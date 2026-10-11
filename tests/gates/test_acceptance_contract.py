@@ -2590,8 +2590,8 @@ class AcceptanceContractTests(unittest.TestCase):
         ]
         self.assertEqual([("functional", "recovery", "xray-diagnostic", "provider-diagnostic",
                            "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
-                           "recovery-diagnostic", "kernel-preflight", "kernel-recovery-diagnostic",
-                           "packet-diagnostic")], suite_choices)
+                           "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight",
+                           "kernel-recovery-diagnostic", "packet-diagnostic")], suite_choices)
 
     def test_recovery_diagnostic_is_exactly_the_two_fixed_recovery_nodes(self):
         expected = {
@@ -2862,6 +2862,64 @@ class AcceptanceContractTests(unittest.TestCase):
                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                          and node.func.id == "_install_acceptance_apply_exception_observer"]
         self.assertEqual(1, len(install_calls))
+
+    def test_packet_dnsmasq_reconcile_diagnostic_is_bounded_and_preserves_result(self):
+        worker_source = WORKER_PATH.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
+        observer = next(node for node in ast.walk(worker_tree)
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "observed_reconcile_dnsmasq_rules")
+        expected = {
+            "ok": False,
+            "error_code": "DNSMASQ_RESTART_FAILED",
+            "restart_required": True,
+            "restart_reason": "config_changed",
+            "selective_status": {"ok": False, "message": "private nested text"},
+            "message": "sensitive text must not escape",
+            "stderr": "private detail",
+        }
+        original_result = expected.copy()
+        namespace = {
+            "Any": __import__("typing").Any,
+            "current": {},
+            "original_reconcile_dnsmasq_rules": lambda *args, **kwargs: original_result,
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(WORKER_PATH), "exec"), namespace)
+        observed_fn = namespace["observed_reconcile_dnsmasq_rules"]
+        observed_result = observed_fn("fixed", force_restart_reason="test")
+        self.assertIs(observed_result, original_result)
+        self.assertEqual(namespace["current"]["reconcile_result"], {
+            "ok": False,
+            "error_code": "DNSMASQ_RESTART_FAILED",
+            "restart_required": True,
+            "restart_reason": "config_changed",
+            "selective_status_ok": False,
+        })
+        self.assertNotIn("message", namespace["current"]["reconcile_result"])
+        self.assertNotIn("stderr", namespace["current"]["reconcile_result"])
+        self.assertNotIn("private", json.dumps(namespace["current"]["reconcile_result"]))
+        unknown_code_result = {"ok": True, "error_code": "TOKEN_SECRET", "restart_required": False,
+                               "restart_reason": None, "selective_status": {"ok": True}}
+        namespace["original_reconcile_dnsmasq_rules"] = lambda *_args, **_kwargs: unknown_code_result
+        self.assertIs(observed_fn(), unknown_code_result)
+        self.assertEqual(namespace["current"]["reconcile_result"], {
+            "ok": True, "error_code": None, "restart_required": False,
+            "restart_reason": None, "selective_status_ok": True,
+        })
+
+        packet_source = (Path(__file__).parents[1] / "application_acceptance" /
+                         "test_packet_dataplane.py").read_text(encoding="utf-8")
+        packet_tree = ast.parse(packet_source)
+        packet_function = next(node for node in packet_tree.body
+                               if isinstance(node, ast.FunctionDef)
+                               and node.name == "_probe_dns53_policy_phase")
+        packet_function_source = ast.get_source_segment(packet_source, packet_function) or ""
+        for required in ('"phase": "dns53-native-daemon"', '"config_test_status"',
+                         '"config_test_returncode"', '"config_test_error_code"',
+                         '"reconcile_result": reconcile_result',
+                         '"readiness_probe_timeout"'):
+            self.assertIn(required, packet_function_source)
+        self.assertNotIn("diagnostic_tail", packet_function_source)
 
     def test_packet_handoff_alias_is_qualified_local_and_removed(self):
         worker_source = WORKER_PATH.read_text(encoding="utf-8")

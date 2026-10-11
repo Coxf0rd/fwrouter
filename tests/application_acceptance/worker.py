@@ -154,6 +154,8 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
                 setattr(module, name, value)
             if module is not None and current.get("subprocess_module") is not None:
                 module.subprocess = current["subprocess_module"]
+            if module is not None and current.get("reconcile_dnsmasq_rules") is not None:
+                module.reconcile_dnsmasq_rules = current["reconcile_dnsmasq_rules"]
             settings = current.get("settings")
             if settings is not None:
                 settings.lan_interface_allowlist = current.get("lan_allowlist", [])
@@ -267,8 +269,34 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
             "DNSMASQ_LOCAL_HOSTS_CONF_PATH": config_dir / "fwrouter-local-hosts.conf",
         }
         runtime: dict[str, Any] = current["runtime"]
+        original_reconcile_dnsmasq_rules = dnsmasq.reconcile_dnsmasq_rules
+
+        def observed_reconcile_dnsmasq_rules(*args: Any, **kwargs: Any) -> Any:
+            result = original_reconcile_dnsmasq_rules(*args, **kwargs)
+            if isinstance(result, dict):
+                error_code = result.get("error_code")
+                if error_code not in {
+                    "DNSMASQ_DNS_CAPTURE_FAILED", "DNSMASQ_RESTART_FAILED",
+                    "DNSMASQ_SELECTIVE_CONTRACT_INCOMPLETE",
+                }:
+                    error_code = None
+                restart_reason = result.get("restart_reason")
+                if restart_reason not in {None, "config_changed", "nftset_probe_unhealthy"}:
+                    restart_reason = None
+                current["reconcile_result"] = {
+                    "ok": result.get("ok") is True,
+                    "error_code": error_code,
+                    "restart_required": result.get("restart_required") is True,
+                    "restart_reason": restart_reason,
+                    "selective_status_ok": (result.get("selective_status") or {}).get("ok") is True
+                    if isinstance(result.get("selective_status"), dict) else None,
+                }
+            return result
+
         current.update({"module": dnsmasq, "subprocess_module": dnsmasq.subprocess,
+                        "reconcile_dnsmasq_rules": original_reconcile_dnsmasq_rules,
                         "settings": settings, "lan_allowlist": old_allowlist, "paths": old_paths})
+        dnsmasq.reconcile_dnsmasq_rules = observed_reconcile_dnsmasq_rules
         settings.lan_interface_allowlist = [lan_rows[0][0]]
         for name, value in new_paths.items():
             setattr(dnsmasq, name, value)
@@ -291,10 +319,27 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
             raise RuntimeError("pinned dnsmasq lacks native nftset support")
 
         def restart_owned_dnsmasq() -> subprocess.CompletedProcess[bytes]:
-            test_result = subprocess.run([*arguments, "--test"], check=False, capture_output=True,
-                                         timeout=5, stdin=subprocess.DEVNULL,
-                                         env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C", "TZ": "UTC"})
-            if test_result.returncode != 0 or len(test_result.stdout) > 2048 or len(test_result.stderr) > 2048:
+            try:
+                test_result = subprocess.run([*arguments, "--test"], check=False, capture_output=True,
+                                             timeout=5, stdin=subprocess.DEVNULL,
+                                             env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C", "TZ": "UTC"})
+            except subprocess.TimeoutExpired:
+                runtime.update({"config_test_status": "timeout", "config_test_returncode": None,
+                                "config_test_error_code": "config_test_timeout"})
+                raise subprocess.CalledProcessError(1, [*arguments, "--test"], output=b"",
+                                                    stderr=b"native dnsmasq config test timed out")
+            stdout_size = len(test_result.stdout or b"")
+            stderr_size = len(test_result.stderr or b"")
+            status = "passed" if test_result.returncode == 0 and stdout_size <= 2048 and stderr_size <= 2048 else "failed"
+            runtime.update({"config_test_status": status,
+                            "config_test_returncode": test_result.returncode
+                            if type(test_result.returncode) is int and -255 <= test_result.returncode <= 255 else None,
+                            "config_test_stdout_bytes": stdout_size if stdout_size <= 2048 else 2049,
+                            "config_test_stderr_bytes": stderr_size if stderr_size <= 2048 else 2049,
+                            "config_test_error_code": None if status == "passed" else
+                            "config_test_output_bound_exceeded" if stdout_size > 2048 or stderr_size > 2048 else
+                            "config_test_rejected"})
+            if status != "passed":
                 raise subprocess.CalledProcessError(1, [*arguments, "--test"],
                                                     output=b"", stderr=b"native dnsmasq config test failed")
             prior = runtime.get("process")
@@ -2328,7 +2373,21 @@ def build_app(socket_path: Path):
                 "nft_probe_targets": nft_proof,
                 "process_exit_code": process.returncode if process is not None and process.poll() is not None else None,
                 "startup_error_code": runtime.get("startup_error_code") if runtime.get("startup_error_code") in {
-                    "native_uid_mismatch", "native_process_exited", "readiness_deadline"} else None,
+                    "native_uid_mismatch", "native_process_exited", "readiness_probe_timeout",
+                    "readiness_deadline"} else None,
+                "config_test_status": runtime.get("config_test_status") if runtime.get("config_test_status") in {
+                    "passed", "failed", "timeout"} else None,
+                "config_test_returncode": runtime.get("config_test_returncode")
+                if type(runtime.get("config_test_returncode")) is int
+                and -255 <= runtime["config_test_returncode"] <= 255 else None,
+                "config_test_stdout_bytes": runtime.get("config_test_stdout_bytes")
+                if type(runtime.get("config_test_stdout_bytes")) is int else None,
+                "config_test_stderr_bytes": runtime.get("config_test_stderr_bytes")
+                if type(runtime.get("config_test_stderr_bytes")) is int else None,
+                "config_test_error_code": runtime.get("config_test_error_code") if runtime.get("config_test_error_code") in {
+                    "config_test_timeout", "config_test_output_bound_exceeded", "config_test_rejected"} else None,
+                "reconcile_result": current.get("reconcile_result")
+                if isinstance(current.get("reconcile_result"), dict) else None,
                 "diagnostic_tail": _dnsmasq_diagnostic_tail(runtime),
                 "lan_interface_count": 1 if current else 0,
             }

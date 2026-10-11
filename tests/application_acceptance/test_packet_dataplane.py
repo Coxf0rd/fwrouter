@@ -958,6 +958,64 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "dns53_manual_apply": _bounded_job_summary(job), "native_dnsmasq": setup_dns,
         "native_status_code": setup_status_code,
     }
+    startup_error_code = setup_dns.get("startup_error_code")
+    if startup_error_code not in {
+        "native_uid_mismatch", "native_process_exited", "readiness_probe_timeout", "readiness_deadline",
+    }:
+        startup_error_code = None
+    process_exit_code = setup_dns.get("process_exit_code")
+    if type(process_exit_code) is not int or not -255 <= process_exit_code <= 255:
+        process_exit_code = None
+    config_test_status = setup_dns.get("config_test_status")
+    if config_test_status not in {"passed", "failed", "timeout"}:
+        config_test_status = None
+    config_test_returncode = setup_dns.get("config_test_returncode")
+    if type(config_test_returncode) is not int or not -255 <= config_test_returncode <= 255:
+        config_test_returncode = None
+    config_test_error_code = setup_dns.get("config_test_error_code")
+    if config_test_error_code not in {
+        "config_test_timeout", "config_test_output_bound_exceeded", "config_test_rejected",
+    }:
+        config_test_error_code = None
+    reconcile_result = setup_dns.get("reconcile_result")
+    if isinstance(reconcile_result, dict):
+        reconcile_error_code = reconcile_result.get("error_code")
+        if reconcile_error_code not in {
+            "DNSMASQ_DNS_CAPTURE_FAILED", "DNSMASQ_RESTART_FAILED",
+            "DNSMASQ_SELECTIVE_CONTRACT_INCOMPLETE",
+        }:
+            reconcile_error_code = None
+        reconcile_reason = reconcile_result.get("restart_reason")
+        if reconcile_reason not in {None, "config_changed", "nftset_probe_unhealthy"}:
+            reconcile_reason = None
+        reconcile_result = {
+            "ok": reconcile_result.get("ok") is True,
+            "error_code": reconcile_error_code,
+            "restart_required": reconcile_result.get("restart_required") is True,
+            "restart_reason": reconcile_reason,
+            "selective_status_ok": reconcile_result.get("selective_status_ok")
+            if type(reconcile_result.get("selective_status_ok")) is bool else None,
+        }
+    else:
+        reconcile_result = None
+    daemon_diagnostic = {
+        "phase": "dns53-native-daemon",
+        "http_status": setup_status_code if type(setup_status_code) is int else None,
+        "configured": setup_dns.get("configured") is True,
+        "daemon_running": setup_dns.get("daemon_running") is True,
+        "daemon_uid_matches": setup_dns.get("daemon_uid_matches") is True,
+        "native_process_arguments_match": setup_dns.get("native_process_arguments_match") is True,
+        "selective_status_ok": setup_dns.get("selective_status_ok") is True,
+        "dns_capture_ok": setup_dns.get("dns_capture_ok") is True,
+        "nftset_probe_ok": setup_dns.get("nftset_probe_ok") is True,
+        "startup_error_code": startup_error_code,
+        "process_exit_code": process_exit_code,
+        "config_test_status": config_test_status,
+        "config_test_returncode": config_test_returncode,
+        "config_test_error_code": config_test_error_code,
+        "reconcile_result": reconcile_result,
+    }
+    _record_phase_diagnostic(record_property, daemon_diagnostic)
     assert setup_status_code == 200 and setup_dns.get("daemon_running") is True
     assert setup_dns.get("daemon_uid_matches") is True and setup_dns.get("selective_status_ok") is True
     assert setup_dns.get("native_process_arguments_match") is True
@@ -1189,7 +1247,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
                      "vpn-empty-pool-native",
                      "provider-recovery-confirmations",
-                     "provider-recovery-confirmation-1", "dns53-manual-apply",
+                     "provider-recovery-confirmation-1", "dns53-manual-apply", "dns53-native-daemon",
                      "provider-reentry",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "protected-direct-under-global-vpn",
