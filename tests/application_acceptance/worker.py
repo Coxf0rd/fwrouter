@@ -618,7 +618,7 @@ def _install_acceptance_recovery_apply_observer() -> None:
     limit = 32
 
     def valid_code(value: Any) -> str | None:
-        if (isinstance(value, str) and len(value) <= 96
+        if (isinstance(value, str) and len(value) <= 64
                 and all(char.isascii() and (char.isalnum() or char in "_.-") for char in value)):
             return value
         return None
@@ -663,7 +663,7 @@ def _install_acceptance_recovery_apply_observer() -> None:
                 safe_dataplane["error_code"] = dataplane_code
             details = dataplane.get("details")
             if isinstance(details, dict):
-                safe_details: dict[str, str] = {}
+                safe_details: dict[str, Any] = {}
                 for key in ("stage", "error_stage"):
                     item = details.get(key)
                     if isinstance(item, str) and len(item) <= 80 and all(
@@ -673,6 +673,29 @@ def _install_acceptance_recovery_apply_observer() -> None:
                 details_code = valid_code(details.get("error_code"))
                 if details_code:
                     safe_details["error_code"] = details_code
+                failed_enforcement = details.get("failed_runtime_enforcement")
+                if isinstance(failed_enforcement, dict):
+                    failed_modes = failed_enforcement.get("supported_modes")
+                    safe_failed_enforcement: dict[str, Any] = {}
+                    for key in ("enforcement_level", "live_global_mode"):
+                        item = failed_enforcement.get(key)
+                        if isinstance(item, str) and len(item) <= 80 and all(
+                            char.isascii() and (char.isalnum() or char in "_.- ") for char in item
+                        ):
+                            safe_failed_enforcement[key] = item
+                    for key in ("traffic_enforcement_guaranteed", "active_mode_matches_intent", "vpn_egress_ready"):
+                        item = failed_enforcement.get(key)
+                        if isinstance(item, bool):
+                            safe_failed_enforcement[key] = item
+                    if isinstance(failed_modes, dict) and type(failed_modes.get("vpn")) is bool:
+                        safe_failed_enforcement["vpn_supported"] = failed_modes["vpn"]
+                    missing = failed_enforcement.get("missing_runtime_requirements")
+                    if isinstance(missing, list):
+                        safe_failed_enforcement["missing_runtime_requirements"] = [
+                            code for code in (valid_code(item) for item in missing[:2]) if code is not None
+                        ]
+                    if safe_failed_enforcement:
+                        safe_details["failed_runtime_enforcement"] = safe_failed_enforcement
                 if safe_details:
                     safe_dataplane["details"] = safe_details
             result["dataplane"] = safe_dataplane
@@ -701,6 +724,31 @@ def _install_acceptance_recovery_apply_observer() -> None:
             result["on_demand"] = {**counts, "results": statuses}
         if "selected_member_id" in value:
             result["selected_member_present"] = bool(value.get("selected_member_id"))
+        supported_modes = value.get("supported_modes")
+        if isinstance(supported_modes, dict) and type(supported_modes.get("vpn")) is bool:
+            result["vpn_supported"] = supported_modes["vpn"]
+        preflight = value.get("preflight")
+        if isinstance(preflight, dict):
+            safe_preflight: dict[str, Any] = {}
+            for key in ("can_enforce_global_vpn", "can_prepare_global_vpn", "vpn_policy_installed",
+                        "vpn_egress_ready", "vpn_egress_target_present", "vpn_external_path_verified"):
+                item = preflight.get(key)
+                if isinstance(item, bool):
+                    safe_preflight[key] = item
+            for key in ("vpn_prepare_missing", "vpn_egress_missing"):
+                values = preflight.get(key)
+                if isinstance(values, list):
+                    safe_preflight[key] = [
+                        code for code in (valid_code(item) for item in values[:2]) if code is not None
+                    ]
+            missing_by_mode = preflight.get("missing_by_mode")
+            vpn_missing = missing_by_mode.get("vpn") if isinstance(missing_by_mode, dict) else None
+            if isinstance(vpn_missing, list):
+                safe_preflight["vpn_missing"] = [
+                    code for code in (valid_code(item) for item in vpn_missing[:2]) if code is not None
+                ]
+            if safe_preflight:
+                result["vpn_preflight"] = safe_preflight
         return result
 
     def record(phase: str, *, operation: int | None = None, result: Any = None,

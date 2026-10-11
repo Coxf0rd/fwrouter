@@ -250,6 +250,27 @@ def _packet_refresh_state(source_ref: str, logical_id: str) -> dict[str, Any]:
 
 def _packet_refresh_native_proof(stack: dict[str, Any]) -> dict[str, Any]:
     proof = _mihomo_packet_path_proof(stack)
+    receipt_matches = {"available": False}
+    try:
+        receipt_path = stack["state"] / "generated" / "mihomo" / "reconcile-state.json"
+        receipt_info = receipt_path.lstat()
+        if (stat.S_ISREG(receipt_info.st_mode) and not receipt_path.is_symlink()
+                and receipt_info.st_size <= 16384):
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            if isinstance(receipt, dict):
+                receipt_matches = {
+                    "available": True,
+                    "active_hash_matches": receipt.get("active_config_hash") == proof.get("active_config_sha256"),
+                    "runtime_incarnation_matches": (
+                        isinstance(receipt.get("runtime_incarnation"), str)
+                        and bool(receipt.get("runtime_incarnation"))
+                        and hashlib.sha256(receipt["runtime_incarnation"].strip().encode("utf-8")).hexdigest()
+                        == proof.get("native_incarnation_sha256")
+                    ),
+                    "version_supported": receipt.get("udp_policy_version") == 1,
+                }
+    except (OSError, ValueError, TypeError):
+        pass
     allowed = (
         "available", "native_loaded_config_matches_active", "runtime_running",
         "vpn_global_selects_vpn_auto", "vpn_auto_selected_target_kind",
@@ -260,7 +281,9 @@ def _packet_refresh_native_proof(stack: dict[str, Any]) -> dict[str, Any]:
         "vpn_udp_policy_receipt_matches", "vpn_udp_selector_membership_matches",
         "vpn_udp_guarded_rules_match", "vpn_udp_native_rules_match",
     )
-    return {key: proof[key] for key in allowed if key in proof}
+    result = {key: proof[key] for key in allowed if key in proof}
+    result["reconcile_receipt"] = receipt_matches
+    return result
 
 
 def _refresh_packet_provider(api: str, source_ref: str, *, stack: dict[str, Any], logical_id: str,
@@ -757,8 +780,8 @@ def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
         try:
             incarnation = stack["native"].rpc("mihomo_incarnation", {})
             raw_incarnation = incarnation.get("details", {}).get("stdout") if isinstance(incarnation, dict) else None
-            if isinstance(raw_incarnation, str) and raw_incarnation:
-                incarnation_sha256 = hashlib.sha256(raw_incarnation.encode("utf-8")).hexdigest()
+            if isinstance(raw_incarnation, str) and raw_incarnation.strip():
+                incarnation_sha256 = hashlib.sha256(raw_incarnation.strip().encode("utf-8")).hexdigest()
         except Exception:
             pass
         code, response = http_json(f"{stack['api']}/mihomo")
