@@ -212,6 +212,14 @@ read-only `vpn_auto_reconcile` status object. Completion applies only to the
 claimed revision after final runtime and public-profile verification; a newer
 revision remains pending.
 
+Staged Xray subscription generations publish Mihomo's UDP policy receipt at
+terminal publication, after exact runtime readback and before public snapshot
+promotion. Receipt publication revalidates the generation checkpoint,
+selection revision, source fingerprint, active config hash and runtime
+incarnation around fresh native rule/selector/guard proof. Failure retains the
+checkpoint and prevents public promotion. This source contract is not yet
+hosted-verified; packet/Core re-entry acceptance remains pending.
+
 ## Boot Relevance
 
 - The configured Docker network must exist before service start.

@@ -206,7 +206,12 @@ jobs:
             tests/test_mihomo_config_runtime.py::test_reconcile_rollback_classifies_actual_direct_and_mandatory_vpn_configs \
             tests/test_mihomo_config_runtime.py::test_mihomo_udp_policy_receipt_is_bound_to_config_hash_runtime_and_native_proof \
             tests/test_vpn_auto_exclusive.py::test_exact_auto_targets_requires_reject_terminal_and_rejects_direct \
-            tests/test_logical_topology.py::test_provider_generation_probe_keeps_automatic_health_and_refresh_admission
+            tests/test_logical_topology.py::test_provider_generation_probe_keeps_automatic_health_and_refresh_admission \
+            tests/test_xray.py::test_staged_generation_finalizer_returns_success_and_closes_checkpoint_last \
+            tests/test_xray.py::test_staged_generation_finalizer_keeps_checkpoint_on_publication_failure \
+            tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof \
+            tests/test_xray.py::test_staged_generation_finalizer_requires_udp_receipt_before_publication \
+            tests/test_xray.py::test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publication
       - name: Record focused preflight outcome
         if: always()
         run: |

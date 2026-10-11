@@ -302,6 +302,7 @@ def _refresh_packet_provider(api: str, source_ref: str, *, stack: dict[str, Any]
             await_error_class = type(exc).__name__
     after = _packet_refresh_state(source_ref, logical_id)
     job_summary = _bounded_provider_refresh_summary(job)
+    native_proof = _packet_refresh_native_proof(stack)
     summary = {
         "phase": phase,
         "http_status": code if type(code) is int else None,
@@ -310,7 +311,7 @@ def _refresh_packet_provider(api: str, source_ref: str, *, stack: dict[str, Any]
         "job": job_summary,
         "before": before,
         "after": after,
-        "mihomo_path": _packet_refresh_native_proof(stack),
+        "mihomo_path": native_proof,
     }
     _record_phase_diagnostic(record_property, summary)
     assert accepted_ok, {"provider_refresh_phase": phase, "accepted": accepted_ok}
@@ -318,6 +319,21 @@ def _refresh_packet_provider(api: str, source_ref: str, *, stack: dict[str, Any]
         raise AssertionError("provider refresh job polling failed within its bound")
     assert isinstance(job, dict) and job.get("status") == "success", {
         "provider_refresh_phase": phase, "job": job_summary, "before": before, "after": after,
+    }
+    receipt = native_proof.get("reconcile_receipt")
+    assert (
+        native_proof.get("vpn_udp_policy_installed") is True
+        and native_proof.get("vpn_udp_policy_receipt_matches") is True
+        and isinstance(receipt, dict)
+        and receipt.get("available") is True
+        and receipt.get("active_hash_matches") is True
+        and receipt.get("runtime_incarnation_matches") is True
+        and receipt.get("version_supported") is True
+    ), {
+        "provider_refresh_phase": phase,
+        "mihomo_policy_installed": native_proof.get("vpn_udp_policy_installed"),
+        "mihomo_receipt_matches": native_proof.get("vpn_udp_policy_receipt_matches"),
+        "receipt_parity": receipt,
     }
     from fwrouter_api.services.provider_managed import binding_for
     binding = binding_for(source_ref)

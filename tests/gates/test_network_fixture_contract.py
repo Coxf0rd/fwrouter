@@ -122,6 +122,20 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('provider_calls_after_first == [("GET", "/configs", {}, None)]', source)
         self.assertIn('provider_calls_after_recovery == provider_calls_after_first', source)
         self.assertIn('"mihomo_path": _packet_refresh_native_proof(stack)', source)
+        refresh_provider = functions["_refresh_packet_provider"]
+        refresh_source = ast.get_source_segment(source, refresh_provider)
+        for receipt_fact in (
+            'native_proof.get("vpn_udp_policy_installed") is True',
+            'native_proof.get("vpn_udp_policy_receipt_matches") is True',
+            'receipt.get("active_hash_matches") is True',
+            'receipt.get("runtime_incarnation_matches") is True',
+            'receipt.get("version_supported") is True',
+        ):
+            self.assertIn(receipt_fact, refresh_source)
+        self.assertLess(refresh_source.index('assert accepted_ok'),
+                        refresh_source.index('assert isinstance(job, dict)'))
+        self.assertLess(refresh_source.index('assert isinstance(job, dict)'),
+                        refresh_source.index('assert ('))
         reentry_diagnostic = source.index('"phase": "provider-reentry"')
         reentry_assertion = source.index('assert code == 200 and reentered.get("ok") is True')
         self.assertLess(reentry_diagnostic, reentry_assertion)
