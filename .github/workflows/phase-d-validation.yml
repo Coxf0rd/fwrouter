@@ -209,7 +209,21 @@ jobs:
             tests/test_logical_topology.py::test_provider_generation_probe_keeps_automatic_health_and_refresh_admission \
             tests/test_xray.py::test_staged_generation_finalizer_returns_success_and_closes_checkpoint_last \
             tests/test_xray.py::test_staged_generation_finalizer_keeps_checkpoint_on_publication_failure \
-            tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[success]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[success_no_callback]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[revision]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[source]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[incarnation]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[active_hash]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[fingerprint_after_proof]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[checkpoint_after_proof]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[native_proof]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[native_selector]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[native_guards]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[callback_false]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[receipt_write]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[unheld]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[wrong_token]" \
             tests/test_xray.py::test_staged_generation_finalizer_requires_udp_receipt_before_publication \
             tests/test_xray.py::test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publication
       - name: Record focused preflight outcome
