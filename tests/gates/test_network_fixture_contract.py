@@ -82,6 +82,77 @@ def _literal_assignments() -> dict[str, object]:
 
 
 class NetworkFixtureContractTests(unittest.TestCase):
+    def test_packet_capture_summary_is_compact_and_retains_all_required_packet_evidence(self):
+        tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))
+        writer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "_write_capture_summary")
+        with tempfile.TemporaryDirectory(prefix="packet-summary-contract-") as raw_root:
+            output = Path(raw_root) / "summary.json"
+            namespace = {"Any": object, "json": json, "os": os, "CAPTURE_SUMMARY_PATH": output}
+            exec(compile(ast.Module(body=[writer], type_ignores=[]), str(PACKET_TEST), "exec"), namespace)
+            direct_udp = {"client_source_to_service": 0, "mihomo_direct_to_service": 0}
+            core = {"vpn_tcp_classified": 3, "vpn_udp_classified": 4, "vpn_udp_handoff_packets": 4}
+            phases = {
+                "direct_before_vpn": {
+                    "flows": {"tcp_9080": 2, "udp_9081": 2, "dns_5353": 2},
+                    "core_counters": {"direct_lan_forward": 9},
+                    "observations": {"counts": {"http": 1, "udp": 1, "dns": 1}},
+                },
+                "vpn": {"vless_endpoint_packets": 7,
+                        "direct_client_leaks": {"tcp_9080": 0, "udp_9081": 0, "dns_5353": 0},
+                        "core_counters": core, "observations": {"counts": {"http": 1, "udp": 1, "dns": 1}}},
+                "udp_capability_contract": {
+                    "supported": True,
+                    "supported_packet": {"endpoint_udp_observation": 1,
+                                         "vless_tunnel_tcp_capture_packets": 7, "direct_udp_packets": 0},
+                    "unknown": True,
+                    "unknown_packet": {"endpoint_udp_delta": 1, "core": core,
+                                       "direct_udp_capture_delta": direct_udp, "tcp": 3},
+                    "unsupported": True,
+                    "unsupported_packet": {"endpoint_udp_delta": 0,
+                                           "core": {"vpn_udp_classified": 2},
+                                           "direct_udp_capture_delta": direct_udp, "tcp": 0},
+                    "endpoint_unavailable": {"endpoint_udp_delta": 0, "core": core,
+                                              "direct_udp_capture_delta": direct_udp},
+                    "empty_pool": {
+                        "native": {"vpn_auto_selected_reject": True, "vpn_auto_target_count": 1,
+                                   "vpn_global_has_direct_target": False, "selection_fence_revision": 22,
+                                   "runtime_enforcement": {"level": "global_vpn_fail_closed",
+                                                           "vpn_egress_ready": False}},
+                        "endpoint_udp_delta": 0, "core": core,
+                        "tcp_capture": {"client_direct": 0, "router_direct": 0, "vpn_proxy": 0},
+                        "direct_udp_capture_delta": direct_udp, "selection_stable": True,
+                    },
+                },
+                "emergency_direct": {"flows": {"tcp_9080": 1, "udp_9081": 1, "dns_5353": 1},
+                                      "core_counters": {"direct_lan_forward": 5},
+                                      "observations": {"counts": {"http": 1, "udp": 1, "dns": 1}}},
+                "vpn_after_reentry": {"vless_endpoint_packets": 5,
+                                       "direct_client_leaks": {"tcp_9080": 0, "udp_9081": 0, "dns_5353": 0},
+                                       "core_counters": core,
+                                       "observations": {"counts": {"http": 1, "udp": 1, "dns": 1}}},
+                "ignored_large_diagnostic": "x" * 100_000,
+            }
+            namespace["_write_capture_summary"](phases)
+            raw = output.read_bytes()
+            self.assertLessEqual(len(raw), 4096)
+            encoded = json.loads(raw)
+            self.assertEqual(encoded["schema"], "fwrouter-packet-test-flows/v2")
+            summary = encoded["phases"]
+            self.assertEqual(set(summary), {"direct_before_vpn", "vpn", "udp_capability",
+                                            "emergency_direct", "vpn_after_reentry"})
+            capability = summary["udp_capability"]
+            self.assertEqual(set(capability), {"supported", "unknown", "unsupported",
+                                               "endpoint_unavailable", "empty_pool"})
+            for name in ("unknown", "unsupported", "endpoint_unavailable", "empty_pool"):
+                self.assertEqual(capability[name]["direct_udp"], direct_udp)
+            self.assertIsNone(capability["unsupported"]["handoff"],
+                              "missing native counter must remain unknown, not become zero")
+            self.assertEqual(capability["empty_pool"]["native"]["reject_selected"], True)
+            self.assertEqual(capability["empty_pool"]["native"]["fence_revision"], 22)
+            self.assertTrue(capability["empty_pool"]["selection_stable"])
+            self.assertEqual(summary["direct_before_vpn"]["endpoint"], {"http": 1, "udp": 1, "dns": 1})
+
     def test_packet_phase_diagnostics_are_bounded_junit_json_emitted_before_probes_assert(self):
         tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))
         functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}

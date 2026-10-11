@@ -1735,7 +1735,115 @@ def _assert_packet_runtime(stack: dict, *, mode: str, policy_required: bool) -> 
 
 
 def _write_capture_summary(phases: dict[str, Any]) -> None:
-    summary = json.dumps({"schema": "fwrouter-packet-test-flows/v1", "phases": phases},
+    """Write compact packet-proof facts; full diagnostics remain in bounded JUnit properties."""
+    def number(value: Any) -> int | None:
+        return value if type(value) is int and 0 <= value <= 1_000_000 else None
+
+    def counters(source: Any, keys: tuple[str, ...]) -> dict[str, int | None]:
+        values = source if isinstance(source, dict) else {}
+        return {key: number(values.get(key)) for key in keys}
+
+    def native_empty(source: Any) -> dict[str, Any]:
+        value = source if isinstance(source, dict) else {}
+        enforcement = value.get("runtime_enforcement") if isinstance(value.get("runtime_enforcement"), dict) else {}
+        return {
+            "reject_selected": value.get("vpn_auto_selected_reject") is True,
+            "auto_targets": number(value.get("vpn_auto_target_count")),
+            "direct_target": value.get("vpn_global_has_direct_target") is True,
+            "fence_revision": number(value.get("selection_fence_revision")),
+            "enforcement": enforcement.get("level")
+            if enforcement.get("level") in {"global_vpn_fail_closed", "global_vpn_enforced", "degraded"} else "other",
+            "vpn_egress_ready": enforcement.get("vpn_egress_ready")
+            if type(enforcement.get("vpn_egress_ready")) is bool else None,
+        }
+
+    capability = phases.get("udp_capability_contract") if isinstance(phases.get("udp_capability_contract"), dict) else {}
+    supported = capability.get("supported_packet") if isinstance(capability.get("supported_packet"), dict) else {}
+    unknown = capability.get("unknown_packet") if isinstance(capability.get("unknown_packet"), dict) else {}
+    unsupported = capability.get("unsupported_packet") if isinstance(capability.get("unsupported_packet"), dict) else {}
+    unavailable = capability.get("endpoint_unavailable") if isinstance(capability.get("endpoint_unavailable"), dict) else {}
+    empty = capability.get("empty_pool") if isinstance(capability.get("empty_pool"), dict) else {}
+    direct = phases.get("direct_before_vpn") if isinstance(phases.get("direct_before_vpn"), dict) else {}
+    vpn = phases.get("vpn") if isinstance(phases.get("vpn"), dict) else {}
+    emergency = phases.get("emergency_direct") if isinstance(phases.get("emergency_direct"), dict) else {}
+    reentry = phases.get("vpn_after_reentry") if isinstance(phases.get("vpn_after_reentry"), dict) else {}
+    def observation_counts(source: Any) -> dict[str, int | None]:
+        value = source if isinstance(source, dict) else {}
+        counts_value = value.get("counts") if isinstance(value.get("counts"), dict) else {}
+        return counters(counts_value, ("http", "udp", "dns"))
+
+    summary_phases = {
+        "direct_before_vpn": {
+            "flows": counters(direct.get("flows"), ("tcp_9080", "udp_9081", "dns_5353")),
+            "direct_counter": number((direct.get("core_counters") or {}).get("direct_lan_forward")
+                                      if isinstance(direct.get("core_counters"), dict) else None),
+            "endpoint": observation_counts(direct.get("observations")),
+        },
+        "vpn": {
+            "endpoint_vless_tcp": number(vpn.get("vless_endpoint_packets")),
+            "direct_leaks": counters(vpn.get("direct_client_leaks"), ("tcp_9080", "udp_9081", "dns_5353")),
+            "core": counters(vpn.get("core_counters"),
+                              ("vpn_tcp_classified", "vpn_udp_classified", "vpn_udp_handoff_packets")),
+            "endpoint": observation_counts(vpn.get("observations")),
+        },
+        "udp_capability": {
+            "supported": {
+                "declared": capability.get("supported") is True,
+                "endpoint_udp": number(supported.get("endpoint_udp_observation")),
+                "tunnel_tcp": number(supported.get("vless_tunnel_tcp_capture_packets")),
+                "direct_udp": number(supported.get("direct_udp_packets")),
+            },
+            "unknown": {
+                "declared": capability.get("unknown") is True,
+                "endpoint_udp": number(unknown.get("endpoint_udp_delta")),
+                "handoff": number((unknown.get("core") or {}).get("vpn_udp_handoff_packets")
+                                   if isinstance(unknown.get("core"), dict) else None),
+                "tunnel_tcp": number(unknown.get("tcp")),
+                "direct_udp": counters(unknown.get("direct_udp_capture_delta"),
+                                        ("client_source_to_service", "mihomo_direct_to_service")),
+            },
+            "unsupported": {
+                "declared": capability.get("unsupported") is True,
+                "endpoint_udp": number(unsupported.get("endpoint_udp_delta")),
+                "handoff": number((unsupported.get("core") or {}).get("vpn_udp_handoff_packets")
+                                   if isinstance(unsupported.get("core"), dict) else None),
+                "tunnel_tcp": number(unsupported.get("tcp")),
+                "direct_udp": counters(unsupported.get("direct_udp_capture_delta"),
+                                        ("client_source_to_service", "mihomo_direct_to_service")),
+            },
+            "endpoint_unavailable": {
+                "endpoint_udp": number(unavailable.get("endpoint_udp_delta")),
+                "handoff": number((unavailable.get("core") or {}).get("vpn_udp_handoff_packets")
+                                   if isinstance(unavailable.get("core"), dict) else None),
+                "direct_udp": counters(unavailable.get("direct_udp_capture_delta"),
+                                        ("client_source_to_service", "mihomo_direct_to_service")),
+            },
+            "empty_pool": {
+                "native": native_empty(empty.get("native")),
+                "endpoint_udp": number(empty.get("endpoint_udp_delta")),
+                "handoff": number((empty.get("core") or {}).get("vpn_udp_handoff_packets")
+                                   if isinstance(empty.get("core"), dict) else None),
+                "tcp_direct": counters(empty.get("tcp_capture"), ("client_direct", "router_direct", "vpn_proxy")),
+                "direct_udp": counters(empty.get("direct_udp_capture_delta"),
+                                        ("client_source_to_service", "mihomo_direct_to_service")),
+                "selection_stable": empty.get("selection_stable") is True,
+            },
+        },
+        "emergency_direct": {
+            "flows": counters(emergency.get("flows"), ("tcp_9080", "udp_9081", "dns_5353")),
+            "direct_counter": number((emergency.get("core_counters") or {}).get("direct_lan_forward")
+                                      if isinstance(emergency.get("core_counters"), dict) else None),
+            "endpoint": observation_counts(emergency.get("observations")),
+        },
+        "vpn_after_reentry": {
+            "endpoint_vless_tcp": number(reentry.get("vless_endpoint_packets")),
+            "direct_leaks": counters(reentry.get("direct_client_leaks"), ("tcp_9080", "udp_9081", "dns_5353")),
+            "core": counters(reentry.get("core_counters"),
+                              ("vpn_tcp_classified", "vpn_udp_classified", "vpn_udp_handoff_packets")),
+            "endpoint": observation_counts(reentry.get("observations")),
+        },
+    }
+    summary = json.dumps({"schema": "fwrouter-packet-test-flows/v2", "phases": summary_phases},
                          sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
     if len(summary) > 4096:
         raise AssertionError("packet flow summary exceeded its fixed byte limit")
@@ -2136,18 +2244,30 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
             "unknown": unknown_capability["declared_capability"] == "unknown",
             "unknown_packet": {"endpoint_udp_delta": unknown_udp_phase["endpoint_udp_observation_delta"],
                                "core": unknown_udp_phase["core_counter_delta"],
+                               "direct_udp_capture_delta": unknown_udp_phase["direct_udp_capture_delta"],
                                "tcp": unknown_tcp_phase["vpn_proxy_capture_delta"]},
             "unsupported": unsupported_capability["declared_capability"] == "unsupported",
             "unsupported_packet": {"endpoint_udp_delta": unsupported_udp_phase["endpoint_udp_observation_delta"],
                                    "core": unsupported_udp_phase["core_counter_delta"],
+                                   "direct_udp_capture_delta": unsupported_udp_phase["direct_udp_capture_delta"],
                                    "tcp": unsupported_tcp_phase["vpn_proxy_capture_delta"]},
             "endpoint_unavailable": {"endpoint_udp_delta": unavailable_udp_phase["endpoint_udp_observation_delta"],
-                                      "core": unavailable_udp_phase["core_counter_delta"]},
+                                      "core": unavailable_udp_phase["core_counter_delta"],
+                                      "direct_udp_capture_delta": unavailable_udp_phase["direct_udp_capture_delta"]},
             "empty_pool": {"native": empty_pool_native,
-                           "endpoint_udp_delta": empty_pool_phase["endpoint_udp_observation_delta"],
-                           "core": empty_pool_phase["core_counter_delta"],
-                           "tcp": empty_pool_tcp_phase["core_counter_delta"],
-                           "tcp_capture": empty_pool_tcp_phase["capture_delta"]},
+                               "endpoint_udp_delta": empty_pool_phase["endpoint_udp_observation_delta"],
+                               "core": empty_pool_phase["core_counter_delta"],
+                               "tcp": empty_pool_tcp_phase["core_counter_delta"],
+                               "tcp_capture": empty_pool_tcp_phase["capture_delta"],
+                               "direct_udp_capture_delta": empty_pool_phase["direct_udp_capture_delta"],
+                               "selection_stable": (
+                                   fence_before_empty_probe.get("active_server_id")
+                                   == fence_after_empty_probe.get("active_server_id")
+                                   and fence_before_empty_probe.get("provenance_server_id")
+                                   == fence_after_empty_probe.get("provenance_server_id")
+                                   and fence_before_empty_probe.get("revision")
+                                   == fence_after_empty_probe.get("revision")),
+                           },
         },
         "emergency_direct": {"flows": emergency_flows, "core_counters": core_emergency,
                               "mihomo_path": emergency_phase["mihomo_path"],
