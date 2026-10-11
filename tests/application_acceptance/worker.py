@@ -900,6 +900,211 @@ def _install_acceptance_recovery_apply_observer() -> None:
     apply._run_pipeline_for_state = observed_core_apply
 
 
+def _install_acceptance_xray_generation_rollback_observer() -> None:
+    """Expose bounded rollback receipt predicates before the provider pipeline drops them."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("Xray generation rollback observer requires the qualified acceptance worker")
+
+    from fwrouter_api.services import mihomo_reconcile, xray_subscription_service
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+
+    local = threading.local()
+    lock = threading.Lock()
+    state = {"records": 0}
+    limit = 16
+    max_bytes = 2048
+
+    def code(value: Any) -> str | None:
+        if (isinstance(value, str) and 0 < len(value) <= 64
+                and all(char.isascii() and (char.isalnum() or char in "_.:-") for char in value)):
+            return value
+        return None
+
+    def emit(event: str, fields: dict[str, Any]) -> None:
+        with lock:
+            if state["records"] >= limit:
+                return
+            state["records"] += 1
+        payload = {"schema": "fwrouter-acceptance-xray-rollback/v1", "event": event, **fields}
+        try:
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            if len(encoded.encode("ascii")) <= max_bytes:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_XRAY_ROLLBACK " + encoded + "\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
+
+    def checkpoint_facts(checkpoint_path: Any, expected_source: Any, expected_revision: Any,
+                         expected_runtime: Any, expected_sha: Any) -> dict[str, Any]:
+        facts: dict[str, Any] = {"checkpoint_readable": False}
+        try:
+            path = Path(checkpoint_path)
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
+                return facts
+            checkpoint = json.loads(path.read_text(encoding="utf-8"))
+            artifacts = checkpoint.get("artifacts") if isinstance(checkpoint.get("artifacts"), dict) else {}
+            mihomo_artifact = artifacts.get("mihomo_config")
+            mihomo_artifact = mihomo_artifact if isinstance(mihomo_artifact, dict) else {}
+            encoded = mihomo_artifact.get("text")
+            try:
+                preimage_matches = bool(
+                    isinstance(encoded, str)
+                    and hashlib.sha256(base64.b64decode(encoded, validate=True)).hexdigest() == expected_sha
+                )
+            except (ValueError, TypeError):
+                preimage_matches = False
+            facts.update({
+                "checkpoint_readable": True,
+                "phase_restore_started": checkpoint.get("phase") == "restore_started",
+                "source_fingerprint_matches": bool(expected_source)
+                and checkpoint.get("source_fingerprint") == expected_source,
+                "preimage_hash_matches": preimage_matches,
+                "selection_revision_matches": type(expected_revision) is int
+                and checkpoint.get("selection_revision") == expected_revision,
+                "mihomo_runtime_matches": bool(expected_runtime)
+                and checkpoint.get("mihomo_runtime_incarnation") == expected_runtime,
+                "staged_hash_matches": bool(expected_sha)
+                and (checkpoint.get("staged_generation") or {}).get("mihomo_final_sha256") == expected_sha,
+            })
+            from fwrouter_api.services import mihomo_config
+            from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+            active_path = Path(mihomo_config._resolved_base_config_path())
+            active_hash = hashlib.sha256(active_path.read_bytes()).hexdigest()
+            facts["active_hash_matches"] = active_hash == expected_sha
+            facts["runtime_incarnation_matches"] = get_mihomo_runtime_incarnation() == expected_runtime
+            fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+            facts["input_fingerprint_present"] = bool(
+                isinstance(fingerprint, dict) and isinstance(fingerprint.get("hash"), str)
+                and bool(fingerprint["hash"])
+            )
+        except Exception:
+            pass
+        return facts
+
+    original_restore = xray_subscription_service._restore_xray_generation_checkpoint
+    original_rollback_receipt = xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt
+    original_publish = xray_subscription_service._publish_mihomo_udp_receipt_with_owner
+    original_native_proof = mihomo_reconcile._native_udp_policy_proof
+    original_write = mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state
+
+    def observed_restore(*args: Any, **kwargs: Any) -> Any:
+        prior = getattr(local, "rollback", False)
+        local.rollback = True
+        try:
+            result = original_restore(*args, **kwargs)
+        except Exception as exc:
+            emit("restore_exception", {"exception_type": type(exc).__name__[:64]})
+            raise
+        finally:
+            local.rollback = prior
+        summary: dict[str, Any] = {"result_type": type(result).__name__[:48]}
+        if isinstance(result, dict):
+            for key in ("ok", "xray_reload", "mihomo_restart", "derived_rows_restored"):
+                if type(result.get(key)) is bool:
+                    summary[key] = result[key]
+            recovered = result.get("recovered")
+            if recovered in {"restored_last_good", "restore_failed", "stale_checkpoint_declined"}:
+                summary["recovered"] = recovered
+            error_code = result.get("error_code")
+            if error_code == "MIHOMO_UDP_POLICY_ROLLBACK_RECEIPT_UNCONFIRMED":
+                summary["error_code"] = error_code
+            for key in ("selection_readback", "xray_runtime_readback", "mihomo_runtime_readback"):
+                value = result.get(key)
+                if isinstance(value, dict):
+                    nested: dict[str, Any] = {}
+                    if type(value.get("ok")) is bool:
+                        nested["ok"] = value["ok"]
+                    reason = code(value.get("reason"))
+                    if reason in {"not_checked", "restore_restart_failed"}:
+                        nested["reason"] = reason
+                    summary[key] = nested
+        emit("restore_result", summary)
+        return result
+
+    def observed_publish(*, expected_mihomo_runtime: str, expected_mihomo_sha: str,
+                         reconcile_reason: str, operation_id: str, owner_matches: Any) -> bool:
+        if not getattr(local, "rollback", False) or reconcile_reason != "xray_generation_rollback":
+            return original_publish(
+                expected_mihomo_runtime=expected_mihomo_runtime,
+                expected_mihomo_sha=expected_mihomo_sha,
+                reconcile_reason=reconcile_reason, operation_id=operation_id, owner_matches=owner_matches,
+            )
+        # checkpoint_path and expected source/revision are only available to the
+        # outer rollback owner; these owner callback observations remain booleans.
+        owner_calls = {"count": 0, "matched": True}
+
+        def observed_owner(fingerprint_hash: str) -> bool:
+            matched = bool(owner_matches(fingerprint_hash))
+            owner_calls["count"] = min(owner_calls["count"] + 1, 4)
+            owner_calls["matched"] = owner_calls["matched"] and matched
+            return matched
+
+        result = original_publish(
+            expected_mihomo_runtime=expected_mihomo_runtime,
+            expected_mihomo_sha=expected_mihomo_sha,
+            reconcile_reason=reconcile_reason, operation_id=operation_id, owner_matches=observed_owner,
+        )
+        emit("receipt_publish_result", {
+            "ok": bool(result), "owner_callback_count": owner_calls["count"],
+            "owner_callback_all_matched": owner_calls["matched"] if owner_calls["count"] else None,
+        })
+        return result
+
+    def observed_rollback_receipt(*, checkpoint_path: Any, expected_source: str, expected_revision: int,
+                                  expected_mihomo_runtime: str, expected_mihomo_sha: str) -> bool:
+        if not getattr(local, "rollback", False):
+            return original_rollback_receipt(
+                checkpoint_path=checkpoint_path, expected_source=expected_source,
+                expected_revision=expected_revision, expected_mihomo_runtime=expected_mihomo_runtime,
+                expected_mihomo_sha=expected_mihomo_sha,
+            )
+        facts = checkpoint_facts(checkpoint_path, expected_source, expected_revision,
+                                 expected_mihomo_runtime, expected_mihomo_sha)
+        try:
+            from fwrouter_api.db.connection import db_session
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+            with db_session() as connection:
+                fence = read_selection_fence(connection)
+            facts["selection_fence_matches"] = fence.get("revision") == expected_revision
+        except Exception:
+            facts["selection_fence_matches"] = False
+        emit("receipt_owner_preflight", facts)
+        result = original_rollback_receipt(
+            checkpoint_path=checkpoint_path, expected_source=expected_source,
+            expected_revision=expected_revision, expected_mihomo_runtime=expected_mihomo_runtime,
+            expected_mihomo_sha=expected_mihomo_sha,
+        )
+        emit("rollback_receipt_result", {"ok": bool(result)})
+        return result
+
+    def observed_native_proof() -> dict[str, Any]:
+        result = original_native_proof()
+        if getattr(local, "rollback", False):
+            proof = result if isinstance(result, dict) else {}
+            emit("native_udp_policy_proof", {
+                key: proof[key] for key in ("ok", "native_top_level_rules_match",
+                                            "selector_membership_matches", "guarded_rules_match")
+                if type(proof.get(key)) is bool
+            })
+        return result
+
+    def observed_write(*args: Any, **kwargs: Any) -> Any:
+        result = original_write(*args, **kwargs)
+        if getattr(local, "rollback", False):
+            summary: dict[str, Any] = {"result_type": type(result).__name__[:48]}
+            if type(result) is bool:
+                summary["ok"] = result
+            emit("receipt_state_write", summary)
+        return result
+
+    xray_subscription_service._restore_xray_generation_checkpoint = observed_restore
+    xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt = observed_rollback_receipt
+    xray_subscription_service._publish_mihomo_udp_receipt_with_owner = observed_publish
+    mihomo_reconcile._native_udp_policy_proof = observed_native_proof
+    mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state = observed_write
+
+
 def _install_acceptance_generation_callback_observer() -> None:
     """Capture bounded exception provenance at the staged-generation callback seam."""
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
@@ -1222,7 +1427,7 @@ def build_app(socket_path: Path):
         raise RuntimeError("native runner socket escapes the isolated application state")
     from .profile import ProfileError, load_profile
     try:
-        load_profile(Path(os.environ.get("FWROUTER_ACCEPTANCE_PROFILE", "")))
+        acceptance_profile, _ = load_profile(Path(os.environ.get("FWROUTER_ACCEPTANCE_PROFILE", "")))
     except (OSError, ProfileError) as exc:
         raise RuntimeError("acceptance worker profile qualification failed") from exc
 
@@ -1273,6 +1478,8 @@ def build_app(socket_path: Path):
     _install_acceptance_selection_fence_observer()
     _install_acceptance_mihomo_reconcile_failure_observer()
     _install_acceptance_recovery_apply_observer()
+    if acceptance_profile.get("profile") == "hosted-kernel-packet":
+        _install_acceptance_xray_generation_rollback_observer()
     _bind_acceptance_provider()
 
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"

@@ -2239,6 +2239,41 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('"ci:validate-packet": "packet-diagnostic"', workflow)
         self.assertIn('if [[ "$VALIDATION_STAGE" == packet-diagnostic ]]; then suite=packet-diagnostic; fi', workflow)
 
+    def test_xray_generation_rollback_observer_is_bounded_and_installed(self):
+        worker_source = WORKER_PATH.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
+        observer = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_install_acceptance_xray_generation_rollback_observer"
+        )
+        observer_source = ast.get_source_segment(worker_source, observer) or ""
+        for required in (
+            "FWROUTER_ENVIRONMENT", "FWROUTER_APPLICATION_ACCEPTANCE_ROOT",
+            "_restore_xray_generation_checkpoint", "_publish_xray_generation_rollback_mihomo_udp_receipt",
+            "_publish_mihomo_udp_receipt_with_owner", "_native_udp_policy_proof",
+            "write_mihomo_reconcile_fingerprint_state", "checkpoint_facts", "owner_callback_all_matched",
+            "native_top_level_rules_match", "selector_membership_matches", "guarded_rules_match",
+            '"selection_readback"', '"xray_runtime_readback"', '"mihomo_runtime_readback"',
+            '"source_fingerprint_matches"', '"preimage_hash_matches"',
+            '"selection_revision_matches"', '"runtime_incarnation_matches"',
+            '"active_hash_matches"', '"input_fingerprint_present"',
+            '"FWROUTER_ACCEPTANCE_XRAY_ROLLBACK "', 'limit = 16', 'max_bytes = 2048',
+        ):
+            self.assertIn(required, observer_source)
+        for forbidden in ("error_message", "str(exc)", '"expected_mihomo_sha":',
+                          '"expected_mihomo_runtime":', '"checkpoint_path":'):
+            self.assertNotIn(forbidden, observer_source)
+        self.assertIn('acceptance_profile.get("profile") == "hosted-kernel-packet"', worker_source)
+        install_calls = [node for node in ast.walk(worker_tree)
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                         and node.func.id == "_install_acceptance_xray_generation_rollback_observer"]
+        self.assertEqual(1, len(install_calls))
+        recovery_controller = next(node for node in ast.walk(worker_tree)
+                                   if isinstance(node, ast.FunctionDef)
+                                   and node.name == "acceptance_provider_recovery_controller")
+        self.assertLess(install_calls[0].lineno, recovery_controller.lineno)
+
     def test_browser_diagnostic_is_one_fixed_functional_node_and_rejects_skips(self):
         nodeid = (
             "tests/application_acceptance/test_browser_locale.py::"
