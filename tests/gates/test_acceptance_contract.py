@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import ast
+import builtins
 import hashlib
 import json
 import tarfile
@@ -2617,6 +2618,106 @@ class AcceptanceContractTests(unittest.TestCase):
                                    if isinstance(node, ast.FunctionDef)
                                    and node.name == "acceptance_provider_recovery_controller")
         self.assertLess(install_calls[0].lineno, recovery_controller.lineno)
+
+    def test_packet_manual_apply_exception_observer_redacts_and_preserves_handler(self):
+        worker_source = WORKER_PATH.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
+        helper = next(node for node in worker_tree.body
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "_acceptance_job_exception_summary")
+        observer = next(node for node in worker_tree.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_apply_exception_observer")
+        namespace = {"BaseException": BaseException, "Any": __import__("typing").Any, "Path": Path,
+                     "re": __import__("re"), "traceback": __import__("traceback")}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(WORKER_PATH), "exec"), namespace)
+        fixture_namespace = {}
+        exec(compile("def fixture_apply():\n    raise RuntimeError('token=secret /private/path')\n",
+                     "/workspace/backend/fwrouter_api/services/dnsmasq.py", "exec"), fixture_namespace)
+        try:
+            fixture_namespace["fixture_apply"]()
+        except RuntimeError as exc:
+            summary = namespace["_acceptance_job_exception_summary"](exc)
+        self.assertEqual(summary["exception_class"], "RuntimeError")
+        self.assertEqual(summary["source_frames"][-1]["module"], "fwrouter_api.services.dnsmasq")
+        self.assertEqual(summary["source_frames"][-1]["function"], "fixture_apply")
+        self.assertIs(type(summary["source_frames"][-1]["line"]), int)
+        self.assertLessEqual(len(summary["source_frames"]), 4)
+        self.assertEqual(set(summary["source_frames"][-1]), {"module", "function", "line"})
+        self.assertNotIn("secret", json.dumps(summary))
+        self.assertNotIn("/private/path", json.dumps(summary))
+        class TOKEN_Error(Exception):
+            pass
+        self.assertEqual(namespace["_acceptance_job_exception_summary"](TOKEN_Error("sensitive")), {
+            "exception_class": "OtherException", "source_frames": "outside_fwrouter_api",
+        })
+        outside_namespace = {}
+        exec(compile("def outside_apply():\n    raise RuntimeError('private')\n",
+                     "/tmp/backend/fwrouter_api/services/dnsmasq.py", "exec"), outside_namespace)
+        try:
+            outside_namespace["outside_apply"]()
+        except RuntimeError as exc:
+            self.assertEqual(namespace["_acceptance_job_exception_summary"](exc)["source_frames"],
+                             "outside_fwrouter_api")
+
+        class FakeManager:
+            def __init__(self, handler):
+                self.handler = handler
+
+            def _get_handler(self, _job_type):
+                return self.handler
+
+        expected_error = RuntimeError("token=secret /private/path")
+        def raising_handler(job):
+            if job.get("requested_by") != "packet-dns53":
+                return "unobserved"
+            raise expected_error
+
+        manager = FakeManager(raising_handler)
+        observer_namespace = {
+            "Any": __import__("typing").Any, "os": __import__("os"), "json": json,
+            "_acceptance_job_exception_summary": namespace["_acceptance_job_exception_summary"],
+        }
+        original_import = __import__
+        def acceptance_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "fwrouter_api.jobs.manager":
+                return SimpleNamespace(get_default_job_manager=lambda: manager)
+            return original_import(name, globals, locals, fromlist, level)
+        observer_namespace["__builtins__"] = {**builtins.__dict__, "__import__": acceptance_import}
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(WORKER_PATH), "exec"),
+             observer_namespace)
+        with mock.patch.dict("os.environ", {
+                "FWROUTER_ENVIRONMENT": "test",
+                "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+        }), mock.patch("sys.stdout", io.StringIO()) as captured:
+            observer_namespace["_install_acceptance_apply_exception_observer"]()
+            observed = manager._get_handler("apply_mutation")
+            self.assertEqual(observed({"input": {"intent": "other"}, "requested_by": "packet-dns53"}),
+                             "unobserved")
+            self.assertEqual(observed({"input": {"intent": "apply_manual_rules"},
+                                       "requested_by": "another-actor"}), "unobserved")
+            self.assertEqual(captured.getvalue(), "")
+            with self.assertRaises(RuntimeError) as raised:
+                observed({"input": {"intent": "apply_manual_rules"}, "requested_by": "packet-dns53"})
+            self.assertIs(raised.exception, expected_error)
+            event_line = captured.getvalue().strip()
+        event_json = event_line.removeprefix("FWROUTER_ACCEPTANCE_APPLY_JOB_EXCEPTION ")
+        event = json.loads(event_json)
+        self.assertEqual(event["exception_class"], "RuntimeError")
+        self.assertNotIn("secret", event_line)
+        self.assertNotIn("/private/path", event_line)
+        self.assertNotIn("/workspace/backend", event_line)
+        observer_source = ast.get_source_segment(worker_source, observer) or ""
+        for required in ('"apply_mutation"', '"apply_manual_rules"', '"packet-dns53"',
+                         '"FWROUTER_ACCEPTANCE_APPLY_JOB_EXCEPTION "',
+                         '_acceptance_job_exception_summary(exc)', "raise"):
+            self.assertIn(required, observer_source)
+        for forbidden in ("str(exc)", "error_message", "filename", "job_id", "payload"):
+            self.assertNotIn(forbidden, observer_source)
+        install_calls = [node for node in ast.walk(worker_tree)
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                         and node.func.id == "_install_acceptance_apply_exception_observer"]
+        self.assertEqual(1, len(install_calls))
 
     def test_packet_handoff_alias_is_qualified_local_and_removed(self):
         worker_source = WORKER_PATH.read_text(encoding="utf-8")

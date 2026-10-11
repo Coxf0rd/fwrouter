@@ -11,6 +11,7 @@ import re
 import socket
 import sys
 import threading
+import traceback
 from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
@@ -531,6 +532,85 @@ def _rpc_call(socket_path: Path, action: str, payload: dict[str, Any]) -> dict[s
         details["config_bytes"] = base64.b64decode(details.pop("config_bytes_b64"), validate=True)
     response["details"] = details
     return response
+
+
+def _acceptance_job_exception_summary(exc: BaseException) -> dict[str, Any]:
+    """Project a test-owned apply exception to fixed class and owned source frames."""
+    allowed_classes = {
+        "AssertionError", "AttributeError", "FileNotFoundError", "ImportError", "IndexError",
+        "KeyError", "ModuleNotFoundError", "NotImplementedError", "OSError", "PermissionError",
+        "RuntimeError", "TimeoutError", "TypeError", "ValueError", "CalledProcessError",
+        "OperationalError", "IntegrityError",
+    }
+    name = type(exc).__name__
+    exception_class = name if name in allowed_classes else "OtherException"
+    owned_root = Path("/workspace/backend/fwrouter_api")
+    owned_frames: list[dict[str, Any]] = []
+    for frame in traceback.extract_tb(exc.__traceback__):
+        source = Path(frame.filename)
+        if not source.is_absolute():
+            continue
+        try:
+            relative = source.relative_to(owned_root)
+        except ValueError:
+            continue
+        parts = list(relative.with_suffix("").parts)
+        if not parts or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", part) for part in parts):
+            continue
+        module = "fwrouter_api." + ".".join(parts)
+        if len(module) > 160:
+            continue
+        function = frame.name
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", function):
+            continue
+        line = frame.lineno
+        if type(line) is not int or line < 1 or line > 1_000_000:
+            continue
+        owned_frames.append({
+            "module": module,
+            "function": function,
+            "line": line,
+        })
+    return {
+        "exception_class": exception_class,
+        "source_frames": owned_frames[-4:] if owned_frames else "outside_fwrouter_api",
+    }
+
+
+def _install_acceptance_apply_exception_observer() -> None:
+    """Observe only the fixed packet DNS manual-apply handler and preserve its behavior."""
+    from fwrouter_api.jobs.manager import get_default_job_manager
+
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("apply exception observer requires the qualified acceptance worker")
+    manager = get_default_job_manager()
+    original_get_handler = manager._get_handler
+
+    def observed_get_handler(job_type: str) -> Any:
+        handler = original_get_handler(job_type)
+        if job_type != "apply_mutation" or not callable(handler):
+            return handler
+
+        def observed_handler(job: dict[str, Any]) -> Any:
+            job_input = job.get("input") if isinstance(job.get("input"), dict) else {}
+            if (job_input.get("intent") != "apply_manual_rules"
+                    or job.get("requested_by") != "packet-dns53"):
+                return handler(job)
+            try:
+                return handler(job)
+            except Exception as exc:
+                summary = _acceptance_job_exception_summary(exc)
+                print("FWROUTER_ACCEPTANCE_APPLY_JOB_EXCEPTION " + json.dumps({
+                    "schema": "fwrouter-acceptance-apply-job-exception/v1",
+                    "job_type": "apply_mutation", "intent": "apply_manual_rules",
+                    **summary,
+                }, sort_keys=True, separators=(",", ":")), flush=True)
+                raise
+
+        return observed_handler
+
+    manager._get_handler = observed_get_handler
 
 
 def _install_acceptance_mihomo_fence_observer() -> None:
@@ -1924,6 +2004,7 @@ def build_app(socket_path: Path):
     _install_acceptance_recovery_apply_observer()
     if acceptance_profile.get("profile") == "hosted-kernel-packet":
         _install_acceptance_xray_generation_rollback_observer()
+        _install_acceptance_apply_exception_observer()
     _bind_acceptance_provider()
 
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"

@@ -932,8 +932,27 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
     code, saved = http_json(f"{api}/rules/manual", method="POST", payload={"text": rules_text})
     assert code == 200 and saved.get("ok") is True, saved
     code, accepted = http_json(f"{api}/rules/manual/apply", method="POST", payload={"requested_by": "packet-dns53", "run_now": True})
-    assert code == 200 and accepted.get("ok") is True, accepted
-    job = await_core_job(api, accepted, timeout_seconds=90)
+    accepted_data = accepted.get("data") if isinstance(accepted.get("data"), dict) else {}
+    accepted_job_ref = accepted_data.get("job") if isinstance(accepted_data.get("job"), dict) else {}
+    job = (await_core_job(api, accepted, timeout_seconds=90)
+           if isinstance(accepted_job_ref.get("job_id"), str) and accepted_job_ref.get("job_id")
+           else None)
+    accepted_error = accepted_data.get("error") if isinstance(accepted_data.get("error"), dict) else accepted.get("error")
+    accepted_error_code = accepted_error.get("code") if isinstance(accepted_error, dict) else None
+    if (not isinstance(accepted_error_code, str) or not accepted_error_code
+            or len(accepted_error_code) > 64
+            or not all(char.isascii() and (char.isalnum() or char in "_.:-") for char in accepted_error_code)):
+        accepted_error_code = None
+    manual_apply_diagnostic = {
+        "phase": "dns53-manual-apply",
+        "http_status": code if type(code) is int else None,
+        "accepted": accepted.get("ok") is True,
+        "response_error_code": accepted_error_code,
+        "job": _bounded_job_summary(job),
+    }
+    _record_phase_diagnostic(record_property, manual_apply_diagnostic)
+    assert code == 200 and accepted.get("ok") is True and isinstance(job, dict) \
+        and job.get("status") == "success", manual_apply_diagnostic
     setup_status_code, setup_dns = http_json(f"{api}/__acceptance/dns53/status")
     assert job.get("status") == "success", {
         "dns53_manual_apply": _bounded_job_summary(job), "native_dnsmasq": setup_dns,
@@ -1170,7 +1189,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
                      "vpn-empty-pool-native",
                      "provider-recovery-confirmations",
-                     "provider-recovery-confirmation-1",
+                     "provider-recovery-confirmation-1", "dns53-manual-apply",
                      "provider-reentry",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "protected-direct-under-global-vpn",
