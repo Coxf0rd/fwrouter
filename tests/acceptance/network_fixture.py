@@ -46,6 +46,9 @@ CLIENT_IP = "10.240.0.2"
 ROUTER_LAN_IP = "10.240.0.1"
 ROUTER_WAN_IP = "198.18.240.1"
 ENDPOINT_WAN_IP = "198.18.240.2"
+DNS_UPSTREAM_IP = "1.1.1.1"
+DNS_VPN_SERVICE_VIP = "198.51.100.77"
+DNS_BYPASS_NEGATIVE_IP = "8.8.8.8"
 WAN_NET = "198.18.240.0/29"
 SERVICE_VIP = "203.0.113.53"
 PROTECTED_VIP = "10.250.240.2"
@@ -62,6 +65,7 @@ DNS_NAME = "probe.fwrouter.test"
 DNS_NEGATIVE_NAME = "missing.fwrouter.test"
 DNS_IP = SERVICE_VIP
 PROBE_BODY = b"fwrouter-packet-fixture-v1"
+DNS_SELECTED_PROBE_BODY = b"fwrouter-dns-selected-flow-v1"
 LEAK_DNS_TARGET = "127.0.0.11"
 LEAK_RESERVED_TARGET = "192.0.2.1"
 LEAK_RESERVED_PORT = 9
@@ -302,14 +306,15 @@ def _validate_role_network(role: str) -> None:
             if (isinstance(item, dict) and item.get("family") == "inet"
                     and isinstance(item.get("local"), str) and isinstance(item.get("prefixlen"), int)):
                 found.add((item["local"], item["prefixlen"]))
-                if item["local"] in {SERVICE_VIP, PROTECTED_VIP}:
+                if item["local"] in {SERVICE_VIP, PROTECTED_VIP, DNS_UPSTREAM_IP, DNS_VPN_SERVICE_VIP}:
                     vip_interfaces.add(str(interface.get("ifname", "")))
     if role == "client":
         required_addresses = {("127.0.0.1", 8), (CLIENT_IP, 29)}
         required_route = ("default", ROUTER_LAN_IP)
     else:
         required_addresses = {("127.0.0.1", 8), (ENDPOINT_WAN_IP, 29),
-                              (SERVICE_VIP, 32), (PROTECTED_VIP, 32)}
+                              (SERVICE_VIP, 32), (PROTECTED_VIP, 32), (DNS_UPSTREAM_IP, 32),
+                              (DNS_VPN_SERVICE_VIP, 32)}
         required_route = (CLIENT_NET, ROUTER_WAN_IP)
     if found != required_addresses:
         raise FixtureError("role network addresses differ from the fixed packet topology")
@@ -419,10 +424,10 @@ def _install_guard(role: str) -> None:
     ))
     if role == "client":
         input_rules.append(
-            f'add rule inet {TABLE_NAME} input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }} '
+            f'add rule inet {TABLE_NAME} input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP}, {DNS_BYPASS_NEGATIVE_IP} }} '
             'ct state established,related accept')
         output_rules.append(
-            f'add rule inet {TABLE_NAME} output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }} '
+            f'add rule inet {TABLE_NAME} output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP}, {DNS_BYPASS_NEGATIVE_IP} }} '
             'ct state established,related accept')
         output_rules.extend((
             f'add rule inet {TABLE_NAME} output ip daddr {ENDPOINT_WAN_IP} tcp dport 22 accept',
@@ -431,11 +436,15 @@ def _install_guard(role: str) -> None:
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} '
             f'udp dport {{ {UDP_ECHO_PORT}, {DNS_PORT} }} accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {DNS_VPN_SERVICE_VIP} tcp dport {HTTP_PORT} accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {DNS_VPN_SERVICE_VIP} udp dport {UDP_ECHO_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {PROTECTED_VIP} tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {PROTECTED_VIP} udp dport {PROTECTED_UDP_PORT} accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {DNS_BYPASS_NEGATIVE_IP} udp dport 53 accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {DNS_BYPASS_NEGATIVE_IP} tcp dport 53 accept',
         ))
     else:
-        allowed_sources = f"{{ {CLIENT_IP}, {ROUTER_WAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }}"
+        allowed_sources = f"{{ {CLIENT_IP}, {ROUTER_WAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP} }}"
         input_rules.append(
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ct state established,related accept')
         input_rules.extend((
@@ -449,6 +458,10 @@ def _install_guard(role: str) -> None:
             f'tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {PROTECTED_VIP} '
             f'udp dport {PROTECTED_UDP_PORT} accept',
+            f'add rule inet {TABLE_NAME} input ip saddr {ROUTER_WAN_IP} ip daddr {DNS_UPSTREAM_IP} '
+            'udp dport 53 accept',
+            f'add rule inet {TABLE_NAME} input ip saddr {ROUTER_WAN_IP} ip daddr {DNS_UPSTREAM_IP} '
+            'tcp dport 53 accept',
         ))
         output_rules.extend((
             f'add rule inet {TABLE_NAME} output ip daddr {allowed_sources} ct state established,related accept',
@@ -457,6 +470,8 @@ def _install_guard(role: str) -> None:
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} '
             f'udp dport {{ {UDP_ECHO_PORT}, {DNS_PORT} }} accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {DNS_VPN_SERVICE_VIP} tcp dport {HTTP_PORT} accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {DNS_VPN_SERVICE_VIP} udp dport {UDP_ECHO_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {PROTECTED_VIP} tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {PROTECTED_VIP} udp dport {PROTECTED_UDP_PORT} accept',
         ))
@@ -567,6 +582,54 @@ class _ProtectedObservations:
 
 
 _PROTECTED_OBS = _ProtectedObservations()
+
+
+class _DnsUpstreamObservations:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts = {"udp": 0, "tcp": 0, "vpn_name": 0, "direct_name": 0, "other_name": 0}
+        self._peers: list[str] = []
+
+    def record(self, transport: str, name: str, peer: str) -> None:
+        with self._lock:
+            self._counts[transport] += 1
+            key = ("vpn_name" if name == "vpn.test" or name.endswith(".vpn.test") else
+                   "direct_name" if name == "direct.test" or name.endswith(".direct.test") else "other_name")
+            self._counts[key] += 1
+            if peer not in self._peers and len(self._peers) < 4:
+                self._peers.append(peer)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {"counts": dict(self._counts), "peers": list(self._peers)}
+
+
+_DNS_UPSTREAM_OBS = _DnsUpstreamObservations()
+
+
+class _DnsSelectedFlowObservations:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts = {"vpn_domain_tcp": 0, "vpn_domain_udp": 0,
+                        "direct_domain_tcp": 0, "direct_domain_udp": 0}
+        self._peers: dict[str, list[str]] = {key: [] for key in self._counts}
+
+    def record(self, flow: str, peer: str) -> None:
+        if flow not in self._counts:
+            return
+        with self._lock:
+            self._counts[flow] += 1
+            peers = self._peers[flow]
+            if peer not in peers and len(peers) < 4:
+                peers.append(peer)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {"counts": dict(self._counts), "peers": {key: list(value)
+                                                               for key, value in self._peers.items()}}
+
+
+_DNS_SELECTED_FLOW_OBS = _DnsSelectedFlowObservations()
 _ROLE_STOP = threading.Event()
 _HEALTH_LOCK = threading.Lock()
 _HEALTH_AVAILABLE = True
@@ -635,6 +698,10 @@ class _EndpointHandler(_QuietHandler):
             self._send_json(200, _OBS.snapshot())
         elif is_control and self.path == "/protected-observations":
             self._send_json(200, _PROTECTED_OBS.snapshot())
+        elif is_control and self.path == "/dns53-observations":
+            self._send_json(200, _DNS_UPSTREAM_OBS.snapshot())
+        elif is_control and self.path == "/dns53-flow-observations":
+            self._send_json(200, _DNS_SELECTED_FLOW_OBS.snapshot())
         elif self.server.server_address == (SERVICE_VIP, HTTP_PORT) and self.path == "/generate_204":
             self._send_generate_204()
         elif is_control and self.path == "/xray":
@@ -645,6 +712,14 @@ class _EndpointHandler(_QuietHandler):
                 self._send_json(200, runtime.snapshot())
         elif self.path == "/probe" and self.server.server_address[0] == SERVICE_VIP:
             _OBS.record("http", self.client_address[0])
+            self._send_json(200, {"ok": True, "peer": self.client_address[0]})
+        elif (self.path == "/probe/dns-selected" and
+              self.server.server_address in {(SERVICE_VIP, HTTP_PORT), (DNS_VPN_SERVICE_VIP, HTTP_PORT)}):
+            flow = "vpn_domain_tcp" if self.server.server_address[0] == DNS_VPN_SERVICE_VIP else "direct_domain_tcp"
+            _DNS_SELECTED_FLOW_OBS.record(flow, self.client_address[0])
+            self._send_json(200, {"ok": True, "peer": self.client_address[0]})
+        elif (self.path == "/probe" and
+              self.server.server_address == (DNS_VPN_SERVICE_VIP, HTTP_PORT)):
             self._send_json(200, {"ok": True, "peer": self.client_address[0]})
         elif (self.path == "/probe/protected" and
               self.server.server_address == (PROTECTED_VIP, HTTP_PORT)):
@@ -749,6 +824,7 @@ class _ClientHandler(_QuietHandler):
     def do_POST(self) -> None:
         if self.path not in {"/probe/tcp", "/probe/tcp-negative", "/probe/udp", "/probe/udp-negative",
                              "/probe/protected-tcp", "/probe/protected-udp", "/probe/dns", "/probe/dns-negative",
+                             "/probe/dns53", "/probe/dns53-external", "/probe/dns53-flows",
                              "/probe/leak", "/probe/router-forward-leak"}:
             self._send_json(404, {"error": "not_found"})
             return
@@ -773,6 +849,12 @@ class _ClientHandler(_QuietHandler):
                 result = _probe_dns()
             elif self.path == "/probe/dns-negative":
                 result = _probe_dns_negative()
+            elif self.path == "/probe/dns53":
+                result = _probe_dns53()
+            elif self.path == "/probe/dns53-external":
+                result = _probe_dns53_external()
+            elif self.path == "/probe/dns53-flows":
+                result = _probe_dns53_resolved_flows()
             elif self.path == "/probe/router-forward-leak":
                 result = _probe_router_forward_leak()
             else:
@@ -823,9 +905,24 @@ class _BoundedUDPServer(socketserver.UDPServer):
     request_queue_size = 8
 
 
+class _BoundedDnsTCPServer(socketserver.TCPServer):
+    allow_reuse_address = False
+    request_queue_size = 8
+
+    def get_request(self) -> tuple[socket.socket, Any]:
+        request, address = super().get_request()
+        request.settimeout(CONTROL_TIMEOUT)
+        return request, address
+
+
 class _UDPEchoHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         data, sock = self.request
+        if data == DNS_SELECTED_PROBE_BODY:
+            suffix = "vpn_domain" if self.server.server_address[0] == DNS_VPN_SERVICE_VIP else "direct_domain"
+            _DNS_SELECTED_FLOW_OBS.record(f"{suffix}_udp", self.client_address[0])
+            sock.sendto(DNS_SELECTED_PROBE_BODY, self.client_address)
+            return
         if len(data) != len(PROBE_BODY) or data != PROBE_BODY:
             return
         _OBS.record("udp", self.client_address[0])
@@ -880,12 +977,70 @@ def _dns_response(query: bytes, peer: str) -> bytes:
     return identifier + b"\x81\x00\x00\x01\x00\x01\x00\x00\x00\x00" + question + answer
 
 
+def _dns_upstream_response(query: bytes, transport: str, peer: str) -> bytes:
+    if len(query) > 512 or len(query) < 17 or query[2:4] != b"\x01\x00":
+        return b""
+    question_end = query.find(b"\0", 12)
+    if question_end < 13 or question_end + 5 > len(query):
+        return b""
+    question = query[12:question_end + 5]
+    if query[question_end + 1:question_end + 5] != b"\x00\x01\x00\x01":
+        return query[:2] + b"\x81\x04\x00\x00\x00\x00\x00\x00\x00\x00"
+    labels: list[str] = []
+    offset = 12
+    while offset < question_end:
+        size = query[offset]
+        offset += 1
+        if size == 0 or size > 63 or offset + size > question_end:
+            return b""
+        try:
+            labels.append(query[offset:offset + size].decode("ascii").lower())
+        except UnicodeError:
+            return b""
+        offset += size
+    name = ".".join(labels)
+    _DNS_UPSTREAM_OBS.record(transport, name, peer)
+    address = ("198.51.100.77" if name == "vpn.test" or name.endswith(".vpn.test") else
+               "203.0.113.53" if name == "direct.test" or name.endswith(".direct.test") else None)
+    if address is None:
+        return query[:2] + b"\x81\x83\x00\x01\x00\x00\x00\x00\x00\x00" + question
+    answer = b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x1e\x00\x04" + socket.inet_aton(address)
+    return query[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + question + answer
+
+
 class _DNSHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         query, sock = self.request
         response = _dns_response(query, self.client_address[0])
         if response:
             sock.sendto(response, self.client_address)
+
+
+class _DnsUpstreamUDPHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        query, sock = self.request
+        response = _dns_upstream_response(query, "udp", self.client_address[0])
+        if response:
+            sock.sendto(response, self.client_address)
+
+
+class _DnsUpstreamTCPHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        try:
+            length = int.from_bytes(self.request.recv(2), "big")
+            if length < 17 or length > 512:
+                return
+            query = bytearray()
+            while len(query) < length:
+                chunk = self.request.recv(length - len(query))
+                if not chunk:
+                    return
+                query.extend(chunk)
+            response = _dns_upstream_response(bytes(query), "tcp", self.client_address[0])
+            if response:
+                self.request.sendall(len(response).to_bytes(2, "big") + response)
+        except (OSError, ValueError, TimeoutError):
+            return
 
 
 def _probe_http() -> dict[str, Any]:
@@ -1001,6 +1156,107 @@ def _probe_dns_negative() -> dict[str, Any]:
             or data[4:6] != b"\x00\x01" or data[6:8] != b"\x00\x00"):
         raise FixtureError("fixed unknown .test DNS name was not answered with NXDOMAIN")
     return {"service": "dns-negative", "peer": peer[0], "rcode": "NXDOMAIN"}
+
+
+def _dns53_request(name: str, *, tcp: bool, target: str = ROUTER_LAN_IP) -> tuple[str, str | None]:
+    query = _dns_query(name)
+    if tcp:
+        with socket.create_connection((target, 53), timeout=CONTROL_TIMEOUT) as conn:
+            conn.settimeout(CONTROL_TIMEOUT)
+            conn.sendall(len(query).to_bytes(2, "big") + query)
+            size_prefix = bytearray()
+            while len(size_prefix) < 2:
+                chunk = conn.recv(2 - len(size_prefix))
+                if not chunk:
+                    raise FixtureError("native DNS53 TCP response length prefix was truncated")
+                size_prefix.extend(chunk)
+            size = int.from_bytes(size_prefix, "big")
+            if size < 12 or size > 512:
+                raise FixtureError("native DNS53 TCP response length is outside its fixed bounds")
+            response = bytearray()
+            while len(response) < size:
+                chunk = conn.recv(size - len(response))
+                if not chunk:
+                    raise FixtureError("native DNS53 TCP response ended before its fixed length")
+                response.extend(chunk)
+        answer = bytes(response)
+    else:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(CONTROL_TIMEOUT)
+            sock.sendto(query, (target, 53))
+            answer, _peer = sock.recvfrom(512)
+    if len(answer) < 12 or answer[:2] != query[:2] or answer[2] & 0x80 == 0:
+        raise FixtureError("native DNS53 response did not match its bounded query")
+    rcode = answer[3] & 0x0f
+    if rcode != 0:
+        return "nxdomain" if rcode == 3 else "error", None
+    if answer[6:8] != b"\x00\x01" or len(answer) < 4:
+        raise FixtureError("native DNS53 response did not contain exactly one A answer")
+    return "answer", socket.inet_ntoa(answer[-4:])
+
+
+def _probe_dns53() -> dict[str, Any]:
+    outcomes = {}
+    for name, expected in (("probe.vpn.test", "198.51.100.77"), ("probe.direct.test", "203.0.113.53")):
+        for transport in ("udp", "tcp"):
+            status, address = _dns53_request(name, tcp=transport == "tcp")
+            if status != "answer" or address != expected:
+                raise FixtureError("router native DNS53 returned an unexpected fixed rule answer")
+            outcomes[f"{name}_{transport}"] = address
+    return {"service": "router-dns53", "answers": outcomes}
+
+
+def _probe_dns53_external() -> dict[str, Any]:
+    outcomes = {}
+    for transport in ("udp", "tcp"):
+        status, address = _dns53_request("leak.test", tcp=transport == "tcp", target=DNS_BYPASS_NEGATIVE_IP)
+        if status != "nxdomain" or address is not None:
+            raise FixtureError("external DNS53 request did not resolve through the owned router policy")
+        outcomes[transport] = "router_nxdomain"
+    return {"service": "external-dns53-captured", "outcomes": outcomes}
+
+
+def _probe_dns53_resolved_flows() -> dict[str, Any]:
+    """Resolve fixed policy names, then exercise their exact answer IPs over TCP and UDP."""
+    results: dict[str, Any] = {}
+    for name, expected, label in (
+        ("probe.vpn.test", DNS_VPN_SERVICE_VIP, "vpn"),
+        ("probe.direct.test", SERVICE_VIP, "direct"),
+    ):
+        status, address = _dns53_request(name, tcp=False)
+        if status != "answer" or address != expected:
+            raise FixtureError("DNS-selected flow did not use the fixed native DNS answer")
+        with socket.create_connection((address, HTTP_PORT), timeout=CONTROL_TIMEOUT) as conn:
+            conn.settimeout(CONTROL_TIMEOUT)
+            conn.sendall(b"GET /probe/dns-selected HTTP/1.1\r\nHost: dns-policy\r\nConnection: close\r\n\r\n")
+            response = bytearray()
+            while len(response) <= 1024:
+                chunk = conn.recv(min(256, 1025 - len(response)))
+                if not chunk:
+                    break
+                response.extend(chunk)
+        if len(response) > 1024 or b" 200 " not in response[:64] or b"\r\n\r\n" not in response:
+            raise FixtureError("DNS-selected TCP destination failed its bounded fixture probe")
+        try:
+            answer = json.loads(bytes(response).split(b"\r\n\r\n", 1)[1])
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise FixtureError("DNS-selected TCP response was not bounded JSON") from exc
+        peer = answer.get("peer") if isinstance(answer, dict) else None
+        # The phase runs under global VPN. A DNS DIRECT-domain set remains
+        # recorded and independently tested, while global VPN still tunnels
+        # this application flow; only the endpoint's own aliases may originate
+        # the post-proxy service connection.
+        allowed_peers = {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP}
+        if not isinstance(answer, dict) or answer.get("ok") is not True or peer not in allowed_peers:
+            raise FixtureError("DNS-selected TCP endpoint peer did not prove the fixed direct or VPN path")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(CONTROL_TIMEOUT)
+            sock.sendto(DNS_SELECTED_PROBE_BODY, (address, UDP_ECHO_PORT))
+            payload, peer = sock.recvfrom(128)
+        if payload != DNS_SELECTED_PROBE_BODY or peer != (address, UDP_ECHO_PORT):
+            raise FixtureError("DNS-selected UDP destination failed its bounded fixture probe")
+        results[label] = {"answer": address, "tcp": True, "udp": True}
+    return {"service": "dns53-selected-service-flows", "results": results}
 
 
 def _probe_leak() -> dict[str, Any]:
@@ -1169,6 +1425,14 @@ def _endpoint_status(control_server: Any, runtime: _XrayRuntime | None) -> dict[
             servers[4], PROTECTED_VIP, HTTP_PORT, tcp=True)),
         "protected_udp_9081": bool(len(servers) > 5 and _server_socket_ready(
             servers[5], PROTECTED_VIP, PROTECTED_UDP_PORT, tcp=False)),
+        "dns_upstream_udp_53": bool(len(servers) > 6 and _server_socket_ready(
+            servers[6], DNS_UPSTREAM_IP, 53, tcp=False)),
+        "dns_upstream_tcp_53": bool(len(servers) > 7 and _server_socket_ready(
+            servers[7], DNS_UPSTREAM_IP, 53, tcp=True)),
+        "vpn_dns_tcp_9080": bool(len(servers) > 8 and _server_socket_ready(
+            servers[8], DNS_VPN_SERVICE_VIP, HTTP_PORT, tcp=True)),
+        "vpn_dns_udp_9081": bool(len(servers) > 9 and _server_socket_ready(
+            servers[9], DNS_VPN_SERVICE_VIP, UDP_ECHO_PORT, tcp=False)),
     }
     running = runtime is not None and runtime.running
     return {"ready": running and all(sockets.values()), "role": "endpoint", "sockets": sockets,
@@ -1187,6 +1451,10 @@ def _serve(role: str, profile: dict[str, Any]) -> None:
             servers.append(_BoundedUDPServer((SERVICE_VIP, DNS_PORT), _DNSHandler))
             servers.append(_BoundedHTTPServer((PROTECTED_VIP, HTTP_PORT), _EndpointHandler))
             servers.append(_BoundedUDPServer((PROTECTED_VIP, PROTECTED_UDP_PORT), _ProtectedUDPEchoHandler))
+            servers.append(_BoundedUDPServer((DNS_UPSTREAM_IP, 53), _DnsUpstreamUDPHandler))
+            servers.append(_BoundedDnsTCPServer((DNS_UPSTREAM_IP, 53), _DnsUpstreamTCPHandler))
+            servers.append(_BoundedHTTPServer((DNS_VPN_SERVICE_VIP, HTTP_PORT), _EndpointHandler))
+            servers.append(_BoundedUDPServer((DNS_VPN_SERVICE_VIP, UDP_ECHO_PORT), _UDPEchoHandler))
             servers[1].xray_runtime = runtime
             servers[1].role_servers = tuple(servers)
             servers[1].xray_lock = threading.Lock()
@@ -1198,6 +1466,7 @@ def _serve(role: str, profile: dict[str, Any]) -> None:
                 serving.append(server)
             _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_CONTROL_PORT, deadline, runtime)
             _wait_tcp(SERVICE_VIP, HTTP_PORT, deadline, runtime)
+            _wait_tcp(DNS_VPN_SERVICE_VIP, HTTP_PORT, deadline, runtime)
             servers[1].xray_profile = profile
             servers[1].xray_runtime = runtime
             watcher = threading.Thread(target=lambda: _watch_xray(runtime), daemon=True)

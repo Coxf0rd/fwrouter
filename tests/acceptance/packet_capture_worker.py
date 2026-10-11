@@ -36,11 +36,11 @@ PACKET_LIMIT = 512
 FLOWS = {
     "tcp": {
         "snaplen": 54,
-        "filter": "(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)",
+        "filter": "(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301) or (tcp and dst host 1.1.1.1 and dst port 53)",
     },
     "udp": {
         "snaplen": 42,
-        "filter": "(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 10.250.240.2 and dst port 9081)",
+        "filter": "(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 198.51.100.77 and dst port 9081) or (udp and dst host 10.250.240.2 and dst port 9081) or (udp and dst host 1.1.1.1 and dst port 53)",
     },
 }
 _IFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")

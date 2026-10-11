@@ -553,6 +553,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
             FakeServer((fixture.SERVICE_VIP, fixture.DNS_PORT), tcp=False),
             FakeServer((fixture.PROTECTED_VIP, fixture.HTTP_PORT), tcp=True),
             FakeServer((fixture.PROTECTED_VIP, fixture.PROTECTED_UDP_PORT), tcp=False),
+            FakeServer((fixture.DNS_UPSTREAM_IP, 53), tcp=False),
+            FakeServer((fixture.DNS_UPSTREAM_IP, 53), tcp=True),
+            FakeServer((fixture.DNS_VPN_SERVICE_VIP, fixture.HTTP_PORT), tcp=True),
+            FakeServer((fixture.DNS_VPN_SERVICE_VIP, fixture.UDP_ECHO_PORT), tcp=False),
         )
         control = servers[1]
         control.role_servers = servers
@@ -576,6 +580,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertFalse(missing["sockets"]["dns_udp_5353"])
             self.assertFalse(missing["sockets"]["protected_tcp_9080"])
             self.assertFalse(missing["sockets"]["protected_udp_9081"])
+            self.assertFalse(missing["sockets"]["dns_upstream_udp_53"])
+            self.assertFalse(missing["sockets"]["dns_upstream_tcp_53"])
 
             control.role_servers = (servers[0], servers[1],
                                     FakeServer((fixture.SERVICE_VIP, fixture.DNS_PORT), tcp=False), servers[3])
@@ -592,7 +598,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
 
             control.role_servers = (servers[0], servers[1], servers[2], servers[3],
                                     FakeServer((fixture.PROTECTED_VIP, fixture.HTTP_PORT), tcp=False),
-                                    servers[5])
+                                    servers[5], servers[6], servers[7])
             wrong_protected = fixture._endpoint_status(control, FakeRuntime())
             self.assertFalse(wrong_protected["ready"])
             self.assertFalse(wrong_protected["sockets"]["protected_tcp_9080"])
@@ -674,11 +680,15 @@ class NetworkFixtureContractTests(unittest.TestCase):
                                   for target in node.targets))
         self.assertEqual(ast.literal_eval(flows_node.value), {
             "tcp": {"snaplen": 54, "filter": "(tcp and dst host 203.0.113.53 and dst port 9080) or "
+                                                  "(tcp and dst host 198.51.100.77 and dst port 9080) or "
                                                   "(tcp and dst host 10.250.240.2 and dst port 9080) or "
-                                                  "(tcp and dst host 198.18.240.2 and dst port 5301)"},
+                                                  "(tcp and dst host 198.18.240.2 and dst port 5301) or "
+                                                  "(tcp and dst host 1.1.1.1 and dst port 53)"},
             "udp": {"snaplen": 42, "filter": "(udp and dst host 203.0.113.53 and "
                                                   "(dst port 9081 or dst port 5353)) or "
-                                                  "(udp and dst host 10.250.240.2 and dst port 9081)"},
+                                                  "(udp and dst host 198.51.100.77 and dst port 9081) or "
+                                                  "(udp and dst host 10.250.240.2 and dst port 9081) or "
+                                                  "(udp and dst host 1.1.1.1 and dst port 53)"},
         })
         for flow in ("10.250.240.2 and dst port 9080", "10.250.240.2 and dst port 9081"):
             self.assertIn(flow, start)
@@ -986,6 +996,9 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "CLIENT_NET": "10.240.0.0/29", "CLIENT_IP": "10.240.0.2",
             "ROUTER_LAN_IP": "10.240.0.1", "ROUTER_WAN_IP": "198.18.240.1",
             "ENDPOINT_WAN_IP": "198.18.240.2", "WAN_NET": "198.18.240.0/29",
+            "DNS_UPSTREAM_IP": "1.1.1.1",
+            "DNS_VPN_SERVICE_VIP": "198.51.100.77",
+            "DNS_BYPASS_NEGATIVE_IP": "8.8.8.8",
             "SERVICE_VIP": "203.0.113.53", "PROTECTED_VIP": "10.250.240.2",
             "ENDPOINT_XRAY_PORT": 5301,
             "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
@@ -1003,6 +1016,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertNotIn(vip, ipaddress.ip_network(network))
         self.assertNotIn(vip, ipaddress.ip_network(values["CLIENT_NET"]))
         self.assertNotIn(vip, ipaddress.ip_network(values["WAN_NET"]))
+        dns_vip = ipaddress.ip_address(values["DNS_VPN_SERVICE_VIP"])
+        self.assertIn(dns_vip, ipaddress.ip_network("198.51.100.0/24"))
+        self.assertNotIn(dns_vip, ipaddress.ip_network(values["CLIENT_NET"]))
+        self.assertNotIn(dns_vip, ipaddress.ip_network(values["WAN_NET"]))
 
     def test_protected_direct_probe_uses_real_fixed_tcp_udp_sockets_and_counterproof(self):
         values = _literal_assignments()
@@ -1024,6 +1041,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("_PROTECTED_OBS.record(\"udp\"", _method_source("_ProtectedUDPEchoHandler", "handle"))
         self.assertIn('"protected_tcp_9080"', endpoint_status)
         self.assertIn('"protected_udp_9081"', endpoint_status)
+        self.assertIn('"dns_upstream_udp_53"', endpoint_status)
+        self.assertIn('"dns_upstream_tcp_53"', endpoint_status)
         self.assertIn("_BoundedHTTPServer((PROTECTED_VIP, HTTP_PORT)", serve)
         self.assertIn("_BoundedUDPServer((PROTECTED_VIP, PROTECTED_UDP_PORT)", serve)
 
@@ -1041,6 +1060,48 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('guard_delta["router_protected_udp_forward"]["packets"] > 0', probe_source)
         self.assertIn('guard_delta["router_protected_tcp_output"]["packets"] == 0', probe_source)
         self.assertIn('guard_delta["router_protected_udp_output"]["packets"] == 0', probe_source)
+
+    def test_dns53_packet_acceptance_uses_real_native_service_and_fixed_private_upstream(self):
+        source = (ROOT / "tests/application_acceptance/test_packet_dataplane.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        node = next(item for item in tree.body if isinstance(item, ast.FunctionDef)
+                    and item.name == "_probe_dns53_policy_phase")
+        phase = "\n".join(source.splitlines()[node.lineno - 1:node.end_lineno])
+        self.assertIn("/rules/manual/apply", phase)
+        self.assertIn("_router_guard_counter_delta", phase)
+        self.assertIn("_packet_counts()", phase)
+        self.assertIn("dns53-observations", phase)
+        self.assertIn("nftset_probe_ok", phase)
+        self.assertIn("router_nxdomain", phase)
+        self.assertIn("/probe/dns53-flows", phase)
+        self.assertIn("dns53-flow-observations", phase)
+        self.assertIn("vpn_udp_classified", phase)
+        self.assertIn("vpn_alias_udp_router_direct", phase)
+        self.assertIn('selected_flow_delta == {"vpn_domain_tcp": 1, "vpn_domain_udp": 1,', phase)
+        self.assertIn('"vpn_domain_tcp_local"', phase)
+        self.assertIn('"unexpected_upstream_rule_count") == 0', phase)
+        self.assertIn('upstream_domains") == ["vpn.test"]', phase)
+        self.assertIn('unexpected_upstream_rule_count") == 0', phase)
+        fixture_source = (ROOT / "tests/acceptance/network_fixture.py").read_text(encoding="utf-8")
+        self.assertIn("_BoundedDnsTCPServer((DNS_UPSTREAM_IP, 53)", fixture_source)
+        self.assertIn("_BoundedUDPServer((DNS_UPSTREAM_IP, 53)", fixture_source)
+        self.assertIn('("1.1.1.1", 32)', fixture_source)
+        self.assertIn("target=DNS_BYPASS_NEGATIVE_IP", fixture_source)
+        self.assertNotIn("--network=host", fixture_source)
+        worker = (ROOT / "tests/application_acceptance/worker.py").read_text(encoding="utf-8")
+        self.assertIn("dnsmasq.subprocess = SimpleNamespace", worker)
+        self.assertIn("/usr/sbin/dnsmasq", worker)
+        self.assertIn("/api/v2/__acceptance/dns53/configure", worker)
+        self.assertIn('"owned_paths_cleaned": cleaned', worker)
+        self.assertIn('import re', worker.split('def _clean_environment', 1)[0])
+        self.assertIn('except subprocess.TimeoutExpired:', worker)
+        self.assertIn('"--user=root", "--group=root"', worker)
+        self.assertIn('"native_process_arguments_match": argv_matches', worker)
+        fixture_source = (ROOT / "tests/acceptance/network_fixture.py").read_text(encoding="utf-8")
+        self.assertIn('DNS_SELECTED_PROBE_BODY = b"fwrouter-dns-selected-flow-v1"', fixture_source)
+        self.assertIn('GET /probe/dns-selected HTTP/1.1', fixture_source)
+        self.assertIn('if data == DNS_SELECTED_PROBE_BODY:', fixture_source)
+        self.assertIn('_DNS_SELECTED_FLOW_OBS.record(f"{suffix}_udp"', fixture_source)
 
     def test_profile_capability_and_namespace_checks_precede_fixed_network_commands(self):
         context = _function_source("_validate_owned_context")
@@ -1067,10 +1128,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("leak_dns_stub", guard)
         self.assertIn("leak_reserved", guard)
         self.assertIn("ct state established,related", guard)
-        self.assertIn('output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }}', guard)
+        self.assertIn('output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP} }}', guard)
         self.assertIn('output ip daddr {ENDPOINT_WAN_IP} tcp dport {ENDPOINT_XRAY_PORT}', guard)
         self.assertIn('output ip daddr {ENDPOINT_WAN_IP} tcp dport 22 accept', guard)
-        self.assertIn('input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }}', guard)
+        self.assertIn('input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP} }}', guard)
         endpoint_input = guard.split('else:', 1)[1]
         self.assertNotIn('tcp dport 22 accept', endpoint_input)
         self.assertIn('hook input priority 0; policy drop;', guard)

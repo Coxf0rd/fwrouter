@@ -132,8 +132,13 @@ PYTHON_BASE_FIXED_ENV = {
 }
 PACKET_VIP = "203.0.113.53/32"
 PACKET_PROTECTED_VIP = "10.250.240.2/32"
+PACKET_DNS_UPSTREAM = "1.1.1.1/32"
+PACKET_DNS_VPN_VIP = "198.51.100.77/32"
 PACKET_LIBPCAP_PACKAGE_VERSION = "1.10.3-1"
 PACKET_LIBPCAP_API_VERSION_PREFIX = "libpcap version 1.10.3"
+PACKET_DNSMASQ_BASE_VERSION = "2.90-4~deb12u2"
+PACKET_BIND9_DNSUTILS_VERSION = "1:9.18.49-1~deb12u1"
+PACKET_IPTABLES_VERSION = "1.8.9-2"
 PACKET_CAPTURE_LIMIT = 512
 PACKET_CAPTURE_SNAPLEN = {"tcp": 54, "udp": 42}
 PACKET_CAPTURE_SOURCES = {
@@ -980,7 +985,9 @@ def packet_host_preflight() -> dict[str, Any]:
         raise NotRun("host route table has an unexpected shape")
     subnets = {name: ipaddress.ip_network(spec["subnet"]) for name, spec in PACKET_NETWORKS.items()}
     fixed_targets = {"service": ipaddress.ip_network(PACKET_VIP),
-                     "protected": ipaddress.ip_network(PACKET_PROTECTED_VIP)}
+                     "protected": ipaddress.ip_network(PACKET_PROTECTED_VIP),
+                     "dns_upstream": ipaddress.ip_network(PACKET_DNS_UPSTREAM),
+                     "dns_vpn_service": ipaddress.ip_network(PACKET_DNS_VPN_VIP)}
     observed_routes = []
     for route in routes:
         if not isinstance(route, dict):
@@ -1099,7 +1106,7 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
                       "security_opt", "tmpfs", "user", "volumes"},
         "endpoint": {"cap_add", "cap_drop", "command", "cpus", "environment", "image", "init", "labels",
                      "mem_limit", "memswap_limit", "networks", "pids_limit", "read_only", "restart",
-                     "security_opt", "tmpfs", "user", "volumes"},
+                     "security_opt", "sysctls", "tmpfs", "user", "volumes"},
     }
     for service_name, attached_names in expected_attachments.items():
         service = services[service_name]
@@ -1198,10 +1205,10 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
         if not isinstance(environment, dict) or environment != expected_environment:
             raise NotRun("packet service environment differs from its fixed no-secret role profile")
     app = services["application"]
-    if app.get("sysctls") != {"net.ipv4.ip_forward": "1"}:
-        raise NotRun("router must enable only its namespaced IPv4 forwarding sysctl")
-    if services["endpoint"].get("sysctls") not in (None, {}):
-        raise NotRun("endpoint must not change network sysctls")
+    if app.get("sysctls") != {"net.ipv4.ip_forward": "1", "net.ipv4.ip_unprivileged_port_start": "53"}:
+        raise NotRun("router namespaced forwarding and unprivileged DNS port sysctls differ from the packet profile")
+    if services["endpoint"].get("sysctls") != {"net.ipv4.ip_unprivileged_port_start": "53"}:
+        raise NotRun("endpoint must use only the fixed namespaced DNS port sysctl")
     build_args = app.get("build", {}).get("args", {})
     if (build_args.get("BASE_IMAGE") != base_image_ref
             or build_args.get("FWROUTER_KERNEL_PREFLIGHT") != "1"
@@ -1288,10 +1295,13 @@ def validate_packet_container_inspect(value: dict[str, Any], *, project: str, ru
         raise NotRun("packet container image, user, or root filesystem differs from policy")
     if host.get("Privileged") is not False or host.get("CapDrop") != ["ALL"]:
         raise NotRun("packet container is privileged or does not drop all capabilities")
-    expected_sysctls = {"net.ipv4.ip_forward": "1"} if role == "router" else {}
+    expected_sysctls = ({"net.ipv4.ip_forward": "1", "net.ipv4.ip_unprivileged_port_start": "53"}
+                        if role == "router" else
+                        {"net.ipv4.ip_unprivileged_port_start": "53"} if role == "endpoint" else {})
     observed_sysctls = host.get("Sysctls")
     if ((role == "router" and observed_sysctls != expected_sysctls)
-            or (role != "router" and observed_sysctls not in (None, {}))):
+            or (role == "endpoint" and observed_sysctls != expected_sysctls)
+            or (role == "client" and observed_sysctls not in (None, {}))):
         raise NotRun("packet container namespaced sysctls differ from the fixed role contract")
     expected_caps = {"NET_ADMIN", "NET_RAW"} if role == "router" else {"NET_ADMIN"}
     observed_caps = host.get("CapAdd") or []
@@ -1659,7 +1669,7 @@ def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
                                "dev", ifname("endpoint", "wan")], cwd=cwd, env=env)
     endpoint_addresses = _packet_container_json(docker, container_ids["endpoint"],
         ["ip", "-j", "-4", "address", "show", "dev", "lo"], cwd=cwd, env=env)
-    if any(item.get("local") in {"203.0.113.53", "10.250.240.2"}
+    if any(item.get("local") in {"203.0.113.53", "10.250.240.2", "1.1.1.1", "198.51.100.77"}
            for row in endpoint_addresses if isinstance(row, dict)
            for item in row.get("addr_info", []) if isinstance(item, dict)):
         raise NotRun("packet endpoint service address was already present before owned setup")
@@ -1669,14 +1679,20 @@ def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
     _packet_container_command(docker, container_ids["endpoint"],
                               ["ip", "-4", "address", "add", PACKET_PROTECTED_VIP, "dev", "lo"],
                               cwd=cwd, env=env)
+    _packet_container_command(docker, container_ids["endpoint"],
+                              ["ip", "-4", "address", "add", PACKET_DNS_UPSTREAM, "dev", "lo"],
+                              cwd=cwd, env=env)
+    _packet_container_command(docker, container_ids["endpoint"],
+                              ["ip", "-4", "address", "add", PACKET_DNS_VPN_VIP, "dev", "lo"],
+                              cwd=cwd, env=env)
     endpoint_loopback = _packet_container_json(docker, container_ids["endpoint"],
         ["ip", "-j", "-4", "address", "show", "dev", "lo"], cwd=cwd, env=env)
     endpoint_locals = [item.get("local") for row in endpoint_loopback if isinstance(row, dict)
                        for item in row.get("addr_info", []) if isinstance(item, dict)]
     if any(endpoint_locals.count(address) != 1 for address in
-           ("203.0.113.53", "10.250.240.2")):
+           ("203.0.113.53", "10.250.240.2", "1.1.1.1", "198.51.100.77")):
         raise NotRun("packet endpoint service VIP readback differs from the owned loopback aliases")
-    for destination in (PACKET_VIP, PACKET_PROTECTED_VIP):
+    for destination in (PACKET_VIP, PACKET_PROTECTED_VIP, PACKET_DNS_UPSTREAM, PACKET_DNS_VPN_VIP):
         _packet_container_command(docker, container_ids["router"],
                                   ["ip", "-4", "route", "replace", destination, "via", "198.18.240.2",
                                    "dev", router_if], cwd=cwd, env=env)
@@ -1685,7 +1701,9 @@ def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
         "router": [("10.240.0.0/29", None, ifname("router", "lan")),
                    ("198.18.240.0/29", None, ifname("router", "wan")),
                    ("203.0.113.53/32", "198.18.240.2", ifname("router", "wan")),
-                   ("10.250.240.2/32", "198.18.240.2", ifname("router", "wan"))],
+                   ("10.250.240.2/32", "198.18.240.2", ifname("router", "wan")),
+                   ("1.1.1.1/32", "198.18.240.2", ifname("router", "wan")),
+                   ("198.51.100.77/32", "198.18.240.2", ifname("router", "wan"))],
         "client": [("10.240.0.0/29", None, ifname("client", "lan")),
                    ("default", "10.240.0.1", ifname("client", "lan"))],
         "endpoint": [("198.18.240.0/29", None, ifname("endpoint", "wan")),
@@ -1705,6 +1723,8 @@ def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
                            "interfaces": dict(sorted(interfaces[role].items()))}
     summaries["endpoint"]["service_vip"] = "203.0.113.53/32 on lo"
     summaries["endpoint"]["protected_vip"] = "10.250.240.2/32 on lo"
+    summaries["endpoint"]["dns_upstream_vip"] = "1.1.1.1/32 on lo"
+    summaries["endpoint"]["dns_vpn_service_vip"] = "198.51.100.77/32 on lo"
     return {"schema": "fwrouter-packet-topology/v1", "roles": summaries,
             "ipv4_forwarding": "enabled in router namespace"}
 
@@ -1788,8 +1808,8 @@ try:
     ready=json.loads(raw.decode("ascii"))
     if not isinstance(ready,dict) or ready.get("status")!="ready":
         raise RuntimeError("worker_startup_failed:"+str(ready.get("stage","unknown"))[:64])
-    expected_flows={"tcp":{"snaplen":54,"filter":"(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"},
-                    "udp":{"snaplen":42,"filter":"(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 10.250.240.2 and dst port 9081)"}}
+    expected_flows={"tcp":{"snaplen":54,"filter":"(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301) or (tcp and dst host 1.1.1.1 and dst port 53)"},
+                    "udp":{"snaplen":42,"filter":"(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 198.51.100.77 and dst port 9081) or (udp and dst host 10.250.240.2 and dst port 9081) or (udp and dst host 1.1.1.1 and dst port 53)"}}
     api_version=ready.get("libpcap_api_version","")
     api_prefix="libpcap version 1.10.3"
     if (ready.get("interface")!=iface or ready.get("worker_sha256")!=worker_sha
@@ -1921,8 +1941,8 @@ if (final.get("status")!="stopped" or final.get("exit_code")!=0 or final.get("pi
 files={}
 for name,snaplen in (("tcp",54),("udp",42)):
     row=final["flows"][name]; path=root/(name+".pcap"); info=path.lstat()
-    expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"
-                     if name=="tcp" else "(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 10.250.240.2 and dst port 9081)")
+    expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301) or (tcp and dst host 1.1.1.1 and dst port 53)"
+                if name=="tcp" else "(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 198.51.100.77 and dst port 9081) or (udp and dst host 10.250.240.2 and dst port 9081) or (udp and dst host 1.1.1.1 and dst port 53)")
     if (type(row.get("count")) is not int or not 0<=row["count"]<=512 or row.get("snaplen")!=snaplen
         or row.get("filter")!=expected_filter or row.get("header",{}).get("major")!=2
         or row.get("header",{}).get("minor")!=4 or row.get("header",{}).get("linktype")!=1
@@ -2098,7 +2118,7 @@ def packet_role_readiness_code() -> str:
     """Poll only the fixed role-control endpoints from the router namespace."""
     return r'''import json, time, urllib.error, urllib.request
 targets = {"client":("http://10.240.0.2:8081/ready", lambda x: x.get("role")=="client" and x.get("ready") is True),
-           "endpoint":("http://198.18.240.2:8082/ready", lambda x: x.get("role")=="endpoint" and x.get("ready") is True and isinstance(x.get("sockets"),dict) and all(x["sockets"].get(k) is True for k in ("xray_tcp_5301","http_tcp_9080","udp_echo_9081","dns_udp_5353")))}
+           "endpoint":("http://198.18.240.2:8082/ready", lambda x: x.get("role")=="endpoint" and x.get("ready") is True and isinstance(x.get("sockets"),dict) and all(x["sockets"].get(k) is True for k in ("xray_tcp_5301","http_tcp_9080","udp_echo_9081","dns_udp_5353","dns_upstream_udp_53","dns_upstream_tcp_53")))}
 deadline=time.monotonic()+10.0; ready={}; observations={role:{"attempts":0,"last_error":"not_attempted"} for role in targets}
 while time.monotonic()<deadline and len(ready)<2:
     for role,(url,valid) in targets.items():
@@ -2207,6 +2227,8 @@ lan={lan_interface!r}; wan={wan_interface!r}; table="fwrouter_packet_guard"
 counter_names={{"router_stub_drop","router_egress_drop","router_forward_drop","router_input_drop",
                "router_protected_tcp_output","router_protected_udp_output",
                "router_protected_tcp_forward","router_protected_udp_forward",
+               "router_dns_tcp_output","router_dns_udp_output","router_dns_tcp_input","router_dns_udp_input",
+               "router_dns_vpn_direct_output","router_dns_vpn_direct_forward",
                "router_ipv6_output_drop","router_ipv6_input_drop","router_ipv6_forward_drop"}}
 rules=[
  f'add table inet {{table}}',
@@ -2221,6 +2243,10 @@ rules=[
  'add rule inet fwrouter_packet_guard output ip daddr 10.240.0.2 tcp dport 8081 accept comment "fwrouter packet guard client control allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 8082 accept comment "fwrouter packet guard endpoint control allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 5301 accept comment "fwrouter packet guard vless allow v1"',
+ 'add rule inet fwrouter_packet_guard output ip daddr 1.1.1.1 tcp dport 53 counter name router_dns_tcp_output accept comment "fwrouter packet guard owned dns tcp upstream allow v1"',
+ 'add rule inet fwrouter_packet_guard output ip daddr 1.1.1.1 udp dport 53 counter name router_dns_udp_output accept comment "fwrouter packet guard owned dns udp upstream allow v1"',
+ 'add rule inet fwrouter_packet_guard output ip daddr 198.51.100.77 tcp dport 9080 counter name router_dns_vpn_direct_output accept comment "fwrouter packet guard dns-selected vpn direct-route observation v1"',
+ 'add rule inet fwrouter_packet_guard output ip daddr 198.51.100.77 udp dport 9081 counter name router_dns_vpn_direct_output accept comment "fwrouter packet guard dns-selected vpn direct-route observation v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 203.0.113.53 tcp dport 9080 accept comment "fwrouter packet guard vip tcp allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 203.0.113.53 udp dport {{ 9081, 5353 }} accept comment "fwrouter packet guard vip udp allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 10.250.240.2 tcp dport 9080 counter name router_protected_tcp_output accept comment "fwrouter packet guard protected tcp exact allow v1"',
@@ -2233,11 +2259,15 @@ rules=[
  f'add rule inet fwrouter_packet_guard input iifname "{{lan}}" ip saddr 10.240.0.2 ip daddr 203.0.113.53 udp dport {{{{ 9081, 5353 }}}} accept comment "fwrouter packet guard lan vip udp input allow v1"',
  f'add rule inet fwrouter_packet_guard input iifname "{{lan}}" ip saddr 10.240.0.2 ip daddr 10.240.0.1 tcp dport {{{{ 5202, 5204 }}}} accept comment "fwrouter packet guard lan tproxy tcp input allow v1"',
  f'add rule inet fwrouter_packet_guard input iifname "{{lan}}" ip saddr 10.240.0.2 ip daddr 10.240.0.1 udp dport {{{{ 5203, 5205 }}}} accept comment "fwrouter packet guard lan tproxy udp input allow v1"',
+ f'add rule inet fwrouter_packet_guard input iifname "{{lan}}" ip saddr 10.240.0.2 ip daddr 10.240.0.1 tcp dport 53 counter name router_dns_tcp_input accept comment "fwrouter packet guard lan dns tcp input allow v1"',
+ f'add rule inet fwrouter_packet_guard input iifname "{{lan}}" ip saddr 10.240.0.2 ip daddr 10.240.0.1 udp dport 53 counter name router_dns_udp_input accept comment "fwrouter packet guard lan dns udp input allow v1"',
  'add rule inet fwrouter_packet_guard input counter name router_input_drop drop comment "fwrouter packet guard input deny v1"',
  'add rule inet fwrouter_packet_guard forward meta nfproto ipv6 counter name router_ipv6_forward_drop drop comment "fwrouter packet guard ipv6 forward deny v1"',
  'add rule inet fwrouter_packet_guard forward ct state {{ established, related }} accept comment "fwrouter packet guard established forward allow v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 203.0.113.53 tcp dport 9080 accept comment "fwrouter packet guard lan vip tcp forward allow v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 203.0.113.53 udp dport {{{{ 9081, 5353 }}}} accept comment "fwrouter packet guard lan vip udp forward allow v1"',
+ f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 198.51.100.77 tcp dport 9080 counter name router_dns_vpn_direct_forward accept comment "fwrouter packet guard dns-selected vpn direct-route observation v1"',
+ f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 198.51.100.77 udp dport 9081 counter name router_dns_vpn_direct_forward accept comment "fwrouter packet guard dns-selected vpn direct-route observation v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 10.250.240.2 tcp dport 9080 counter name router_protected_tcp_forward accept comment "fwrouter packet guard protected tcp forward exact allow v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 10.250.240.2 udp dport 9081 counter name router_protected_udp_forward accept comment "fwrouter packet guard protected udp forward exact allow v1"',
  'add rule inet fwrouter_packet_guard forward counter name router_forward_drop drop comment "fwrouter packet guard forward deny v1"',
@@ -2546,6 +2576,26 @@ if kernel_mode:
         api_version = libpcap.pcap_lib_version().decode("ascii")
         assert api_version.startswith(capture["libpcap_api_version_prefix"])
         assert len(api_version) == len(capture["libpcap_api_version_prefix"]) or api_version[len(capture["libpcap_api_version_prefix"])].isspace()
+        dns=p["dns_runtime"]
+        assert set(dns)=={"dnsmasq_base_package_version","bind9_dnsutils_package_version","iptables_package_version","dnsmasq_version_prefix","dnsmasq_nftset_required"}
+        assert dns["dnsmasq_base_package_version"]=="2.90-4~deb12u2"
+        assert dns["bind9_dnsutils_package_version"]=="1:9.18.49-1~deb12u1"
+        assert dns["iptables_package_version"]=="1.8.9-2"
+        assert dns["dnsmasq_version_prefix"]=="Dnsmasq version 2.90" and dns["dnsmasq_nftset_required"] is True
+        for package,version in (("dnsmasq-base",dns["dnsmasq_base_package_version"]),
+                                ("bind9-dnsutils",dns["bind9_dnsutils_package_version"]),
+                                ("iptables",dns["iptables_package_version"])):
+            result=subprocess.run(["/usr/bin/dpkg-query","-W","-f=${Version}",package],capture_output=True,
+                timeout=5,stdin=subprocess.DEVNULL,env={"PATH":"/usr/bin:/bin","LANG":"C.UTF-8","TZ":"UTC"})
+            assert result.returncode==0 and result.stdout.decode("ascii").strip()==version
+        dnsmasq=subprocess.run(["/usr/sbin/dnsmasq","--version"],capture_output=True,timeout=5,
+            stdin=subprocess.DEVNULL,env={"PATH":"/usr/sbin:/usr/bin:/bin","LANG":"C.UTF-8","TZ":"UTC"})
+        dnsmasq_text=dnsmasq.stdout.decode("ascii")
+        assert dnsmasq.returncode==0 and dnsmasq_text.startswith(dns["dnsmasq_version_prefix"])
+        assert "nftset" in dnsmasq_text.splitlines()[1].split()
+        dig=subprocess.run(["/usr/bin/dig","-v"],capture_output=True,timeout=5,stdin=subprocess.DEVNULL,
+            env={"PATH":"/usr/bin:/bin","LANG":"C.UTF-8","TZ":"UTC"})
+        assert dig.returncode==0 and dig.stdout.decode("ascii").startswith("DiG 9.18.49")
 else:
     assert "kernel_preflight" not in p and "kernel_dataplane" not in p and "network_testbed" not in p and "packet_capture" not in p
 for raw in ("/tmp/fwrouter-home", "/tmp/fwrouter-acceptance-state",
@@ -3125,6 +3175,13 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 "libpcap_api_version_prefix": PACKET_LIBPCAP_API_VERSION_PREFIX,
                 "capture_worker_sha256": sha256_file(context / "tests/acceptance/packet_capture_worker.py"),
             }
+            profile["dns_runtime"] = {
+                "dnsmasq_base_package_version": PACKET_DNSMASQ_BASE_VERSION,
+                "bind9_dnsutils_package_version": PACKET_BIND9_DNSUTILS_VERSION,
+                "iptables_package_version": PACKET_IPTABLES_VERSION,
+                "dnsmasq_version_prefix": "Dnsmasq version 2.90",
+                "dnsmasq_nftset_required": True,
+            }
         required_versions = [profile["xray"]["version"], profile["mihomo"]["version"],
                              profile["chromium"]["version"], profile["playwright_python"]]
         if not all(isinstance(value, str) and value.strip() for value in required_versions):
@@ -3564,10 +3621,16 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             capture_exports = {}
             for name, protocol, snaplen, destinations in (
                 ("tcp", 6, 54, {("10.240.0.2", "203.0.113.53", 6): {9080},
+                                ("10.240.0.2", "198.51.100.77", 6): {9080},
+                                ("198.18.240.1", "198.51.100.77", 6): {9080},
                                 ("198.18.240.1", "198.18.240.2", 6): {5301},
-                                ("10.240.0.2", "10.250.240.2", 6): {9080}}),
+                                ("10.240.0.2", "10.250.240.2", 6): {9080},
+                                ("198.18.240.1", "1.1.1.1", 6): {53}}),
                 ("udp", 17, 42, {("10.240.0.2", "203.0.113.53", 17): {9081, 5353},
-                                 ("10.240.0.2", "10.250.240.2", 17): {9081}}),
+                                 ("10.240.0.2", "198.51.100.77", 17): {9081},
+                                 ("198.18.240.1", "198.51.100.77", 17): {9081},
+                                 ("10.240.0.2", "10.250.240.2", 17): {9081},
+                                 ("198.18.240.1", "1.1.1.1", 17): {53}}),
             ):
                 destination = artifact_dir / f"packet-{name}.pcap"
                 if stopped["exit_code"] != 0 or stop_result.get("status") != "stopped":

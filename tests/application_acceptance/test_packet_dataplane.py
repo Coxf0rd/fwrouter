@@ -30,6 +30,7 @@ CLIENT_IP = "10.240.0.2"
 ROUTER_WAN_IP = "198.18.240.1"
 ENDPOINT_IP = "198.18.240.2"
 SERVICE_VIP = "203.0.113.53"
+DNS_VPN_SERVICE_VIP = "198.51.100.77"
 PROTECTED_VIP = "10.250.240.2"
 CLIENT_CONTROL = "http://10.240.0.2:8081"
 ENDPOINT_CONTROL = "http://198.18.240.2:8082"
@@ -546,8 +547,10 @@ def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
             continue
         if dst_port == 5301 and (src, dst, protocol) != (ROUTER_WAN_IP, ENDPOINT_IP, 6):
             raise AssertionError("captured VLESS flow differs from the fixed router-to-endpoint tuple")
-        if ((dst_port == 9080 and dst not in {SERVICE_VIP, PROTECTED_VIP})
-                or (dst_port in {9081, 5353} and dst not in {SERVICE_VIP, PROTECTED_VIP})
+        if dst_port == 53 and (src, dst, protocol) != (ROUTER_WAN_IP, "1.1.1.1", protocol):
+            raise AssertionError("captured DNS53 flow differs from the fixed router-to-owned-upstream tuple")
+        if ((dst_port == 9080 and dst not in {SERVICE_VIP, DNS_VPN_SERVICE_VIP, PROTECTED_VIP})
+                or (dst_port in {9081, 5353} and dst not in {SERVICE_VIP, DNS_VPN_SERVICE_VIP, PROTECTED_VIP})
                 or (dst_port == 5353 and dst != SERVICE_VIP)):
             raise AssertionError("captured service flow differs from the fixed VIP")
         counts[(src, dst, "tcp" if protocol == 6 else "udp", dst_port)] = (
@@ -557,8 +560,8 @@ def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
 
 
 def _packet_counts() -> dict[tuple[str, str, str, int], int]:
-    tcp = _pcap_counts(TCP_CAPTURE_PATH, TCP_SNAPLEN, 6, {5301, 9080})
-    udp = _pcap_counts(UDP_CAPTURE_PATH, UDP_SNAPLEN, 17, {9081, 5353})
+    tcp = _pcap_counts(TCP_CAPTURE_PATH, TCP_SNAPLEN, 6, {53, 5301, 9080})
+    udp = _pcap_counts(UDP_CAPTURE_PATH, UDP_SNAPLEN, 17, {53, 9081, 5353})
     return {**tcp, **udp}
 
 
@@ -758,6 +761,8 @@ def _router_guard_counter_snapshot() -> dict[str, dict[str, int]]:
         "router_stub_drop", "router_egress_drop", "router_forward_drop",
         "router_protected_tcp_output", "router_protected_udp_output",
         "router_protected_tcp_forward", "router_protected_udp_forward",
+        "router_dns_tcp_output", "router_dns_udp_output", "router_dns_tcp_input", "router_dns_udp_input",
+        "router_dns_vpn_direct_output", "router_dns_vpn_direct_forward",
     }
     found: dict[str, list[dict[str, int]]] = {name: [] for name in wanted}
     for item in payload["nftables"]:
@@ -777,6 +782,8 @@ def _router_guard_counter_delta(before: dict[str, dict[str, int]],
             "router_stub_drop", "router_egress_drop", "router_forward_drop",
             "router_protected_tcp_output", "router_protected_udp_output",
             "router_protected_tcp_forward", "router_protected_udp_forward",
+            "router_dns_tcp_output", "router_dns_udp_output", "router_dns_tcp_input", "router_dns_udp_input",
+            "router_dns_vpn_direct_output", "router_dns_vpn_direct_forward",
     } or set(after) != set(before):
         raise AssertionError("router guard counter snapshots differ from the fixed fixture contract")
     delta = {name: {field: after[name][field] - before[name][field]
@@ -916,6 +923,168 @@ def _probe_protected_direct_phase(stack: dict[str, Any], source_ref: str,
     return proof
 
 
+def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_property: Any) -> dict[str, Any]:
+    """Exercise generated DNS policy with real dnsmasq, endpoint, captures, and native counters."""
+    api = stack["api"]
+    prepared_code, prepared = http_json(f"{api}/__acceptance/dns53/configure", method="POST")
+    assert prepared_code == 200 and prepared.get("ok") is True and prepared.get("fixture_configured") is True, prepared
+    rules_text = "VPN vpn.test\nDIRECT direct.test"
+    code, saved = http_json(f"{api}/rules/manual", method="POST", payload={"text": rules_text})
+    assert code == 200 and saved.get("ok") is True, saved
+    code, accepted = http_json(f"{api}/rules/manual/apply", method="POST", payload={"requested_by": "packet-dns53", "run_now": True})
+    assert code == 200 and accepted.get("ok") is True, accepted
+    job = await_core_job(api, accepted, timeout_seconds=90)
+    setup_status_code, setup_dns = http_json(f"{api}/__acceptance/dns53/status")
+    assert job.get("status") == "success", {
+        "dns53_manual_apply": _bounded_job_summary(job), "native_dnsmasq": setup_dns,
+        "native_status_code": setup_status_code,
+    }
+    assert setup_status_code == 200 and setup_dns.get("daemon_running") is True
+    assert setup_dns.get("daemon_uid_matches") is True and setup_dns.get("selective_status_ok") is True
+    assert setup_dns.get("native_process_arguments_match") is True
+    assert setup_dns.get("upstream_domains") == ["vpn.test"]
+    assert setup_dns.get("unexpected_upstream_rule_count") == 0
+    assert setup_dns.get("dns_capture_ok") is True and setup_dns.get("nftset_probe_ok") is True
+
+    _assert_packet_runtime(stack, mode="vpn", policy_required=True)
+    native_before = _packet_vpn_runtime_selection(stack)
+    selection_before = _provider_selection_snapshot(source_ref)
+    guard_before = _router_guard_counter_snapshot()
+    packets_before = _packet_counts()
+    endpoint_before = _role_json(f"{ENDPOINT_CONTROL}/dns53-observations")
+    selected_flows_before = _role_json(f"{ENDPOINT_CONTROL}/dns53-flow-observations")
+    core_before = _core_counter_snapshot()
+    client = _role_json(f"{CLIENT_CONTROL}/probe/dns53", method="POST")
+    external = _role_json(f"{CLIENT_CONTROL}/probe/dns53-external", method="POST")
+    resolved_flows = _role_json(f"{CLIENT_CONTROL}/probe/dns53-flows", method="POST")
+    packets_after = _wait_packet_counts(lambda counts:
+        _flow_delta(packets_before, counts, (ROUTER_WAN_IP, "1.1.1.1", "udp", 53)) > 0
+        and _flow_delta(packets_before, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
+    guard_after = _router_guard_counter_snapshot()
+    endpoint_after = _role_json(f"{ENDPOINT_CONTROL}/dns53-observations")
+    selected_flows_after = _role_json(f"{ENDPOINT_CONTROL}/dns53-flow-observations")
+    core_after = _core_counter_snapshot()
+    status_code, native_dns = http_json(f"{api}/__acceptance/dns53/status")
+    _assert_packet_runtime(stack, mode="vpn", policy_required=True)
+    native_after = _packet_vpn_runtime_selection(stack)
+    selection_after = _provider_selection_snapshot(source_ref)
+    cleanup_code, cleanup = http_json(f"{api}/__acceptance/dns53/stop", method="POST")
+
+    def count_delta(name: str) -> int:
+        before = (endpoint_before.get("counts") or {}).get(name)
+        after = (endpoint_after.get("counts") or {}).get(name)
+        assert type(before) is int and type(after) is int and after >= before, {
+            "dns53_endpoint_counter": name,
+        }
+        return after - before
+
+    capture_delta = {
+        "udp_upstream": _flow_delta(packets_before, packets_after, (ROUTER_WAN_IP, "1.1.1.1", "udp", 53)),
+        "tcp_upstream": _flow_delta(packets_before, packets_after, (ROUTER_WAN_IP, "1.1.1.1", "tcp", 53)),
+    }
+    guard_delta = _router_guard_counter_delta(guard_before, guard_after)
+    core_delta = _core_counter_delta(core_before, core_after)
+    selected_counts_before = selected_flows_before.get("counts") or {}
+    selected_counts_after = selected_flows_after.get("counts") or {}
+    selected_flow_delta = {
+        name: selected_counts_after.get(name) - selected_counts_before.get(name)
+        if type(selected_counts_before.get(name)) is int and type(selected_counts_after.get(name)) is int
+        and selected_counts_after.get(name) >= selected_counts_before.get(name) else None
+        for name in ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp")
+    }
+    selected_peers = selected_flows_after.get("peers") or {}
+    endpoint_peer_proof = {
+        "direct_domain_tcp_local": bool(selected_peers.get("direct_domain_tcp"))
+        and set(selected_peers.get("direct_domain_tcp", [])) <= {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP},
+        "direct_domain_udp_local": bool(selected_peers.get("direct_domain_udp"))
+        and set(selected_peers.get("direct_domain_udp", [])) <= {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP},
+        "vpn_domain_tcp_local": bool(selected_peers.get("vpn_domain_tcp"))
+        and set(selected_peers.get("vpn_domain_tcp", [])) <= {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP},
+        "vpn_domain_udp_local": bool(selected_peers.get("vpn_domain_udp"))
+        and set(selected_peers.get("vpn_domain_udp", [])) <= {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP},
+    }
+    direct_capture_delta = {
+        "service_tcp_router_direct": _flow_delta(packets_before, packets_after, (ROUTER_WAN_IP, SERVICE_VIP, "tcp", 9080)),
+        "service_udp_router_direct": _flow_delta(packets_before, packets_after, (ROUTER_WAN_IP, SERVICE_VIP, "udp", 9081)),
+        "vpn_alias_tcp_router_direct": _flow_delta(packets_before, packets_after,
+                                                       (ROUTER_WAN_IP, DNS_VPN_SERVICE_VIP, "tcp", 9080)),
+        "vpn_alias_udp_router_direct": _flow_delta(packets_before, packets_after,
+                                                       (ROUTER_WAN_IP, DNS_VPN_SERVICE_VIP, "udp", 9081)),
+        "service_tcp_client_direct": _flow_delta(packets_before, packets_after,
+                                                       (CLIENT_IP, SERVICE_VIP, "tcp", 9080)),
+        "service_udp_client_direct": _flow_delta(packets_before, packets_after,
+                                                       (CLIENT_IP, SERVICE_VIP, "udp", 9081)),
+        "vpn_alias_tcp_client_direct": _flow_delta(packets_before, packets_after,
+                                                       (CLIENT_IP, DNS_VPN_SERVICE_VIP, "tcp", 9080)),
+        "vpn_alias_udp_client_direct": _flow_delta(packets_before, packets_after,
+                                                       (CLIENT_IP, DNS_VPN_SERVICE_VIP, "udp", 9081)),
+    }
+    endpoint_delta = {name: count_delta(name) for name in ("udp", "tcp", "vpn_name", "direct_name", "other_name")}
+    proof = {
+        "phase": "native-dns53-under-global-vpn",
+        "client_queries": client,
+        "external_resolver_queries": external,
+        "resolved_user_flows": resolved_flows,
+        "dns_selected_endpoint_flow_delta": selected_flow_delta,
+        "dns_selected_endpoint_peer_proof": endpoint_peer_proof,
+        "dns_selected_endpoint_peers": selected_flows_after.get("peers"),
+        "resolved_flow_core_delta": core_delta,
+        "resolved_flow_direct_capture_delta": direct_capture_delta,
+        "native_dnsmasq": native_dns,
+        "capture_router_to_owned_upstream": capture_delta,
+        "endpoint_observations_delta": endpoint_delta,
+        "endpoint_peers": endpoint_after.get("peers"),
+        "router_guard_delta": guard_delta,
+        "native_vpn_before": native_before,
+        "native_vpn_after": native_after,
+        "native_vpn_stable": native_before == native_after,
+        "selection_stable": selection_before == selection_after,
+        "api_status": status_code,
+        "cleanup": {"http_status": cleanup_code, "process_reaped": cleanup.get("process_reaped") is True,
+                    "owned_paths_cleaned": cleanup.get("owned_paths_cleaned") is True},
+    }
+    _record_phase_diagnostic(record_property, proof)
+    assert client.get("answers") == {
+        "probe.vpn.test_udp": "198.51.100.77", "probe.vpn.test_tcp": "198.51.100.77",
+        "probe.direct.test_udp": "203.0.113.53", "probe.direct.test_tcp": "203.0.113.53",
+    }, proof
+    assert resolved_flows.get("results") == {
+        "vpn": {"answer": DNS_VPN_SERVICE_VIP, "tcp": True, "udp": True},
+        "direct": {"answer": SERVICE_VIP, "tcp": True, "udp": True},
+    }, proof
+    assert external.get("outcomes") == {"udp": "router_nxdomain", "tcp": "router_nxdomain"}, proof
+    assert status_code == 200 and native_dns.get("configured") is True and native_dns.get("daemon_running") is True
+    assert native_dns.get("daemon_uid_matches") is True and native_dns.get("native_process_arguments_match") is True
+    assert native_dns.get("upstream_domains") == ["vpn.test"]
+    assert native_dns.get("unexpected_upstream_rule_count") == 0
+    assert native_dns.get("selective_status_ok") is True and native_dns.get("dns_capture_ok") is True
+    assert native_dns.get("nftset_probe_ok") is True
+    assert native_dns.get("vpn_rule_generated") is True and native_dns.get("vpn_nftset_generated") is True
+    assert native_dns.get("direct_rule_generated") is True and native_dns.get("direct_nftset_generated") is True
+    assert {row.get("domain") for row in native_dns.get("nft_probe_targets", []) if row.get("ok") and row.get("resolved") and row.get("materialized_count", 0) > 0} == {"vpn.test", "direct.test"}, proof
+    assert endpoint_delta["udp"] > 0
+    assert endpoint_delta["vpn_name"] > 0 and endpoint_delta["direct_name"] > 0 and endpoint_delta["other_name"] > 0
+    assert set(endpoint_after.get("peers", [])) == {ROUTER_WAN_IP}, proof
+    assert capture_delta["udp_upstream"] > 0, proof
+    assert selected_flow_delta == {"vpn_domain_tcp": 1, "vpn_domain_udp": 1,
+                                   "direct_domain_tcp": 1, "direct_domain_udp": 1}, proof
+    assert all(direct_capture_delta[name] == 0 for name in (
+        "service_tcp_router_direct", "service_udp_router_direct", "vpn_alias_tcp_router_direct",
+        "vpn_alias_udp_router_direct", "service_tcp_client_direct", "service_udp_client_direct",
+        "vpn_alias_tcp_client_direct", "vpn_alias_udp_client_direct")), proof
+    assert core_delta["vpn_tcp_classified"] > 0 and core_delta["vpn_udp_classified"] > 0
+    assert core_delta["vpn_udp_handoff_packets"] > 0
+    assert guard_delta["router_dns_vpn_direct_output"]["packets"] == 0
+    assert guard_delta["router_dns_vpn_direct_forward"]["packets"] == 0
+    assert all(endpoint_peer_proof.values()), proof
+    assert all(guard_delta[name]["packets"] > 0 for name in (
+        "router_dns_udp_input", "router_dns_tcp_input", "router_dns_udp_output")), proof
+    assert proof["native_vpn_stable"] is True and proof["selection_stable"] is True, proof
+    assert cleanup_code == 200 and cleanup.get("stopped") is True and cleanup.get("process_reaped") is True
+    assert cleanup.get("owned_paths_cleaned") is True, proof
+    return proof
+
+
 def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
     """Return bounded semantic Mihomo facts without exposing config or proxy identifiers."""
     try:
@@ -1005,7 +1174,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "provider-reentry",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "protected-direct-under-global-vpn",
-                     "emergency-direct", "vpn-after-reentry", "provider-enable-job",
+                     "emergency-direct", "vpn-after-reentry", "native-dns53-under-global-vpn", "provider-enable-job",
                      "vpn-auto-exclusive-job", "provider-refresh-supported", "provider-refresh-unknown",
                      "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
@@ -1933,6 +2102,7 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
     vpn = phases.get("vpn") if isinstance(phases.get("vpn"), dict) else {}
     emergency = phases.get("emergency_direct") if isinstance(phases.get("emergency_direct"), dict) else {}
     reentry = phases.get("vpn_after_reentry") if isinstance(phases.get("vpn_after_reentry"), dict) else {}
+    dns53 = phases.get("native_dns53_policy") if isinstance(phases.get("native_dns53_policy"), dict) else {}
     def observation_counts(source: Any) -> dict[str, int | None]:
         value = source if isinstance(source, dict) else {}
         counts_value = value.get("counts") if isinstance(value.get("counts"), dict) else {}
@@ -2023,6 +2193,36 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
             "core": counters(reentry.get("core_counters"),
                               ("vpn_tcp_classified", "vpn_udp_classified", "vpn_udp_handoff_packets")),
             "endpoint": observation_counts(reentry.get("observations")),
+        },
+        "native_dns53_policy": {
+            "api_status": dns53.get("api_status") == 200,
+            "queries_answered": isinstance(dns53.get("client_queries"), dict),
+            "external_resolver_captured": isinstance(dns53.get("external_resolver_queries"), dict),
+            "dnsmasq_native": (dns53.get("native_dnsmasq") or {}).get("daemon_running") is True
+            and (dns53.get("native_dnsmasq") or {}).get("selective_status_ok") is True
+            and (dns53.get("native_dnsmasq") or {}).get("nftset_probe_ok") is True
+            and (dns53.get("native_dnsmasq") or {}).get("native_process_arguments_match") is True,
+            "unexpected_upstream_rules": number((dns53.get("native_dnsmasq") or {}).get("unexpected_upstream_rule_count")),
+            "router_upstream_capture": counters(dns53.get("capture_router_to_owned_upstream"), ("udp_upstream", "tcp_upstream")),
+            "endpoint_dns": counters(dns53.get("endpoint_observations_delta"), ("udp", "tcp", "vpn_name", "direct_name", "other_name")),
+            "resolved_user_flows": counters(dns53.get("dns_selected_endpoint_flow_delta"),
+                                              ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp")),
+            "endpoint_peer_proof": {
+                key: (dns53.get("dns_selected_endpoint_peer_proof") or {}).get(key) is True
+                for key in ("direct_domain_tcp_local", "direct_domain_udp_local",
+                            "vpn_domain_tcp_local", "vpn_domain_udp_local")
+            },
+            "resolved_flow_core": counters(dns53.get("resolved_flow_core_delta"),
+                                             ("vpn_tcp_classified", "vpn_udp_classified", "vpn_udp_handoff_packets")),
+            "resolved_flow_direct_capture": counters(dns53.get("resolved_flow_direct_capture_delta"),
+                ("service_tcp_router_direct", "service_udp_router_direct", "vpn_alias_tcp_router_direct",
+                 "vpn_alias_udp_router_direct", "service_tcp_client_direct", "service_udp_client_direct",
+                 "vpn_alias_tcp_client_direct", "vpn_alias_udp_client_direct")),
+            "dns_guard": guard_packets(dns53.get("router_guard_delta"),
+                                       ("router_dns_udp_input", "router_dns_tcp_input", "router_dns_udp_output", "router_dns_tcp_output",
+                                        "router_dns_vpn_direct_output", "router_dns_vpn_direct_forward")),
+            "selection_stable": dns53.get("selection_stable") is True,
+            "cleanup": (dns53.get("cleanup") or {}).get("owned_paths_cleaned") is True,
         },
     }
     summary = json.dumps({"schema": "fwrouter-packet-test-flows/v2", "phases": summary_phases},
@@ -2392,6 +2592,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "phase": "vpn-after-reentry", "vless_endpoint_packets": reentry_flow,
         "direct_client_leaks": reentry_direct_leaks,
     }
+    dns53_phase = _probe_dns53_policy_phase(stack, source_ref, record_property)
     assert_mihomo_launch_matches_active(native, stack["state"] / "generated" / "mihomo" / "config.yaml")
     final_binding = binding_for(source_ref)
     assert final_binding["current_member_id"] == binding["current_member_id"]
@@ -2418,6 +2619,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
                 "observations": vpn_phase["observations"],
                 "egress_guard": vpn_phase["leak"], "router_guard": vpn_phase["router_guard"]},
         "protected_direct": protected_direct_phase,
+        "native_dns53_policy": dns53_phase,
         "udp_capability_contract": {
             "supported": supported_capability["declared_capability"] == "supported",
             "supported_packet": {

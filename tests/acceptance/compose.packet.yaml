@@ -11,6 +11,7 @@ services:
         ipv4_address: 198.18.240.1
     sysctls:
       net.ipv4.ip_forward: "1"
+      net.ipv4.ip_unprivileged_port_start: "53"
   lanclient:
     image: fwrouter-acceptance:${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}
     init: true
@@ -59,6 +60,8 @@ services:
     mem_limit: 384m
     memswap_limit: 384m
     cpus: 1.0
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "53"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     volumes:

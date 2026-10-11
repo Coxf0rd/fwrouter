@@ -20,6 +20,9 @@ PROFILE_SCHEMA = "fwrouter-acceptance-profile/v2"
 KERNEL_DATAPLANE_PROFILE = "hosted-kernel-dataplane"
 KERNEL_PACKET_PROFILE = "hosted-kernel-packet"
 MIHOMO_HANDOFF = {"address": "172.18.0.1", "subnet": "172.18.0.0/24", "gateway": "172.18.0.254"}
+PACKET_DNSMASQ_BASE_VERSION = "2.90-4~deb12u2"
+PACKET_BIND9_DNSUTILS_VERSION = "1:9.18.49-1~deb12u1"
+PACKET_IPTABLES_VERSION = "1.8.9-2"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 NONCE = re.compile(r"^[0-9a-f]{32}$")
@@ -179,6 +182,16 @@ def _verify_packet_router_profile(profile: dict[str, Any], facts: dict[str, Any]
             or capture["libpcap_api_version_prefix"] != "libpcap version 1.10.3"
             or not SHA256.fullmatch(str(capture["capture_worker_sha256"]))):
         raise ProfileError("packet capture package, API version, or worker digest differs from its fixed profile")
+    dns = profile.get("dns_runtime")
+    if (not isinstance(dns, dict) or set(dns) != {
+            "dnsmasq_base_package_version", "bind9_dnsutils_package_version",
+            "iptables_package_version", "dnsmasq_version_prefix", "dnsmasq_nftset_required"}
+            or dns.get("dnsmasq_base_package_version") != PACKET_DNSMASQ_BASE_VERSION
+            or dns.get("bind9_dnsutils_package_version") != PACKET_BIND9_DNSUTILS_VERSION
+            or dns.get("iptables_package_version") != PACKET_IPTABLES_VERSION
+            or dns.get("dnsmasq_version_prefix") != "Dnsmasq version 2.90"
+            or dns.get("dnsmasq_nftset_required") is not True):
+        raise ProfileError("DNS native package/runtime pin differs from the fixed packet profile")
     worker = Path("/workspace/tests/acceptance/packet_capture_worker.py")
     try:
         worker_info = worker.lstat()
@@ -189,6 +202,20 @@ def _verify_packet_router_profile(profile: dict[str, Any], facts: dict[str, Any]
                                  check=False, capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
                                   env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
         package_version = package.stdout.decode("ascii", "strict").strip()
+        dns_packages = {}
+        for package_name in ("dnsmasq-base", "bind9-dnsutils", "iptables"):
+            result = subprocess.run(["/usr/bin/dpkg-query", "-W", "-f=${Version}", package_name],
+                                    check=False, capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+                                    env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
+            if result.returncode != 0 or len(result.stdout) > 256 or len(result.stderr) > 1024:
+                raise ProfileError("pinned DNS package readback failed")
+            dns_packages[package_name] = result.stdout.decode("ascii", "strict").strip()
+        dnsmasq = subprocess.run(["/usr/sbin/dnsmasq", "--version"], check=False,
+                                 capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+                                 env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
+        dig = subprocess.run(["/usr/bin/dig", "-v"], check=False, capture_output=True,
+                             timeout=5, stdin=subprocess.DEVNULL,
+                             env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
         soname = ctypes.util.find_library("pcap")
         if not isinstance(soname, str) or not soname or "/" in soname:
             raise ProfileError("pinned libpcap shared library is unavailable")
@@ -204,6 +231,15 @@ def _verify_packet_router_profile(profile: dict[str, Any], facts: dict[str, Any]
             or not api_version.startswith(prefix)
             or (len(api_version) > len(prefix) and not api_version[len(prefix)].isspace())):
         raise ProfileError("libpcap package, API, or source digest does not match the packet profile")
+    dnsmasq_text = dnsmasq.stdout.decode("ascii", "strict")
+    dig_text = dig.stdout.decode("ascii", "strict")
+    if (dns_packages != {"dnsmasq-base": PACKET_DNSMASQ_BASE_VERSION,
+                         "bind9-dnsutils": PACKET_BIND9_DNSUTILS_VERSION,
+                         "iptables": PACKET_IPTABLES_VERSION}
+            or dnsmasq.returncode != 0 or not dnsmasq_text.startswith(dns["dnsmasq_version_prefix"])
+            or len(dnsmasq_text.splitlines()) < 2 or "nftset" not in dnsmasq_text.splitlines()[1].split()
+            or dig.returncode != 0 or not dig_text.startswith("DiG 9.18.49")):
+        raise ProfileError("pinned real dnsmasq/dig native runtime is unavailable or lacks nftset support")
 
 
 def _sha(path: Path) -> str:

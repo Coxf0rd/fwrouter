@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import socket
 import sys
 import threading
@@ -31,6 +32,292 @@ def _clean_environment() -> None:
     os.environ["FWROUTER_ENVIRONMENT"] = "test"
     os.environ["FWROUTER_STARTUP_TASKS_ENABLED"] = "0"
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
+
+_PACKET_DNSMASQ_LOCK = threading.RLock()
+_PACKET_DNSMASQ_STATE: dict[str, Any] = {}
+
+
+def _drain_dnsmasq_pipe(stream: Any, output: bytearray) -> None:
+    try:
+        while True:
+            chunk = stream.read(512)
+            if not chunk:
+                return
+            output.extend(chunk)
+            if len(output) > 2048:
+                del output[:-2048]
+    except OSError:
+        return
+
+
+def _dnsmasq_native_uid_matches(process: Any) -> bool:
+    pid = getattr(process, "pid", None)
+    if type(pid) is not int or pid <= 1:
+        return False
+    try:
+        status = Path(f"/proc/{pid}/status").read_text(encoding="ascii")
+    except OSError:
+        return False
+    match = re.search(r"^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)$", status, re.MULTILINE)
+    return bool(match and {int(value) for value in match.groups()} == {os.geteuid()})
+
+
+def _dnsmasq_diagnostic_tail(runtime: Any) -> str | None:
+    raw = runtime.get("diagnostic") if isinstance(runtime, dict) else None
+    if not isinstance(raw, bytearray) or not raw:
+        return None
+    text = raw.decode("utf-8", "replace")
+    text = re.sub(r"(?i)(password|secret|token|authorization)(\s*[:=]\s*)[^\s,;]+", r"\1\2[REDACTED]", text)
+    text = re.sub(r"https?://[^\s]+", "[URL]", text)
+    text = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b", "[ADDRESS]", text)
+    text = re.sub(r"\b(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b", "[HOST]", text)
+    text = re.sub(r"/(?:[^\s:]|:(?!\d))+", "[PATH]", text)
+    return text.encode("utf-8", "replace")[-512:].decode("utf-8", "replace")
+
+
+def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool = False) -> dict[str, Any]:
+    """Use production DNS generation with owned paths and the pinned real daemon."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"
+            or profile.get("profile") != "hosted-kernel-packet" or os.geteuid() != 0):
+        raise RuntimeError("packet DNS fixture requires the qualified isolated packet worker")
+    network = profile.get("network_testbed")
+    if not isinstance(network, dict) or network.get("role") != "router":
+        raise RuntimeError("packet DNS fixture requires the qualified router role")
+    host_hash = network.get("host_netns_inode_sha256")
+    if (not isinstance(host_hash, str)
+            or hashlib.sha256(str(os.stat("/proc/self/ns/net").st_ino).encode("ascii")).hexdigest() == host_hash):
+        raise RuntimeError("packet DNS fixture refused outside the owned network namespace")
+
+    with _PACKET_DNSMASQ_LOCK:
+        current = _PACKET_DNSMASQ_STATE
+        if stop:
+            if not current:
+                return {"stopped": True, "process_was_owned": False}
+            runtime = current.get("runtime")
+            process = runtime.get("process") if isinstance(runtime, dict) else None
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except Exception:
+                    process.kill()
+                    process.wait(timeout=2)
+            module = current.get("module")
+            for name, value in (current.get("paths") or {}).items():
+                setattr(module, name, value)
+            if module is not None and current.get("subprocess_module") is not None:
+                module.subprocess = current["subprocess_module"]
+            settings = current.get("settings")
+            if settings is not None:
+                settings.lan_interface_allowlist = current.get("lan_allowlist", [])
+            root = current.get("root")
+            cleaned = False
+            if isinstance(root, Path) and root == Path(current.get("state")) / "dns53-owned" and not root.is_symlink():
+                config_dir = root / "dnsmasq.d"
+                root_info = root.lstat()
+                try:
+                    config_info = config_dir.lstat()
+                except FileNotFoundError:
+                    config_info = None
+                if (not root.is_dir() or root_info.st_uid != os.getuid() or root_info.st_mode & 0o077
+                        or (config_info is not None and (config_dir.is_symlink() or not config_dir.is_dir()
+                            or config_info.st_uid != os.getuid() or config_info.st_mode & 0o077))):
+                    raise RuntimeError("packet DNS teardown refused unowned private directories")
+                if config_info is not None:
+                    for name in ("fwrouter-rules.conf", "fwrouter-dhcp-dns.conf",
+                                 "fwrouter-ipv6-lan.conf", "fwrouter-local-hosts.conf"):
+                        item = config_dir / name
+                        try:
+                            info = item.lstat()
+                        except FileNotFoundError:
+                            continue
+                        if item.is_symlink() or not item.is_file() or info.st_uid != os.getuid():
+                            raise RuntimeError("packet DNS teardown refused an unowned config artifact")
+                        item.unlink()
+                pid_file = root / "dnsmasq.pid"
+                try:
+                    pid_info = pid_file.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    if pid_file.is_symlink() or not pid_file.is_file() or pid_info.st_uid != os.getuid():
+                        raise RuntimeError("packet DNS teardown refused an unowned PID artifact")
+                    pid_file.unlink()
+                if config_info is not None:
+                    config_dir.rmdir()
+                root.rmdir()
+                cleaned = True
+            _PACKET_DNSMASQ_STATE.clear()
+            reader = runtime.get("reader") if isinstance(runtime, dict) else None
+            if reader is not None:
+                reader.join(timeout=1)
+            return {"stopped": True, "process_was_owned": process is not None,
+                    "process_reaped": process is None or process.poll() is not None,
+                    "owned_paths_cleaned": cleaned}
+
+        if current:
+            runtime = current.get("runtime")
+            process = runtime.get("process") if isinstance(runtime, dict) else None
+            return {"configured": current.get("configured") is True,
+                    "daemon_running": process is not None and process.poll() is None,
+                    "daemon_uid_matches": process is not None and _dnsmasq_native_uid_matches(process),
+                    "dnsmasq_version": current.get("dnsmasq_version"),
+                    "dnsmasq_nftset_support": current.get("nftset_support") is True,
+                    "lan_interface_count": 1}
+
+        import subprocess
+        from types import SimpleNamespace
+        from fwrouter_api.core.config import get_settings
+        from fwrouter_api.services import dnsmasq
+
+        root = state / "dns53-owned"
+        try:
+            root.mkdir(mode=0o700)
+        except FileExistsError as exc:
+            raise RuntimeError("packet DNS config root already exists and cannot be adopted") from exc
+        info = root.lstat()
+        if root.is_symlink() or not root.is_dir() or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise RuntimeError("packet DNS config root is not private and test-owned")
+        # Register ownership before any command or module-global override can
+        # fail, so the fixture's normal stop/finally path can always unwind it.
+        current.update({"state": state, "root": root, "runtime": {"process": None},
+                        "configured": False})
+        config_dir = root / "dnsmasq.d"
+        config_dir.mkdir(mode=0o700)
+
+        ip_result = subprocess.run(["/usr/sbin/ip", "-j", "-4", "address", "show"],
+                                   check=False, capture_output=True, timeout=3, stdin=subprocess.DEVNULL,
+                                   env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "TZ": "UTC"})
+        if ip_result.returncode != 0 or len(ip_result.stdout) > 8192 or len(ip_result.stderr) > 1024:
+            raise RuntimeError("packet DNS interface readback failed or exceeded its bound")
+        addresses = json.loads(ip_result.stdout)
+        lan_rows = []
+        wan_rows = []
+        for interface in addresses if isinstance(addresses, list) else []:
+            if not isinstance(interface, dict) or not isinstance(interface.get("ifname"), str):
+                continue
+            for item in interface.get("addr_info") or []:
+                if not isinstance(item, dict) or item.get("family") != "inet":
+                    continue
+                pair = (interface["ifname"], item.get("local"), item.get("prefixlen"))
+                if pair[1:] == ("10.240.0.1", 29):
+                    lan_rows.append(pair)
+                if pair[1:] == ("198.18.240.1", 29):
+                    wan_rows.append(pair)
+        if (len(lan_rows) != 1 or len(wan_rows) != 1 or lan_rows[0][0] == wan_rows[0][0]
+                or any(not isinstance(row[0], str) or not row[0] for row in (*lan_rows, *wan_rows))):
+            raise RuntimeError("packet DNS LAN/WAN interface identity is not the fixed topology")
+
+        settings = get_settings()
+        old_allowlist = list(settings.lan_interface_allowlist)
+        path_names = ("DNSMASQ_RULES_CONF_PATH", "DNSMASQ_DHCP_DNS_CONF_PATH",
+                      "DNSMASQ_IPV6_LAN_CONF_PATH", "DNSMASQ_LOCAL_HOSTS_CONF_PATH")
+        old_paths = {name: getattr(dnsmasq, name) for name in path_names}
+        new_paths = {
+            "DNSMASQ_RULES_CONF_PATH": config_dir / "fwrouter-rules.conf",
+            "DNSMASQ_DHCP_DNS_CONF_PATH": config_dir / "fwrouter-dhcp-dns.conf",
+            "DNSMASQ_IPV6_LAN_CONF_PATH": config_dir / "fwrouter-ipv6-lan.conf",
+            "DNSMASQ_LOCAL_HOSTS_CONF_PATH": config_dir / "fwrouter-local-hosts.conf",
+        }
+        runtime: dict[str, Any] = current["runtime"]
+        current.update({"module": dnsmasq, "subprocess_module": dnsmasq.subprocess,
+                        "settings": settings, "lan_allowlist": old_allowlist, "paths": old_paths})
+        settings.lan_interface_allowlist = [lan_rows[0][0]]
+        for name, value in new_paths.items():
+            setattr(dnsmasq, name, value)
+
+        current["nftset_support"] = True
+
+        binary = "/usr/sbin/dnsmasq"
+        pid_file = root / "dnsmasq.pid"
+        arguments = [binary, "--no-daemon", "--user=root", "--group=root", "--no-resolv", "--no-hosts", "--conf-file=/dev/null",
+                     "--port=53", "--listen-address=127.0.0.1,10.240.0.1", "--bind-interfaces",
+                     "--server=1.1.1.1", f"--pid-file={pid_file}", f"--conf-dir={config_dir}"]
+        version_result = subprocess.run([binary, "--version"], check=False, capture_output=True,
+                                        timeout=5, stdin=subprocess.DEVNULL,
+                                        env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C", "TZ": "UTC"})
+        version_text = version_result.stdout.decode("ascii", "strict") if len(version_result.stdout) <= 4096 else ""
+        if version_result.returncode != 0 or not version_text.startswith("Dnsmasq version 2.90"):
+            raise RuntimeError("packet DNS daemon version differs from its pinned package")
+        version_lines = version_text.splitlines()
+        if len(version_lines) < 2 or "nftset" not in version_lines[1].split():
+            raise RuntimeError("pinned dnsmasq lacks native nftset support")
+
+        def restart_owned_dnsmasq() -> subprocess.CompletedProcess[bytes]:
+            test_result = subprocess.run([*arguments, "--test"], check=False, capture_output=True,
+                                         timeout=5, stdin=subprocess.DEVNULL,
+                                         env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C", "TZ": "UTC"})
+            if test_result.returncode != 0 or len(test_result.stdout) > 2048 or len(test_result.stderr) > 2048:
+                raise subprocess.CalledProcessError(1, [*arguments, "--test"],
+                                                    output=b"", stderr=b"native dnsmasq config test failed")
+            prior = runtime.get("process")
+            if prior is not None and prior.poll() is None:
+                prior.terminate()
+                try:
+                    prior.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    prior.kill()
+                    prior.wait(timeout=2)
+                prior_reader = runtime.get("reader")
+                if prior_reader is not None:
+                    prior_reader.join(timeout=1)
+            diagnostic = bytearray()
+            process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, close_fds=True, start_new_session=True,
+                                        env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C", "TZ": "UTC"},
+                                        cwd=str(root))
+            reader = threading.Thread(target=_drain_dnsmasq_pipe, args=(process.stdout, diagnostic), daemon=True)
+            reader.start()
+            runtime.update({"process": process, "diagnostic": diagnostic, "reader": reader})
+            if not _dnsmasq_native_uid_matches(process):
+                runtime["startup_error_code"] = "native_uid_mismatch"
+                raise subprocess.CalledProcessError(1, arguments, output=b"",
+                                                    stderr=b"native dnsmasq UID differs from its packet namespace owner")
+            monotonic = __import__("time").monotonic
+            deadline = monotonic() + 3.0
+            backoff = 0.05
+            while __import__("time").monotonic() < deadline:
+                if process.poll() is not None:
+                    reader.join(timeout=0.5)
+                    runtime["startup_error_code"] = "native_process_exited"
+                    raise subprocess.CalledProcessError(1, arguments, output=b"",
+                                                        stderr=b"native dnsmasq exited before readiness")
+                try:
+                    remaining = max(0.05, deadline - monotonic())
+                    probe = subprocess.run(["/usr/bin/dig", "@127.0.0.1", "vpn.test", "A", "+short",
+                                            "+time=1", "+tries=1"], check=False, capture_output=True,
+                                           timeout=min(0.75, remaining), stdin=subprocess.DEVNULL,
+                                           env={"PATH": "/usr/bin:/bin", "LANG": "C", "TZ": "UTC"})
+                except subprocess.TimeoutExpired:
+                    runtime["startup_error_code"] = "readiness_probe_timeout"
+                    break
+                if probe.returncode == 0 and b"198.51.100.77" in probe.stdout:
+                    return subprocess.CompletedProcess(["systemctl", "restart", "dnsmasq"], 0, b"", b"")
+                # Bounded backoff avoids a hot loop; only the actual DNS answer
+                # above satisfies readiness.
+                __import__("threading").Event().wait(min(backoff, max(0.0, deadline - monotonic())))
+                backoff = min(backoff * 2, 0.4)
+            runtime.setdefault("startup_error_code", "readiness_deadline")
+            raise subprocess.CalledProcessError(1, arguments, output=b"",
+                                                stderr=b"native dnsmasq readiness deadline expired")
+
+        real_run = subprocess.run
+
+        def dnsmasq_run(command: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(command, (list, tuple)) and list(command) == ["systemctl", "restart", "dnsmasq"]:
+                return restart_owned_dnsmasq()
+            if isinstance(command, (list, tuple)) and command and command[0] == "systemctl":
+                raise subprocess.CalledProcessError(1, list(command), output=b"", stderr=b"unowned systemctl action refused")
+            return real_run(command, *args, **kwargs)
+
+        current.update({"dnsmasq_version": version_lines[0], "arguments": arguments})
+        dnsmasq.subprocess = SimpleNamespace(run=dnsmasq_run, CalledProcessError=subprocess.CalledProcessError)
+        current["configured"] = True
+        return {"configured": True, "daemon_running": False, "dnsmasq_version": version_lines[0],
+                "dnsmasq_nftset_support": True, "lan_interface_count": 1,
+                "daemon_uid_matches": False}
 
 
 def _install_packet_handoff_loopback_alias(profile: dict[str, Any]) -> Any:
@@ -1760,6 +2047,91 @@ def build_app(socket_path: Path):
                                     timeout_ms=timeout_ms, reason="acceptance_reentry")
 
     app.add_api_route("/api/v2/__acceptance/provider/reentry", reenter_provider_path, methods=["POST"])
+
+    if acceptance_profile.get("profile") == "hosted-kernel-packet":
+        def configure_packet_dns53() -> dict[str, Any]:
+            fixture = _packet_dnsmasq_fixture(state, acceptance_profile)
+            return {
+                "ok": fixture.get("configured") is True,
+                "fixture_configured": fixture.get("configured") is True,
+                "daemon_running": fixture.get("daemon_running") is True,
+                "dnsmasq_version": _PACKET_DNSMASQ_STATE.get("dnsmasq_version"),
+                "nftset_support": _PACKET_DNSMASQ_STATE.get("nftset_support") is True,
+            }
+
+        def packet_dns53_status() -> dict[str, Any]:
+            from fwrouter_api.services import dnsmasq
+            current = _PACKET_DNSMASQ_STATE
+            runtime = current.get("runtime") or {}
+            process = runtime.get("process")
+            try:
+                status = dnsmasq.inspect_dnsmasq_selective_status()
+            except Exception:
+                status = {}
+            rules_path = Path(dnsmasq.DNSMASQ_RULES_CONF_PATH)
+            try:
+                lines = set(rules_path.read_text(encoding="utf-8").splitlines())
+            except OSError:
+                lines = set()
+            upstream_domains = []
+            unexpected_upstream_rules = 0
+            for line in sorted(lines):
+                if not line.startswith("server=/"):
+                    continue
+                domain = line[len("server=/"):].split("/", 1)[0]
+                if domain in {"vpn.test", "direct.test"}:
+                    upstream_domains.append(domain)
+                else:
+                    unexpected_upstream_rules += 1
+            argv_matches = False
+            if process is not None and process.poll() is None and type(process.pid) is int and process.pid > 1:
+                try:
+                    cmdline = Path(f"/proc/{process.pid}/cmdline").read_bytes()
+                except OSError:
+                    cmdline = b""
+                if len(cmdline) <= 4096:
+                    argv = cmdline.decode("ascii", "ignore").split("\0")
+                    argv_matches = (argv[:2] == ["/usr/sbin/dnsmasq", "--no-daemon"]
+                                    and "--user=root" in argv and "--group=root" in argv
+                                    and "--port=53" in argv and f"--conf-dir={current.get('root') / 'dnsmasq.d'}" in argv)
+            nft_probe = (status.get("nftset_probe_status") or {}).get("probes")
+            nft_proof = []
+            if isinstance(nft_probe, list):
+                for item in nft_probe[:4]:
+                    if not isinstance(item, dict):
+                        continue
+                    domain = item.get("domain") if item.get("domain") in {"vpn.test", "direct.test"} else None
+                    nft_proof.append({"domain": domain, "ok": item.get("ok") is True,
+                                      "resolved": item.get("resolved_ipv4") == ["198.51.100.77"] if domain == "vpn.test" else item.get("resolved_ipv4") == ["203.0.113.53"] if domain == "direct.test" else False,
+                                      "materialized_count": len(item.get("materialized")) if isinstance(item.get("materialized"), list) else None})
+            return {
+                "configured": bool(current.get("configured")),
+                "daemon_running": process is not None and process.poll() is None,
+                "daemon_uid_matches": process is not None and _dnsmasq_native_uid_matches(process),
+                "native_process_arguments_match": argv_matches,
+                "selective_status_ok": status.get("ok") is True,
+                "dns_capture_ok": (status.get("dns_capture_status") or {}).get("ok") is True,
+                "nftset_probe_ok": (status.get("nftset_probe_status") or {}).get("ok") is True,
+                "vpn_rule_generated": "server=/vpn.test/1.1.1.1" in lines,
+                "upstream_domains": sorted(set(upstream_domains)),
+                "unexpected_upstream_rule_count": unexpected_upstream_rules,
+                "vpn_nftset_generated": any(line.startswith("nftset=/vpn.test/4#") and line.endswith("#dns_vpn_ipv4") for line in lines),
+                "direct_rule_generated": not any(line.startswith("server=/direct.test/") for line in lines),
+                "direct_nftset_generated": any(line.startswith("nftset=/direct.test/4#") and line.endswith("#dns_direct_ipv4") for line in lines),
+                "nft_probe_targets": nft_proof,
+                "process_exit_code": process.returncode if process is not None and process.poll() is not None else None,
+                "startup_error_code": runtime.get("startup_error_code") if runtime.get("startup_error_code") in {
+                    "native_uid_mismatch", "native_process_exited", "readiness_deadline"} else None,
+                "diagnostic_tail": _dnsmasq_diagnostic_tail(runtime),
+                "lan_interface_count": 1 if current else 0,
+            }
+
+        def stop_packet_dns53() -> dict[str, Any]:
+            return _packet_dnsmasq_fixture(state, acceptance_profile, stop=True)
+
+        app.add_api_route("/api/v2/__acceptance/dns53/configure", configure_packet_dns53, methods=["POST"])
+        app.add_api_route("/api/v2/__acceptance/dns53/status", packet_dns53_status, methods=["GET"])
+        app.add_api_route("/api/v2/__acceptance/dns53/stop", stop_packet_dns53, methods=["POST"])
     return app
 
 
@@ -2064,6 +2436,12 @@ def main() -> None:
         import uvicorn
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
     finally:
+        if profile.get("profile") == "hosted-kernel-packet" and _PACKET_DNSMASQ_STATE:
+            try:
+                _packet_dnsmasq_fixture(Path(os.environ["FWROUTER_STATE_DIR"]), profile, stop=True)
+            except Exception:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_DNS53_CLEANUP_FAILED\n")
+                sys.stderr.flush()
         if remove_handoff_alias is not None:
             remove_handoff_alias()
 

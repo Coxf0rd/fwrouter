@@ -6,7 +6,7 @@
   "required": [
     "schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
     "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce", "profile_owner_uid",
-    "kernel_dataplane", "network_testbed", "packet_capture"
+    "kernel_dataplane", "network_testbed", "packet_capture", "dns_runtime"
   ],
   "properties": {
     "schema": {"const": "fwrouter-acceptance-profile/v2"},
@@ -37,6 +37,17 @@
         "libpcap_package_version": {"const": "1.10.3-1"},
         "libpcap_api_version_prefix": {"const": "libpcap version 1.10.3"},
         "capture_worker_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "dns_runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["dnsmasq_base_package_version", "bind9_dnsutils_package_version", "iptables_package_version", "dnsmasq_version_prefix", "dnsmasq_nftset_required"],
+      "properties": {
+        "dnsmasq_base_package_version": {"const": "2.90-4~deb12u2"},
+        "bind9_dnsutils_package_version": {"const": "1:9.18.49-1~deb12u1"},
+        "iptables_package_version": {"const": "1.8.9-2"},
+        "dnsmasq_version_prefix": {"const": "Dnsmasq version 2.90"},
+        "dnsmasq_nftset_required": {"const": true}
       }
     }
   },
