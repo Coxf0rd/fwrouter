@@ -2094,6 +2094,21 @@ class AcceptanceContractTests(unittest.TestCase):
                             if node.func.id == "_install_acceptance_mihomo_fence_observer")
         self.assertLess(bind_line, observer_line)
 
+    def test_packet_profile_declares_and_validates_native_dns_runtime_fields(self):
+        profile_source = PROFILE_PATH.read_text(encoding="utf-8")
+        profile_tree = ast.parse(profile_source, filename=str(PROFILE_PATH))
+        load_profile = next(node for node in profile_tree.body
+                            if isinstance(node, ast.FunctionDef) and node.name == "load_profile")
+        load_source = ast.get_source_segment(profile_source, load_profile) or ""
+        packet_verifier = next(node for node in profile_tree.body
+                               if isinstance(node, ast.FunctionDef)
+                               and node.name == "_verify_packet_router_profile")
+        verifier_source = ast.get_source_segment(profile_source, packet_verifier) or ""
+        self.assertIn('"profile_owner_uid", "dns_runtime"', load_source)
+        self.assertIn('dns = profile.get("dns_runtime")', verifier_source)
+        self.assertIn('"bind9_dnsutils_package_version"', verifier_source)
+        self.assertIn('"dnsmasq_nftset_required"', verifier_source)
+
     def test_launcher_import_is_stdlib_only_and_default_cli_is_nonexecuting(self):
         self.assertNotIn("fwrouter_api", launcher.sys.modules)
         self.assertNotIn("fastapi", launcher.sys.modules)

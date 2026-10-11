@@ -331,7 +331,8 @@ def load_profile(path: Path = PROFILE_PATH) -> tuple[dict[str, Any], str]:
         raise ProfileError("acceptance profile fields do not match v2")
     profile_mode = profile.get("profile")
     expected_top = (common_top if profile_mode == "hosted-native-process" else
-                    common_top | {"kernel_dataplane", "network_testbed", "packet_capture", "profile_owner_uid"}
+                    common_top | {"kernel_dataplane", "network_testbed", "packet_capture",
+                                 "profile_owner_uid", "dns_runtime"}
                     if profile_mode == KERNEL_PACKET_PROFILE else common_top | {"kernel_dataplane"})
     if profile_mode != KERNEL_PACKET_PROFILE:
         expected_top = expected_top | {"mihomo_handoff"}
