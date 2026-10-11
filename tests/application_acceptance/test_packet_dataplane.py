@@ -306,6 +306,7 @@ def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id:
                              expected: str, expected_udp: bool,
                              *, expect_active_server: bool = True) -> dict[str, Any]:
     from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.logical_topology import get_logical_runtime_name
     from fwrouter_api.services.provider_managed import binding_for
 
     with db_session() as connection:
@@ -335,6 +336,7 @@ def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id:
     assert native.get("vless_udp_enabled_count") == (1 if expected_udp else 0), native
     binding = binding_for(source_ref)
     assert binding["logical_server_id"] == logical_id
+    runtime_name = get_logical_runtime_name(logical_id)
     code, vpn_state = http_json(f"{stack['api']}/state/vpn")
     assert code == 200 and vpn_state.get("ok") is True
     effective = vpn_state["data"]["vpn"].get("effective")
@@ -343,9 +345,9 @@ def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id:
     health = effective.get("server_health")
     active = health.get("active") if isinstance(health, dict) else None
     if expect_active_server:
-        assert effective_active_id == logical_id and isinstance(active, dict) \
+        assert effective_active_id == runtime_name and isinstance(active, dict) \
             and active.get("server_id") == logical_id, {
-                "effective_active_server_id_matches": effective_active_id == logical_id,
+                "effective_active_runtime_name_matches": effective_active_id == runtime_name,
                 "health_active_server_id_matches": isinstance(active, dict)
                 and active.get("server_id") == logical_id,
             }

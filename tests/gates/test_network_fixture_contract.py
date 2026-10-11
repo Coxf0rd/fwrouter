@@ -123,7 +123,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
         capability_state = functions["_packet_capability_state"]
         capability_source = ast.get_source_segment(source, capability_state)
         self.assertIn('effective.get("active_server_id")', capability_source)
-        self.assertIn('assert effective_active_id == logical_id', capability_source)
+        self.assertIn('assert effective_active_id == runtime_name', capability_source)
+        self.assertIn('get_logical_runtime_name(logical_id)', capability_source)
         self.assertIn('assert effective_active_id is None', capability_source)
         self.assertIn('active.get("server_id") is None', capability_source)
         self.assertTrue(all(any(isinstance(keyword.value, ast.Name) and keyword.value.id == "record_property"
