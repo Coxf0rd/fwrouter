@@ -453,6 +453,57 @@
       "domains": [
         "test-infrastructure"
       ],
+      "glob": "tests/acceptance/publish_dependency_image.py",
+      "required_native": [
+        "tests/acceptance/test_dependency_image_contract.py",
+        "tests/acceptance/test_consume_dependency_image_contract.py"
+      ]
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "tests/acceptance/prepare_dependency_image.py",
+      "required_native": [
+        "tests/acceptance/test_dependency_image_contract.py",
+        "tests/acceptance/test_consume_dependency_image_contract.py"
+      ]
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "tests/acceptance/dependency-image.lock.json",
+      "required_native": [
+        "tests/acceptance/test_dependency_image_contract.py",
+        "tests/acceptance/test_consume_dependency_image_contract.py"
+      ]
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "tests/acceptance/test_dependency_image_contract.py"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "tests/acceptance/consume_dependency_image.py",
+      "required_native": [
+        "tests/acceptance/test_consume_dependency_image_contract.py"
+      ]
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "tests/acceptance/test_consume_dependency_image_contract.py"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
       "glob": "backend/tests/**"
     },
     {
@@ -4836,6 +4887,31 @@
       "timeout_seconds": 30
     },
     {
+      "baseline_policy": "not applicable: source-only anonymous consumer contract tests",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "fixed dependency lock, synthetic hosted runner environment, mocked Docker output, and bounded temporary paths",
+      "fixture_owner": "tests/acceptance/consume_dependency_image.py and tests/acceptance/test_consume_dependency_image_contract.py",
+      "id": "dependency-image-consumer-contract",
+      "isolation": "stdlib-only source and mocked subprocess contracts; no application imports, real Docker, network, registry auth, or native execution",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/acceptance/test_consume_dependency_image_contract.py",
+      "primary_level": "L1",
+      "risk_notes": "all Docker child commands are mocked; rejected inputs fail before any command and successful flow is anonymous and digest-pinned",
+      "runtime_dependencies": [
+        "Python 3.11 standard library"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
+    },
+    {
       "baseline_policy": "exact-node-id; acceptance receipt and profile are run-scoped; skipped/uncollected nodes remain visible",
       "destructive": false,
       "domain": "application-acceptance",
@@ -5024,23 +5100,24 @@
       "max_output_bytes": 4194304,
       "max_workers": 1,
       "native": true,
-      "network": "owned internal LAN and WAN; fixture endpoint/VIP only; header-only packet captures",
+      "network": "owned internal LAN and WAN; fixed endpoint, protected and DNS upstream aliases only; header-only packet captures",
       "opt_in": true,
       "path": "tests/application_acceptance/test_packet_dataplane.py",
       "primary_level": "L3",
-      "risk_notes": "SOURCE IMPLEMENTED / hosted packet execution NOT RUN; fixed matrix covers UDP supported, unknown, unsupported, unavailable Xray endpoint, empty VPN pool with TCP and UDP rejection, explicit DIRECT, Emergency Direct/re-entry, and TCP nonregression with native/capture evidence; DNS/53 policy acceptance remains separate and UDP/5353 is payload-only; no host networking, privileged mode, devices, production routes or Debian host parity",
+      "risk_notes": "SOURCE IMPLEMENTED / hosted packet execution NOT RUN; fixed matrix covers UDP supported, unknown, unsupported, unavailable Xray endpoint, empty VPN pool with TCP and UDP rejection, explicit DIRECT, Emergency Direct/re-entry, TCP nonregression, and real LAN DNS/53 policy with pinned dnsmasq, native nftset materialization, owned upstream observations and packet captures; UDP/5353 remains payload-only; no host networking, privileged mode, devices, production routes or Debian host parity",
       "runtime_dependencies": [
         "Linux amd64 hosted runner",
         "Docker Compose v2",
         "pinned Xray/Mihomo binaries",
-        "pinned libpcap0.8 package 1.10.3-1"
+        "pinned libpcap0.8 package 1.10.3-1",
+        "pinned dnsmasq-base 2.90-4~deb12u2, bind9-dnsutils 1:9.18.49-1~deb12u1 and iptables 1.8.9-2"
       ],
       "slow": true,
       "timeout_seconds": 900,
       "execution_profile": "hosted-kernel-packet"
     }
   ],
-  "version": "2026.10.08.4",
+  "version": "2026.10.11.1",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

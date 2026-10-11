@@ -457,6 +457,35 @@ class GateContractTests(unittest.TestCase):
         self.assertTrue(all(row["destructive"] == (row["primary_level"] == "L7")
                             for row in acceptance))
 
+    def test_dependency_consumer_helper_selects_its_stdlib_contract(self) -> None:
+        path = "tests/acceptance/consume_dependency_image.py"
+        domains, _ = gate.domain_for_path(path, self.manifest)
+        self.assertEqual({"test-infrastructure"}, domains)
+        plan = gate.make_plan("HEAD", self.manifest, [path])
+        self.assertIn("tests/acceptance/test_consume_dependency_image_contract.py",
+                      plan["selected_files"])
+        self.assertNotIn("tests/application_acceptance/test_core_provider_mihomo.py",
+                         plan["selected_files"])
+
+    def test_shared_dependency_inputs_select_both_stdlib_contracts(self) -> None:
+        expected = {
+            "tests/acceptance/test_dependency_image_contract.py",
+            "tests/acceptance/test_consume_dependency_image_contract.py",
+        }
+        for path in (
+            "tests/acceptance/publish_dependency_image.py",
+            "tests/acceptance/prepare_dependency_image.py",
+            "tests/acceptance/dependency-image.lock.json",
+        ):
+            with self.subTest(path=path):
+                domains, _ = gate.domain_for_path(path, self.manifest)
+                self.assertEqual({"test-infrastructure"}, domains)
+                plan = gate.make_plan("HEAD", self.manifest, [path])
+                self.assertTrue(expected <= set(plan["selected_files"]))
+                self.assertFalse(any(item.startswith("tests/application_acceptance/")
+                                     for item in plan["selected_files"]))
+                self.assertFalse(plan["full_suite_required"])
+
     def test_shared_application_contracts_require_hosted_functional_but_never_l7(self) -> None:
         functional = {row["path"] for row in self.manifest["test_files"]
                       if row.get("execution_profile") == "hosted-isolated-compose" and row["primary_level"] != "L7"}

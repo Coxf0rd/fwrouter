@@ -5,6 +5,7 @@ import ast
 import hashlib
 import json
 import sys
+import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -132,6 +133,19 @@ class DependencyImageContractTests(unittest.TestCase):
         self.assertFalse(publisher._prepared_input_receipt_matches_lock(receipt, "b" * 64))
         receipt["provision_manifest_sha256"] = digest
         self.assertFalse(publisher._prepared_input_receipt_matches_lock(receipt, "c" * 64))
+
+        with tempfile.TemporaryDirectory(prefix="dependency-member-") as temp:
+            path = Path(temp) / "member.bin"
+            content = b"owned source-free fixture bytes"
+            path.write_bytes(content)
+            member_digest, member_size = prepare._file_digest(path)
+            member = {"path": "native/member.bin", "sha256": member_digest, "bytes": member_size}
+            self.assertTrue(publisher._valid_context_member_metadata(member))
+            self.assertEqual(64, len(member_digest))
+            self.assertFalse(member_digest.startswith("sha256:"))
+            self.assertEqual(len(content), member_size)
+            self.assertFalse(publisher._valid_context_member_metadata(
+                {**member, "sha256": f"sha256:{member_digest}"}))
 
     def test_existing_publisher_tag_is_verified_and_reused_without_push(self):
         source = (ACCEPTANCE / "publish_dependency_image.py").read_text(encoding="utf-8")

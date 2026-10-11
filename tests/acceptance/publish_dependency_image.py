@@ -129,6 +129,18 @@ def _prepared_input_receipt_matches_lock(value: Any, lock_digest: str) -> bool:
     )
 
 
+def _valid_context_member_metadata(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("path"), str)
+        and isinstance(value.get("sha256"), str)
+        and HEX_SHA256_RE.fullmatch(value["sha256"]) is not None
+        and isinstance(value.get("bytes"), int)
+        and not isinstance(value.get("bytes"), bool)
+        and value["bytes"] > 0
+    )
+
+
 def _safe_command_output(raw: bytes) -> str:
     detail = raw.decode("utf-8", "replace")
     secret_values = [value for name, value in os.environ.items()
@@ -363,10 +375,7 @@ def publish(*, context: Path, input_receipt_path: Path, receipt_path: Path) -> d
         raise PublishError("prepared receipt context member list is incomplete")
     for item in receipt_members:
         relative = item["path"]
-        if (not isinstance(relative, str) or not isinstance(item.get("sha256"), str)
-                or not SHA256_RE.fullmatch(item["sha256"])
-                or not isinstance(item.get("bytes"), int) or isinstance(item.get("bytes"), bool)
-                or item["bytes"] <= 0):
+        if not _valid_context_member_metadata(item):
             raise PublishError("prepared context member metadata is invalid")
         try:
             observed_digest, observed_size = _file_digest(context / relative)
