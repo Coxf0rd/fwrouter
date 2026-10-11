@@ -133,13 +133,137 @@ def _set_packet_provider_capability(bridge: Any, capability: str | None) -> None
         bridge.current_config = row
 
 
-def _refresh_packet_provider(api: str, source_ref: str) -> dict[str, Any]:
+def _packet_refresh_state(source_ref: str, logical_id: str) -> dict[str, Any]:
+    """Capture read-only selector/inventory facts with identifiers hashed."""
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.selector import get_vpn_auto_state
+
+    state = get_vpn_auto_state(read_only=True)
+    selector_runtime = state.get("selector_runtime") if isinstance(state.get("selector_runtime"), dict) else {}
+    scores = state.get("candidate_scores") if isinstance(state.get("candidate_scores"), list) else []
+    active_id = state.get("active_auto_server_id")
+    with db_session() as connection:
+        member_rows = connection.execute(
+            "SELECT member_id, member_config_json, is_active FROM logical_server_members "
+            "WHERE logical_server_id=? ORDER BY member_order, member_id",
+            (logical_id,),
+        ).fetchall()
+        ping_row = connection.execute(
+            "SELECT status, checked_by, error_code, checked_at, "
+            "json_extract(metadata_json, '$.source') AS source "
+            "FROM server_ping_state WHERE server_id=?",
+            (active_id,),
+        ).fetchone() if isinstance(active_id, str) and active_id else None
+
+    def digest(value: Any) -> str | None:
+        if not isinstance(value, str) or not value:
+            return None
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+    def digest_list(values: Any) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        return sorted(value for item in values if (value := digest(item)) is not None)[:3]
+
+    def safe_code(value: Any, allowed: set[str] | None = None) -> str | None:
+        if not isinstance(value, str) or len(value) > 64 or not all(ch.isalnum() or ch in "_.:-" for ch in value):
+            return None
+        return value if allowed is None or value in allowed else "other"
+
+    capability_counts = {"supported": 0, "unsupported": 0, "unknown": 0, "invalid": 0}
+    active_member_hashes: list[str] = []
+    for row in member_rows:
+        try:
+            member_config = json.loads(row["member_config_json"])
+        except (TypeError, json.JSONDecodeError):
+            member_config = None
+        declared = member_config.get("_fwrouter_udp_capability") if isinstance(member_config, dict) else None
+        capability_counts[declared if declared in {"supported", "unsupported", "unknown"} else "invalid"] += 1
+        if row["is_active"]:
+            active_member_hashes.append(digest(row["member_id"]))
+
+    active_score = next((row for row in scores if isinstance(row, dict)
+                         and row.get("server_id") == active_id), None)
+    return {
+        "server_mode": state.get("server_mode") if state.get("server_mode") in {"auto", "fixed"} else None,
+        "global_mode": state.get("global_mode") if state.get("global_mode") in {"vpn", "direct"} else None,
+        "runtime_state": state.get("runtime_state") if state.get("runtime_state") in {"running", "failed", "unknown"} else "other",
+        "problem_code": safe_code(state.get("problem_code")),
+        "enabled_candidates_count": state.get("enabled_candidates_count") if type(state.get("enabled_candidates_count")) is int else None,
+        "auto_selectable_candidates_count": state.get("auto_selectable_candidates_count") if type(state.get("auto_selectable_candidates_count")) is int else None,
+        "active_candidate_hash": digest(active_id),
+        "enabled_candidate_contains_active": isinstance(state.get("enabled_candidate_ids"), list)
+        and active_id in state["enabled_candidate_ids"],
+        "active_auto_target_valid": state.get("active_auto_target_valid") is True,
+        "active_auto_server_valid": state.get("active_auto_server_valid") is True,
+        "config_consistent": state.get("config_consistent") is True,
+        "candidate_ping": {
+            "status": active_score.get("ping_status") if isinstance(active_score, dict)
+            and active_score.get("ping_status") in {"success", "failed", "unknown", "stale"} else "other",
+            "effective_ping_present": isinstance(active_score, dict)
+            and type(active_score.get("effective_ping")) in {int, float},
+            "priority": active_score.get("priority") if isinstance(active_score, dict)
+            and type(active_score.get("priority")) is int else None,
+            "stored_status": safe_code(ping_row["status"], {"success", "failed", "unknown", "skipped"})
+            if ping_row else "unknown",
+            "source": safe_code(ping_row["source"]) if ping_row else None,
+            "checked_by": safe_code(ping_row["checked_by"]) if ping_row else None,
+            "error_code": safe_code(ping_row["error_code"]) if ping_row else None,
+            "checked_at_hash": digest(ping_row["checked_at"]) if ping_row else None,
+        },
+        "provider_udp_capability": {
+            "active_member_hashes": sorted(value for value in active_member_hashes if value)[:3],
+            "declaration_counts": capability_counts,
+        },
+        "selector_runtime": {
+            "vpn_auto_now_hash": digest(selector_runtime.get("vpn_auto_now")),
+            "vpn_auto_targets_count": len(selector_runtime.get("vpn_auto_targets", []))
+            if isinstance(selector_runtime.get("vpn_auto_targets"), list) else 0,
+            "vpn_auto_target_hashes": digest_list(selector_runtime.get("vpn_auto_targets")),
+            "vpn_global_now_hash": digest(selector_runtime.get("vpn_global_now")),
+            "vpn_global_targets_count": len(selector_runtime.get("vpn_global_targets", []))
+            if isinstance(selector_runtime.get("vpn_global_targets"), list) else 0,
+            "vpn_global_target_hashes": digest_list(selector_runtime.get("vpn_global_targets")),
+        },
+        "provider_binding": {
+            "source_hash": digest(source_ref),
+            "logical_server_hash": digest(logical_id),
+        },
+    }
+
+
+def _refresh_packet_provider(api: str, source_ref: str, *, stack: dict[str, Any], logical_id: str,
+                             phase: str, record_property: Any) -> dict[str, Any]:
+    before = _packet_refresh_state(source_ref, logical_id)
     code, accepted = http_json(f"{api}/subscription/sources/{source_ref}/provider", method="POST",
                                payload={"action": "refresh"})
-    assert code == 200 and accepted.get("ok") is True and accepted.get("data", {}).get("accepted") is True
-    job = await_core_job(api, accepted)
-    assert job.get("status") == "success", {
-        "provider_refresh_status": job.get("status"), "provider_refresh_error": job.get("error_code"),
+    accepted_ok = code == 200 and isinstance(accepted, dict) and accepted.get("ok") is True \
+        and accepted.get("data", {}).get("accepted") is True
+    job = None
+    await_error_class = None
+    if accepted_ok:
+        try:
+            job = await_core_job(api, accepted)
+        except Exception as exc:
+            await_error_class = type(exc).__name__
+    after = _packet_refresh_state(source_ref, logical_id)
+    job_summary = _bounded_provider_refresh_summary(job)
+    summary = {
+        "phase": phase,
+        "http_status": code if type(code) is int else None,
+        "accepted": accepted_ok,
+        "await_error_class": await_error_class[:64] if isinstance(await_error_class, str) else None,
+        "job": job_summary,
+        "before": before,
+        "after": after,
+        "mihomo_path": _mihomo_packet_path_proof(stack),
+    }
+    _record_phase_diagnostic(record_property, summary)
+    assert accepted_ok, {"provider_refresh_phase": phase, "accepted": accepted_ok}
+    if await_error_class is not None:
+        raise AssertionError("provider refresh job polling failed within its bound")
+    assert isinstance(job, dict) and job.get("status") == "success", {
+        "provider_refresh_phase": phase, "job": job_summary, "before": before, "after": after,
     }
     from fwrouter_api.services.provider_managed import binding_for
     binding = binding_for(source_ref)
@@ -217,10 +341,14 @@ def _assert_packet_selection_stable(before: dict[str, Any], after: dict[str, Any
 
 
 def _refresh_packet_capability(stack: dict[str, Any], api: str, bridge: Any, source_ref: str, capability: str | None,
-                               expected_capability: str, logical_id: str, expected_member: str) -> dict[str, Any]:
+                               expected_capability: str, logical_id: str, expected_member: str,
+                               record_property: Any) -> dict[str, Any]:
     before = _provider_selection_snapshot(source_ref)
     _set_packet_provider_capability(bridge, capability)
-    binding = _refresh_packet_provider(api, source_ref)
+    binding = _refresh_packet_provider(
+        api, source_ref, stack=stack, logical_id=logical_id,
+        phase=f"provider-refresh-{expected_capability}", record_property=record_property,
+    )
     after = _provider_selection_snapshot(source_ref)
     assert binding.get("logical_server_id") == logical_id
     assert after["logical_server_id"] == logical_id
@@ -626,7 +754,8 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "emergency-direct", "vpn-after-reentry", "provider-enable-job",
-                     "vpn-auto-exclusive-job", "global-mode-direct", "global-mode-vpn"}:
+                     "vpn-auto-exclusive-job", "provider-refresh-supported", "provider-refresh-unknown",
+                     "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
@@ -667,6 +796,42 @@ def _bounded_job_summary(job: Any) -> dict[str, Any]:
         "target_observed_count": target_readback.get("observed_target_count")
         if type(target_readback.get("observed_target_count")) is int else None,
         "mihomo_reconcile": _bounded_reconcile_result(result),
+    }
+
+
+def _bounded_provider_refresh_summary(job: Any) -> dict[str, Any]:
+    """Keep only fixed provider-refresh outcome fields; omit payloads/messages."""
+    if not isinstance(job, dict):
+        return {"shape": type(job).__name__[:48]}
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    error = result.get("error") if isinstance(result.get("error"), dict) else {}
+    refresh = result.get("refresh") if isinstance(result.get("refresh"), dict) else {}
+    source_outcomes = result.get("source_outcomes") if isinstance(result.get("source_outcomes"), list) else []
+
+    def code(value: Any) -> str | None:
+        return value[:64] if isinstance(value, str) and value and all(
+            ch.isalnum() or ch in "_.:-" for ch in value
+        ) else None
+
+    return {
+        "status": code(job.get("status")),
+        "job_type": code(job.get("job_type")),
+        "error_code": code(job.get("error_code") or result.get("error_code")),
+        "reason_code": code(error.get("code")),
+        "result_status": code(result.get("job_status")),
+        "stage": code(result.get("stage")),
+        "refresh_stage": code(refresh.get("stage")),
+        "refresh_ok": refresh.get("ok") if type(refresh.get("ok")) is bool else None,
+        "runtime_verified": result.get("runtime_verified") if type(result.get("runtime_verified")) is bool else None,
+        "intent_saved": result.get("intent_saved") if type(result.get("intent_saved")) is bool else None,
+        "applied": result.get("applied") if type(result.get("applied")) is bool else None,
+        "promoted": result.get("promoted") if type(result.get("promoted")) is bool else None,
+        "container_restarted": result.get("container_restarted")
+        if type(result.get("container_restarted")) is bool else None,
+        "last_good_retained": result.get("last_good_retained")
+        if type(result.get("last_good_retained")) is bool else None,
+        "source_outcome_statuses": [code(item.get("outcome")) for item in source_outcomes[:3]
+                                    if isinstance(item, dict)],
     }
 
 
@@ -1323,7 +1488,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     }
 
     unknown_capability = _refresh_packet_capability(
-        stack, api, bridge, source_ref, None, "unknown", logical_id, original_member_id,
+        stack, api, bridge, source_ref, None, "unknown", logical_id, original_member_id, record_property,
     )
     unknown_udp_phase = _probe_vpn_udp_contract_phase(
         stack, source_ref, logical_id, "unknown", True, "vpn-unknown-udp", record_property,
@@ -1331,7 +1496,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     )
     unknown_tcp_phase = _probe_vpn_tcp_regression(stack, "vpn-tcp-after-unknown", record_property)
     unsupported_capability = _refresh_packet_capability(
-        stack, api, bridge, source_ref, "false", "unsupported", logical_id, original_member_id,
+        stack, api, bridge, source_ref, "false", "unsupported", logical_id, original_member_id, record_property,
     )
     unsupported_udp_phase = _probe_vpn_udp_contract_phase(
         stack, source_ref, logical_id, "unsupported", False, "vpn-unsupported-udp", record_property,
@@ -1339,7 +1504,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     )
     unsupported_tcp_phase = _probe_vpn_tcp_regression(stack, "vpn-tcp-after-unsupported", record_property)
     supported_again = _refresh_packet_capability(
-        stack, api, bridge, source_ref, "true", "supported", logical_id, original_member_id,
+        stack, api, bridge, source_ref, "true", "supported", logical_id, original_member_id, record_property,
     )
 
     stopped = _role_json(f"{ENDPOINT_CONTROL}/xray/availability", method="POST",
