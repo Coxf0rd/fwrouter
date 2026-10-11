@@ -94,6 +94,7 @@ def _validate_candidate_structure(
         _build_transparent_fallback_rule,
         _runtime_proxy_inventory_count,
     )
+    from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
     from fwrouter_api.services.mihomo_config_proxies import _ensure_selector_groups
 
     rules = candidate_config.get("rules") if isinstance(candidate_config.get("rules"), list) else []
@@ -240,12 +241,26 @@ def _validate_candidate_structure(
     transparent_subrules_ok = isinstance(transparent_subrules, list) and transparent_subrules == expected_transparent_subrules
     full_vpn_subrules = sub_rules.get("fwrouter-full-vpn")
     full_vpn_subrules_ok = isinstance(full_vpn_subrules, list) and full_vpn_subrules == expected_full_vpn_subrules
+    expected_transparent_final_match_rule = _build_transparent_fallback_rule(routing)
     transparent_final_match_rule = (
         str(transparent_subrules[-1])
         if isinstance(transparent_subrules, list) and transparent_subrules
         else ""
     )
-    expected_transparent_final_match_rule = _build_transparent_fallback_rule(routing)
+    # A mandatory VPN fallback is immediately followed by a UDP REJECT rule:
+    # Mihomo can skip the proxy fallback for UDP, so the guard is intentionally
+    # terminal. Compare policy against the fallback before that exact guard.
+    expected_transparent_udp_guard = _mandatory_vpn_udp_guard(
+        expected_transparent_final_match_rule
+    )
+    if (
+        expected_transparent_udp_guard
+        and isinstance(transparent_subrules, list)
+        and len(transparent_subrules) >= 2
+        and transparent_subrules[-1] == expected_transparent_udp_guard
+        and transparent_subrules[-2] == expected_transparent_final_match_rule
+    ):
+        transparent_final_match_rule = str(transparent_subrules[-2])
     transparent_direct_proxy_ok = (
         isinstance(transparent_redir_listener, dict)
         and isinstance(transparent_tproxy_listener, dict)

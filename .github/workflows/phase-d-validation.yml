@@ -196,6 +196,8 @@ jobs:
             tests/test_protocol_adapters.py::test_vless_udp_capability_rejects_invalid_and_duplicate_uri_values \
             tests/test_mihomo_config_runtime.py::test_build_mihomo_config_scopes_subject_server_override_to_vpn_rules_only \
             tests/test_mihomo_config_runtime.py::test_build_mihomo_config_renders_effective_domain_and_cidr_rules \
+            tests/test_mihomo_config_runtime.py::test_build_mihomo_config_uses_vpn_fallback_when_requested \
+            tests/test_mihomo_config_runtime.py::test_transparent_fallback_validation_accounts_for_terminal_vpn_udp_guard \
             tests/test_mihomo_adapter.py::test_vpn_udp_native_readback_requires_reject_groups_and_paired_guards \
             tests/test_mihomo_adapter.py::test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types \
             tests/test_mihomo_adapter.py::test_vpn_udp_active_server_does_not_fall_through_when_owned_selector_rejects \

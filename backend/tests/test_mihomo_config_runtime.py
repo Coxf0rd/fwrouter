@@ -440,10 +440,38 @@ def test_build_mihomo_config_uses_vpn_fallback_when_requested(monkeypatch, tmp_p
 
     _assert_managed_contour(config)
     assert config["rules"][-1] == "MATCH,DIRECT"
-    assert config["sub-rules"]["fwrouter-transparent"][-1] == "MATCH,vpn-global"
+    assert config["sub-rules"]["fwrouter-transparent"][-2:] == [
+        "MATCH,vpn-global",
+        "NETWORK,udp,REJECT",
+    ]
     assert config["fwrouter"]["resolved_selective_default"] == "vpn"
     assert config["fwrouter"]["final_match_rule"] == "MATCH,DIRECT"
     assert config["fwrouter"]["transparent_final_match_rule"] == "MATCH,vpn-global"
+
+
+def test_transparent_fallback_validation_accounts_for_terminal_vpn_udp_guard(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
+    from fwrouter_api.services.mihomo_config_validation import _validate_candidate_structure
+
+    routing = {"desired_mode": "vpn"}
+    config = mihomo_config_service.build_mihomo_config(routing)
+    structural = _validate_candidate_structure(config, routing=routing)
+
+    assert config["sub-rules"]["fwrouter-transparent"][-2:] == [
+        "MATCH,vpn-global",
+        "NETWORK,udp,REJECT",
+    ]
+    assert structural["transparent_final_match_rule"] == "MATCH,vpn-global"
+    assert structural["transparent_state_consistency_ok"] is True
+
+    config["sub-rules"]["fwrouter-transparent"][-2] = "MATCH,DIRECT"
+    mismatched = _validate_candidate_structure(config, routing=routing)
+    assert mismatched["transparent_state_consistency_ok"] is False
 
 
 def test_build_mihomo_config_forces_ipv4_transparent_listener_mode_over_legacy_ipv6_true(
