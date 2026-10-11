@@ -211,7 +211,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 self.running = False
 
         class FakeHandler:
-            def __init__(self, path, runtime=None, profile=None):
+            def __init__(self, path, available, runtime=None, profile=None):
                 self.server = type("Server", (), {
                     "server_address": (fixture.ENDPOINT_WAN_IP, fixture.ENDPOINT_CONTROL_PORT),
                     "xray_runtime": runtime,
@@ -219,8 +219,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
                     "xray_lock": __import__("threading").Lock(),
                 })()
                 self.path = path
-                body = json.dumps({"available": path == "/xray/availability"},
-                                  separators=(",", ":")).encode("ascii")
+                body = json.dumps({"available": available}, separators=(",", ":")).encode("ascii")
                 self.headers = {"Content-Length": str(len(body))}
                 self.rfile = io.BytesIO(body)
                 self.response = None
@@ -229,14 +228,14 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 self.response = (status, payload)
 
         stopped_runtime = FakeRuntime(True)
-        stop = FakeHandler("/xray/availability", runtime=stopped_runtime)
+        stop = FakeHandler("/xray/availability", available=False, runtime=stopped_runtime)
         fixture._EndpointHandler.do_POST(stop)
         self.assertTrue(stopped_runtime.expected_exit)
         self.assertIsNone(stop.server.xray_runtime)
         self.assertEqual(stop.response, (200, {"available": False}))
 
         restarted_runtime = FakeRuntime(True)
-        start = FakeHandler("/xray/availability", profile={"fixed": True})
+        start = FakeHandler("/xray/availability", available=True, profile={"fixed": True})
         fake_thread = mock.Mock()
         with (mock.patch.object(fixture, "_start_xray", return_value=restarted_runtime) as start_xray,
               mock.patch.object(fixture, "_wait_tcp") as wait_tcp,

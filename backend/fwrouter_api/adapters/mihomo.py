@@ -811,16 +811,26 @@ class MihomoHttpAdapter(MihomoAdapter):
             config = {}
         if not isinstance(config, dict):
             config = {}
+        configured_groups = [
+            item for item in (config.get("proxy-groups") or [])
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
         groups = {
             str(item.get("name") or ""): item
-            for item in (config.get("proxy-groups") or [])
-            if isinstance(item, dict) and str(item.get("name") or "").strip()
+            for item in configured_groups
         }
         owned_names = {
             name for name in groups
             if name in {"vpn-auto", "vpn-global"} or name.startswith("fwrouter-subject-")
         }
         group_readback_ok = bool({"vpn-auto", "vpn-global"} <= owned_names)
+        owned_name_counts: dict[str, int] = {}
+        for item in configured_groups:
+            name = str(item.get("name") or "")
+            if name in {"vpn-auto", "vpn-global"} or name.startswith("fwrouter-subject-"):
+                owned_name_counts[name] = owned_name_counts.get(name, 0) + 1
+        if any(count != 1 for count in owned_name_counts.values()):
+            group_readback_ok = False
         group_names_match: dict[str, bool] = {}
         for name in sorted(owned_names):
             configured = groups[name].get("proxies")
@@ -920,7 +930,8 @@ class MihomoHttpAdapter(MihomoAdapter):
                 return (*canonical, target) if canonical is not None else None
 
             normalized_native_rules: list[tuple[str, str, str]] = []
-            for item in native_rules:
+            has_native_indexes = any(isinstance(item, dict) and "index" in item for item in native_rules)
+            for position, item in enumerate(native_rules):
                 if not isinstance(item, dict):
                     normalized_native_rules = []
                     break
@@ -934,9 +945,17 @@ class MihomoHttpAdapter(MihomoAdapter):
                 if not rule_type:
                     normalized_native_rules = []
                     break
+                if "disabled" in extra and type(extra.get("disabled")) is not bool:
+                    normalized_native_rules = []
+                    break
                 if extra.get("disabled") is True:
                     normalized_native_rules = []
                     break
+                if has_native_indexes:
+                    index = item.get("index")
+                    if type(index) is not int or index != position:
+                        normalized_native_rules = []
+                        break
                 canonical = normalize_native_rule_type(rule_type, payload)
                 if canonical is None:
                     normalized_native_rules = []

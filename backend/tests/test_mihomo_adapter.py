@@ -91,6 +91,27 @@ def test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types() -> None:
     assert proof["native_top_level_rules_match"] is True
     assert proof["policy_installed"] is True
 
+    malformed_disabled = [dict(rule) for rule in native_rules]
+    malformed_disabled[1]["extra"] = {"disabled": 1}
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        config, proxies, malformed_disabled,
+    )["native_top_level_rules_match"] is False
+
+    indexed_rules = [dict(rule, index=position) for position, rule in enumerate(native_rules)]
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        config, proxies, indexed_rules,
+    )["native_top_level_rules_match"] is True
+    indexed_rules[2]["index"] = True
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        config, proxies, indexed_rules,
+    )["native_top_level_rules_match"] is False
+
+    duplicate_groups_config = yaml.safe_load(config)
+    duplicate_groups_config["proxy-groups"].append({"name": "vpn-auto", "proxies": ["REJECT"]})
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        yaml.safe_dump(duplicate_groups_config, sort_keys=False), proxies,
+    )["selector_membership_matches"] is False
+
 
 def test_vpn_udp_active_server_does_not_fall_through_when_owned_selector_rejects() -> None:
     adapter = MihomoHttpAdapter()
