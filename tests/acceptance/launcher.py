@@ -131,6 +131,7 @@ PYTHON_BASE_FIXED_ENV = {
     "LANG": "C.UTF-8",
 }
 PACKET_VIP = "203.0.113.53/32"
+PACKET_PROTECTED_VIP = "10.250.240.2/32"
 PACKET_LIBPCAP_PACKAGE_VERSION = "1.10.3-1"
 PACKET_LIBPCAP_API_VERSION_PREFIX = "libpcap version 1.10.3"
 PACKET_CAPTURE_LIMIT = 512
@@ -978,6 +979,8 @@ def packet_host_preflight() -> dict[str, Any]:
     if not isinstance(routes, list):
         raise NotRun("host route table has an unexpected shape")
     subnets = {name: ipaddress.ip_network(spec["subnet"]) for name, spec in PACKET_NETWORKS.items()}
+    fixed_targets = {"service": ipaddress.ip_network(PACKET_VIP),
+                     "protected": ipaddress.ip_network(PACKET_PROTECTED_VIP)}
     observed_routes = []
     for route in routes:
         if not isinstance(route, dict):
@@ -993,6 +996,9 @@ def packet_host_preflight() -> dict[str, Any]:
         for name, subnet in subnets.items():
             if network.version == subnet.version and network.overlaps(subnet):
                 raise NotRun(f"fixed packet {name} subnet overlaps a hosted-runner route")
+        for name, target in fixed_targets.items():
+            if network.version == target.version and network.overlaps(target):
+                raise NotRun(f"fixed packet {name} endpoint overlaps a hosted-runner route")
     route_bytes = json.dumps(sorted(routes, key=lambda row: json.dumps(
         row, sort_keys=True, separators=(",", ":"))), sort_keys=True,
         separators=(",", ":")).encode("utf-8")
@@ -1036,7 +1042,8 @@ def packet_host_preflight() -> dict[str, Any]:
         "route_snapshot_sha256": hashlib.sha256(route_bytes).hexdigest(),
         "firewall_snapshot_sha256": hashlib.sha256(nft_bytes).hexdigest(),
         "firewall_object_count": len(semantic_nft),
-        "checked_subnets": {name: spec["subnet"] for name, spec in PACKET_NETWORKS.items()},
+        "checked_subnets": {**{name: spec["subnet"] for name, spec in PACKET_NETWORKS.items()},
+                            **{name: str(target) for name, target in fixed_targets.items()}},
         "overlap_check": "passed",
     }
 
@@ -1193,6 +1200,8 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
     app = services["application"]
     if app.get("sysctls") != {"net.ipv4.ip_forward": "1"}:
         raise NotRun("router must enable only its namespaced IPv4 forwarding sysctl")
+    if services["endpoint"].get("sysctls") not in (None, {}):
+        raise NotRun("endpoint must not change network sysctls")
     build_args = app.get("build", {}).get("args", {})
     if (build_args.get("BASE_IMAGE") != base_image_ref
             or build_args.get("FWROUTER_KERNEL_PREFLIGHT") != "1"
@@ -1279,6 +1288,11 @@ def validate_packet_container_inspect(value: dict[str, Any], *, project: str, ru
         raise NotRun("packet container image, user, or root filesystem differs from policy")
     if host.get("Privileged") is not False or host.get("CapDrop") != ["ALL"]:
         raise NotRun("packet container is privileged or does not drop all capabilities")
+    expected_sysctls = {"net.ipv4.ip_forward": "1"} if role == "router" else {}
+    observed_sysctls = host.get("Sysctls")
+    if ((role == "router" and observed_sysctls != expected_sysctls)
+            or (role != "router" and observed_sysctls not in (None, {}))):
+        raise NotRun("packet container namespaced sysctls differ from the fixed role contract")
     expected_caps = {"NET_ADMIN", "NET_RAW"} if role == "router" else {"NET_ADMIN"}
     observed_caps = host.get("CapAdd") or []
     normalized_caps = {value.removeprefix("CAP_") for value in observed_caps}
@@ -1645,20 +1659,33 @@ def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
                                "dev", ifname("endpoint", "wan")], cwd=cwd, env=env)
     endpoint_addresses = _packet_container_json(docker, container_ids["endpoint"],
         ["ip", "-j", "-4", "address", "show", "dev", "lo"], cwd=cwd, env=env)
-    if any(item.get("local") == "203.0.113.53" for row in endpoint_addresses if isinstance(row, dict)
+    if any(item.get("local") in {"203.0.113.53", "10.250.240.2"}
+           for row in endpoint_addresses if isinstance(row, dict)
            for item in row.get("addr_info", []) if isinstance(item, dict)):
-        raise NotRun("packet endpoint service VIP was already present before owned setup")
+        raise NotRun("packet endpoint service address was already present before owned setup")
     _packet_container_command(docker, container_ids["endpoint"],
                               ["ip", "-4", "address", "add", PACKET_VIP, "dev", "lo"],
                               cwd=cwd, env=env)
-    _packet_container_command(docker, container_ids["router"],
-                              ["ip", "-4", "route", "replace", PACKET_VIP, "via", "198.18.240.2",
-                               "dev", router_if], cwd=cwd, env=env)
+    _packet_container_command(docker, container_ids["endpoint"],
+                              ["ip", "-4", "address", "add", PACKET_PROTECTED_VIP, "dev", "lo"],
+                              cwd=cwd, env=env)
+    endpoint_loopback = _packet_container_json(docker, container_ids["endpoint"],
+        ["ip", "-j", "-4", "address", "show", "dev", "lo"], cwd=cwd, env=env)
+    endpoint_locals = [item.get("local") for row in endpoint_loopback if isinstance(row, dict)
+                       for item in row.get("addr_info", []) if isinstance(item, dict)]
+    if any(endpoint_locals.count(address) != 1 for address in
+           ("203.0.113.53", "10.250.240.2")):
+        raise NotRun("packet endpoint service VIP readback differs from the owned loopback aliases")
+    for destination in (PACKET_VIP, PACKET_PROTECTED_VIP):
+        _packet_container_command(docker, container_ids["router"],
+                                  ["ip", "-4", "route", "replace", destination, "via", "198.18.240.2",
+                                   "dev", router_if], cwd=cwd, env=env)
 
     expected_final = {
         "router": [("10.240.0.0/29", None, ifname("router", "lan")),
                    ("198.18.240.0/29", None, ifname("router", "wan")),
-                   ("203.0.113.53/32", "198.18.240.2", ifname("router", "wan"))],
+                   ("203.0.113.53/32", "198.18.240.2", ifname("router", "wan")),
+                   ("10.250.240.2/32", "198.18.240.2", ifname("router", "wan"))],
         "client": [("10.240.0.0/29", None, ifname("client", "lan")),
                    ("default", "10.240.0.1", ifname("client", "lan"))],
         "endpoint": [("198.18.240.0/29", None, ifname("endpoint", "wan")),
@@ -1677,6 +1704,7 @@ def packet_namespace_setup(docker: str, container_ids: dict[str, str], *,
                            "route_readback": route_evidence,
                            "interfaces": dict(sorted(interfaces[role].items()))}
     summaries["endpoint"]["service_vip"] = "203.0.113.53/32 on lo"
+    summaries["endpoint"]["protected_vip"] = "10.250.240.2/32 on lo"
     return {"schema": "fwrouter-packet-topology/v1", "roles": summaries,
             "ipv4_forwarding": "enabled in router namespace"}
 
@@ -1760,8 +1788,8 @@ try:
     ready=json.loads(raw.decode("ascii"))
     if not isinstance(ready,dict) or ready.get("status")!="ready":
         raise RuntimeError("worker_startup_failed:"+str(ready.get("stage","unknown"))[:64])
-    expected_flows={"tcp":{"snaplen":54,"filter":"(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"},
-                    "udp":{"snaplen":42,"filter":"udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)"}}
+    expected_flows={"tcp":{"snaplen":54,"filter":"(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"},
+                    "udp":{"snaplen":42,"filter":"(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 10.250.240.2 and dst port 9081)"}}
     api_version=ready.get("libpcap_api_version","")
     api_prefix="libpcap version 1.10.3"
     if (ready.get("interface")!=iface or ready.get("worker_sha256")!=worker_sha
@@ -1893,8 +1921,8 @@ if (final.get("status")!="stopped" or final.get("exit_code")!=0 or final.get("pi
 files={}
 for name,snaplen in (("tcp",54),("udp",42)):
     row=final["flows"][name]; path=root/(name+".pcap"); info=path.lstat()
-    expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"
-                     if name=="tcp" else "udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)")
+    expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301)"
+                     if name=="tcp" else "(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 10.250.240.2 and dst port 9081)")
     if (type(row.get("count")) is not int or not 0<=row["count"]<=512 or row.get("snaplen")!=snaplen
         or row.get("filter")!=expected_filter or row.get("header",{}).get("major")!=2
         or row.get("header",{}).get("minor")!=4 or row.get("header",{}).get("linktype")!=1
@@ -1912,7 +1940,7 @@ print(json.dumps({"status":"stopped","worker_status":result,"worker_pid":pid,
 
 
 def validate_packet_capture(path: Path, *, protocol: int, snaplen: int,
-                            allowed_destinations: dict[tuple[str, int], set[int]]) -> dict[str, Any]:
+                            allowed_destinations: dict[tuple[str, str, int], set[int]]) -> dict[str, Any]:
     """Validate bounded Ethernet/IPv4 headers and reject any captured payload."""
     try:
         info = path.lstat()
@@ -1971,8 +1999,8 @@ def validate_packet_capture(path: Path, *, protocol: int, snaplen: int,
             destination_port = struct.unpack_from("!H", frame, transport + 2)[0]
         else:
             raise NotRun("packet capture validator protocol is not supported")
-        ports = allowed_destinations.get((destination, protocol), set())
-        if source not in {"10.240.0.2", "198.18.240.1"} or destination_port not in ports:
+        ports = allowed_destinations.get((source, destination, protocol), set())
+        if destination_port not in ports:
             raise NotRun("packet capture contains a source, destination, or port outside the owned fixture")
         key = f"{source}>{destination}:{destination_port}"
         counts[key] = counts.get(key, 0) + 1
@@ -2177,6 +2205,8 @@ def packet_router_guard_setup_code(lan_interface: str, wan_interface: str) -> st
     return f'''import json, subprocess
 lan={lan_interface!r}; wan={wan_interface!r}; table="fwrouter_packet_guard"
 counter_names={{"router_stub_drop","router_egress_drop","router_forward_drop","router_input_drop",
+               "router_protected_tcp_output","router_protected_udp_output",
+               "router_protected_tcp_forward","router_protected_udp_forward",
                "router_ipv6_output_drop","router_ipv6_input_drop","router_ipv6_forward_drop"}}
 rules=[
  f'add table inet {{table}}',
@@ -2193,6 +2223,8 @@ rules=[
  'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 5301 accept comment "fwrouter packet guard vless allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 203.0.113.53 tcp dport 9080 accept comment "fwrouter packet guard vip tcp allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 203.0.113.53 udp dport {{ 9081, 5353 }} accept comment "fwrouter packet guard vip udp allow v1"',
+ 'add rule inet fwrouter_packet_guard output ip daddr 10.250.240.2 tcp dport 9080 counter name router_protected_tcp_output accept comment "fwrouter packet guard protected tcp exact allow v1"',
+ 'add rule inet fwrouter_packet_guard output ip daddr 10.250.240.2 udp dport 9081 counter name router_protected_udp_output accept comment "fwrouter packet guard protected udp exact allow v1"',
  'add rule inet fwrouter_packet_guard output counter name router_egress_drop drop comment "fwrouter packet guard egress deny v1"',
  'add rule inet fwrouter_packet_guard input iifname "lo" accept comment "fwrouter packet guard loopback input allow v1"',
  'add rule inet fwrouter_packet_guard input meta nfproto ipv6 iifname != "lo" counter name router_ipv6_input_drop drop comment "fwrouter packet guard ipv6 input deny v1"',
@@ -2206,6 +2238,8 @@ rules=[
  'add rule inet fwrouter_packet_guard forward ct state {{ established, related }} accept comment "fwrouter packet guard established forward allow v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 203.0.113.53 tcp dport 9080 accept comment "fwrouter packet guard lan vip tcp forward allow v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 203.0.113.53 udp dport {{{{ 9081, 5353 }}}} accept comment "fwrouter packet guard lan vip udp forward allow v1"',
+ f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 10.250.240.2 tcp dport 9080 counter name router_protected_tcp_forward accept comment "fwrouter packet guard protected tcp forward exact allow v1"',
+ f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 10.250.240.2 udp dport 9081 counter name router_protected_udp_forward accept comment "fwrouter packet guard protected udp forward exact allow v1"',
  'add rule inet fwrouter_packet_guard forward counter name router_forward_drop drop comment "fwrouter packet guard forward deny v1"',
 ]
 script="\\n".join(rules)+"\\n"
@@ -3529,8 +3563,11 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 receipt["packet_capture_stop"] = stop_result
             capture_exports = {}
             for name, protocol, snaplen, destinations in (
-                ("tcp", 6, 54, {("203.0.113.53", 6): {9080}, ("198.18.240.2", 6): {5301}}),
-                ("udp", 17, 42, {("203.0.113.53", 17): {9081, 5353}}),
+                ("tcp", 6, 54, {("10.240.0.2", "203.0.113.53", 6): {9080},
+                                ("198.18.240.1", "198.18.240.2", 6): {5301},
+                                ("10.240.0.2", "10.250.240.2", 6): {9080}}),
+                ("udp", 17, 42, {("10.240.0.2", "203.0.113.53", 17): {9081, 5353},
+                                 ("10.240.0.2", "10.250.240.2", 17): {9081}}),
             ):
                 destination = artifact_dir / f"packet-{name}.pcap"
                 if stopped["exit_code"] != 0 or stop_result.get("status") != "stopped":

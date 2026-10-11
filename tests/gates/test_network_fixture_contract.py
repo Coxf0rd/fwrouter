@@ -101,6 +101,21 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 "vpn": {"vless_endpoint_packets": 7,
                         "direct_client_leaks": {"tcp_9080": 0, "udp_9081": 0, "dns_5353": 0},
                         "core_counters": core, "observations": {"counts": {"http": 1, "udp": 1, "dns": 1}}},
+                "protected_direct": {
+                    "native_vpn_active": True, "native_target_stable": True, "selection_stable": True,
+                    "native_protected_rule": {"classifier_bypass_installed": True,
+                                               "protected_vip_in_active_set": True},
+                    "native_protected_rule_stable": True,
+                    "core_vpn_delta": {"vpn_tcp_classified": 0, "vpn_udp_classified": 0},
+                    "endpoint_counts_delta": {"tcp": 1, "udp": 1},
+                    "capture_flow_delta": {"tcp_9080": 2, "udp_9081": 1},
+                    "router_guard_delta": {
+                        "router_protected_tcp_forward": {"packets": 3},
+                        "router_protected_udp_forward": {"packets": 1},
+                        "router_protected_tcp_output": {"packets": 0},
+                        "router_protected_udp_output": {"packets": 0},
+                    },
+                },
                 "udp_capability_contract": {
                     "supported": True,
                     "supported_packet": {"endpoint_udp_observation": 1,
@@ -139,8 +154,19 @@ class NetworkFixtureContractTests(unittest.TestCase):
             encoded = json.loads(raw)
             self.assertEqual(encoded["schema"], "fwrouter-packet-test-flows/v2")
             summary = encoded["phases"]
-            self.assertEqual(set(summary), {"direct_before_vpn", "vpn", "udp_capability",
+            self.assertEqual(set(summary), {"direct_before_vpn", "vpn", "protected_direct", "udp_capability",
                                             "emergency_direct", "vpn_after_reentry"})
+            self.assertEqual(summary["protected_direct"]["endpoint"], {"tcp": 1, "udp": 1})
+            self.assertEqual(summary["protected_direct"]["capture"], {"tcp_9080": 2, "udp_9081": 1})
+            self.assertEqual(summary["protected_direct"]["core_vpn_classified"],
+                             {"vpn_tcp_classified": 0, "vpn_udp_classified": 0})
+            self.assertEqual(summary["protected_direct"]["forward_guard"],
+                             {"router_protected_tcp_forward": 3, "router_protected_udp_forward": 1})
+            self.assertEqual(summary["protected_direct"]["output_guard"],
+                             {"router_protected_tcp_output": 0, "router_protected_udp_output": 0})
+            self.assertTrue(summary["protected_direct"]["protected_rule_installed"])
+            self.assertTrue(summary["protected_direct"]["protected_rule_stable"])
+            self.assertTrue(summary["protected_direct"]["native_target_stable"])
             capability = summary["udp_capability"]
             self.assertEqual(set(capability), {"supported", "unknown", "unsupported",
                                                "endpoint_unavailable", "empty_pool"})
@@ -525,6 +551,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             FakeServer((fixture.ENDPOINT_WAN_IP, fixture.ENDPOINT_CONTROL_PORT), tcp=True),
             FakeServer((fixture.SERVICE_VIP, fixture.UDP_ECHO_PORT), tcp=False),
             FakeServer((fixture.SERVICE_VIP, fixture.DNS_PORT), tcp=False),
+            FakeServer((fixture.PROTECTED_VIP, fixture.HTTP_PORT), tcp=True),
+            FakeServer((fixture.PROTECTED_VIP, fixture.PROTECTED_UDP_PORT), tcp=False),
         )
         control = servers[1]
         control.role_servers = servers
@@ -546,6 +574,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertFalse(missing["sockets"]["http_tcp_9080"])
             self.assertFalse(missing["sockets"]["udp_echo_9081"])
             self.assertFalse(missing["sockets"]["dns_udp_5353"])
+            self.assertFalse(missing["sockets"]["protected_tcp_9080"])
+            self.assertFalse(missing["sockets"]["protected_udp_9081"])
 
             control.role_servers = (servers[0], servers[1],
                                     FakeServer((fixture.SERVICE_VIP, fixture.DNS_PORT), tcp=False), servers[3])
@@ -554,10 +584,18 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertFalse(wrong_udp["sockets"]["udp_echo_9081"])
 
             control.role_servers = (servers[0], servers[1], servers[2],
-                                    FakeServer((fixture.SERVICE_VIP, fixture.UDP_ECHO_PORT), tcp=False))
+                                    FakeServer((fixture.SERVICE_VIP, fixture.UDP_ECHO_PORT), tcp=False),
+                                    servers[4], servers[5])
             wrong_dns = fixture._endpoint_status(control, FakeRuntime())
             self.assertFalse(wrong_dns["ready"])
             self.assertFalse(wrong_dns["sockets"]["dns_udp_5353"])
+
+            control.role_servers = (servers[0], servers[1], servers[2], servers[3],
+                                    FakeServer((fixture.PROTECTED_VIP, fixture.HTTP_PORT), tcp=False),
+                                    servers[5])
+            wrong_protected = fixture._endpoint_status(control, FakeRuntime())
+            self.assertFalse(wrong_protected["ready"])
+            self.assertFalse(wrong_protected["sockets"]["protected_tcp_9080"])
 
         serve = _function_source("_serve")
         self.assertIn("servers[1].role_servers = tuple(servers)", serve)
@@ -631,6 +669,19 @@ class NetworkFixtureContractTests(unittest.TestCase):
         worker_path = ROOT / "tests/acceptance/packet_capture_worker.py"
         worker_source = worker_path.read_text(encoding="utf-8")
         worker_tree = ast.parse(worker_source)
+        flows_node = next(node for node in worker_tree.body if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == "FLOWS"
+                                  for target in node.targets))
+        self.assertEqual(ast.literal_eval(flows_node.value), {
+            "tcp": {"snaplen": 54, "filter": "(tcp and dst host 203.0.113.53 and dst port 9080) or "
+                                                  "(tcp and dst host 10.250.240.2 and dst port 9080) or "
+                                                  "(tcp and dst host 198.18.240.2 and dst port 5301)"},
+            "udp": {"snaplen": 42, "filter": "(udp and dst host 203.0.113.53 and "
+                                                  "(dst port 9081 or dst port 5353)) or "
+                                                  "(udp and dst host 10.250.240.2 and dst port 9081)"},
+        })
+        for flow in ("10.250.240.2 and dst port 9080", "10.250.240.2 and dst port 9081"):
+            self.assertIn(flow, start)
         packet_out = next(node for node in worker_tree.body if isinstance(node, ast.Assign)
                           and any(isinstance(target, ast.Name) and target.id == "PCAP_D_OUT"
                                   for target in node.targets))
@@ -935,7 +986,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "CLIENT_NET": "10.240.0.0/29", "CLIENT_IP": "10.240.0.2",
             "ROUTER_LAN_IP": "10.240.0.1", "ROUTER_WAN_IP": "198.18.240.1",
             "ENDPOINT_WAN_IP": "198.18.240.2", "WAN_NET": "198.18.240.0/29",
-            "SERVICE_VIP": "203.0.113.53", "ENDPOINT_XRAY_PORT": 5301,
+            "SERVICE_VIP": "203.0.113.53", "PROTECTED_VIP": "10.250.240.2",
+            "ENDPOINT_XRAY_PORT": 5301,
             "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
             "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_CONTROL_PORT": 8082,
             "DNS_NAME": "probe.fwrouter.test", "DNS_NEGATIVE_NAME": "missing.fwrouter.test",
@@ -951,6 +1003,44 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertNotIn(vip, ipaddress.ip_network(network))
         self.assertNotIn(vip, ipaddress.ip_network(values["CLIENT_NET"]))
         self.assertNotIn(vip, ipaddress.ip_network(values["WAN_NET"]))
+
+    def test_protected_direct_probe_uses_real_fixed_tcp_udp_sockets_and_counterproof(self):
+        values = _literal_assignments()
+        self.assertEqual("10.250.240.2", values["PROTECTED_VIP"])
+        self.assertEqual(9081, values["PROTECTED_UDP_PORT"])
+        role_network = _function_source("_validate_role_network")
+        endpoint_guard = _function_source("_install_guard")
+        tcp_probe = _function_source("_probe_protected_tcp")
+        udp_probe = _function_source("_probe_protected_udp")
+        endpoint_status = _function_source("_endpoint_status")
+        serve = _function_source("_serve")
+        self.assertIn("PROTECTED_VIP", role_network)
+        self.assertIn('vip_interfaces != {"lo"}', role_network)
+        self.assertIn("PROTECTED_VIP", endpoint_guard)
+        self.assertIn("PROTECTED_UDP_PORT", endpoint_guard)
+        self.assertIn("socket.create_connection((PROTECTED_VIP, HTTP_PORT)", tcp_probe)
+        self.assertIn("sock.sendto(PROBE_BODY, (PROTECTED_VIP, PROTECTED_UDP_PORT))", udp_probe)
+        self.assertIn("_PROTECTED_OBS.record(\"tcp\"", _method_source("_EndpointHandler", "do_GET"))
+        self.assertIn("_PROTECTED_OBS.record(\"udp\"", _method_source("_ProtectedUDPEchoHandler", "handle"))
+        self.assertIn('"protected_tcp_9080"', endpoint_status)
+        self.assertIn('"protected_udp_9081"', endpoint_status)
+        self.assertIn("_BoundedHTTPServer((PROTECTED_VIP, HTTP_PORT)", serve)
+        self.assertIn("_BoundedUDPServer((PROTECTED_VIP, PROTECTED_UDP_PORT)", serve)
+
+        packet_source = (ROOT / "tests/application_acceptance/test_packet_dataplane.py").read_text(encoding="utf-8")
+        packet_tree = ast.parse(packet_source)
+        probe = next(node for node in packet_tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "_probe_protected_direct_phase")
+        probe_source = "\n".join(packet_source.splitlines()[probe.lineno - 1:probe.end_lineno])
+        self.assertIn("_assert_packet_runtime(stack, mode=\"vpn\", policy_required=True)", probe_source)
+        self.assertIn("vpn_tcp_classified\"] == 0", probe_source)
+        self.assertIn("vpn_udp_classified\"] == 0", probe_source)
+        self.assertIn('native_before == native_after', probe_source)
+        self.assertIn('selection_before == selection_after', probe_source)
+        self.assertIn('guard_delta["router_protected_tcp_forward"]["packets"] > 0', probe_source)
+        self.assertIn('guard_delta["router_protected_udp_forward"]["packets"] > 0', probe_source)
+        self.assertIn('guard_delta["router_protected_tcp_output"]["packets"] == 0', probe_source)
+        self.assertIn('guard_delta["router_protected_udp_output"]["packets"] == 0', probe_source)
 
     def test_profile_capability_and_namespace_checks_precede_fixed_network_commands(self):
         context = _function_source("_validate_owned_context")

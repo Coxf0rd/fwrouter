@@ -476,7 +476,7 @@ class AcceptanceContractTests(unittest.TestCase):
                             "restart", "security_opt", "sysctls", "tmpfs", "user", "volumes"},
             "lanclient": {"cap_add", "cap_drop", "command", "cpus", "environment", "image", "init", "labels",
                           "mem_limit", "memswap_limit", "networks", "pids_limit", "read_only", "restart",
-                          "security_opt", "tmpfs", "user", "volumes"},
+                          "security_opt", "sysctls", "tmpfs", "user", "volumes"},
             "endpoint": {"cap_add", "cap_drop", "command", "cpus", "environment", "image", "init", "labels",
                          "mem_limit", "memswap_limit", "networks", "pids_limit", "read_only", "restart",
                          "security_opt", "tmpfs", "user", "volumes"},
@@ -550,7 +550,7 @@ class AcceptanceContractTests(unittest.TestCase):
             result = launcher.export_validated_packet_capture(
                 invalid_capture, "/fixed/tcp.pcap", quarantine, published,
                 owned_root=root, artifact_root=artifacts, protocol=6, snaplen=54,
-                allowed_destinations={("203.0.113.53", 6): {9080}},
+                allowed_destinations={("10.240.0.2", "203.0.113.53", 6): {9080}},
                 receipt=receipt, name="tcp")
             self.assertFalse(result["published"])
             self.assertNotIn(raw_marker.decode(), json.dumps(result))
@@ -566,7 +566,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 lambda _source, _target: {"copied": False, "exit_code": 1, "method": "synthetic"},
                 "/fixed/udp.pcap", udp_quarantine, udp_published,
                 owned_root=root, artifact_root=artifacts, protocol=17, snaplen=42,
-                allowed_destinations={("203.0.113.53", 17): {9081}},
+                allowed_destinations={("10.240.0.2", "203.0.113.53", 17): {9081}},
                 receipt=failed_receipt, name="udp")
             self.assertFalse(failed["published"])
             self.assertFalse(udp_quarantine.exists())
@@ -579,7 +579,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 lambda _source, _target: self.fail("copy must not run for an external quarantine path"),
                 "/fixed/tcp.pcap", Path(temp) / "outside.pcap", artifacts / "blocked.pcap",
                 owned_root=root, artifact_root=artifacts, protocol=6, snaplen=54,
-                allowed_destinations={("203.0.113.53", 6): {9080}},
+                allowed_destinations={("10.240.0.2", "203.0.113.53", 6): {9080}},
                 receipt=precondition_receipt, name="tcp")
             self.assertFalse(precondition["published"])
             self.assertFalse((artifacts / "blocked.pcap").exists())
@@ -603,6 +603,15 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertTrue(any("tcp dport { 5202, 5204 } accept" in rule for rule in rules))
         self.assertTrue(any("udp dport { 5203, 5205 } accept" in rule for rule in rules))
         self.assertTrue(any("udp dport { 9081, 5353 } accept" in rule and "forward" in rule for rule in rules))
+        exact_rules = (
+            'output ip daddr 10.250.240.2 tcp dport 9080 counter name router_protected_tcp_output accept',
+            'output ip daddr 10.250.240.2 udp dport 9081 counter name router_protected_udp_output accept',
+            'forward iifname "eth0" oifname "eth1" ip saddr 10.240.0.2 ip daddr 10.250.240.2 tcp dport 9080 counter name router_protected_tcp_forward accept',
+            'forward iifname "eth0" oifname "eth1" ip saddr 10.240.0.2 ip daddr 10.250.240.2 udp dport 9081 counter name router_protected_udp_forward accept',
+        )
+        for expected in exact_rules:
+            self.assertTrue(any(expected in rule for rule in rules), expected)
+        self.assertFalse(any("ip daddr 1.1.1.1" in rule for rule in rules))
         self.assertFalse(any("(9081, 5353)" in rule or "(5202, 5204)" in rule for rule in rules))
 
     def test_kernel_acceptance_worker_path_exposes_admin_tools_only_in_kernel_profiles(self):

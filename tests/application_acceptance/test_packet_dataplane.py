@@ -30,6 +30,7 @@ CLIENT_IP = "10.240.0.2"
 ROUTER_WAN_IP = "198.18.240.1"
 ENDPOINT_IP = "198.18.240.2"
 SERVICE_VIP = "203.0.113.53"
+PROTECTED_VIP = "10.250.240.2"
 CLIENT_CONTROL = "http://10.240.0.2:8081"
 ENDPOINT_CONTROL = "http://198.18.240.2:8082"
 CAPTURE_ROOT = Path("/tmp/fwrouter-packet-evidence")
@@ -545,7 +546,9 @@ def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
             continue
         if dst_port == 5301 and (src, dst, protocol) != (ROUTER_WAN_IP, ENDPOINT_IP, 6):
             raise AssertionError("captured VLESS flow differs from the fixed router-to-endpoint tuple")
-        if dst_port in {9080, 9081, 5353} and dst != SERVICE_VIP:
+        if ((dst_port == 9080 and dst not in {SERVICE_VIP, PROTECTED_VIP})
+                or (dst_port in {9081, 5353} and dst not in {SERVICE_VIP, PROTECTED_VIP})
+                or (dst_port == 5353 and dst != SERVICE_VIP)):
             raise AssertionError("captured service flow differs from the fixed VIP")
         counts[(src, dst, "tcp" if protocol == 6 else "udp", dst_port)] = (
             counts.get((src, dst, "tcp" if protocol == 6 else "udp", dst_port), 0) + 1
@@ -661,6 +664,56 @@ def _core_counter_snapshot() -> dict[str, int | None]:
     }
 
 
+def _core_protected_exception_readback() -> dict[str, bool]:
+    """Read the installed protected-address set and exact classify rule from native nft."""
+    try:
+        result = subprocess.run(
+            ("/usr/sbin/nft", "-j", "list", "table", "inet", CORE_NFT_TABLE),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=3, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AssertionError("native protected-route readback did not complete within its bound") from exc
+    if result.returncode or len(result.stdout) > MAX_CORE_NFT_JSON or len(result.stderr) > 4096:
+        raise AssertionError("native protected-route readback failed or exceeded its byte bound")
+    try:
+        rows = json.loads(result.stdout).get("nftables")
+    except (UnicodeError, json.JSONDecodeError, AttributeError) as exc:
+        raise AssertionError("native protected-route readback was not valid nft JSON") from exc
+    if not isinstance(rows, list):
+        raise AssertionError("native protected-route readback has an invalid nftables shape")
+    classifier = any(
+        isinstance(item, dict) and isinstance(item.get("rule"), dict)
+        and item["rule"].get("table") == CORE_NFT_TABLE
+        and item["rule"].get("chain") == "fwrouter_classify"
+        and item["rule"].get("comment") == "protected IPv4 always direct"
+        for item in rows
+    )
+    vip = ipaddress.ip_address(PROTECTED_VIP)
+    member = False
+    for item in rows:
+        entry = item.get("set") if isinstance(item, dict) else None
+        if not isinstance(entry, dict) or entry.get("table") != CORE_NFT_TABLE \
+                or entry.get("name") != "protected_ipv4":
+            continue
+        elements = entry.get("elem")
+        if not isinstance(elements, list):
+            continue
+        for element in elements:
+            token = element if isinstance(element, str) else None
+            if isinstance(element, dict) and isinstance(element.get("prefix"), dict):
+                prefix = element["prefix"]
+                address, length = prefix.get("addr"), prefix.get("len")
+                if isinstance(address, str) and type(length) is int:
+                    token = f"{address}/{length}"
+            try:
+                if token is not None and vip in ipaddress.ip_network(token, strict=False):
+                    member = True
+            except ValueError:
+                continue
+    return {"classifier_bypass_installed": classifier, "protected_vip_in_active_set": member}
+
+
 def _core_counter_delta(before: dict[str, int | None], after: dict[str, int | None]) -> dict[str, int]:
     if set(before) != {"direct_lan_forward", "vpn_tcp", "vpn_udp", "vpn_udp_handoff"} or set(after) != set(before):
         raise AssertionError("FWRouter counter snapshots do not match the fixed path contract")
@@ -701,7 +754,11 @@ def _router_guard_counter_snapshot() -> dict[str, dict[str, int]]:
         raise AssertionError("router egress guard counter readback was not valid JSON") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("nftables"), list):
         raise AssertionError("router egress guard counter readback has an invalid shape")
-    wanted = {"router_stub_drop", "router_egress_drop", "router_forward_drop"}
+    wanted = {
+        "router_stub_drop", "router_egress_drop", "router_forward_drop",
+        "router_protected_tcp_output", "router_protected_udp_output",
+        "router_protected_tcp_forward", "router_protected_udp_forward",
+    }
     found: dict[str, list[dict[str, int]]] = {name: [] for name in wanted}
     for item in payload["nftables"]:
         counter = item.get("counter") if isinstance(item, dict) else None
@@ -716,7 +773,11 @@ def _router_guard_counter_snapshot() -> dict[str, dict[str, int]]:
 
 def _router_guard_counter_delta(before: dict[str, dict[str, int]],
                                 after: dict[str, dict[str, int]]) -> dict[str, dict[str, int]]:
-    if set(before) != {"router_stub_drop", "router_egress_drop", "router_forward_drop"} or set(after) != set(before):
+    if set(before) != {
+            "router_stub_drop", "router_egress_drop", "router_forward_drop",
+            "router_protected_tcp_output", "router_protected_udp_output",
+            "router_protected_tcp_forward", "router_protected_udp_forward",
+    } or set(after) != set(before):
         raise AssertionError("router guard counter snapshots differ from the fixed fixture contract")
     delta = {name: {field: after[name][field] - before[name][field]
                     for field in ("packets", "bytes")} for name in before}
@@ -771,6 +832,88 @@ def _endpoint_observations() -> dict[str, Any]:
         "shape": "invalid observations"
     }
     return response
+
+
+def _protected_endpoint_observations() -> dict[str, Any]:
+    response = _role_json(f"{ENDPOINT_CONTROL}/protected-observations")
+    assert set(response) == {"counts", "peers"}, {"keys": sorted(response)}
+    assert (isinstance(response.get("counts"), dict) and isinstance(response.get("peers"), dict)
+            and set(response["counts"]) == {"tcp", "udp"}
+            and set(response["peers"]) == {"tcp", "udp"}), {"shape": "invalid protected observations"}
+    return response
+
+
+def _probe_protected_direct_phase(stack: dict[str, Any], source_ref: str,
+                                  record_property: Any) -> dict[str, Any]:
+    """Prove protected TCP/UDP stay direct while global VPN policy remains active."""
+    _assert_packet_runtime(stack, mode="vpn", policy_required=True)
+    native_before = _packet_vpn_runtime_selection(stack)
+    selection_before = _provider_selection_snapshot(source_ref)
+    protected_rule_before = _core_protected_exception_readback()
+    core_before = _core_counter_snapshot()
+    before_capture = _packet_counts()
+    before_endpoint = _protected_endpoint_observations()
+    before_guard = _router_guard_counter_snapshot()
+    tcp = _role_json(f"{CLIENT_CONTROL}/probe/protected-tcp", method="POST")
+    udp = _role_json(f"{CLIENT_CONTROL}/probe/protected-udp", method="POST")
+    after_capture = _wait_packet_counts(lambda counts: (
+        _flow_delta(before_capture, counts, (CLIENT_IP, PROTECTED_VIP, "tcp", 9080)) > 0
+        and _flow_delta(before_capture, counts, (CLIENT_IP, PROTECTED_VIP, "udp", 9081)) > 0
+    ))
+    after_endpoint = _protected_endpoint_observations()
+    core_delta = _core_counter_delta(core_before, _core_counter_snapshot())
+    protected_rule_after = _core_protected_exception_readback()
+    after_guard = _router_guard_counter_snapshot()
+    guard_delta = _router_guard_counter_delta(before_guard, after_guard)
+    selection_after = _provider_selection_snapshot(source_ref)
+    _assert_packet_runtime(stack, mode="vpn", policy_required=True)
+    native_after = _packet_vpn_runtime_selection(stack)
+    endpoint_delta = {
+        kind: after_endpoint["counts"][kind] - before_endpoint["counts"][kind]
+        for kind in ("tcp", "udp")
+    }
+    flows = {
+        "tcp_9080": _flow_delta(before_capture, after_capture, (CLIENT_IP, PROTECTED_VIP, "tcp", 9080)),
+        "udp_9081": _flow_delta(before_capture, after_capture, (CLIENT_IP, PROTECTED_VIP, "udp", 9081)),
+    }
+    proof = {
+        "phase": "protected-direct-under-global-vpn",
+        "endpoint_counts_delta": endpoint_delta,
+        "endpoint_peers": after_endpoint["peers"],
+        "capture_flow_delta": flows,
+        "router_guard_delta": guard_delta,
+        "core_vpn_delta": {
+            "vpn_tcp_classified": core_delta["vpn_tcp_classified"],
+            "vpn_udp_classified": core_delta["vpn_udp_classified"],
+        },
+        "native_protected_rule": protected_rule_after,
+        "native_protected_rule_stable": protected_rule_before == protected_rule_after,
+        "native_vpn_active": True,
+        "native_target_stable": native_before == native_after,
+        "selection_stable": selection_before == selection_after,
+        "selection_revision_stable": selection_before.get("selection_revision")
+        == selection_after.get("selection_revision"),
+        "tcp_peer": tcp.get("peer"),
+        "udp_peer": udp.get("peer"),
+    }
+    _record_phase_diagnostic(record_property, proof)
+    assert tcp.get("ok") is True and tcp.get("service") == "protected-tcp"
+    assert udp.get("ok") is True and udp.get("service") == "protected-udp"
+    assert endpoint_delta == {"tcp": 1, "udp": 1}, proof
+    assert CLIENT_IP in after_endpoint["peers"]["tcp"] and CLIENT_IP in after_endpoint["peers"]["udp"], proof
+    assert flows["tcp_9080"] > 0 and flows["udp_9081"] > 0, proof
+    assert core_delta["vpn_tcp_classified"] == 0 and core_delta["vpn_udp_classified"] == 0, proof
+    assert protected_rule_before == {
+        "classifier_bypass_installed": True, "protected_vip_in_active_set": True,
+    }, proof
+    assert protected_rule_after == protected_rule_before and proof["native_protected_rule_stable"] is True, proof
+    assert proof["selection_stable"] is True and proof["selection_revision_stable"] is True, proof
+    assert proof["native_target_stable"] is True, proof
+    assert guard_delta["router_protected_tcp_forward"]["packets"] > 0
+    assert guard_delta["router_protected_udp_forward"]["packets"] > 0
+    assert guard_delta["router_protected_tcp_output"]["packets"] == 0
+    assert guard_delta["router_protected_udp_output"]["packets"] == 0
+    return proof
 
 
 def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
@@ -861,6 +1004,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "provider-recovery-confirmation-1",
                      "provider-reentry",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
+                     "protected-direct-under-global-vpn",
                      "emergency-direct", "vpn-after-reentry", "provider-enable-job",
                      "vpn-auto-exclusive-job", "provider-refresh-supported", "provider-refresh-unknown",
                      "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn"}:
@@ -1734,6 +1878,22 @@ def _assert_packet_runtime(stack: dict, *, mode: str, policy_required: bool) -> 
     }
 
 
+def _packet_vpn_runtime_selection(stack: dict[str, Any]) -> dict[str, str]:
+    code, payload = http_json(f"{stack['api']}/mihomo")
+    assert code == 200 and payload.get("ok") is True
+    mihomo = payload.get("data", {}).get("mihomo", {})
+    details = mihomo.get("details", {}) if isinstance(mihomo, dict) else {}
+    selectors = details.get("selectors", {}) if isinstance(details, dict) else {}
+    assert isinstance(selectors, dict)
+    now = selectors.get("vpn_global_now")
+    auto_target = selectors.get("vpn_auto_now")
+    selected_target = selectors.get("vpn_auto_selected_target")
+    assert now == "vpn-auto" and isinstance(auto_target, str) and auto_target
+    assert isinstance(selected_target, str) and selected_target
+    return {"vpn_global_now": now, "vpn_auto_now": auto_target,
+            "vpn_auto_selected_target": selected_target}
+
+
 def _write_capture_summary(phases: dict[str, Any]) -> None:
     """Write compact packet-proof facts; full diagnostics remain in bounded JUnit properties."""
     def number(value: Any) -> int | None:
@@ -1742,6 +1902,11 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
     def counters(source: Any, keys: tuple[str, ...]) -> dict[str, int | None]:
         values = source if isinstance(source, dict) else {}
         return {key: number(values.get(key)) for key in keys}
+
+    def guard_packets(source: Any, keys: tuple[str, ...]) -> dict[str, int | None]:
+        values = source if isinstance(source, dict) else {}
+        return {key: number(values.get(key, {}).get("packets")
+                            if isinstance(values.get(key), dict) else None) for key in keys}
 
     def native_empty(source: Any) -> dict[str, Any]:
         value = source if isinstance(source, dict) else {}
@@ -1759,6 +1924,7 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
 
     capability = phases.get("udp_capability_contract") if isinstance(phases.get("udp_capability_contract"), dict) else {}
     supported = capability.get("supported_packet") if isinstance(capability.get("supported_packet"), dict) else {}
+    protected = phases.get("protected_direct") if isinstance(phases.get("protected_direct"), dict) else {}
     unknown = capability.get("unknown_packet") if isinstance(capability.get("unknown_packet"), dict) else {}
     unsupported = capability.get("unsupported_packet") if isinstance(capability.get("unsupported_packet"), dict) else {}
     unavailable = capability.get("endpoint_unavailable") if isinstance(capability.get("endpoint_unavailable"), dict) else {}
@@ -1785,6 +1951,22 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
             "core": counters(vpn.get("core_counters"),
                               ("vpn_tcp_classified", "vpn_udp_classified", "vpn_udp_handoff_packets")),
             "endpoint": observation_counts(vpn.get("observations")),
+        },
+        "protected_direct": {
+            "native_vpn": protected.get("native_vpn_active") is True,
+            "native_target_stable": protected.get("native_target_stable") is True,
+            "selection_stable": protected.get("selection_stable") is True,
+            "protected_rule_installed": (protected.get("native_protected_rule") or {}).get("classifier_bypass_installed") is True
+            and (protected.get("native_protected_rule") or {}).get("protected_vip_in_active_set") is True,
+            "protected_rule_stable": protected.get("native_protected_rule_stable") is True,
+            "core_vpn_classified": counters(protected.get("core_vpn_delta"),
+                                              ("vpn_tcp_classified", "vpn_udp_classified")),
+            "endpoint": counters(protected.get("endpoint_counts_delta"), ("tcp", "udp")),
+            "capture": counters(protected.get("capture_flow_delta"), ("tcp_9080", "udp_9081")),
+            "forward_guard": guard_packets(protected.get("router_guard_delta"),
+                                             ("router_protected_tcp_forward", "router_protected_udp_forward")),
+            "output_guard": guard_packets(protected.get("router_guard_delta"),
+                                            ("router_protected_tcp_output", "router_protected_udp_output")),
         },
         "udp_capability": {
             "supported": {
@@ -1874,6 +2056,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert endpoint_ready.get("sockets") == {
         "xray_tcp_5301": True, "http_tcp_9080": True, "control_tcp_8082": True,
         "udp_echo_9081": True, "dns_udp_5353": True,
+        "protected_tcp_9080": True, "protected_udp_9081": True,
     }
     xray = endpoint_ready.get("xray")
     assert isinstance(xray, dict) and xray.get("running") is True
@@ -1962,6 +2145,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     supported_capability = _packet_capability_state(stack, source_ref, logical_id, "supported", True)
+    protected_direct_phase = _probe_protected_direct_phase(stack, source_ref, record_property)
     before_vpn = _packet_counts()
     core_before_vpn = _core_counter_snapshot()
     vpn_phase = _probe_phase(stack, SERVICE_VIP, "vpn-supported-udp", core_before_vpn, record_property,
@@ -2233,6 +2417,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
                 "mihomo_path": vpn_phase["mihomo_path"],
                 "observations": vpn_phase["observations"],
                 "egress_guard": vpn_phase["leak"], "router_guard": vpn_phase["router_guard"]},
+        "protected_direct": protected_direct_phase,
         "udp_capability_contract": {
             "supported": supported_capability["declared_capability"] == "supported",
             "supported_packet": {

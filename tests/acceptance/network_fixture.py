@@ -48,10 +48,12 @@ ROUTER_WAN_IP = "198.18.240.1"
 ENDPOINT_WAN_IP = "198.18.240.2"
 WAN_NET = "198.18.240.0/29"
 SERVICE_VIP = "203.0.113.53"
+PROTECTED_VIP = "10.250.240.2"
 ENDPOINT_XRAY_PORT = 5301
 HTTP_PORT = 9080
 UDP_ECHO_PORT = 9081
 DNS_PORT = 5353
+PROTECTED_UDP_PORT = 9081
 CLIENT_CONTROL_PORT = 8081
 ENDPOINT_CONTROL_PORT = 8082
 XRAY_PATH = Path("/opt/fwrouter-test/bin/xray")
@@ -300,18 +302,19 @@ def _validate_role_network(role: str) -> None:
             if (isinstance(item, dict) and item.get("family") == "inet"
                     and isinstance(item.get("local"), str) and isinstance(item.get("prefixlen"), int)):
                 found.add((item["local"], item["prefixlen"]))
-                if item["local"] == SERVICE_VIP:
+                if item["local"] in {SERVICE_VIP, PROTECTED_VIP}:
                     vip_interfaces.add(str(interface.get("ifname", "")))
     if role == "client":
         required_addresses = {("127.0.0.1", 8), (CLIENT_IP, 29)}
         required_route = ("default", ROUTER_LAN_IP)
     else:
-        required_addresses = {("127.0.0.1", 8), (ENDPOINT_WAN_IP, 29), (SERVICE_VIP, 32)}
+        required_addresses = {("127.0.0.1", 8), (ENDPOINT_WAN_IP, 29),
+                              (SERVICE_VIP, 32), (PROTECTED_VIP, 32)}
         required_route = (CLIENT_NET, ROUTER_WAN_IP)
     if found != required_addresses:
         raise FixtureError("role network addresses differ from the fixed packet topology")
     if role == "endpoint" and vip_interfaces != {"lo"}:
-        raise FixtureError("service VIP must be owned only by endpoint loopback")
+        raise FixtureError("service VIPs must be owned only by endpoint loopback")
     if not isinstance(routes, list):
         raise FixtureError("fixed role route facts have an invalid shape")
     route_pairs = {(item.get("dst", "default"), item.get("gateway")) for item in routes if isinstance(item, dict)}
@@ -416,10 +419,10 @@ def _install_guard(role: str) -> None:
     ))
     if role == "client":
         input_rules.append(
-            f'add rule inet {TABLE_NAME} input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP} }} '
+            f'add rule inet {TABLE_NAME} input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }} '
             'ct state established,related accept')
         output_rules.append(
-            f'add rule inet {TABLE_NAME} output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP} }} '
+            f'add rule inet {TABLE_NAME} output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }} '
             'ct state established,related accept')
         output_rules.extend((
             f'add rule inet {TABLE_NAME} output ip daddr {ENDPOINT_WAN_IP} tcp dport 22 accept',
@@ -428,9 +431,11 @@ def _install_guard(role: str) -> None:
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} '
             f'udp dport {{ {UDP_ECHO_PORT}, {DNS_PORT} }} accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {PROTECTED_VIP} tcp dport {HTTP_PORT} accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {PROTECTED_VIP} udp dport {PROTECTED_UDP_PORT} accept',
         ))
     else:
-        allowed_sources = f"{{ {CLIENT_IP}, {ROUTER_WAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP} }}"
+        allowed_sources = f"{{ {CLIENT_IP}, {ROUTER_WAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }}"
         input_rules.append(
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ct state established,related accept')
         input_rules.extend((
@@ -440,6 +445,10 @@ def _install_guard(role: str) -> None:
             f'tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {SERVICE_VIP} '
             f'udp dport {{ {UDP_ECHO_PORT}, {DNS_PORT} }} accept',
+            f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {PROTECTED_VIP} '
+            f'tcp dport {HTTP_PORT} accept',
+            f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {PROTECTED_VIP} '
+            f'udp dport {PROTECTED_UDP_PORT} accept',
         ))
         output_rules.extend((
             f'add rule inet {TABLE_NAME} output ip daddr {allowed_sources} ct state established,related accept',
@@ -448,6 +457,8 @@ def _install_guard(role: str) -> None:
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} '
             f'udp dport {{ {UDP_ECHO_PORT}, {DNS_PORT} }} accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {PROTECTED_VIP} tcp dport {HTTP_PORT} accept',
+            f'add rule inet {TABLE_NAME} output ip daddr {PROTECTED_VIP} udp dport {PROTECTED_UDP_PORT} accept',
         ))
     definitions = [f"add table inet {TABLE_NAME}"]
     if role == "client":
@@ -534,6 +545,28 @@ class _Observations:
 
 
 _OBS = _Observations()
+
+
+class _ProtectedObservations:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts = {"tcp": 0, "udp": 0}
+        self._peers: dict[str, list[str]] = {"tcp": [], "udp": []}
+
+    def record(self, kind: str, peer: str) -> None:
+        with self._lock:
+            self._counts[kind] += 1
+            peers = self._peers[kind]
+            if peer not in peers and len(peers) < 4:
+                peers.append(peer)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {"counts": dict(self._counts), "peers": {key: list(value)
+                                                               for key, value in self._peers.items()}}
+
+
+_PROTECTED_OBS = _ProtectedObservations()
 _ROLE_STOP = threading.Event()
 _HEALTH_LOCK = threading.Lock()
 _HEALTH_AVAILABLE = True
@@ -600,6 +633,8 @@ class _EndpointHandler(_QuietHandler):
             self._send_json(200, _endpoint_status(self.server, runtime))
         elif is_control and self.path == "/observations":
             self._send_json(200, _OBS.snapshot())
+        elif is_control and self.path == "/protected-observations":
+            self._send_json(200, _PROTECTED_OBS.snapshot())
         elif self.server.server_address == (SERVICE_VIP, HTTP_PORT) and self.path == "/generate_204":
             self._send_generate_204()
         elif is_control and self.path == "/xray":
@@ -610,6 +645,10 @@ class _EndpointHandler(_QuietHandler):
                 self._send_json(200, runtime.snapshot())
         elif self.path == "/probe" and self.server.server_address[0] == SERVICE_VIP:
             _OBS.record("http", self.client_address[0])
+            self._send_json(200, {"ok": True, "peer": self.client_address[0]})
+        elif (self.path == "/probe/protected" and
+              self.server.server_address == (PROTECTED_VIP, HTTP_PORT)):
+            _PROTECTED_OBS.record("tcp", self.client_address[0])
             self._send_json(200, {"ok": True, "peer": self.client_address[0]})
         else:
             self._send_json(404, {"error": "not_found"})
@@ -708,7 +747,8 @@ class _ClientHandler(_QuietHandler):
             self._send_json(404, {"error": "not_found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/probe/tcp", "/probe/tcp-negative", "/probe/udp", "/probe/udp-negative", "/probe/dns", "/probe/dns-negative",
+        if self.path not in {"/probe/tcp", "/probe/tcp-negative", "/probe/udp", "/probe/udp-negative",
+                             "/probe/protected-tcp", "/probe/protected-udp", "/probe/dns", "/probe/dns-negative",
                              "/probe/leak", "/probe/router-forward-leak"}:
             self._send_json(404, {"error": "not_found"})
             return
@@ -725,6 +765,10 @@ class _ClientHandler(_QuietHandler):
                 result = _probe_udp()
             elif self.path == "/probe/udp-negative":
                 result = _probe_udp_negative()
+            elif self.path == "/probe/protected-tcp":
+                result = _probe_protected_tcp()
+            elif self.path == "/probe/protected-udp":
+                result = _probe_protected_udp()
             elif self.path == "/probe/dns":
                 result = _probe_dns()
             elif self.path == "/probe/dns-negative":
@@ -785,6 +829,15 @@ class _UDPEchoHandler(socketserver.BaseRequestHandler):
         if len(data) != len(PROBE_BODY) or data != PROBE_BODY:
             return
         _OBS.record("udp", self.client_address[0])
+        sock.sendto(PROBE_BODY, self.client_address)
+
+
+class _ProtectedUDPEchoHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        data, sock = self.request
+        if len(data) != len(PROBE_BODY) or data != PROBE_BODY:
+            return
+        _PROTECTED_OBS.record("udp", self.client_address[0])
         sock.sendto(PROBE_BODY, self.client_address)
 
 
@@ -890,6 +943,39 @@ def _probe_udp_negative() -> dict[str, Any]:
     if data != PROBE_BODY or peer[0] != SERVICE_VIP or peer[1] != UDP_ECHO_PORT:
         raise FixtureError("bounded negative UDP probe unexpectedly received an invalid response")
     return {"service": "udp", "peer": peer[0]}
+
+
+def _probe_protected_tcp() -> dict[str, Any]:
+    with socket.create_connection((PROTECTED_VIP, HTTP_PORT), timeout=CONTROL_TIMEOUT) as conn:
+        conn.settimeout(CONTROL_TIMEOUT)
+        conn.sendall(b"GET /probe/protected HTTP/1.1\r\nHost: protected.fwrouter.test\r\n"
+                     b"Connection: close\r\n\r\n")
+        data = bytearray()
+        while len(data) <= MAX_HTTP_BODY + 512:
+            chunk = conn.recv(min(512, MAX_HTTP_BODY + 513 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+    if len(data) > MAX_HTTP_BODY + 512 or b" 200 " not in data[:64] or b"\r\n\r\n" not in data:
+        raise FixtureError("protected TCP endpoint did not return the fixed probe response")
+    try:
+        payload = json.loads(bytes(data).split(b"\r\n\r\n", 1)[1])
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise FixtureError("protected TCP endpoint response was not valid JSON") from exc
+    peer = payload.get("peer") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("ok") is not True or peer not in {CLIENT_IP, ROUTER_WAN_IP}:
+        raise FixtureError("protected TCP endpoint did not report a fixed peer")
+    return {"service": "protected-tcp", "peer": peer}
+
+
+def _probe_protected_udp() -> dict[str, Any]:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(CONTROL_TIMEOUT)
+        sock.sendto(PROBE_BODY, (PROTECTED_VIP, PROTECTED_UDP_PORT))
+        data, peer = sock.recvfrom(128)
+    if data != PROBE_BODY or peer != (PROTECTED_VIP, PROTECTED_UDP_PORT):
+        raise FixtureError("protected UDP endpoint returned an invalid fixed response")
+    return {"service": "protected-udp", "peer": peer[0]}
 
 
 def _probe_dns() -> dict[str, Any]:
@@ -1079,6 +1165,10 @@ def _endpoint_status(control_server: Any, runtime: _XrayRuntime | None) -> dict[
             servers[2], SERVICE_VIP, UDP_ECHO_PORT, tcp=False)),
         "dns_udp_5353": bool(len(servers) > 3 and _server_socket_ready(
             servers[3], SERVICE_VIP, DNS_PORT, tcp=False)),
+        "protected_tcp_9080": bool(len(servers) > 4 and _server_socket_ready(
+            servers[4], PROTECTED_VIP, HTTP_PORT, tcp=True)),
+        "protected_udp_9081": bool(len(servers) > 5 and _server_socket_ready(
+            servers[5], PROTECTED_VIP, PROTECTED_UDP_PORT, tcp=False)),
     }
     running = runtime is not None and runtime.running
     return {"ready": running and all(sockets.values()), "role": "endpoint", "sockets": sockets,
@@ -1095,6 +1185,8 @@ def _serve(role: str, profile: dict[str, Any]) -> None:
             servers.append(_BoundedHTTPServer((ENDPOINT_WAN_IP, ENDPOINT_CONTROL_PORT), _EndpointHandler))
             servers.append(_BoundedUDPServer((SERVICE_VIP, UDP_ECHO_PORT), _UDPEchoHandler))
             servers.append(_BoundedUDPServer((SERVICE_VIP, DNS_PORT), _DNSHandler))
+            servers.append(_BoundedHTTPServer((PROTECTED_VIP, HTTP_PORT), _EndpointHandler))
+            servers.append(_BoundedUDPServer((PROTECTED_VIP, PROTECTED_UDP_PORT), _ProtectedUDPEchoHandler))
             servers[1].xray_runtime = runtime
             servers[1].role_servers = tuple(servers)
             servers[1].xray_lock = threading.Lock()
