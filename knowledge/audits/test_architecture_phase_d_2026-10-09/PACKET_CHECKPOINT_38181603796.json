@@ -1,0 +1,109 @@
+{
+  "cleanup": "owned_resources_removed",
+  "host_snapshots_unchanged": true,
+  "native_dns53": {
+    "api_status_ok": true,
+    "capture_router_to_owned_upstream": {
+      "tcp_upstream": 3,
+      "udp_upstream": 3
+    },
+    "cleanup_ok": true,
+    "client_answers_fixed": true,
+    "dns_selected_endpoint_flow_delta": {
+      "direct_domain_tcp": 1,
+      "direct_domain_udp": 1,
+      "vpn_domain_tcp": 1,
+      "vpn_domain_udp": 1
+    },
+    "dns_selected_endpoint_peer_proof": {
+      "direct_domain_tcp_local": true,
+      "direct_domain_udp_local": true,
+      "vpn_domain_tcp_local": true,
+      "vpn_domain_udp_local": true
+    },
+    "endpoint_observations_delta": {
+      "direct_name": 1,
+      "other_name": 2,
+      "tcp": 1,
+      "udp": 3,
+      "vpn_name": 1
+    },
+    "endpoint_peers_router_wan_only": true,
+    "endpoint_reply_delta": {
+      "direct_name": 1,
+      "other_name": 2,
+      "tcp": 1,
+      "udp": 3,
+      "vpn_name": 1
+    },
+    "external_nxdomain_both": true,
+    "native_dnsmasq_reference": "dns53-native-daemon",
+    "native_nftset_probe_targets": [
+      {
+        "domain": "vpn.test",
+        "materialized_count": 1,
+        "ok": true,
+        "resolved": true
+      },
+      {
+        "domain": "direct.test",
+        "materialized_count": 1,
+        "ok": true,
+        "resolved": true
+      }
+    ],
+    "native_vpn_stable": true,
+    "phase": "native-dns53-under-global-vpn",
+    "resolved_flow_core_delta": {
+      "vpn_tcp_classified": 12,
+      "vpn_udp_classified": 2,
+      "vpn_udp_handoff_packets": 2
+    },
+    "resolved_flow_direct_capture_delta": {
+      "service_tcp_client_direct": 0,
+      "service_tcp_router_direct": 0,
+      "service_udp_client_direct": 0,
+      "service_udp_router_direct": 0,
+      "vpn_alias_tcp_client_direct": 0,
+      "vpn_alias_tcp_router_direct": 0,
+      "vpn_alias_udp_client_direct": 0,
+      "vpn_alias_udp_router_direct": 0
+    },
+    "resolved_user_flows_fixed": true,
+    "router_guard_dns_packets": {
+      "router_dns_tcp_input": 3,
+      "router_dns_udp_input": 5,
+      "router_dns_udp_output": 3,
+      "router_dns_vpn_direct_forward": 0,
+      "router_dns_vpn_direct_output": 0
+    },
+    "selection_stable": true
+  },
+  "not_covered": [
+    "actual_vpn_auto_server_change_packet_path",
+    "selective_mode_domain_direct_priority",
+    "debian_host_systemd_boot_kernel_parity",
+    "full_functional_and_affected_gates",
+    "provider_reentry_concurrency_timing",
+    "L7_release_gate"
+  ],
+  "production_changed": false,
+  "resources": {
+    "cpu_system_seconds": 4.574,
+    "cpu_user_seconds": 29.955,
+    "max_rss_kib": 123700,
+    "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+    "owned_temp_bytes_before_cleanup": 2055468,
+    "wall_seconds": 60.912
+  },
+  "result": {
+    "fail": 0,
+    "junit_suite_seconds": 60.898,
+    "pass": 1,
+    "skip": 0
+  },
+  "run_id": 38181603796,
+  "schema": "fwrouter-phase-d-packet-checkpoint/v1",
+  "source": "fa0056ed04858d215ac384b5b582528d6661a6e8",
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38181603796"
+}
