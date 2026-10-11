@@ -1,5 +1,9 @@
 # Test Architecture and CI/CD Foundation
 
+## Verified protected-DIRECT checkpoint — 2026-10-11
+
+Run [38141202543](https://github.com/Coxf0rd/fwrouter/actions/runs/38141202543), `cf62b37`: **1 PASS / 0 FAIL / 0 SKIP**, 46.575 s. Real protected TCP/UDP forwarding succeeds under stable active VPN with exact endpoint/capture/native rule/set/counter proof. The prior UDP/empty-pool/Emergency Direct/re-entry checks also pass. Run `38140783732`, `49d40ff`, separately confirms **3 application/native/browser PASS** (including real CAS-miss fresh reconciliation) plus 18 read-model and 4 alias cases. This supersedes the older protected-DIRECT and targeted CAS/browser pending notes only in the tested scope. DNS/53, actual selector-change packet forwarding, provider cohort, full functional/affected, GHCR and reproducibility remain open. Phase D **BLOCKED**; production unchanged. See Phase D REPORT and `PACKET_CHECKPOINT_38141202543.json`; older evidence is retained.
+
 ### Packet acceptance update — 2026-10-11
 
 Run [38138693984](https://github.com/Coxf0rd/fwrouter/actions/runs/38138693984), `8689e23`: **1 PASS / 0 FAIL / 0 SKIP**, 55.400 s. Actual supported/unknown VPN UDP paths, unsupported/unavailable/empty-pool fail-closed, TCP, Emergency Direct and verified VPN re-entry pass. Re-entry provider calls are 1→1 (zero additional calls); native handoff/rollback receipt proof and cleanup pass, with unchanged host network/firewall snapshots. This supersedes the pending alias acceptance below only for this packet scenario. DNS/53, protected DIRECT, packet proof after a real selector change, fresh application/browser/provider/full gates and GHCR remain open. Phase D **BLOCKED**, production unchanged. See the [structured checkpoint](../audits/test_architecture_phase_d_2026-10-09/PACKET_CHECKPOINT_38138693984.json).
