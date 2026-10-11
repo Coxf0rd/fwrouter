@@ -1414,7 +1414,12 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertEqual(after_rejected["replies"]["udp"], 1)
             self.assertEqual(flags_socket.sent, [])
 
-            malformed = fixture._dns_query("a" * 64 + ".vpn.test")
+            malformed = (
+                b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+                + b"\x40" + b"a" * 64 + b"\x00\x00\x01\x00\x01"
+            )
+            self.assertLess(len(malformed), 512)
+            self.assertEqual(malformed[12], 64)
             self.assertIsNone(fixture._dns_upstream_query_name(malformed))
             self.assertEqual(fixture._dns_upstream_response(malformed, "udp", fixture.ROUTER_WAN_IP), b"")
             after_malformed = observations.snapshot()
