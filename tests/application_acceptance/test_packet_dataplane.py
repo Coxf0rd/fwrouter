@@ -69,6 +69,171 @@ def _role_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None 
     return value
 
 
+def _udp_negative_control() -> dict[str, Any]:
+    """Return a bounded client-side UDP failure, never interpreting HTTP 200 as packet success."""
+    request = urllib.request.Request(f"{CLIENT_CONTROL}/probe/udp-negative", data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            code, raw = response.status, response.read(8193)
+    except urllib.error.HTTPError as exc:
+        code, raw = exc.code, exc.read(8193)
+    except (OSError, TimeoutError) as exc:
+        raise AssertionError("bounded negative UDP control request did not complete") from exc
+    assert len(raw) <= 8192, "negative UDP control response exceeded its byte bound"
+    try:
+        value = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise AssertionError("negative UDP control response was not valid bounded JSON") from exc
+    assert code == 502 and isinstance(value, dict) and value.get("ok") is False, {
+        "control_status": code, "control_body_shape": type(value).__name__,
+    }
+    assert value.get("error") in {"TimeoutError", "ConnectionRefusedError", "OSError"}, {
+        "udp_failure_class": value.get("error"),
+    }
+    return {"control_status": code, "failure_class": value["error"]}
+
+
+def _tcp_negative_control() -> dict[str, Any]:
+    """Return a bounded client TCP rejection; a successful HTTP response fails the contract."""
+    request = urllib.request.Request(f"{CLIENT_CONTROL}/probe/tcp-negative", data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            code, raw = response.status, response.read(8193)
+    except urllib.error.HTTPError as exc:
+        code, raw = exc.code, exc.read(8193)
+    except (OSError, TimeoutError) as exc:
+        raise AssertionError("bounded negative TCP control request did not complete") from exc
+    assert len(raw) <= 8192, "negative TCP control response exceeded its byte bound"
+    try:
+        value = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise AssertionError("negative TCP control response was not valid bounded JSON") from exc
+    assert code == 502 and isinstance(value, dict) and value.get("ok") is False, {
+        "control_status": code, "control_body_shape": type(value).__name__,
+    }
+    assert value.get("error") in {"TimeoutError", "ConnectionRefusedError", "ConnectionResetError",
+                                   "OSError", "FixtureError"}, {
+        "tcp_failure_class": value.get("error"),
+    }
+    return {"control_status": code, "failure_class": value["error"]}
+
+
+def _set_packet_provider_capability(bridge: Any, capability: str | None) -> None:
+    if capability not in {None, "true", "false"}:
+        raise AssertionError("packet provider capability is outside the fixed URI matrix")
+    declaration = "" if capability is None else f"&udp={capability}"
+    row = dict(bridge.current_config)
+    row["connection_url"] = (
+        f"vless://88c7ce2a-465e-4e72-9c56-2a9e2fc84a51@{ENDPOINT_IP}:5301"
+        f"?type=tcp&encryption=none{declaration}#acceptance"
+    )
+    with bridge._lock:
+        bridge.current_config = row
+
+
+def _refresh_packet_provider(api: str, source_ref: str) -> dict[str, Any]:
+    code, accepted = http_json(f"{api}/subscription/sources/{source_ref}/provider", method="POST",
+                               payload={"action": "refresh"})
+    assert code == 200 and accepted.get("ok") is True and accepted.get("data", {}).get("accepted") is True
+    job = await_core_job(api, accepted)
+    assert job.get("status") == "success", {
+        "provider_refresh_status": job.get("status"), "provider_refresh_error": job.get("error_code"),
+    }
+    from fwrouter_api.services.provider_managed import binding_for
+    binding = binding_for(source_ref)
+    assert isinstance(binding, dict) and binding.get("logical_server_id")
+    return binding
+
+
+def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id: str,
+                             expected: str, expected_udp: bool,
+                             *, expect_active_server: bool = True) -> dict[str, Any]:
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.provider_managed import binding_for
+
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT member_id, member_config_json FROM logical_server_members "
+            "WHERE logical_server_id=? AND is_active=1 ORDER BY member_order, member_id",
+            (logical_id,),
+        ).fetchall()
+    assert len(rows) == 1, {"active_member_count": len(rows)}
+    member = json.loads(rows[0]["member_config_json"])
+    assert isinstance(member, dict) and member.get("_fwrouter_udp_capability") == expected, {
+        "member_udp_capability": member.get("_fwrouter_udp_capability") if isinstance(member, dict) else None,
+    }
+    config_path = stack["state"] / "generated" / "mihomo" / "config.yaml"
+    config = yaml.safe_load(config_path.read_bytes())
+    proxies = config.get("proxies") if isinstance(config, dict) else None
+    vless = [row for row in proxies if isinstance(row, dict) and row.get("type") == "vless"] if isinstance(proxies, list) else []
+    assert len(vless) == 1 and vless[0].get("udp") is expected_udp and vless[0].get("port") == 5301, {
+        "native_vless_count": len(vless),
+        "native_udp": vless[0].get("udp") if len(vless) == 1 else None,
+        "native_target_port": vless[0].get("port") if len(vless) == 1 else None,
+    }
+    assert not any(str(key).startswith("_fwrouter") for key in vless[0]), "internal capability marker leaked into native Mihomo config"
+    native = _mihomo_packet_path_proof(stack)
+    assert native.get("available") is True and native.get("runtime_running") is True, native
+    assert native.get("native_loaded_config_matches_active") is True, native
+    assert native.get("vless_udp_enabled_count") == (1 if expected_udp else 0), native
+    binding = binding_for(source_ref)
+    assert binding["logical_server_id"] == logical_id
+    code, vpn_state = http_json(f"{stack['api']}/state/vpn")
+    assert code == 200 and vpn_state.get("ok") is True
+    active = vpn_state["data"]["vpn"]["effective"]["server_health"]["active"]
+    expected_active_id = logical_id if expect_active_server else None
+    assert active.get("server_id") == expected_active_id, {
+        "active_logical_server_preserved": active.get("server_id"),
+        "expected_logical_server": expected_active_id,
+    }
+    return {"declared_capability": expected, "native_udp_attempt": expected_udp,
+            "member_id": rows[0]["member_id"], "native": native}
+
+
+def _provider_selection_snapshot(source_ref: str) -> dict[str, Any]:
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.provider_managed import binding_for
+    from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    binding = binding_for(source_ref)
+    with db_session() as connection:
+        fence = read_selection_fence(connection)
+    return {
+        "logical_server_id": binding.get("logical_server_id"),
+        "current_member_id": binding.get("current_member_id"),
+        "applied_member_id": binding.get("applied_member_id"),
+        "binding_revision": binding.get("binding_revision"),
+        "selection_revision": fence.get("revision"),
+        "exclusive_source_ref": get_vpn_auto_exclusive_source_ref(),
+    }
+
+
+def _assert_packet_selection_stable(before: dict[str, Any], after: dict[str, Any]) -> None:
+    if before != after:
+        raise AssertionError({"selection_fence_changed_during_packet_probe": {"before": before, "after": after}})
+
+
+def _refresh_packet_capability(stack: dict[str, Any], api: str, bridge: Any, source_ref: str, capability: str | None,
+                               expected_capability: str, logical_id: str, expected_member: str) -> dict[str, Any]:
+    before = _provider_selection_snapshot(source_ref)
+    _set_packet_provider_capability(bridge, capability)
+    binding = _refresh_packet_provider(api, source_ref)
+    after = _provider_selection_snapshot(source_ref)
+    assert binding.get("logical_server_id") == logical_id
+    assert after["logical_server_id"] == logical_id
+    assert after["current_member_id"] == expected_member and after["applied_member_id"] == expected_member, {
+        "provider_member_changed_during_capability_refresh": after,
+    }
+    assert after["exclusive_source_ref"] == source_ref
+    assert type(before["selection_revision"]) is int and type(after["selection_revision"]) is int
+    assert after["selection_revision"] >= before["selection_revision"], {
+        "selection_revision_moved_backwards": {"before": before, "after": after},
+    }
+    return _packet_capability_state(stack, source_ref, logical_id, expected_capability,
+                                    expected_capability != "unsupported")
+
+
 def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
                  expected_ports: set[int]) -> dict[tuple[str, str, str, int], int]:
     """Read only fixed IPv4 headers from a launcher-owned bounded live pcap."""
@@ -404,12 +569,21 @@ def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
         if type(count) is not int or count < 0 or count > 4096:
             count = None
         current_auto = selectors.get("vpn_auto_now")
+        auto_targets = selectors.get("vpn_auto_targets")
+        global_targets = selectors.get("vpn_global_targets")
+        auto_targets = auto_targets if isinstance(auto_targets, list) else []
+        global_targets = global_targets if isinstance(global_targets, list) else []
         return {
             "available": code == 200 and isinstance(mihomo, dict),
             "native_loaded_config_matches_active": True,
             "runtime_running": isinstance(mihomo, dict) and mihomo.get("runtime_state") == "running",
             "vpn_global_selects_vpn_auto": selectors.get("vpn_global_now") == "vpn-auto",
             "vpn_auto_selects_non_direct": isinstance(current_auto, str) and current_auto.upper() != "DIRECT",
+            "vpn_auto_selected_reject": str(current_auto or "").upper() == "REJECT",
+            "vpn_auto_selected_target": selectors.get("vpn_auto_selected_target"),
+            "vpn_auto_reject_only": auto_targets == ["REJECT"],
+            "vpn_auto_has_direct_target": any(str(item).upper() == "DIRECT" for item in auto_targets),
+            "vpn_global_has_direct_target": any(str(item).upper() == "DIRECT" for item in global_targets),
             "full_vpn_udp_listener_count": len(full_udp),
             "vless_proxy_count": len(vless),
             "vless_udp_enabled_count": sum(row.get("udp") is True for row in vless),
@@ -423,7 +597,10 @@ def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
 def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -> None:
     """Persist only the fixed, bounded packet-path observations in JUnit."""
     label = diagnostic.get("phase")
-    if label not in {"direct-before-vpn", "vpn", "emergency-direct", "vpn-after-reentry"}:
+    if label not in {"direct-before-vpn", "vpn", "vpn-supported-udp", "vpn-unknown-udp",
+                     "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
+                     "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
+                     "emergency-direct", "vpn-after-reentry"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
@@ -432,7 +609,8 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
 
 
 def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
-                 core_before: dict[str, int], record_property: Any) -> dict[str, Any]:
+                 core_before: dict[str, int], record_property: Any, source_ref: str) -> dict[str, Any]:
+    selection_before = _provider_selection_snapshot(source_ref)
     before = _endpoint_observations()
     tcp = _role_json(f"{CLIENT_CONTROL}/probe/tcp", method="POST")
     udp = _role_json(f"{CLIENT_CONTROL}/probe/udp", method="POST")
@@ -440,6 +618,7 @@ def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
     negative = _role_json(f"{CLIENT_CONTROL}/probe/dns-negative", method="POST")
     leak = _role_json(f"{CLIENT_CONTROL}/probe/leak", method="POST")
     after = _endpoint_observations()
+    selection_after = _provider_selection_snapshot(source_ref)
     try:
         core_counters = _core_counter_delta(core_before, _core_counter_snapshot())
     except Exception as exc:
@@ -453,8 +632,11 @@ def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
         },
         "core_counter_delta": core_counters,
         "mihomo_path": _mihomo_packet_path_proof(stack),
+        "provider_selection_before": selection_before,
+        "provider_selection_after": selection_after,
     }
     _record_phase_diagnostic(record_property, diagnostic)
+    _assert_packet_selection_stable(selection_before, selection_after)
     assert tcp.get("ok") is True and tcp.get("peer") == expected_peer, {**diagnostic, "service": "tcp"}
     assert udp.get("ok") is True and udp.get("peer") == SERVICE_VIP, {**diagnostic, "service": "udp"}
     assert dns.get("ok") is True and dns.get("peer") == SERVICE_VIP and dns.get("answer") == SERVICE_VIP, {
@@ -483,6 +665,221 @@ def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
     }, "router_guard": router_guard}
 
 
+def _wait_direct_udp_capture_quiet(baseline: dict[tuple[str, str, str, int], int],
+                                   *, timeout_seconds: float = UDP_NEGATIVE_TIMEOUT) -> dict[tuple[str, str, str, int], int]:
+    """Drain owned capture writes for the failed probe without a sleep or an unbounded wait."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if fd < 0:
+        raise AssertionError("bounded negative capture observer could not initialize")
+    selector = selectors.DefaultSelector()
+    try:
+        if libc.inotify_add_watch(fd, os.fsencode(UDP_CAPTURE_PATH), 0x00000002) < 0:
+            raise AssertionError("bounded negative capture observer could not watch its owned UDP capture")
+        selector.register(fd, selectors.EVENT_READ)
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            current = _packet_counts()
+            direct = sum(_flow_delta(baseline, current, flow) for flow in (
+                (CLIENT_IP, SERVICE_VIP, "udp", 9081),
+                (ROUTER_WAN_IP, SERVICE_VIP, "udp", 9081),
+            ))
+            if direct > 0:
+                return current
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                return _packet_counts()
+            while True:
+                try:
+                    events = os.read(fd, 4096)
+                except BlockingIOError:
+                    break
+                if not events:
+                    break
+                offset = 0
+                while offset + 16 <= len(events):
+                    _watch, mask, _cookie, name_length = struct.unpack_from("iIII", events, offset)
+                    if mask & 0x00004000:
+                        raise AssertionError("negative capture observer queue overflowed")
+                    offset += 16 + name_length
+    finally:
+        selector.close()
+        os.close(fd)
+
+
+def _wait_direct_tcp_capture_quiet(baseline: dict[tuple[str, str, str, int], int],
+                                   *, timeout_seconds: float = UDP_NEGATIVE_TIMEOUT) -> dict[tuple[str, str, str, int], int]:
+    """Boundedly observe TCP capture writes while rejecting direct VIP connections."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if fd < 0:
+        raise AssertionError("bounded negative TCP capture observer could not initialize")
+    selector = selectors.DefaultSelector()
+    try:
+        if libc.inotify_add_watch(fd, os.fsencode(TCP_CAPTURE_PATH), 0x00000002) < 0:
+            raise AssertionError("bounded negative TCP capture observer could not watch its owned capture")
+        selector.register(fd, selectors.EVENT_READ)
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            current = _packet_counts()
+            direct = sum(_flow_delta(baseline, current, flow) for flow in (
+                (CLIENT_IP, SERVICE_VIP, "tcp", 9080),
+                (ROUTER_WAN_IP, SERVICE_VIP, "tcp", 9080),
+            ))
+            if direct > 0:
+                return current
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                return _packet_counts()
+            while True:
+                try:
+                    events = os.read(fd, 4096)
+                except BlockingIOError:
+                    break
+                if not events:
+                    break
+                offset = 0
+                while offset + 16 <= len(events):
+                    _watch, mask, _cookie, name_length = struct.unpack_from("iIII", events, offset)
+                    if mask & 0x00004000:
+                        raise AssertionError("negative TCP capture observer queue overflowed")
+                    offset += 16 + name_length
+    finally:
+        selector.close()
+        os.close(fd)
+
+
+def _probe_vpn_udp_contract_phase(stack: dict[str, Any], source_ref: str, logical_id: str,
+                                  capability: str, expected_udp: bool, label: str,
+                                  record_property: Any, *, expect_success: bool,
+                                  endpoint_unavailable: bool = False,
+                                  expect_vpn_handoff: bool | None = None,
+                                  expect_active_server: bool = True) -> dict[str, Any]:
+    _assert_packet_runtime(stack, mode="vpn", policy_required=True)
+    capability_state = _packet_capability_state(stack, source_ref, logical_id, capability, expected_udp,
+                                                 expect_active_server=expect_active_server)
+    selection_before = _provider_selection_snapshot(source_ref)
+    observations_before = _endpoint_observations()
+    capture_before = _packet_counts()
+    core_before = _core_counter_snapshot()
+    if endpoint_unavailable:
+        endpoint_state = _role_json(f"{ENDPOINT_CONTROL}/ready")
+        assert endpoint_state.get("sockets", {}).get("xray_tcp_5301") is False, endpoint_state
+        attempt = _udp_negative_control()
+        capture_after = _wait_direct_udp_capture_quiet(capture_before)
+    elif expect_success:
+        attempt = _role_json(f"{CLIENT_CONTROL}/probe/udp", method="POST")
+        capture_after = _wait_packet_counts(lambda counts:
+            _flow_delta(capture_before, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
+    else:
+        attempt = _udp_negative_control()
+        capture_after = _wait_direct_udp_capture_quiet(capture_before)
+    observations_after = _endpoint_observations()
+    selection_after = _provider_selection_snapshot(source_ref)
+    core_delta = _core_counter_delta(core_before, _core_counter_snapshot())
+    direct_flow_deltas = {
+        "client_source_to_service": _flow_delta(capture_before, capture_after,
+                                                 (CLIENT_IP, SERVICE_VIP, "udp", 9081)),
+        "mihomo_direct_to_service": _flow_delta(capture_before, capture_after,
+                                                 (ROUTER_WAN_IP, SERVICE_VIP, "udp", 9081)),
+    }
+    endpoint_udp_delta = observations_after["counts"].get("udp", -1) - observations_before["counts"].get("udp", 0)
+    diagnostic = {
+        "phase": label,
+        "capability": capability_state,
+        "attempt": attempt,
+        "expected_success": expect_success,
+        "endpoint_unavailable": endpoint_unavailable,
+        "endpoint_udp_observation_delta": endpoint_udp_delta,
+        "core_counter_delta": core_delta,
+        "direct_udp_capture_delta": direct_flow_deltas,
+        "provider_selection_before": selection_before,
+        "provider_selection_after": selection_after,
+        "endpoint_xray_running": endpoint_state.get("xray", {}).get("running") if endpoint_unavailable else True,
+    }
+    _record_phase_diagnostic(record_property, diagnostic)
+    _assert_packet_selection_stable(selection_before, selection_after)
+    if expect_vpn_handoff is None:
+        # Unsupported and empty-pool packets still enter Mihomo through TPROXY;
+        # its generated UDP REJECT policy must stop them there without DIRECT.
+        expect_vpn_handoff = True
+    assert core_delta["vpn_udp_classified"] > 0, diagnostic
+    assert (core_delta["vpn_udp_handoff_packets"] > 0) is expect_vpn_handoff, diagnostic
+    assert core_delta["direct_lan_forward"] == 0, diagnostic
+    assert direct_flow_deltas == {"client_source_to_service": 0, "mihomo_direct_to_service": 0}, diagnostic
+    if expect_success:
+        assert attempt.get("ok") is True and attempt.get("peer") == SERVICE_VIP, diagnostic
+        assert endpoint_udp_delta == 1 and observations_after["last_peers"].get("udp") == SERVICE_VIP, diagnostic
+        assert _flow_delta(capture_before, capture_after,
+                           (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0, diagnostic
+    else:
+        assert attempt.get("control_status") == 502 and attempt.get("failure_class") in {
+            "TimeoutError", "ConnectionRefusedError", "OSError",
+        }, diagnostic
+        assert endpoint_udp_delta == 0, diagnostic
+        assert observations_after["counts"].get("udp", -1) == observations_before["counts"].get("udp", 0), diagnostic
+    return diagnostic
+
+
+def _probe_vpn_tcp_regression(stack: dict[str, Any], label: str,
+                              record_property: Any) -> dict[str, Any]:
+    """Prove TCP still traverses the selected VPN proxy after UDP capability changes."""
+    before = _packet_counts()
+    core_before = _core_counter_snapshot()
+    endpoint_before = _endpoint_observations()
+    result = _role_json(f"{CLIENT_CONTROL}/probe/tcp", method="POST")
+    after = _wait_packet_counts(lambda counts:
+        _flow_delta(before, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
+    core_delta = _core_counter_delta(core_before, _core_counter_snapshot())
+    endpoint_after = _endpoint_observations()
+    direct = {
+        "client": _flow_delta(before, after, (CLIENT_IP, SERVICE_VIP, "tcp", 9080)),
+        "mihomo": _flow_delta(before, after, (ROUTER_WAN_IP, SERVICE_VIP, "tcp", 9080)),
+    }
+    diagnostic = {
+        "phase": label,
+        "result": result,
+        "core_counter_delta": core_delta,
+        "endpoint_http_delta": endpoint_after["counts"].get("http", -1) - endpoint_before["counts"].get("http", 0),
+        "vpn_proxy_capture_delta": _flow_delta(before, after, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)),
+        "direct_tcp_capture_delta": direct,
+        "mihomo_path": _mihomo_packet_path_proof(stack),
+    }
+    _record_phase_diagnostic(record_property, diagnostic)
+    assert result.get("ok") is True and result.get("peer") == SERVICE_VIP, diagnostic
+    assert core_delta["vpn_tcp_classified"] > 0, diagnostic
+    assert diagnostic["vpn_proxy_capture_delta"] > 0 and diagnostic["endpoint_http_delta"] > 0, diagnostic
+    assert direct == {"client": 0, "mihomo": 0}, diagnostic
+    return diagnostic
+
+
+def _probe_vpn_tcp_empty_pool(stack: dict[str, Any], record_property: Any) -> dict[str, Any]:
+    """Full-VPN TCP remains classified but has no target or DIRECT escape."""
+    _assert_packet_runtime(stack, mode="vpn", policy_required=True)
+    before = _packet_counts()
+    core_before = _core_counter_snapshot()
+    endpoint_before = _endpoint_observations()
+    attempt = _tcp_negative_control()
+    after = _wait_direct_tcp_capture_quiet(before)
+    core_delta = _core_counter_delta(core_before, _core_counter_snapshot())
+    endpoint_after = _endpoint_observations()
+    deltas = {
+        "client_direct": _flow_delta(before, after, (CLIENT_IP, SERVICE_VIP, "tcp", 9080)),
+        "router_direct": _flow_delta(before, after, (ROUTER_WAN_IP, SERVICE_VIP, "tcp", 9080)),
+        "vpn_proxy": _flow_delta(before, after, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)),
+    }
+    endpoint_http_delta = endpoint_after["counts"].get("http", -1) - endpoint_before["counts"].get("http", 0)
+    diagnostic = {"phase": "vpn-empty-pool-tcp", "attempt": attempt,
+                  "core_counter_delta": core_delta, "capture_delta": deltas,
+                  "endpoint_http_observation_delta": endpoint_http_delta}
+    _record_phase_diagnostic(record_property, diagnostic)
+    assert core_delta["vpn_tcp_classified"] > 0, diagnostic
+    assert core_delta["direct_lan_forward"] == 0, diagnostic
+    assert deltas == {"client_direct": 0, "router_direct": 0, "vpn_proxy": 0}, diagnostic
+    assert endpoint_http_delta == 0, diagnostic
+    return diagnostic
+
+
 def _set_health_available(available: bool) -> None:
     result = _role_json(f"{ENDPOINT_CONTROL}/health", method="POST", payload={"available": available})
     assert result.get("available") is available, {"health_control": "unexpected response"}
@@ -504,6 +901,89 @@ def _apply_global_mode(api: str, mode: str) -> dict[str, Any]:
     }
     assert enforcement.get("active_mode_matches_intent") is True
     return projection["data"]
+
+
+def _set_server_auto_eligibility(api: str, logical_id: str, enabled: bool) -> dict[str, Any]:
+    code, response = http_json(
+        f"{api}/servers/{logical_id}/preferences", method="PATCH",
+        payload={"vpn_auto": enabled, "reconcile_mihomo": True,
+                 "requested_by": "hosted-packet-acceptance-empty-pool"},
+    )
+    data = response.get("data") if isinstance(response, dict) else None
+    result = data.get("server_preferences") if isinstance(data, dict) else None
+    assert code == 200 and response.get("ok") is True and isinstance(result, dict), {
+        "auto_eligibility_status": code,
+        "auto_eligibility_error": response.get("error") if isinstance(response, dict) else "invalid_response",
+    }
+    preferences = (result.get("server") or {}).get("preferences") or {}
+    assert preferences.get("vpn_auto") is enabled, {
+        "expected_vpn_auto": enabled, "observed_vpn_auto": preferences.get("vpn_auto"),
+    }
+    reconcile = result.get("mihomo_reconcile")
+    assert not isinstance(reconcile, dict) or reconcile.get("ok") is True, {
+        "mihomo_reconcile": reconcile,
+    }
+    return result
+
+
+def _server_user_preferences(api: str, logical_id: str) -> dict[str, Any]:
+    code, response = http_json(f"{api}/servers/{logical_id}")
+    server = response.get("data", {}).get("server") if isinstance(response, dict) else None
+    preferences = server.get("preferences") if isinstance(server, dict) else None
+    assert code == 200 and response.get("ok") is True and isinstance(preferences, dict), {
+        "server_preferences_readback": code,
+    }
+    keys = ("vpn_auto", "vpn_auto_priority", "vpn_auto_priority_origin", "global_list",
+            "remembered_until", "manually_deleted_at")
+    return {key: preferences.get(key) for key in keys}
+
+
+def _assert_native_empty_vpn_pool(stack: dict[str, Any]) -> dict[str, Any]:
+    _assert_packet_runtime(stack, mode="vpn", policy_required=True)
+    config_path = stack["state"] / "generated" / "mihomo" / "config.yaml"
+    config = yaml.safe_load(config_path.read_bytes())
+    groups = config.get("proxy-groups") if isinstance(config, dict) else None
+    auto = next((row for row in groups if isinstance(row, dict) and row.get("name") == "vpn-auto"), None) \
+        if isinstance(groups, list) else None
+    global_group = next((row for row in groups if isinstance(row, dict) and row.get("name") == "vpn-global"), None) \
+        if isinstance(groups, list) else None
+    assert isinstance(auto, dict) and auto.get("proxies") == ["REJECT"], {
+        "vpn_auto_group": auto,
+    }
+    assert isinstance(global_group, dict) and "DIRECT" not in global_group.get("proxies", []), {
+        "vpn_global_group": global_group,
+    }
+    code, response = http_json(f"{stack['api']}/mihomo")
+    assert code == 200 and response.get("ok") is True
+    details = response["data"]["mihomo"].get("details") or {}
+    selectors = details.get("selectors") or {}
+    assert (selectors.get("vpn_auto_now") is None
+            and selectors.get("vpn_auto_selected_target") == "REJECT"
+            and selectors.get("vpn_auto_targets") == ["REJECT"]), {
+        "native_vpn_auto_selection": selectors.get("vpn_auto_now"),
+        "native_vpn_auto_selected_target": selectors.get("vpn_auto_selected_target"),
+        "native_vpn_auto_targets": selectors.get("vpn_auto_targets"),
+    }
+    code, vpn_state = http_json(f"{stack['api']}/state/vpn")
+    active = vpn_state.get("data", {}).get("vpn", {}).get("effective", {}).get("server_health", {}).get("active") \
+        if isinstance(vpn_state, dict) else None
+    assert code == 200 and vpn_state.get("ok") is True and isinstance(active, dict) \
+        and active.get("server_id") is None, {"empty_pool_active_server": active}
+    code, routing = http_json(f"{stack['api']}/routing/global")
+    enforcement = routing.get("data", {}).get("runtime_enforcement") if isinstance(routing, dict) else None
+    assert code == 200 and routing.get("ok") is True and isinstance(enforcement, dict), {
+        "global_vpn_enforcement_readback": code,
+    }
+    assert (enforcement.get("active_mode_matches_intent") is True
+            and enforcement.get("enforcement_level") == "global_vpn_fail_closed"
+            and enforcement.get("vpn_egress_ready") is False), enforcement
+    assert_mihomo_launch_matches_active(stack["native"], config_path)
+    return {"vpn_auto_selected_reject": True, "vpn_auto_target_count": 1,
+            "vpn_global_has_direct_target": "DIRECT" in global_group["proxies"],
+            "runtime_enforcement": {
+                "level": enforcement["enforcement_level"],
+                "vpn_egress_ready": enforcement["vpn_egress_ready"],
+            }}
 
 
 def _assert_packet_runtime(stack: dict, *, mode: str, policy_required: bool) -> None:
@@ -570,6 +1050,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
 
     _enable_owned_mihomo_runtime_state()
     source_ref = _seed_source(stack)
+    _set_packet_provider_capability(bridge, "true")
     _configure_provider(api, source_ref)
     code, enabled = http_json(f"{api}/subscription/sources/{source_ref}/provider", method="POST",
                               payload={"action": "enable"})
@@ -579,6 +1060,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     from fwrouter_api.services.provider_managed import binding_for
     binding = binding_for(source_ref)
     logical_id = binding["logical_server_id"]
+    original_member_id = binding["current_member_id"]
     from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
     code, exclusive = http_json(f"{api}/subscription/sources/{source_ref}/vpn-auto-exclusive", method="POST",
                                 payload={"enabled": True})
@@ -591,7 +1073,8 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     capture_baseline = _packet_counts()
     core_before_direct = _core_counter_snapshot()
-    direct_phase = _probe_phase(stack, CLIENT_IP, "direct-before-vpn", core_before_direct, record_property)
+    direct_phase = _probe_phase(stack, CLIENT_IP, "direct-before-vpn", core_before_direct, record_property,
+                                source_ref)
     after_direct = _wait_packet_counts(lambda counts: all(
         _flow_delta(capture_baseline, counts, flow) > 0 for flow in (
             (CLIENT_IP, SERVICE_VIP, "tcp", 9080),
@@ -609,9 +1092,11 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
 
     _apply_global_mode(api, "vpn")
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
+    supported_capability = _packet_capability_state(stack, source_ref, logical_id, "supported", True)
     before_vpn = _packet_counts()
     core_before_vpn = _core_counter_snapshot()
-    vpn_phase = _probe_phase(stack, SERVICE_VIP, "vpn", core_before_vpn, record_property)
+    vpn_phase = _probe_phase(stack, SERVICE_VIP, "vpn-supported-udp", core_before_vpn, record_property,
+                             source_ref)
     after_vpn = _wait_packet_counts(lambda counts:
         _flow_delta(before_vpn, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
     core_vpn = vpn_phase["core_counters"]
@@ -628,6 +1113,63 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert vpn_flow > 0 and all(count == 0 for count in vpn_direct_leaks.values()), {
         "phase": "vpn", "vless_endpoint_packets": vpn_flow, "direct_client_leaks": vpn_direct_leaks,
     }
+
+    unknown_capability = _refresh_packet_capability(
+        stack, api, bridge, source_ref, None, "unknown", logical_id, original_member_id,
+    )
+    unknown_udp_phase = _probe_vpn_udp_contract_phase(
+        stack, source_ref, logical_id, "unknown", True, "vpn-unknown-udp", record_property,
+        expect_success=True,
+    )
+    unknown_tcp_phase = _probe_vpn_tcp_regression(stack, "vpn-tcp-after-unknown", record_property)
+    unsupported_capability = _refresh_packet_capability(
+        stack, api, bridge, source_ref, "false", "unsupported", logical_id, original_member_id,
+    )
+    unsupported_udp_phase = _probe_vpn_udp_contract_phase(
+        stack, source_ref, logical_id, "unsupported", False, "vpn-unsupported-udp", record_property,
+        expect_success=False,
+    )
+    unsupported_tcp_phase = _probe_vpn_tcp_regression(stack, "vpn-tcp-after-unsupported", record_property)
+    supported_again = _refresh_packet_capability(
+        stack, api, bridge, source_ref, "true", "supported", logical_id, original_member_id,
+    )
+
+    stopped = _role_json(f"{ENDPOINT_CONTROL}/xray/availability", method="POST",
+                         payload={"available": False})
+    assert stopped.get("available") is False, {"endpoint_xray_stop": stopped}
+    unavailable_udp_phase = _probe_vpn_udp_contract_phase(
+        stack, source_ref, logical_id, "supported", True, "vpn-endpoint-unavailable", record_property,
+        expect_success=False, endpoint_unavailable=True,
+    )
+    restarted = _role_json(f"{ENDPOINT_CONTROL}/xray/availability", method="POST",
+                           payload={"available": True})
+    assert restarted.get("available") is True, {"endpoint_xray_restart": restarted}
+    endpoint_restored = _role_json(f"{ENDPOINT_CONTROL}/ready")
+    assert endpoint_restored.get("ready") is True and endpoint_restored.get("xray", {}).get("running") is True
+
+    # Empty the eligible Auto pool through the public preference API while full-VPN
+    # is applied. The native selector must select REJECT, and real UDP must fail
+    # without reaching either direct endpoint path.
+    preferences_before_empty_pool = _server_user_preferences(api, logical_id)
+    assert preferences_before_empty_pool.get("vpn_auto") is True, {
+        "empty_pool_requires_selected_provider_to_be_eligible": preferences_before_empty_pool,
+    }
+    _set_server_auto_eligibility(api, logical_id, False)
+    empty_pool_native = _assert_native_empty_vpn_pool(stack)
+    empty_pool_phase = _probe_vpn_udp_contract_phase(
+        stack, source_ref, logical_id, "supported", True, "vpn-empty-pool", record_property,
+        expect_success=False, expect_active_server=False,
+    )
+    empty_pool_tcp_phase = _probe_vpn_tcp_empty_pool(stack, record_property)
+    _set_server_auto_eligibility(api, logical_id, True)
+    preferences_after_empty_pool = _server_user_preferences(api, logical_id)
+    assert preferences_after_empty_pool == preferences_before_empty_pool, {
+        "provider_user_preferences_not_restored_exactly": {
+            "before": preferences_before_empty_pool,
+            "after": preferences_after_empty_pool,
+        },
+    }
+    restored_pool_native = _assert_packet_runtime(stack, mode="vpn", policy_required=True)
 
     code, policy = http_json(f"{api}/subscription/sources/{source_ref}/provider/configuration",
                              method="POST", payload={"allow_automatic_member_switch": False})
@@ -651,7 +1193,8 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     core_before_emergency = _core_counter_snapshot()
     before_emergency_direct = _packet_counts()
-    emergency_phase = _probe_phase(stack, CLIENT_IP, "emergency-direct", core_before_emergency, record_property)
+    emergency_phase = _probe_phase(stack, CLIENT_IP, "emergency-direct", core_before_emergency,
+                                   record_property, source_ref)
     after_emergency_direct = _wait_packet_counts(lambda counts: all(
         _flow_delta(before_emergency_direct, counts, flow) > 0 for flow in (
             (CLIENT_IP, SERVICE_VIP, "tcp", 9080),
@@ -688,7 +1231,8 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     core_before_reentry = _core_counter_snapshot()
     before_reentry = _packet_counts()
-    reentry_phase = _probe_phase(stack, SERVICE_VIP, "vpn-after-reentry", core_before_reentry, record_property)
+    reentry_phase = _probe_phase(stack, SERVICE_VIP, "vpn-after-reentry", core_before_reentry,
+                                 record_property, source_ref)
     after_reentry = _wait_packet_counts(lambda counts:
         _flow_delta(before_reentry, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
     core_reentry = reentry_phase["core_counters"]
@@ -731,6 +1275,30 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
                 "mihomo_path": vpn_phase["mihomo_path"],
                 "observations": vpn_phase["observations"],
                 "egress_guard": vpn_phase["leak"], "router_guard": vpn_phase["router_guard"]},
+        "udp_capability_contract": {
+            "supported": supported_capability["declared_capability"] == "supported",
+            "supported_packet": {
+                "endpoint_udp_observation": vpn_phase["observations"]["counts"].get("udp", 0),
+                "core": core_vpn,
+                "vless_tunnel_tcp_capture_packets": vpn_flow,
+                "direct_udp_packets": vpn_direct_leaks["udp_9081"],
+            },
+            "unknown": unknown_capability["declared_capability"] == "unknown",
+            "unknown_packet": {"endpoint_udp_delta": unknown_udp_phase["endpoint_udp_observation_delta"],
+                               "core": unknown_udp_phase["core_counter_delta"],
+                               "tcp": unknown_tcp_phase["vpn_proxy_capture_delta"]},
+            "unsupported": unsupported_capability["declared_capability"] == "unsupported",
+            "unsupported_packet": {"endpoint_udp_delta": unsupported_udp_phase["endpoint_udp_observation_delta"],
+                                   "core": unsupported_udp_phase["core_counter_delta"],
+                                   "tcp": unsupported_tcp_phase["vpn_proxy_capture_delta"]},
+            "endpoint_unavailable": {"endpoint_udp_delta": unavailable_udp_phase["endpoint_udp_observation_delta"],
+                                      "core": unavailable_udp_phase["core_counter_delta"]},
+            "empty_pool": {"native": empty_pool_native,
+                           "endpoint_udp_delta": empty_pool_phase["endpoint_udp_observation_delta"],
+                           "core": empty_pool_phase["core_counter_delta"],
+                           "tcp": empty_pool_tcp_phase["core_counter_delta"],
+                           "tcp_capture": empty_pool_tcp_phase["capture_delta"]},
+        },
         "emergency_direct": {"flows": emergency_flows, "core_counters": core_emergency,
                               "mihomo_path": emergency_phase["mihomo_path"],
                               "observations": emergency_phase["observations"],

@@ -113,6 +113,140 @@ class NetworkFixtureContractTests(unittest.TestCase):
         phase_calls = [node for node in ast.walk(scenario) if isinstance(node, ast.Call)
                        and isinstance(node.func, ast.Name) and node.func.id == "_probe_phase"]
         self.assertEqual(len(phase_calls), 4)
+        source = PACKET_TEST.read_text(encoding="utf-8")
+        for label in ("vpn-supported-udp", "vpn-unknown-udp", "vpn-unsupported-udp",
+                      "vpn-endpoint-unavailable", "vpn-empty-pool", "vpn-tcp-after-unknown",
+                      "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp"):
+            self.assertIn(label, source)
+        self.assertIn("CAPTURE_LIMIT = 512", source)
+        self.assertIn("expect_active_server=False", source)
+
+    def test_bounded_negative_udp_probe_is_fixed_and_reports_timeout_without_network(self):
+        fixture = _fixture_module()
+
+        class FakeSocket:
+            def __init__(self, response):
+                self.response = response
+                self.timeout = None
+                self.sent = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def settimeout(self, value):
+                self.timeout = value
+
+            def sendto(self, payload, target):
+                self.sent = (payload, target)
+
+            def recvfrom(self, _size):
+                if isinstance(self.response, BaseException):
+                    raise self.response
+                return self.response
+
+        timeout_socket = FakeSocket(TimeoutError("bounded"))
+        with mock.patch.object(fixture.socket, "socket", return_value=timeout_socket):
+            with self.assertRaises(TimeoutError):
+                fixture._probe_udp_negative()
+        self.assertEqual(timeout_socket.timeout, fixture.UDP_NEGATIVE_TIMEOUT)
+        self.assertEqual(timeout_socket.sent, (fixture.PROBE_BODY,
+                                               (fixture.SERVICE_VIP, fixture.UDP_ECHO_PORT)))
+
+        success_socket = FakeSocket((fixture.PROBE_BODY,
+                                     (fixture.SERVICE_VIP, fixture.UDP_ECHO_PORT)))
+        with mock.patch.object(fixture.socket, "socket", return_value=success_socket):
+            self.assertEqual(fixture._probe_udp_negative(),
+                             {"service": "udp", "peer": fixture.SERVICE_VIP})
+
+    def test_bounded_negative_tcp_probe_uses_only_the_fixed_service_vip(self):
+        fixture = _fixture_module()
+
+        class FakeConnection:
+            def __init__(self, data):
+                self.data = data
+                self.timeout = None
+                self.sent = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def settimeout(self, value):
+                self.timeout = value
+
+            def sendall(self, data):
+                self.sent = data
+
+            def recv(self, _size):
+                return self.data
+
+        connection = FakeConnection(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        with mock.patch.object(fixture.socket, "create_connection", return_value=connection) as connect:
+            result = fixture._probe_tcp_negative()
+        connect.assert_called_once_with((fixture.SERVICE_VIP, fixture.HTTP_PORT),
+                                        timeout=fixture.UDP_NEGATIVE_TIMEOUT)
+        self.assertEqual(connection.timeout, fixture.UDP_NEGATIVE_TIMEOUT)
+        self.assertIn(b"GET /probe HTTP/1.1", connection.sent)
+        self.assertEqual(result["peer"], fixture.SERVICE_VIP)
+
+        with mock.patch.object(fixture.socket, "create_connection", side_effect=TimeoutError("bounded")):
+            with self.assertRaises(TimeoutError):
+                fixture._probe_tcp_negative()
+
+    def test_xray_availability_control_stops_and_restarts_only_owned_runtime(self):
+        fixture = _fixture_module()
+
+        class FakeRuntime:
+            def __init__(self, running):
+                self.running = running
+                self.expected_exit = False
+
+            def terminate(self):
+                self.expected_exit = True
+                self.running = False
+
+        class FakeHandler:
+            def __init__(self, path, runtime=None, profile=None):
+                self.server = type("Server", (), {
+                    "server_address": (fixture.ENDPOINT_WAN_IP, fixture.ENDPOINT_CONTROL_PORT),
+                    "xray_runtime": runtime,
+                    "xray_profile": profile,
+                    "xray_lock": __import__("threading").Lock(),
+                })()
+                self.path = path
+                body = json.dumps({"available": path == "/xray/availability"},
+                                  separators=(",", ":")).encode("ascii")
+                self.headers = {"Content-Length": str(len(body))}
+                self.rfile = io.BytesIO(body)
+                self.response = None
+
+            def _send_json(self, status, payload):
+                self.response = (status, payload)
+
+        stopped_runtime = FakeRuntime(True)
+        stop = FakeHandler("/xray/availability", runtime=stopped_runtime)
+        fixture._EndpointHandler.do_POST(stop)
+        self.assertTrue(stopped_runtime.expected_exit)
+        self.assertIsNone(stop.server.xray_runtime)
+        self.assertEqual(stop.response, (200, {"available": False}))
+
+        restarted_runtime = FakeRuntime(True)
+        start = FakeHandler("/xray/availability", profile={"fixed": True})
+        fake_thread = mock.Mock()
+        with (mock.patch.object(fixture, "_start_xray", return_value=restarted_runtime) as start_xray,
+              mock.patch.object(fixture, "_wait_tcp") as wait_tcp,
+              mock.patch.object(fixture.threading, "Thread", return_value=fake_thread)):
+            fixture._EndpointHandler.do_POST(start)
+        start_xray.assert_called_once_with({"fixed": True})
+        wait_tcp.assert_called_once()
+        fake_thread.start.assert_called_once_with()
+        self.assertIs(start.server.xray_runtime, restarted_runtime)
+        self.assertEqual(start.response, (200, {"available": True}))
         self.assertTrue(all(any(isinstance(keyword.value, ast.Name) and keyword.value.id == "record_property"
                                 for keyword in call.keywords)
                             or any(isinstance(arg, ast.Name) and arg.id == "record_property" for arg in call.args)

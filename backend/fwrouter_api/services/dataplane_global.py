@@ -30,6 +30,7 @@ ENFORCEMENT_LEVEL_GLOBAL_DIRECT_ONLY = "global_direct_only"
 ENFORCEMENT_LEVEL_GLOBAL_DIRECT_ENFORCED = "global_direct_enforced"
 ENFORCEMENT_LEVEL_GLOBAL_SELECTIVE_ENFORCED = "global_selective_enforced"
 ENFORCEMENT_LEVEL_GLOBAL_VPN_ENFORCED = "global_vpn_enforced"
+ENFORCEMENT_LEVEL_GLOBAL_VPN_FAIL_CLOSED = "global_vpn_fail_closed"
 
 PROTECTED_IPV4_NETWORKS = DEFAULT_PROTECTED_IPV4_NETWORKS
 PROTECTED_IPV6_NETWORKS = DEFAULT_PROTECTED_IPV6_NETWORKS
@@ -78,6 +79,8 @@ MISSING_VPN_ROUTING_CONTRACT = "vpn_tproxy_contract_not_defined"
 MISSING_VPN_VERIFY = "vpn_external_path_not_verified"
 MISSING_ACTIVE_DATAPLANE_MODE_MISMATCH = "active_dataplane_mode_mismatch"
 MISSING_VPN_TPROXY_HANDOFF = "vpn_tproxy_handoff_not_observed"
+MISSING_VPN_FAIL_CLOSED_POLICY = "vpn_udp_fail_closed_policy_unconfirmed"
+VPN_NON_SERVER_SELECTOR_TARGETS = frozenset({"DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE"})
 
 
 def _rules_list(effective_rules_artifact: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -419,10 +422,11 @@ def build_global_preflight(
     normalized_routing = routing or {}
     mode = _routing_mode_from_manifest(normalized_routing)
     rules_artifact = effective_rules_artifact if effective_rules_artifact is not None else read_effective_rules_artifact()
-    explicit_mihomo_health = mihomo_health is not None
     resolved_mihomo_health = mihomo_health or _mihomo_health()
     required_chains = _bool_chain_map((check_details or {}).get("required_chains"))
     mihomo_details = _details_dict(resolved_mihomo_health.details)
+    vpn_udp_policy = _details_dict(mihomo_details.get("vpn_udp_policy"))
+    vpn_policy_installed = _bool_or_false(vpn_udp_policy.get("policy_installed"))
     mihomo_config = _details_dict(mihomo_details.get("config"))
     mihomo_selectors = _details_dict(mihomo_details.get("selectors"))
     contours = _details_dict(mihomo_config.get("fwrouter_contours"))
@@ -483,6 +487,9 @@ def build_global_preflight(
         else None
     )
     if external_vpn_contour:
+        # External adapters carry their own explicitly reported contour proof;
+        # they do not use FWRouter-owned Mihomo selectors or rules.
+        vpn_policy_installed = True
         redir_port = int(external_vpn_contour["redir_port"])
         tproxy_port = int(external_vpn_contour["tproxy_port"])
         transparent_tcp_ready = True
@@ -544,35 +551,23 @@ def build_global_preflight(
     ):
         vpn_missing.append(MISSING_MIHOMO_CONTROLLER)
     vpn_global_exists = _bool_or_false(mihomo_selectors.get("vpn_global_exists"))
-    vpn_global_targets_count = _int_or_none(mihomo_selectors.get("vpn_global_targets_count")) or 0
-    vpn_global_has_vpn_auto = _bool_or_false(mihomo_selectors.get("vpn_global_has_vpn_auto"))
     vpn_global_now = mihomo_selectors.get("vpn_global_now")
     vpn_auto_now = mihomo_selectors.get("vpn_auto_now")
     active_server_id = resolved_mihomo_health.active_server_id
     vpn_target_reachable = False
-    if vpn_global_exists and bool(active_server_id):
+    if vpn_global_exists and str(active_server_id or "") not in VPN_NON_SERVER_SELECTOR_TARGETS and bool(active_server_id):
         vpn_target_reachable = True
-    elif vpn_global_exists and bool(vpn_global_now) and vpn_global_now != "vpn-auto":
+    elif vpn_global_exists and bool(vpn_global_now) and vpn_global_now != "vpn-auto" and str(vpn_global_now) not in VPN_NON_SERVER_SELECTOR_TARGETS:
         vpn_target_reachable = True
-    elif (
-        vpn_global_exists
-        and vpn_global_has_vpn_auto
-        and vpn_global_targets_count > 0
-    ):
-        # We allow vpn_auto_now to be None (which means DIRECT in our adapter)
-        # to avoid chicken-and-egg failures when Mihomo is empty.
+    elif vpn_global_exists and vpn_global_now == "vpn-auto" and str(vpn_auto_now or "") not in VPN_NON_SERVER_SELECTOR_TARGETS and bool(vpn_auto_now):
         vpn_target_reachable = True
     if external_vpn_contour:
         vpn_target_reachable = True
-    if (
-        not explicit_mihomo_health
-        and not require_runtime_verify
-        and tproxy_port is not None
-        and resolved_mihomo_health.runtime_state == MihomoRuntimeState.RUNNING
-    ):
-        vpn_target_reachable = True
+    vpn_egress_target_present = vpn_target_reachable
     if not vpn_target_reachable:
         vpn_missing.append(MISSING_MIHOMO_GLOBAL_EGRESS)
+    if not vpn_policy_installed:
+        vpn_missing.append(MISSING_VPN_FAIL_CLOSED_POLICY)
     vpn_external_path_verified = _bool_or_false((check_details or {}).get("vpn_external_path_verified"))
     transparent_path = _details_dict((check_details or {}).get("transparent_path"))
     transparent_flow_observed = _bool_or_false(transparent_path.get("transparent_flow_observed"))
@@ -588,12 +583,29 @@ def build_global_preflight(
     vpn_mark_tcp_packets = _int_or_none(transparent_path.get("vpn_mark_tcp_packets")) or 0
     if require_runtime_verify and mode == "vpn" and not vpn_external_path_verified:
         vpn_missing.append(MISSING_VPN_VERIFY)
+    elif not vpn_external_path_verified:
+        vpn_missing.append(MISSING_VPN_VERIFY)
     if require_runtime_verify and vpn_mark_packets > 0 and not transparent_flow_observed:
         vpn_missing.append(MISSING_VPN_TPROXY_HANDOFF)
     if require_runtime_verify and vpn_mark_tcp_packets > 0 and not (
         transparent_tcp_flow_observed and transparent_tcp_session_materialized
     ):
         vpn_missing.append(MISSING_VPN_TPROXY_HANDOFF)
+
+    egress_observation_missing = {
+        MISSING_MIHOMO_GLOBAL_EGRESS,
+        MISSING_VPN_VERIFY,
+        MISSING_VPN_FAIL_CLOSED_POLICY,
+    }
+    vpn_policy_missing = [item for item in vpn_missing if item not in egress_observation_missing]
+    vpn_egress_missing = [item for item in vpn_missing if item in egress_observation_missing]
+    vpn_egress_ready = (
+        not vpn_egress_missing
+        and vpn_policy_installed
+        and MISSING_VPN_TPROXY_HANDOFF not in vpn_missing
+        and vpn_egress_target_present
+        and vpn_external_path_verified
+    )
 
     selective_missing: list[str] = []
     if rules_artifact is None:
@@ -637,7 +649,16 @@ def build_global_preflight(
         "protected_local_pools_loaded": True,
         "can_enforce_global_direct": len(direct_missing) == 0,
         "can_enforce_global_selective": len(selective_missing) == 0,
-        "can_enforce_global_vpn": len(vpn_missing) == 0,
+        # REJECT-backed selectors make the routing policy safe to install even
+        # before a VPN endpoint is selected. Endpoint/path readiness is reported
+        # independently and never inferred from an empty selector.
+        "can_enforce_global_vpn": len(vpn_policy_missing) == 0 and vpn_policy_installed,
+        "can_prepare_global_vpn": len(vpn_policy_missing) == 0,
+        "vpn_policy_installed": vpn_policy_installed,
+        "vpn_prepare_missing": vpn_policy_missing,
+        "vpn_egress_target_present": vpn_egress_target_present,
+        "vpn_egress_ready": vpn_egress_ready,
+        "vpn_egress_missing": vpn_egress_missing,
         "selective_vpn_ready": selective_vpn_ready,
         "selective_degraded": selective_degraded,
         "selective_degraded_missing": list(vpn_missing) if selective_degraded else [],
@@ -856,17 +877,23 @@ def build_applied_runtime_enforcement(
         }
 
     if mode == "vpn" and supported_modes["vpn"]:
+        egress_ready = bool(resolved_preflight.get("vpn_egress_ready"))
         return {
             "dataplane_capability": DATAPLANE_CAPABILITY_GLOBAL_POLICY_V1,
             "capability": DATAPLANE_CAPABILITY_GLOBAL_POLICY_V1,
-            "enforcement_level": ENFORCEMENT_LEVEL_GLOBAL_VPN_ENFORCED,
+            "enforcement_level": (
+                ENFORCEMENT_LEVEL_GLOBAL_VPN_ENFORCED
+                if egress_ready
+                else ENFORCEMENT_LEVEL_GLOBAL_VPN_FAIL_CLOSED
+            ),
             "traffic_enforcement_guaranteed": True,
             "supported_modes": supported_modes,
-            "missing_runtime_requirements": [],
+            "missing_runtime_requirements": list(resolved_preflight.get("vpn_egress_missing") or []),
             "profile": resolved_preflight["profile"],
             "active_mode_matches_intent": True,
             "live_global_mode": live_mode,
             "live_selective_default": live_selective_default,
+            "vpn_egress_ready": egress_ready,
         }
 
     if mode == "selective" and supported_modes["selective"]:
@@ -924,7 +951,7 @@ def validate_global_mode_request(
         }
 
     if normalized_mode == "vpn":
-        if resolved_preflight["can_enforce_global_vpn"]:
+        if resolved_preflight.get("can_prepare_global_vpn", bool(resolved_preflight.get("can_enforce_global_vpn"))):
             return {"ok": True, "mode": normalized_mode, "preflight": resolved_preflight}
         return {
             "ok": False,
@@ -932,7 +959,10 @@ def validate_global_mode_request(
             "stage": "preflight",
             "code": "GLOBAL_VPN_ENFORCEMENT_NOT_READY",
             "message": "Global VPN enforcement is not ready because Mihomo egress steering requirements are unresolved.",
-            "missing": resolved_preflight["missing_by_mode"]["vpn"],
+            "missing": resolved_preflight.get(
+                "vpn_prepare_missing",
+                (resolved_preflight.get("missing_by_mode") or {}).get("vpn", []),
+            ),
             "preflight": resolved_preflight,
         }
 

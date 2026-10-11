@@ -64,6 +64,7 @@ LEAK_DNS_TARGET = "127.0.0.11"
 LEAK_RESERVED_TARGET = "192.0.2.1"
 LEAK_RESERVED_PORT = 9
 CONTROL_TIMEOUT = 3.0
+UDP_NEGATIVE_TIMEOUT = 1.0
 READINESS_TIMEOUT = 8.0
 MAX_OUTPUT = 8192
 MAX_DIAGNOSTIC_OUTPUT = 4096
@@ -631,7 +632,7 @@ class _EndpointHandler(_QuietHandler):
 
     def do_POST(self) -> None:
         if (self.server.server_address != (ENDPOINT_WAN_IP, ENDPOINT_CONTROL_PORT)
-                or self.path != "/health"):
+                or self.path not in {"/health", "/xray/availability"}):
             self._send_json(405, {"error": "method_not_allowed"})
             return
         if self.headers.get("Transfer-Encoding"):
@@ -650,8 +651,36 @@ class _EndpointHandler(_QuietHandler):
         if not isinstance(payload, dict) or set(payload) != {"available"} or type(payload["available"]) is not bool:
             self._send_json(400, {"error": "invalid_health_state"})
             return
-        _set_health_available(payload["available"])
-        self._send_json(200, {"available": _health_available()})
+        if self.path == "/health":
+            _set_health_available(payload["available"])
+            self._send_json(200, {"available": _health_available()})
+            return
+        lock = getattr(self.server, "xray_lock", None)
+        if lock is None:
+            self._send_json(503, {"available": False, "error": "fixture_control_unavailable"})
+            return
+        with lock:
+            runtime = getattr(self.server, "xray_runtime", None)
+            if payload["available"]:
+                if runtime is None or not runtime.running:
+                    profile = getattr(self.server, "xray_profile", None)
+                    if not isinstance(profile, dict):
+                        self._send_json(503, {"available": False, "error": "fixture_profile_unavailable"})
+                        return
+                    try:
+                        runtime = _start_xray(profile)
+                        _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_XRAY_PORT,
+                                  time.monotonic() + READINESS_TIMEOUT, runtime)
+                    except FixtureError as exc:
+                        self._send_json(503, {"available": False, "error": type(exc).__name__})
+                        return
+                    self.server.xray_runtime = runtime
+                    threading.Thread(target=lambda: _watch_xray(runtime), daemon=True).start()
+            elif runtime is not None and runtime.running:
+                runtime.terminate()
+                self.server.xray_runtime = None
+            current = getattr(self.server, "xray_runtime", None)
+            self._send_json(200, {"available": current is not None and current.running})
 
 
 class _ClientHandler(_QuietHandler):
@@ -666,7 +695,7 @@ class _ClientHandler(_QuietHandler):
             self._send_json(404, {"error": "not_found"})
 
     def do_POST(self) -> None:
-        if self.path not in {"/probe/tcp", "/probe/udp", "/probe/dns", "/probe/dns-negative",
+        if self.path not in {"/probe/tcp", "/probe/tcp-negative", "/probe/udp", "/probe/udp-negative", "/probe/dns", "/probe/dns-negative",
                              "/probe/leak", "/probe/router-forward-leak"}:
             self._send_json(404, {"error": "not_found"})
             return
@@ -677,8 +706,12 @@ class _ClientHandler(_QuietHandler):
         try:
             if self.path == "/probe/tcp":
                 result = _probe_http()
+            elif self.path == "/probe/tcp-negative":
+                result = _probe_tcp_negative()
             elif self.path == "/probe/udp":
                 result = _probe_udp()
+            elif self.path == "/probe/udp-negative":
+                result = _probe_udp_negative()
             elif self.path == "/probe/dns":
                 result = _probe_dns()
             elif self.path == "/probe/dns-negative":
@@ -814,6 +847,17 @@ def _probe_http() -> dict[str, Any]:
         return {"service": "http", "response_bytes": len(data), "peer": peer}
 
 
+def _probe_tcp_negative() -> dict[str, Any]:
+    """Make one bounded TCP request whose success would prove an unwanted path."""
+    with socket.create_connection((SERVICE_VIP, HTTP_PORT), timeout=UDP_NEGATIVE_TIMEOUT) as conn:
+        conn.settimeout(UDP_NEGATIVE_TIMEOUT)
+        conn.sendall(b"GET /probe HTTP/1.1\r\nHost: fixture\r\nConnection: close\r\n\r\n")
+        data = conn.recv(512)
+    if b" 200 " not in data[:64]:
+        raise FixtureError("bounded negative TCP probe received an invalid response")
+    return {"service": "http", "response_bytes": len(data), "peer": SERVICE_VIP}
+
+
 def _probe_udp() -> dict[str, Any]:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.settimeout(CONTROL_TIMEOUT)
@@ -821,6 +865,17 @@ def _probe_udp() -> dict[str, Any]:
         data, peer = sock.recvfrom(128)
         if data != PROBE_BODY or peer[0] != SERVICE_VIP or peer[1] != UDP_ECHO_PORT:
             raise FixtureError("bounded UDP probe received an invalid response")
+    return {"service": "udp", "peer": peer[0]}
+
+
+def _probe_udp_negative() -> dict[str, Any]:
+    """Attempt one fixed UDP echo and let the control HTTP layer expose failure."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(UDP_NEGATIVE_TIMEOUT)
+        sock.sendto(PROBE_BODY, (SERVICE_VIP, UDP_ECHO_PORT))
+        data, peer = sock.recvfrom(128)
+    if data != PROBE_BODY or peer[0] != SERVICE_VIP or peer[1] != UDP_ECHO_PORT:
+        raise FixtureError("bounded negative UDP probe unexpectedly received an invalid response")
     return {"service": "udp", "peer": peer[0]}
 
 
@@ -896,6 +951,7 @@ class _XrayRuntime:
         self.binary_sha256 = binary_sha256
         self._lock = threading.Lock()
         self._stderr = bytearray()
+        self.expected_exit = False
         if process.stderr is None:
             raise FixtureError("pinned endpoint Xray stderr capture is unavailable")
         self._reader = threading.Thread(target=self._read_stderr, daemon=True)
@@ -928,6 +984,7 @@ class _XrayRuntime:
                 "binary_sha256": self.binary_sha256, "stderr_tail": self.stderr_tail()}
 
     def terminate(self) -> None:
+        self.expected_exit = True
         if self.process.poll() is None:
             self.process.terminate()
             try:
@@ -940,6 +997,12 @@ class _XrayRuntime:
         self._reader.join(timeout=2)
 
 
+def _watch_xray(runtime: _XrayRuntime) -> None:
+    runtime.process.wait()
+    if not runtime.expected_exit:
+        _ROLE_STOP.set()
+
+
 def _start_xray(profile: dict[str, Any]) -> _XrayRuntime:
     xray = profile.get("xray")
     if (not isinstance(xray, dict) or xray.get("path") != str(XRAY_PATH)
@@ -948,18 +1011,20 @@ def _start_xray(profile: dict[str, Any]) -> _XrayRuntime:
         raise FixtureError("endpoint Xray binary does not match its parent profile pin")
     global _XRAY_CONFIG_CREATED
     xray_config = OWNED_ROOT / "xray-endpoint.json"
-    if xray_config.exists() or xray_config.is_symlink():
-        raise FixtureError("endpoint Xray config path already exists")
     config = _expected_xray_config()
     _assert_xray_config(config)
     data = (json.dumps(config, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
-    fd = os.open(xray_config, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
-    _XRAY_CONFIG_CREATED = True
-    with os.fdopen(fd, "wb", closefd=True) as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.chmod(xray_config, 0o400, follow_symlinks=False)
+    if xray_config.exists() or xray_config.is_symlink():
+        if _read_json(xray_config) != config:
+            raise FixtureError("existing endpoint Xray config differs from the fixed config")
+    else:
+        fd = os.open(xray_config, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        _XRAY_CONFIG_CREATED = True
+        with os.fdopen(fd, "wb", closefd=True) as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(xray_config, 0o400, follow_symlinks=False)
     stored_config = _read_json(xray_config)
     if stored_config != config:
         raise FixtureError("generated endpoint Xray config changed before validation")
@@ -1019,6 +1084,7 @@ def _serve(role: str, profile: dict[str, Any]) -> None:
             servers.append(_BoundedUDPServer((SERVICE_VIP, DNS_PORT), _DNSHandler))
             servers[1].xray_runtime = runtime
             servers[1].role_servers = tuple(servers)
+            servers[1].xray_lock = threading.Lock()
             deadline = time.monotonic() + READINESS_TIMEOUT
             _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_XRAY_PORT, deadline, runtime)
             for server in servers:
@@ -1027,11 +1093,15 @@ def _serve(role: str, profile: dict[str, Any]) -> None:
                 serving.append(server)
             _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_CONTROL_PORT, deadline, runtime)
             _wait_tcp(SERVICE_VIP, HTTP_PORT, deadline, runtime)
-            watcher = threading.Thread(target=lambda: (runtime.process.wait(), _ROLE_STOP.set()), daemon=True)
+            servers[1].xray_profile = profile
+            servers[1].xray_runtime = runtime
+            watcher = threading.Thread(target=lambda: _watch_xray(runtime), daemon=True)
             watcher.start()
             _ROLE_STOP.wait()
-            if runtime.process.poll() is not None:
-                status = runtime.snapshot()
+            current_runtime = getattr(servers[1], "xray_runtime", runtime)
+            if current_runtime is not None and current_runtime.process.poll() is not None \
+                    and not current_runtime.expected_exit:
+                status = current_runtime.snapshot()
                 raise FixtureError("endpoint Xray exited unexpectedly: " +
                                    json.dumps(status, sort_keys=True, separators=(",", ":")))
         finally:
@@ -1039,7 +1109,14 @@ def _serve(role: str, profile: dict[str, Any]) -> None:
                 if server in serving:
                     server.shutdown()
                 server.server_close()
-            runtime.terminate()
+            terminated: set[int] = set()
+            for server in servers:
+                current = getattr(server, "xray_runtime", None)
+                if isinstance(current, _XrayRuntime) and id(current) not in terminated:
+                    terminated.add(id(current))
+                    current.terminate()
+            if id(runtime) not in terminated:
+                runtime.terminate()
     elif role == "client":
         server = _BoundedHTTPServer((CLIENT_IP, CLIENT_CONTROL_PORT), _ClientHandler)
         try:

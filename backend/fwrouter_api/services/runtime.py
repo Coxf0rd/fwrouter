@@ -88,6 +88,7 @@ def _project_module_runtime(
         "global_direct_enforced",
         "global_selective_enforced",
         "global_vpn_enforced",
+        "global_vpn_fail_closed",
     }
     vpn_active = enforcement_level in {"global_selective_enforced", "global_vpn_enforced"}
 

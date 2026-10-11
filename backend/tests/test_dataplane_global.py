@@ -16,9 +16,11 @@ from fwrouter_api.services.dataplane_global import (
     MISSING_MIHOMO_TPROXY,
     MISSING_MIHOMO_TRANSPARENT_CONTOUR,
     MISSING_VPN_TPROXY_HANDOFF,
+    build_applied_runtime_enforcement,
     build_global_preflight,
     build_nft_rule_sets,
     read_effective_rules_artifact,
+    validate_global_mode_request,
 )
 from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
@@ -266,6 +268,64 @@ def test_external_vpn_module_can_supply_vpn_contour(monkeypatch, tmp_path: Path)
     assert preflight["vpn_contour"]["tproxy_port"] == 16081
     assert preflight["vpn_contour"]["full_vpn_redir_port"] == 16082
     assert preflight["vpn_contour"]["full_vpn_tproxy_port"] == 16083
+
+
+def test_global_vpn_preflight_allows_prepare_with_empty_reject_selector_without_egress(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_global._module_state",
+        lambda _name: {"desired_state": "enabled"},
+    )
+    preflight = build_global_preflight(
+        routing={"desired_mode": "vpn", "applied_mode": "vpn", "server_mode": "auto"},
+        mihomo_health=MihomoHealth(
+            runtime_state=MihomoRuntimeState.RUNNING,
+            active_server_id=None,
+            message="empty eligible pool",
+            details={
+                "vpn_udp_policy": {"policy_installed": True},
+                "config": {
+                    "redir_port": 5202, "tproxy_port": 5203, "tun_enabled": True,
+                    "fwrouter_contours": {
+                        "explicit_proxy": {"preserved": True},
+                        "transparent_vpn": {
+                            "ready": True, "isolated_from_explicit_proxy": True,
+                            "redir_port": 5202, "tproxy_port": 5203,
+                            "transparent_tcp_listener_present": True,
+                            "transparent_udp_listener_present": True,
+                            "transparent_tcp_ready": True, "transparent_udp_ready": True,
+                        },
+                        "domain_selective": {"ready": True},
+                    },
+                },
+                "selectors": {
+                    "vpn_global_exists": True, "vpn_global_now": "vpn-auto",
+                    "vpn_auto_now": None, "vpn_auto_selected_target": "REJECT",
+                    "vpn_global_targets": ["vpn-auto", "REJECT"],
+                    "vpn_auto_targets": ["REJECT"],
+                },
+            },
+        ),
+        check_details={"vpn_external_path_verified": False},
+        effective_rules_artifact={"rules": []},
+    )
+    assert preflight["can_prepare_global_vpn"] is True
+    assert preflight["can_enforce_global_vpn"] is True
+    assert preflight["vpn_policy_installed"] is True
+    assert preflight["vpn_egress_ready"] is False
+    assert preflight["vpn_egress_target_present"] is False
+    assert validate_global_mode_request("vpn", preflight=preflight)["ok"] is True
+    enforcement = build_applied_runtime_enforcement(
+        routing={"desired_mode": "vpn", "applied_mode": "vpn"},
+        preflight=preflight,
+        live_mode_probe={"ok": True, "mode": "vpn"},
+    )
+    assert enforcement["enforcement_level"] == "global_vpn_fail_closed"
+    assert enforcement["traffic_enforcement_guaranteed"] is True
+    assert enforcement["vpn_egress_ready"] is False
 
 
 def test_external_vpn_module_without_ready_runtime_is_ignored(monkeypatch, tmp_path: Path) -> None:

@@ -161,6 +161,12 @@ def _normalized_refresh(binding: dict[str, Any], config: dict[str, Any]) -> Any:
     endpoints = (server.raw.get("_fwrouter_topology") or {}).get("endpoints") or []
     endpoint_raw = endpoints[0]["runtime"] if endpoints else server.raw
     runtime = {k: v for k, v in endpoint_raw.items() if not k.startswith("_fwrouter")}
+    # Keep declared capability separate from Mihomo's ``udp`` attempt flag.
+    # In particular, an unknown endpoint is projected with udp=true for an
+    # allowed native transport and must remain unknown across refreshes.
+    udp_capability = endpoint_raw.get("_fwrouter_udp_capability")
+    if udp_capability in {"supported", "unsupported", "unknown"}:
+        runtime["_fwrouter_udp_capability"] = udp_capability
     runtime["name"] = logical_name
     raw = {**runtime, "_fwrouter_server_id": logical_id, "_fwrouter_runtime_name": logical_name,
            "_fwrouter_parser_format": "provider_managed", "_fwrouter_topology": {

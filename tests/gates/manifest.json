@@ -5028,7 +5028,7 @@
       "opt_in": true,
       "path": "tests/application_acceptance/test_packet_dataplane.py",
       "primary_level": "L3",
-      "risk_notes": "SOURCE IMPLEMENTED / hosted packet execution NOT RUN; no host networking, privileged mode, devices, production routes or Debian host parity",
+      "risk_notes": "SOURCE IMPLEMENTED / hosted packet execution NOT RUN; fixed matrix covers UDP supported, unknown, unsupported, unavailable Xray endpoint, empty VPN pool with TCP and UDP rejection, explicit DIRECT, Emergency Direct/re-entry, and TCP nonregression with native/capture evidence; DNS/53 policy acceptance remains separate and UDP/5353 is payload-only; no host networking, privileged mode, devices, production routes or Debian host parity",
       "runtime_dependencies": [
         "Linux amd64 hosted runner",
         "Docker Compose v2",

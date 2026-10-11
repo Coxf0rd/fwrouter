@@ -158,6 +158,41 @@ def test_vless_non_reality_uri_is_owned_by_adapter_and_preserves_tls_transport()
     assert parsed.proxy["security"] == "tls"
 
 
+def test_vless_udp_capability_is_tri_state_and_native_attempt_is_idempotent() -> None:
+    supported = parse_uri_protocol_proxy("vless://id@edge.example:443?udp=true#supported")
+    unsupported = parse_uri_protocol_proxy("vless://id@edge.example:443?udp=0#unsupported")
+    unknown = parse_uri_protocol_proxy("vless://id@edge.example:443#unknown")
+    explicit_unknown = parse_uri_protocol_proxy("vless://id@edge.example:443?udp=unknown#unknown")
+    assert supported and supported.issues == ()
+    assert unsupported and unsupported.issues == ()
+    assert unknown and unknown.issues == ()
+    assert explicit_unknown and explicit_unknown.issues == ()
+    assert supported.proxy["_fwrouter_udp_capability"] == "supported"
+    assert unsupported.proxy["_fwrouter_udp_capability"] == "unsupported"
+    assert unknown.proxy["_fwrouter_udp_capability"] == "unknown"
+    assert explicit_unknown.proxy["_fwrouter_udp_capability"] == "unknown"
+    assert supported.proxy["udp"] is True
+    assert unsupported.proxy["udp"] is False
+    assert unknown.proxy["udp"] is True
+    assert explicit_unknown.proxy["udp"] is True
+
+    from fwrouter_api.adapters.protocols.vless import normalize_vless_udp_capability
+    assert normalize_vless_udp_capability({"type": "vless", "network": "grpc", "udp": True}) == ("supported", True)
+    assert normalize_vless_udp_capability({"type": "vless", "network": "grpc", "udp": False}) == ("unsupported", False)
+    # The marker prevents an unknown attempt projection from becoming declared support on refresh.
+    assert normalize_vless_udp_capability({**unknown.proxy, "udp": True}) == ("unknown", True)
+    assert normalize_vless_udp_capability({"type": "vless", "network": "quic"}) == ("unknown", False)
+
+
+def test_vless_udp_capability_rejects_invalid_and_duplicate_uri_values() -> None:
+    invalid = parse_uri_protocol_proxy("vless://id@edge.example:443?udp=maybe#node")
+    duplicate = parse_uri_protocol_proxy("vless://id@edge.example:443?udp=true&udp=false#node")
+    assert invalid and [(issue.code, issue.field) for issue in invalid.issues] == [("invalid_field", "udp")]
+    assert duplicate and [(issue.code, issue.field) for issue in duplicate.issues] == [("duplicate_parameter", "uri.query")]
+    from fwrouter_api.adapters.protocols.vless import normalize_vless_udp_capability
+    assert normalize_vless_udp_capability({"type": "vless", "network": "grpc", "udp": "maybe"}) == ("invalid", False)
+
+
 def test_vless_xray_json_adapter_handles_tls_and_rejects_unknown_security_and_network() -> None:
     from fwrouter_api.adapters.protocol_integration import parse_xray_protocol_outbound
 

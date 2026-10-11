@@ -16,6 +16,21 @@ from fwrouter_api.services.mihomo_config_rules import _load_subject_server_overr
 LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS = 300
 
 
+def _project_native_proxy(proxy: dict[str, Any]) -> dict[str, Any]:
+    """Project FWRouter capability metadata into native Mihomo fields."""
+    native = dict(proxy)
+    if str(native.get("type") or "").strip().lower() == "vless":
+        from fwrouter_api.adapters.protocols.vless import normalize_vless_udp_capability
+
+        capability, attempt_udp = normalize_vless_udp_capability(native)
+        if capability == "invalid":
+            raise ValueError("invalid canonical VLESS UDP capability")
+        native["_fwrouter_udp_capability"] = capability
+        native["udp"] = attempt_udp
+    # Internal provenance must never become unknown Mihomo schema fields.
+    return {key: value for key, value in native.items() if not key.startswith("_fwrouter")}
+
+
 def _logical_profile_members(raw: dict[str, Any], *, logical_runtime_name: str) -> list[dict[str, Any]]:
     logical_server_id = str(raw.get("_fwrouter_server_id") or "").strip()
     if logical_server_id:
@@ -142,6 +157,7 @@ def _merge_runtime_proxies(
                 continue
             if name in seen_names:
                 continue
+            proxy = _project_native_proxy(proxy)
             runtime_proxies.append(proxy)
             seen_names.add(name)
 
@@ -176,6 +192,7 @@ def _merge_runtime_proxies(
                 or (proxy_type != "http" and not str(proxy.get("server") or "").strip())
             ):
                 continue
+            proxy = _project_native_proxy(proxy)
             runtime_proxies.append(proxy)
             seen_names.add(name)
 
@@ -282,14 +299,16 @@ def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]
     groups_by_name["vpn-auto"] = {
         "name": "vpn-auto",
         "type": "select",
-        "proxies": [*vpn_auto_names, "DIRECT"],
+        # DIRECT is never an implicit member of a required-VPN selector.
+        # REJECT gives Mihomo a valid terminal member when the pool is empty.
+        "proxies": [*vpn_auto_names, "REJECT"],
     }
 
     vpn_global_proxies = ["vpn-auto"]
     for name in global_list_proxy_names:
         if name not in vpn_global_proxies:
             vpn_global_proxies.append(name)
-    vpn_global_proxies.append("DIRECT")
+    vpn_global_proxies.append("REJECT")
     groups_by_name["vpn-global"] = {
         "name": "vpn-global",
         "type": "select",
@@ -300,7 +319,7 @@ def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]
     for name in global_list_proxy_names:
         if name not in subject_selector_targets:
             subject_selector_targets.append(name)
-    subject_selector_targets.append("DIRECT")
+    subject_selector_targets.append("REJECT")
     for route in _load_subject_server_override_routes():
         selector_name = str(route.get("selector_name") or "").strip()
         if not selector_name:

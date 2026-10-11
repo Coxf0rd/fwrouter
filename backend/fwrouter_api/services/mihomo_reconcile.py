@@ -4,6 +4,7 @@ import filecmp
 import inspect
 import os
 import shutil
+import yaml
 from uuid import uuid4
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,25 @@ def reconcile_mihomo_selective_default_fast(
             "reconcile_reason": "active_metadata_not_patchable",
             "fast_path": True,
             "metadata": current_metadata,
+        }
+
+    # Fallback changes can add or remove a paired UDP reject. The narrow text
+    # patch below cannot safely update rule order/count, so permit it only when
+    # the active compiler-owned rule sets already equal the target sets.
+    active_config = config._safe_load_yaml(str(base_path))
+    _expected_rules, expected_policy = config._build_mihomo_config_with_source(routing_dict)
+    active_subrules = active_config.get("sub-rules") if isinstance(active_config, dict) else None
+    active_subrules = active_subrules if isinstance(active_subrules, dict) else {}
+    if (
+        active_subrules.get(config.TRANSPARENT_TPROXY_RULE_NAME) != expected_policy.get("transparent_rules")
+        or active_subrules.get(config.FULL_VPN_RULE_NAME) != expected_policy.get("full_vpn_rules")
+    ):
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "reconcile_action": "none",
+            "reconcile_reason": "compiled_policy_requires_full_reconcile",
+            "fast_path": True,
         }
 
     current_transparent_rule = "MATCH,vpn-global" if current_default == "vpn" else "MATCH,DIRECT"
@@ -369,7 +389,9 @@ def validate_and_promote_mihomo_candidate_config() -> dict[str, Any]:
     }
 
 
-def _capture_mihomo_reconcile_checkpoint(base_path: str, candidate_path: str) -> dict[str, Any]:
+def _capture_mihomo_reconcile_checkpoint(
+    base_path: str, candidate_path: str, *, routing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     base = Path(base_path)
     backup = config._resolved_last_good_mihomo_dir() / "config.previous.yaml"
     if not base.is_file():
@@ -383,13 +405,97 @@ def _capture_mihomo_reconcile_checkpoint(base_path: str, candidate_path: str) ->
         backup.chmod(0o600)
     except (OSError, UnicodeDecodeError) as exc:
         return {"ok": False, "reason": "checkpoint_write_failed", "error_message": str(exc)}
+    try:
+        checkpoint_text = original.decode("utf-8")
+    except UnicodeDecodeError:
+        checkpoint_text = ""
+    intent = routing if isinstance(routing, dict) else {}
+    mode = str(intent.get("applied_mode") or intent.get("desired_mode") or "direct").strip().lower()
+    required_vpn_policy = (
+        mode == "vpn"
+        or str(intent.get("selective_default") or "direct").strip().lower() == "vpn"
+        or _config_has_mandatory_vpn_routes(checkpoint_text, routing=intent)
+    )
     return {
         "ok": True,
         "base_path": str(base),
         "backup_path": str(backup),
         "before_hash": old_hash,
         "candidate_hash": _file_hash(candidate_path),
+        "before_udp_policy_safe": _config_has_failclosed_udp_policy(checkpoint_text),
+        "before_mandatory_vpn_policy_required": required_vpn_policy,
     }
+
+
+def _config_has_failclosed_udp_policy(config_text: str) -> bool:
+    try:
+        loaded = yaml.safe_load(config_text) or {}
+    except yaml.YAMLError:
+        return False
+    if not isinstance(loaded, dict):
+        return False
+    groups = {
+        str(item.get("name") or ""): item
+        for item in (loaded.get("proxy-groups") or [])
+        if isinstance(item, dict)
+    }
+    owned = [name for name in groups if name in {"vpn-auto", "vpn-global"} or name.startswith("fwrouter-subject-")]
+    if not {"vpn-auto", "vpn-global"} <= set(owned):
+        return False
+    for name in owned:
+        targets = groups[name].get("proxies")
+        if not isinstance(targets, list) or not targets or targets[-1] != "REJECT" or "DIRECT" in targets:
+            return False
+    from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
+
+    sub_rules = loaded.get("sub-rules") if isinstance(loaded.get("sub-rules"), dict) else {}
+    sequences = [loaded.get("rules"), sub_rules.get("fwrouter-transparent"), sub_rules.get("fwrouter-full-vpn")]
+    for rules in sequences:
+        if not isinstance(rules, list) or not rules:
+            return False
+        for index, value in enumerate(rules):
+            guard = _mandatory_vpn_udp_guard(str(value))
+            if guard and (index + 1 >= len(rules) or str(rules[index + 1]) != guard):
+                return False
+    full = sequences[-1]
+    return len(full) >= 2 and str(full[-2]) == "MATCH,vpn-global" and str(full[-1]) == "NETWORK,udp,REJECT"
+
+
+def _config_has_mandatory_vpn_routes(
+    config_text: str, *, routing: dict[str, Any] | None = None,
+) -> bool:
+    try:
+        loaded = yaml.safe_load(config_text) or {}
+    except yaml.YAMLError:
+        return True
+    if not isinstance(loaded, dict):
+        return True
+    from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
+
+    sub_rules = loaded.get("sub-rules") if isinstance(loaded.get("sub-rules"), dict) else {}
+    intent = routing if isinstance(routing, dict) else {}
+    mode = str(intent.get("applied_mode") or intent.get("desired_mode") or "direct").strip().lower()
+    sequences = [loaded.get("rules"), sub_rules.get("fwrouter-transparent")]
+    full_rules = sub_rules.get("fwrouter-full-vpn")
+    if isinstance(full_rules, list):
+        # Full-VPN fallback is only reachable when the current Core policy
+        # sends traffic into the full-VPN contour. Subject-scoped entries are
+        # independently reachable and remain mandatory in every mode.
+        if any("fwrouter-subject-" in str(rule) for rule in full_rules):
+            sequences.append(full_rules)
+        elif mode == "vpn" or str(intent.get("selective_default") or "direct").strip().lower() == "vpn":
+            sequences.append(full_rules)
+    for sequence in sequences:
+        if isinstance(sequence, list) and any(_mandatory_vpn_udp_guard(str(rule)) for rule in sequence):
+            return True
+    return False
+
+
+def _checkpoint_rollback_policy_allowed(checkpoint: dict[str, Any]) -> bool:
+    return not (
+        checkpoint.get("before_mandatory_vpn_policy_required") is True
+        and checkpoint.get("before_udp_policy_safe") is not True
+    )
 
 
 def _mihomo_incarnation() -> str | None:
@@ -397,6 +503,23 @@ def _mihomo_incarnation() -> str | None:
 
     value = get_mihomo_runtime_incarnation()
     return str(value).strip() if value else None
+
+
+def _native_udp_policy_proof() -> dict[str, Any]:
+    """Read the loaded Mihomo rules and selectors before publishing a receipt."""
+    from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
+
+    health = DEFAULT_MIHOMO_ADAPTER.health()
+    details = health.details if isinstance(health.details, dict) else {}
+    proof = details.get("vpn_udp_policy") if isinstance(details.get("vpn_udp_policy"), dict) else {}
+    return {
+        "ok": str(getattr(health.runtime_state, "value", health.runtime_state)) == "running"
+        and proof.get("wiring_proven") is True
+        and proof.get("native_top_level_rules_match") is True,
+        "native_top_level_rules_match": proof.get("native_top_level_rules_match") is True,
+        "selector_membership_matches": proof.get("selector_membership_matches") is True,
+        "guarded_rules_match": proof.get("guarded_rules_match") is True,
+    }
 
 
 def _invoke_verification_callback(callback: Any, *, operation_id: str, expected_revision: int) -> Any:
@@ -456,6 +579,8 @@ def restore_mihomo_reconcile_checkpoint(
     checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
     if not checkpoint.get("ok"):
         return {"ok": False, "recovered": False, "reason": checkpoint.get("reason") or "checkpoint_unavailable"}
+    if not _checkpoint_rollback_policy_allowed(checkpoint):
+        return {"ok": False, "recovered": False, "reason": "previous_config_not_failclosed_for_vpn_udp"}
     checkpoint_revision = checkpoint.get("expected_selection_revision")
     checkpoint_operation = str(checkpoint.get("operation_id") or "")
     if (
@@ -597,9 +722,29 @@ def reconcile_mihomo_runtime(
                         "error_code": "MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION",
                         "verification_callback_result": verification,
                         "last_good_retained": True}
-            if input_fingerprint is not None:
-                write_mihomo_reconcile_fingerprint_state(fingerprint=input_fingerprint,
-                                                         result={"ok": True, "reconcile_reason": "input_fingerprint_unchanged"})
+            native_proof = _native_udp_policy_proof()
+            if not native_proof.get("ok") or not _selection_publication_still_owned(
+                operation_id=operation_id, expected_revision=owned_revision,
+                expected_incarnation=runtime_incarnation_before,
+                expected_input_hash=(input_fingerprint or {}).get("hash"),
+                expected_active_hash=active_config_hash_before,
+                routing=routing_dict, verification=verification,
+            ):
+                return {"ok": False, "stage": "native_udp_policy_readback",
+                        "reconcile_reason": "native_policy_or_fence_unconfirmed",
+                        "verification_callback_result": verification,
+                        "native_udp_policy_proof": native_proof,
+                        "last_good_retained": True}
+            if input_fingerprint is not None and not write_mihomo_reconcile_fingerprint_state(
+                fingerprint=input_fingerprint,
+                result={"ok": True, "reconcile_reason": "input_fingerprint_unchanged"},
+                native_proof=native_proof,
+                expected_active_hash=active_config_hash_before,
+                expected_runtime_incarnation=runtime_incarnation_before,
+            ):
+                return {"ok": False, "stage": "native_udp_policy_receipt",
+                        "reconcile_reason": "receipt_fence_mismatch",
+                        "last_good_retained": True}
         base_path = config._resolved_base_config_path()
         candidate_path = config._resolved_candidate_config_path()
         return {
@@ -779,8 +924,29 @@ def reconcile_mihomo_runtime(
                                    "reconcile_reason": "selection_or_runtime_superseded",
                                    "error_code": "MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION",
                                    "last_good_retained": True})
-                elif input_fingerprint is not None:
-                    write_mihomo_reconcile_fingerprint_state(fingerprint=input_fingerprint, result=result)
+                else:
+                    native_proof = _native_udp_policy_proof()
+                    if not native_proof.get("ok") or not _selection_publication_still_owned(
+                        operation_id=operation_id, expected_revision=owned_revision,
+                        expected_incarnation=runtime_incarnation_before,
+                        expected_input_hash=(input_fingerprint or {}).get("hash"),
+                        expected_active_hash=active_config_hash_before, routing=routing_dict,
+                        verification=verification,
+                    ):
+                        result.update({"ok": False, "stage": "native_udp_policy_readback",
+                                       "reconcile_reason": "native_policy_or_fence_unconfirmed",
+                                       "native_udp_policy_proof": native_proof,
+                                       "last_good_retained": True})
+                    elif input_fingerprint is not None:
+                        receipt_written = write_mihomo_reconcile_fingerprint_state(
+                            fingerprint=input_fingerprint, result=result, native_proof=native_proof,
+                            expected_active_hash=active_config_hash_before,
+                            expected_runtime_incarnation=runtime_incarnation_before,
+                        )
+                        if not receipt_written:
+                            result.update({"ok": False, "stage": "native_udp_policy_receipt",
+                                           "reconcile_reason": "receipt_fence_mismatch",
+                                           "last_good_retained": True})
         return result
 
     restart_action = "force_recreate"
@@ -797,7 +963,7 @@ def reconcile_mihomo_runtime(
                 "reconcile_action": "none",
             }
         recovery_checkpoint = (
-            _capture_mihomo_reconcile_checkpoint(base_path, candidate_path)
+            _capture_mihomo_reconcile_checkpoint(base_path, candidate_path, routing=routing_dict)
             if callable(verification_callback)
             else {"ok": False, "reason": "verification_callback_not_requested"}
         )
@@ -885,10 +1051,25 @@ def reconcile_mihomo_runtime(
                 verification=verification,
             )
             if publication_owned and input_fingerprint is not None:
-                write_mihomo_reconcile_fingerprint_state(
+                native_proof = _native_udp_policy_proof()
+                publication_owned = bool(native_proof.get("ok")) and _selection_publication_still_owned(
+                    operation_id=operation_id,
+                    expected_revision=recovery_expected_revision,
+                    expected_incarnation=runtime_incarnation_after,
+                    expected_input_hash=(input_fingerprint or {}).get("hash"),
+                    expected_active_hash=prepared_candidate_hash,
+                    routing=routing_dict,
+                    verification=verification,
+                )
+            if publication_owned and input_fingerprint is not None:
+                receipt_written = write_mihomo_reconcile_fingerprint_state(
                     fingerprint=input_fingerprint,
                     result={"ok": True, "reconcile_reason": "structural_change", "operation_id": operation_id},
+                    native_proof=native_proof,
+                    expected_active_hash=prepared_candidate_hash,
+                    expected_runtime_incarnation=runtime_incarnation_after,
                 )
+                publication_owned = publication_owned and receipt_written
         if not publication_owned:
             publication_revalidation_failed = True
             verified = False

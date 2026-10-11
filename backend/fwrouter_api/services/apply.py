@@ -441,10 +441,14 @@ def run_apply_pipeline(
                     and not result_runtime_enforcement["traffic_enforcement_guaranteed"]
                     and bool(apply_result.details.get("vpn_external_path_verified"))
                     and bool(apply_result.details.get("vpn_contract_ready"))
-                    and bool(preflight.get("can_enforce_global_vpn"))
+                    and bool(preflight.get("can_prepare_global_vpn"))
                 ):
-                    applied_preflight = dict(preflight)
-                    applied_preflight["vpn_external_path_verified"] = True
+                    applied_preflight = build_global_preflight(
+                        routing=manifest.get("routing_global_state")
+                        if isinstance(manifest.get("routing_global_state"), dict)
+                        else None,
+                        check_details=apply_result.details,
+                    )
                     result_runtime_enforcement = build_applied_runtime_enforcement(
                         routing=manifest.get("routing_global_state") if isinstance(manifest.get("routing_global_state"), dict) else None,
                         preflight=applied_preflight,

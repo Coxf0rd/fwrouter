@@ -301,6 +301,9 @@ def test_runtime_enforcement_projection_preserves_applied_mode_contracts(monkeyp
             "can_enforce_global_direct": True,
             "can_enforce_global_selective": True,
             "can_enforce_global_vpn": True,
+            "can_prepare_global_vpn": True,
+            "vpn_policy_installed": True,
+            "vpn_egress_ready": True,
             "selective_degraded": False,
             "selective_vpn_ready": True,
             "profile": {"profile": "global_v1"},
@@ -326,6 +329,33 @@ def test_runtime_enforcement_projection_preserves_applied_mode_contracts(monkeyp
             },
         }
         assert _runtime_enforcement_from_summary(runtime_snapshot) == enforcement
+
+
+def test_runtime_enforcement_reports_confirmed_fail_closed_vpn_policy_without_egress(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services.dataplane_global import build_applied_runtime_enforcement
+
+    result = build_applied_runtime_enforcement(
+        routing={"desired_mode": "vpn", "applied_mode": "vpn"},
+        preflight={
+            "can_enforce_global_direct": True,
+            "can_enforce_global_selective": True,
+            "can_enforce_global_vpn": True,
+            "can_prepare_global_vpn": True,
+            "vpn_policy_installed": True,
+            "vpn_egress_ready": False,
+            "vpn_egress_missing": ["mihomo_global_egress_missing"],
+            "profile": {"profile": "global_v1"},
+            "missing": [],
+        },
+        live_mode_probe={"ok": True, "mode": "vpn"},
+    )
+    assert result["enforcement_level"] == "global_vpn_fail_closed"
+    assert result["traffic_enforcement_guaranteed"] is True
+    assert result["vpn_egress_ready"] is False
 
 
 def test_system_summary_reuses_runtime_enforcement_projection(monkeypatch, tmp_path: Path) -> None:

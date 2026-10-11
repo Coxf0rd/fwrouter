@@ -18,6 +18,7 @@ from fwrouter_api.services.mihomo_config_paths import (
 )
 
 FINGERPRINT_VERSION = 2
+UDP_POLICY_RECEIPT_VERSION = 1
 STATE_FILE_NAME = "reconcile-state.json"
 
 
@@ -222,24 +223,79 @@ def mihomo_input_unchanged(fingerprint: dict[str, Any]) -> bool:
     active_hash = active_config_hash()
     if not active_hash:
         return False
-    return state.get("active_config_hash") == active_hash
+    if state.get("active_config_hash") != active_hash:
+        return False
+    return _receipt_runtime_matches(state)
+
+
+def _current_runtime_incarnation() -> str | None:
+    try:
+        from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+
+        value = get_mihomo_runtime_incarnation()
+    except Exception:
+        return None
+    return str(value).strip() if value else None
+
+
+def _receipt_runtime_matches(state: dict[str, Any]) -> bool:
+    incarnation = _current_runtime_incarnation()
+    return bool(
+        incarnation
+        and state.get("runtime_incarnation") == incarnation
+        and state.get("udp_policy_version") == UDP_POLICY_RECEIPT_VERSION
+    )
+
+
+def mihomo_udp_policy_receipt_matches() -> bool:
+    """Confirm the active config hash and runtime are the reconciled instance."""
+    state = _load_state()
+    active_hash = active_config_hash()
+    return bool(
+        isinstance(state, dict)
+        and active_hash
+        and state.get("active_config_hash") == active_hash
+        and _receipt_runtime_matches(state)
+        and state.get("native_top_level_rules_match") is True
+        and state.get("native_selector_membership_match") is True
+        and state.get("subrule_config_guard_match") is True
+    )
 
 
 def write_mihomo_reconcile_fingerprint_state(
     *,
     fingerprint: dict[str, Any],
     result: dict[str, Any],
-) -> None:
+    native_proof: dict[str, Any] | None = None,
+    expected_active_hash: str | None = None,
+    expected_runtime_incarnation: str | None = None,
+) -> bool:
     active_hash = active_config_hash()
-    if not active_hash:
-        return
+    incarnation = _current_runtime_incarnation()
+    if (
+        not active_hash
+        or not incarnation
+        or active_hash != expected_active_hash
+        or incarnation != expected_runtime_incarnation
+        or not isinstance(native_proof, dict)
+        or native_proof.get("native_top_level_rules_match") is not True
+        or native_proof.get("selector_membership_matches") is not True
+        or native_proof.get("guarded_rules_match") is not True
+    ):
+        return False
     data = {
         "version": FINGERPRINT_VERSION,
         "fingerprint_hash": fingerprint.get("hash"),
         "active_config_hash": active_hash,
+        "runtime_incarnation": incarnation,
+        "udp_policy_version": UDP_POLICY_RECEIPT_VERSION,
+        "native_top_level_rules_match": True,
+        "native_selector_membership_match": True,
+        "subrule_config_guard_match": True,
         "candidate_config_hash": _file_hash(_resolved_candidate_config_path()),
         "updated_at": _utc_timestamp(),
         "reconcile_reason": result.get("reconcile_reason"),
         "reconcile_action": result.get("reconcile_action"),
     }
     atomic_write_json(_state_path(), data)
+    return True

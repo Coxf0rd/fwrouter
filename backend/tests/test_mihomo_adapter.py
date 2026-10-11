@@ -15,6 +15,92 @@ from fwrouter_api.adapters.mihomo import (
 from fwrouter_api.adapters import mihomo as mihomo_module
 
 
+def test_vpn_udp_native_readback_requires_reject_groups_and_paired_guards() -> None:
+    from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+
+    config = yaml.safe_dump({
+        "rules": ["DOMAIN,example.test,vpn-global", "AND,((NETWORK,udp),(DOMAIN,example.test)),REJECT", "MATCH,DIRECT"],
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]},
+            {"name": "fwrouter-subject-test", "proxies": ["vpn-global", "REJECT"]},
+        ],
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,DIRECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
+    }, sort_keys=False)
+    proxies = {
+        name: {"all": group["proxies"], "now": "REJECT" if name == "vpn-auto" else group["proxies"][0]}
+        for name, group in {
+            "vpn-auto": {"proxies": ["REJECT"]},
+            "vpn-global": {"proxies": ["vpn-auto", "REJECT"]},
+            "fwrouter-subject-test": {"proxies": ["vpn-global", "REJECT"]},
+        }.items()
+    }
+    result = MihomoHttpAdapter._vpn_udp_policy_readback(config, proxies)
+    assert result["policy_installed"] is True
+    assert result["selector_membership_matches"] is True
+    assert result["guarded_rules_match"] is True
+
+    unsafe_config = config.replace("AND,((NETWORK,udp),(DOMAIN,example.test)),REJECT", "MATCH,DIRECT")
+    unsafe = MihomoHttpAdapter._vpn_udp_policy_readback(unsafe_config, proxies)
+    assert unsafe["policy_installed"] is False
+    unsafe_members = {**proxies, "vpn-auto": {"all": ["DIRECT", "REJECT"]}}
+    unsafe_group = MihomoHttpAdapter._vpn_udp_policy_readback(config, unsafe_members)
+    assert unsafe_group["selector_membership_matches"] is False
+
+    unsafe_selection = {**proxies, "vpn-auto": {"all": ["REJECT"], "now": "DIRECT"}}
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(config, unsafe_selection)["selector_membership_matches"] is False
+
+
+def test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types() -> None:
+    from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+
+    config = yaml.safe_dump({
+        "rules": [
+            "DOMAIN-SUFFIX,example.test,vpn-global",
+            "AND,((NETWORK,udp),(DOMAIN-SUFFIX,example.test)),REJECT",
+            "IP-CIDR6,2001:db8::1/64,no-resolve,vpn-global",
+            "AND,((NETWORK,udp),(IP-CIDR6,2001:db8::1/64)),REJECT",
+            "AND,((SRC-IP-CIDR,192.0.2.4/32),(DOMAIN-SUFFIX,example.test)),vpn-global",
+            "AND,((NETWORK,udp),(AND,((SRC-IP-CIDR,192.0.2.4/32),(DOMAIN-SUFFIX,example.test)))),REJECT",
+            "MATCH,DIRECT",
+        ],
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]},
+        ],
+        "sub-rules": {"fwrouter-transparent": ["MATCH,DIRECT"], "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"]},
+    }, sort_keys=False)
+    proxies = {
+        "vpn-auto": {"all": ["REJECT"], "now": "REJECT"},
+        "vpn-global": {"all": ["vpn-auto", "REJECT"], "now": "vpn-auto"},
+    }
+    native_rules = [
+        {"type": "DomainSuffix", "payload": "example.test", "proxy": "vpn-global"},
+        {"type": "AND", "payload": "((Network,udp) && (DomainSuffix,example.test))", "proxy": "REJECT",
+         "extra": {"disabled": False}},
+        {"type": "IPCIDR", "payload": "2001:db8::/64", "proxy": "vpn-global"},
+        {"type": "AND", "payload": "((Network,udp) && (IPCIDR,2001:db8::/64))", "proxy": "REJECT"},
+        {"type": "AND", "payload": "((SrcIPCIDR,192.0.2.4/32) && (DomainSuffix,example.test))", "proxy": "vpn-global"},
+        {"type": "AND", "payload": "((Network,udp) && (AND,((SrcIPCIDR,192.0.2.4/32) && (DomainSuffix,example.test))))", "proxy": "REJECT"},
+        {"type": "Match", "payload": "", "proxy": "DIRECT"},
+    ]
+    proof = MihomoHttpAdapter._vpn_udp_policy_readback(config, proxies, native_rules)
+    assert proof["native_top_level_rules_match"] is True
+    assert proof["policy_installed"] is True
+
+
+def test_vpn_udp_active_server_does_not_fall_through_when_owned_selector_rejects() -> None:
+    adapter = MihomoHttpAdapter()
+    assert adapter._active_server_id_from_proxies({
+        "vpn-global": {"now": "vpn-auto", "all": ["vpn-auto", "REJECT"]},
+        "vpn-auto": {"now": "REJECT", "all": ["REJECT"]},
+        "GLOBAL": {"now": "unrelated-server", "all": ["unrelated-server"]},
+    }) is None
+
+
 def _use_adapter_clock(monkeypatch, *times: datetime) -> None:
     class SequenceDateTime(datetime):
         _times = list(times)

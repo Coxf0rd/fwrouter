@@ -42,6 +42,7 @@ jobs:
               "ci:validate-kernel": "kernel-preflight",
               "ci:validate-dataplane": "kernel-recovery-diagnostic",
               "ci:validate-packet": "packet-diagnostic",
+              "ci:validate-udp-unit": "udp-unit",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
           selected = [stage for marker, stage in markers.items() if marker in message]
@@ -181,6 +182,26 @@ jobs:
             tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_requires_fresh_exact_url_state_readback \
             tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_without_exact_fresh_proof_stays_failed \
             tests/test_mihomo_adapter.py::test_mihomo_delay_zero_fallback_does_not_probe_on_other_errors
+      - name: Run exact UDP capability and Mihomo policy regression nodes
+        if: needs.select-stage.outputs.stage == 'udp-unit'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/udp-unit-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/udp-unit-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/udp-unit-nodeids.log" \
+            tests/test_protocol_adapters.py::test_vless_udp_capability_is_tri_state_and_native_attempt_is_idempotent \
+            tests/test_protocol_adapters.py::test_vless_udp_capability_rejects_invalid_and_duplicate_uri_values \
+            tests/test_mihomo_config_runtime.py::test_build_mihomo_config_scopes_subject_server_override_to_vpn_rules_only \
+            tests/test_mihomo_config_runtime.py::test_build_mihomo_config_renders_effective_domain_and_cidr_rules \
+            tests/test_mihomo_adapter.py::test_vpn_udp_native_readback_requires_reject_groups_and_paired_guards \
+            tests/test_mihomo_adapter.py::test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types \
+            tests/test_mihomo_adapter.py::test_vpn_udp_active_server_does_not_fall_through_when_owned_selector_rejects \
+            tests/test_runtime_summary.py::test_runtime_enforcement_reports_confirmed_fail_closed_vpn_policy_without_egress \
+            tests/test_dataplane_global.py::test_global_vpn_preflight_allows_prepare_with_empty_reject_selector_without_egress \
+            tests/test_mihomo_config_runtime.py::test_reconcile_rollback_classifies_actual_direct_and_mandatory_vpn_configs \
+            tests/test_mihomo_config_runtime.py::test_mihomo_udp_policy_receipt_is_bound_to_config_hash_runtime_and_native_proof
       - name: Record focused preflight outcome
         if: always()
         run: |

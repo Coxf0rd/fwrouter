@@ -74,7 +74,7 @@ def parse_material(key: str, config: dict[str, Any]) -> Any:
         raise ProviderError("PROVIDER_CONFIG_INCOMPLETE")
     if profile.family == "vless" and config[field].lstrip().startswith("vless://"):
         from urllib.parse import parse_qsl, urlparse
-        allowed_query = {"security", "type", "network", "flow", "encryption", "sni", "fp", "pbk", "sid",
+        allowed_query = {"security", "type", "network", "flow", "encryption", "sni", "fp", "pbk", "sid", "udp",
                          "serviceName", "grpc-service-name", "path", "host", "mode", "extra"}
         if any(k not in allowed_query for k, _ in parse_qsl(urlparse(config[field]).query, keep_blank_values=True)):
             raise ProviderError("PROVIDER_PROTOCOL_VALIDATION_FAILED")
