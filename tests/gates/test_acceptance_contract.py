@@ -2234,6 +2234,18 @@ class AcceptanceContractTests(unittest.TestCase):
             launcher.validate_suite_node_receipt(skipped, "packet-diagnostic", [nodeid])
         row = next(item for item in launcher.expected_acceptance_nodeids("packet-diagnostic"))
         self.assertEqual(nodeid, row)
+        packet_source = (Path(__file__).parents[1] / "application_acceptance" / "test_packet_dataplane.py").read_text(
+            encoding="utf-8")
+        packet_tree = ast.parse(packet_source)
+        packet_case = next(node for node in packet_tree.body
+                           if isinstance(node, ast.FunctionDef)
+                           and node.name == "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks")
+        packet_case_source = ast.get_source_segment(packet_source, packet_case) or ""
+        self.assertIn("provider_calls_after_reentry == provider_calls_before_reentry", packet_case_source)
+        self.assertNotIn("bridge.snapshot_calls() == []", packet_case_source)
+        self.assertIn('"provider_api_call_summary": reentry_provider_call_summary', packet_case_source)
+        self.assertIn('"provider_api_calls_before": len(provider_calls_before_reentry)', packet_case_source)
+        self.assertIn('"provider_api_calls_after": len(provider_calls_after_reentry)', packet_case_source)
         workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
             encoding="utf-8")
         self.assertIn('"ci:validate-packet": "packet-diagnostic"', workflow)
@@ -2258,6 +2270,7 @@ class AcceptanceContractTests(unittest.TestCase):
             '"source_fingerprint_matches"', '"preimage_hash_matches"',
             '"selection_revision_matches"', '"runtime_incarnation_matches"',
             '"active_hash_matches"', '"input_fingerprint_present"',
+            '"checkpoint_pre_restore_runtime_matches"',
             '"FWROUTER_ACCEPTANCE_XRAY_ROLLBACK "', 'limit = 16', 'max_bytes = 2048',
         ):
             self.assertIn(required, observer_source)

@@ -2042,8 +2042,20 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     }
 
     _set_health_available(True)
+    provider_calls_before_reentry = bridge.snapshot_calls()
     code, reentered = http_json(f"{api}/__acceptance/provider/reentry", method="POST",
                                 payload={"timeout_ms": 2000}, timeout=90)
+    provider_calls_after_reentry = bridge.snapshot_calls()
+    reentry_provider_calls = provider_calls_after_reentry[len(provider_calls_before_reentry):]
+    reentry_provider_call_summary = [
+        {
+            "method": method if method in {"GET", "PATCH", "POST"} else "other",
+            "endpoint": "configs" if path == "/configs" else "other",
+            "query_present": bool(query),
+            "body_present": body is not None,
+        }
+        for method, path, query, body in reentry_provider_calls[:4]
+    ]
     reentry_routing_code, reentry_routing = http_json(f"{api}/routing/global")
     _record_phase_diagnostic(record_property, {
         "phase": "provider-reentry",
@@ -2052,10 +2064,15 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "health": _recovery_health_snapshot(source_ref, logical_id),
         "routing": _provider_reentry_routing_summary(reentry_routing_code, reentry_routing),
         "mihomo_path": _packet_refresh_native_proof(stack),
+        "provider_api_calls_before": len(provider_calls_before_reentry),
+        "provider_api_calls_after": len(provider_calls_after_reentry),
+        "provider_api_call_summary": reentry_provider_call_summary,
     })
     assert code == 200 and reentered.get("ok") is True
     assert reentered.get("effective_override") in {None, ""}
-    assert bridge.snapshot_calls() == [], "provider reentry must not call the external provider API"
+    assert provider_calls_after_reentry == provider_calls_before_reentry, {
+        "phase": "provider-reentry", "provider_api_call_summary": reentry_provider_call_summary,
+    }
     code, vpn_projection = http_json(f"{api}/routing/global")
     assert code == 200 and vpn_projection.get("ok") is True
     assert vpn_projection["data"]["routing"].get("desired_mode") == "vpn"

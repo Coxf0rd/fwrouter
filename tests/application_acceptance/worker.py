@@ -1063,7 +1063,7 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
                 "preimage_hash_matches": preimage_matches,
                 "selection_revision_matches": type(expected_revision) is int
                 and checkpoint.get("selection_revision") == expected_revision,
-                "mihomo_runtime_matches": bool(expected_runtime)
+                "checkpoint_pre_restore_runtime_matches": bool(expected_runtime)
                 and checkpoint.get("mihomo_runtime_incarnation") == expected_runtime,
                 "staged_hash_matches": bool(expected_sha)
                 and (checkpoint.get("staged_generation") or {}).get("mihomo_final_sha256") == expected_sha,
