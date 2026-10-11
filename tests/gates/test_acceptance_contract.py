@@ -390,6 +390,45 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("diagnostic=unavailable", str(raised_unsafe.exception))
         self.assertNotIn("PATH_SENTINEL", str(raised_unsafe.exception))
 
+    def test_runtime_preflight_failed_exec_reports_fixed_statement_without_raw_stderr(self):
+        code = launcher.runtime_preflight_code()
+        expected_line = next(index for index, row in enumerate(code.splitlines(), 1)
+                             if row == 'assert p["schema"] == "fwrouter-acceptance-profile/v2"')
+        stderr = (f'Traceback (most recent call last):\n  File "<string>", line {expected_line}, in <module>\n'
+                  'AssertionError: TOKEN_SENTINEL /secret/path\n').encode("utf-8")
+        completed = SimpleNamespace(returncode=1, stdout=b"", stderr=stderr)
+        with mock.patch.object(launcher.subprocess, "run", return_value=completed):
+            with self.assertRaises(launcher.NotRun) as raised:
+                launcher._docker_exec_small(
+                    ["/usr/bin/docker", "exec", "<owned-id>"], cwd=Path("/tmp"), env={},
+                    stage="container_runtime_profile_preflight", role="router")
+        message = str(raised.exception)
+        self.assertIn('"exception_type":"AssertionError"', message)
+        self.assertIn('"statement":"assert p[\\"schema\\"] == \\"fwrouter-acceptance-profile/v2\\""', message)
+        self.assertIn(f'"line":{expected_line}', message)
+        self.assertNotIn("TOKEN_SENTINEL", message)
+        self.assertNotIn("/secret/path", message)
+
+        crafted_stderr = (f'Traceback (most recent call last):\n  File "<string>", line {expected_line}, in <module>\n'
+                          'TOKEN_Error: TOKEN_SENTINEL\n').encode("utf-8")
+        crafted = SimpleNamespace(returncode=1, stdout=b"", stderr=crafted_stderr)
+        with mock.patch.object(launcher.subprocess, "run", return_value=crafted):
+            with self.assertRaises(launcher.NotRun) as raised_crafted:
+                launcher._docker_exec_small(
+                    ["/usr/bin/docker", "exec", "<owned-id>"], cwd=Path("/tmp"), env={},
+                    stage="container_runtime_profile_preflight", role="router")
+        self.assertIn('"exception_type":"Other"', str(raised_crafted.exception))
+        self.assertNotIn("TOKEN_Error", str(raised_crafted.exception))
+        self.assertNotIn("TOKEN_SENTINEL", str(raised_crafted.exception))
+
+        oversized = SimpleNamespace(returncode=1, stdout=b"", stderr=b"x" * (16 * 1024 + 1))
+        with mock.patch.object(launcher.subprocess, "run", return_value=oversized):
+            with self.assertRaises(launcher.NotRun) as raised_oversized:
+                launcher._docker_exec_small(
+                    ["/usr/bin/docker", "exec", "<owned-id>"], cwd=Path("/tmp"), env={},
+                    stage="container_runtime_profile_preflight", role="router")
+        self.assertIn("diagnostic=unavailable", str(raised_oversized.exception))
+
     def test_packet_network_inspect_targets_both_exact_owned_networks(self):
         project = "fwrouter-acceptance-0123456789abcdef0123456789abcdef"
         self.assertEqual(["/usr/bin/docker", "network", "inspect", f"{project}_lan"],

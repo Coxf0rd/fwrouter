@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import ipaddress
 import json
@@ -2867,6 +2868,55 @@ def _packet_tmpfs_failure_summary(raw_stdout: bytes, *, role: str) -> dict[str, 
     return summary
 
 
+def _runtime_preflight_failure_summary(stderr: bytes) -> dict[str, Any] | None:
+    """Project the fixed Python preflight traceback to its source statement only."""
+    if not isinstance(stderr, bytes) or not stderr or len(stderr) > 16 * 1024:
+        return None
+    text = stderr.decode("utf-8", "replace")
+    frames = list(re.finditer(r'File "<string>", line ([0-9]+),', text))
+    if not frames:
+        return None
+    line_number = int(frames[-1].group(1))
+    code = runtime_preflight_code()
+    try:
+        tree = ast.parse(code, filename="<acceptance-runtime-preflight>")
+    except SyntaxError:
+        return None
+    candidates = [node for node in ast.walk(tree)
+                  if isinstance(node, ast.stmt)
+                  and getattr(node, "lineno", 0) <= line_number <= getattr(node, "end_lineno", 0)]
+    if not candidates:
+        return None
+    statement = min(candidates, key=lambda node: (node.end_lineno - node.lineno, -node.lineno))
+    source_statement = ast.get_source_segment(code, statement)
+    if not isinstance(source_statement, str) or not source_statement.strip():
+        return None
+    source_statement = source_statement.strip()
+    if len(source_statement.encode("utf-8")) > 768:
+        return None
+    known_exceptions = {
+        "AssertionError", "OSError", "FileNotFoundError", "PermissionError", "RuntimeError",
+        "ValueError", "KeyError", "TypeError", "TimeoutExpired", "CalledProcessError",
+        "ModuleNotFoundError", "ImportError", "SystemExit", "IndexError", "AttributeError",
+        "NameError", "UnicodeError", "JSONDecodeError", "OverflowError", "NotImplementedError",
+    }
+    exception_type = None
+    for row in reversed(text.splitlines()):
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_.]*)(?::.*)?$", row.strip())
+        if match:
+            candidate = match.group(1).rsplit(".", 1)[-1]
+            if candidate in known_exceptions:
+                exception_type = candidate
+                break
+            if candidate.endswith(("Error", "Exception", "Exit")):
+                exception_type = "Other"
+                break
+    if exception_type is None:
+        return None
+    return {"line": line_number, "exception_type": exception_type,
+            "statement": source_statement}
+
+
 def _docker_exec_small(argv: list[str], *, cwd: Path, env: dict[str, str], stage: str, role: str,
                        timeout: int = 20) -> str:
     allowed_roles = {"application", "router", "client", "endpoint"}
@@ -2878,7 +2928,10 @@ def _docker_exec_small(argv: list[str], *, cwd: Path, env: dict[str, str], stage
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise NotRun(f"bounded container preflight failed stage={stage} role={role} error={type(exc).__name__}") from exc
     if proc.returncode or len(proc.stdout) > 16384 or len(proc.stderr) > 16384:
-        detail = _packet_tmpfs_failure_summary(proc.stdout, role=role) if stage == "packet_tmpfs_mount_readback" else None
+        if stage == "packet_tmpfs_mount_readback":
+            detail = _packet_tmpfs_failure_summary(proc.stdout, role=role)
+        else:
+            detail = _runtime_preflight_failure_summary(proc.stderr)
         summary = json.dumps(detail, sort_keys=True, separators=(",", ":")) if detail is not None else "unavailable"
         raise NotRun(f"container runtime preflight failed stage={stage} role={role} exit={proc.returncode} "
                      f"stdout_bytes={len(proc.stdout)} stderr_bytes={len(proc.stderr)} diagnostic={summary}")
