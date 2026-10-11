@@ -2105,6 +2105,8 @@ class AcceptanceContractTests(unittest.TestCase):
         compile(kernel_code, "acceptance-kernel-preflight.py", "exec")
         runtime_code = launcher.runtime_preflight_code()
         self.assertIn("hosted-kernel-dataplane", runtime_code)
+        self.assertIn('dig_output=(dig.stdout+b"\\n"+dig.stderr).decode("ascii")', runtime_code)
+        self.assertIn('assert dig.returncode==0 and dig_output.startswith("DiG 9.18.49")', runtime_code)
         self.assertIn("os.geteuid() == 0 and os.getegid() == 0", runtime_code)
         self.assertIn('[nft,"-c","add","rule"', kernel_code)
         self.assertIn('initial_objects == final_objects', kernel_code)
