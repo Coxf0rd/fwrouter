@@ -2105,8 +2105,23 @@ class AcceptanceContractTests(unittest.TestCase):
         compile(kernel_code, "acceptance-kernel-preflight.py", "exec")
         runtime_code = launcher.runtime_preflight_code()
         self.assertIn("hosted-kernel-dataplane", runtime_code)
-        self.assertIn('dig_output=(dig.stdout+b"\\n"+dig.stderr).decode("ascii")', runtime_code)
-        self.assertIn('assert dig.returncode==0 and dig_output.startswith("DiG 9.18.49")', runtime_code)
+        runtime_tree = ast.parse(runtime_code, filename="acceptance-runtime-preflight.py")
+        dig_version_helpers = [node for node in ast.walk(runtime_tree)
+                               if isinstance(node, ast.FunctionDef)
+                               and node.name == "_dig_version_matches"]
+        self.assertEqual(len(dig_version_helpers), 1)
+        dig_version_helper = dig_version_helpers[0]
+        dig_namespace = {}
+        exec(compile(ast.Module(body=[dig_version_helper], type_ignores=[]),
+                     "acceptance-dig-version-contract.py", "exec"), dig_namespace)
+        matches = dig_namespace["_dig_version_matches"]
+        self.assertTrue(matches(0, b"DiG 9.18.49-1~deb12u1", b""))
+        self.assertTrue(matches(0, b"", b"DiG 9.18.49-1~deb12u1\n"))
+        self.assertFalse(matches(0, b"other-version", b"also-other-version"))
+        self.assertFalse(matches(1, b"DiG 9.18.49-1~deb12u1", b""))
+        self.assertFalse(matches(0, b"DiG 9.18.49\xff", b""))
+        self.assertIn('return returncode==0 and output.startswith("DiG 9.18.49")', runtime_code)
+        self.assertIn('assert _dig_version_matches(dig.returncode,dig.stdout,dig.stderr)', runtime_code)
         self.assertIn("os.geteuid() == 0 and os.getegid() == 0", runtime_code)
         self.assertIn('[nft,"-c","add","rule"', kernel_code)
         self.assertIn('initial_objects == final_objects', kernel_code)

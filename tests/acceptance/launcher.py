@@ -2596,8 +2596,13 @@ if kernel_mode:
         assert "nftset" in dnsmasq_text.splitlines()[1].split()
         dig=subprocess.run(["/usr/bin/dig","-v"],capture_output=True,timeout=5,stdin=subprocess.DEVNULL,
             env={"PATH":"/usr/bin:/bin","LANG":"C.UTF-8","TZ":"UTC"})
-        dig_output=(dig.stdout+b"\n"+dig.stderr).decode("ascii")
-        assert dig.returncode==0 and dig_output.startswith("DiG 9.18.49")
+        def _dig_version_matches(returncode, stdout, stderr):
+            try:
+                output=(stdout+stderr).decode("ascii").strip()
+            except UnicodeDecodeError:
+                return False
+            return returncode==0 and output.startswith("DiG 9.18.49")
+        assert _dig_version_matches(dig.returncode,dig.stdout,dig.stderr)
 else:
     assert "kernel_preflight" not in p and "kernel_dataplane" not in p and "network_testbed" not in p and "packet_capture" not in p
 for raw in ("/tmp/fwrouter-home", "/tmp/fwrouter-acceptance-state",
