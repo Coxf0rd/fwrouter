@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from typing import Any
 from _test_support import database_table_diff, database_table_snapshot as _database_snapshot
 
 import pytest
