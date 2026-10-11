@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import argparse
 import os
 import platform
 import re
@@ -30,6 +31,7 @@ REFERENCE_SCHEMA = "fwrouter-acceptance-dependency-consumer-ref/v1"
 CONSUMER_RECEIPT_SCHEMA = "fwrouter-acceptance-dependency-consumer-receipt/v1"
 MAX_REFERENCE_BYTES = 16 * 1024
 MAX_DOCKER_OUTPUT_BYTES = 128 * 1024
+MAX_IMAGE_BYTES = 8 * 1024 * 1024 * 1024
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 REJECTED_DOCKER_ENV = {
     "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_AUTH_CONFIG", "DOCKER_CERT_PATH",
@@ -130,7 +132,8 @@ def _child_environment(env: dict[str, str], docker_config: Path) -> dict[str, st
 
 
 def _run_bounded(argv: list[str], *, env: dict[str, str], timeout: int,
-                 output_limit: int = MAX_DOCKER_OUTPUT_BYTES) -> tuple[bytes, bytes, float]:
+                 output_limit: int = MAX_DOCKER_OUTPUT_BYTES,
+                 expected_returncode: int = 0) -> tuple[bytes, bytes, float]:
     started = time.monotonic()
     try:
         process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -170,7 +173,7 @@ def _run_bounded(argv: list[str], *, env: dict[str, str], timeout: int,
     process.stderr.close()
     if failure:
         raise ConsumerError(failure)
-    if process.returncode != 0:
+    if process.returncode != expected_returncode:
         raise ConsumerError("anonymous Docker command failed")
     return bytes(buffers[process.stdout]), bytes(buffers[process.stderr]), round(time.monotonic() - started, 3)
 
@@ -222,7 +225,7 @@ def _read_image_manifest(docker: str, config: Path, image_ref: str, *, env: dict
 
 
 def consume(reference: Any, *, runner_temp: Path, docker: str,
-            env: dict[str, str] | None = None) -> dict[str, Any]:
+            env: dict[str, str] | None = None, expect_cold: bool = False) -> dict[str, Any]:
     """Pull and qualify the referenced image anonymously before application use."""
     source_env = dict(os.environ if env is None else env)
     validate_consumer_environment(source_env)
@@ -248,6 +251,11 @@ def consume(reference: Any, *, runner_temp: Path, docker: str,
         raise ConsumerError("credential-like environment reached the anonymous Docker client")
 
     try:
+        if not isinstance(expect_cold, bool):
+            raise ConsumerError("cold-runner qualification flag must be an explicit boolean")
+        if expect_cold:
+            cold_check = [docker, "--config", str(config), "image", "inspect", image_ref]
+            _run_bounded(cold_check, env=child_env, timeout=20, expected_returncode=1)
         pull_command = [docker, "--config", str(config), "pull", "--platform", "linux/amd64", image_ref]
         pull_stdout, pull_stderr, pull_seconds = _run_bounded(pull_command, env=child_env, timeout=600)
         _validate_pull_digest(pull_stdout, pull_stderr, image_ref)
@@ -263,6 +271,9 @@ def consume(reference: Any, *, runner_temp: Path, docker: str,
                                                        image_ref=image_ref)
         except PublishError as exc:
             raise ConsumerError("dependency image labels or immutable digest differ from the lock") from exc
+        image_bytes = image.get("Size")
+        if type(image_bytes) is not int or not 0 < image_bytes <= MAX_IMAGE_BYTES:
+            raise ConsumerError("dependency image size is missing or outside its evidence bound")
         _validate_source_free_image_config(image)
         manifest, manifest_seconds = _read_image_manifest(
             docker, config, image_ref, env=child_env, lock=lock, lock_digest=lock_digest)
@@ -273,6 +284,8 @@ def consume(reference: Any, *, runner_temp: Path, docker: str,
             "lock_sha256": lock_digest,
             "platform": lock["platform"],
             "image_config_id": image["Id"],
+            "verified_image_bytes": image_bytes,
+            "cold_cache_absent": expect_cold,
             "installed_package_count": len(manifest["installed_packages"]),
             "pull_seconds": pull_seconds,
             "inspect_seconds": inspect_seconds,
@@ -287,3 +300,60 @@ def consume(reference: Any, *, runner_temp: Path, docker: str,
             shutil.rmtree(config)
         except OSError as exc:
             raise ConsumerError("anonymous Docker config cleanup could not be confirmed") from exc
+
+
+def _write_receipt(path: Path, receipt: dict[str, Any]) -> None:
+    """Write a bounded, private receipt without following an existing path."""
+    payload = json.dumps(receipt, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    if len(payload) > 16 * 1024:
+        raise ConsumerError("consumer receipt exceeded its bound")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(payload)
+
+
+def _validated_receipt_path(path: Path, runner_temp: Path) -> Path:
+    root = _validated_runner_temp(runner_temp)
+    if not path.is_absolute() or path.parent.resolve(strict=True) != root:
+        raise ConsumerError("consumer receipt must be a direct child of the runner temporary directory")
+    if Path(os.path.abspath(path.parent)) != root or path.is_symlink():
+        raise ConsumerError("consumer receipt path must not contain symlinks")
+    if not re.fullmatch(r"fwrouter-dependency-consumer-[a-z0-9-]+\.json", path.name):
+        raise ConsumerError("consumer receipt filename is outside its bounded contract")
+    if path.exists() or path.is_symlink():
+        raise ConsumerError("consumer receipt already exists")
+    return path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runner-temp", required=True, type=Path)
+    parser.add_argument("--receipt", required=True, type=Path)
+    parser.add_argument("--expect-cold", action="store_true")
+    args = parser.parse_args(argv)
+    receipt_path = None
+    try:
+        runner_temp = _validated_runner_temp(args.runner_temp)
+        receipt_path = _validated_receipt_path(args.receipt, runner_temp)
+        reference = load_consumer_reference()
+        receipt = consume(reference, runner_temp=runner_temp, docker="/usr/bin/docker",
+                          expect_cold=args.expect_cold)
+        _write_receipt(receipt_path, receipt)
+    except (ConsumerError, OSError) as exc:
+        # Keep failure artifacts bounded and free of Docker output or secrets.
+        failure = {"schema": CONSUMER_RECEIPT_SCHEMA, "status": "failed",
+                   "stage": "anonymous_consume", "error_code": (
+                       "consumer_contract_failed" if isinstance(exc, ConsumerError) else "consumer_io_failed")}
+        if receipt_path is not None:
+            try:
+                _write_receipt(receipt_path, failure)
+            except OSError:
+                pass
+        print(f"anonymous dependency consumption failed: {failure['error_code']}")
+        return 1
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

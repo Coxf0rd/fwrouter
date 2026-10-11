@@ -95,6 +95,7 @@ class ConsumeDependencyImageContractTests(unittest.TestCase):
         digest = image_ref.split("@", 1)[1]
         image = {
             "Id": "sha256:" + "b" * 64,
+            "Size": 2_500_000_000,
             "Os": "linux",
             "Architecture": "amd64",
             "RepoDigests": [image_ref],
@@ -128,11 +129,14 @@ class ConsumeDependencyImageContractTests(unittest.TestCase):
         }
         observed_calls = []
 
-        def fake_docker(argv, *, env, timeout, output_limit=consumer.MAX_DOCKER_OUTPUT_BYTES):
-            observed_calls.append((argv, dict(env), timeout, output_limit))
+        def fake_docker(argv, *, env, timeout, output_limit=consumer.MAX_DOCKER_OUTPUT_BYTES,
+                        expected_returncode=0):
+            observed_calls.append((argv, dict(env), timeout, output_limit, expected_returncode))
             if "pull" in argv:
                 return f"Digest: {digest}\n".encode(), b"", 0.25
             if "inspect" in argv:
+                if not any("pull" in prior for prior, *_rest in observed_calls[:-1]):
+                    return b"", b"", 0.02
                 return json.dumps([image]).encode(), b"", 0.1
             if "run" in argv:
                 return json.dumps(manifest).encode(), b"", 0.2
@@ -144,18 +148,22 @@ class ConsumeDependencyImageContractTests(unittest.TestCase):
               mock.patch.object(consumer, "_run_bounded", side_effect=fake_docker)):
             runner_temp = Path(temp)
             runner_temp.chmod(0o700)
-            receipt = consumer.consume(reference, runner_temp=runner_temp, docker="/usr/bin/docker", env=env)
+            receipt = consumer.consume(reference, runner_temp=runner_temp, docker="/usr/bin/docker",
+                                       env=env, expect_cold=True)
 
             self.assertEqual("ready", receipt["status"])
             self.assertEqual(image_ref, receipt["image_ref"])
             self.assertEqual(lock_digest, receipt["lock_sha256"])
             self.assertTrue(receipt["anonymous"])
+            self.assertTrue(receipt["cold_cache_absent"])
+            self.assertEqual(2_500_000_000, receipt["verified_image_bytes"])
             self.assertEqual(0.25, receipt["pull_seconds"])
             self.assertEqual(0.1, receipt["inspect_seconds"])
             self.assertEqual(0.2, receipt["manifest_readback_seconds"])
-            self.assertEqual(3, len(observed_calls))
+            self.assertEqual(4, len(observed_calls))
+            self.assertEqual(1, observed_calls[0][4])
             configs = set()
-            for argv, child_env, _timeout, _limit in observed_calls:
+            for argv, child_env, _timeout, _limit, _expected_returncode in observed_calls:
                 self.assertEqual(consumer.MAX_DOCKER_OUTPUT_BYTES, _limit)
                 self.assertEqual("/usr/bin/docker", argv[0])
                 self.assertEqual("--config", argv[1])
@@ -168,7 +176,7 @@ class ConsumeDependencyImageContractTests(unittest.TestCase):
             config = Path(configs.pop())
             self.assertTrue(config.parent == runner_temp)
             self.assertFalse(config.exists())
-            run_call = next(argv for argv, _env, _timeout, _limit in observed_calls if "run" in argv)
+            run_call = next(argv for argv, _env, _timeout, _limit, _expected in observed_calls if "run" in argv)
             for required in ("--pull=never", "--network=none", "--read-only", "10001:10001",
                              "--memory=256m", "--memory-swap=256m", "--cpus=0.5",
                              "--pids-limit=32", "--cap-drop=ALL", "--security-opt=no-new-privileges"):
@@ -182,6 +190,112 @@ class ConsumeDependencyImageContractTests(unittest.TestCase):
             missing = Path(temp) / "reference.json"
             with self.assertRaises(consumer.ConsumerError):
                 consumer.load_consumer_reference(missing)
+
+    def test_consumer_receipt_is_bound_to_owned_runner_temp_and_rejects_symlinks(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-consumer-receipt-") as temp:
+            root = Path(temp)
+            root.chmod(0o700)
+            receipt = root / "fwrouter-dependency-consumer-cold.json"
+            self.assertEqual(receipt, consumer._validated_receipt_path(receipt, root))
+            for target in (root.parent / "outside.json", root / "receipt.txt"):
+                with self.subTest(target=target), self.assertRaises(consumer.ConsumerError):
+                    consumer._validated_receipt_path(target, root)
+            link = root / "fwrouter-dependency-consumer-warm.json"
+            link.symlink_to(receipt)
+            with self.assertRaises(consumer.ConsumerError):
+                consumer._validated_receipt_path(link, root)
+
+    def test_consumer_rejects_invalid_image_size_before_manifest_and_cleans_docker_config(self):
+        lock = self._lock()
+        reference = self._reference(lock)
+        image_ref = reference["image_ref"]
+        digest = image_ref.split("@", 1)[1]
+        lock_digest = prepare._canonical_digest(lock)
+        base_image = {
+            "Id": "sha256:" + "b" * 64,
+            "Os": "linux",
+            "Architecture": "amd64",
+            "RepoDigests": [image_ref],
+            "Config": {"Labels": {
+                publisher.OWNER_LABEL: lock_digest,
+                publisher.BASE_LABEL: lock["base_image"],
+            }},
+        }
+        env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "PATH": "/usr/bin"}
+        invalid_sizes = (None, 0, consumer.MAX_IMAGE_BYTES + 1)
+        for image_size in invalid_sizes:
+            with self.subTest(image_size=image_size), tempfile.TemporaryDirectory(
+                    prefix="fwrouter-consumer-size-") as temp:
+                runner_temp = Path(temp)
+                runner_temp.chmod(0o700)
+                image = dict(base_image)
+                if image_size is not None:
+                    image["Size"] = image_size
+                calls = []
+
+                def fake_docker(argv, *, env, timeout, output_limit=consumer.MAX_DOCKER_OUTPUT_BYTES,
+                                expected_returncode=0):
+                    calls.append((argv, dict(env)))
+                    if "pull" in argv:
+                        return f"Digest: {digest}\n".encode(), b"", 0.1
+                    if "inspect" in argv:
+                        return json.dumps([image]).encode(), b"", 0.1
+                    raise AssertionError("invalid image size reached manifest execution")
+
+                with (mock.patch.object(consumer.platform, "system", return_value="Linux"),
+                      mock.patch.object(consumer.platform, "machine", return_value="x86_64"),
+                      mock.patch.object(consumer, "_run_bounded", side_effect=fake_docker)):
+                    with self.assertRaisesRegex(consumer.ConsumerError, "image size"):
+                        consumer.consume(reference, runner_temp=runner_temp, docker="/usr/bin/docker", env=env)
+                self.assertEqual(2, len(calls))
+                config = Path(calls[0][0][2])
+                self.assertFalse(config.exists())
+
+    def test_cold_consumer_refuses_a_cached_image_before_pull_and_cleans_config(self):
+        lock = self._lock()
+        reference = self._reference(lock)
+        env = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "PATH": "/usr/bin"}
+        with tempfile.TemporaryDirectory(prefix="fwrouter-consumer-cold-cache-") as temp:
+            runner_temp = Path(temp)
+            runner_temp.chmod(0o700)
+            calls = []
+
+            def cached_image(argv, *, env, timeout, output_limit=consumer.MAX_DOCKER_OUTPUT_BYTES,
+                             expected_returncode=0):
+                calls.append(argv)
+                self.assertIn("image", argv)
+                self.assertIn("inspect", argv)
+                self.assertEqual(1, expected_returncode)
+                raise consumer.ConsumerError("cold cache check found a cached image")
+
+            with (mock.patch.object(consumer.platform, "system", return_value="Linux"),
+                  mock.patch.object(consumer.platform, "machine", return_value="x86_64"),
+                  mock.patch.object(consumer, "_run_bounded", side_effect=cached_image)):
+                with self.assertRaisesRegex(consumer.ConsumerError, "cached image"):
+                    consumer.consume(reference, runner_temp=runner_temp, docker="/usr/bin/docker",
+                                     env=env, expect_cold=True)
+            self.assertEqual(1, len(calls))
+            self.assertNotIn("pull", calls[0])
+            self.assertFalse(Path(calls[0][2]).exists())
+
+    def test_dependency_workflow_has_separate_anonymous_cold_and_warm_consumer(self):
+        workflow = (ROOT / ".github/workflows/publish-acceptance-dependencies.yml").read_text(
+            encoding="utf-8")
+        job = workflow.split("  publish-dependencies:", 1)[0]
+        self.assertIn("ci:validate-dependencies", job)
+        self.assertIn("runs-on: ubuntu-24.04", job)
+        self.assertIn("permissions:\n      contents: read", job)
+        self.assertNotIn("packages: write", job)
+        self.assertNotIn("docker login", job)
+        self.assertIn("--expect-cold", job)
+        self.assertIn("test_dependency_image_contract.py", job)
+        self.assertIn("test_consume_dependency_image_contract.py", job)
+        self.assertIn("fwrouter-dependency-consumer-cold.json", job)
+        self.assertIn("fwrouter-dependency-consumer-warm.json", job)
+        self.assertIn("if: always()", job)
+        self.assertIn("retention-days: 14", job)
+        self.assertIn("dependency-image-consumer.lock.json", (ACCEPTANCE / "consume_dependency_image.py")
+                      .read_text(encoding="utf-8"))
 
     def test_consumer_uses_only_standard_library_and_the_existing_lock_qualifiers(self):
         source = (ACCEPTANCE / "consume_dependency_image.py").read_text(encoding="utf-8")
