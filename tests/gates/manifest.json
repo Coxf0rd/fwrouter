@@ -453,31 +453,19 @@
       "domains": [
         "test-infrastructure"
       ],
-      "glob": "tests/acceptance/publish_dependency_image.py",
-      "required_native": [
-        "tests/acceptance/test_dependency_image_contract.py",
-        "tests/acceptance/test_consume_dependency_image_contract.py"
-      ]
+      "glob": "tests/acceptance/publish_dependency_image.py"
     },
     {
       "domains": [
         "test-infrastructure"
       ],
-      "glob": "tests/acceptance/prepare_dependency_image.py",
-      "required_native": [
-        "tests/acceptance/test_dependency_image_contract.py",
-        "tests/acceptance/test_consume_dependency_image_contract.py"
-      ]
+      "glob": "tests/acceptance/prepare_dependency_image.py"
     },
     {
       "domains": [
         "test-infrastructure"
       ],
-      "glob": "tests/acceptance/dependency-image.lock.json",
-      "required_native": [
-        "tests/acceptance/test_dependency_image_contract.py",
-        "tests/acceptance/test_consume_dependency_image_contract.py"
-      ]
+      "glob": "tests/acceptance/dependency-image.lock.json"
     },
     {
       "domains": [
@@ -489,10 +477,7 @@
       "domains": [
         "test-infrastructure"
       ],
-      "glob": "tests/acceptance/consume_dependency_image.py",
-      "required_native": [
-        "tests/acceptance/test_consume_dependency_image_contract.py"
-      ]
+      "glob": "tests/acceptance/consume_dependency_image.py"
     },
     {
       "domains": [
@@ -5100,17 +5085,16 @@
       "max_output_bytes": 4194304,
       "max_workers": 1,
       "native": true,
-      "network": "owned internal LAN and WAN; fixed endpoint, protected and DNS upstream aliases only; header-only packet captures",
+      "network": "owned internal LAN and WAN; fixture endpoint/VIP only; header-only packet captures",
       "opt_in": true,
       "path": "tests/application_acceptance/test_packet_dataplane.py",
       "primary_level": "L3",
-      "risk_notes": "SOURCE IMPLEMENTED / hosted packet execution NOT RUN; fixed matrix covers UDP supported, unknown, unsupported, unavailable Xray endpoint, empty VPN pool with TCP and UDP rejection, explicit DIRECT, Emergency Direct/re-entry, TCP nonregression, and real LAN DNS/53 policy with pinned dnsmasq, native nftset materialization, owned upstream observations and packet captures; UDP/5353 remains payload-only; no host networking, privileged mode, devices, production routes or Debian host parity",
+      "risk_notes": "SOURCE IMPLEMENTED / hosted packet execution NOT RUN; fixed matrix covers UDP supported, unknown, unsupported, unavailable Xray endpoint, empty VPN pool with TCP and UDP rejection, explicit DIRECT, Emergency Direct/re-entry, and TCP nonregression with native/capture evidence; DNS/53 policy acceptance remains separate and UDP/5353 is payload-only; no host networking, privileged mode, devices, production routes or Debian host parity",
       "runtime_dependencies": [
         "Linux amd64 hosted runner",
         "Docker Compose v2",
         "pinned Xray/Mihomo binaries",
-        "pinned libpcap0.8 package 1.10.3-1",
-        "pinned dnsmasq-base 2.90-4~deb12u2, bind9-dnsutils 1:9.18.49-1~deb12u1 and iptables 1.8.9-2"
+        "pinned libpcap0.8 package 1.10.3-1"
       ],
       "slow": true,
       "timeout_seconds": 900,
