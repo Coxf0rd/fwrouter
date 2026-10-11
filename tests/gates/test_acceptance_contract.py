@@ -1821,6 +1821,10 @@ class AcceptanceContractTests(unittest.TestCase):
                     raise self.failure
 
         httpx_stub = SimpleNamespace(Response=FakeResponse)
+        adapter_module = ModuleType("fwrouter_api.adapters.mihomo")
+        adapter_module.MihomoHttpAdapter = SimpleNamespace(
+            _has_fresh_zero_delay_for_url=staticmethod(lambda *_args, **_kwargs: False),
+        )
         native_module = ModuleType("application_acceptance.native_runner")
         native_module._redact_diagnostic = native_runner._redact_diagnostic
         namespace = {
@@ -1839,6 +1843,7 @@ class AcceptanceContractTests(unittest.TestCase):
         try:
             with mock.patch.dict(sys.modules, {
                 "application_acceptance.native_runner": native_module,
+                "fwrouter_api.adapters.mihomo": adapter_module,
                 "httpx": httpx_stub,
             }), mock.patch.dict(__import__("os").environ, {
                 "FWROUTER_ENVIRONMENT": "test",
@@ -2043,7 +2048,7 @@ class AcceptanceContractTests(unittest.TestCase):
         exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
         now = __import__("datetime").datetime(2026, 10, 11, 12, 0, 1,
                                                tzinfo=__import__("datetime").timezone.utc)
-        started = now.replace(microsecond=0)
+        started = now - __import__("datetime").timedelta(seconds=1)
         probe_url = "http://owned-private-endpoint.invalid/generate_204"
         inputs = [
             {"extra": {probe_url: {"alive": False, "history": [

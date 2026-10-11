@@ -146,7 +146,8 @@ jobs:
             --report "$RUNNER_TEMP/phase-d-preflight/manual-rules-actor-nodeids.json" \
             --log "$RUNNER_TEMP/phase-d-preflight/manual-rules-actor-nodeids.log" \
             tests/test_rules.py::test_manual_rules_api_forwards_request_actor_to_draft_service \
-            tests/test_apply_orchestrator.py::test_manual_rules_apply_audit_counts_prior_rules
+            tests/test_apply_orchestrator.py::test_manual_rules_apply_audit_counts_prior_rules \
+            tests/test_apply_orchestrator.py::test_mark_rules_job_success_forwards_audit_change_without_mutating_it
       - name: Run the fixed metadata-override exact-node set
         if: needs.select-stage.outputs.stage == 'metadata'
         run: |

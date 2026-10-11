@@ -346,10 +346,11 @@ def mark_rules_job_success(
     *,
     job_id: str,
     update_type: str,
+    audit_change: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from fwrouter_api.services.rules_state import mark_rules_job_success as impl
 
-    return impl(job_id=job_id, update_type=update_type)
+    return impl(job_id=job_id, update_type=update_type, audit_change=audit_change)
 
 
 def get_rules_overview() -> dict[str, Any]:
