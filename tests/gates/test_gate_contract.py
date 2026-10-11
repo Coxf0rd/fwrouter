@@ -42,6 +42,52 @@ class GateContractTests(unittest.TestCase):
         with self.assertRaises(gate.GateError):
             gate.domain_for_path("unmapped/binary.blob", self.manifest)
 
+    def test_changed_python_f821_checks_only_changed_python_and_selects_one_rule(self) -> None:
+        relative = str(Path(__file__).relative_to(gate.ROOT))
+        with tempfile.TemporaryDirectory(prefix="fwrouter-f821-contract-") as temp, \
+             mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
+             mock.patch.object(gate, "run_process", side_effect=[
+                 (0, "ruff 0.17.0\n", False), (0, "", False),
+             ]) as runner:
+            self.assertEqual([], gate.check_changed_python_undefined_names(
+                ["README.md", relative, relative], Path(temp)))
+        argv = runner.call_args.args[0]
+        self.assertEqual("/locked/bin/ruff", argv[0])
+        self.assertEqual(["--isolated", "--select", "F821"], argv[2:5])
+        self.assertIn("--ignore-noqa", argv)
+        self.assertIn("--no-cache", argv)
+        self.assertEqual("--", argv[-2])
+        self.assertEqual([relative], argv[-1:])
+
+    def test_changed_python_f821_missing_tool_truncation_and_diagnostics_fail_closed(self) -> None:
+        relative = str(Path(__file__).relative_to(gate.ROOT))
+        with tempfile.TemporaryDirectory(prefix="fwrouter-f821-contract-") as temp:
+            with mock.patch.object(gate.shutil, "which", return_value=None):
+                self.assertTrue(gate.check_changed_python_undefined_names(
+                    [relative], Path(temp)))
+            with mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
+                 mock.patch.object(gate, "run_process", side_effect=[
+                     (0, "ruff 0.17.0\n", False), (0, "", True),
+                 ]):
+                self.assertIn("output bound", " ".join(
+                    gate.check_changed_python_undefined_names([relative], Path(temp))))
+            with mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
+                 mock.patch.object(gate, "run_process", side_effect=[
+                     (0, "ruff 0.17.0\n", False),
+                     (1, "fixture.py:1:5: F821 Undefined name `lost`", False),
+                 ]):
+                self.assertIn("F821", " ".join(
+                    gate.check_changed_python_undefined_names([relative], Path(temp))))
+
+    def test_changed_python_f821_requires_exact_locked_ruff_version(self) -> None:
+        relative = str(Path(__file__).relative_to(gate.ROOT))
+        with tempfile.TemporaryDirectory(prefix="fwrouter-f821-contract-") as temp, \
+             mock.patch.object(gate.shutil, "which", return_value="/other/bin/ruff"), \
+             mock.patch.object(gate, "run_process", return_value=(0, "ruff 0.16.10\n", False)) as runner:
+            problems = gate.check_changed_python_undefined_names([relative], Path(temp))
+        self.assertIn("hash-locked 0.17.0", " ".join(problems))
+        runner.assert_called_once()
+
     def test_provider_plan_expands_declared_domains_and_uses_l5_anchors_as_primary_levels(self) -> None:
         plan = gate.make_plan("HEAD", self.manifest, ["backend/fwrouter_api/services/provider_recovery.py"])
         self.assertIn("provider", plan["domains"])

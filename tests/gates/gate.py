@@ -821,6 +821,29 @@ def command_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_lint_changed(args: argparse.Namespace) -> int:
+    if not re.fullmatch(r"[0-9a-f]{40}", args.base):
+        raise GateError("base must be a full lowercase commit hash")
+    with tempfile.TemporaryDirectory(prefix="fwrouter-l0-lint-") as temp:
+        owned = Path(temp)
+        code, output, truncated = run_process(
+            ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{args.base}...HEAD"],
+            15, 65536, cwd=ROOT, env=clean_test_environment(owned),
+        )
+        if code or truncated:
+            raise GateError("cannot enumerate changed paths for F821 validation")
+        changed = output.splitlines()
+        problems = check_changed_python_undefined_names(changed, owned)
+        problems.extend(verify_ruff_f821_behavior(owned))
+    if problems:
+        for problem in problems:
+            print(problem, file=sys.stderr)
+        return 1
+    count = sum(name.endswith(".py") and (ROOT / name).is_file() for name in changed)
+    print(f"Ruff F821 passed its valid/undefined fixtures and {count} changed Python files")
+    return 0
+
+
 def command_plan(args: argparse.Namespace) -> int:
     manifest = load_manifest(Path(args.manifest))
     catalog_errors = check_catalog(manifest)
@@ -1138,6 +1161,56 @@ def node_status_from_tap(output: str, test_path: str) -> dict[str, str]:
     return statuses
 
 
+def check_changed_python_undefined_names(changed: list[str], owned: Path) -> list[str]:
+    python_paths = sorted({name for name in changed if name.endswith(".py") and (ROOT / name).is_file()})
+    if not python_paths:
+        return []
+    if len(python_paths) > 512 or any(
+        Path(name).is_absolute() or ".." in Path(name).parts or len(name) > 512
+        for name in python_paths
+    ):
+        return ["changed Python path inventory is invalid or exceeds its bound"]
+    ruff = shutil.which("ruff", path=os.environ.get("PATH", os.defpath))
+    if ruff is None:
+        return ["pinned Ruff executable is required for changed-Python undefined-name checks"]
+    env = clean_test_environment(owned)
+    version_code, version_output, version_truncated = run_process(
+        [ruff, "--version"], 10, 4096, cwd=ROOT, env=env,
+    )
+    if version_code or version_truncated or version_output.strip() != "ruff 0.17.0":
+        return ["Ruff executable version does not match the hash-locked 0.17.0 release"]
+    code, output, truncated = run_process(
+        [ruff, "check", "--isolated", "--select", "F821", "--target-version", "py311",
+         "--ignore-noqa", "--output-format", "concise", "--no-cache", "--", *python_paths],
+        30, 32768, cwd=ROOT, env=env,
+    )
+    if truncated:
+        return ["Ruff F821 diagnostics exceeded the 32 KiB output bound"]
+    if code:
+        detail = output.strip()[:2048]
+        return ["Ruff F821 check failed" + (f": {detail}" if detail else "")]
+    return []
+
+
+def verify_ruff_f821_behavior(owned: Path) -> list[str]:
+    with tempfile.TemporaryDirectory(prefix=".fwrouter-f821-proof-", dir=ROOT) as temp:
+        root = Path(temp)
+        good = root / "valid.py"
+        bad = root / "undefined.py"
+        good.write_text("value = 42\nprint(value)\n", encoding="utf-8")
+        bad.write_text("print(missing_symbol)  # noqa: F821\n", encoding="utf-8")
+        good_name = good.relative_to(ROOT).as_posix()
+        bad_name = bad.relative_to(ROOT).as_posix()
+        good_problems = check_changed_python_undefined_names([good_name], owned)
+        bad_problems = check_changed_python_undefined_names([bad_name], owned)
+        if good_problems:
+            return ["Ruff F821 valid-fixture check failed: " + " ".join(good_problems)[:512]]
+        bad_detail = " ".join(bad_problems)
+        if "F821" not in bad_detail or "missing_symbol" not in bad_detail:
+            return ["Ruff F821 undefined-name self-check failed to catch its synthetic violation"]
+    return []
+
+
 def run_l0(changed: list[str], owned: Path, base_commit: str) -> tuple[bool, list[str]]:
     problems: list[str] = []
     diff = diff_check(base_commit, cwd=ROOT)
@@ -1173,6 +1246,8 @@ def run_l0(changed: list[str], owned: Path, base_commit: str) -> tuple[bool, lis
                     problems.append(f"PyYAML is required for changed YAML L0 validation: {relative}")
         except Exception as exc:
             problems.append(f"L0 parse failed for {relative}: {type(exc).__name__}")
+    problems.extend(check_changed_python_undefined_names(changed, owned))
+    problems.extend(verify_ruff_f821_behavior(owned))
     return not problems, problems
 
 
@@ -1462,6 +1537,9 @@ def parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate")
     validate.add_argument("--manifest", default=str(MANIFEST))
     validate.set_defaults(func=command_validate)
+    lint_changed = sub.add_parser("lint-changed")
+    lint_changed.add_argument("--base", required=True)
+    lint_changed.set_defaults(func=command_lint_changed)
     plan = sub.add_parser("plan")
     plan.add_argument("--base", required=True)
     plan.add_argument("--paths", nargs="*")

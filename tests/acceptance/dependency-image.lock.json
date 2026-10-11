@@ -45,7 +45,7 @@
     "libxtst6"
   ],
   "requirements": {
-    "tests/gates/requirements-ci.txt": "b5d22e5c52ef1531e40bfc43ac07656f84f427eff7878e9ae8d5854c06faefc5",
+    "tests/gates/requirements-ci.txt": "12dfef04ec38a69413a241860462c5693f9c4cf2a0bd5dfea396bcf349d8ba1a",
     "tests/acceptance/requirements-browser.txt": "cd828629be89772224072fe10474f9276b70f653a76e305bfe8b08974efc6ca0"
   },
   "assets": {

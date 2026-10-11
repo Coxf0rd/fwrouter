@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import ctypes
+import hashlib
 import json
 import os
 import selectors
@@ -557,13 +558,24 @@ def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
                     and row.get("rule") == "fwrouter-full-vpn" and row.get("udp") is True]
         proxies = config.get("proxies") if isinstance(config.get("proxies"), list) else []
         vless = [row for row in proxies if isinstance(row, dict) and row.get("type") == "vless"]
-        assert_mihomo_launch_matches_active(stack["native"], config_path)
+        launch = assert_mihomo_launch_matches_active(stack["native"], config_path)
+        native_config_sha256 = launch.get("sha256") if isinstance(launch, dict) else None
+        incarnation_sha256 = None
+        try:
+            incarnation = stack["native"].rpc("mihomo_incarnation", {})
+            raw_incarnation = incarnation.get("details", {}).get("stdout") if isinstance(incarnation, dict) else None
+            if isinstance(raw_incarnation, str) and raw_incarnation:
+                incarnation_sha256 = hashlib.sha256(raw_incarnation.encode("utf-8")).hexdigest()
+        except Exception:
+            pass
         code, response = http_json(f"{stack['api']}/mihomo")
         data = response.get("data") if isinstance(response, dict) else None
         mihomo = data.get("mihomo") if isinstance(data, dict) else None
         details = mihomo.get("details") if isinstance(mihomo, dict) else None
         selectors = details.get("selectors") if isinstance(details, dict) else None
         selectors = selectors if isinstance(selectors, dict) else {}
+        udp_policy = details.get("vpn_udp_policy") if isinstance(details, dict) else None
+        udp_policy = udp_policy if isinstance(udp_policy, dict) else {}
         transparent = details.get("transparent_runtime") if isinstance(details, dict) else None
         transparent = transparent if isinstance(transparent, dict) else {}
         count = transparent.get("transparent_udp_sessions_count")
@@ -581,7 +593,11 @@ def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
             "vpn_global_selects_vpn_auto": selectors.get("vpn_global_now") == "vpn-auto",
             "vpn_auto_selects_non_direct": isinstance(current_auto, str) and current_auto.upper() != "DIRECT",
             "vpn_auto_selected_reject": str(current_auto or "").upper() == "REJECT",
-            "vpn_auto_selected_target": selectors.get("vpn_auto_selected_target"),
+            "vpn_auto_selected_target_kind": (
+                str(selectors.get("vpn_auto_selected_target")).upper()
+                if str(selectors.get("vpn_auto_selected_target") or "").upper() in {"REJECT", "DIRECT"}
+                else "provider" if selectors.get("vpn_auto_selected_target") else None
+            ),
             "vpn_auto_reject_only": auto_targets == ["REJECT"],
             "vpn_auto_has_direct_target": any(str(item).upper() == "DIRECT" for item in auto_targets),
             "vpn_global_has_direct_target": any(str(item).upper() == "DIRECT" for item in global_targets),
@@ -590,6 +606,14 @@ def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
             "vless_udp_enabled_count": sum(row.get("udp") is True for row in vless),
             "transparent_udp_sessions_count": count,
             "transparent_udp_session_materialized": transparent.get("transparent_udp_session_materialized") is True,
+            "active_config_sha256": native_config_sha256 if isinstance(native_config_sha256, str) else None,
+            "native_incarnation_sha256": incarnation_sha256,
+            "vpn_udp_policy_installed": udp_policy.get("policy_installed") is True,
+            "vpn_udp_policy_wiring_proven": udp_policy.get("wiring_proven") is True,
+            "vpn_udp_policy_receipt_matches": udp_policy.get("reconcile_receipt_matches") is True,
+            "vpn_udp_selector_membership_matches": udp_policy.get("selector_membership_matches") is True,
+            "vpn_udp_guarded_rules_match": udp_policy.get("guarded_rules_match") is True,
+            "vpn_udp_native_rules_match": udp_policy.get("native_top_level_rules_match") is True,
         }
     except Exception as exc:
         return {"available": False, "error_class": type(exc).__name__[:64]}
@@ -601,12 +625,74 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
     if label not in {"direct-before-vpn", "vpn", "vpn-supported-udp", "vpn-unknown-udp",
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
-                     "emergency-direct", "vpn-after-reentry"}:
+                     "emergency-direct", "vpn-after-reentry", "provider-enable-job",
+                     "vpn-auto-exclusive-job"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
         raise AssertionError("packet phase diagnostic exceeded its fixed byte bound")
     record_property("packet_phase_" + label.replace("-", "_"), encoded)
+
+
+def _bounded_job_summary(job: Any) -> dict[str, Any]:
+    """Keep failure attribution useful while excluding payloads, IDs, and messages."""
+    if not isinstance(job, dict):
+        return {"shape": type(job).__name__[:48]}
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    apply = result.get("apply") if isinstance(result.get("apply"), dict) else {}
+    verification = apply.get("verification") if isinstance(apply.get("verification"), dict) else {}
+    target_readback = result.get("target_readback")
+    if not isinstance(target_readback, dict):
+        target_readback = verification.get("target_readback")
+    target_readback = target_readback if isinstance(target_readback, dict) else {}
+    def short(value: Any) -> str | None:
+        return value[:96] if isinstance(value, str) and value and all(ch.isalnum() or ch in "_.:-" for ch in value) else None
+    def boolean(value: Any) -> bool | None:
+        return value if type(value) is bool else None
+    return {
+        "status": short(job.get("status")),
+        "job_type": short(job.get("job_type")),
+        "error_code": short(job.get("error_code") or result.get("error_code")),
+        "result_status": short(result.get("job_status")),
+        "stage": short(result.get("stage")),
+        "runtime_verified": boolean(result.get("runtime_verified")),
+        "intent_saved": boolean(result.get("intent_saved")),
+        "last_good_retained": boolean(result.get("last_good_retained")),
+        "apply_reconcile_action": short(apply.get("reconcile_action")),
+        "apply_reconcile_reason": short(apply.get("reconcile_reason")),
+        "apply_verification_error": short(verification.get("error_code")),
+        "target_readback_matches": boolean(target_readback.get("target_set_matches")),
+        "target_expected_count": target_readback.get("expected_target_count")
+        if type(target_readback.get("expected_target_count")) is int else None,
+        "target_observed_count": target_readback.get("observed_target_count")
+        if type(target_readback.get("observed_target_count")) is int else None,
+    }
+
+
+def _record_job_stage(record_property: Any, phase: str, *, http_status: int,
+                      accepted: Any, job: Any = None, error_class: str | None = None,
+                      stack: dict[str, Any]) -> None:
+    revision = None
+    try:
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+        from fwrouter_api.db.connection import db_session
+
+        with db_session() as connection:
+            fence = read_selection_fence(connection)
+        revision = fence.get("revision") if isinstance(fence, dict) else None
+    except Exception:
+        pass
+    diagnostic = {
+        "phase": phase,
+        "http_status": http_status if type(http_status) is int else None,
+        "accepted": (accepted.get("data", {}).get("accepted") is True
+                     if isinstance(accepted, dict) and isinstance(accepted.get("data"), dict) else False),
+        "job": _bounded_job_summary(job),
+        "await_error_class": error_class[:64] if isinstance(error_class, str) else None,
+        "selection_revision": revision if type(revision) is int else None,
+        "mihomo_path": _mihomo_packet_path_proof(stack),
+    }
+    _record_phase_diagnostic(record_property, diagnostic)
 
 
 def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
@@ -1055,8 +1141,18 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _configure_provider(api, source_ref)
     code, enabled = http_json(f"{api}/subscription/sources/{source_ref}/provider", method="POST",
                               payload={"action": "enable"})
+    enable_job = None
+    enable_error_class = None
+    if code == 200 and enabled.get("ok") is True and enabled.get("data", {}).get("accepted") is True:
+        try:
+            enable_job = await_core_job(api, enabled)
+        except Exception as exc:
+            enable_error_class = type(exc).__name__
+    _record_job_stage(record_property, "provider-enable-job", http_status=code,
+                      accepted=enabled, job=enable_job, error_class=enable_error_class, stack=stack)
     assert code == 200 and enabled.get("ok") is True and enabled.get("data", {}).get("accepted") is True
-    enable_job = await_core_job(api, enabled)
+    if enable_error_class is not None:
+        raise AssertionError("provider enable job polling failed within its bound")
     assert enable_job.get("status") == "success"
     from fwrouter_api.services.provider_managed import binding_for
     binding = binding_for(source_ref)
@@ -1065,8 +1161,19 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
     code, exclusive = http_json(f"{api}/subscription/sources/{source_ref}/vpn-auto-exclusive", method="POST",
                                 payload={"enabled": True})
+    exclusive_job = None
+    exclusive_error_class = None
+    if code == 200 and exclusive.get("ok") is True and exclusive.get("data", {}).get("accepted") is True:
+        try:
+            exclusive_job = await_core_job(api, exclusive)
+        except Exception as exc:
+            exclusive_error_class = type(exc).__name__
+    _record_job_stage(record_property, "vpn-auto-exclusive-job", http_status=code,
+                      accepted=exclusive, job=exclusive_job, error_class=exclusive_error_class, stack=stack)
     assert code == 200 and exclusive.get("ok") is True and exclusive.get("data", {}).get("accepted") is True
-    assert await_core_job(api, exclusive).get("status") == "success"
+    if exclusive_error_class is not None:
+        raise AssertionError("exclusive provider job polling failed within its bound")
+    assert exclusive_job.get("status") == "success"
     assert get_vpn_auto_exclusive_source_ref() == source_ref
 
     _set_health_available(True)

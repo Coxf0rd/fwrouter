@@ -70,7 +70,7 @@ def _exact_auto_targets() -> tuple[bool, dict[str, Any]]:
     from fwrouter_api.services.selector import get_vpn_auto_state
 
     state = get_vpn_auto_state(read_only=True)
-    expected = set(_load_vpn_auto_proxy_names()) | {"DIRECT"}
+    expected = set(_load_vpn_auto_proxy_names()) | {"REJECT"}
     observed = {
         str(target)
         for target in state.get("runtime_vpn_auto_targets") or []
