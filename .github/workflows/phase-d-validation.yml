@@ -224,6 +224,19 @@ jobs:
             "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[receipt_write]" \
             "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[unheld]" \
             "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[wrong_token]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[success]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[revision]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[source]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[incarnation]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[active_hash]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[fingerprint_after_proof]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[checkpoint_after_proof]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[native_proof]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[native_selector]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[native_guards]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[receipt_write]" \
+            "tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[True]" \
+            "tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[False]" \
             tests/test_xray.py::test_staged_generation_finalizer_requires_udp_receipt_before_publication \
             tests/test_xray.py::test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publication
       - name: Record focused preflight outcome

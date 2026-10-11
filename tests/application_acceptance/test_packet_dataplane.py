@@ -858,6 +858,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
                      "vpn-empty-pool-native",
                      "provider-recovery-confirmations",
+                     "provider-recovery-confirmation-1",
                      "provider-reentry",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "emergency-direct", "vpn-after-reentry", "provider-enable-job",
@@ -1959,6 +1960,13 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     provider_calls_after_first = bridge.snapshot_calls()
     health_after_first = _recovery_health_snapshot(source_ref, logical_id)
     assert code == 200 and first.get("provider_recovery") is True and first.get("provider_confirmation") == 1
+    _record_phase_diagnostic(record_property, {
+        "phase": "provider-recovery-confirmation-1",
+        "decision": _recovery_decision_summary(first),
+        "health": health_after_first,
+        "provider_api_calls": len(provider_calls_after_first),
+        "mihomo_path": _packet_refresh_native_proof(stack),
+    })
     code, second = http_json(f"{api}/__acceptance/provider/recovery", method="POST",
                              payload={"logical_server_id": logical_id, "decision_id": "packet-health-failure-2",
                                       "timeout_ms": 1000, "allow_switch": True}, timeout=90)

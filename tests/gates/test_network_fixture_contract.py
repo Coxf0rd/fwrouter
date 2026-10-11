@@ -117,7 +117,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
         for label in ("vpn-supported-udp", "vpn-unknown-udp", "vpn-unsupported-udp",
                       "vpn-endpoint-unavailable", "vpn-empty-pool", "vpn-tcp-after-unknown",
                       "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
-                      "provider-recovery-confirmations", "provider-reentry"):
+                      "provider-recovery-confirmations", "provider-recovery-confirmation-1",
+                      "provider-reentry"):
             self.assertIn(label, source)
         self.assertIn('provider_calls_after_first == [("GET", "/configs", {}, None)]', source)
         self.assertIn('provider_calls_after_recovery == provider_calls_after_first', source)
@@ -136,6 +137,11 @@ class NetworkFixtureContractTests(unittest.TestCase):
                         refresh_source.index('assert isinstance(job, dict)'))
         self.assertLess(refresh_source.index('assert isinstance(job, dict)'),
                         refresh_source.index('assert ('))
+        confirmation_1_receipt = source.index('"phase": "provider-recovery-confirmation-1"')
+        confirmation_2_call = source.index('"decision_id": "packet-health-failure-2"')
+        self.assertLess(confirmation_1_receipt, confirmation_2_call)
+        self.assertIn('"mihomo_path": _packet_refresh_native_proof(stack)',
+                      source[confirmation_1_receipt:confirmation_2_call])
         reentry_diagnostic = source.index('"phase": "provider-reentry"')
         reentry_assertion = source.index('assert code == 200 and reentered.get("ok") is True')
         self.assertLess(reentry_diagnostic, reentry_assertion)

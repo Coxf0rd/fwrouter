@@ -216,9 +216,13 @@ Staged Xray subscription generations publish Mihomo's UDP policy receipt at
 terminal publication, after exact runtime readback and before public snapshot
 promotion. Receipt publication revalidates the generation checkpoint,
 selection revision, source fingerprint, active config hash and runtime
-incarnation around fresh native rule/selector/guard proof. Failure retains the
-checkpoint and prevents public promotion. This source contract is not yet
-hosted-verified; packet/Core re-entry acceptance remains pending.
+incarnation around fresh native rule/selector/guard proof. Failed generation
+rollback separately republishes a receipt for the restored last-good config
+after exact Xray/Mihomo/selection readback and before checkpoint removal; it
+uses the restored source fingerprint, fence, config hash and new runtime
+incarnation. Any failed proof retains a `restore_failed` checkpoint and does
+not report recovery success. These source contracts remain pending hosted
+verification; packet/Core re-entry acceptance remains incomplete.
 
 ## Boot Relevance
 
