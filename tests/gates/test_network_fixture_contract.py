@@ -598,7 +598,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         udp_contract = packet_function_source("_probe_vpn_udp_contract_phase")
         empty_pool_tcp = packet_function_source("_probe_vpn_tcp_empty_pool")
         self.assertIn('"core_counter_delta": core_delta', udp_contract)
-        self.assertIn('"direct_flow_deltas": direct_flow_deltas', udp_contract)
+        self.assertIn('"direct_udp_capture_delta": direct_flow_deltas', udp_contract)
         self.assertIn('direct_flow_deltas == {"client_source_to_service": 0, "mihomo_direct_to_service": 0}',
                       udp_contract)
         self.assertIn('(CLIENT_IP, SERVICE_VIP, "udp", 9081)', udp_contract)
