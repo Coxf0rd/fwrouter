@@ -621,3 +621,7 @@ The corrected rule fixture follows pinned target/parameter order. Guards preserv
 ### Approved-contract backend gate PASS — 2026-10-11
 
 Run [38097866810](https://github.com/Coxf0rd/fwrouter/actions/runs/38097866810), source `b1f242d`, passed focused workflow/static/isolation/infrastructure gates and **11 exact backend nodes / 0 FAIL / 0 SKIP**, 1.79 s pytest wall. Exact-node coverage, JUnit and owned temporary cleanup are confirmed in the retained receipt. This closes only the targeted L1/L2 regression gate; real native/packet execution is pending the controlled packet job. Evidence remains preserved untracked under `evidence/run_38097866810/`. Phase D remains BLOCKED; no production operation occurred.
+
+### First approved-contract packet launch — 2026-10-11
+
+Run [38097935598](https://github.com/Coxf0rd/fwrouter/actions/runs/38097935598), source `837e90e`, passed static/infra, real kernel preflight, isolated topology/capture start/export and owned cleanup. Application collection failed because `UDP_NEGATIVE_TIMEOUT` was undefined in helper defaults; exit 4, zero scenario executions. **Packet acceptance NOT RUN**, not a packet routing failure. Captures contain only headers because no application probe ran. Native primitives and cleanup remain scoped PASS, host namespace unchanged. Base pull 16.911 s, image build 28.952 s, image 1,972,224,033 bytes; GHCR not used. Raw diagnostic receipt/logs retained under `evidence/run_38097935598/`. A bounded constant/default contract correction is being reviewed before another targeted launch.

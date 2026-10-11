@@ -38,6 +38,7 @@ CAPTURE_SUMMARY_PATH = CAPTURE_ROOT / "appboundedpacket-summary.json"
 CAPTURE_LIMIT = 512
 TCP_SNAPLEN = 54
 UDP_SNAPLEN = 42
+NEGATIVE_CAPTURE_DRAIN_SECONDS = 1.0
 CORE_NFT_TABLE = "fwrouter_v2"
 ROUTER_GUARD_TABLE = "fwrouter_packet_guard"
 MAX_CORE_NFT_JSON = 1024 * 1024
@@ -666,7 +667,7 @@ def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
 
 
 def _wait_direct_udp_capture_quiet(baseline: dict[tuple[str, str, str, int], int],
-                                   *, timeout_seconds: float = UDP_NEGATIVE_TIMEOUT) -> dict[tuple[str, str, str, int], int]:
+                                   *, timeout_seconds: float = NEGATIVE_CAPTURE_DRAIN_SECONDS) -> dict[tuple[str, str, str, int], int]:
     """Drain owned capture writes for the failed probe without a sleep or an unbounded wait."""
     libc = ctypes.CDLL(None, use_errno=True)
     fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
@@ -708,7 +709,7 @@ def _wait_direct_udp_capture_quiet(baseline: dict[tuple[str, str, str, int], int
 
 
 def _wait_direct_tcp_capture_quiet(baseline: dict[tuple[str, str, str, int], int],
-                                   *, timeout_seconds: float = UDP_NEGATIVE_TIMEOUT) -> dict[tuple[str, str, str, int], int]:
+                                   *, timeout_seconds: float = NEGATIVE_CAPTURE_DRAIN_SECONDS) -> dict[tuple[str, str, str, int], int]:
     """Boundedly observe TCP capture writes while rejecting direct VIP connections."""
     libc = ctypes.CDLL(None, use_errno=True)
     fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
