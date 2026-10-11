@@ -1895,9 +1895,16 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "provider_api_calls_after_confirmation_1": len(provider_calls_after_first),
         "provider_api_call_summary": provider_call_summary,
     })
+    assert provider_calls_after_first == [("GET", "/configs", {}, None)], {
+        "phase": "provider-recovery-confirmations",
+        "provider_api_call_summary": provider_call_summary,
+    }
     assert code == 200 and direct.get("status") == "emergency_direct"
     assert direct.get("effective_override") == "emergency_direct"
-    assert bridge.snapshot_calls() == [], "packet recovery must not call the external provider API"
+    assert provider_calls_after_recovery == provider_calls_after_first, {
+        "phase": "provider-recovery-confirmations",
+        "provider_api_call_summary": provider_call_summary,
+    }
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     core_before_emergency = _core_counter_snapshot()
     before_emergency_direct = _packet_counts()

@@ -119,6 +119,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
                       "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                       "provider-recovery-confirmations"):
             self.assertIn(label, source)
+        self.assertIn('provider_calls_after_first == [("GET", "/configs", {}, None)]', source)
+        self.assertIn('provider_calls_after_recovery == provider_calls_after_first', source)
         self.assertIn("CAPTURE_LIMIT = 512", source)
         self.assertIn("expect_active_server=False", source)
         capability_state = functions["_packet_capability_state"]
