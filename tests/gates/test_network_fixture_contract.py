@@ -123,10 +123,28 @@ class NetworkFixtureContractTests(unittest.TestCase):
         capability_state = functions["_packet_capability_state"]
         capability_source = ast.get_source_segment(source, capability_state)
         self.assertIn('effective.get("active_server_id")', capability_source)
-        self.assertIn('assert effective_active_id == runtime_name', capability_source)
         self.assertIn('get_logical_runtime_name(logical_id)', capability_source)
-        self.assertIn('assert effective_active_id is None', capability_source)
         self.assertIn('active.get("server_id") is None', capability_source)
+        assertions = [node.test for node in ast.walk(functions["_packet_capability_state"])
+                      if isinstance(node, ast.Assert)]
+        runtime_name_equality = ast.parse("effective_active_id == runtime_name", mode="eval").body
+        empty_target_equality = ast.parse("effective_active_id is None", mode="eval").body
+        self.assertTrue(any(ast.dump(runtime_name_equality, include_attributes=False)
+                            in ast.dump(test, include_attributes=False) for test in assertions))
+        self.assertTrue(any(ast.dump(empty_target_equality, include_attributes=False)
+                            in ast.dump(test, include_attributes=False) for test in assertions))
+        self.assertTrue(any(
+            any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                and call.func.id == "isinstance"
+                and len(call.args) == 2
+                and isinstance(call.args[0], ast.Name) and call.args[0].id == "runtime_name"
+                for call in ast.walk(test))
+            and any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                    and call.func.id == "bool" and len(call.args) == 1
+                    and isinstance(call.args[0], ast.Name) and call.args[0].id == "runtime_name"
+                    for call in ast.walk(test))
+            for test in assertions
+        ))
         auto_eligibility = ast.get_source_segment(source, functions["_set_server_auto_eligibility"])
         self.assertIn('payload["vpn_auto_priority"] = priority', auto_eligibility)
         scenario_source = ast.get_source_segment(source, scenario)
