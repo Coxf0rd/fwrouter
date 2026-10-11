@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 import traceback
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from pathlib import Path
 from typing import Any
 
@@ -1916,7 +1916,7 @@ def _install_acceptance_generation_callback_observer() -> None:
     mihomo_reconcile._invoke_verification_callback = observed_invoke
 
 
-def _install_acceptance_mihomo_delay_error_observer() -> None:
+def _install_acceptance_mihomo_delay_error_observer() -> dict[str, Any]:
     """Capture bounded Mihomo delay error bodies without changing HTTP behavior."""
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
             or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
@@ -1928,10 +1928,13 @@ def _install_acceptance_mihomo_delay_error_observer() -> None:
     from .native_runner import _redact_diagnostic
 
     original_raise = httpx.Response.raise_for_status
+    client_type = httpx.Client
+    original_client_get = client_type.get
     original_zero_readback = MihomoHttpAdapter._has_fresh_zero_delay_for_url
     state = {"records": 0, "success_samples": 0, "member_state_snapshot_used": False,
-             "zero_readback_records": 0}
+             "zero_readback_records": 0, "group_probe_events": []}
     lock = threading.Lock()
+    group_probe_context = threading.local()
     url_pattern = re.compile(r"(?i)\bhttps?://[^\s\"'<>]+")
     endpoint_pattern = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b")
 
@@ -1989,6 +1992,133 @@ def _install_acceptance_mihomo_delay_error_observer() -> None:
         return result
 
     MihomoHttpAdapter._has_fresh_zero_delay_for_url = staticmethod(observed_zero_readback)
+
+    def begin_probe(kind: str, runtime_target: str, owned_test_url: str) -> dict[str, Any]:
+        previous = getattr(group_probe_context, "current", None)
+        token = {"kind": kind, "runtime_target": runtime_target,
+                 "owned_test_url": owned_test_url, "event": None, "previous": previous}
+        group_probe_context.current = token
+        return token
+
+    def finish_group_probe(token: dict[str, Any], result: Any) -> dict[str, Any]:
+        if getattr(group_probe_context, "current", None) is token:
+            previous = token.get("previous")
+            if previous is None:
+                del group_probe_context.current
+            else:
+                group_probe_context.current = previous
+        event = token.get("event")
+        if not isinstance(event, dict):
+            event = {
+                "request_observed": False,
+                "request_kind": token.get("kind"),
+                "response_received": False,
+                "status": None,
+                "url_matches_known_owned": False,
+                "payload_map_empty": None,
+                "integer_delay_result_found": False,
+                "integer_delay_zero": None,
+                "error_code": "no_matching_delay_request",
+            }
+        event["adapter_probe_ok"] = bool(result.get("ok")) if isinstance(result, dict) else False
+        with lock:
+            events = state["group_probe_events"]
+            events.append(dict(event))
+            del events[:-8]
+        return dict(event)
+
+    def request_probe_path_matches(url: Any, token: dict[str, Any]) -> bool:
+        try:
+            parsed = httpx.URL(str(url))
+            if token.get("kind") == "group":
+                expected_path = "/group/" + quote(str(token["runtime_target"]), safe="") + "/delay"
+            elif token.get("kind") == "member":
+                expected_path = "/proxies/" + quote(str(token["runtime_target"]), safe="") + "/delay"
+            else:
+                return False
+            return (parsed.scheme == "http" and parsed.host == "127.0.0.1" and parsed.port == 5200
+                    and parsed.raw_path.split(b"?", 1)[0] == expected_path.encode("ascii"))
+        except (TypeError, ValueError):
+            return False
+
+    def canonical_http_error(exc: BaseException) -> str:
+        for error_type, code in (
+            (httpx.ConnectTimeout, "connect_timeout"),
+            (httpx.ReadTimeout, "read_timeout"),
+            (httpx.WriteTimeout, "write_timeout"),
+            (httpx.PoolTimeout, "pool_timeout"),
+            (httpx.ConnectError, "connect_error"),
+            (httpx.ReadError, "read_error"),
+            (httpx.WriteError, "write_error"),
+            (httpx.RemoteProtocolError, "remote_protocol_error"),
+            (httpx.LocalProtocolError, "local_protocol_error"),
+            (httpx.NetworkError, "network_error"),
+            (httpx.HTTPError, "http_error"),
+            (OSError, "os_error"),
+        ):
+            if isinstance(exc, error_type):
+                return code
+        return "other_error"
+
+    def observed_group_client_get(client: Any, url: Any, *args: Any, **kwargs: Any) -> Any:
+        token = getattr(group_probe_context, "current", None)
+        if not isinstance(token, dict) or not request_probe_path_matches(url, token):
+            return original_client_get(client, url, *args, **kwargs)
+        params = kwargs.get("params")
+        try:
+            supplied_test_url = params.get("url") if params is not None else None
+        except (AttributeError, TypeError):
+            supplied_test_url = None
+        url_matches = supplied_test_url == token.get("owned_test_url")
+        try:
+            response = original_client_get(client, url, *args, **kwargs)
+        except Exception as exc:
+            token["event"] = {
+                "request_observed": True,
+                "request_kind": token.get("kind"),
+                "response_received": False,
+                "status": None,
+                "url_matches_known_owned": url_matches,
+                "payload_map_empty": None,
+                "integer_delay_result_found": False,
+                "integer_delay_zero": None,
+                "error_code": canonical_http_error(exc),
+            }
+            raise
+        payload: Any = None
+        try:
+            if len(response.content) <= 8192:
+                payload = response.json()
+        except (TypeError, ValueError):
+            pass
+        payload_is_map = isinstance(payload, dict)
+        delay_values = ([value for value in payload.values()
+                         if type(value) is int and 0 <= value <= 65535][:32]
+                        if payload_is_map else [])
+        status = int(response.status_code)
+        message = payload.get("message") if payload_is_map else None
+        error_code = None
+        if status == 503 and message == "An error occurred in the delay test":
+            error_code = "mihomo_generic_delay_failure"
+        elif status == 504 and message == "Timeout":
+            error_code = "mihomo_timeout"
+        elif status >= 400:
+            error_code = "other_http_error"
+        token["event"] = {
+            "request_observed": True,
+            "request_kind": token.get("kind"),
+            "response_received": True,
+            "status": status if 100 <= status <= 599 else None,
+            "url_matches_known_owned": url_matches,
+            "payload_map_empty": not payload if payload_is_map else None,
+            "integer_delay_result_found": bool(delay_values),
+            "integer_delay_zero": (any(value == 0 for value in delay_values)
+                                   if delay_values else None),
+            "error_code": error_code,
+        }
+        return response
+
+    client_type.get = observed_group_client_get
 
     def response_error(response: Any) -> None:
         try:
@@ -2136,6 +2266,7 @@ def _install_acceptance_mihomo_delay_error_observer() -> None:
         return original_raise(response)
 
     httpx.Response.raise_for_status = observed_raise_for_status
+    return {"begin_probe": begin_probe, "finish_group_probe": finish_group_probe}
 
 
 def build_app(socket_path: Path):
@@ -2201,7 +2332,8 @@ def build_app(socket_path: Path):
     _install_acceptance_mihomo_fence_observer()
     _install_acceptance_provider_verification_observer()
     _install_acceptance_generation_callback_observer()
-    _install_acceptance_mihomo_delay_error_observer()
+    mihomo_delay_observer = _install_acceptance_mihomo_delay_error_observer()
+    mihomo_adapter._acceptance_group_probe_observer = mihomo_delay_observer
     _install_acceptance_selection_fence_observer()
     _install_acceptance_mihomo_reconcile_failure_observer()
     _install_acceptance_recovery_apply_observer()
@@ -2670,25 +2802,48 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
         def _acceptance_probe_url(self, test_url: str) -> str:
             return owned_probe_url
 
-        def _probe_result_barrier(self, target: str, result: Any) -> None:
-            reply = _rpc_call(socket_path, "mihomo_probe_result", {
-                "logical_runtime_target": str(target), "probe_ok": bool(result.get("ok")) if isinstance(result, dict) else bool(getattr(result, "ok", False)),
-            })
+        def _probe_result_barrier(self, target: str, result: Any,
+                                  delay_request_evidence: dict[str, Any] | None = None) -> None:
+            payload = {
+                "logical_runtime_target": str(target),
+                "probe_ok": bool(result.get("ok")) if isinstance(result, dict) else bool(getattr(result, "ok", False)),
+            }
+            if isinstance(delay_request_evidence, dict):
+                payload["delay_request_evidence"] = delay_request_evidence
+            reply = _rpc_call(socket_path, "mihomo_probe_result", payload)
             if not reply.get("ok"):
                 raise RuntimeError("acceptance native probe-result barrier failed")
 
         def probe_logical_group(self, logical_runtime_target: str, *, test_url: str = "https://www.gstatic.com/generate_204", timeout_ms: int = 5000) -> dict[str, Any]:
-            result = super().probe_logical_group(
-                logical_runtime_target, test_url=self._acceptance_probe_url(test_url), timeout_ms=timeout_ms,
-            )
-            self._probe_result_barrier(logical_runtime_target, result)
+            owned_url = self._acceptance_probe_url(test_url)
+            observer = getattr(self, "_acceptance_group_probe_observer", None)
+            token = (observer["begin_probe"]("group", logical_runtime_target, owned_url)
+                     if isinstance(observer, dict) else None)
+            result = None
+            try:
+                result = super().probe_logical_group(
+                    logical_runtime_target, test_url=owned_url, timeout_ms=timeout_ms,
+                )
+            finally:
+                evidence = (observer["finish_group_probe"](token, result)
+                            if token is not None and isinstance(observer, dict) else None)
+            self._probe_result_barrier(logical_runtime_target, result, evidence)
             return result
 
         def probe_logical_member(self, logical_runtime_target: str, member_runtime_identity: str, *, test_url: str = "https://www.gstatic.com/generate_204", timeout_ms: int = 5000) -> dict[str, Any]:
-            result = super().probe_logical_member(
-                logical_runtime_target, member_runtime_identity, test_url=self._acceptance_probe_url(test_url), timeout_ms=timeout_ms,
-            )
-            self._probe_result_barrier(logical_runtime_target, result)
+            owned_url = self._acceptance_probe_url(test_url)
+            observer = getattr(self, "_acceptance_group_probe_observer", None)
+            token = (observer["begin_probe"]("member", member_runtime_identity, owned_url)
+                     if isinstance(observer, dict) else None)
+            result = None
+            try:
+                result = super().probe_logical_member(
+                    logical_runtime_target, member_runtime_identity, test_url=owned_url, timeout_ms=timeout_ms,
+                )
+            finally:
+                evidence = (observer["finish_group_probe"](token, result)
+                            if token is not None and isinstance(observer, dict) else None)
+            self._probe_result_barrier(logical_runtime_target, result, evidence)
             return result
 
         def probe_logical_groups(self, logical_runtime_targets: list[str], *, test_url: str = "https://www.gstatic.com/generate_204", timeout_ms: int = 5000) -> list[dict[str, Any]]:

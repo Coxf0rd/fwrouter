@@ -930,6 +930,202 @@ class AcceptanceContractTests(unittest.TestCase):
             lambda key, value: worst_case_recorded.setdefault(key, value), "worst_case", worst_case_summary)
         self.assertLessEqual(len(next(iter(worst_case_recorded.values())).encode("utf-8")), 2048)
 
+    def test_native_delay_request_junit_evidence_is_bounded_and_redacted(self):
+        from application_acceptance.test_core_provider_mihomo import _record_native_delay_request
+
+        recorded = {}
+        evidence = {
+            "probe_ok": False,
+            "delay_request_evidence": {
+                "request_observed": True, "request_kind": "member", "response_received": True,
+                "status": 503, "url_matches_known_owned": True, "payload_map_empty": False,
+                "integer_delay_result_found": False, "integer_delay_zero": None,
+                "error_code": "mihomo_generic_delay_failure", "adapter_probe_ok": False,
+                "url": "http://secret.invalid/proxies/SECRET/delay", "body": "SECRET_SENTINEL",
+            },
+        }
+        _record_native_delay_request(lambda key, value: recorded.setdefault(key, value), "case", evidence)
+        property_name, encoded = next(iter(recorded.items()))
+        self.assertEqual("native_delay_request_case", property_name)
+        self.assertLessEqual(len(encoded.encode("utf-8")), 1024)
+        result = json.loads(encoded)
+        self.assertEqual("member", result["request_kind"])
+        self.assertEqual(503, result["status"])
+        self.assertEqual("mihomo_generic_delay_failure", result["error_code"])
+        self.assertNotIn("secret.invalid", encoded)
+        self.assertNotIn("SECRET", encoded)
+
+        bounded = {}
+        _record_native_delay_request(
+            lambda key, value: bounded.setdefault(key, value), "empty",
+            {"delay_request_evidence": {"request_observed": False, "request_kind": "group",
+                                        "status": None, "error_code": "secret", "url": "SECRET"}},
+        )
+        self.assertEqual({"request_kind": "group", "status": None},
+                         json.loads(next(iter(bounded.values()))))
+
+    def test_native_delay_observer_scopes_group_and_member_calls_without_changing_http_result(self):
+        tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
+        installer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "_install_acceptance_mihomo_delay_error_observer")
+        observer = next(node for node in ast.walk(installer) if isinstance(node, ast.FunctionDef)
+                        and node.name == "observed_group_client_get")
+        calls = [node for node in ast.walk(observer) if isinstance(node, ast.Call)]
+        original_get_calls = [node for node in calls if isinstance(node.func, ast.Name)
+                              and node.func.id == "original_client_get"]
+        self.assertEqual(2, len(original_get_calls), "one pass-through and one observed request path")
+        self.assertTrue(any(isinstance(node, ast.Return) and isinstance(node.value, ast.Name)
+                            and node.value.id == "response" for node in ast.walk(observer)))
+        self.assertTrue(any(isinstance(node, ast.Raise) and node.exc is None
+                            for node in ast.walk(observer)), "transport exceptions must be re-raised unchanged")
+        path_matcher = next(node for node in ast.walk(installer) if isinstance(node, ast.FunctionDef)
+                            and node.name == "request_probe_path_matches")
+        self.assertIn("raw_path", ast.unparse(path_matcher))
+        self.assertIn("quote", ast.unparse(path_matcher))
+        bound = next(node for node in ast.walk(installer) if isinstance(node, ast.FunctionDef)
+                     and node.name == "finish_group_probe")
+        self.assertIn("events[:-8]", ast.unparse(bound))
+        adapter = ast.parse((ROOT / "tests/application_acceptance/worker.py").read_text(encoding="utf-8"))
+        class_node = next(node for node in ast.walk(adapter) if isinstance(node, ast.ClassDef)
+                          and node.name == "LoopbackProbeMihomoHttpAdapter")
+        for method_name in ("probe_logical_group", "probe_logical_member"):
+            method = next(node for node in class_node.body if isinstance(node, ast.FunctionDef)
+                          and node.name == method_name)
+            source = ast.unparse(method)
+            self.assertIn('begin_probe', source)
+            self.assertIn('finish_group_probe', source)
+            self.assertIn('delay_request_evidence', ast.unparse(
+                next(node for node in class_node.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "_probe_result_barrier")))
+
+    def test_native_delay_observer_matches_encoded_group_and_member_paths_and_preserves_result(self):
+        worker_path = WORKER_PATH
+        tree = ast.parse(worker_path.read_text(encoding="utf-8"))
+        installer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "_install_acceptance_mihomo_delay_error_observer")
+
+        class FakeURL:
+            def __init__(self, value):
+                from urllib.parse import urlsplit
+                parsed = urlsplit(str(value))
+                self.scheme, self.host, self.port = parsed.scheme, parsed.hostname, parsed.port
+                self.raw_path = parsed.path.encode("ascii") + (b"?" + parsed.query.encode("ascii") if parsed.query else b"")
+
+        class FakeResponse:
+            def __init__(self, status, payload):
+                self.status_code = status
+                self.content = json.dumps(payload).encode("utf-8")
+
+            def json(self):
+                return json.loads(self.content)
+
+            def raise_for_status(self):
+                return None
+
+        class FakeHTTPError(Exception):
+            pass
+
+        class FakeConnectTimeout(FakeHTTPError):
+            pass
+
+        class FakeReadTimeout(FakeHTTPError):
+            pass
+
+        class FakeWriteTimeout(FakeHTTPError):
+            pass
+
+        class FakePoolTimeout(FakeHTTPError):
+            pass
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+                self.next_result = None
+
+            def get(self, url, *args, **kwargs):
+                self.calls.append((url, args, kwargs))
+                if isinstance(self.next_result, BaseException):
+                    raise self.next_result
+                return self.next_result
+
+        class QueryParams(dict):
+            pass
+
+        httpx_stub = SimpleNamespace(
+            URL=FakeURL, Response=FakeResponse, Client=FakeClient, QueryParams=QueryParams,
+            ConnectTimeout=FakeConnectTimeout, ReadTimeout=FakeReadTimeout,
+            WriteTimeout=FakeWriteTimeout, PoolTimeout=FakePoolTimeout,
+            ConnectError=FakeHTTPError, ReadError=FakeHTTPError,
+            WriteError=FakeHTTPError, RemoteProtocolError=FakeHTTPError,
+            LocalProtocolError=FakeHTTPError, NetworkError=FakeHTTPError, HTTPError=FakeHTTPError,
+        )
+        adapter_module = ModuleType("fwrouter_api.adapters.mihomo")
+        adapter_module.MihomoHttpAdapter = SimpleNamespace(
+            _has_fresh_zero_delay_for_url=staticmethod(lambda *_args, **_kwargs: False),
+        )
+        native_module = ModuleType("application_acceptance.native_runner")
+        native_module._redact_diagnostic = native_runner._redact_diagnostic
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": __import__("os"), "sys": sys, "json": json,
+            "threading": __import__("threading"), "Any": __import__("typing").Any,
+            "quote": __import__("urllib.parse", fromlist=["quote"]).quote,
+            "urlsplit": __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit,
+        }
+        exec(compile(ast.Module(body=[installer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        original_client_get = FakeClient.get
+        original_raise = FakeResponse.raise_for_status
+        try:
+            with mock.patch.dict(sys.modules, {
+                "application_acceptance.native_runner": native_module,
+                "fwrouter_api.adapters.mihomo": adapter_module,
+                "httpx": httpx_stub,
+            }), mock.patch.dict(__import__("os").environ, {
+                "FWROUTER_ENVIRONMENT": "test",
+                "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+            }), mock.patch("sys.stderr", io.StringIO()):
+                observer = namespace["_install_acceptance_mihomo_delay_error_observer"]()
+                client = FakeClient()
+                owned_url = "http://127.0.0.1:52044/generate_204"
+                group_path = "http://127.0.0.1:5200/group/logical%2Ftarget%20one/delay"
+                group_response = FakeResponse(200, {"member": 0})
+                client.next_result = group_response
+                group_token = observer["begin_probe"]("group", "logical/target one", owned_url)
+                result = FakeClient.get(client, group_path, params=QueryParams(url=owned_url))
+                group_evidence = observer["finish_group_probe"](group_token, {"ok": False})
+                self.assertIs(group_response, result)
+                self.assertEqual(1, len(client.calls))
+                self.assertEqual({
+                    "request_observed": True, "request_kind": "group", "response_received": True,
+                    "status": 200, "url_matches_known_owned": True, "payload_map_empty": False,
+                    "integer_delay_result_found": True, "integer_delay_zero": True,
+                    "error_code": None, "adapter_probe_ok": False,
+                }, group_evidence)
+
+                member_response = FakeResponse(503, {"message": "An error occurred in the delay test"})
+                client.next_result = member_response
+                member_path = "http://127.0.0.1:5200/proxies/member%2Fidentity/delay"
+                member_token = observer["begin_probe"]("member", "member/identity", owned_url)
+                result = FakeClient.get(client, member_path, params=QueryParams({"url": owned_url}))
+                member_evidence = observer["finish_group_probe"](member_token, {"ok": False})
+                self.assertIs(member_response, result)
+                self.assertEqual(2, len(client.calls))
+                self.assertEqual("mihomo_generic_delay_failure", member_evidence["error_code"])
+                self.assertEqual("member", member_evidence["request_kind"])
+
+                failure = FakeReadTimeout("private exception text")
+                client.next_result = failure
+                member_token = observer["begin_probe"]("member", "member/identity", owned_url)
+                with self.assertRaises(FakeReadTimeout) as raised:
+                    FakeClient.get(client, member_path, params={"url": owned_url})
+                member_error = observer["finish_group_probe"](member_token, {"ok": False})
+                self.assertIs(failure, raised.exception)
+                self.assertEqual("read_timeout", member_error["error_code"])
+                self.assertEqual(3, len(client.calls))
+        finally:
+            FakeClient.get = original_client_get
+            FakeResponse.raise_for_status = original_raise
+
     def test_acceptance_recovery_routes_build_fresh_production_controller(self):
         tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
         build_app = next(node for node in tree.body
@@ -1692,7 +1888,7 @@ class AcceptanceContractTests(unittest.TestCase):
                         and node.name == "_install_acceptance_generation_callback_observer")
         namespace = {
             "__builtins__": __builtins__, "__package__": "application_acceptance",
-            "os": __import__("os"), "sys": sys, "json": json,
+            "os": __import__("os"), "sys": sys, "json": json, "re": re,
             "threading": __import__("threading"), "Path": Path,
             "Any": __import__("typing").Any,
         }
@@ -1896,7 +2092,11 @@ class AcceptanceContractTests(unittest.TestCase):
                 if self.failure is not None:
                     raise self.failure
 
-        httpx_stub = SimpleNamespace(Response=FakeResponse)
+        class FakeClient:
+            def get(self, url, *args, **kwargs):
+                raise AssertionError("unexpected HTTP request in response-error observer contract")
+
+        httpx_stub = SimpleNamespace(Response=FakeResponse, Client=FakeClient)
         adapter_module = ModuleType("fwrouter_api.adapters.mihomo")
         adapter_module.MihomoHttpAdapter = SimpleNamespace(
             _has_fresh_zero_delay_for_url=staticmethod(lambda *_args, **_kwargs: False),
@@ -1905,7 +2105,7 @@ class AcceptanceContractTests(unittest.TestCase):
         native_module._redact_diagnostic = native_runner._redact_diagnostic
         namespace = {
             "__builtins__": __builtins__, "__package__": "application_acceptance",
-            "os": __import__("os"), "sys": sys, "json": json,
+            "os": __import__("os"), "sys": sys, "json": json, "re": re,
             "threading": __import__("threading"), "Any": __import__("typing").Any,
         }
         exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
@@ -1916,6 +2116,7 @@ class AcceptanceContractTests(unittest.TestCase):
         foreign_error = RuntimeError("foreign response")
         foreign = FakeResponse(FakeURL("127.0.0.1", 5201, "/group/secret-provider/delay"), 504, body, foreign_error)
         observed = io.StringIO()
+        original_client_get = FakeClient.get
         try:
             with mock.patch.dict(sys.modules, {
                 "application_acceptance.native_runner": native_module,
@@ -1934,6 +2135,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 self.assertIs(foreign_error, foreign_raised.exception)
         finally:
             FakeResponse.raise_for_status = original_method
+            FakeClient.get = original_client_get
 
         records = [json.loads(line.split(" ", 1)[1]) for line in observed.getvalue().splitlines()]
         self.assertEqual(1, len(records))
@@ -1993,7 +2195,10 @@ class AcceptanceContractTests(unittest.TestCase):
             def __exit__(self, *_args):
                 return False
 
-            def get(self, url, *, headers):
+            def get(self, url, *args, **kwargs):
+                if args or set(kwargs) != {"headers"}:
+                    raise AssertionError("unexpected native delay observer GET in state-snapshot test")
+                headers = kwargs["headers"]
                 diagnostic_gets.append((url, headers, self.timeout, self.trust_env))
                 return snapshot_response
 
@@ -2009,11 +2214,12 @@ class AcceptanceContractTests(unittest.TestCase):
         mihomo_module.MihomoHttpAdapter = FakeMihomoHttpAdapter
         namespace = {
             "__builtins__": __builtins__, "__package__": "application_acceptance",
-            "os": __import__("os"), "sys": sys, "json": json,
+            "os": __import__("os"), "sys": sys, "json": json, "re": re,
             "threading": __import__("threading"), "Any": __import__("typing").Any,
         }
         exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
         original_method = FakeResponse.raise_for_status
+        original_client_get = FakeClient.get
         request_headers = {"authorization": "synthetic-secret"}
         failed = RuntimeError("original 503")
         observed = io.StringIO()
@@ -2057,6 +2263,7 @@ class AcceptanceContractTests(unittest.TestCase):
                     second_failure.raise_for_status()
         finally:
             FakeResponse.raise_for_status = original_method
+            FakeClient.get = original_client_get
 
         lines = observed.getvalue().splitlines()
         samples_out = [json.loads(line.split(" ", 1)[1]) for line in lines
@@ -2112,13 +2319,17 @@ class AcceptanceContractTests(unittest.TestCase):
             def _has_fresh_zero_delay_for_url(*_args, **_kwargs):
                 return next(FakeAdapter.helper_results)
 
+        class FakeClient:
+            def get(self, url, *args, **kwargs):
+                raise AssertionError("unexpected HTTP request in zero-readback predicate contract")
+
         adapter_module = ModuleType("fwrouter_api.adapters.mihomo")
         adapter_module.MihomoHttpAdapter = FakeAdapter
         native_module = ModuleType("application_acceptance.native_runner")
         native_module._redact_diagnostic = native_runner._redact_diagnostic
         namespace = {
             "__builtins__": __builtins__, "__package__": "application_acceptance",
-            "os": __import__("os"), "sys": sys, "json": json,
+            "os": __import__("os"), "sys": sys, "json": json, "re": re,
             "threading": __import__("threading"), "Any": __import__("typing").Any,
         }
         exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
@@ -2138,18 +2349,22 @@ class AcceptanceContractTests(unittest.TestCase):
             ]}}},
         ]
         output = io.StringIO()
+        original_client_get = FakeClient.get
         with mock.patch.dict(sys.modules, {
             "application_acceptance.native_runner": native_module,
             "fwrouter_api.adapters.mihomo": adapter_module,
-            "httpx": SimpleNamespace(Response=FakeResponse, Client=object),
+            "httpx": SimpleNamespace(Response=FakeResponse, Client=FakeClient),
         }), mock.patch.dict(__import__("os").environ, {
             "FWROUTER_ENVIRONMENT": "test",
             "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
         }), mock.patch("sys.stderr", output):
-            namespace["_install_acceptance_mihomo_delay_error_observer"]()
-            observed = [FakeAdapter._has_fresh_zero_delay_for_url(
-                proxy, test_url=probe_url, probe_started_at=started, observed_end=now,
-            ) for proxy in inputs]
+            try:
+                namespace["_install_acceptance_mihomo_delay_error_observer"]()
+                observed = [FakeAdapter._has_fresh_zero_delay_for_url(
+                    proxy, test_url=probe_url, probe_started_at=started, observed_end=now,
+                ) for proxy in inputs]
+            finally:
+                FakeClient.get = original_client_get
 
         rows = [json.loads(line.split(" ", 1)[1]) for line in output.getvalue().splitlines()
                 if line.startswith("FWROUTER_ACCEPTANCE_MIHOMO_ZERO_READBACK ")]

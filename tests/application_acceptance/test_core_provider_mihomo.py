@@ -120,6 +120,41 @@ def _record_owned_probe_boundary(record_property, label: str, summary: dict) -> 
     record_property(f"owned_probe_{label}", encoded)
 
 
+def _record_native_delay_request(record_property, label: str, evidence: dict | None) -> None:
+    """Persist only bounded classifications from the exact native delay call."""
+    raw = evidence.get("delay_request_evidence") if isinstance(evidence, dict) else None
+    fields = (
+        "request_observed", "request_kind", "response_received", "status",
+        "url_matches_known_owned", "payload_map_empty", "integer_delay_result_found",
+        "integer_delay_zero", "error_code", "adapter_probe_ok",
+    )
+    safe = {}
+    if isinstance(raw, dict):
+        for key in fields:
+            value = raw.get(key)
+            if key == "request_kind":
+                if isinstance(value, str) and value in {"group", "member"}:
+                    safe[key] = value
+            elif key == "status":
+                if value is None or (type(value) is int and 100 <= value <= 599):
+                    safe[key] = value
+            elif key == "error_code":
+                if value is None or (isinstance(value, str) and value in {
+                    None, "no_matching_delay_request", "connect_timeout", "read_timeout",
+                    "write_timeout", "pool_timeout", "connect_error", "read_error", "write_error",
+                    "remote_protocol_error", "local_protocol_error", "network_error", "http_error",
+                    "os_error", "other_error", "mihomo_generic_delay_failure", "mihomo_timeout",
+                    "other_http_error",
+                }):
+                    safe[key] = value
+            elif value is None or type(value) is bool:
+                safe[key] = value
+    encoded = json.dumps(safe, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 1024:
+        raise AssertionError("bounded native delay-request evidence exceeded JUnit limit")
+    record_property(f"native_delay_request_{label}", encoded)
+
+
 def _last_targeted_provider_refresh_summary(stack: dict) -> dict | None:
     """Read only the bounded, structured result emitted for this owned source."""
     port = int(stack["api"].rsplit(":", 1)[1].split("/", 1)[0])
@@ -723,6 +758,7 @@ def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change
         assert native.action_entered.wait(timeout=30), "reentry did not finish a real Mihomo health probe"
         _record_owned_probe_boundary(record_property, "incarnation_at_probe", bridge.snapshot_probe_summary())
         probe_evidence = native.last_mihomo_probe_result
+        _record_native_delay_request(record_property, "incarnation", probe_evidence)
         assert probe_evidence is not None and probe_evidence.get("probe_ok") is True, {
             "native_probe": probe_evidence, "owned_probe_bridge": bridge.snapshot_probe_summary(),
         }
@@ -805,6 +841,7 @@ def test_provider_reentry_fences_concurrent_public_exclusive_intent_change(accep
         assert native.action_entered.wait(timeout=30), "reentry did not reach the post-response probe barrier"
         _record_owned_probe_boundary(record_property, "exclusive_at_probe", bridge.snapshot_probe_summary())
         probe_evidence = native.last_mihomo_probe_result
+        _record_native_delay_request(record_property, "exclusive", probe_evidence)
         assert probe_evidence is not None and probe_evidence.get("probe_ok") is True, {
             "native_probe": probe_evidence, "owned_probe_bridge": bridge.snapshot_probe_summary(),
         }
