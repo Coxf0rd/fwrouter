@@ -2210,9 +2210,9 @@ def test_subscription_profile_reconcile_is_idempotent(monkeypatch, tmp_path: Pat
     assert len(rules) == len(set(rules))
 
 
-@pytest.mark.parametrize("rollback_receipt_ok", [True, False])
+@pytest.mark.parametrize("rollback_failure", ["success", "receipt_failure", "readback_failure"])
 def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
-    monkeypatch, tmp_path: Path, rollback_receipt_ok: bool, isolated_host_observations,
+    monkeypatch, tmp_path: Path, rollback_failure: str, isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2251,7 +2251,7 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
     receipt_attempts = []
     def rollback_receipt(**kwargs):
         receipt_attempts.append(True)
-        if not rollback_receipt_ok:
+        if rollback_failure == "receipt_failure":
             return False
         return publish_rollback_receipt(**kwargs)
     monkeypatch.setattr(
@@ -2261,6 +2261,13 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
     apply_candidate = xray_subscription_service._apply_staged_mihomo_candidate
     def fail_final_candidate(candidate_path: str, expected_sha256: str):
         if "final" in Path(candidate_path).name:
+            if rollback_failure == "readback_failure":
+                from fwrouter_api.adapters import mihomo as mihomo_adapter_module
+                monkeypatch.setattr(
+                    mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER,
+                    "check_port",
+                    lambda *_args, **_kwargs: False,
+                )
             return {"ok": False, "stage": "test_failure", "error_code": "INJECTED_FINAL_APPLY_FAILURE"}
         return apply_candidate(candidate_path, expected_sha256)
     monkeypatch.setattr(xray_subscription_service, "_apply_staged_mihomo_candidate", fail_final_candidate)
@@ -2277,11 +2284,22 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
         ).fetchall()]
     assert restored_snapshots == good_snapshots
     checkpoint = xray_subscription_service._xray_generation_checkpoint_path(adapter)
-    assert checkpoint.exists() is (not rollback_receipt_ok), json.dumps(failed, indent=2)
-    assert len(receipt_attempts) == 1
-    assert failed["generation_recovery"]["ok"] is rollback_receipt_ok
-    if not rollback_receipt_ok:
+    recovery_ok = rollback_failure == "success"
+    assert checkpoint.exists() is (not recovery_ok), json.dumps(failed, indent=2)
+    assert failed["generation_recovery"]["ok"] is recovery_ok
+    assert failed["generation_recovery"]["recovered"] == (
+        "restored_last_good" if recovery_ok else "restore_failed"
+    )
+    if rollback_failure == "success":
+        assert len(receipt_attempts) == 1
+    elif rollback_failure == "receipt_failure":
+        assert len(receipt_attempts) == 1
         assert failed["generation_recovery"]["error_code"] == "MIHOMO_UDP_POLICY_ROLLBACK_RECEIPT_UNCONFIRMED"
+        assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "restore_failed"
+    else:
+        assert receipt_attempts == []
+        assert "error_code" not in failed["generation_recovery"]
+        assert failed["generation_recovery"]["mihomo_runtime_readback"]["ok"] is False
         assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "restore_failed"
 
 

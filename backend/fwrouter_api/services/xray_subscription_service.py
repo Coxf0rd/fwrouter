@@ -2237,7 +2237,7 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
             ok = False
             receipt_error_code = "MIHOMO_UDP_POLICY_ROLLBACK_RECEIPT_UNCONFIRMED"
     ok = _finish_xray_generation_rollback(checkpoint_path, restored=ok)
-    return {"ok": ok, "recovered": "restored_last_good" if ok else ("restore_failed" if receipt_error_code else "restored_last_good"),
+    return {"ok": ok, "recovered": "restored_last_good" if ok else "restore_failed",
             **({"error_code": receipt_error_code} if receipt_error_code else {}),
             "xray_reload": xray_restore.ok,
             "mihomo_restart": bool(mihomo_restore.get("ok")), "derived_rows_restored": derived_restore_ok,
