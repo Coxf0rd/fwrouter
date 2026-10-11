@@ -798,6 +798,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
     label = diagnostic.get("phase")
     if label not in {"direct-before-vpn", "vpn", "vpn-supported-udp", "vpn-unknown-udp",
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
+                     "vpn-empty-pool-native",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "emergency-direct", "vpn-after-reentry", "provider-enable-job",
                      "vpn-auto-exclusive-job", "provider-refresh-supported", "provider-refresh-unknown",
@@ -1336,7 +1337,8 @@ def _server_user_preferences(api: str, logical_id: str) -> dict[str, Any]:
     return {key: preferences.get(key) for key in keys}
 
 
-def _assert_native_empty_vpn_pool(stack: dict[str, Any], *, expected_fence: dict[str, Any]) -> dict[str, Any]:
+def _assert_native_empty_vpn_pool(stack: dict[str, Any], *, expected_fence: dict[str, Any],
+                                  preference_change: dict[str, Any], record_property: Any) -> dict[str, Any]:
     fence_before_readback = _read_packet_selection_fence()
     selector_state = _read_packet_selector_state()
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
@@ -1410,6 +1412,106 @@ def _assert_native_empty_vpn_pool(stack: dict[str, Any], *, expected_fence: dict
     assert code == 200 and routing.get("ok") is True and isinstance(enforcement, dict), {
         "global_vpn_enforcement_readback": code,
     }
+    from fwrouter_api.services.dataplane_global import (
+        _mihomo_health,
+        build_global_preflight,
+        read_applied_manifest,
+        read_effective_rules_artifact,
+    )
+    from fwrouter_api.services.dataplane_live import probe_live_global_mode
+    from fwrouter_api.services.dataplane_status import _runtime_routing_state, read_live_dataplane_payload
+
+    def safe_codes(values: Any) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        return sorted({item for item in values if isinstance(item, str) and len(item) <= 64
+                       and all(character.isalnum() or character in "_.:-" for character in item)})[:12]
+
+    # Recompute the same read-only live preflight inputs used by the runtime
+    # enforcement projection. Keep only fixed booleans, enums and reason codes.
+    preflight_summary: dict[str, Any] = {"available": False}
+    try:
+        manifest = read_applied_manifest()
+        live_payload = read_live_dataplane_payload()
+        live_routing = _runtime_routing_state(manifest)
+        effective_rules = ((manifest.get("extra") or {}).get("rules_effective")
+                           if isinstance(manifest, dict) else None)
+        if not isinstance(effective_rules, dict):
+            effective_rules = read_effective_rules_artifact()
+        preflight = build_global_preflight(
+            routing=live_routing,
+            check_details=live_payload,
+            mihomo_health=_mihomo_health(),
+            effective_rules_artifact=effective_rules if isinstance(effective_rules, dict) else None,
+        )
+        live_mode_probe = probe_live_global_mode()
+        preflight_summary = {
+            "available": True,
+            "routing_applied_mode": (live_routing or {}).get("applied_mode")
+            if (live_routing or {}).get("applied_mode") in {"vpn", "direct", "selective"} else "other",
+            "routing_desired_mode": (live_routing or {}).get("desired_mode")
+            if (live_routing or {}).get("desired_mode") in {"vpn", "direct", "selective"} else "other",
+            "live_mode": live_mode_probe.get("mode")
+            if isinstance(live_mode_probe, dict)
+            and live_mode_probe.get("mode") in {"vpn", "direct", "selective"} else "other",
+            "live_mode_ok": live_mode_probe.get("ok") is True if isinstance(live_mode_probe, dict) else False,
+            "can_enforce_global_vpn": preflight.get("can_enforce_global_vpn") is True,
+            "vpn_policy_installed": preflight.get("vpn_policy_installed") is True,
+            "vpn_egress_ready": preflight.get("vpn_egress_ready") is True,
+            "vpn_egress_target_present": preflight.get("vpn_egress_target_present") is True,
+            "vpn_external_path_verified": preflight.get("vpn_external_path_verified") is True,
+            "vpn_prepare_missing": safe_codes(preflight.get("vpn_prepare_missing")),
+            "vpn_egress_missing": safe_codes(preflight.get("vpn_egress_missing")),
+            "vpn_missing": safe_codes(preflight.get("missing_by_mode", {}).get("vpn", [])),
+        }
+    except Exception as exc:
+        preflight_summary = {"available": False, "error_class": type(exc).__name__[:64]}
+
+    reconcile = preference_change.get("mihomo_reconcile") if isinstance(preference_change, dict) else None
+    reconcile_summary = {
+        "present": isinstance(reconcile, dict),
+        "ok": reconcile.get("ok") is True if isinstance(reconcile, dict) else None,
+        "action": reconcile.get("reconcile_action")
+        if isinstance(reconcile, dict) and reconcile.get("reconcile_action") in {
+            "no_working_candidates", "staged_generation_verified", "noop", "failed",
+        } else "other" if isinstance(reconcile, dict) else None,
+        "error_code": reconcile.get("error_code")
+        if isinstance(reconcile, dict) and isinstance(reconcile.get("error_code"), str)
+        and len(reconcile["error_code"]) <= 64
+        and all(character.isalnum() or character in "_.:-" for character in reconcile["error_code"])
+        else None,
+    }
+    native_proof = _packet_refresh_native_proof(stack)
+    policy_state = {key: native_proof.get(key) for key in (
+        "vpn_udp_policy_installed", "vpn_udp_policy_receipt_matches",
+        "vpn_udp_selector_membership_matches", "vpn_udp_guarded_rules_match",
+        "vpn_udp_native_rules_match", "active_config_sha256", "native_incarnation_sha256",
+    ) if key in native_proof}
+    nft_counters = _core_counter_snapshot()
+    diagnostic = {
+        "phase": "vpn-empty-pool-native",
+        "runtime_enforcement": {
+            "level": enforcement.get("enforcement_level")
+            if enforcement.get("enforcement_level") in {
+                "global_direct_only", "global_vpn_fail_closed", "global_vpn_enforced",
+            } else "other",
+            "active_mode_matches_intent": enforcement.get("active_mode_matches_intent") is True,
+            "live_mode": enforcement.get("live_global_mode")
+            if enforcement.get("live_global_mode") in {"vpn", "direct", "selective"} else "other",
+            "traffic_enforcement_guaranteed": enforcement.get("traffic_enforcement_guaranteed") is True,
+            "vpn_egress_ready": enforcement.get("vpn_egress_ready") is True
+            if type(enforcement.get("vpn_egress_ready")) is bool else None,
+            "supported_vpn": (enforcement.get("supported_modes") or {}).get("vpn") is True
+            if isinstance(enforcement.get("supported_modes"), dict) else None,
+            "missing": safe_codes(enforcement.get("missing_runtime_requirements")),
+        },
+        "fresh_preflight": preflight_summary,
+        "eligibility_reconcile": reconcile_summary,
+        "native_policy_readback": policy_state,
+        "core_nft_counters": nft_counters,
+        "mihomo_path": native_proof,
+    }
+    _record_phase_diagnostic(record_property, diagnostic)
     assert (enforcement.get("active_mode_matches_intent") is True
             and enforcement.get("enforcement_level") == "global_vpn_fail_closed"
             and enforcement.get("vpn_egress_ready") is False), enforcement
@@ -1613,8 +1715,11 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "empty_pool_requires_selected_provider_to_be_eligible": preferences_before_empty_pool,
     }
     fence_before_empty_pool = _read_packet_selection_fence()
-    _set_server_auto_eligibility(api, logical_id, False)
-    empty_pool_native = _assert_native_empty_vpn_pool(stack, expected_fence=fence_before_empty_pool)
+    empty_pool_preference_change = _set_server_auto_eligibility(api, logical_id, False)
+    empty_pool_native = _assert_native_empty_vpn_pool(
+        stack, expected_fence=fence_before_empty_pool,
+        preference_change=empty_pool_preference_change, record_property=record_property,
+    )
     fence_before_empty_probe = _read_packet_selection_fence()
     empty_pool_phase = _probe_vpn_udp_contract_phase(
         stack, source_ref, logical_id, "supported", True, "vpn-empty-pool", record_property,
