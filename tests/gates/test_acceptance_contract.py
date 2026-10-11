@@ -807,7 +807,9 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertFalse(helper_names & {"db_session", "mihomo_adapter", "write_selection_fence"})
 
     def test_browser_api_response_summary_bounds_and_redacts_error_details(self):
-        from application_acceptance.test_browser_locale import _bounded_browser_api_response
+        from application_acceptance.test_browser_locale import (
+            _bounded_browser_api_response, _matches_preferences_patch,
+        )
 
         class FakeResponse:
             def __init__(self, status, headers, body):
@@ -838,6 +840,58 @@ class AcceptanceContractTests(unittest.TestCase):
             500, {"content-length": "unknown"}, b"BODY_SENTINEL"))
         self.assertEqual("omitted_unbounded_length", malformed_length["body_observation"])
         self.assertNotIn("BODY_SENTINEL", json.dumps(malformed_length))
+
+        class FakeRequest:
+            def __init__(self, method):
+                self.method = method
+
+        class FakeBrowserResponse:
+            def __init__(self, url, method="PATCH"):
+                self.url = url
+                self.request = FakeRequest(method)
+
+        browser_api_base = "http://127.0.0.1:41000/api/v2"
+        encoded_id = "node:west/one?two"
+        encoded_url = (
+            "http://127.0.0.1:41000/api/v2/servers/node%3Awest%2Fone%3Ftwo/preferences?source=browser"
+        )
+        self.assertTrue(_matches_preferences_patch(
+            FakeBrowserResponse(encoded_url), browser_api_base, encoded_id))
+        self.assertFalse(_matches_preferences_patch(
+            FakeBrowserResponse(encoded_url, method="GET"), browser_api_base, encoded_id))
+        self.assertFalse(_matches_preferences_patch(
+            FakeBrowserResponse(encoded_url.replace("127.0.0.1:41000", "127.0.0.1:41001")),
+            browser_api_base, encoded_id))
+        self.assertFalse(_matches_preferences_patch(
+            FakeBrowserResponse(encoded_url), browser_api_base, "node:west/other"))
+        self.assertFalse(_matches_preferences_patch(
+            FakeBrowserResponse(encoded_url.replace("/preferences?", "/preferences-extra?")),
+            browser_api_base, encoded_id))
+
+    def test_provider_probe_junit_evidence_keeps_exact_bounded_statuses_without_urls(self):
+        from application_acceptance.test_core_provider_mihomo import _record_owned_probe_boundary
+
+        recorded = {}
+        summary = {
+            "request_count": 9, "response_count": 6, "event_count": 8,
+            "transport_closed_count": 2, "response_status_counts": {"204": 4, "504": 2},
+            "recent_events": [
+                {"kind": "http_response", "status": 204, "url": "http://secret.invalid/path"},
+                {"kind": "transport_closed", "status": None, "token": "SECRET_SENTINEL"},
+                {"kind": "untrusted-kind-with-sensitive-text", "status": 500},
+            ],
+        }
+        _record_owned_probe_boundary(lambda key, value: recorded.setdefault(key, value), "failure", summary)
+        property_name, encoded = next(iter(recorded.items()))
+        self.assertEqual("owned_probe_failure", property_name)
+        self.assertLessEqual(len(encoded.encode("utf-8")), 2048)
+        result = json.loads(encoded)
+        self.assertEqual(9, result["request_count"])
+        self.assertEqual({"204": 4, "504": 2}, result["response_status_counts"])
+        self.assertEqual([{"kind": "http_response", "status": 204},
+                          {"kind": "transport_closed", "status": None}], result["recent_events"])
+        self.assertNotIn("secret.invalid", encoded)
+        self.assertNotIn("SECRET_SENTINEL", encoded)
 
     def test_acceptance_recovery_routes_build_fresh_production_controller(self):
         tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))

@@ -55,6 +55,38 @@ def _enable_owned_mihomo_runtime_state() -> None:
         )
 
 
+def _record_owned_probe_boundary(record_property, label: str, summary: dict) -> None:
+    """Persist bounded, URL-free probe event/status evidence in JUnit properties."""
+    events = summary.get("recent_events") if isinstance(summary.get("recent_events"), list) else []
+    safe_events = []
+    for event in events[-8:]:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("kind")
+        status = event.get("status")
+        if kind in {"http_response", "transport_closed"} and (status is None or type(status) is int):
+            safe_events.append({"kind": kind, "status": status})
+    raw_statuses = summary.get("response_status_counts")
+    safe_statuses = {}
+    if isinstance(raw_statuses, dict):
+        safe_statuses = {
+            key: value for key, value in raw_statuses.items()
+            if isinstance(key, str) and key.isascii() and key.isdecimal()
+            and type(value) is int and 0 <= value <= 1_000_000
+        }
+    bounded = {
+        key: summary.get(key)
+        for key in ("request_count", "response_count", "event_count", "transport_closed_count")
+        if type(summary.get(key)) is int and 0 <= summary[key] <= 1_000_000
+    }
+    bounded["response_status_counts"] = safe_statuses
+    bounded["recent_events"] = safe_events
+    encoded = json.dumps(bounded, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 2048:
+        raise AssertionError("bounded probe summary exceeded JUnit evidence limit")
+    record_property(f"owned_probe_{label}", encoded)
+
+
 def _last_targeted_provider_refresh_summary(stack: dict) -> dict | None:
     """Read only the bounded, structured result emitted for this owned source."""
     port = int(stack["api"].rsplit(":", 1)[1].split("/", 1)[0])
@@ -611,7 +643,7 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     assert_mihomo_launch_matches_active(stack["native"], stack["state"] / "generated" / "mihomo" / "config.yaml")
 
 
-def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change(acceptance_stack):
+def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change(acceptance_stack, record_property):
     stack = acceptance_stack
     api, bridge, native = stack["api"], stack["provider_bridge"], stack["native"]
     _enable_owned_mihomo_runtime_state()
@@ -640,6 +672,7 @@ def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change
     assert direct.get("effective_override") == "emergency_direct", direct
 
     bridge.set_probe_available(True)
+    _record_owned_probe_boundary(record_property, "incarnation_before", bridge.snapshot_probe_summary())
     native.hold_action("mihomo_probe_result")
     result_box: dict[str, object] = {}
     probe_response_count = len(bridge.snapshot_probe_responses())
@@ -655,6 +688,7 @@ def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change
     request_thread.start()
     try:
         assert native.action_entered.wait(timeout=30), "reentry did not finish a real Mihomo health probe"
+        _record_owned_probe_boundary(record_property, "incarnation_at_probe", bridge.snapshot_probe_summary())
         probe_evidence = native.last_mihomo_probe_result
         assert probe_evidence is not None and probe_evidence.get("probe_ok") is True, {
             "native_probe": probe_evidence, "owned_probe_bridge": bridge.snapshot_probe_summary(),
@@ -672,6 +706,7 @@ def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change
     finally:
         native.release_action()
         request_thread.join(timeout=65)
+        _record_owned_probe_boundary(record_property, "incarnation_after", bridge.snapshot_probe_summary())
     assert not request_thread.is_alive(), "reentry request thread did not terminate after probe release"
     code, stale = result_box.get("status_code"), result_box.get("payload")
     assert code == 200 and isinstance(stale, dict), result_box
@@ -681,7 +716,7 @@ def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change
     assert code == 200 and projection["data"]["subscription"]["provider_managed"]["effective_override"] == "emergency_direct", projection
 
 
-def test_provider_reentry_fences_concurrent_public_exclusive_intent_change(acceptance_stack):
+def test_provider_reentry_fences_concurrent_public_exclusive_intent_change(acceptance_stack, record_property):
     stack = acceptance_stack
     api, bridge, native = stack["api"], stack["provider_bridge"], stack["native"]
     _enable_owned_mihomo_runtime_state()
@@ -719,6 +754,7 @@ def test_provider_reentry_fences_concurrent_public_exclusive_intent_change(accep
 
     with db_session() as connection:
         fence_before = read_selection_fence(connection)
+    _record_owned_probe_boundary(record_property, "exclusive_before", bridge.snapshot_probe_summary())
     native.hold_action("mihomo_probe_result")
     result_box: dict[str, object] = {}
     probe_response_count = len(bridge.snapshot_probe_responses())
@@ -734,6 +770,7 @@ def test_provider_reentry_fences_concurrent_public_exclusive_intent_change(accep
     request_thread.start()
     try:
         assert native.action_entered.wait(timeout=30), "reentry did not reach the post-response probe barrier"
+        _record_owned_probe_boundary(record_property, "exclusive_at_probe", bridge.snapshot_probe_summary())
         probe_evidence = native.last_mihomo_probe_result
         assert probe_evidence is not None and probe_evidence.get("probe_ok") is True, {
             "native_probe": probe_evidence, "owned_probe_bridge": bridge.snapshot_probe_summary(),
@@ -757,6 +794,7 @@ def test_provider_reentry_fences_concurrent_public_exclusive_intent_change(accep
     finally:
         native.release_action()
         request_thread.join(timeout=65)
+        _record_owned_probe_boundary(record_property, "exclusive_after", bridge.snapshot_probe_summary())
     assert not request_thread.is_alive(), "reentry request did not leave its post-response barrier"
     assert result_box.get("status_code") == 200, result_box
     stale = result_box.get("payload")

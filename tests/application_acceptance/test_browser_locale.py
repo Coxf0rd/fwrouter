@@ -12,6 +12,20 @@ import pytest
 from .http_support import http_json
 
 
+def _matches_preferences_patch(response, browser_origin: str, server_id: str) -> bool:
+    if response.request.method != "PATCH":
+        return False
+    expected_origin = urllib.parse.urlsplit(browser_origin)
+    observed = urllib.parse.urlsplit(response.url)
+    if (observed.scheme, observed.netloc) != (expected_origin.scheme, expected_origin.netloc):
+        return False
+    expected_parts = expected_origin.path.rstrip("/").split("/") + [
+        "servers", str(server_id), "preferences",
+    ]
+    observed_parts = [urllib.parse.unquote(part) for part in observed.path.split("/")]
+    return observed_parts == expected_parts
+
+
 def _bounded_browser_api_response(response) -> dict[str, object]:
     summary: dict[str, object] = {
         "status": int(response.status),
@@ -312,8 +326,8 @@ def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_can
             assert provider_candidate.is_checked(), logical_id
             assert ordinary_candidate.is_checked() and ordinary_candidate.is_enabled(), ordinary_id
             with page.expect_response(
-                lambda response: response.url.endswith(f"/servers/{ordinary_id}/preferences")
-                and response.request.method == "PATCH",
+                lambda response: _matches_preferences_patch(
+                    response, browser_origin + "/api/v2", ordinary_id),
                 timeout=12000,
             ) as save:
                 # The checkbox is visually hidden beneath the styled track;
