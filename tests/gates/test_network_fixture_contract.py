@@ -611,6 +611,20 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('(ROUTER_WAN_IP, SERVICE_VIP, "tcp", 9080)', empty_pool_tcp)
         self.assertIn('endpoint_http_delta == 0', empty_pool_tcp)
         self.assertNotIn('core_delta["direct_lan_forward"] == 0', empty_pool_tcp)
+        selector_path = ROOT / "backend" / "fwrouter_api" / "services" / "selector.py"
+        selector_source = selector_path.read_text(encoding="utf-8")
+        selector_tree = ast.parse(selector_source)
+        selector_functions = [node for node in selector_tree.body
+                              if isinstance(node, ast.FunctionDef) and node.name == "get_vpn_auto_state"]
+        self.assertEqual(1, len(selector_functions), "expected one canonical read-only selector-state projection")
+        selector_lines = selector_source.splitlines()
+        selector_state_source = "\n".join(
+            selector_lines[selector_functions[0].lineno - 1:selector_functions[0].end_lineno]
+        )
+        self.assertLess(selector_state_source.index("elif not enabled_candidate_ids:"),
+                        selector_state_source.index("elif not auto_selectable_candidate_ids:"))
+        self.assertIn('problem_code = "vpn_auto_no_candidates"', selector_state_source)
+        self.assertIn('problem_code = "vpn_auto_no_auto_selectable_candidates"', selector_state_source)
         self.assertIn('"router_stub_drop"', source)
         self.assertIn('"router_egress_drop"', source)
         self.assertIn('"router_forward_drop"', source)

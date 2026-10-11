@@ -1392,15 +1392,17 @@ def _assert_native_empty_vpn_pool(stack: dict[str, Any], *, expected_fence: dict
             and fence.get("revision") == fence_before_readback.get("revision"),
         }
     }
-    assert (selector_state.get("auto_selectable_candidates_count") == 0
+    assert (selector_state.get("enabled_candidates_count") == 0
+            and selector_state.get("auto_selectable_candidates_count") == 0
             and selector_state.get("active_auto_target_valid") is False
             and selector_state.get("active_auto_server_valid") is False
-            and selector_state.get("problem_code") == "vpn_auto_no_auto_selectable_candidates"), {
+            and selector_state.get("problem_code") == "vpn_auto_no_candidates"), {
         "empty_pool_selector_state": {
+            "enabled_candidates_count": selector_state.get("enabled_candidates_count"),
             "auto_selectable_candidates_count": selector_state.get("auto_selectable_candidates_count"),
             "active_auto_target_valid": selector_state.get("active_auto_target_valid") is True,
             "active_auto_server_valid": selector_state.get("active_auto_server_valid") is True,
-            "problem_code_matches_empty_pool": selector_state.get("problem_code") == "vpn_auto_no_auto_selectable_candidates",
+            "problem_code_matches_no_candidates": selector_state.get("problem_code") == "vpn_auto_no_candidates",
         }
     }
     code, routing = http_json(f"{stack['api']}/routing/global")
