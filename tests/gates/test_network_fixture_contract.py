@@ -1448,6 +1448,68 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 "reason": "flags_unsupported", "transport": "udp", "flags": 0x0200,
             })
 
+            recursive_ad_query = bytearray(query)
+            recursive_ad_query[3] = 0x20
+            recursive_ad_query = bytes(recursive_ad_query)
+            self.assertEqual(int.from_bytes(recursive_ad_query[2:4], "big"), 0x0120)
+
+            def expected_vpn_answer(request):
+                question_end = request.find(b"\0", 12)
+                question = request[12:question_end + 5]
+                answer = (b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x1e\x00\x04"
+                          + fixture.socket.inet_aton("198.51.100.77"))
+                return request[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + question + answer
+
+            ad_udp_socket = DatagramSocket()
+            ad_udp_handler = object.__new__(fixture._DnsUpstreamUDPHandler)
+            ad_udp_handler.request = (recursive_ad_query, ad_udp_socket)
+            ad_udp_handler.client_address = (fixture.ROUTER_WAN_IP, 54324)
+            ad_udp_handler.handle()
+            udp_response = ad_udp_socket.sent[0][0]
+            self.assertEqual(udp_response, expected_vpn_answer(recursive_ad_query))
+            udp_response_flags = int.from_bytes(udp_response[2:4], "big")
+            self.assertEqual(udp_response_flags, 0x8180)
+            self.assertTrue(udp_response_flags & 0x8000)  # QR
+            self.assertTrue(udp_response_flags & 0x0100)  # RD
+            self.assertTrue(udp_response_flags & 0x0080)  # RA
+            self.assertFalse(udp_response_flags & 0x0020)  # AD remains clear
+
+            class StreamSocket:
+                def __init__(self, payload):
+                    self.payload = payload
+                    self.sent = []
+
+                def recv(self, size):
+                    part, self.payload = self.payload[:size], self.payload[size:]
+                    return part
+
+                def sendall(self, payload):
+                    self.sent.append(payload)
+
+            framed_query = len(recursive_ad_query).to_bytes(2, "big") + recursive_ad_query
+            ad_tcp_socket = StreamSocket(framed_query)
+            ad_tcp_handler = object.__new__(fixture._DnsUpstreamTCPHandler)
+            ad_tcp_handler.request = ad_tcp_socket
+            ad_tcp_handler.client_address = (fixture.ROUTER_WAN_IP, 54325)
+            ad_tcp_handler.handle()
+            tcp_frame = ad_tcp_socket.sent[0]
+            tcp_length = int.from_bytes(tcp_frame[:2], "big")
+            self.assertEqual(tcp_length, len(tcp_frame) - 2)
+            self.assertEqual(tcp_frame[2:], expected_vpn_answer(recursive_ad_query))
+            tcp_response_flags = int.from_bytes(tcp_frame[4:6], "big")
+            self.assertEqual(tcp_response_flags, 0x8180)
+            self.assertTrue(tcp_response_flags & 0x8000)  # QR
+            self.assertTrue(tcp_response_flags & 0x0100)  # RD
+            self.assertTrue(tcp_response_flags & 0x0080)  # RA
+            self.assertFalse(tcp_response_flags & 0x0020)  # AD remains clear
+            after_ad_success = observations.snapshot()
+            self.assertEqual(after_ad_success["counts"]["udp"], 4)
+            self.assertEqual(after_ad_success["counts"]["tcp"], 1)
+            self.assertEqual(after_ad_success["counts"]["vpn_name"], 5)
+            self.assertEqual(after_ad_success["replies"]["udp"], 2)
+            self.assertEqual(after_ad_success["replies"]["tcp"], 1)
+            self.assertEqual(after_ad_success["replies"]["vpn_name"], 3)
+
             malformed = (
                 b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
                 + b"\x40" + b"a" * 64 + b"\x00\x00\x01\x00\x01"
@@ -1457,8 +1519,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertIsNone(fixture._dns_upstream_query_name(malformed))
             self.assertEqual(fixture._dns_upstream_response(malformed, "udp", fixture.ROUTER_WAN_IP), b"")
             after_malformed = observations.snapshot()
-            self.assertEqual(after_malformed["counts"], after_rejected["counts"])
-            self.assertEqual(after_malformed["replies"], after_rejected["replies"])
+            self.assertEqual(after_malformed["counts"], after_ad_success["counts"])
+            self.assertEqual(after_malformed["replies"], after_ad_success["replies"])
             self.assertEqual(after_malformed["rejection_counts"]["name_invalid"], 1)
             self.assertEqual(after_malformed["last_rejection"], {
                 "reason": "name_invalid", "transport": "udp", "flags": 0x0100,

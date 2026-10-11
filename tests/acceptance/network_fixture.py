@@ -1031,7 +1031,9 @@ def _dns_upstream_response(query: bytes, transport: str, peer: str) -> bytes:
                                            int.from_bytes(query[2:4], "big") if len(query) >= 4 else None)
         return b""
     flags = int.from_bytes(query[2:4], "big")
-    if query[2:4] != b"\x01\x00":
+    # RFC 6840 section 5.7 permits an AD bit in a query. This fixture does not
+    # validate DNSSEC, so its responses keep AD clear while accepting RD+AD.
+    if query[2:4] not in {b"\x01\x00", b"\x01\x20"}:
         _DNS_UPSTREAM_OBS.record_rejection("flags_unsupported", transport, flags)
         return b""
     question_end = query.find(b"\0", 12)
