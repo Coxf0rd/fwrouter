@@ -362,6 +362,7 @@ def _provider_selection_snapshot(source_ref: str) -> dict[str, Any]:
         "applied_member_id": binding.get("applied_member_id"),
         "binding_revision": binding.get("binding_revision"),
         "selection_revision": fence.get("revision"),
+        "fenced_active_server_id": fence.get("active_server_id"),
         "exclusive_source_ref": get_vpn_auto_exclusive_source_ref(),
     }
 
@@ -1348,10 +1349,23 @@ def _assert_native_empty_vpn_pool(stack: dict[str, Any]) -> dict[str, Any]:
         "native_vpn_auto_targets": selectors.get("vpn_auto_targets"),
     }
     code, vpn_state = http_json(f"{stack['api']}/state/vpn")
-    active = vpn_state.get("data", {}).get("vpn", {}).get("effective", {}).get("server_health", {}).get("active") \
-        if isinstance(vpn_state, dict) else None
-    assert code == 200 and vpn_state.get("ok") is True and isinstance(active, dict) \
-        and active.get("server_id") is None, {"empty_pool_active_server": active}
+    effective = vpn_state.get("data", {}).get("vpn", {}).get("effective") if isinstance(vpn_state, dict) else None
+    assert code == 200 and vpn_state.get("ok") is True and isinstance(effective, dict) \
+        and effective.get("active_server_id") is None, {
+            "empty_pool_active_server": effective.get("active_server_id") if isinstance(effective, dict) else None,
+        }
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+    with db_session() as connection:
+        fence = read_selection_fence(connection)
+    assert (fence.get("routing_state_present") is True and fence.get("active_server_id") is None
+            and type(fence.get("revision")) is int and fence.get("revision") >= 0), {
+        "empty_pool_selection_fence": {
+            "routing_state_present": fence.get("routing_state_present"),
+            "active_server_id": fence.get("active_server_id"),
+            "revision_valid": type(fence.get("revision")) is int and fence.get("revision") >= 0,
+        }
+    }
     code, routing = http_json(f"{stack['api']}/routing/global")
     enforcement = routing.get("data", {}).get("runtime_enforcement") if isinstance(routing, dict) else None
     assert code == 200 and routing.get("ok") is True and isinstance(enforcement, dict), {
