@@ -979,6 +979,7 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         config_test_error_code = None
     reconcile_result = setup_dns.get("reconcile_result")
     if isinstance(reconcile_result, dict):
+        artifact_read = reconcile_result.get("artifact_read")
         reconcile_error_code = reconcile_result.get("error_code")
         if reconcile_error_code not in {
             "DNSMASQ_DNS_CAPTURE_FAILED", "DNSMASQ_RESTART_FAILED",
@@ -996,6 +997,17 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
             "selective_status_ok": reconcile_result.get("selective_status_ok")
             if type(reconcile_result.get("selective_status_ok")) is bool else None,
         }
+        if isinstance(artifact_read, dict):
+            reconcile_result["artifact_read"] = {
+                key: artifact_read.get(key) if type(artifact_read.get(key)) is bool else None
+                for key in ("cache_entry_present", "cached_artifact_present", "uncached_artifact_present",
+                            "cache_inflight_present", "cache_entry_valid_at_reader", "cached_matches_uncached",
+                            "writer_path_matches_reader", "writer_path_exists",
+                            "reader_returned_artifact", "uncached_presence_matches_reader_result",
+                            "cached_presence_matches_reader_result")
+            }
+        else:
+            reconcile_result["artifact_read"] = None
     else:
         reconcile_result = None
     daemon_diagnostic = {

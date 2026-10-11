@@ -11,6 +11,7 @@ import re
 import socket
 import sys
 import threading
+import time
 import traceback
 from urllib.parse import urlsplit
 from pathlib import Path
@@ -38,6 +39,63 @@ def _clean_environment() -> None:
 
 _PACKET_DNSMASQ_LOCK = threading.RLock()
 _PACKET_DNSMASQ_STATE: dict[str, Any] = {}
+
+
+def _packet_dns_effective_artifact_observation() -> dict[str, Any]:
+    """Capture non-atomic cache/path parity without changing the production DNS lookup."""
+    try:
+        from fwrouter_api.core.config import get_settings
+        from fwrouter_api.services import dataplane_global, rules
+        from fwrouter_api.services.live_probe_cache import _CACHE, _CACHE_LOCK, _INFLIGHT
+
+        key = "dataplane_global.effective_rules_artifact"
+        cached_entry_present = False
+        cached_artifact_present: bool | None = None
+        cached_value: Any = None
+        cache_inflight_present = False
+        with _CACHE_LOCK:
+            cache_inflight_present = key in _INFLIGHT
+            entry = _CACHE.get(key)
+            if isinstance(entry, tuple) and len(entry) == 2 and type(entry[0]) in {int, float}:
+                if entry[0] > time.monotonic():
+                    cached_entry_present = True
+                    cached_value = entry[1]
+                    cached_artifact_present = isinstance(cached_value, dict)
+
+        uncached_value = dataplane_global._read_effective_rules_artifact_uncached()
+        try:
+            state = rules.get_manual_rules_texts()
+            writer_path = Path(state["effective_json_path"]).resolve(strict=False)
+            settings = get_settings()
+            reader_paths = (
+                (settings.paths.generated_dir / "rules" / "effective-rules.json").resolve(strict=False),
+                (settings.paths.state_dir / "last-good" / "rules" / "effective-rules.json").resolve(strict=False),
+            )
+            writer_path_matches_reader = writer_path in reader_paths
+            writer_path_exists = writer_path.is_file()
+        except Exception:
+            writer_path_matches_reader = None
+            writer_path_exists = None
+
+        return {
+            "cache_entry_present": cached_entry_present,
+            "cache_inflight_present": cache_inflight_present,
+            "cached_artifact_present": cached_artifact_present,
+            "uncached_artifact_present": isinstance(uncached_value, dict),
+            "cached_matches_uncached": cached_value == uncached_value if cached_entry_present else None,
+            "writer_path_matches_reader": writer_path_matches_reader,
+            "writer_path_exists": writer_path_exists,
+        }
+    except Exception:
+        return {
+            "cache_entry_present": None,
+            "cache_inflight_present": None,
+            "cached_artifact_present": None,
+            "uncached_artifact_present": None,
+            "cached_matches_uncached": None,
+            "writer_path_matches_reader": None,
+            "writer_path_exists": None,
+        }
 
 
 def _select_owned_core_candidate(
@@ -156,6 +214,8 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
                 module.subprocess = current["subprocess_module"]
             if module is not None and current.get("reconcile_dnsmasq_rules") is not None:
                 module.reconcile_dnsmasq_rules = current["reconcile_dnsmasq_rules"]
+            if module is not None and current.get("read_effective_rules_artifact") is not None:
+                module.read_effective_rules_artifact = current["read_effective_rules_artifact"]
             settings = current.get("settings")
             if settings is not None:
                 settings.lan_interface_allowlist = current.get("lan_allowlist", [])
@@ -270,8 +330,45 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
         }
         runtime: dict[str, Any] = current["runtime"]
         original_reconcile_dnsmasq_rules = dnsmasq.reconcile_dnsmasq_rules
+        original_read_effective_rules_artifact = dnsmasq.read_effective_rules_artifact
+
+        def observed_read_effective_rules_artifact() -> Any:
+            observation = _packet_dns_effective_artifact_observation()
+            try:
+                from fwrouter_api.services.live_probe_cache import _CACHE, _CACHE_LOCK
+
+                key = "dataplane_global.effective_rules_artifact"
+                with _CACHE_LOCK:
+                    entry = _CACHE.get(key)
+                    observation["cache_entry_valid_at_reader"] = (
+                        isinstance(entry, tuple) and len(entry) == 2
+                        and type(entry[0]) in {int, float} and entry[0] > time.monotonic()
+                    )
+            except Exception:
+                observation["cache_entry_valid_at_reader"] = None
+            try:
+                result = original_read_effective_rules_artifact()
+            except BaseException:
+                observation["reader_returned_artifact"] = None
+                observation["uncached_presence_matches_reader_result"] = None
+                observation["cached_presence_matches_reader_result"] = None
+                current["artifact_read_observation"] = observation
+                raise
+            reader_has_artifact = isinstance(result, dict)
+            observation["reader_returned_artifact"] = reader_has_artifact
+            observation["uncached_presence_matches_reader_result"] = isinstance(
+                observation.get("uncached_artifact_present"), bool
+            ) and observation.get("uncached_artifact_present") is reader_has_artifact
+            cached_has_artifact = observation.get("cached_artifact_present")
+            observation["cached_presence_matches_reader_result"] = (
+                cached_has_artifact is reader_has_artifact
+                if observation.get("cache_entry_present") is True else None
+            )
+            current["artifact_read_observation"] = observation
+            return result
 
         def observed_reconcile_dnsmasq_rules(*args: Any, **kwargs: Any) -> Any:
+            current.pop("artifact_read_observation", None)
             result = original_reconcile_dnsmasq_rules(*args, **kwargs)
             if isinstance(result, dict):
                 error_code = result.get("error_code")
@@ -290,12 +387,15 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
                     "restart_reason": restart_reason,
                     "selective_status_ok": (result.get("selective_status") or {}).get("ok") is True
                     if isinstance(result.get("selective_status"), dict) else None,
+                    "artifact_read": current.get("artifact_read_observation"),
                 }
             return result
 
         current.update({"module": dnsmasq, "subprocess_module": dnsmasq.subprocess,
                         "reconcile_dnsmasq_rules": original_reconcile_dnsmasq_rules,
+                        "read_effective_rules_artifact": original_read_effective_rules_artifact,
                         "settings": settings, "lan_allowlist": old_allowlist, "paths": old_paths})
+        dnsmasq.read_effective_rules_artifact = observed_read_effective_rules_artifact
         dnsmasq.reconcile_dnsmasq_rules = observed_reconcile_dnsmasq_rules
         settings.lan_interface_allowlist = [lan_rows[0][0]]
         for name, value in new_paths.items():

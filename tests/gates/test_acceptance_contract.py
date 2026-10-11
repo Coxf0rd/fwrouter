@@ -13,6 +13,7 @@ import zipfile
 import stat
 import sys
 import socket
+import time
 from urllib.parse import urlparse
 from unittest import mock
 import io
@@ -2894,6 +2895,7 @@ class AcceptanceContractTests(unittest.TestCase):
             "restart_required": True,
             "restart_reason": "config_changed",
             "selective_status_ok": False,
+            "artifact_read": None,
         })
         self.assertNotIn("message", namespace["current"]["reconcile_result"])
         self.assertNotIn("stderr", namespace["current"]["reconcile_result"])
@@ -2904,8 +2906,95 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIs(observed_fn(), unknown_code_result)
         self.assertEqual(namespace["current"]["reconcile_result"], {
             "ok": True, "error_code": None, "restart_required": False,
-            "restart_reason": None, "selective_status_ok": True,
+            "restart_reason": None, "selective_status_ok": True, "artifact_read": None,
         })
+        raised = ValueError("fixture failure")
+        namespace["original_reconcile_dnsmasq_rules"] = lambda *_args, **_kwargs: (_ for _ in ()).throw(raised)
+        with self.assertRaises(ValueError) as caught:
+            observed_fn("failure-path")
+        self.assertIs(caught.exception, raised)
+
+        cache_observer = next(node for node in ast.walk(worker_tree)
+                              if isinstance(node, ast.FunctionDef)
+                              and node.name == "_packet_dns_effective_artifact_observation")
+        reader_observer = next(node for node in ast.walk(worker_tree)
+                               if isinstance(node, ast.FunctionDef)
+                               and node.name == "observed_read_effective_rules_artifact")
+        cache_key = "dataplane_global.effective_rules_artifact"
+        cached_none = (time.monotonic() + 30, None)
+        uncached_artifact = {"rules": [{"kind": "domain", "value": "vpn.test"}]}
+        reader_path = Path("/fixture/state/generated/rules/effective-rules.json")
+        settings = SimpleNamespace(paths=SimpleNamespace(
+            generated_dir=Path("/fixture/state/generated"), state_dir=Path("/fixture/state")))
+        fake_cache = ModuleType("fwrouter_api.services.live_probe_cache")
+        fake_cache._CACHE = {cache_key: cached_none}
+        fake_cache._INFLIGHT = {}
+        fake_cache._CACHE_LOCK = threading.Lock()
+        fake_data = ModuleType("fwrouter_api.services.dataplane_global")
+        fake_data._read_effective_rules_artifact_uncached = lambda: uncached_artifact
+        fake_rules = ModuleType("fwrouter_api.services.rules")
+        fake_rules.get_manual_rules_texts = lambda: {"effective_json_path": str(reader_path)}
+        fake_services = ModuleType("fwrouter_api.services")
+        fake_services.__path__ = []
+        fake_services.dataplane_global = fake_data
+        fake_services.rules = fake_rules
+        fake_config = ModuleType("fwrouter_api.core.config")
+        fake_config.get_settings = lambda: settings
+        fake_core = ModuleType("fwrouter_api.core")
+        fake_core.__path__ = []
+        fake_package = ModuleType("fwrouter_api")
+        fake_package.__path__ = []
+        fake_modules = {
+            "fwrouter_api": fake_package, "fwrouter_api.core": fake_core,
+            "fwrouter_api.core.config": fake_config, "fwrouter_api.services": fake_services,
+            "fwrouter_api.services.dataplane_global": fake_data,
+            "fwrouter_api.services.rules": fake_rules,
+            "fwrouter_api.services.live_probe_cache": fake_cache,
+        }
+        cache_namespace = {"Any": __import__("typing").Any, "Path": Path, "time": __import__("time")}
+        exec(compile(ast.Module(body=[cache_observer, reader_observer], type_ignores=[]),
+                     str(WORKER_PATH), "exec"), cache_namespace)
+        reader_calls = []
+        cache_namespace["current"] = {}
+        cache_namespace["original_read_effective_rules_artifact"] = lambda: reader_calls.append(True) or None
+        with mock.patch.dict(sys.modules, fake_modules):
+            reader_result = cache_namespace["observed_read_effective_rules_artifact"]()
+        self.assertIsNone(reader_result)
+        self.assertEqual(reader_calls, [True])
+        cache_result = cache_namespace["current"]["artifact_read_observation"]
+        self.assertEqual(cache_result, {
+            "cache_entry_present": True, "cache_inflight_present": False,
+            "cached_artifact_present": False, "uncached_artifact_present": True,
+            "cache_entry_valid_at_reader": True,
+            "cached_matches_uncached": False, "writer_path_matches_reader": True,
+            "writer_path_exists": False, "reader_returned_artifact": False,
+            "uncached_presence_matches_reader_result": False,
+            "cached_presence_matches_reader_result": True,
+        })
+        self.assertIs(fake_cache._CACHE[cache_key], cached_none)
+
+        reader_error = OSError("fixture reader error")
+        reader_calls.clear()
+        cache_namespace["original_read_effective_rules_artifact"] = lambda: reader_calls.append(True) or (_ for _ in ()).throw(reader_error)
+        with mock.patch.dict(sys.modules, fake_modules):
+            with self.assertRaises(OSError) as caught_reader:
+                cache_namespace["observed_read_effective_rules_artifact"]()
+        self.assertIs(caught_reader.exception, reader_error)
+        self.assertEqual(reader_calls, [True])
+        self.assertIsNone(cache_namespace["current"]["artifact_read_observation"]["reader_returned_artifact"])
+
+        missing_cache = ModuleType("fwrouter_api.services.live_probe_cache")
+        missing_cache._CACHE = {}
+        missing_cache._INFLIGHT = {}
+        missing_cache._CACHE_LOCK = threading.Lock()
+        fake_modules["fwrouter_api.services.live_probe_cache"] = missing_cache
+        with mock.patch.dict(sys.modules, fake_modules):
+            absent_result = cache_namespace["_packet_dns_effective_artifact_observation"]()
+        self.assertFalse(absent_result["cache_entry_present"])
+        self.assertIsNone(absent_result["cached_artifact_present"])
+        self.assertIsNone(absent_result["cached_matches_uncached"])
+        self.assertTrue(absent_result["uncached_artifact_present"])
+        self.assertFalse(absent_result["cache_inflight_present"])
 
         packet_source = (Path(__file__).parents[1] / "application_acceptance" /
                          "test_packet_dataplane.py").read_text(encoding="utf-8")
@@ -2917,7 +3006,10 @@ class AcceptanceContractTests(unittest.TestCase):
         for required in ('"phase": "dns53-native-daemon"', '"config_test_status"',
                          '"config_test_returncode"', '"config_test_error_code"',
                          '"reconcile_result": reconcile_result',
-                         '"readiness_probe_timeout"'):
+                         '"readiness_probe_timeout"', '"artifact_read"',
+                         '"writer_path_matches_reader"', '"cached_matches_uncached"',
+                         '"reader_returned_artifact"', '"cache_entry_valid_at_reader"',
+                         '"cached_presence_matches_reader_result"'):
             self.assertIn(required, packet_function_source)
         self.assertNotIn("diagnostic_tail", packet_function_source)
 
