@@ -345,8 +345,10 @@ def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id:
     health = effective.get("server_health")
     active = health.get("active") if isinstance(health, dict) else None
     if expect_active_server:
-        assert effective_active_id == runtime_name and isinstance(active, dict) \
+        assert isinstance(runtime_name, str) and bool(runtime_name) \
+            and effective_active_id == runtime_name and isinstance(active, dict) \
             and active.get("server_id") == logical_id, {
+                "effective_active_runtime_name_present": isinstance(runtime_name, str) and bool(runtime_name),
                 "effective_active_runtime_name_matches": effective_active_id == runtime_name,
                 "health_active_server_id_matches": isinstance(active, dict)
                 and active.get("server_id") == logical_id,
@@ -1319,11 +1321,18 @@ def _apply_global_mode(api: str, mode: str, *, stack: dict[str, Any], record_pro
     return projection["data"]
 
 
-def _set_server_auto_eligibility(api: str, logical_id: str, enabled: bool) -> dict[str, Any]:
+def _set_server_auto_eligibility(api: str, logical_id: str, enabled: bool,
+                                 *, priority: int | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "vpn_auto": enabled,
+        "reconcile_mihomo": True,
+        "requested_by": "hosted-packet-acceptance-empty-pool",
+    }
+    if priority is not None:
+        payload["vpn_auto_priority"] = priority
     code, response = http_json(
         f"{api}/servers/{logical_id}/preferences", method="PATCH",
-        payload={"vpn_auto": enabled, "reconcile_mihomo": True,
-                 "requested_by": "hosted-packet-acceptance-empty-pool"},
+        payload=payload,
     )
     data = response.get("data") if isinstance(response, dict) else None
     result = data.get("server_preferences") if isinstance(data, dict) else None
@@ -1644,6 +1653,23 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         raise AssertionError("exclusive provider job polling failed within its bound")
     assert exclusive_job.get("status") == "success"
     assert get_vpn_auto_exclusive_source_ref() == source_ref
+
+    # Normalize this test-owned provider server to a reversible, explicit
+    # public-API preference baseline before traffic and before the later exact
+    # preference snapshot. Explicit priority 1 retains manual provenance across
+    # the empty-pool off/on cycle instead of invoking legacy auto normalization.
+    preference_baseline = _set_server_auto_eligibility(api, logical_id, True, priority=1)
+    baseline_preferences = _server_user_preferences(api, logical_id)
+    assert (baseline_preferences.get("vpn_auto") is True
+            and baseline_preferences.get("vpn_auto_priority") == 1
+            and baseline_preferences.get("vpn_auto_priority_origin") == "manual"), {
+        "canonical_packet_preference_baseline": {
+            key: baseline_preferences.get(key)
+            for key in ("vpn_auto", "vpn_auto_priority", "vpn_auto_priority_origin")
+        },
+        "reconcile_ok": (preference_baseline.get("mihomo_reconcile") or {}).get("ok")
+        if isinstance(preference_baseline.get("mihomo_reconcile"), dict) else None,
+    }
 
     _set_health_available(True)
     _apply_global_mode(api, "direct", stack=stack, record_property=record_property)

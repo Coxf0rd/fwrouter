@@ -127,6 +127,14 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('get_logical_runtime_name(logical_id)', capability_source)
         self.assertIn('assert effective_active_id is None', capability_source)
         self.assertIn('active.get("server_id") is None', capability_source)
+        auto_eligibility = ast.get_source_segment(source, functions["_set_server_auto_eligibility"])
+        self.assertIn('payload["vpn_auto_priority"] = priority', auto_eligibility)
+        scenario_source = ast.get_source_segment(source, scenario)
+        self.assertLess(
+            scenario_source.index("preference_baseline = _set_server_auto_eligibility(api, logical_id, True, priority=1)"),
+            scenario_source.index('_apply_global_mode(api, "direct"'),
+        )
+        self.assertIn('baseline_preferences.get("vpn_auto_priority_origin") == "manual"', scenario_source)
         self.assertTrue(all(any(isinstance(keyword.value, ast.Name) and keyword.value.id == "record_property"
                                 for keyword in call.keywords)
                             or any(isinstance(arg, ast.Name) and arg.id == "record_property" for arg in call.args)
