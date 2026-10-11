@@ -744,6 +744,101 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge", source)
         self.assertIn("generated = original_logical_profile_groups()", source)
 
+    def test_owned_core_candidate_rpc_is_profile_gated_and_delegates_to_core_selector(self):
+        from application_acceptance import worker
+
+        calls = []
+
+        def fake_selector(**kwargs):
+            calls.append(kwargs)
+            return {
+                "ok": True, "selected_server_id": "provider-1", "active_after": "provider-1",
+                "selection_revision": 17, "applied": True, "selection_outcome": "applied",
+                "provider_operation": {"ok": True, "runtime_verified": True,
+                                        "actual_member_id": "902", "secret": "SECRET_SENTINEL"},
+                "secret": "SECRET_SENTINEL",
+            }
+
+        valid_profile = {"profile": "hosted-kernel-dataplane"}
+        invalid_requests = (
+            {"environment": "production", "acceptance_root": "/tmp/fwrouter-application-acceptance",
+             "profile": valid_profile, "payload": {"candidate_server_id": "provider-1"}},
+            {"environment": "test", "acceptance_root": "/wrong-root",
+             "profile": valid_profile, "payload": {"candidate_server_id": "provider-1"}},
+            {"environment": "test", "acceptance_root": "/tmp/fwrouter-application-acceptance",
+             "profile": {"profile": "hosted-kernel-packet"},
+             "payload": {"candidate_server_id": "provider-1"}},
+            {"environment": "test", "acceptance_root": "/tmp/fwrouter-application-acceptance",
+             "profile": valid_profile, "payload": {"candidate_server_id": "provider-1", "apply": False}},
+        )
+        for request in invalid_requests:
+            result = worker._select_owned_core_candidate(
+                request["payload"], environment=request["environment"],
+                acceptance_root=request["acceptance_root"], profile=request["profile"],
+                selector=fake_selector)
+            self.assertFalse(result["ok"])
+            self.assertEqual("ACCEPTANCE_CORE_SELECTOR_REQUEST_INVALID", result["error_code"])
+        invalid_candidate = worker._select_owned_core_candidate(
+            {"candidate_server_id": "bad candidate"}, environment="test",
+            acceptance_root="/tmp/fwrouter-application-acceptance", profile=valid_profile,
+            selector=fake_selector,
+        )
+        self.assertEqual("ACCEPTANCE_CORE_SELECTOR_CANDIDATE_INVALID", invalid_candidate["error_code"])
+        self.assertEqual([], calls)
+
+        result = worker._select_owned_core_candidate(
+            {"candidate_server_id": "provider-1"}, environment="test",
+            acceptance_root="/tmp/fwrouter-application-acceptance", profile=valid_profile,
+            selector=fake_selector,
+        )
+        self.assertEqual({
+            "apply": True, "reason": "acceptance_provider_baseline", "requested_by": "api",
+            "check_on_demand": True, "update_ping_state": False, "on_demand_limit": 20,
+            "timeout_ms": 1000, "candidate_server_id": "provider-1", "origin": "api",
+        }, calls[0])
+        self.assertEqual("provider-1", result["selected_server_id"])
+        self.assertEqual({"ok": True, "runtime_verified": True, "actual_member_id": "902"},
+                         result["provider_operation"])
+        self.assertNotIn("SECRET_SENTINEL", json.dumps(result))
+        helper = next(node for node in ast.parse(WORKER_PATH.read_text(encoding="utf-8")).body
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "_select_owned_core_candidate")
+        helper_names = {node.id for node in ast.walk(helper) if isinstance(node, ast.Name)}
+        self.assertFalse(helper_names & {"db_session", "mihomo_adapter", "write_selection_fence"})
+
+    def test_browser_api_response_summary_bounds_and_redacts_error_details(self):
+        from application_acceptance.test_browser_locale import _bounded_browser_api_response
+
+        class FakeResponse:
+            def __init__(self, status, headers, body):
+                self.status = status
+                self.status_text = "Failure " + ("X" * 200)
+                self.headers = headers
+                self._body = body
+
+            def body(self):
+                return self._body
+
+        secret_message = "provider detail SECRET_SENTINEL"
+        body = json.dumps({"ok": False, "error": {"code": "PROVIDER_FAILED", "message": secret_message}}).encode()
+        summary = _bounded_browser_api_response(FakeResponse(
+            409, {"content-length": str(len(body))}, body))
+        self.assertEqual(409, summary["status"])
+        self.assertEqual("PROVIDER_FAILED", summary["error_code"])
+        self.assertTrue(summary["error_message_present"])
+        self.assertLessEqual(len(summary["status_text"]), 160)
+        self.assertNotIn(secret_message, json.dumps(summary))
+        self.assertNotIn("SECRET_SENTINEL", json.dumps(summary))
+
+        oversized = _bounded_browser_api_response(FakeResponse(
+            502, {"content-length": "8193"}, b"BODY_SENTINEL"))
+        self.assertEqual("omitted_unbounded_length", oversized["body_observation"])
+        self.assertNotIn("BODY_SENTINEL", json.dumps(oversized))
+        malformed_length = _bounded_browser_api_response(FakeResponse(
+            500, {"content-length": "unknown"}, b"BODY_SENTINEL"))
+        self.assertEqual("omitted_unbounded_length", malformed_length["body_observation"])
+        self.assertNotIn("BODY_SENTINEL", json.dumps(malformed_length))
+
     def test_acceptance_recovery_routes_build_fresh_production_controller(self):
         tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
         build_app = next(node for node in tree.body

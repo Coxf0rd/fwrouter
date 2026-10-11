@@ -11,6 +11,39 @@ from pathlib import Path
 import pytest
 from .http_support import http_json
 
+
+def _bounded_browser_api_response(response) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "status": int(response.status),
+        "status_text": str(response.status_text)[:160],
+    }
+    raw_length = response.headers.get("content-length", "")
+    if not raw_length.isascii() or not raw_length.isdecimal() or int(raw_length) > 8192:
+        summary["body_observation"] = "omitted_unbounded_length"
+        return summary
+    try:
+        body = response.body()
+        payload = json.loads(body) if len(body) == int(raw_length) else None
+    except Exception:
+        payload = None
+        body = b""
+    summary["body_bytes"] = min(len(body), 8192)
+    if not isinstance(payload, dict):
+        summary["json_object"] = False
+        return summary
+    summary["json_object"] = True
+    if isinstance(payload.get("ok"), bool):
+        summary["ok"] = payload["ok"]
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code = error.get("code")
+        if (isinstance(code, str) and 0 < len(code) <= 80 and code.isascii()
+                and all(char.isalnum() or char in "._-" for char in code)):
+            summary["error_code"] = code
+        summary["error_message_present"] = isinstance(error.get("message"), str)
+    return summary
+
+
 class _UiAndApiBridge(http.server.SimpleHTTPRequestHandler):
     api_base = ""
     ui_root = Path("/workspace/ui")
@@ -280,13 +313,14 @@ def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_can
             assert ordinary_candidate.is_checked() and ordinary_candidate.is_enabled(), ordinary_id
             with page.expect_response(
                 lambda response: response.url.endswith(f"/servers/{ordinary_id}/preferences")
-                and response.request.method == "PATCH" and response.status == 200,
+                and response.request.method == "PATCH",
                 timeout=12000,
             ) as save:
                 # The checkbox is visually hidden beneath the styled track;
                 # clicking the wrapping label is the actual user interaction.
                 ordinary_candidate.locator("xpath=..").click()
-            assert save.value.status == 200
+            response_summary = _bounded_browser_api_response(save.value)
+            assert response_summary["status"] == 200, response_summary
             code, after_servers = http_json(f"{api}/servers?inventory_state=active&limit=1000&include_provider_legacy=true")
             assert code == 200 and after_servers.get("ok") is True, after_servers
             after_rows = after_servers.get("data", {}).get("servers", [])

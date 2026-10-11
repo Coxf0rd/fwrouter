@@ -432,8 +432,9 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     assert enabled_job.get("status") == "success", enabled_job
     from fwrouter_api.services.provider_managed import binding_for
     provider_logical_id = binding_for(source_ref)["logical_server_id"]
-    # Establish an explicit Core priority baseline before adding the competing
-    # candidate; the membership change must not choose the competitor first.
+    # Prefer the provider when there is no competing candidate yet. Priority
+    # only breaks ties after Core's health/latency evidence, so it cannot
+    # establish the incumbent by itself.
     code, provider_preferences = http_json(
         f"{api}/servers/{provider_logical_id}/preferences", method="PATCH",
         payload={"vpn_auto_priority": 5, "reconcile_mihomo": False,
@@ -460,14 +461,24 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     )
     assert inventory["seen_count"] == 1, inventory
 
-    # Make the ordinary candidate eligible through the public preferences API
-    # before the handoff starts. The valid provider target remains active, so
-    # the normal membership-change path reconciles inventory without switching.
+    # Build the native candidate pool through the normal Core preference path,
+    # then establish the provider incumbent through the owned worker RPC, which
+    # calls the real Core selector's explicit candidate filter. The public
+    # selector endpoint has no target filter and correctly ranks successful
+    # latency before preference priority.
     code, preferences = http_json(
         f"{api}/servers/{ordinary.server_id}/preferences", method="PATCH",
-        payload={"vpn_auto": True, "vpn_auto_priority": 0},
+        payload={"vpn_auto": True, "vpn_auto_priority": 0, "reconcile_mihomo": True,
+                 "requested_by": "acceptance-provider-baseline"},
     )
     assert code == 200 and preferences.get("ok") is True, preferences
+    code, provider_selection = http_json(
+        f"{api}/__acceptance/selector/candidate", method="POST",
+        payload={"candidate_server_id": str(provider_logical_id)}, timeout=90,
+    )
+    assert code == 200 and provider_selection.get("ok") is True, provider_selection
+    assert provider_selection.get("selected_server_id") == provider_logical_id, provider_selection
+    assert provider_selection.get("active_after") == provider_logical_id, provider_selection
     from fwrouter_api.services.provider_managed import binding_for
     binding_before_handoff = binding_for(source_ref)
     logical_id = binding_before_handoff["logical_server_id"]
@@ -476,11 +487,32 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
     active = urllib.request.urlopen("http://127.0.0.1:5200/proxies/vpn-auto", timeout=3)
     with active:
         active_before = json.loads(active.read(256 * 1024))
-    assert active_before.get("now", "").startswith("Provider VPN ["), active_before
     from fwrouter_api.services.selector import get_vpn_auto_state
     state_before = get_vpn_auto_state(read_only=True)
-    assert state_before.get("active_auto_server_id") == logical_id, state_before
+    from fwrouter_api.services.logical_topology import get_logical_runtime_name
+    assert active_before.get("now") == get_logical_runtime_name(logical_id), {
+        "native": active_before, "core": state_before,
+        "owned_probe_bridge": bridge.snapshot_probe_summary(),
+    }
+    assert state_before.get("active_auto_server_id") == logical_id, {
+        "native": active_before, "core": state_before,
+        "owned_probe_bridge": bridge.snapshot_probe_summary(),
+    }
     assert ordinary.server_id in state_before.get("auto_selectable_candidate_ids", []), state_before
+    ordinary_runtime_name = get_logical_runtime_name(ordinary.server_id)
+    assert ordinary_runtime_name in active_before.get("all", []), {
+        "native": active_before, "ordinary_runtime_name": ordinary_runtime_name,
+    }
+    provider_runtime_name = get_logical_runtime_name(provider_logical_id)
+    assert provider_runtime_name in active_before.get("all", []), {
+        "native": active_before, "provider_runtime_name": provider_runtime_name,
+    }
+    code, baseline_fence = http_json(f"{api}/__acceptance/selection/fence")
+    baseline_fence = baseline_fence.get("fence") if isinstance(baseline_fence, dict) else None
+    assert code == 200 and isinstance(baseline_fence, dict), baseline_fence
+    assert baseline_fence.get("active_server_id") == logical_id, baseline_fence
+    assert baseline_fence.get("provenance_server_id") == logical_id, baseline_fence
+    assert isinstance(baseline_fence.get("decision_id"), str) and baseline_fence["decision_id"], baseline_fence
 
     bridge.hold_probe()
 
@@ -497,9 +529,20 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
         active = urllib.request.urlopen("http://127.0.0.1:5200/proxies/vpn-auto", timeout=3)
         with active:
             active_at_barrier = json.loads(active.read(256 * 1024))
-        assert active_at_barrier.get("now", "").startswith("Provider VPN ["), active_at_barrier
+        assert active_at_barrier.get("now", "").startswith("Provider VPN ["), {
+            "native": active_at_barrier, "owned_probe_bridge": bridge.snapshot_probe_summary(),
+        }
         with db_session() as connection:
             fence_before = read_selection_fence(connection)
+        assert provider_runtime_name in active_at_barrier.get("all", []), {
+            "native": active_at_barrier, "provider_runtime_name": provider_runtime_name,
+        }
+        assert ordinary_runtime_name in active_at_barrier.get("all", []), {
+            "native": active_at_barrier, "ordinary_runtime_name": ordinary_runtime_name,
+        }
+        assert fence_before.get("active_server_id") == logical_id, fence_before
+        assert fence_before.get("provenance_server_id") == logical_id, fence_before
+        assert isinstance(fence_before.get("decision_id"), str) and fence_before["decision_id"], fence_before
 
         # A second operation on the same provider source is still rejected
         # while the first operation owns its lock, without another provider
@@ -613,8 +656,13 @@ def test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change
     try:
         assert native.action_entered.wait(timeout=30), "reentry did not finish a real Mihomo health probe"
         probe_evidence = native.last_mihomo_probe_result
-        assert probe_evidence is not None and probe_evidence.get("probe_ok") is True, probe_evidence
-        assert bridge.snapshot_probe_responses()[probe_response_count:] and bridge.snapshot_probe_responses()[-1] == 204
+        assert probe_evidence is not None and probe_evidence.get("probe_ok") is True, {
+            "native_probe": probe_evidence, "owned_probe_bridge": bridge.snapshot_probe_summary(),
+        }
+        observed_probe_responses = bridge.snapshot_probe_responses()[probe_response_count:]
+        assert observed_probe_responses and observed_probe_responses[-1] == 204, {
+            "native_probe": probe_evidence, "owned_probe_bridge": bridge.snapshot_probe_summary(),
+        }
         before_incarnation = native.rpc("mihomo_incarnation", {})
         assert before_incarnation.get("ok") is True, before_incarnation
         native.restart_mihomo_child()
@@ -687,8 +735,13 @@ def test_provider_reentry_fences_concurrent_public_exclusive_intent_change(accep
     try:
         assert native.action_entered.wait(timeout=30), "reentry did not reach the post-response probe barrier"
         probe_evidence = native.last_mihomo_probe_result
-        assert probe_evidence is not None and probe_evidence.get("probe_ok") is True, probe_evidence
-        assert bridge.snapshot_probe_responses()[probe_response_count:] and bridge.snapshot_probe_responses()[-1] == 204
+        assert probe_evidence is not None and probe_evidence.get("probe_ok") is True, {
+            "native_probe": probe_evidence, "owned_probe_bridge": bridge.snapshot_probe_summary(),
+        }
+        observed_probe_responses = bridge.snapshot_probe_responses()[probe_response_count:]
+        assert observed_probe_responses and observed_probe_responses[-1] == 204, {
+            "native_probe": probe_evidence, "owned_probe_bridge": bridge.snapshot_probe_summary(),
+        }
         # The external probe is complete and successful, while Core has not
         # consumed its evidence. Public intent mutation must complete without
         # holding the probe/writer guard; the older reentry then fails its CAS.

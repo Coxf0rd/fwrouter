@@ -39,6 +39,49 @@ _PACKET_DNSMASQ_LOCK = threading.RLock()
 _PACKET_DNSMASQ_STATE: dict[str, Any] = {}
 
 
+def _select_owned_core_candidate(
+    payload: dict[str, Any], *, environment: str | None, acceptance_root: str | None,
+    profile: dict[str, Any], selector: Any,
+) -> dict[str, Any]:
+    """Run a test-scoped candidate choice through the real Core selector callable."""
+    if (environment != "test" or acceptance_root != "/tmp/fwrouter-application-acceptance"
+            or profile.get("profile") != "hosted-kernel-dataplane"
+            or not isinstance(payload, dict) or set(payload) != {"candidate_server_id"}):
+        return {"ok": False, "error_code": "ACCEPTANCE_CORE_SELECTOR_REQUEST_INVALID"}
+    raw_candidate = payload.get("candidate_server_id")
+    if type(raw_candidate) is int and raw_candidate > 0:
+        candidate_server_id = str(raw_candidate)
+    elif (isinstance(raw_candidate, str) and 0 < len(raw_candidate) <= 128
+          and all(char.isascii() and (char.isalnum() or char in "._:-") for char in raw_candidate)):
+        candidate_server_id = raw_candidate
+    else:
+        return {"ok": False, "error_code": "ACCEPTANCE_CORE_SELECTOR_CANDIDATE_INVALID"}
+    result = selector(
+        apply=True, reason="acceptance_provider_baseline", requested_by="api",
+        check_on_demand=True, update_ping_state=False, on_demand_limit=20,
+        timeout_ms=1000, candidate_server_id=candidate_server_id, origin="api",
+    )
+    summary: dict[str, Any] = {
+        "ok": result.get("ok") is True,
+        "selected_server_id": result.get("selected_server_id"),
+        "active_after": result.get("active_after"),
+        "selection_revision": result.get("selection_revision"),
+        "applied": result.get("applied") is True,
+        "selection_outcome": result.get("selection_outcome"),
+    }
+    error_code = result.get("error_code")
+    if isinstance(error_code, str) and len(error_code) <= 80:
+        summary["error_code"] = error_code
+    operation = result.get("provider_operation")
+    if isinstance(operation, dict):
+        summary["provider_operation"] = {
+            key: operation.get(key)
+            for key in ("ok", "runtime_verified", "actual_member_id", "error_code")
+            if key in operation
+        }
+    return summary
+
+
 def _drain_dnsmasq_pipe(stream: Any, output: bytearray) -> None:
     try:
         while True:
@@ -2007,6 +2050,18 @@ def build_app(socket_path: Path):
             return {"ok": True, "fence": read_selection_fence(connection)}
 
     app.add_api_route("/api/v2/__acceptance/selection/fence", read_selection_fence_for_acceptance, methods=["GET"])
+
+    def select_owned_core_candidate(payload: dict[str, Any]) -> dict[str, Any]:
+        """Exercise the real Core selector with one explicit acceptance candidate."""
+        from fwrouter_api.services.selector import select_vpn_auto_server
+        return _select_owned_core_candidate(
+            payload, environment=os.environ.get("FWROUTER_ENVIRONMENT"),
+            acceptance_root=os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT"),
+            profile=acceptance_profile, selector=select_vpn_auto_server,
+        )
+
+    app.add_api_route("/api/v2/__acceptance/selector/candidate", select_owned_core_candidate,
+                      methods=["POST"])
 
     def set_owned_vpn_auto_selector_reject() -> dict[str, Any]:
         """Move only the owned native selector to its fail-closed sentinel for CAS testing."""
