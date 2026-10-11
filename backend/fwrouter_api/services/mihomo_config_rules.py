@@ -92,10 +92,31 @@ def _format_source_ip_cidr_rule_value(value: str) -> str | None:
 
 def _split_mihomo_rule_target(rule: str) -> tuple[str, str] | None:
     parts = [part.strip() for part in str(rule or "").split(",")]
-    if len(parts) < 2 or (len(parts) == 2 and parts[0].upper() != "MATCH"):
+    if len(parts) < 2:
         return None
-    condition = ",".join(parts[:-1])
-    target = parts[-1]
+    rule_type = parts[0].upper()
+    if rule_type == "MATCH":
+        if len(parts) != 2 or not parts[1]:
+            return None
+        return "MATCH", parts[1]
+    if rule_type == "AND":
+        # AND owns its complete nested payload and has no outer parameters.
+        if len(parts) < 3 or parts[-1].lower() in {"no-resolve", "src"}:
+            return None
+        condition = ",".join(parts[:-1])
+        target = parts[-1]
+        return (condition, target) if condition and target else None
+    if len(parts) < 3:
+        return None
+    target = parts[2]
+    params = [value.lower() for value in parts[3:]]
+    if not target or any(value not in {"no-resolve", "src"} for value in params):
+        return None
+    if len(params) != len(set(params)):
+        return None
+    if "src" in params and parts[0].upper() not in {"IP-CIDR", "IP-CIDR6"}:
+        return None
+    condition = ",".join([*parts[:2], *(value for value in ("src", "no-resolve") if value in params)])
     if not condition or not target:
         return None
     return condition, target

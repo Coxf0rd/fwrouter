@@ -56,13 +56,24 @@ def test_vpn_udp_native_readback_requires_reject_groups_and_paired_guards() -> N
 
 def test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types() -> None:
     from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+    from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
+
+    assert _mandatory_vpn_udp_guard(
+        "IP-CIDR6,2001:db8::1/64,vpn-global,no-resolve",
+    ) == "AND,((NETWORK,udp),(IP-CIDR6,2001:db8::1/64,no-resolve)),REJECT"
+    assert _mandatory_vpn_udp_guard(
+        "IP-CIDR6,2001:db8::1/64,no-resolve,vpn-global",
+    ) is None
+    assert _mandatory_vpn_udp_guard(
+        "IP-CIDR6,2001:db8::1/64,vpn-global,no-resolve,src",
+    ) == "AND,((NETWORK,udp),(IP-CIDR6,2001:db8::1/64,src,no-resolve)),REJECT"
 
     config = yaml.safe_dump({
         "rules": [
             "DOMAIN-SUFFIX,example.test,vpn-global",
             "AND,((NETWORK,udp),(DOMAIN-SUFFIX,example.test)),REJECT",
-            "IP-CIDR6,2001:db8::1/64,no-resolve,vpn-global",
-            "AND,((NETWORK,udp),(IP-CIDR6,2001:db8::1/64)),REJECT",
+            "IP-CIDR6,2001:db8::1/64,vpn-global,no-resolve",
+            "AND,((NETWORK,udp),(IP-CIDR6,2001:db8::1/64,no-resolve)),REJECT",
             "AND,((SRC-IP-CIDR,192.0.2.4/32),(DOMAIN-SUFFIX,example.test)),vpn-global",
             "AND,((NETWORK,udp),(AND,((SRC-IP-CIDR,192.0.2.4/32),(DOMAIN-SUFFIX,example.test)))),REJECT",
             "MATCH,DIRECT",
@@ -90,6 +101,29 @@ def test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types() -> None:
     proof = MihomoHttpAdapter._vpn_udp_policy_readback(config, proxies, native_rules)
     assert proof["native_top_level_rules_match"] is True
     assert proof["policy_installed"] is True
+
+    source_config = yaml.safe_load(config)
+    source_config["rules"][2] = "IP-CIDR6,2001:db8::1/64,vpn-global,src,no-resolve"
+    source_config["rules"][3] = (
+        "AND,((NETWORK,udp),(IP-CIDR6,2001:db8::1/64,src,no-resolve)),REJECT"
+    )
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        yaml.safe_dump(source_config, sort_keys=False), proxies, native_rules,
+    )["native_top_level_rules_match"] is False
+    source_native_rules = [dict(rule) for rule in native_rules]
+    source_native_rules[2] = {
+        "type": "SrcIPCIDR", "payload": "2001:db8::/64", "proxy": "vpn-global",
+    }
+    source_native_rules[3] = {
+        "type": "AND",
+        "payload": "((Network,udp) && (SrcIPCIDR,2001:db8::/64))",
+        "proxy": "REJECT",
+    }
+    source_proof = MihomoHttpAdapter._vpn_udp_policy_readback(
+        yaml.safe_dump(source_config, sort_keys=False), proxies, source_native_rules,
+    )
+    assert source_proof["native_top_level_rules_match"] is True
+    assert source_proof["policy_installed"] is True
 
     malformed_disabled = [dict(rule) for rule in native_rules]
     malformed_disabled[1]["extra"] = {"disabled": 1}

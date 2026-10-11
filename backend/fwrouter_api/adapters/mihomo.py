@@ -888,12 +888,19 @@ class MihomoHttpAdapter(MihomoAdapter):
 
             def canonicalize_nested_cidrs(payload: str) -> str | None:
                 def replace(match: re.Match[str]) -> str:
-                    rule_type, value = match.groups()
+                    rule_type, value, raw_params = match.groups()
+                    params = [item for item in raw_params.split(",") if item]
+                    if len(params) != len(set(params)) or any(
+                        item not in {"no-resolve", "src"} for item in params
+                    ):
+                        raise ValueError("invalid CIDR rule parameter")
                     try:
                         network = ipaddress.ip_network(value, strict=False)
                     except ValueError:
                         raise ValueError("invalid CIDR in native compound rule")
-                    if rule_type == "IP-CIDR" and network.version == 6:
+                    if "src" in params:
+                        rule_type = "SRC-IP-CIDR"
+                    elif rule_type == "IP-CIDR" and network.version == 6:
                         rule_type = "IP-CIDR6"
                     elif rule_type == "IP-CIDR6" and network.version != 6:
                         raise ValueError("IPv6 CIDR condition contains an IPv4 network")
@@ -901,7 +908,7 @@ class MihomoHttpAdapter(MihomoAdapter):
 
                 try:
                     return re.sub(
-                        r"(?<=[(,])((?:IP-CIDR6|IP-CIDR|SRC-IP-CIDR)),([^,()]+)",
+                        r"(?<=[(,])((?:IP-CIDR6|IP-CIDR|SRC-IP-CIDR)),([^,()]+)((?:,(?:no-resolve|src))*)(?=[),])",
                         replace,
                         payload,
                     )
@@ -940,15 +947,30 @@ class MihomoHttpAdapter(MihomoAdapter):
                 parts = [part.strip() for part in rule.split(",")]
                 if len(parts) < 2:
                     return None
-                target = parts[-1]
                 rule_type = parts[0].upper()
-                if rule_type == "AND":
-                    payload = ",".join(parts[1:-1])
-                elif rule_type == "MATCH":
+                if rule_type == "MATCH":
+                    if len(parts) != 2 or not parts[1]:
+                        return None
+                    target = parts[1]
                     payload = ""
+                elif rule_type == "AND":
+                    if len(parts) < 3 or parts[-1].lower() in {"no-resolve", "src"}:
+                        return None
+                    target = parts[-1]
+                    payload = ",".join(parts[1:-1])
                 else:
-                    fields = [value for value in parts[1:-1] if value.lower() != "no-resolve"]
-                    payload = fields[0] if fields else ""
+                    params = [value.lower() for value in parts[3:]]
+                    if (
+                        len(parts) < 3
+                        or any(value not in {"no-resolve", "src"} for value in params)
+                        or len(params) != len(set(params))
+                        or ("src" in params and rule_type not in {"IP-CIDR", "IP-CIDR6"})
+                    ):
+                        return None
+                    target = parts[2]
+                    payload = parts[1]
+                    if "src" in params:
+                        rule_type = "SRC-IP-CIDR"
                 native_type = config_type_to_native.get(rule_type)
                 if native_type is None:
                     return None
