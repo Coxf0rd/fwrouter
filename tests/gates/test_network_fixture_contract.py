@@ -148,6 +148,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
         ))
         auto_eligibility = ast.get_source_segment(source, functions["_set_server_auto_eligibility"])
         self.assertIn('payload["vpn_auto_priority"] = priority', auto_eligibility)
+        health_control = functions["_set_health_available"]
+        self.assertEqual(ast.get_source_segment(source, health_control.returns), "dict[str, Any]")
+        self.assertTrue(any(isinstance(node, ast.Return) and isinstance(node.value, ast.Name)
+                            and node.value.id == "result" for node in ast.walk(health_control)))
         scenario_source = ast.get_source_segment(source, scenario)
         self.assertLess(
             scenario_source.index("preference_baseline = _set_server_auto_eligibility(api, logical_id, True, priority=1)"),

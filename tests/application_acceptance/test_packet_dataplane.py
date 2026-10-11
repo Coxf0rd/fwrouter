@@ -1281,9 +1281,10 @@ def _probe_vpn_tcp_empty_pool(stack: dict[str, Any], record_property: Any) -> di
     return diagnostic
 
 
-def _set_health_available(available: bool) -> None:
+def _set_health_available(available: bool) -> dict[str, Any]:
     result = _role_json(f"{ENDPOINT_CONTROL}/health", method="POST", payload={"available": available})
     assert result.get("available") is available, {"health_control": "unexpected response"}
+    return result
 
 
 def _apply_global_mode(api: str, mode: str, *, stack: dict[str, Any], record_property: Any) -> dict[str, Any]:
