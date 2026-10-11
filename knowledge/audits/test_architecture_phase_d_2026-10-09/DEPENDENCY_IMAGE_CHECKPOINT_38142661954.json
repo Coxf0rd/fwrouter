@@ -3,6 +3,13 @@
   "branch": "stage/test-architecture-ci-stabilization",
   "build_seconds": 66.595,
   "checked_in_consumer_reference": "../../../tests/acceptance/dependency-image-consumer.lock.json",
+  "consumer_contracts": {
+    "failed": 0,
+    "passed": 7,
+    "seconds": 0.01,
+    "skipped": 0,
+    "status": "PASS"
+  },
   "consumer_evidence_limit": "anonymous pull used the publisher job Docker daemon after build/push; it is not an independent cold-runner consumer test",
   "context_bytes": 719214311,
   "image_bytes": 2598192591,
@@ -13,6 +20,13 @@
   "platform": "linux/amd64",
   "production": "unchanged",
   "publication_action": "built_and_pushed",
+  "publisher_contracts": {
+    "failed": 0,
+    "passed": 8,
+    "seconds": 0.05,
+    "skipped": 0,
+    "status": "PASS"
+  },
   "publisher_job_anonymous_pull_seconds": 0.708,
   "publisher_job_anonymous_pull_status": "PASS",
   "publisher_status": "PASS",
