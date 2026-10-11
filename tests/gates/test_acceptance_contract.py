@@ -708,13 +708,13 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertEqual("acceptance_provider_recovery_controller", controller.func.id)
         self.assertNotIn("mihomo_controller", ast.unparse(build_app))
 
-    def test_owned_vpn_auto_direct_fault_route_is_fixed_and_readback_bound(self):
+    def test_owned_vpn_auto_reject_fault_route_is_membership_and_readback_bound(self):
         tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
         build_app = next(node for node in tree.body
                          if isinstance(node, ast.FunctionDef) and node.name == "build_app")
         route = next(node for node in ast.walk(build_app)
                      if isinstance(node, ast.FunctionDef)
-                     and node.name == "set_owned_vpn_auto_selector_direct")
+                     and node.name == "set_owned_vpn_auto_selector_reject")
         self.assertEqual([], route.args.args)
         calls = [node for node in ast.walk(route) if isinstance(node, ast.Call)]
         selector_reads = [call for call in calls if isinstance(call.func, ast.Attribute)
@@ -728,10 +728,12 @@ class AcceptanceContractTests(unittest.TestCase):
         payload = put.args[1]
         self.assertIsInstance(payload, ast.Dict)
         self.assertEqual(["name"], [key.value for key in payload.keys])
-        self.assertEqual(["DIRECT"], [value.value for value in payload.values])
+        self.assertEqual(["REJECT"], [value.value for value in payload.values])
+        self.assertFalse(any(isinstance(node, ast.Constant) and node.value == "DIRECT"
+                             for node in ast.walk(route)))
         self.assertTrue(any(isinstance(node, ast.Compare)
                             and any(isinstance(comparator, ast.Constant)
-                                    and comparator.value == "DIRECT" for comparator in node.comparators)
+                                    and comparator.value == "REJECT" for comparator in node.comparators)
                             for node in ast.walk(route)))
         self.assertTrue(any(isinstance(node, ast.Constant)
                             and node.value == "/tmp/fwrouter-application-acceptance"
@@ -743,7 +745,7 @@ class AcceptanceContractTests(unittest.TestCase):
                             if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
                             and call.func.attr == "add_api_route" and call.args
                             and isinstance(call.args[0], ast.Constant)
-                            and call.args[0].value == "/api/v2/__acceptance/selection/runtime-direct")
+                            and call.args[0].value == "/api/v2/__acceptance/selection/runtime-reject")
         methods = next(keyword.value for keyword in registration.keywords if keyword.arg == "methods")
         self.assertEqual(["POST"], [item.value for item in methods.elts])
 

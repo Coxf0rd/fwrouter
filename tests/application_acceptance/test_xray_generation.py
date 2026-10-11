@@ -330,12 +330,12 @@ def test_real_core_selection_cas_miss_reconciles_after_native_readback_without_p
 
     fence_code, fence_before_fault = http_json(f"{api}/__acceptance/selection/fence")
     assert fence_code == 200 and fence_before_fault.get("ok") is True, fence_before_fault
-    direct_code, direct = http_json(
-        f"{api}/__acceptance/selection/runtime-direct", method="POST", payload={},
+    competing_code, competing = http_json(
+        f"{api}/__acceptance/selection/runtime-reject", method="POST", payload={},
     )
-    assert direct_code == 200 and direct.get("ok") is True, direct
-    assert direct.get("selector") == "vpn-auto" and direct.get("selected_target") == "DIRECT", direct
-    assert direct.get("membership_confirmed") is True and direct.get("readback_confirmed") is True, direct
+    assert competing_code == 200 and competing.get("ok") is True, competing
+    assert competing.get("selector") == "vpn-auto" and competing.get("selected_target") == "REJECT", competing
+    assert competing.get("membership_confirmed") is True and competing.get("readback_confirmed") is True, competing
     fence_code, fence_before_switch = http_json(f"{api}/__acceptance/selection/fence")
     assert fence_code == 200 and fence_before_switch.get("ok") is True, fence_before_switch
     assert fence_before_switch["fence"] == fence_before_fault["fence"], {

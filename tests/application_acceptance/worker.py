@@ -1708,8 +1708,8 @@ def build_app(socket_path: Path):
 
     app.add_api_route("/api/v2/__acceptance/selection/fence", read_selection_fence_for_acceptance, methods=["GET"])
 
-    def set_owned_vpn_auto_selector_direct() -> dict[str, Any]:
-        """Fault-inject only the real owned selector runtime, with exact native readback."""
+    def set_owned_vpn_auto_selector_reject() -> dict[str, Any]:
+        """Move only the owned native selector to its fail-closed sentinel for CAS testing."""
         if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
                 or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"
                 or str(getattr(mihomo_adapter, "base_url", "")) != "http://127.0.0.1:5200"
@@ -1718,16 +1718,18 @@ def build_app(socket_path: Path):
             raise RuntimeError("owned selector fault injection is unavailable outside the qualified Mihomo child")
         before = mihomo_adapter.get_proxy_state("vpn-auto")
         targets = before.get("all") if isinstance(before, dict) and isinstance(before.get("all"), list) else []
-        if "DIRECT" not in targets:
-            return {"ok": False, "error_code": "ACCEPTANCE_DIRECT_TARGET_NOT_PRESENT"}
-        mihomo_adapter._put_json("/proxies/vpn-auto", {"name": "DIRECT"})
+        if "REJECT" not in targets:
+            return {"ok": False, "error_code": "ACCEPTANCE_REJECT_TARGET_NOT_PRESENT"}
+        if before.get("now") == "REJECT":
+            return {"ok": False, "error_code": "ACCEPTANCE_REJECT_TARGET_NOT_COMPETING"}
+        mihomo_adapter._put_json("/proxies/vpn-auto", {"name": "REJECT"})
         after = mihomo_adapter.get_proxy_state("vpn-auto")
-        if not isinstance(after, dict) or after.get("now") != "DIRECT":
-            return {"ok": False, "error_code": "ACCEPTANCE_DIRECT_READBACK_UNCONFIRMED"}
-        return {"ok": True, "selector": "vpn-auto", "selected_target": "DIRECT",
+        if not isinstance(after, dict) or after.get("now") != "REJECT":
+            return {"ok": False, "error_code": "ACCEPTANCE_REJECT_READBACK_UNCONFIRMED"}
+        return {"ok": True, "selector": "vpn-auto", "selected_target": "REJECT",
                 "membership_confirmed": True, "readback_confirmed": True}
 
-    app.add_api_route("/api/v2/__acceptance/selection/runtime-direct", set_owned_vpn_auto_selector_direct,
+    app.add_api_route("/api/v2/__acceptance/selection/runtime-reject", set_owned_vpn_auto_selector_reject,
                       methods=["POST"])
 
     def recover_provider_path(payload: dict[str, Any]) -> dict[str, Any]:
