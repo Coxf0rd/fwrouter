@@ -2212,7 +2212,7 @@ def test_subscription_profile_reconcile_is_idempotent(monkeypatch, tmp_path: Pat
 
 @pytest.mark.parametrize("rollback_receipt_ok", [True, False])
 def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
-    monkeypatch, tmp_path: Path, rollback_receipt_ok: bool,
+    monkeypatch, tmp_path: Path, rollback_receipt_ok: bool, isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
