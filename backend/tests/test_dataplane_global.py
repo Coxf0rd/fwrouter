@@ -279,6 +279,10 @@ def test_global_vpn_preflight_allows_prepare_with_empty_reject_selector_without_
         "fwrouter_api.services.dataplane_global._module_state",
         lambda _name: {"desired_state": "enabled"},
     )
+    monkeypatch.setattr(
+        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        lambda: {"ok": True, "missing": []},
+    )
     preflight = build_global_preflight(
         routing={"desired_mode": "vpn", "applied_mode": "vpn", "server_mode": "auto"},
         mihomo_health=MihomoHealth(

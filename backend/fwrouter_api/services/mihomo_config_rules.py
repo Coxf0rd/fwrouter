@@ -92,7 +92,7 @@ def _format_source_ip_cidr_rule_value(value: str) -> str | None:
 
 def _split_mihomo_rule_target(rule: str) -> tuple[str, str] | None:
     parts = [part.strip() for part in str(rule or "").split(",")]
-    if len(parts) < 3:
+    if len(parts) < 2 or (len(parts) == 2 and parts[0].upper() != "MATCH"):
         return None
     condition = ",".join(parts[:-1])
     target = parts[-1]

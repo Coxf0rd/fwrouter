@@ -886,6 +886,28 @@ class MihomoHttpAdapter(MihomoAdapter):
             }
             native_condition_type_to_config = {**native_type_to_config, "SrcPort": "SRC-PORT", "DstPort": "DST-PORT"}
 
+            def canonicalize_nested_cidrs(payload: str) -> str | None:
+                def replace(match: re.Match[str]) -> str:
+                    rule_type, value = match.groups()
+                    try:
+                        network = ipaddress.ip_network(value, strict=False)
+                    except ValueError:
+                        raise ValueError("invalid CIDR in native compound rule")
+                    if rule_type == "IP-CIDR" and network.version == 6:
+                        rule_type = "IP-CIDR6"
+                    elif rule_type == "IP-CIDR6" and network.version != 6:
+                        raise ValueError("IPv6 CIDR condition contains an IPv4 network")
+                    return f"{rule_type},{network}"
+
+                try:
+                    return re.sub(
+                        r"(?<=[(,])((?:IP-CIDR6|IP-CIDR|SRC-IP-CIDR)),([^,()]+)",
+                        replace,
+                        payload,
+                    )
+                except ValueError:
+                    return None
+
             def normalize_native_rule_type(rule_type: str, payload: str) -> tuple[str, str] | None:
                 config_type = native_type_to_config.get(rule_type)
                 if config_type is None:
@@ -903,6 +925,10 @@ class MihomoHttpAdapter(MihomoAdapter):
                         lambda match: native_condition_type_to_config.get(match.group(1), match.group(1)),
                         payload,
                     )
+                    canonical_nested = canonicalize_nested_cidrs(payload)
+                    if canonical_nested is None:
+                        return None
+                    payload = canonical_nested
                 if config_type in {"IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR"}:
                     try:
                         payload = str(ipaddress.ip_network(payload, strict=False))
@@ -935,14 +961,11 @@ class MihomoHttpAdapter(MihomoAdapter):
                 if not isinstance(item, dict):
                     normalized_native_rules = []
                     break
-                rule_type = native_type_to_config.get(str(item.get("type") or "").strip())
+                native_rule_type = str(item.get("type") or "").strip()
                 payload = str(item.get("payload") or "").strip()
                 target = str(item.get("proxy") or "").strip()
                 extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
-                if not rule_type or not target:
-                    normalized_native_rules = []
-                    break
-                if not rule_type:
+                if native_rule_type not in native_type_to_config or not target:
                     normalized_native_rules = []
                     break
                 if "disabled" in extra and type(extra.get("disabled")) is not bool:
@@ -956,7 +979,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                     if type(index) is not int or index != position:
                         normalized_native_rules = []
                         break
-                canonical = normalize_native_rule_type(rule_type, payload)
+                canonical = normalize_native_rule_type(native_rule_type, payload)
                 if canonical is None:
                     normalized_native_rules = []
                     break

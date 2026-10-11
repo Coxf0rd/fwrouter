@@ -336,12 +336,16 @@ def test_build_mihomo_config_scopes_subject_server_override_to_vpn_rules_only(
     assert f"AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,ru)),{selector_name}" not in transparent_rules
     assert not any(rule.startswith("SRC-IP-CIDR,192.168.0.51/32,") for rule in transparent_rules)
     assert transparent_rules[-1] == "MATCH,DIRECT"
-    assert config["sub-rules"]["fwrouter-full-vpn"] == [
+    actual_full_vpn_rules = config["sub-rules"]["fwrouter-full-vpn"]
+    expected_full_vpn_rules = [
         f"SRC-IP-CIDR,192.168.0.51/32,{selector_name}",
         f"AND,((NETWORK,udp),(SRC-IP-CIDR,192.168.0.51/32)),REJECT",
         "MATCH,vpn-global",
         "NETWORK,udp,REJECT",
     ]
+    assert actual_full_vpn_rules == expected_full_vpn_rules, (
+        f"unexpected full-vpn sub-rules: {actual_full_vpn_rules!r}"
+    )
     selector_group = next(group for group in config["proxy-groups"] if group["name"] == selector_name)
     assert "Armenia" in selector_group["proxies"]
     assert "vpn-global" in selector_group["proxies"]
