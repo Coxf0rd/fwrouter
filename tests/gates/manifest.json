@@ -135,6 +135,16 @@
       "path": "backend/tests/test_vpn_auto_exclusive.py",
       "node": "test_inventory_keeps_outside_auto_intent_editable_without_effective_pool_churn",
       "primary_level": "L1"
+    },
+    {
+      "path": "backend/tests/test_dataplane_global.py",
+      "node": "test_read_effective_rules_artifact_fresh_bypasses_stale_cache_and_inflight",
+      "primary_level": "L1"
+    },
+    {
+      "path": "backend/tests/test_dnsmasq.py",
+      "node": "test_reconcile_dnsmasq_rules_reports_dns_capture_success",
+      "primary_level": "L1"
     }
   ],
   "path_rules": [

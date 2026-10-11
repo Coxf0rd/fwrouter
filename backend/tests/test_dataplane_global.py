@@ -4,6 +4,7 @@ from _test_support import configure_test_state_dir_and_clear_live_probe_cache as
 import json
 from pathlib import Path
 import subprocess
+from threading import Event
 from types import SimpleNamespace
 
 from fwrouter_api.adapters.mihomo import MihomoHealth, MihomoRuntimeState
@@ -23,7 +24,8 @@ from fwrouter_api.services.dataplane_global import (
     validate_global_mode_request,
 )
 from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.live_probe_cache import _CACHE, _CACHE_LOCK, _INFLIGHT, clear_live_probe_cache
+from fwrouter_api.services import live_probe_cache
 
 
 
@@ -226,6 +228,66 @@ def test_read_effective_rules_artifact_falls_back_to_last_good(
 
     assert artifact is not None
     assert artifact["rules"][0]["value"] == "instagram.com"
+
+
+def test_read_effective_rules_artifact_fresh_bypasses_stale_cache_and_inflight(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    clear_live_probe_cache()
+    monkeypatch.setattr(live_probe_cache, "monotonic", lambda: 1234.0)
+    paths = get_settings().paths
+    generated_rules = paths.generated_dir / "rules"
+    generated_rules.mkdir(parents=True)
+    effective_path = generated_rules / "effective-rules.json"
+    key = "dataplane_global.effective_rules_artifact"
+    latest = {"selective_default": "direct", "rules": [{"kind": "domain", "action": "VPN", "value": "fresh.example"}]}
+    older = {"selective_default": "direct", "rules": [{"kind": "domain", "action": "VPN", "value": "older.example"}]}
+
+    assert read_effective_rules_artifact() is None
+    with _CACHE_LOCK:
+        cached_none = _CACHE[key]
+    effective_path.write_text(json.dumps(latest), encoding="utf-8")
+    assert read_effective_rules_artifact() is None
+    assert read_effective_rules_artifact(fresh=True) == latest
+    with _CACHE_LOCK:
+        assert _CACHE[key] is cached_none
+
+    clear_live_probe_cache()
+    assert read_effective_rules_artifact() == latest
+    with _CACHE_LOCK:
+        cached_old_artifact = _CACHE[key]
+    effective_path.write_text(json.dumps(older), encoding="utf-8")
+    assert read_effective_rules_artifact() == latest
+    class NeverWaitEvent(Event):
+        def wait(self, timeout=None):
+            raise AssertionError("fresh artifact read waited for a stale in-flight cache loader")
+
+    with _CACHE_LOCK:
+        monkeypatch.setitem(_INFLIGHT, key, (NeverWaitEvent(), {"value": latest}))
+        inflight_entry = _INFLIGHT[key]
+    assert read_effective_rules_artifact(fresh=True) == older
+    with _CACHE_LOCK:
+        assert _CACHE[key] is cached_old_artifact
+        assert _INFLIGHT[key] is inflight_entry
+
+    with _CACHE_LOCK:
+        monkeypatch.delitem(_CACHE, key)
+    assert read_effective_rules_artifact(fresh=True) == older
+    with _CACHE_LOCK:
+        assert key not in _CACHE
+        assert _INFLIGHT[key] is inflight_entry
+    with _CACHE_LOCK:
+        monkeypatch.delitem(_INFLIGHT, key)
+
+    effective_path.unlink()
+    last_good_path = paths.state_dir / "last-good" / "rules" / "effective-rules.json"
+    last_good_path.parent.mkdir(parents=True, exist_ok=True)
+    last_good_path.write_text(json.dumps(latest), encoding="utf-8")
+    assert read_effective_rules_artifact(fresh=True) == latest
+    last_good_path.unlink()
+    assert read_effective_rules_artifact(fresh=True) is None
 
 
 def test_external_vpn_module_can_supply_vpn_contour(monkeypatch, tmp_path: Path) -> None:

@@ -332,7 +332,7 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
         original_reconcile_dnsmasq_rules = dnsmasq.reconcile_dnsmasq_rules
         original_read_effective_rules_artifact = dnsmasq.read_effective_rules_artifact
 
-        def observed_read_effective_rules_artifact() -> Any:
+        def observed_read_effective_rules_artifact(*args: Any, **kwargs: Any) -> Any:
             observation = _packet_dns_effective_artifact_observation()
             try:
                 from fwrouter_api.services.live_probe_cache import _CACHE, _CACHE_LOCK
@@ -347,7 +347,7 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
             except Exception:
                 observation["cache_entry_valid_at_reader"] = None
             try:
-                result = original_read_effective_rules_artifact()
+                result = original_read_effective_rules_artifact(*args, **kwargs)
             except BaseException:
                 observation["reader_returned_artifact"] = None
                 observation["uncached_presence_matches_reader_result"] = None

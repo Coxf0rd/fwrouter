@@ -34,7 +34,15 @@ no fake binaries, mock success, reservation bypass or suppressed validation.
 the application adapter also maps ScriptRunnerError to that code. Inspect
 script installation, PATH, execution errors and netlink permissions separately.
 
-## Minimal packet topology — source implemented, latest hosted attempt failed
+## Current qualification checkpoint — packet base passes; DNS and host parity remain open
+
+Run [38141202543](https://github.com/Coxf0rd/fwrouter/actions/runs/38141202543) passed the hosted kernel/native packet scenario (**1 PASS / 0 FAIL / 0 SKIP**): supported, unknown, and unsupported UDP behavior; unavailable endpoint and empty-pool rejection; TCP; explicit DIRECT; Emergency Direct and re-entry; and protected TCP/UDP DIRECT under global VPN all had real packet/native evidence. This is scoped acceptance of that scenario, not a full Testbed or Phase D pass.
+
+The extended LAN DNS/53 fixture has not passed. Run [38158233261](https://github.com/Coxf0rd/fwrouter/actions/runs/38158233261) failed in `dns53-native-daemon`: reconcile returned `ok=true` with `restart_required=false`, while no config test or daemon start was observed. Run [38159521000](https://github.com/Coxf0rd/fwrouter/actions/runs/38159521000) confirms the cause: at the actual reader call a live cache entry held `None`, while the uncached artifact existed and the database writer path matched the reader path; the cached read returned `None`. Reconcile therefore skipped restart, and no DNS packet queries ran. This identifies the source cache-invalidation defect but does not establish DNS53 acceptance. A minimal production fix is pending review; production remains unchanged.
+
+Debian host systemd/physical-interface/boot parity remains **NOT RUN**. Full Testbed acceptance and Phase D remain BLOCKED; production is unchanged.
+
+## Historical first packet attempt — VPN UDP failed before the current packet checkpoint
 
 Run `38077786323` reached the application packet test. Direct TCP/UDP/DNS proof
 passed before the VPN phase failed: the endpoint's fresh UDP observation saw

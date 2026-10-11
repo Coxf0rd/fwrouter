@@ -69,7 +69,7 @@ def test_reconcile_dnsmasq_rules_fails_when_dns_capture_enforcement_fails(
     monkeypatch.setattr(
         dnsmasq_service,
         "read_effective_rules_artifact",
-        lambda: {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]},
+        lambda *, fresh=False: {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]},
     )
     monkeypatch.setattr(
         dnsmasq_service,
@@ -108,10 +108,17 @@ def test_reconcile_dnsmasq_rules_reports_dns_capture_success(
     monkeypatch.setattr(dnsmasq_service, "DNSMASQ_DHCP_DNS_CONF_PATH", dhcp_path)
     monkeypatch.setattr(dnsmasq_service, "DNSMASQ_IPV6_LAN_CONF_PATH", ipv6_lan_path)
     monkeypatch.setattr(dnsmasq_service, "DNSMASQ_LOCAL_HOSTS_CONF_PATH", local_hosts_path)
+    artifact = {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]}
+    artifact_reads: list[bool] = []
+
+    def read_artifact(*, fresh: bool = False):
+        artifact_reads.append(fresh)
+        return artifact
+
     monkeypatch.setattr(
         dnsmasq_service,
         "read_effective_rules_artifact",
-        lambda: {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]},
+        read_artifact,
     )
     monkeypatch.setattr(
         dnsmasq_service,
@@ -156,6 +163,7 @@ def test_reconcile_dnsmasq_rules_reports_dns_capture_success(
     assert result["dns_capture"]["ok"] is True
     assert any(argv[:3] == ["systemctl", "restart", "dnsmasq"] for argv in calls)
     assert result["restart_reason"] == "config_changed"
+    assert artifact_reads == [True]
     assert result["ipv6_lan_changed"] is True
     assert result["local_hosts_changed"] is True
     assert rules_path.read_text(encoding="utf-8").splitlines() == [
@@ -185,6 +193,12 @@ def test_reconcile_dnsmasq_rules_reports_dns_capture_success(
         "address=/homes.lan/192.168.0.1",
     ]
 
+    monkeypatch.setattr(dnsmasq_service, "_resolve_ipv4_via_local_dnsmasq", lambda _domain: ["198.51.100.20"])
+    monkeypatch.setattr(dnsmasq_service, "_nft_set_contains_ipv4", lambda _set_name, _address: True)
+    probe = dnsmasq_service._probe_dnsmasq_nftset_materialization()
+    assert probe["ok"] is True
+    assert artifact_reads == [True, True]
+
 
 def test_reconcile_dnsmasq_rules_force_restarts_without_config_change(
     monkeypatch,
@@ -202,7 +216,7 @@ def test_reconcile_dnsmasq_rules_force_restarts_without_config_change(
     monkeypatch.setattr(
         dnsmasq_service,
         "read_effective_rules_artifact",
-        lambda: {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]},
+        lambda *, fresh=False: {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]},
     )
     monkeypatch.setattr(
         dnsmasq_service,
@@ -273,7 +287,7 @@ def test_reconcile_dnsmasq_rules_forces_android_connectivity_domains_direct(
     monkeypatch.setattr(
         dnsmasq_service,
         "read_effective_rules_artifact",
-        lambda: {"rules": [{"action": "VPN", "kind": "domain", "value": "connectivitycheck.gstatic.com"}]},
+        lambda *, fresh=False: {"rules": [{"action": "VPN", "kind": "domain", "value": "connectivitycheck.gstatic.com"}]},
     )
     monkeypatch.setattr(
         dnsmasq_service,
@@ -397,7 +411,7 @@ def test_reconcile_dnsmasq_rules_restarts_when_nftset_probe_is_unhealthy(
     monkeypatch.setattr(
         dnsmasq_service,
         "read_effective_rules_artifact",
-        lambda: {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]},
+        lambda *, fresh=False: {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]},
     )
     monkeypatch.setattr(
         dnsmasq_service,
@@ -507,7 +521,7 @@ def test_reconcile_dnsmasq_rules_waits_for_nftset_probe_after_restart(
     monkeypatch.setattr(
         dnsmasq_service,
         "read_effective_rules_artifact",
-        lambda: {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]},
+        lambda *, fresh=False: {"rules": [{"action": "VPN", "kind": "domain", "value": "example.com"}]},
     )
     monkeypatch.setattr(
         dnsmasq_service,

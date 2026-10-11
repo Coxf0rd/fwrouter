@@ -228,7 +228,10 @@ def _read_effective_rules_artifact_uncached() -> dict[str, Any] | None:
     return None
 
 
-def read_effective_rules_artifact() -> dict[str, Any] | None:
+def read_effective_rules_artifact(*, fresh: bool = False) -> dict[str, Any] | None:
+    """Read the effective rules artifact, optionally bypassing cache without publishing it."""
+    if fresh:
+        return _read_effective_rules_artifact_uncached()
     return get_live_probe_cache(
         "dataplane_global.effective_rules_artifact",
         ttl_seconds=5.0,

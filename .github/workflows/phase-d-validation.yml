@@ -149,6 +149,23 @@ jobs:
             tests/test_rules.py::test_manual_rules_api_forwards_request_actor_to_draft_service \
             tests/test_apply_orchestrator.py::test_manual_rules_apply_audit_counts_prior_rules \
             tests/test_apply_orchestrator.py::test_mark_rules_job_success_forwards_audit_change_without_mutating_it
+      - name: Run exact DNS effective-artifact freshness regressions
+        if: needs.select-stage.outputs.stage == 'packet-diagnostic'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/dns-artifact-freshness-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/dns-artifact-freshness-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/dns-artifact-freshness-nodeids.log" \
+            tests/test_dataplane_global.py::test_read_effective_rules_artifact_fresh_bypasses_stale_cache_and_inflight \
+            tests/test_dataplane_global.py::test_read_effective_rules_artifact_falls_back_to_last_good \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_fails_when_dns_capture_enforcement_fails \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_reports_dns_capture_success \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_force_restarts_without_config_change \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_forces_android_connectivity_domains_direct \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_restarts_when_nftset_probe_is_unhealthy \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_waits_for_nftset_probe_after_restart
       - name: Run the fixed metadata-override exact-node set
         if: needs.select-stage.outputs.stage == 'metadata'
         run: |

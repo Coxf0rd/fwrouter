@@ -3031,11 +3031,13 @@ class AcceptanceContractTests(unittest.TestCase):
                      str(WORKER_PATH), "exec"), cache_namespace)
         reader_calls = []
         cache_namespace["current"] = {}
-        cache_namespace["original_read_effective_rules_artifact"] = lambda: reader_calls.append(True) or None
+        cache_namespace["original_read_effective_rules_artifact"] = (
+            lambda *args, **kwargs: reader_calls.append((args, kwargs)) or None
+        )
         with mock.patch.dict(sys.modules, fake_modules):
-            reader_result = cache_namespace["observed_read_effective_rules_artifact"]()
+            reader_result = cache_namespace["observed_read_effective_rules_artifact"](fresh=True)
         self.assertIsNone(reader_result)
-        self.assertEqual(reader_calls, [True])
+        self.assertEqual(reader_calls, [((), {"fresh": True})])
         cache_result = cache_namespace["current"]["artifact_read_observation"]
         self.assertEqual(cache_result, {
             "cache_entry_present": True, "cache_inflight_present": False,
@@ -3050,12 +3052,15 @@ class AcceptanceContractTests(unittest.TestCase):
 
         reader_error = OSError("fixture reader error")
         reader_calls.clear()
-        cache_namespace["original_read_effective_rules_artifact"] = lambda: reader_calls.append(True) or (_ for _ in ()).throw(reader_error)
+        cache_namespace["original_read_effective_rules_artifact"] = (
+            lambda *args, **kwargs: reader_calls.append((args, kwargs))
+            or (_ for _ in ()).throw(reader_error)
+        )
         with mock.patch.dict(sys.modules, fake_modules):
             with self.assertRaises(OSError) as caught_reader:
-                cache_namespace["observed_read_effective_rules_artifact"]()
+                cache_namespace["observed_read_effective_rules_artifact"](fresh=True)
         self.assertIs(caught_reader.exception, reader_error)
-        self.assertEqual(reader_calls, [True])
+        self.assertEqual(reader_calls, [((), {"fresh": True})])
         self.assertIsNone(cache_namespace["current"]["artifact_read_observation"]["reader_returned_artifact"])
 
         missing_cache = ModuleType("fwrouter_api.services.live_probe_cache")
