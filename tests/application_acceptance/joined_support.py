@@ -35,8 +35,13 @@ class ProviderHttpTestBridge:
                 parsed_probe_address = ipaddress.IPv4Address(mihomo_probe_address)
             except (ipaddress.AddressValueError, TypeError) as exc:
                 raise ValueError("Mihomo probe bind address must be a qualified IPv4 address") from exc
+            rfc1918 = any(parsed_probe_address in network for network in (
+                ipaddress.IPv4Network("10.0.0.0/8"),
+                ipaddress.IPv4Network("172.16.0.0/12"),
+                ipaddress.IPv4Network("192.168.0.0/16"),
+            ))
             if (parsed_probe_address.is_loopback or parsed_probe_address.is_unspecified
-                    or parsed_probe_address.is_multicast or not parsed_probe_address.is_private):
+                    or parsed_probe_address.is_multicast or not rfc1918):
                 raise ValueError("Mihomo probe bind address must be a private non-loopback IPv4 address")
             mihomo_probe_address = str(parsed_probe_address)
         if packet_endpoint and mihomo_probe_address is not None:
