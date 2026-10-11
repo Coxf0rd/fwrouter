@@ -1011,7 +1011,7 @@ class AcceptanceContractTests(unittest.TestCase):
         runner_class = next(node for node in runner_tree.body
                             if isinstance(node, ast.ClassDef) and node.name == "NativeXrayProcess")
         action = next(node for node in runner_class.body
-                      if isinstance(node, ast.FunctionDef) and node.name == "__call__")
+                      if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
         self.assertIn("_valid_mihomo_probe_timing", ast.unparse(action))
 
     def test_native_delay_observer_scopes_group_and_member_calls_without_changing_http_result(self):
@@ -1032,7 +1032,10 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("time.monotonic_ns", observer_source)
         self.assertIn("request_started_monotonic_ms", observer_source)
         self.assertIn("request_finished_monotonic_ms", observer_source)
-        self.assertIn("request_elapsed_ms", observer_source)
+        self.assertEqual(observer_source.count("bounded_request_timing("), 2)
+        timing_helper = next(node for node in ast.walk(installer) if isinstance(node, ast.FunctionDef)
+                             and node.name == "bounded_request_timing")
+        self.assertIn("request_elapsed_ms", ast.unparse(timing_helper))
         bridge_tree = ast.parse((Path(__file__).parents[1] / "application_acceptance" /
                                  "joined_support.py").read_text(encoding="utf-8"))
         bridge_class = next(node for node in bridge_tree.body
