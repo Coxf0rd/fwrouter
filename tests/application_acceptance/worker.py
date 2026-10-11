@@ -734,6 +734,7 @@ def _install_acceptance_recovery_apply_observer() -> None:
             return state["next_operation"]
 
     original_enter = provider_recovery.enter_emergency_direct
+    original_reentry = provider_recovery.try_verified_reentry
     original_apply = provider_recovery._apply_override
     original_apply_under_policy = provider_recovery._apply_override_under_policy
     original_selector_call = selector_route.select_vpn_auto_server
@@ -752,6 +753,23 @@ def _install_acceptance_recovery_apply_observer() -> None:
             raise
         else:
             record("emergency_direct_result", operation=operation, result=result)
+            return result
+        finally:
+            local.operation = prior
+
+    def observed_reentry(*args: Any, **kwargs: Any) -> Any:
+        prior = getattr(local, "operation", None)
+        operation = next_operation()
+        local.operation = operation
+        record("provider_reentry_enter", operation=operation)
+        try:
+            result = original_reentry(*args, **kwargs)
+        except Exception as exc:
+            record("provider_reentry_exception", operation=operation,
+                   exception_type=type(exc).__name__)
+            raise
+        else:
+            record("provider_reentry_result", operation=operation, result=result)
             return result
         finally:
             local.operation = prior
@@ -827,6 +845,7 @@ def _install_acceptance_recovery_apply_observer() -> None:
         return result
 
     provider_recovery.enter_emergency_direct = observed_enter
+    provider_recovery.try_verified_reentry = observed_reentry
     provider_recovery._apply_override = observed_apply
     provider_recovery._apply_override_under_policy = observed_apply_under_policy
     selector_route.select_vpn_auto_server = observed_selector_call

@@ -819,6 +819,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
                      "vpn-empty-pool-native",
                      "provider-recovery-confirmations",
+                     "provider-reentry",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "emergency-direct", "vpn-after-reentry", "provider-enable-job",
                      "vpn-auto-exclusive-job", "provider-refresh-supported", "provider-refresh-unknown",
@@ -1419,6 +1420,67 @@ def _recovery_decision_summary(value: Any) -> dict[str, Any]:
     }
 
 
+def _provider_reentry_summary(value: Any) -> dict[str, Any]:
+    response = value if isinstance(value, dict) else {}
+    statuses = {"provider_vpn_recovered", "emergency_direct", "emergency_direct_unconfirmed",
+                "provider_recovery_stale", "provider_recovery_deferred", "provider_reentry_in_progress",
+                "provider_switch_outcome_unconfirmed", "provider_reentry_suppressed_by_exclusive_source"}
+    actions = {"none", "verified_vpn_reentry", "emergency_direct"}
+
+    def safe_code(field: str) -> str | None:
+        code = response.get(field)
+        if (not isinstance(code, str) or len(code) > 64
+                or not all(character.isalnum() or character in "_.:-" for character in code)):
+            return None
+        return code
+
+    override = response.get("effective_override")
+    outcome = response.get("outcome")
+    status = response.get("status")
+    action = response.get("action")
+    return {
+        "ok": response.get("ok") is True,
+        "status": status if isinstance(status, str) and status in statuses else "other",
+        "action": action if isinstance(action, str) and action in actions else "other",
+        "outcome": outcome if isinstance(outcome, str)
+        and outcome in {"success", "failed", "deferred", "unconfirmed"} else "other",
+        "error_code": safe_code("error_code"),
+        "evidence_code": safe_code("evidence_code"),
+        "effective_override": override if override is None or override == "emergency_direct" else "other",
+        "fallback_verified": response.get("fallback_verified") is True,
+        "local_connectivity_restored": response.get("local_connectivity_restored") is True,
+        "last_good_retained": response.get("last_good_retained") is True,
+        "pending_preserved": response.get("pending_preserved") is True,
+    }
+
+
+def _provider_reentry_routing_summary(http_status: Any, response: Any) -> dict[str, Any]:
+    payload = response if isinstance(response, dict) else {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    routing = data.get("routing") if isinstance(data.get("routing"), dict) else {}
+    enforcement = data.get("runtime_enforcement") if isinstance(data.get("runtime_enforcement"), dict) else {}
+    modes = {"vpn", "direct"}
+    levels = {"global_vpn_enforced", "global_direct_only", "selective_vpn_enforced", "degraded", "unknown"}
+    desired = routing.get("desired_mode")
+    applied = routing.get("applied_mode")
+    live = enforcement.get("live_global_mode")
+    level = enforcement.get("enforcement_level")
+    return {
+        "http_status": http_status if type(http_status) is int else None,
+        "api_ok": payload.get("ok") is True,
+        "desired_mode": desired if isinstance(desired, str) and desired in modes else "other",
+        "applied_mode": applied if isinstance(applied, str) and applied in modes else "other",
+        "live_global_mode": live if isinstance(live, str) and live in modes else "other",
+        "enforcement_level": level if isinstance(level, str) and level in levels else "other",
+        "active_mode_matches_intent": enforcement.get("active_mode_matches_intent")
+        if type(enforcement.get("active_mode_matches_intent")) is bool else None,
+        "vpn_egress_ready": enforcement.get("vpn_egress_ready")
+        if type(enforcement.get("vpn_egress_ready")) is bool else None,
+        "traffic_enforcement_guaranteed": enforcement.get("traffic_enforcement_guaranteed")
+        if type(enforcement.get("traffic_enforcement_guaranteed")) is bool else None,
+    }
+
+
 def _assert_native_empty_vpn_pool(stack: dict[str, Any], *, expected_fence: dict[str, Any],
                                   preference_change: dict[str, Any], record_property: Any) -> dict[str, Any]:
     fence_before_readback = _read_packet_selection_fence()
@@ -1935,6 +1997,15 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     _set_health_available(True)
     code, reentered = http_json(f"{api}/__acceptance/provider/reentry", method="POST",
                                 payload={"timeout_ms": 2000}, timeout=90)
+    reentry_routing_code, reentry_routing = http_json(f"{api}/routing/global")
+    _record_phase_diagnostic(record_property, {
+        "phase": "provider-reentry",
+        "http_status": code if type(code) is int else None,
+        "result": _provider_reentry_summary(reentered),
+        "health": _recovery_health_snapshot(source_ref, logical_id),
+        "routing": _provider_reentry_routing_summary(reentry_routing_code, reentry_routing),
+        "mihomo_path": _packet_refresh_native_proof(stack),
+    })
     assert code == 200 and reentered.get("ok") is True
     assert reentered.get("effective_override") in {None, ""}
     assert bridge.snapshot_calls() == [], "provider reentry must not call the external provider API"

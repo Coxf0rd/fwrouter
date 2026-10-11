@@ -2207,7 +2207,8 @@ class AcceptanceContractTests(unittest.TestCase):
                         and node.name == "_install_acceptance_recovery_apply_observer")
         observer_source = ast.get_source_segment(worker_source, observer) or ""
         for required in ("FWROUTER_ENVIRONMENT", "FWROUTER_APPLICATION_ACCEPTANCE_ROOT",
-                         "enter_emergency_direct", "_apply_override_under_policy",
+                         "enter_emergency_direct", "try_verified_reentry", "provider_reentry_result",
+                         "_apply_override_under_policy",
                          "_run_pipeline_for_state", "select_vpn_auto_server",
                          "override_pipeline_caught_exception", "exception_type", "limit = 32",
                          "The real Core apply result nests its bounded taxonomy under dataplane.",

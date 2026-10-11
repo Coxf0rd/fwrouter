@@ -117,10 +117,14 @@ class NetworkFixtureContractTests(unittest.TestCase):
         for label in ("vpn-supported-udp", "vpn-unknown-udp", "vpn-unsupported-udp",
                       "vpn-endpoint-unavailable", "vpn-empty-pool", "vpn-tcp-after-unknown",
                       "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
-                      "provider-recovery-confirmations"):
+                      "provider-recovery-confirmations", "provider-reentry"):
             self.assertIn(label, source)
         self.assertIn('provider_calls_after_first == [("GET", "/configs", {}, None)]', source)
         self.assertIn('provider_calls_after_recovery == provider_calls_after_first', source)
+        self.assertIn('"mihomo_path": _packet_refresh_native_proof(stack)', source)
+        reentry_diagnostic = source.index('"phase": "provider-reentry"')
+        reentry_assertion = source.index('assert code == 200 and reentered.get("ok") is True')
+        self.assertLess(reentry_diagnostic, reentry_assertion)
         self.assertIn("CAPTURE_LIMIT = 512", source)
         self.assertIn("expect_active_server=False", source)
         capability_state = functions["_packet_capability_state"]
