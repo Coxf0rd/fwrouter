@@ -659,6 +659,7 @@ class AcceptanceContractTests(unittest.TestCase):
             'output ip daddr 1.1.1.1 udp dport 53 counter name router_dns_udp_output accept',
             'input iifname "eth0" ip saddr 10.240.0.2 ip daddr 10.240.0.1 tcp dport 53 counter name router_dns_tcp_input accept',
             'input iifname "eth0" ip saddr 10.240.0.2 ip daddr 10.240.0.1 udp dport 53 counter name router_dns_udp_input accept',
+            'input iifname "eth0" ip saddr 10.240.0.2 ip daddr 198.51.100.77 udp dport 9081 accept',
             'output ip daddr 198.51.100.77 tcp dport 9080 counter name router_dns_vpn_direct_output accept',
             'output ip daddr 198.51.100.77 udp dport 9081 counter name router_dns_vpn_direct_output accept',
             'forward iifname "eth0" oifname "eth1" ip saddr 10.240.0.2 ip daddr 198.51.100.77 tcp dport 9080 counter name router_dns_vpn_direct_forward accept',

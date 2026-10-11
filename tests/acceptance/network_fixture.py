@@ -108,6 +108,30 @@ class DNS53ProbeFailure(FixtureError):
         }
 
 
+class DNS53FlowProbeFailure(FixtureError):
+    """A bounded first-failure receipt for resolved DNS policy flows."""
+
+    def __init__(self, query_label: str, stage: str, error_code: str,
+                 original_error_type: str, peer_class: str | None = None) -> None:
+        self.query_label = query_label
+        self.stage = stage
+        self.error_code = error_code
+        self.original_error_type = original_error_type
+        self.peer_class = peer_class
+        super().__init__("native DNS-selected flow probe failed")
+
+    def receipt(self) -> dict[str, str]:
+        result = {
+            "schema": "fwrouter-dns53-flow-failure/v1",
+            "query_label": self.query_label,
+            "stage": self.stage,
+            "error_code": self.error_code,
+        }
+        if self.stage == "tcp_peer" and self.peer_class is not None:
+            result["peer_class"] = self.peer_class
+        return result
+
+
 def _redact(value: bytes | str, limit: int = MAX_OUTPUT) -> str:
     text = value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
     text = re.sub(r"(?i)(password|secret|token|authorization|credential)(\s*[:=]\s*)[^\s,;]+",
@@ -909,10 +933,14 @@ class _ClientHandler(_QuietHandler):
             else:
                 result = _probe_leak()
         except (OSError, FixtureError, TimeoutError) as exc:
-            error_type = exc.original_error_type if isinstance(exc, DNS53ProbeFailure) else type(exc).__name__
+            error_type = (exc.original_error_type
+                          if isinstance(exc, (DNS53ProbeFailure, DNS53FlowProbeFailure))
+                          else type(exc).__name__)
             body = {"ok": False, "error": error_type}
             if isinstance(exc, DNS53ProbeFailure):
                 body["dns53_failure"] = exc.receipt()
+            elif isinstance(exc, DNS53FlowProbeFailure):
+                body["dns53_flow_failure"] = exc.receipt()
             self._send_json(502, body)
             return
         observation_kind = {
@@ -1308,42 +1336,77 @@ def _probe_dns53_external() -> dict[str, Any]:
 def _probe_dns53_resolved_flows() -> dict[str, Any]:
     """Resolve fixed policy names, then exercise their exact answer IPs over TCP and UDP."""
     results: dict[str, Any] = {}
+
+    def fail(label: str, stage: str, exc: BaseException | None = None,
+             *, peer_class: str | None = None) -> None:
+        if isinstance(exc, TimeoutError):
+            category, original_type = "timeout", "TimeoutError"
+        elif isinstance(exc, OSError):
+            category, original_type = "os_error", "OSError"
+        elif isinstance(exc, FixtureError):
+            category, original_type = "fixture_error", "FixtureError"
+        else:
+            category, original_type = "response_mismatch", "FixtureError"
+        raise DNS53FlowProbeFailure(label, stage, category, original_type, peer_class) from exc
+
     for name, expected, label in (
         ("probe.vpn.test", DNS_VPN_SERVICE_VIP, "vpn"),
         ("probe.direct.test", SERVICE_VIP, "direct"),
     ):
-        status, address = _dns53_request(name, tcp=False)
+        try:
+            status, address = _dns53_request(name, tcp=False)
+        except (TimeoutError, OSError, FixtureError) as exc:
+            fail(label, "dns_resolution", exc)
         if status != "answer" or address != expected:
-            raise FixtureError("DNS-selected flow did not use the fixed native DNS answer")
-        with socket.create_connection((address, HTTP_PORT), timeout=CONTROL_TIMEOUT) as conn:
-            conn.settimeout(CONTROL_TIMEOUT)
-            conn.sendall(b"GET /probe/dns-selected HTTP/1.1\r\nHost: dns-policy\r\nConnection: close\r\n\r\n")
-            response = bytearray()
-            while len(response) <= 1024:
-                chunk = conn.recv(min(256, 1025 - len(response)))
-                if not chunk:
-                    break
-                response.extend(chunk)
+            fail(label, "dns_resolution")
+        try:
+            conn = socket.create_connection((address, HTTP_PORT), timeout=CONTROL_TIMEOUT)
+        except (TimeoutError, OSError) as exc:
+            fail(label, "tcp_connect", exc)
+        try:
+            with conn:
+                conn.settimeout(CONTROL_TIMEOUT)
+                try:
+                    conn.sendall(b"GET /probe/dns-selected HTTP/1.1\r\nHost: dns-policy\r\nConnection: close\r\n\r\n")
+                    response = bytearray()
+                    while len(response) <= 1024:
+                        chunk = conn.recv(min(256, 1025 - len(response)))
+                        if not chunk:
+                            break
+                        response.extend(chunk)
+                except (TimeoutError, OSError) as exc:
+                    fail(label, "tcp_receive", exc)
+        except (TimeoutError, OSError) as exc:
+            fail(label, "tcp_receive", exc)
         if len(response) > 1024 or b" 200 " not in response[:64] or b"\r\n\r\n" not in response:
-            raise FixtureError("DNS-selected TCP destination failed its bounded fixture probe")
+            fail(label, "tcp_shape")
         try:
             answer = json.loads(bytes(response).split(b"\r\n\r\n", 1)[1])
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            raise FixtureError("DNS-selected TCP response was not bounded JSON") from exc
-        peer = answer.get("peer") if isinstance(answer, dict) else None
+        except (UnicodeError, json.JSONDecodeError):
+            fail(label, "tcp_shape")
+        if not isinstance(answer, dict) or answer.get("ok") is not True:
+            fail(label, "tcp_shape")
+        peer = answer.get("peer")
         # The phase runs under global VPN. A DNS DIRECT-domain set remains
         # recorded and independently tested, while global VPN still tunnels
         # this application flow; only the endpoint's own aliases may originate
         # the post-proxy service connection.
         allowed_peers = {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP}
-        if not isinstance(answer, dict) or answer.get("ok") is not True or peer not in allowed_peers:
-            raise FixtureError("DNS-selected TCP endpoint peer did not prove the fixed direct or VPN path")
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.settimeout(CONTROL_TIMEOUT)
-            sock.sendto(DNS_SELECTED_PROBE_BODY, (address, UDP_ECHO_PORT))
-            payload, peer = sock.recvfrom(128)
+        if peer not in allowed_peers:
+            peer_class = ("missing" if not isinstance(peer, str) else "allowed" if peer in allowed_peers
+                          else "endpoint_wan" if peer == ENDPOINT_WAN_IP
+                          else "router_wan" if peer == ROUTER_WAN_IP
+                          else "lan_client" if peer == CLIENT_IP else "other")
+            fail(label, "tcp_peer", peer_class=peer_class)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(CONTROL_TIMEOUT)
+                sock.sendto(DNS_SELECTED_PROBE_BODY, (address, UDP_ECHO_PORT))
+                payload, peer = sock.recvfrom(128)
+        except (TimeoutError, OSError) as exc:
+            fail(label, "udp_receive", exc)
         if payload != DNS_SELECTED_PROBE_BODY or peer != (address, UDP_ECHO_PORT):
-            raise FixtureError("DNS-selected UDP destination failed its bounded fixture probe")
+            fail(label, "udp_shape")
         results[label] = {"answer": address, "tcp": True, "udp": True}
     return {"service": "dns53-selected-service-flows", "results": results}
 

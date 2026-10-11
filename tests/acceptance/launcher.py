@@ -2267,6 +2267,7 @@ rules=[
  f'add rule inet fwrouter_packet_guard input iifname "{{lan}}" ip saddr 10.240.0.2 ip daddr 10.240.0.1 udp dport {{{{ 5203, 5205 }}}} accept comment "fwrouter packet guard lan tproxy udp input allow v1"',
  f'add rule inet fwrouter_packet_guard input iifname "{{lan}}" ip saddr 10.240.0.2 ip daddr 10.240.0.1 tcp dport 53 counter name router_dns_tcp_input accept comment "fwrouter packet guard lan dns tcp input allow v1"',
  f'add rule inet fwrouter_packet_guard input iifname "{{lan}}" ip saddr 10.240.0.2 ip daddr 10.240.0.1 udp dport 53 counter name router_dns_udp_input accept comment "fwrouter packet guard lan dns udp input allow v1"',
+ f'add rule inet fwrouter_packet_guard input iifname "{{lan}}" ip saddr 10.240.0.2 ip daddr 198.51.100.77 udp dport 9081 accept comment "fwrouter packet guard lan dns vpn vip udp input allow v1"',
  'add rule inet fwrouter_packet_guard input counter name router_input_drop drop comment "fwrouter packet guard input deny v1"',
  'add rule inet fwrouter_packet_guard forward meta nfproto ipv6 counter name router_ipv6_forward_drop drop comment "fwrouter packet guard ipv6 forward deny v1"',
  'add rule inet fwrouter_packet_guard forward ct state {{ established, related }} accept comment "fwrouter packet guard established forward allow v1"',

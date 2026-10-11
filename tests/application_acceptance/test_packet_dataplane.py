@@ -67,6 +67,30 @@ def _record_dns53_probe_failure(record_property: Any, receipt: Any) -> bool:
     return True
 
 
+def _record_dns53_flow_failure(record_property: Any, receipt: Any) -> bool:
+    if not callable(record_property) or not isinstance(receipt, dict):
+        return False
+    required = {"schema", "query_label", "stage", "error_code"}
+    if not required <= set(receipt) or set(receipt) - required - {"peer_class"}:
+        return False
+    if any(not isinstance(value, str) for value in receipt.values()):
+        return False
+    if (receipt.get("schema") != "fwrouter-dns53-flow-failure/v1"
+            or receipt.get("query_label") not in {"vpn", "direct"}
+            or receipt.get("stage") not in {"dns_resolution", "tcp_connect", "tcp_receive", "tcp_shape",
+                                              "tcp_peer", "udp_receive", "udp_shape"}
+            or receipt.get("error_code") not in {"timeout", "os_error", "fixture_error", "response_mismatch"}):
+        return False
+    if "peer_class" in receipt and (receipt.get("stage") != "tcp_peer"
+            or receipt["peer_class"] not in {"allowed", "endpoint_wan", "router_wan", "lan_client", "other", "missing"}):
+        return False
+    encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("ascii")) > 256:
+        return False
+    record_property("dns53_flow_failure", encoded)
+    return True
+
+
 def _role_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None,
                failure_record_property: Any | None = None) -> dict[str, Any]:
     body = json.dumps(payload, separators=(",", ":")).encode("ascii") if payload is not None else None
@@ -90,7 +114,10 @@ def _role_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None 
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise AssertionError("packet role response was not valid bounded JSON") from exc
     if code != 200 and isinstance(value, dict) and failure_record_property is not None:
-        _record_dns53_probe_failure(failure_record_property, value.get("dns53_failure"))
+        if isinstance(value.get("dns53_flow_failure"), dict):
+            _record_dns53_flow_failure(failure_record_property, value.get("dns53_flow_failure"))
+        else:
+            _record_dns53_probe_failure(failure_record_property, value.get("dns53_failure"))
     assert code == 200 and isinstance(value, dict), {"status": code, "shape": type(value).__name__}
     return value
 
@@ -1188,7 +1215,8 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
     client = _role_json(f"{CLIENT_CONTROL}/probe/dns53", method="POST",
                         failure_record_property=record_property)
     external = _role_json(f"{CLIENT_CONTROL}/probe/dns53-external", method="POST")
-    resolved_flows = _role_json(f"{CLIENT_CONTROL}/probe/dns53-flows", method="POST")
+    resolved_flows = _role_json(f"{CLIENT_CONTROL}/probe/dns53-flows", method="POST",
+                                failure_record_property=record_property)
     packets_after = _wait_packet_counts(lambda counts:
         _flow_delta(packets_before, counts, (ROUTER_WAN_IP, "1.1.1.1", "udp", 53)) > 0
         and _flow_delta(packets_before, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
