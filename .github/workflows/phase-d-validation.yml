@@ -33,6 +33,7 @@ jobs:
               "ci:validate-cohort": "provider-cohort",
               "ci:validate-fences": "fence-diagnostic",
               "ci:validate-recovery": "recovery-diagnostic",
+              "ci:validate-reentry": "reentry-diagnostic",
               "ci:validate-targets": "targets",
               "ci:validate-host-fixtures": "host-fixtures",
               "ci:validate-zero": "zero",
@@ -332,6 +333,7 @@ jobs:
        needs.select-stage.outputs.stage == 'provider-cohort' ||
        needs.select-stage.outputs.stage == 'fence-diagnostic' ||
        needs.select-stage.outputs.stage == 'recovery-diagnostic' ||
+       needs.select-stage.outputs.stage == 'reentry-diagnostic' ||
        needs.select-stage.outputs.stage == 'kernel-preflight' ||
        needs.select-stage.outputs.stage == 'kernel-recovery-diagnostic' ||
        needs.select-stage.outputs.stage == 'packet-diagnostic' ||
@@ -381,6 +383,7 @@ jobs:
           if [[ "$VALIDATION_STAGE" == provider-cohort ]]; then suite=provider-cohort; fi
           if [[ "$VALIDATION_STAGE" == fence-diagnostic ]]; then suite=fence-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == recovery-diagnostic ]]; then suite=recovery-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == reentry-diagnostic ]]; then suite=reentry-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == targets ]]; then suite=target-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == kernel-preflight ]]; then suite=kernel-preflight; fi
           if [[ "$VALIDATION_STAGE" == kernel-recovery-diagnostic ]]; then suite=kernel-recovery-diagnostic; fi

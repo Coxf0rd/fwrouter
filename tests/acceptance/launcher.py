@@ -100,19 +100,24 @@ _RECOVERY_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
     "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
 )
+_REENTRY_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+    "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+)
 _TARGET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
     "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry",
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 )
 _KERNEL_RECOVERY_SUITE = "kernel-recovery-diagnostic"
-_KERNEL_DATAPLANE_SUITES = {_KERNEL_RECOVERY_SUITE, "provider-cohort"}
+_KERNEL_DATAPLANE_SUITES = {_KERNEL_RECOVERY_SUITE, "provider-cohort", "reentry-diagnostic"}
 _PACKET_DIAGNOSTIC_SUITE = "packet-diagnostic"
 _PACKET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_packet_dataplane.py::test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks",
 )
 _DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic",
-                      "recovery-diagnostic", _KERNEL_RECOVERY_SUITE, _PACKET_DIAGNOSTIC_SUITE}
+                      "recovery-diagnostic", "reentry-diagnostic", _KERNEL_RECOVERY_SUITE,
+                      _PACKET_DIAGNOSTIC_SUITE}
 _KERNEL_SUITES = {"kernel-preflight"}
 PACKET_NETWORKS = {
     "lan": {"subnet": "10.240.0.0/29", "gateway": "10.240.0.6", "router": "10.240.0.1", "client": "10.240.0.2"},
@@ -2390,6 +2395,8 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
             diagnostics = set(_TARGET_DIAGNOSTIC_NODEIDS)
         elif suite in {"recovery-diagnostic", _KERNEL_RECOVERY_SUITE}:
             diagnostics = set(_RECOVERY_DIAGNOSTIC_NODEIDS)
+        elif suite == "reentry-diagnostic":
+            diagnostics = set(_REENTRY_DIAGNOSTIC_NODEIDS)
         elif suite == _PACKET_DIAGNOSTIC_SUITE:
             diagnostics = set(_PACKET_DIAGNOSTIC_NODEIDS)
         else:
@@ -3898,7 +3905,7 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic", "recovery-diagnostic", "kernel-preflight", "kernel-recovery-diagnostic", "packet-diagnostic"), default="functional")
+    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic", "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight", "kernel-recovery-diagnostic", "packet-diagnostic"), default="functional")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

@@ -2533,7 +2533,7 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual("NOTRUN", receipt["status"])
 
     def test_junit_requires_exact_suite_node_ids_without_skips_or_duplicates(self):
-        for suite in ("functional", "recovery"):
+        for suite in ("functional", "recovery", "reentry-diagnostic"):
             with self.subTest(suite=suite), tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-junit-") as temp:
                 expected = launcher.expected_acceptance_nodeids(suite)
                 root = ET.Element("testsuite")
@@ -2634,6 +2634,63 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertIn(required, observer_source)
         self.assertNotIn("str(exc)", observer_source)
         self.assertNotIn("error_message", observer_source)
+
+    def test_reentry_diagnostic_is_exact_two_kernel_provider_reentry_nodes(self):
+        expected = {
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_rejects_old_probe_after_real_mihomo_incarnation_change",
+            "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_reentry_fences_concurrent_public_exclusive_intent_change",
+        }
+        self.assertEqual(expected, launcher.expected_acceptance_nodeids("reentry-diagnostic"))
+        self.assertEqual(expected, set(launcher._REENTRY_DIAGNOSTIC_NODEIDS))
+        self.assertIn("reentry-diagnostic", launcher._KERNEL_DATAPLANE_SUITES)
+        self.assertNotIn("reentry-diagnostic", launcher._KERNEL_SUITES)
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids("reentry-diagnostic-extra")
+
+        catalog_rows = launcher.expected_acceptance_nodeids("functional")
+        self.assertTrue(expected.issubset(catalog_rows))
+        scenarios = json.loads((Path(__file__).parents[2] / "tests/acceptance/scenarios.json").read_text())
+        selected_scenarios = {row["nodeid"]: row for row in scenarios["scenarios"]
+                              if row["nodeid"] in expected}
+        self.assertEqual(expected, set(selected_scenarios))
+        self.assertTrue(all(row["suite"] == "functional" and row["level"] == "L3"
+                            for row in selected_scenarios.values()))
+        manifest = json.loads((Path(__file__).parents[1] / "gates/manifest.json").read_text())
+        kernel_rows = {row["nodeid"] for row in manifest["node_execution_profiles"]
+                       if row["suite"] == "provider-cohort"
+                       and row["execution_profile"] == "hosted-kernel-dataplane"}
+        self.assertTrue(expected.issubset(kernel_rows))
+
+        failed = [{"nodeid": nodeid, "status": "failed",
+                   "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}
+                  for nodeid in sorted(expected)]
+        launcher.validate_suite_node_receipt(failed, "reentry-diagnostic", sorted(expected))
+        skipped = [dict(row, status="skipped") for row in failed]
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_suite_node_receipt(skipped, "reentry-diagnostic", sorted(expected))
+        expanded = [*failed, {**failed[0], "nodeid": "unexpected-extra-node"}]
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_suite_node_receipt(expanded, "reentry-diagnostic", sorted(expected))
+
+        launcher_source = LAUNCHER_PATH.read_text(encoding="utf-8")
+        suite_choices = [
+            ast.literal_eval(keyword.value)
+            for node in ast.walk(ast.parse(launcher_source))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument" and node.args
+            and isinstance(node.args[0], ast.Constant) and node.args[0].value == "--suite"
+            for keyword in node.keywords if keyword.arg == "choices"
+        ]
+        self.assertEqual(1, len(suite_choices))
+        self.assertIn("reentry-diagnostic", suite_choices[0])
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"ci:validate-reentry": "reentry-diagnostic"', workflow)
+        self.assertIn("needs.select-stage.outputs.stage == 'reentry-diagnostic'", workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == reentry-diagnostic ]]; then suite=reentry-diagnostic; fi',
+                      workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == recovery-diagnostic ]]; then suite=recovery-diagnostic; fi',
+                      workflow)
 
     def test_packet_diagnostic_is_one_fixed_l3_node_and_is_registered(self):
         nodeid = (
