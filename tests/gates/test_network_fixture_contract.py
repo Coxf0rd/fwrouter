@@ -586,8 +586,17 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('"vpn_tcp_classified"', source)
         self.assertIn('"vpn_udp_classified"', source)
         self.assertIn('"vpn_udp_handoff_packets"', source)
-        udp_contract = _function_source("_probe_vpn_udp_contract_phase")
-        empty_pool_tcp = _function_source("_probe_vpn_tcp_empty_pool")
+        packet_lines = source.splitlines()
+
+        def packet_function_source(name: str) -> str:
+            matches = [node for node in tree.body
+                       if isinstance(node, ast.FunctionDef) and node.name == name]
+            self.assertEqual(1, len(matches), f"expected one packet source function named {name}")
+            node = matches[0]
+            return "\n".join(packet_lines[node.lineno - 1:node.end_lineno])
+
+        udp_contract = packet_function_source("_probe_vpn_udp_contract_phase")
+        empty_pool_tcp = packet_function_source("_probe_vpn_tcp_empty_pool")
         self.assertIn('"core_counter_delta": core_delta', udp_contract)
         self.assertIn('"direct_flow_deltas": direct_flow_deltas', udp_contract)
         self.assertIn('direct_flow_deltas == {"client_source_to_service": 0, "mihomo_direct_to_service": 0}',
