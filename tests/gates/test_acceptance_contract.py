@@ -2108,6 +2108,18 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('dns = profile.get("dns_runtime")', verifier_source)
         self.assertIn('"bind9_dnsutils_package_version"', verifier_source)
         self.assertIn('"dnsmasq_nftset_required"', verifier_source)
+        version_matcher = next(node for node in profile_tree.body
+                               if isinstance(node, ast.FunctionDef)
+                               and node.name == "_dig_version_matches")
+        version_namespace = {}
+        exec(compile(ast.Module(body=[version_matcher], type_ignores=[]),
+                     "acceptance-profile-dig-version-contract.py", "exec"), version_namespace)
+        matches = version_namespace["_dig_version_matches"]
+        self.assertTrue(matches(0, b"DiG 9.18.49-1~deb12u1", b""))
+        self.assertTrue(matches(0, b"", b"DiG 9.18.49-1~deb12u1\n"))
+        self.assertFalse(matches(0, b"wrong", b"version"))
+        self.assertFalse(matches(1, b"DiG 9.18.49-1~deb12u1", b""))
+        self.assertFalse(matches(0, b"DiG 9.18.49\xff", b""))
 
     def test_launcher_import_is_stdlib_only_and_default_cli_is_nonexecuting(self):
         self.assertNotIn("fwrouter_api", launcher.sys.modules)

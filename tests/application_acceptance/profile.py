@@ -232,14 +232,22 @@ def _verify_packet_router_profile(profile: dict[str, Any], facts: dict[str, Any]
             or (len(api_version) > len(prefix) and not api_version[len(prefix)].isspace())):
         raise ProfileError("libpcap package, API, or source digest does not match the packet profile")
     dnsmasq_text = dnsmasq.stdout.decode("ascii", "strict")
-    dig_text = dig.stdout.decode("ascii", "strict")
     if (dns_packages != {"dnsmasq-base": PACKET_DNSMASQ_BASE_VERSION,
                          "bind9-dnsutils": PACKET_BIND9_DNSUTILS_VERSION,
                          "iptables": PACKET_IPTABLES_VERSION}
             or dnsmasq.returncode != 0 or not dnsmasq_text.startswith(dns["dnsmasq_version_prefix"])
             or len(dnsmasq_text.splitlines()) < 2 or "nftset" not in dnsmasq_text.splitlines()[1].split()
-            or dig.returncode != 0 or not dig_text.startswith("DiG 9.18.49")):
+            or not _dig_version_matches(dig.returncode, dig.stdout, dig.stderr)):
         raise ProfileError("pinned real dnsmasq/dig native runtime is unavailable or lacks nftset support")
+
+
+def _dig_version_matches(returncode: int, stdout: bytes, stderr: bytes) -> bool:
+    """Check the pinned dig version across its documented output channel."""
+    try:
+        output = (stdout + stderr).decode("ascii", "strict").strip()
+    except UnicodeError:
+        return False
+    return returncode == 0 and output.startswith("DiG 9.18.49")
 
 
 def _sha(path: Path) -> str:
