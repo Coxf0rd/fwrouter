@@ -1067,10 +1067,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("leak_dns_stub", guard)
         self.assertIn("leak_reserved", guard)
         self.assertIn("ct state established,related", guard)
-        self.assertIn('output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP} }}', guard)
+        self.assertIn('output ip daddr {{ {ROUTER_LAN_IP}, {CLIENT_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }}', guard)
         self.assertIn('output ip daddr {ENDPOINT_WAN_IP} tcp dport {ENDPOINT_XRAY_PORT}', guard)
         self.assertIn('output ip daddr {ENDPOINT_WAN_IP} tcp dport 22 accept', guard)
-        self.assertIn('input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP} }}', guard)
+        self.assertIn('input ip saddr {{ {ROUTER_LAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {PROTECTED_VIP} }}', guard)
         endpoint_input = guard.split('else:', 1)[1]
         self.assertNotIn('tcp dport 22 accept', endpoint_input)
         self.assertIn('hook input priority 0; policy drop;', guard)
