@@ -163,7 +163,8 @@ class DependencyImageContractTests(unittest.TestCase):
                      if isinstance(node, ast.FunctionDef) and node.name == "_reuse_existing_locked_tag")
         reuse_source = ast.get_source_segment(source, reuse) or ""
         self.assertIn('["docker", "pull", "--platform", lock["platform"], image_tag]', reuse_source)
-        self.assertIn("RepoDigests", reuse_source)
+        self.assertIn("validate_dependency_image_metadata", reuse_source)
+        self.assertIn("image_ref=immutable_ref", reuse_source)
         self.assertIn("_check_local_image", reuse_source)
         self.assertIn("_check_local_image(immutable_ref", reuse_source)
         self.assertIn("_read_image_manifest", reuse_source)
