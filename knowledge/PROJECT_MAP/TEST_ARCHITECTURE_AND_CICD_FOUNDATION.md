@@ -1,5 +1,10 @@
 # Test Architecture and CI/CD Foundation
 
+### Packet acceptance update — 2026-10-11
+
+Run [38138693984](https://github.com/Coxf0rd/fwrouter/actions/runs/38138693984), `8689e23`: **1 PASS / 0 FAIL / 0 SKIP**, 55.400 s. Actual supported/unknown VPN UDP paths, unsupported/unavailable/empty-pool fail-closed, TCP, Emergency Direct and verified VPN re-entry pass. Re-entry provider calls are 1→1 (zero additional calls); native handoff/rollback receipt proof and cleanup pass, with unchanged host network/firewall snapshots. This supersedes the pending alias acceptance below only for this packet scenario. DNS/53, protected DIRECT, packet proof after a real selector change, fresh application/browser/provider/full gates and GHCR remain open. Phase D **BLOCKED**, production unchanged. See the [structured checkpoint](../audits/test_architecture_phase_d_2026-10-09/PACKET_CHECKPOINT_38138693984.json).
+
+
 ## 2026-10-11 — current bounded UDP/recovery checkpoint
 
 Phase D remains **BLOCKED**. Tri-state UDP and mandatory-VPN fail-closed source are implemented on the CI branch; production is unchanged. Run [38136295650](https://github.com/Coxf0rd/fwrouter/actions/runs/38136295650), `b2ca8d9`, passed **48 exact unit/component cases / 0 FAIL / 0 SKIP** (5.208 s), including native-proof receipt ownership and honest incomplete rollback outcomes. Packet run [38136831776](https://github.com/Coxf0rd/fwrouter/actions/runs/38136831776), `bda38c9`, remains **0 PASS / 1 FAIL / 0 SKIP**. Its trace proves failed Mihomo handoff binding/readback because `172.18.0.1` is absent from the router namespace; receipt publication correctly is not reached. The namespace-only correction `62ef4a4` awaits hosted acceptance. Scoped packet phases do not constitute complete packet acceptance. Port-53 DNS-policy proof, fresh full functional/affected/historical gates and GHCR publisher/consumer remain open. Dated DRAFT/NOT RUN text below is historical and superseded only within the stated source/unit scope; Phase E/CD and the operational branch remain untouched.
