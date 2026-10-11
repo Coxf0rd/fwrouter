@@ -5,6 +5,7 @@ import ast
 import builtins
 import hashlib
 import json
+import re
 import tarfile
 import tempfile
 import threading
@@ -985,7 +986,7 @@ class AcceptanceContractTests(unittest.TestCase):
         bound = next(node for node in ast.walk(installer) if isinstance(node, ast.FunctionDef)
                      and node.name == "finish_group_probe")
         self.assertIn("events[:-8]", ast.unparse(bound))
-        adapter = ast.parse((ROOT / "tests/application_acceptance/worker.py").read_text(encoding="utf-8"))
+        adapter = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
         class_node = next(node for node in ast.walk(adapter) if isinstance(node, ast.ClassDef)
                           and node.name == "LoopbackProbeMihomoHttpAdapter")
         for method_name in ("probe_logical_group", "probe_logical_member"):
