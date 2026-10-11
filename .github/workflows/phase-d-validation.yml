@@ -205,7 +205,8 @@ jobs:
             tests/test_dataplane_global.py::test_global_vpn_preflight_allows_prepare_with_empty_reject_selector_without_egress \
             tests/test_mihomo_config_runtime.py::test_reconcile_rollback_classifies_actual_direct_and_mandatory_vpn_configs \
             tests/test_mihomo_config_runtime.py::test_mihomo_udp_policy_receipt_is_bound_to_config_hash_runtime_and_native_proof \
-            tests/test_vpn_auto_exclusive.py::test_exact_auto_targets_requires_reject_terminal_and_rejects_direct
+            tests/test_vpn_auto_exclusive.py::test_exact_auto_targets_requires_reject_terminal_and_rejects_direct \
+            tests/test_logical_topology.py::test_provider_generation_probe_keeps_automatic_health_and_refresh_admission
       - name: Record focused preflight outcome
         if: always()
         run: |

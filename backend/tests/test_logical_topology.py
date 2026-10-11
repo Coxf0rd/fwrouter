@@ -935,6 +935,89 @@ def test_native_effective_member_controls_persisted_active_and_logical_latency(m
     assert runtime.local_probes == []
 
 
+def test_provider_generation_probe_keeps_automatic_health_and_refresh_admission(monkeypatch, tmp_path: Path) -> None:
+    assert server_ping._normalize_ping_source(
+        "provider_validation", checked_by="manual"
+    ) == "manual"
+    assert server_ping._normalize_ping_source(
+        "untrusted_source", checked_by="provider_generation"
+    ) == "manual"
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server = _server("logical-provider", "Provider profile", [("member-a", 1001)])
+    _seed_servers(server)
+    from fwrouter_api.services.servers import ensure_routing_global_state
+
+    ensure_routing_global_state()
+    with db_session() as connection:
+        logical_topology.sync_logical_topology(connection, [server])
+        connection.execute(
+            "INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES ('logical-provider', 1, 1) "
+            "ON CONFLICT(server_id) DO UPDATE SET vpn_auto = 1, global_list = 1"
+        )
+        connection.execute(
+            "UPDATE routing_global_state SET server_mode = 'auto', active_auto_server_id = 'logical-provider' WHERE id = 1"
+        )
+    snapshot = _snapshot(
+        "Provider profile",
+        "Provider profile :: member-a",
+        [("Provider profile :: member-a", "healthy", 37, "2999-01-01T00:00:00+00:00")],
+    )
+    _register_native_runtime(
+        monkeypatch,
+        _NativeRuntime({"Provider profile": snapshot}, server_targets=["Provider profile"]),
+    )
+    from fwrouter_api.services import selector
+    from fwrouter_api.services.subscription_pipeline import _subscription_transition_preflight
+
+    assert server_ping._normalize_ping_source(
+        "provider_validation", checked_by="provider_generation"
+    ) == "provider_validation"
+    monkeypatch.setattr(
+        selector,
+        "_active_selector_runtime",
+        lambda: (
+            {"adapter_id": "test-runtime", "capabilities": ["health", "list_servers"]},
+            SimpleNamespace(
+                health=lambda: SimpleNamespace(
+                    runtime_state="running",
+                    active_server_id=None,
+                    details={"selectors": {"vpn_auto_targets": ["Provider profile"]}},
+                ),
+                list_servers=lambda: [SimpleNamespace(server_id="Provider profile")],
+            ),
+        ),
+    )
+
+    refreshed = server_ping.check_server_delay(
+        "logical-provider",
+        update_state=True,
+        source="provider_validation",
+        checked_by="provider_generation",
+    )
+    topology = logical_topology.get_logical_topology("logical-provider")
+    active_member = next(member for member in topology["members"] if member["is_effective_active"])
+
+    assert refreshed["ok"] is True
+    assert refreshed["source"] == "provider_validation"
+    assert active_member["probe_lane"] == "provider_validation"
+    assert _subscription_transition_preflight()["ok"] is True
+
+    manual = server_ping.check_server_delay(
+        "logical-provider",
+        update_state=True,
+        source="manual",
+        checked_by="manual",
+    )
+    topology = logical_topology.get_logical_topology("logical-provider")
+    active_member = next(member for member in topology["members"] if member["is_effective_active"])
+
+    assert manual["source"] == "manual"
+    assert active_member["probe_lane"] == "manual"
+    assert _subscription_transition_preflight()["error"]["code"] == "VPN_AUTO_NO_ELIGIBLE_ALTERNATIVE"
+
+
 def test_runtime_projection_marks_imported_single_member_pending_until_runtime_presence(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

@@ -39,6 +39,13 @@ def _normalize_ping_source(source: str | None = None, *, checked_by: str | None 
         return normalized
 
     marker = str(checked_by or "").strip().lower()
+    # Provider refresh verification is an automatic probe of the selected
+    # provider member. Keep its provenance distinct from selector/watchdog
+    # probes, and only accept the exact internal caller pair. In particular,
+    # arbitrary `provider_validation` labels must not make a manual probe
+    # eligible for automatic selection.
+    if normalized == "provider_validation" and marker == "provider_generation":
+        return normalized
     if marker.startswith("selector"):
         return "selector"
     if marker.startswith("watchdog"):
