@@ -1157,7 +1157,7 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual(0, summary["validation"]["returncode"])
         self.assertEqual({"ok": False, "native_top_level_rules_match": False,
                           "wiring_proven": False}, summary["native_udp_policy_proof"])
-        self.assertEqual({"ok": False, "recovered": False,
+        self.assertEqual({"ok": False, "recovered": False, "error_code": None,
                           "reason": "restore_restart_failed"}, summary["recovery"])
 
     def test_provider_verification_observer_redacts_phase_and_reraises(self):
