@@ -60,6 +60,9 @@ class ProviderHttpTestBridge:
         self._hold_probe_count = 0
         self.probe_responses: list[int] = []
         self.probe_events: list[dict[str, object]] = []
+        self.probe_header_write_completion_count = 0
+        self.probe_header_write_errors: dict[str, int] = {}
+        self.probe_header_write_events: list[dict[str, object]] = []
         self.probe_requests = 0
         upstream = ("198.18.240.2:5301" if packet_endpoint else "127.0.0.1:5301")
         self.current_config: dict[str, object] = {
@@ -157,9 +160,15 @@ class ProviderHttpTestBridge:
                         with bridge._lock:
                             bridge.probe_responses.append(204)
                             bridge.probe_events.append({"kind": "http_response", "status": 204})
-                        self.send_response(204)
-                        self.send_header("Content-Length", "0")
-                        self.end_headers()
+                        try:
+                            self.send_response(204)
+                            self.send_header("Content-Length", "0")
+                            self.end_headers()
+                        except OSError as exc:
+                            bridge.record_probe_header_write(self.command, 204, exc)
+                            raise
+                        else:
+                            bridge.record_probe_header_write(self.command, 204)
                     else:
                         with bridge._lock:
                             bridge.probe_events.append({"kind": "transport_closed", "status": None})
@@ -299,9 +308,15 @@ class ProviderHttpTestBridge:
                         with bridge._lock:
                             bridge.probe_responses.append(504)
                             bridge.probe_events.append({"kind": "http_response", "status": 504})
-                        self.send_response(504)
-                        self.send_header("Content-Length", "0")
-                        self.end_headers()
+                        try:
+                            self.send_response(504)
+                            self.send_header("Content-Length", "0")
+                            self.end_headers()
+                        except OSError as exc:
+                            bridge.record_probe_header_write(self.command, 504, exc)
+                            raise
+                        else:
+                            bridge.record_probe_header_write(self.command, 504)
                         self.close_connection = True
                         return
                 with bridge._lock:
@@ -310,9 +325,15 @@ class ProviderHttpTestBridge:
                     with bridge._lock:
                         bridge.probe_responses.append(204)
                         bridge.probe_events.append({"kind": "http_response", "status": 204})
-                    self.send_response(204)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
+                    try:
+                        self.send_response(204)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                    except OSError as exc:
+                        bridge.record_probe_header_write(self.command, 204, exc)
+                        raise
+                    else:
+                        bridge.record_probe_header_write(self.command, 204)
                     return
                 with bridge._lock:
                     bridge.probe_events.append({"kind": "transport_closed", "status": None})
@@ -361,6 +382,36 @@ class ProviderHttpTestBridge:
         with self._lock:
             return list(self.probe_responses)
 
+    def record_probe_header_write(self, method: str, status: int, error: OSError | None = None) -> None:
+        """Record local header-write completion, distinct from response intent."""
+        if method not in {"GET", "HEAD"} or type(status) is not int or status not in {204, 504}:
+            raise ValueError("probe header-write evidence is outside the fixed contract")
+        error_code = None
+        if error is not None:
+            if isinstance(error, BrokenPipeError):
+                error_code = "broken_pipe"
+            elif isinstance(error, ConnectionResetError):
+                error_code = "connection_reset"
+            elif isinstance(error, TimeoutError):
+                error_code = "timeout"
+            else:
+                error_code = "os_error"
+        event = {"method": method, "status": status,
+                 "kind": "header_write_error" if error_code else "header_write_complete"}
+        if error_code:
+            event["error_code"] = error_code
+        with self._lock:
+            if error_code:
+                self.probe_header_write_errors[error_code] = (
+                    min(1_000_000, self.probe_header_write_errors.get(error_code, 0) + 1)
+                )
+            else:
+                self.probe_header_write_completion_count = min(
+                    1_000_000, self.probe_header_write_completion_count + 1
+                )
+            self.probe_header_write_events.append(event)
+            del self.probe_header_write_events[:-16]
+
     def snapshot_probe_summary(self) -> dict[str, object]:
         with self._lock:
             responses = list(self.probe_responses)
@@ -373,6 +424,9 @@ class ProviderHttpTestBridge:
                 "event_count": len(self.probe_events),
                 "transport_closed_count": sum(event.get("kind") == "transport_closed" for event in self.probe_events),
                 "recent_events": [dict(event) for event in self.probe_events[-8:]],
+                "header_write_completion_count": self.probe_header_write_completion_count,
+                "header_write_error_counts": dict(self.probe_header_write_errors),
+                "header_write_recent_events": [dict(event) for event in self.probe_header_write_events[-8:]],
             }
 
     def snapshot_calls(self) -> list[tuple[str, str, dict[str, str], dict[str, object] | None]]:

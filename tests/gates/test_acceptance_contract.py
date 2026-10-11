@@ -877,10 +877,19 @@ class AcceptanceContractTests(unittest.TestCase):
         summary = {
             "request_count": 9, "response_count": 6, "event_count": 8,
             "transport_closed_count": 2, "response_status_counts": {"204": 4, "504": 2},
+            "header_write_completion_count": 3,
+            "header_write_error_counts": {"broken_pipe": 1, "secret_error": 99},
             "recent_events": [
                 {"kind": "http_response", "status": 204, "url": "http://secret.invalid/path"},
                 {"kind": "transport_closed", "status": None, "token": "SECRET_SENTINEL"},
                 {"kind": "untrusted-kind-with-sensitive-text", "status": 500},
+            ],
+            "header_write_recent_events": [
+                {"kind": "header_write_complete", "method": "HEAD", "status": 204},
+                {"kind": "header_write_error", "method": "GET", "status": 204,
+                 "error_code": "broken_pipe", "message": "SECRET_SENTINEL"},
+                {"kind": "header_write_error", "method": "POST", "status": 204,
+                 "error_code": "os_error"},
             ],
         }
         _record_owned_probe_boundary(lambda key, value: recorded.setdefault(key, value), "failure", summary)
@@ -892,8 +901,34 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual({"204": 4, "504": 2}, result["response_status_counts"])
         self.assertEqual([{"kind": "http_response", "status": 204},
                           {"kind": "transport_closed", "status": None}], result["recent_events"])
+        self.assertEqual(3, result["header_write_completion_count"])
+        self.assertEqual({"broken_pipe": 1}, result["header_write_error_counts"])
+        self.assertEqual([
+            {"kind": "header_write_complete", "method": "HEAD", "status": 204},
+            {"kind": "header_write_error", "method": "GET", "status": 204,
+             "error_code": "broken_pipe"},
+        ], result["header_write_recent_events"])
         self.assertNotIn("secret.invalid", encoded)
         self.assertNotIn("SECRET_SENTINEL", encoded)
+
+        worst_case_summary = {
+            "request_count": 1_000_000, "response_count": 1_000_000,
+            "event_count": 1_000_000, "transport_closed_count": 1_000_000,
+            "response_status_counts": {"204": 1_000_000, "504": 1_000_000, "secret": 1},
+            "header_write_completion_count": 1_000_000,
+            "header_write_error_counts": {name: 1_000_000 for name in
+                                           ("broken_pipe", "connection_reset", "timeout", "os_error")},
+            "recent_events": [{"kind": "http_response", "status": 204, "url": "SECRET_SENTINEL"} for _ in range(8)],
+            "header_write_recent_events": ([
+                {"kind": "header_write_complete", "method": method, "status": 204}
+                for method in ("GET", "HEAD") for _ in range(4)
+            ] + [{"kind": "header_write_error", "method": "GET", "status": 204,
+                  "error_code": "os_error"} for _ in range(8)]),
+        }
+        worst_case_recorded = {}
+        _record_owned_probe_boundary(
+            lambda key, value: worst_case_recorded.setdefault(key, value), "worst_case", worst_case_summary)
+        self.assertLessEqual(len(next(iter(worst_case_recorded.values())).encode("utf-8")), 2048)
 
     def test_acceptance_recovery_routes_build_fresh_production_controller(self):
         tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
@@ -1095,10 +1130,28 @@ class AcceptanceContractTests(unittest.TestCase):
                 self.probe_available = False
                 self.probe_events = []
                 self.probe_responses = []
+                self.probe_header_write_completion_count = 0
+                self.probe_header_write_errors = {}
+                self.probe_header_write_events = []
+                self.header_write_order = []
+                self.last_header_write_error = None
                 self.mode = "normal"
                 self.calls = []
                 self.request_entered = threading.Event()
                 self._release_response = threading.Event()
+
+            def record_probe_header_write(self, method, status, error=None):
+                event = {"kind": "header_write_error" if error else "header_write_complete",
+                         "method": method, "status": status}
+                self.header_write_order.append("record")
+                if error:
+                    self.last_header_write_error = error
+                    error_code = "broken_pipe" if isinstance(error, BrokenPipeError) else "os_error"
+                    event["error_code"] = error_code
+                    self.probe_header_write_errors[error_code] = 1
+                else:
+                    self.probe_header_write_completion_count += 1
+                self.probe_header_write_events.append(event)
 
         class Connection:
             def __init__(self):
@@ -1108,7 +1161,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 self.shutdown_how.append(how)
 
         class Request:
-            def __init__(self, path):
+            def __init__(self, path, header_write_error=None):
                 self.headers = {"Content-Length": "0"}
                 self.rfile = io.BytesIO()
                 self.path = path
@@ -1116,6 +1169,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 self.connection = Connection()
                 self.close_connection = False
                 self.protocol_calls = []
+                self.header_write_error = header_write_error
 
             def _respond(self, status, payload, headers=None):
                 self.protocol_calls.append(("response", status, payload, headers))
@@ -1128,6 +1182,10 @@ class AcceptanceContractTests(unittest.TestCase):
 
             def end_headers(self):
                 self.protocol_calls.append(("end_headers",))
+                if bridge is not None:
+                    bridge.header_write_order.append("end_headers")
+                if self.header_write_error is not None:
+                    raise self.header_write_error
 
             def send_error(self, status, message=None, explain=None):
                 self.protocol_calls.append(("send_error", status, message, explain))
@@ -1143,8 +1201,25 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertTrue(unavailable.close_connection)
         self.assertEqual([socket.SHUT_RDWR], unavailable.connection.shutdown_how)
         self.assertEqual([], bridge.probe_responses)
+        self.assertEqual(0, bridge.probe_header_write_completion_count)
         self.assertEqual([{"kind": "transport_closed", "status": None}], bridge.probe_events)
         self.assertEqual(1, bridge.probe_requests)
+
+        bridge.probe_available = True
+        bridge.header_write_order.clear()
+        completed = Request("/generate_204")
+        namespace["_handle"](completed)
+        self.assertEqual(["end_headers", "record"], bridge.header_write_order)
+        self.assertEqual(1, bridge.probe_header_write_completion_count)
+
+        write_failure = BrokenPipeError("SECRET_SENTINEL")
+        failed_write = Request("/generate_204", header_write_error=write_failure)
+        with self.assertRaises(BrokenPipeError) as raised:
+            namespace["_handle"](failed_write)
+        self.assertIs(write_failure, raised.exception)
+        self.assertIs(write_failure, bridge.last_header_write_error)
+        self.assertEqual("header_write_error", bridge.probe_header_write_events[-1]["kind"])
+        self.assertEqual("broken_pipe", bridge.probe_header_write_events[-1]["error_code"])
 
         for mode, expected_status in (("429", 429), ("503", 503)):
             bridge.mode = mode
