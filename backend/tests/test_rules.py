@@ -2,6 +2,7 @@ from __future__ import annotations
 from _test_support import configure_test_state_dir as _configure_env
 
 from pathlib import Path
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,7 +12,7 @@ from fwrouter_api.adapters.rules_sources import (
     RulesSourceFetchError,
     RulesSourcePayload,
 )
-from fwrouter_api.db.connection import initialize_database
+from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.main import create_app
 from fwrouter_api.services.jobs import create_job
 from fwrouter_api.services.rules import (
@@ -91,6 +92,35 @@ def test_rules_get_does_not_create_seed_files(
     assert overview.status_code == 200
     assert effective.status_code == 200
     assert all(not paths[key].exists() for key in seed_keys)
+
+
+def test_manual_rules_api_forwards_request_actor_to_draft_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+
+    with TestClient(create_app(enable_startup_tasks=False)) as client:
+        response = client.post(
+            "/api/v2/rules/manual",
+            json={"text": "VPN vpn.test\nDIRECT direct.test", "requested_by": "pytest:dns53"},
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is True
+    validation = payload["data"]["rules"]["manual"]["draft_validation"]
+    assert validation["valid"] is True
+    assert validation["normalized_text"] == "VPN vpn.test\nDIRECT direct.test\n"
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT details_json FROM operational_logs ORDER BY created_at DESC"
+        ).fetchall()
+    events = [json.loads(row["details_json"] or "{}") for row in rows]
+    draft_events = [event for event in events if event.get("event_code") == "rules.manual_draft_changed"]
+    assert len(draft_events) == 1
+    assert draft_events[0].get("actor") == "pytest:dns53"
 
 
 class _FakeRulesSourceAdapter:

@@ -136,6 +136,16 @@ jobs:
             > "$RUNNER_TEMP/phase-d-preflight/network-fixture-contract.log" 2>&1
           python tests/gates/test_smoke_contract.py \
             > "$RUNNER_TEMP/phase-d-preflight/smoke-contract.log" 2>&1
+      - name: Run the exact manual-rules API actor-forwarding regression
+        if: needs.select-stage.outputs.stage == 'packet-diagnostic'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/manual-rules-actor-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/manual-rules-actor-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/manual-rules-actor-nodeids.log" \
+            tests/test_rules.py::test_manual_rules_api_forwards_request_actor_to_draft_service
       - name: Run the fixed metadata-override exact-node set
         if: needs.select-stage.outputs.stage == 'metadata'
         run: |

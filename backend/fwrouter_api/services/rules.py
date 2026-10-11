@@ -364,10 +364,10 @@ def get_rules_summary() -> dict[str, Any]:
     return impl()
 
 
-def save_manual_draft(text: str) -> dict[str, Any]:
+def save_manual_draft(text: str, *, requested_by: str = "api") -> dict[str, Any]:
     from fwrouter_api.services.rules_state import save_manual_draft as impl
 
-    return impl(text)
+    return impl(text, requested_by=requested_by)
 
 
 def get_effective_rules() -> dict[str, Any]:
