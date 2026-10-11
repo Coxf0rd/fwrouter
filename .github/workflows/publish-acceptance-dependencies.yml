@@ -4,6 +4,10 @@ on:
   push:
     branches: [stage/test-architecture-ci-stabilization]
 
+concurrency:
+  group: fwrouter-acceptance-dependency-publisher
+  cancel-in-progress: false
+
 permissions:
   contents: read
 

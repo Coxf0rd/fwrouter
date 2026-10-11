@@ -186,6 +186,31 @@ def _check_local_image(image_tag: str, *, lock: dict[str, Any], lock_digest: str
     return image
 
 
+def _digest_from_pull_output(output: str) -> str:
+    matches = re.findall(r"(?im)^Digest:\s+(sha256:[0-9a-f]{64})\s*$", output)
+    if len(matches) != 1:
+        raise PublishError("registry pull did not identify exactly one immutable image digest")
+    return matches[0]
+
+
+def _reuse_existing_locked_tag(image_tag: str, *, lock: dict[str, Any],
+                               lock_digest: str) -> tuple[str, dict[str, Any], dict[str, Any], float]:
+    """Pull and verify an existing lock tag without rebuilding or pushing it."""
+    pull_started = time.monotonic()
+    pull_output = _run_output(["docker", "pull", "--platform", lock["platform"], image_tag], timeout=600)
+    pull_seconds = round(time.monotonic() - pull_started, 3)
+    immutable_ref = f"{REGISTRY_IMAGE}@{_digest_from_pull_output(pull_output or '')}"
+    rows = _run_json(["docker", "image", "inspect", image_tag])
+    if not isinstance(rows, list) or len(rows) != 1:
+        raise PublishError("existing dependency tag inspect returned an unexpected result")
+    repo_digests = rows[0].get("RepoDigests")
+    if not isinstance(repo_digests, list) or immutable_ref not in repo_digests:
+        raise PublishError("existing dependency tag digest differs from the pulled immutable image")
+    image = _check_local_image(immutable_ref, lock=lock, lock_digest=lock_digest)
+    manifest = _read_image_manifest(immutable_ref, lock=lock, lock_digest=lock_digest)
+    return immutable_ref, image, manifest, pull_seconds
+
+
 def _read_image_manifest(image_tag: str, *, lock: dict[str, Any], lock_digest: str) -> dict[str, Any]:
     argv = [
         "docker", "run", "--rm", "--network=none", "--read-only", "--user", "10001:10001",
@@ -329,37 +354,44 @@ def publish(*, context: Path, input_receipt_path: Path, receipt_path: Path) -> d
     existing = _run_output(["docker", "manifest", "inspect", image_tag], timeout=30,
                            missing_manifest_ok=True)
     if existing is not None:
-        raise PublishError("dependency lock tag already exists in GHCR; refusing to rebuild or overwrite it")
+        immutable_ref, image, dependency_manifest, reused_pull_seconds = _reuse_existing_locked_tag(
+            image_tag, lock=lock, lock_digest=lock_digest)
+        build_seconds = 0.0
+        push_seconds = 0.0
+        publication_action = "reused_existing_digest"
+    else:
+        reused_pull_seconds = 0.0
+        build_started = time.monotonic()
+        _run_output([
+            "docker", "build", "--pull", "--platform", lock["platform"],
+            "--file", str(context / "Dockerfile"),
+            "--build-arg", f"BASE_IMAGE={lock['base_image']}",
+            "--build-arg", f"DEBIAN_SNAPSHOT={lock['debian_snapshot']['url']}",
+            "--build-arg", f"DEPENDENCY_LOCK_SHA256={lock_digest}",
+            "--tag", image_tag, str(context),
+        ], timeout=1200)
+        build_seconds = round(time.monotonic() - build_started, 3)
+        image = _check_local_image(image_tag, lock=lock, lock_digest=lock_digest)
+        dependency_manifest = _read_image_manifest(image_tag, lock=lock, lock_digest=lock_digest)
 
-    build_started = time.monotonic()
-    _run_output([
-        "docker", "build", "--pull", "--platform", lock["platform"],
-        "--file", str(context / "Dockerfile"),
-        "--build-arg", f"BASE_IMAGE={lock['base_image']}",
-        "--build-arg", f"DEBIAN_SNAPSHOT={lock['debian_snapshot']['url']}",
-        "--build-arg", f"DEPENDENCY_LOCK_SHA256={lock_digest}",
-        "--tag", image_tag, str(context),
-    ], timeout=1200)
-    build_seconds = round(time.monotonic() - build_started, 3)
-    image = _check_local_image(image_tag, lock=lock, lock_digest=lock_digest)
-    dependency_manifest = _read_image_manifest(image_tag, lock=lock, lock_digest=lock_digest)
+        push_started = time.monotonic()
+        push_output = _run_output(["docker", "push", image_tag], timeout=300)
+        push_seconds = round(time.monotonic() - push_started, 3)
+        digests = re.findall(r"digest:\s+(sha256:[0-9a-f]{64})", push_output or "")
+        if len(digests) != 1:
+            try:
+                pushed = _run_json(["docker", "image", "inspect", image_tag])
+            except PublishError as exc:
+                raise PublishError(f"registry digest inspect failed; bounded push output: {push_output}") from exc
+            repo_digests = pushed[0].get("RepoDigests", []) if isinstance(pushed, list) and len(pushed) == 1 else []
+            digests = [item.split("@", 1)[1] for item in repo_digests
+                       if isinstance(item, str) and item.startswith(REGISTRY_IMAGE + "@")
+                       and re.fullmatch(r"sha256:[0-9a-f]{64}", item.split("@", 1)[1])]
+        if len(set(digests)) != 1:
+            raise PublishError(f"registry push did not return one immutable manifest digest; bounded output: {push_output}")
+        immutable_ref = f"{REGISTRY_IMAGE}@{digests[0]}"
+        publication_action = "built_and_pushed"
 
-    push_started = time.monotonic()
-    push_output = _run_output(["docker", "push", image_tag], timeout=300)
-    push_seconds = round(time.monotonic() - push_started, 3)
-    digests = re.findall(r"digest:\s+(sha256:[0-9a-f]{64})", push_output)
-    if len(digests) != 1:
-        try:
-            pushed = _run_json(["docker", "image", "inspect", image_tag])
-        except PublishError as exc:
-            raise PublishError(f"registry digest inspect failed; bounded push output: {push_output}") from exc
-        repo_digests = pushed[0].get("RepoDigests", []) if isinstance(pushed, list) and len(pushed) == 1 else []
-        digests = [item.split("@", 1)[1] for item in repo_digests
-                   if isinstance(item, str) and item.startswith(REGISTRY_IMAGE + "@")
-                   and re.fullmatch(r"sha256:[0-9a-f]{64}", item.split("@", 1)[1])]
-    if len(set(digests)) != 1:
-        raise PublishError(f"registry push did not return one immutable manifest digest; bounded output: {push_output}")
-    immutable_ref = f"{REGISTRY_IMAGE}@{digests[0]}"
     anonymous_pull_ok, anonymous_pull_seconds, anonymous_pull_error = _anonymous_pull(
         immutable_ref, runner_temp=runner_temp)
     receipt = {
@@ -368,6 +400,7 @@ def publish(*, context: Path, input_receipt_path: Path, receipt_path: Path) -> d
         "repository": OWNER,
         "ref": immutable_ref,
         "tag_hint": image_tag,
+        "publication_action": publication_action,
         "lock_sha256": lock_digest,
         "input_receipt_sha256": input_receipt_digest,
         "context_bytes": context_size,
@@ -378,6 +411,7 @@ def publish(*, context: Path, input_receipt_path: Path, receipt_path: Path) -> d
         "image_bytes": image.get("Size"),
         "build_seconds": build_seconds,
         "push_seconds": push_seconds,
+        "reused_pull_seconds": reused_pull_seconds,
         "anonymous_pull_seconds": anonymous_pull_seconds,
         "anonymous_pull_status": "passed" if anonymous_pull_ok else "blocked_or_unverified",
         "anonymous_pull_diagnostic": anonymous_pull_error,
@@ -391,7 +425,7 @@ def publish(*, context: Path, input_receipt_path: Path, receipt_path: Path) -> d
             or receipt["image_bytes"] <= 0
             or any(not isinstance(receipt[field], (int, float)) or isinstance(receipt[field], bool)
                    or not math.isfinite(float(receipt[field])) or receipt[field] < 0
-                   for field in ("build_seconds", "push_seconds"))):
+                   for field in ("build_seconds", "push_seconds", "reused_pull_seconds"))):
         raise PublishError("published image measurements are invalid")
     _write_runner_receipt(receipt_path, receipt, runner_temp)
     return receipt

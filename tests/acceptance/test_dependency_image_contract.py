@@ -6,6 +6,7 @@ import hashlib
 import json
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -107,7 +108,7 @@ class DependencyImageContractTests(unittest.TestCase):
         self.assertIn("selectors.DefaultSelector", runner_source)
         self.assertNotIn("capture_output=True", runner_source)
 
-    def test_publisher_refuses_existing_lock_tag_before_a_cached_build(self):
+    def test_existing_publisher_tag_is_verified_and_reused_without_push(self):
         source = (ACCEPTANCE / "publish_dependency_image.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         publish_function = next(node for node in tree.body
@@ -115,8 +116,37 @@ class DependencyImageContractTests(unittest.TestCase):
         publish_source = ast.get_source_segment(source, publish_function) or ""
         self.assertLess(publish_source.index('"docker", "manifest", "inspect"'),
                         publish_source.index('"docker", "build"'))
-        self.assertIn("dependency lock tag already exists in GHCR", publish_source)
+        self.assertIn("_reuse_existing_locked_tag", publish_source)
+        self.assertIn("reused_pull_seconds", publish_source)
+        self.assertIn('"docker", "push"', publish_source)
         self.assertNotIn("--no-cache", publish_source)
+        existing_guard = next(node for node in ast.walk(publish_function)
+                              if isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                              and isinstance(node.test.left, ast.Name) and node.test.left.id == "existing"
+                              and isinstance(node.test.ops[0], ast.IsNot)
+                              and isinstance(node.test.comparators[0], ast.Constant)
+                              and node.test.comparators[0].value is None)
+        reused_calls = {call.func.id for call in ast.walk(ast.Module(body=existing_guard.body, type_ignores=[]))
+                        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)}
+        fresh_calls = {call.func.id for call in ast.walk(ast.Module(body=existing_guard.orelse, type_ignores=[]))
+                       if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)}
+        self.assertIn("_reuse_existing_locked_tag", reused_calls)
+        self.assertNotIn("_run_output", reused_calls)
+        self.assertIn("_run_output", fresh_calls)
+
+        reuse = next(node for node in tree.body
+                     if isinstance(node, ast.FunctionDef) and node.name == "_reuse_existing_locked_tag")
+        reuse_source = ast.get_source_segment(source, reuse) or ""
+        self.assertIn('["docker", "pull", "--platform", lock["platform"], image_tag]', reuse_source)
+        self.assertIn("RepoDigests", reuse_source)
+        self.assertIn("_check_local_image", reuse_source)
+        self.assertIn("_check_local_image(immutable_ref", reuse_source)
+        self.assertIn("_read_image_manifest", reuse_source)
+        self.assertNotIn('"docker", "push"', reuse_source)
+
+        workflow = (ROOT / ".github/workflows/publish-acceptance-dependencies.yml").read_text(encoding="utf-8")
+        self.assertIn("group: fwrouter-acceptance-dependency-publisher", workflow)
+        self.assertIn("cancel-in-progress: false", workflow)
 
         readback = next(node for node in tree.body
                         if isinstance(node, ast.FunctionDef) and node.name == "_read_image_manifest")
@@ -132,6 +162,46 @@ class DependencyImageContractTests(unittest.TestCase):
         self.assertIn('"--config"', anonymous_source)
         self.assertIn('"DOCKER_CONFIG"', anonymous_source)
         self.assertIn("shutil.rmtree(config", anonymous_source)
+
+    def test_existing_tag_pull_digest_parser_and_verification_are_strict(self):
+        digest = "sha256:" + "b" * 64
+        self.assertEqual(digest, publisher._digest_from_pull_output(f"Status: Image is up to date\nDigest: {digest}\n"))
+        for output in ("Status: Image is up to date\n", f"Digest: {digest}\nDigest: {digest}\n",
+                       "Digest: sha256:NOT_A_DIGEST\n"):
+            with self.subTest(output=output), self.assertRaises(publisher.PublishError):
+                publisher._digest_from_pull_output(output)
+
+        lock = json.loads((ACCEPTANCE / "dependency-image.lock.json").read_text(encoding="utf-8"))
+        lock_digest = publisher._canonical_digest(lock)
+        image_tag = f"{publisher.REGISTRY_IMAGE}:deps-{lock_digest}"
+        immutable_ref = f"{publisher.REGISTRY_IMAGE}@{digest}"
+        image = {"Id": "sha256:" + "c" * 64}
+        manifest = {"schema": "fwrouter-acceptance-dependency-image/v1"}
+        with (mock.patch.object(publisher, "_run_output", return_value=f"Digest: {digest}\n") as run_output,
+              mock.patch.object(publisher, "_run_json", return_value=[{"RepoDigests": [immutable_ref]}]) as run_json,
+              mock.patch.object(publisher, "_check_local_image", return_value=image) as check_image,
+              mock.patch.object(publisher, "_read_image_manifest", return_value=manifest) as read_manifest,
+              mock.patch.object(publisher.time, "monotonic", side_effect=(10.0, 12.5))):
+            observed_ref, observed_image, observed_manifest, observed_pull_seconds = publisher._reuse_existing_locked_tag(
+                image_tag, lock=lock, lock_digest=lock_digest)
+        self.assertEqual(immutable_ref, observed_ref)
+        self.assertIs(image, observed_image)
+        self.assertIs(manifest, observed_manifest)
+        self.assertEqual(2.5, observed_pull_seconds)
+        run_output.assert_called_once_with(["docker", "pull", "--platform", lock["platform"], image_tag],
+                                           timeout=600)
+        run_json.assert_called_once_with(["docker", "image", "inspect", image_tag])
+        check_image.assert_called_once_with(immutable_ref, lock=lock, lock_digest=lock_digest)
+        read_manifest.assert_called_once_with(immutable_ref, lock=lock, lock_digest=lock_digest)
+
+        with (mock.patch.object(publisher, "_run_output", return_value=f"Digest: {digest}\n"),
+              mock.patch.object(publisher, "_run_json", return_value=[{"RepoDigests": []}]),
+              mock.patch.object(publisher, "_check_local_image") as check_image,
+              mock.patch.object(publisher, "_read_image_manifest") as read_manifest,
+              self.assertRaisesRegex(publisher.PublishError, "digest differs")):
+            publisher._reuse_existing_locked_tag(image_tag, lock=lock, lock_digest=lock_digest)
+        check_image.assert_not_called()
+        read_manifest.assert_not_called()
 
     def test_workflow_runs_contracts_before_host_registry_auth_and_never_on_pr(self):
         workflow = (ROOT / ".github/workflows/publish-acceptance-dependencies.yml").read_text(encoding="utf-8")
