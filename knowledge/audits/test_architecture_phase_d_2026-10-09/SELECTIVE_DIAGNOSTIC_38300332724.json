@@ -1,0 +1,179 @@
+{
+  "run_id": 38300332724,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38300332724",
+  "source_commit": "ec8455ca95be9853a0a1a04e2783972ea4a59e0f",
+  "status": "FAIL",
+  "attempts": [
+    {
+      "attempt": "attempt-1",
+      "status": "passed",
+      "suites": [
+        {
+          "path": "backend/tests/test_apply_pipeline.py",
+          "status": "passed",
+          "counts": {
+            "passed": 54
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "installer/test-install.sh",
+          "status": "passed",
+          "counts": {
+            "passed": 1
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "tests/gates/test_gate_contract.py",
+          "status": "passed",
+          "counts": {
+            "passed": 62
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "tests/gates/test_acceptance_contract.py",
+          "status": "passed",
+          "counts": {
+            "passed": 110
+          },
+          "failed_ids": []
+        }
+      ]
+    },
+    {
+      "attempt": "attempt-2",
+      "status": "passed",
+      "suites": [
+        {
+          "path": "backend/tests/test_apply_pipeline.py",
+          "status": "passed",
+          "counts": {
+            "passed": 54
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "installer/test-install.sh",
+          "status": "passed",
+          "counts": {
+            "passed": 1
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "tests/gates/test_gate_contract.py",
+          "status": "passed",
+          "counts": {
+            "passed": 62
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "tests/gates/test_acceptance_contract.py",
+          "status": "passed",
+          "counts": {
+            "passed": 110
+          },
+          "failed_ids": []
+        }
+      ]
+    },
+    {
+      "attempt": "attempt-3",
+      "status": "passed",
+      "suites": [
+        {
+          "path": "backend/tests/test_apply_pipeline.py",
+          "status": "passed",
+          "counts": {
+            "passed": 54
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "installer/test-install.sh",
+          "status": "passed",
+          "counts": {
+            "passed": 1
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "tests/gates/test_gate_contract.py",
+          "status": "passed",
+          "counts": {
+            "passed": 62
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "tests/gates/test_acceptance_contract.py",
+          "status": "passed",
+          "counts": {
+            "passed": 110
+          },
+          "failed_ids": []
+        }
+      ]
+    },
+    {
+      "attempt": "attempt-4",
+      "status": "failed",
+      "suites": [
+        {
+          "path": "backend/tests/test_apply_pipeline.py",
+          "status": "failed",
+          "counts": {
+            "passed": 53,
+            "failed": 1
+          },
+          "failed_ids": [
+            "backend/tests/test_apply_pipeline.py::test_apply_pipeline_apply_mode_records_selective_domain_aware_success"
+          ]
+        },
+        {
+          "path": "installer/test-install.sh",
+          "status": "passed",
+          "counts": {
+            "passed": 1
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "tests/gates/test_gate_contract.py",
+          "status": "passed",
+          "counts": {
+            "passed": 62
+          },
+          "failed_ids": []
+        },
+        {
+          "path": "tests/gates/test_acceptance_contract.py",
+          "status": "passed",
+          "counts": {
+            "passed": 110
+          },
+          "failed_ids": []
+        }
+      ]
+    }
+  ],
+  "attempt_5": "NOT RUN: stopped on first failed repetition",
+  "confirmed_observation": {
+    "candidate_mihomo_adapter": "http",
+    "candidate_runtime_state": "degraded",
+    "candidate_tproxy_port": null,
+    "candidate_redir_port": null,
+    "candidate_vpn_policy_installed": false,
+    "candidate_selective_vpn_policy_ready": false,
+    "post_apply_enforcement": "global_selective_enforced"
+  },
+  "confirmed_source_gap": "background runtime prewarm is not drained by ordinary fixture teardown; two adapter aliases populate the same health cache; cache clear does not fence in-flight publication",
+  "causation_boundary": "exact originating thread not recorded; producer and timing mechanism source-traced, not barrier-reproduced yet",
+  "proposed_fix": "drain or explicitly control component-test prewarm before fixture restoration and cache clear; prove invalidation fencing with deterministic blocked-loader tests before source correction",
+  "fix_implemented": false,
+  "new_tests_run": false,
+  "production_changed": false
+}
