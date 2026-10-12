@@ -171,6 +171,8 @@ def test_runtime_summary_marks_temporary_direct_safe_bootstrap_when_not_enforced
     isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_STARTUP_RECOVERY_ENABLED", "true")
+    get_settings.cache_clear()
     initialize_database()
 
     summary = get_runtime_summary()

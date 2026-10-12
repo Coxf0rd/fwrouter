@@ -111,8 +111,8 @@ def _base_candidate() -> dict:
         "rules": ["MATCH,DIRECT"],
         "proxies": [{"name": "Test VPN", "type": "socks5", "server": "1.1.1.1", "port": 1080}],
         "proxy-groups": [
-            {"name": "vpn-auto", "type": "select", "proxies": ["Test VPN", "REJECT"]},
-            {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "Test VPN", "REJECT"]},
+            {"name": "vpn-auto", "type": "select", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "REJECT"]},
         ],
         "listeners": [
             {
@@ -138,7 +138,10 @@ def _base_candidate() -> dict:
                 "udp": True,
             },
         ],
-        "sub-rules": {"fwrouter-transparent": ["MATCH,vpn-global"]},
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
     }
 
 
