@@ -3142,10 +3142,15 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/test_dataplane_global.py::test_selective_vpn_policy_prepare_is_separate_from_egress_verification",
             "tests/test_apply_pipeline.py::test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_policy_ready",
             "tests/test_apply_pipeline.py::test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_closed_for_vpn_default",
-            "backend/tests/test_mihomo_config_runtime.py::test_reconcile_mihomo_selective_default_fast_requires_full_compile_when_udp_guard_sequence_changes",
-            "backend/tests/test_routing_drift_reapply.py::test_set_selective_default_reapplies_when_live_dataplane_drift_is_detected",
-            "backend/tests/test_routing_drift_reapply.py::test_set_selective_default_does_not_retry_unmarked_fast_failure",
+            "tests/test_mihomo_config_runtime.py::test_reconcile_mihomo_selective_default_fast_requires_full_compile_when_udp_guard_sequence_changes",
+            "tests/test_routing_drift_reapply.py::test_set_selective_default_reapplies_when_live_dataplane_drift_is_detected",
+            "tests/test_routing_drift_reapply.py::test_set_selective_default_does_not_retry_unmarked_fast_failure",
         )
+        backend_root = Path(__file__).parents[2] / "backend"
+        for nodeid in selective_nodeids:
+            relative_path = nodeid.split("::", 1)[0]
+            self.assertTrue(relative_path.startswith("tests/"), nodeid)
+            self.assertTrue((backend_root / relative_path).is_file(), nodeid)
         self.assertIn("Run exact selective live-mode and preflight regressions", workflow)
         self.assertIn("needs.select-stage.outputs.stage == 'reentry-diagnostic' ||\n"
                       "          needs.select-stage.outputs.stage == 'packet-diagnostic'", workflow)
@@ -3154,8 +3159,8 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertNotEqual(-1, step_end)
         selected_step = workflow[step_start:step_end]
         self.assertEqual(list(selective_nodeids), re.findall(
-            r"(?:tests/(?:test_dataplane_live|test_dataplane_global|test_apply_pipeline)"
-            r"|backend/tests/test_(?:mihomo_config_runtime|routing_drift_reapply))\.py::[A-Za-z0-9_]+",
+            r"tests/(?:test_dataplane_live|test_dataplane_global|test_apply_pipeline|"
+            r"test_mihomo_config_runtime|test_routing_drift_reapply)\.py::[A-Za-z0-9_]+",
             selected_step))
         self.assertIn('if [[ "$VALIDATION_STAGE" == recovery-diagnostic ]]; then suite=recovery-diagnostic; fi',
                       workflow)
