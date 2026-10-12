@@ -412,6 +412,8 @@ class DependencyImageContractTests(unittest.TestCase):
         self.assertIn("packages: write", workflow)
         self.assertNotIn("pull_request", workflow)
         self.assertIn("persist-credentials: false", workflow)
+        self.assertEqual(3, workflow.count("ref: ${{ github.sha }}"))
+        self.assertEqual(3, workflow.count("uses: actions/checkout@"))
         contract_position = workflow.index("test_dependency_image_contract.py")
         consumer_contract_position = workflow.index("test_consume_dependency_image_contract.py")
         auth_position = workflow.index("Authenticate Docker on the hosted publisher only")

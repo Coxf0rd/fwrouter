@@ -2897,6 +2897,9 @@ class AcceptanceContractTests(unittest.TestCase):
                 ids = sorted(partitions[suite])
                 partition_receipt["suite"] = suite
                 partition_receipt["scope"] = profile_name
+                # Kernel and packet receipts carry this marker in accepted hosted runs;
+                # it does not change their independently validated execution scope.
+                partition_receipt["diagnostic_only"] = True
                 partition_receipt["tests"] = {"nodeids": ids, "tests": len(ids),
                                                "failures": 0, "errors": 0, "skipped": 0}
                 partition_receipt["profile"]["profile"] = profile_name
