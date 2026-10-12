@@ -387,8 +387,14 @@ class NetworkFixtureContractTests(unittest.TestCase):
                             for call in phase_calls))
 
     def test_packet_scenario_proves_public_selector_change_with_second_owned_inbound(self):
-        scenario = _function_source(
-            "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks")
+        packet_source = PACKET_TEST.read_text(encoding="utf-8")
+        packet_tree = ast.parse(packet_source)
+        packet_functions = [node for node in packet_tree.body if isinstance(node, ast.FunctionDef)
+                            and node.name ==
+                            "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"]
+        self.assertEqual(len(packet_functions), 1)
+        packet_lines = packet_source.splitlines()
+        scenario = "\n".join(packet_lines[packet_functions[0].lineno - 1:packet_functions[0].end_lineno])
         baseline = scenario.index("provider_binding_before_selector = binding_for(source_ref)")
         membership = scenario.index("_upsert_subscription_servers(")
         pool = scenario.index("set(candidate_ids) == {logical_id, ordinary_server.server_id}")
@@ -1305,14 +1311,17 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "FixtureError": RuntimeError,
             "TABLE_NAME": "fwrouter_packet_fixture",
             "ROUTER_LAN_IP": "10.240.0.1", "CLIENT_IP": "10.240.0.2",
+            "ROUTER_WAN_IP": "198.18.240.1",
             "ENDPOINT_WAN_IP": "198.18.240.2", "SERVICE_VIP": "203.0.113.53",
             "DNS_VPN_SERVICE_VIP": "198.51.100.77", "PROTECTED_VIP": "10.250.240.2",
+            "DNS_UPSTREAM_IP": "1.1.1.1", "ENDPOINT_CONTROL_PORT": 8082,
             "DNS_BYPASS_NEGATIVE_IP": "8.8.8.8", "LEAK_DNS_TARGET": "127.0.0.11",
             "LEAK_RESERVED_TARGET": "192.0.2.1", "LEAK_RESERVED_PORT": 9,
             "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_XRAY_PORT": 5301,
             "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
             "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
             "PROTECTED_UDP_PORT": 9081,
+            "_redact": lambda value: str(value),
             "_run_fixed": lambda _args, *, input_bytes: (captured.update(script=input_bytes)
                                                            or type("Result", (), {"returncode": 0})()),
         }

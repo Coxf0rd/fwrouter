@@ -915,3 +915,6 @@ Prepared source-only extension of the existing packet scenario: a second fixed o
 
 
 Run [38209038153](https://github.com/Coxf0rd/fwrouter/actions/runs/38209038153), source `8a10af8`, stopped at hosted L0 Ruff F821: the new selector-packet scenario lacked its function-local `get_logical_runtime_name` import. Native/packet jobs were **SKIPPED**, not PASS. The correction imports the existing canonical logical-topology helper; assertions and routing semantics are unchanged. Raw logs/artifacts preserved under `evidence/run_38209038153/`.
+
+
+Run [38209145044](https://github.com/Coxf0rd/fwrouter/actions/runs/38209145044), source `f29b349`, passed syntax/lint and gate contracts46/46 plus acceptance contracts94/94. Network-fixture contracts stopped with one failure and one error (37 passing): the new selector contract searched the fixture rather than packet test source, and the endpoint guard isolated namespace omitted required constants. Corrections bind the source assertion to the packet AST and supply the complete fixed endpoint namespace. Native/packet acceptance remained SKIPPED/NOT RUN; assertions were not weakened. Raw artifacts retained under `evidence/run_38209145044/`.
