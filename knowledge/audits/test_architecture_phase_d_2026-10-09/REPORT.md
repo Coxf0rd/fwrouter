@@ -1193,3 +1193,10 @@ The first hosted gate expands the existing acceptance-tail cohort to include cac
 Source `e9a476e`, [run38303356534](https://github.com/Coxf0rd/fwrouter/actions/runs/38303356534): **293 PASS / 1 FAIL / 0 SKIP**, first repetition only; repetitions2–5 NOT RUN by stop-on-failure policy. All selective apply, prewarm admission/lifecycle, startup/UI dispatch, installer and gate/receipt contracts pass. The exact prior-cache regression demonstrates stale publication and replacement-entry deletion while the current implementation passes those predicates.
 
 The sole failure is a new matching-clear test assertion: its result bucket wraps the returned dictionary, while the expected value omitted that wrapper. Corrected to the explicit `result` bucket with the same nested fresh value; no application change or relaxed cache predicate. Raw JUnit/report retained untracked under `evidence/run_38303356534/targeted`; corrected hosted repetition is pending. Phase D remains BLOCKED on execution/reproducibility and the final source-matched affected/native gate.
+
+
+### Selective/cache stability targeted acceptance 38303879207 — PASS
+
+Source `e6664d7`, [run38303879207](https://github.com/Coxf0rd/fwrouter/actions/runs/38303879207): five independent acceptance-tail repetitions, **294 PASS / 0 FAIL / 0 SKIP each**, strict per-file JUnit/report cross-checks. Pinned old-module barrier evidence reproduces the real cache invalidation defect; current code preserves replacement ownership and original waiter completion. Prewarm lifecycle/admission and both exact selective routing assertions PASS. [Push-fast38303879219](https://github.com/Coxf0rd/fwrouter/actions/runs/38303879219) also PASS. The initial matching-clear bucket assertion was a test defect and is corrected without weakening the predicate.
+
+Reviewed receipt: `SELECTIVE_STABILITY_CHECKPOINT_38303879207.json`; raw artifacts remain untracked. This closes the targeted component stability gate, not complete Phase D. The final source-matched policy-selected affected L0–L5/native bundle is now requested because the cache is a shared contract; it is not L6 or L7. No production changes, Phase E/CD, PR or merge.

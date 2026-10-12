@@ -1,0 +1,65 @@
+{
+  "run_id": 38303879207,
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38303879207",
+  "repetitions": [
+    {
+      "attempt": "attempt-1",
+      "source_commit": "e6664d719cd9577eb099c634b9ac5bcf84034b6f",
+      "report_digest": "f7dde4e1d0ac82e694ded61db7872fed34cef62d967f95d5f01d089f4ea5ad96",
+      "counts": {
+        "passed": 294,
+        "failed": 0,
+        "skipped": 0
+      },
+      "status": "passed"
+    },
+    {
+      "attempt": "attempt-2",
+      "source_commit": "e6664d719cd9577eb099c634b9ac5bcf84034b6f",
+      "report_digest": "162812740b3bd23c3a3ddc58346161041a577395cd330c60e9f2cdaf1d12c37d",
+      "counts": {
+        "passed": 294,
+        "failed": 0,
+        "skipped": 0
+      },
+      "status": "passed"
+    },
+    {
+      "attempt": "attempt-3",
+      "source_commit": "e6664d719cd9577eb099c634b9ac5bcf84034b6f",
+      "report_digest": "79b16bdaafff3fe482f9d54cc87ac905dd8876e7cf48a6068dfe84c8993932e5",
+      "counts": {
+        "passed": 294,
+        "failed": 0,
+        "skipped": 0
+      },
+      "status": "passed"
+    },
+    {
+      "attempt": "attempt-4",
+      "source_commit": "e6664d719cd9577eb099c634b9ac5bcf84034b6f",
+      "report_digest": "d007886057cd9a600a4ae1845b34dcb1f24cb919fad788b80a84c597f9f068f9",
+      "counts": {
+        "passed": 294,
+        "failed": 0,
+        "skipped": 0
+      },
+      "status": "passed"
+    },
+    {
+      "attempt": "attempt-5",
+      "source_commit": "e6664d719cd9577eb099c634b9ac5bcf84034b6f",
+      "report_digest": "925f67a2b0ef96ab3a33d8dbe17387eeebfa64a22e1ee875f95ad064dc1bb58b",
+      "counts": {
+        "passed": 294,
+        "failed": 0,
+        "skipped": 0
+      },
+      "status": "passed"
+    }
+  ],
+  "fast_run_id": 38303879219,
+  "fast_conclusion": "success",
+  "scope": "targeted eight-file component/contract cohort; no native acceptance inferred",
+  "production_changed": false
+}
