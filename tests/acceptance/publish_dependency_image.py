@@ -22,7 +22,10 @@ from prepare_dependency_image import (
 OWNER = "Coxf0rd/fwrouter"
 MARKER = "ci:publish-dependencies"
 MANUAL_ACKNOWLEDGMENT = "PUBLISH ACCEPTANCE DEPENDENCIES"
-PUBLISH_MODES = {"main-dependency-change", "main-manual", "stage-marker"}
+REVIEWED_BRANCH_ACKNOWLEDGMENT = "PUBLISH REVIEWED BRANCH DEPENDENCIES"
+PUBLISH_MODES = {
+    "main-dependency-change", "main-manual", "reviewed-branch-manual", "stage-marker",
+}
 DEPENDENCY_INPUT_PATHS = frozenset({
     "tests/acceptance/prepare_dependency_image.py",
     "tests/acceptance/provision.py",
@@ -104,7 +107,18 @@ def authorize_publisher_event(env: dict[str, str]) -> str:
     if event_name == "workflow_dispatch" and ref == "refs/heads/main":
         if env.get("MANUAL_ACKNOWLEDGE") != MANUAL_ACKNOWLEDGMENT:
             raise PublishError("manual publication requires the exact acknowledgment on main")
+        expected_sha = env.get("EXPECTED_SHA", "")
+        if not re.fullmatch(r"[0-9a-f]{40}", expected_sha) or expected_sha != env.get("GITHUB_SHA"):
+            raise PublishError("manual publication requires the exact full source SHA on main")
         return "main-manual"
+    if (event_name == "workflow_dispatch" and isinstance(ref, str)
+            and ref.startswith("refs/heads/") and ref != "refs/heads/main"):
+        if env.get("MANUAL_ACKNOWLEDGE") != REVIEWED_BRANCH_ACKNOWLEDGMENT:
+            raise PublishError("reviewed branch publication requires the exact acknowledgment")
+        expected_sha = env.get("EXPECTED_SHA", "")
+        if not re.fullmatch(r"[0-9a-f]{40}", expected_sha) or expected_sha != env.get("GITHUB_SHA"):
+            raise PublishError("reviewed branch publication requires the exact full source SHA")
+        return "reviewed-branch-manual"
     if (event_name == "push" and ref == "refs/heads/stage/test-architecture-ci-stabilization"
             and MARKER in str((payload.get("head_commit") or {}).get("message", ""))):
         return "stage-marker"

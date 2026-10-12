@@ -2800,6 +2800,8 @@ class AcceptanceContractTests(unittest.TestCase):
             diagnostic = json.loads(json.dumps(receipt))
             diagnostic_node = aggregate_hosted.main_smoke_nodeid()
             diagnostic["suite"] = "xray-diagnostic"
+            diagnostic["scope"] = "hosted-native-diagnostic"
+            diagnostic["diagnostic_only"] = True
             diagnostic_row = next(row for row in diagnostic["application_receipt"]["tests"]
                                   if row["nodeid"] == diagnostic_node)
             diagnostic["tests"] = {"nodeids": [diagnostic_node], "tests": 1,
@@ -2808,6 +2810,25 @@ class AcceptanceContractTests(unittest.TestCase):
             path.write_text(json.dumps(diagnostic), encoding="utf-8")
             self.assertEqual([], aggregate_hosted.validate_main_smoke_receipt(
                 path, plan, runtime_inputs, hosted_paths=[], required_partitions=[]))
+            for field, value in (("scope", "hosted-native-process"),
+                                 ("diagnostic_only", False), ("diagnostic_only", None)):
+                changed = json.loads(json.dumps(diagnostic))
+                if value is None:
+                    changed.pop(field, None)
+                else:
+                    changed[field] = value
+                path.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                    path, plan, runtime_inputs, hosted_paths=[], required_partitions=[]),
+                    f"diagnostic receipt accepted invalid outer {field}")
+            ordinary_diagnostic_flag = json.loads(json.dumps(receipt))
+            ordinary_diagnostic_flag["diagnostic_only"] = True
+            path.write_text(json.dumps(ordinary_diagnostic_flag), encoding="utf-8")
+            self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                path, plan, runtime_inputs, hosted_paths=[path],
+                required_partitions=["functional-ordinary"]),
+                "ordinary partition accepted diagnostic-only marker")
+            path.write_text(json.dumps(diagnostic), encoding="utf-8")
             grouped, partition_problems = aggregate_hosted.group_hosted_receipts(
                 [path], ["functional-ordinary", "provider-cohort"], 1)
             self.assertEqual([], grouped["functional-ordinary"])

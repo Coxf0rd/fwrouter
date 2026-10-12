@@ -266,11 +266,11 @@ def load_dependency_image_reference() -> tuple[str, str]:
 def validate_source_assets_publisher_environment(env: dict[str, str]) -> None:
     """Limit source-asset provisioning to the trusted hosted publisher job."""
     try:
-        from publish_dependency_image import authorize_publisher_event
+        from publish_dependency_image import PUBLISH_MODES, authorize_publisher_event
 
         mode = env.get("FWROUTER_DEPENDENCY_PUBLISH_MODE", "")
         if (env.get("GITHUB_ACTIONS") != "true" or env.get("RUNNER_ENVIRONMENT") != "github-hosted"
-                or mode not in {"main-dependency-change", "main-manual", "stage-marker"}
+                or mode not in PUBLISH_MODES
                 or authorize_publisher_event(env) != mode):
             raise ValueError
     except Exception as exc:

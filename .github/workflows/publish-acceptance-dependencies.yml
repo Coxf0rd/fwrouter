@@ -6,7 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       acknowledge:
-        description: Type PUBLISH ACCEPTANCE DEPENDENCIES to authorize publication from main
+        description: Type PUBLISH ACCEPTANCE DEPENDENCIES on main or PUBLISH REVIEWED BRANCH DEPENDENCIES on a reviewed branch
+        required: true
+        type: string
+      expected_sha:
+        description: Full 40-character candidate SHA; publication is refused unless it equals this workflow ref
         required: true
         type: string
 
@@ -33,9 +37,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - id: authorize
-        name: Verify repository, ref, event, dependency paths, or explicit acknowledgment
+        name: Verify repository, exact source SHA, ref, and publication authorization
         env:
           MANUAL_ACKNOWLEDGE: ${{ inputs.acknowledge }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: python3 tests/acceptance/publish_dependency_image.py --authorize-event
 
   consume-dependencies:
@@ -163,6 +168,7 @@ jobs:
     env:
       FWROUTER_DEPENDENCY_PUBLISH_MODE: ${{ needs.authorize-publisher.outputs.mode }}
       MANUAL_ACKNOWLEDGE: ${{ inputs.acknowledge }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:

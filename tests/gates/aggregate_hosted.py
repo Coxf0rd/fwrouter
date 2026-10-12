@@ -191,10 +191,13 @@ def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[
                         "provider-cohort": "hosted-kernel-dataplane",
                         "packet-diagnostic": "hosted-kernel-packet",
                         "xray-diagnostic": "hosted-native-process"}.get(suite)
+    expected_outer_scope = ("hosted-native-diagnostic" if suite == "xray-diagnostic"
+                            else expected_profile)
     problems: list[str] = []
     if expected_profile is None:
         return ["hosted receipt suite is not an approved application profile"]
-    if receipt.get("schema_version") != 1 or receipt.get("scope") != expected_profile:
+    if (receipt.get("schema_version") != 1 or receipt.get("scope") != expected_outer_scope
+            or receipt.get("diagnostic_only") is not (suite == "xray-diagnostic")):
         problems.append("unsupported receipt schema or execution scope")
     recorded_suite = receipt.get("suite")
     suite_matches = recorded_suite == suite

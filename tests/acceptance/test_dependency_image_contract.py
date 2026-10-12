@@ -77,7 +77,8 @@ class DependencyImageContractTests(unittest.TestCase):
                          if isinstance(node, ast.ImportFrom) and node.module}
             self.assertTrue(imported.isdisjoint({"backend", "fwrouter_api", "fastapi"}))
 
-    def _publisher_env(self, root, *, event, ref, message="", acknowledge=""):
+    def _publisher_env(self, root, *, event, ref, message="", acknowledge="",
+                       expected_sha="2" * 40):
         payload = {
             "ref": ref,
             "repository": {"full_name": "Coxf0rd/fwrouter"},
@@ -93,6 +94,7 @@ class DependencyImageContractTests(unittest.TestCase):
             "GITHUB_EVENT_NAME": event, "GITHUB_SHA": "2" * 40,
             "GITHUB_EVENT_PATH": str(event_path), "GITHUB_TOKEN": "synthetic-host-token",
             "RUNNER_TEMP": str(root), "MANUAL_ACKNOWLEDGE": acknowledge,
+            "EXPECTED_SHA": expected_sha,
         }
 
     def test_publisher_authorizes_main_dependency_push_manual_main_and_explicit_stage_marker(self):
@@ -113,6 +115,35 @@ class DependencyImageContractTests(unittest.TestCase):
             self.assertEqual("main-manual", publisher.authorize_publisher_event(manual))
             manual["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "main-manual"
             publisher.validate_publisher_environment(manual)
+
+            wrong_main_sha = dict(manual, EXPECTED_SHA="3" * 40)
+            with self.assertRaisesRegex(publisher.PublishError, "exact full source SHA"):
+                publisher.authorize_publisher_event(wrong_main_sha)
+
+            reviewed_branch = self._publisher_env(
+                root, event="workflow_dispatch", ref="refs/heads/feature/dependency-update",
+                acknowledge=publisher.REVIEWED_BRANCH_ACKNOWLEDGMENT,
+            )
+            self.assertEqual("reviewed-branch-manual", publisher.authorize_publisher_event(reviewed_branch))
+            reviewed_branch["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "reviewed-branch-manual"
+            publisher.validate_publisher_environment(reviewed_branch)
+            provision.validate_source_assets_publisher_environment(reviewed_branch)
+
+            for expected_sha in ("", "a" * 39, "3" * 40):
+                rejected_sha = dict(reviewed_branch, EXPECTED_SHA=expected_sha)
+                with self.subTest(expected_sha=expected_sha), self.assertRaisesRegex(
+                        publisher.PublishError, "exact full source SHA"):
+                    publisher.authorize_publisher_event(rejected_sha)
+
+            rejected_ack = dict(reviewed_branch, MANUAL_ACKNOWLEDGE="ci:publish-dependencies")
+            with self.assertRaisesRegex(publisher.PublishError, "exact acknowledgment"):
+                publisher.authorize_publisher_event(rejected_ack)
+
+            tag_dispatch = self._publisher_env(
+                root, event="workflow_dispatch", ref="refs/tags/v1.0.0",
+                acknowledge=publisher.REVIEWED_BRANCH_ACKNOWLEDGMENT,
+            )
+            self.assertEqual("", publisher.authorize_publisher_event(tag_dispatch))
 
             stage = self._publisher_env(
                 root, event="push", ref="refs/heads/stage/test-architecture-ci-stabilization",
@@ -369,10 +400,15 @@ class DependencyImageContractTests(unittest.TestCase):
         self.assertIn("branches: [main, stage/test-architecture-ci-stabilization]", workflow)
         self.assertIn("github.repository == 'Coxf0rd/fwrouter'", workflow)
         self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("expected_sha:", workflow)
         self.assertIn("--authorize-event", workflow)
         self.assertIn("needs.authorize-publisher.outputs.mode != ''", workflow)
         self.assertIn("FWROUTER_DEPENDENCY_PUBLISH_MODE", workflow)
         self.assertIn("DEPENDENCY_INPUT_PATHS", (ACCEPTANCE / "publish_dependency_image.py").read_text())
+        publisher_source = (ACCEPTANCE / "publish_dependency_image.py").read_text()
+        self.assertIn("REVIEWED_BRANCH_ACKNOWLEDGMENT", publisher_source)
+        self.assertIn("reviewed-branch-manual", publisher_source)
+        self.assertIn("EXPECTED_SHA", workflow)
         self.assertIn("packages: write", workflow)
         self.assertNotIn("pull_request", workflow)
         self.assertIn("persist-credentials: false", workflow)
