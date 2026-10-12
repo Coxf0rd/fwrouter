@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -480,7 +482,7 @@ class NativeXrayProcess:
     def last_mihomo_probe_result(self) -> dict[str, Any] | None:
         """Return the last real Mihomo HTTP probe result observed by the worker."""
         with self._guard:
-            return dict(self._last_mihomo_probe_result) if self._last_mihomo_probe_result is not None else None
+            return deepcopy(self._last_mihomo_probe_result) if self._last_mihomo_probe_result is not None else None
 
     @property
     def provider_upstream_summary(self) -> dict[str, Any]:
@@ -668,6 +670,50 @@ class NativeXrayProcess:
                 raise ValueError("invalid Core selection commit barrier payload")
             with self._guard:
                 self._last_selection_commit = dict(payload)
+        if action == "mihomo_probe_result":
+            allowed = {"logical_runtime_target", "probe_ok", "delay_request_evidence"}
+            if (set(payload) not in ({"logical_runtime_target", "probe_ok"}, allowed)
+                    or not isinstance(payload.get("logical_runtime_target"), str)
+                    or not isinstance(payload.get("probe_ok"), bool)):
+                raise ValueError("invalid native Mihomo probe barrier payload")
+            evidence = payload.get("delay_request_evidence")
+            if evidence is not None:
+                fields = {
+                    "request_observed", "request_kind", "response_received", "status", "url_matches_known_owned",
+                    "payload_map_empty", "integer_delay_result_found", "integer_delay_zero",
+                    "error_code", "adapter_probe_ok", "request_started_monotonic_ms",
+                    "request_finished_monotonic_ms", "request_elapsed_ms",
+                }
+                error_codes = {
+                    None, "no_matching_delay_request", "connect_timeout", "read_timeout",
+                    "write_timeout", "pool_timeout", "connect_error", "read_error", "write_error",
+                    "remote_protocol_error", "local_protocol_error", "network_error", "http_error",
+                    "os_error", "other_error", "mihomo_generic_delay_failure", "mihomo_timeout",
+                    "other_http_error",
+                }
+                if (not isinstance(evidence, dict) or set(evidence) != fields
+                        or type(evidence.get("request_observed")) is not bool
+                        or type(evidence.get("response_received")) is not bool
+                        or (evidence.get("request_kind") is not None
+                            and (not isinstance(evidence.get("request_kind"), str)
+                                 or evidence["request_kind"] not in {"group", "member"}))
+                        or type(evidence.get("url_matches_known_owned")) is not bool
+                        or type(evidence.get("integer_delay_result_found")) is not bool
+                        or type(evidence.get("adapter_probe_ok")) is not bool
+                        or (evidence.get("status") is not None
+                            and (type(evidence["status"]) is not int or not 100 <= evidence["status"] <= 599))
+                        or (evidence.get("payload_map_empty") is not None
+                            and type(evidence["payload_map_empty"]) is not bool)
+                        or (evidence.get("integer_delay_zero") is not None
+                            and type(evidence["integer_delay_zero"]) is not bool)
+                        or (evidence.get("error_code") is not None
+                            and (not isinstance(evidence.get("error_code"), str)
+                                 or evidence["error_code"] not in error_codes))
+                        or not _valid_mihomo_probe_timing(evidence)):
+                    raise ValueError("invalid bounded native Mihomo delay-request evidence")
+            observed_payload = deepcopy(payload)
+            with self._guard:
+                self._last_mihomo_probe_result = observed_payload
         with self._guard:
             held_action = self._hold_action == action
             if held_action:
@@ -726,48 +772,6 @@ class NativeXrayProcess:
                 raise ValueError("unsupported inbound query")
             return self._completed(self._xray_cli(["api", "inbounduser", "--server=127.0.0.1:10085", "-timeout=3", "-tag=vless-ws"], timeout=8))
         if action == "mihomo_probe_result":
-            allowed = {"logical_runtime_target", "probe_ok", "delay_request_evidence"}
-            if (set(payload) not in ({"logical_runtime_target", "probe_ok"}, allowed)
-                    or not isinstance(payload.get("logical_runtime_target"), str)
-                    or not isinstance(payload.get("probe_ok"), bool)):
-                raise ValueError("invalid native Mihomo probe barrier payload")
-            evidence = payload.get("delay_request_evidence")
-            if evidence is not None:
-                fields = {
-                    "request_observed", "request_kind", "response_received", "status", "url_matches_known_owned",
-                    "payload_map_empty", "integer_delay_result_found", "integer_delay_zero",
-                    "error_code", "adapter_probe_ok", "request_started_monotonic_ms",
-                    "request_finished_monotonic_ms", "request_elapsed_ms",
-                }
-                error_codes = {
-                    None, "no_matching_delay_request", "connect_timeout", "read_timeout",
-                    "write_timeout", "pool_timeout", "connect_error", "read_error", "write_error",
-                    "remote_protocol_error", "local_protocol_error", "network_error", "http_error",
-                    "os_error", "other_error", "mihomo_generic_delay_failure", "mihomo_timeout",
-                    "other_http_error",
-                }
-                if (not isinstance(evidence, dict) or set(evidence) != fields
-                        or type(evidence.get("request_observed")) is not bool
-                        or type(evidence.get("response_received")) is not bool
-                        or (evidence.get("request_kind") is not None
-                            and (not isinstance(evidence.get("request_kind"), str)
-                                 or evidence["request_kind"] not in {"group", "member"}))
-                        or type(evidence.get("url_matches_known_owned")) is not bool
-                        or type(evidence.get("integer_delay_result_found")) is not bool
-                        or type(evidence.get("adapter_probe_ok")) is not bool
-                        or (evidence.get("status") is not None
-                            and (type(evidence["status"]) is not int or not 100 <= evidence["status"] <= 599))
-                        or (evidence.get("payload_map_empty") is not None
-                            and type(evidence["payload_map_empty"]) is not bool)
-                        or (evidence.get("integer_delay_zero") is not None
-                            and type(evidence["integer_delay_zero"]) is not bool)
-                        or (evidence.get("error_code") is not None
-                            and (not isinstance(evidence.get("error_code"), str)
-                                 or evidence["error_code"] not in error_codes))
-                        or not _valid_mihomo_probe_timing(evidence)):
-                    raise ValueError("invalid bounded native Mihomo delay-request evidence")
-            with self._guard:
-                self._last_mihomo_probe_result = dict(payload)
             return {"ok": True, "message": "actual Mihomo probe result observed", "details": {"barrier": True}}
         if action == "selection_commit_barrier":
             return {"ok": True, "message": "actual Core CAS inputs observed", "details": {"barrier": True}}

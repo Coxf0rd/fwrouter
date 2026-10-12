@@ -1015,6 +1015,70 @@ class AcceptanceContractTests(unittest.TestCase):
                       if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
         self.assertIn("_valid_mihomo_probe_timing", ast.unparse(action))
 
+    def test_native_probe_barrier_publishes_valid_current_snapshot_before_hold(self):
+        native = native_runner.NativeXrayProcess(
+            Path("/tmp/xray"), Path("/tmp/mihomo"), Path("/tmp/root"),
+            Path("/tmp/config"), Path("/tmp/mihomo-config"), Path("/tmp/socket"),
+        )
+
+        def probe_payload(*, target: str, ok: bool, status: int, elapsed_ms: int) -> dict:
+            return {
+                "logical_runtime_target": target,
+                "probe_ok": ok,
+                "delay_request_evidence": {
+                    "request_observed": True, "request_kind": "member", "response_received": True,
+                    "status": status, "url_matches_known_owned": True, "payload_map_empty": False,
+                    "integer_delay_result_found": ok, "integer_delay_zero": False if ok else None,
+                    "error_code": None if ok else "mihomo_timeout", "adapter_probe_ok": ok,
+                    "request_started_monotonic_ms": 20_000,
+                    "request_finished_monotonic_ms": 20_000 + elapsed_ms,
+                    "request_elapsed_ms": elapsed_ms,
+                },
+            }
+
+        previous = probe_payload(target="previous-failed-1000ms", ok=False, status=504, elapsed_ms=1000)
+        self.assertTrue(native._dispatch({"action": "mihomo_probe_result", "payload": previous})["ok"])
+        self.assertEqual(previous, native.last_mihomo_probe_result)
+
+        current = probe_payload(target="current-success-1500ms", ok=True, status=200, elapsed_ms=1500)
+        native.hold_action("mihomo_probe_result")
+        replies: list[dict] = []
+        errors: list[BaseException] = []
+
+        def dispatch_current() -> None:
+            try:
+                replies.append(native._dispatch({"action": "mihomo_probe_result", "payload": current}))
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=dispatch_current)
+        thread.start()
+        try:
+            self.assertTrue(native.action_entered.wait(timeout=10))
+            self.assertEqual(current, native.last_mihomo_probe_result)
+            self.assertEqual(1500, native.last_mihomo_probe_result["delay_request_evidence"]["request_elapsed_ms"])
+            current["delay_request_evidence"]["status"] = 599
+            self.assertEqual(200, native.last_mihomo_probe_result["delay_request_evidence"]["status"])
+            returned_copy = native.last_mihomo_probe_result
+            returned_copy["delay_request_evidence"]["status"] = 598
+            self.assertEqual(200, native.last_mihomo_probe_result["delay_request_evidence"]["status"])
+            self.assertEqual([], replies, "the RPC reply must remain held until release")
+        finally:
+            native.release_action()
+            thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual([], errors)
+        self.assertEqual(1, len(replies))
+        self.assertTrue(replies[0]["ok"])
+
+        native.hold_action("mihomo_probe_result")
+        invalid = probe_payload(target="invalid-must-not-publish", ok=False, status=504, elapsed_ms=1000)
+        invalid["delay_request_evidence"]["request_elapsed_ms"] = 999
+        with self.assertRaises(ValueError):
+            native._dispatch({"action": "mihomo_probe_result", "payload": invalid})
+        self.assertFalse(native.action_entered.is_set())
+        self.assertEqual("current-success-1500ms", native.last_mihomo_probe_result["logical_runtime_target"])
+
     def test_native_delay_observer_scopes_group_and_member_calls_without_changing_http_result(self):
         tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
         installer = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
