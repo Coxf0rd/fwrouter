@@ -625,6 +625,11 @@ def build_global_preflight(
         selective_missing.extend(direct_missing)
     selective_vpn_ready = (not bool(selective_rules["requires_vpn_runtime"])) or len(vpn_missing) == 0
     selective_degraded = bool(selective_rules["requires_vpn_runtime"]) and not selective_vpn_ready
+    selective_vpn_policy_ready = (
+        bool(selective_rules["requires_vpn_runtime"])
+        and len(vpn_policy_missing) == 0
+        and vpn_policy_installed
+    )
 
     missing = sorted(set(direct_missing + selective_missing + vpn_missing))
 
@@ -663,6 +668,7 @@ def build_global_preflight(
         "vpn_egress_ready": vpn_egress_ready,
         "vpn_egress_missing": vpn_egress_missing,
         "selective_vpn_ready": selective_vpn_ready,
+        "selective_vpn_policy_ready": selective_vpn_policy_ready,
         "selective_degraded": selective_degraded,
         "selective_degraded_missing": list(vpn_missing) if selective_degraded else [],
         "missing": missing,
@@ -844,10 +850,7 @@ def build_applied_runtime_enforcement(
             and live_mode == mode
             and (
                 mode != "selective"
-                or (
-                    live_selective_default == selective_default
-                    or (selective_degraded and live_selective_default == "direct")
-                )
+                or live_selective_default == selective_default
             )
         )
 
@@ -914,6 +917,10 @@ def build_applied_runtime_enforcement(
             "live_global_mode": live_mode,
             "live_selective_default": live_selective_default,
             "selective_vpn_ready": bool(resolved_preflight.get("selective_vpn_ready")),
+            "selective_vpn_policy_ready": bool(
+                resolved_preflight.get("selective_vpn_policy_ready")
+            ),
+            "vpn_egress_ready": bool(resolved_preflight.get("vpn_egress_ready")),
             "selective_degraded": bool(resolved_preflight.get("selective_degraded")),
         }
 

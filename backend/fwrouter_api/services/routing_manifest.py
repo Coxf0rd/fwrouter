@@ -242,13 +242,10 @@ def _requires_vpn_policy_routing(
     routing_mode = str(routing.get("desired_mode") or routing.get("applied_mode") or "direct").strip().lower()
     selective_default = str(routing.get("selective_default") or "direct").strip().lower()
     selective_rules = global_preflight.get("selective_rules")
-    selective_vpn_ready = bool(global_preflight.get("selective_vpn_ready"))
     selective_requires_vpn_runtime = bool(
         isinstance(selective_rules, dict) and selective_rules.get("requires_vpn_runtime")
     )
-    selective_reaches_vpn = selective_vpn_ready and (
-        selective_requires_vpn_runtime or selective_default == "vpn"
-    )
+    selective_reaches_vpn = selective_requires_vpn_runtime or selective_default == "vpn"
 
     if routing_mode == "vpn":
         return True

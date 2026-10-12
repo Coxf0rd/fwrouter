@@ -874,6 +874,8 @@ def _install_acceptance_preflight_observer() -> None:
                     "require_runtime_verify": safe_bool(kwargs.get("require_runtime_verify")),
                     "selective_requires_vpn_runtime": safe_bool(selective_rules.get("requires_vpn_runtime")),
                     "selective_vpn_ready": safe_bool(projected_result.get("selective_vpn_ready")),
+                    "selective_vpn_policy_ready": safe_bool(
+                        projected_result.get("selective_vpn_policy_ready")),
                     "selective_degraded": safe_bool(projected_result.get("selective_degraded")),
                     "selective_degraded_missing": selective_degraded_missing,
                     "selective_degraded_unknown_missing_count": selective_degraded_unknown,

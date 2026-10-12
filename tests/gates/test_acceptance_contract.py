@@ -3138,6 +3138,10 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/test_dataplane_live.py::test_live_global_mode_classifies_normal_and_degraded_selective_defaults",
             "tests/test_dataplane_live.py::test_live_global_mode_keeps_conflicting_selective_defaults_ambiguous",
             "tests/test_dataplane_live.py::test_live_global_mode_does_not_infer_default_from_selective_marker_alone",
+            "tests/test_dataplane_global.py::test_global_vpn_preflight_allows_prepare_with_empty_reject_selector_without_egress",
+            "tests/test_dataplane_global.py::test_selective_vpn_policy_prepare_is_separate_from_egress_verification",
+            "tests/test_apply_pipeline.py::test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_policy_ready",
+            "tests/test_apply_pipeline.py::test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_closed_for_vpn_default",
         )
         self.assertIn("Run exact selective live-mode and preflight regressions", workflow)
         self.assertIn("needs.select-stage.outputs.stage == 'reentry-diagnostic' ||\n"
@@ -3147,7 +3151,8 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertNotEqual(-1, step_end)
         selected_step = workflow[step_start:step_end]
         self.assertEqual(list(selective_nodeids), re.findall(
-            r"tests/test_dataplane_live\.py::[A-Za-z0-9_]+", selected_step))
+            r"tests/(?:test_dataplane_live|test_dataplane_global|test_apply_pipeline)\.py::[A-Za-z0-9_]+",
+            selected_step))
         self.assertIn('if [[ "$VALIDATION_STAGE" == recovery-diagnostic ]]; then suite=recovery-diagnostic; fi',
                       workflow)
 
@@ -3544,6 +3549,7 @@ class AcceptanceContractTests(unittest.TestCase):
         result = {
             "selective_rules": {"requires_vpn_runtime": True},
             "selective_vpn_ready": False,
+            "selective_vpn_policy_ready": True,
             "selective_degraded": True,
             "selective_degraded_missing": ["vpn_external_path_not_verified", "PRIVATE_REASON_SENTINEL"],
             "missing_by_mode": {
@@ -3602,6 +3608,7 @@ class AcceptanceContractTests(unittest.TestCase):
             expected_keys = {
                 "schema", "sequence", "origin", "routing_mode", "require_runtime_verify",
                 "selective_requires_vpn_runtime", "selective_vpn_ready", "selective_degraded",
+                "selective_vpn_policy_ready",
                 "selective_degraded_missing", "selective_degraded_unknown_missing_count",
                 "selective_missing", "selective_unknown_missing_count", "vpn_missing",
                 "vpn_unknown_missing_count", "check_external_path_verified",
@@ -3614,6 +3621,7 @@ class AcceptanceContractTests(unittest.TestCase):
                                 and event["preflight_external_path_verified"] is False
                                 and event["vpn_policy_installed"] is True
                                 and event["vpn_egress_target_present"] is False
+                                and event["selective_vpn_policy_ready"] is True
                                 for event in events))
             self.assertTrue(all(event["routing_mode"] == "selective" for event in events))
             self.assertTrue(all(event["selective_degraded_unknown_missing_count"] == 1

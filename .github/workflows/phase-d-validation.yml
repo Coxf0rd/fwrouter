@@ -150,7 +150,11 @@ jobs:
             --log "$RUNNER_TEMP/phase-d-preflight/selective-live-mode-nodeids.log" \
             tests/test_dataplane_live.py::test_live_global_mode_classifies_normal_and_degraded_selective_defaults \
             tests/test_dataplane_live.py::test_live_global_mode_keeps_conflicting_selective_defaults_ambiguous \
-            tests/test_dataplane_live.py::test_live_global_mode_does_not_infer_default_from_selective_marker_alone
+            tests/test_dataplane_live.py::test_live_global_mode_does_not_infer_default_from_selective_marker_alone \
+            tests/test_dataplane_global.py::test_global_vpn_preflight_allows_prepare_with_empty_reject_selector_without_egress \
+            tests/test_dataplane_global.py::test_selective_vpn_policy_prepare_is_separate_from_egress_verification \
+            tests/test_apply_pipeline.py::test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_policy_ready \
+            tests/test_apply_pipeline.py::test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_closed_for_vpn_default
       - name: Run exact manual-rules actor and apply-audit regressions
         if: needs.select-stage.outputs.stage == 'packet-diagnostic'
         run: |

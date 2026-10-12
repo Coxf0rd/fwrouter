@@ -134,7 +134,7 @@ def render_owned_table_candidate(
         else "0x00000200"
     )
     selective_path_kind = str(contour_profile.get("selective_path_kind") or "ip_only").strip().lower()
-    selective_vpn_ready = bool(preflight.get("selective_vpn_ready", False))
+    selective_vpn_policy_ready = bool(preflight.get("selective_vpn_policy_ready", False))
     selective_degraded = bool(preflight.get("selective_degraded", False))
     scoped_vpn_sets = _build_scoped_vpn_sets(manifest)
     lan_ingress_interfaces = _resolve_lan_ingress_interfaces(manifest)
@@ -176,9 +176,7 @@ def render_owned_table_candidate(
         selective_requires_vpn_runtime = bool(
             isinstance(selective_rules, dict) and selective_rules.get("requires_vpn_runtime")
         )
-        selective_reaches_vpn = selective_vpn_ready and (
-            selective_requires_vpn_runtime or selective_default == "vpn"
-        )
+        selective_reaches_vpn = selective_requires_vpn_runtime or selective_default == "vpn"
         if mode == "vpn" or (mode == "selective" and selective_reaches_vpn):
             vpn_policy_required = True
         else:
@@ -290,12 +288,12 @@ def render_owned_table_candidate(
                         f'        {expr} {val} ip daddr @dns_direct_ipv4 goto fwrouter_direct comment "scoped selective dns direct IPv4: {subject.get("subject_id")}"',
                         (
                             f'        {expr} {val} ip daddr @vpn_ipv4 goto fwrouter_vpn comment "scoped selective vpn IPv4: {subject.get("subject_id")}"'
-                            if selective_vpn_ready
+                            if selective_vpn_policy_ready
                             else f'        {expr} {val} ip daddr @vpn_ipv4 drop comment "scoped selective degraded block VPN IPv4: {subject.get("subject_id")}"'
                         ),
                         (
                             f'        {expr} {val} ip daddr @dns_vpn_ipv4 goto fwrouter_vpn comment "scoped selective dns vpn IPv4: {subject.get("subject_id")}"'
-                            if selective_vpn_ready
+                            if selective_vpn_policy_ready
                             else f'        {expr} {val} ip daddr @dns_vpn_ipv4 drop comment "scoped selective degraded block DNS VPN IPv4: {subject.get("subject_id")}"'
                         ),
                     ]
@@ -306,21 +304,25 @@ def render_owned_table_candidate(
                         f'        {expr} {val} ip6 daddr @direct_ipv6 goto fwrouter_direct comment "scoped selective direct IPv6: {subject.get("subject_id")}"',
                         (
                             f'        {expr} {val} ip6 daddr @vpn_ipv6 goto fwrouter_vpn comment "scoped selective vpn IPv6: {subject.get("subject_id")}"'
-                            if selective_vpn_ready
+                            if selective_vpn_policy_ready
                             else f'        {expr} {val} ip6 daddr @vpn_ipv6 drop comment "scoped selective degraded block VPN IPv6: {subject.get("subject_id")}"'
                         ),
                     ]
                 )
 
-            target = "vpn" if selective_vpn_ready and selective_default == "vpn" else "direct"
-            comment = (
-                f"scoped selective default {selective_default}: {subject.get('subject_id')}"
-                if selective_vpn_ready
-                else f"scoped selective degraded default direct: {subject.get('subject_id')}"
-            )
-            scoped_steering_rules.append(
-                f'        {expr} {val} goto fwrouter_{target} comment "{comment}"'
-            )
+            if selective_default == "vpn" and not selective_vpn_policy_ready:
+                scoped_steering_rules.append(
+                    f'        {expr} {val} drop comment "scoped selective degraded default vpn blocked: {subject.get("subject_id")}"'
+                )
+            else:
+                target = "vpn" if selective_default == "vpn" else "direct"
+                if selective_default == "direct" and selective_degraded:
+                    comment = f"scoped selective degraded default direct: {subject.get('subject_id')}"
+                else:
+                    comment = f"scoped selective default {selective_default}: {subject.get('subject_id')}"
+                scoped_steering_rules.append(
+                    f'        {expr} {val} goto fwrouter_{target} comment "{comment}"'
+                )
             continue
 
         if path == "blocked":
@@ -351,7 +353,7 @@ def render_owned_table_candidate(
     classify_lines = _build_classify_chain_lines(
         mode=mode,
         selective_default=selective_default,
-        selective_vpn_ready=selective_vpn_ready,
+        selective_vpn_policy_ready=selective_vpn_policy_ready,
         selective_degraded=selective_degraded,
         scoped_steering_rules=scoped_steering_rules,
     )

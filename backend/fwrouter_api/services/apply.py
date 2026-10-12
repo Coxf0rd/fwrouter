@@ -361,8 +361,6 @@ def run_apply_pipeline(
                     (manifest.get("routing_global_state") or {}).get("selective_default")
                     or "direct"
                 ).lower()
-                if apply_mode == "selective" and bool(preflight.get("selective_degraded")):
-                    expected_selective_default = "direct"
                 fast_subject_verify = None
                 if fast_subject_apply is not None:
                     fast_subject_verify = _verify_fast_subject_apply(fast_subject_apply)

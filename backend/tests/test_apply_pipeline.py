@@ -217,6 +217,7 @@ class _ReadyMihomoAdapter:
             message="mihomo ready",
             details={
                 "adapter": "fake",
+                "vpn_udp_policy": {"policy_installed": True},
                 "config": {
                     "redir_port": 5202,
                     "tproxy_port": 5203,
@@ -800,6 +801,7 @@ def test_render_owned_table_candidate_uses_auto_merge_for_interval_sets() -> Non
                 "proxy_bypass_mark_hex": "0x00000200",
             },
             "selective_vpn_ready": True,
+            "selective_vpn_policy_ready": True,
             "selective_degraded": False,
             "profile": {
                 "mihomo": {
@@ -935,6 +937,7 @@ def test_render_owned_table_candidate_is_pure_without_runtime_discovery(monkeypa
                 "proxy_bypass_mark_hex": "0x00000200",
             },
             "selective_vpn_ready": True,
+            "selective_vpn_policy_ready": True,
             "selective_degraded": False,
             "profile": {
                 "mihomo": {
@@ -988,6 +991,7 @@ def test_render_owned_table_candidate_allows_lan_dns_capture_before_scoped_vpn()
                 "proxy_bypass_mark_hex": "0x00000200",
             },
             "selective_vpn_ready": True,
+            "selective_vpn_policy_ready": True,
             "selective_degraded": False,
             "dnsmasq_selective_status": {
                 "router_dns_interfaces": ["enp2s0"],
@@ -1061,6 +1065,7 @@ def test_render_owned_table_candidate_uses_port_only_tproxy_target(
                 "proxy_bypass_mark_hex": "0x00000200",
             },
             "selective_vpn_ready": True,
+            "selective_vpn_policy_ready": True,
             "selective_degraded": False,
             "profile": {
                 "mihomo": {
@@ -1100,6 +1105,7 @@ def test_render_owned_table_candidate_uses_split_redir_and_udp_tproxy_contract()
                 "proxy_bypass_mark_hex": "0x00000200",
             },
             "selective_vpn_ready": True,
+            "selective_vpn_policy_ready": True,
             "selective_degraded": False,
             "profile": {
                 "mihomo": {
@@ -1124,6 +1130,85 @@ def test_render_owned_table_candidate_uses_split_redir_and_udp_tproxy_contract()
     assert "tproxy to :5203" in candidate
 
 
+def test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_policy_ready() -> None:
+    manifest = {
+        "summary": {
+            "global_mode": "selective",
+            "selective_default": "vpn",
+            "requires_vpn_policy_routing": True,
+        },
+        "global_preflight": {
+            "vpn_policy_required": True,
+            "vpn_contour": {
+                "redir_port": 5202,
+                "tproxy_port": 5203,
+                "fwmark_hex": "0x00000100",
+                "proxy_bypass_mark_hex": "0x00000200",
+            },
+            "selective_rules": {"requires_vpn_runtime": True},
+            "selective_vpn_ready": False,
+            "selective_vpn_policy_ready": False,
+            "selective_degraded": True,
+            "profile": {"mihomo": {"contours": {"selective_path_kind": "ip_only"}}},
+        },
+        "subjects": [{
+            "subject_id": "lan:policy-ready-check",
+            "subject_type": "lan",
+            "is_active": True,
+            "dataplane_path": "selective",
+            "scoped_runtime": {"matcher": {
+                "nft_expr": "ip saddr", "value": "192.0.2.71", "family": "ipv4",
+            }},
+        }],
+        "extra": {"rules_effective": {
+            "selective_default": "vpn",
+            "rules": [
+                {"action": "DIRECT", "kind": "cidr", "value": "192.0.2.0/24"},
+                {"action": "VPN", "kind": "cidr", "value": "198.51.100.0/24"},
+            ],
+        }},
+    }
+
+    blocked = render_owned_table_candidate(manifest)
+    blocked_classify = _chain_block(blocked, "fwrouter_classify")
+    assert 'ip daddr @direct_ipv4 goto fwrouter_direct comment "selective direct IPv4"' in blocked_classify
+    assert 'ip daddr @vpn_ipv4 drop comment "selective degraded block VPN IPv4"' in blocked_classify
+    assert 'drop comment "selective default vpn"' in blocked_classify
+    assert 'selective degraded default vpn blocked' in blocked_classify
+    assert 'scoped selective degraded default vpn blocked: lan:policy-ready-check' in blocked_classify
+    assert 'goto fwrouter_direct comment "selective degraded default direct"' not in blocked_classify
+
+    prepared = {
+        **manifest,
+        "global_preflight": {
+            **manifest["global_preflight"],
+            "selective_vpn_policy_ready": True,
+        },
+    }
+    prepared_text = render_owned_table_candidate(prepared)
+    prepared_classify = _chain_block(prepared_text, "fwrouter_classify")
+    assert 'ip daddr @vpn_ipv4 goto fwrouter_vpn comment "selective vpn IPv4"' in prepared_classify
+    assert 'goto fwrouter_vpn_full comment "selective default vpn"' in prepared_classify
+    assert 'ip saddr 192.0.2.71 goto fwrouter_vpn comment "scoped selective default vpn: lan:policy-ready-check"' in prepared_classify
+
+    direct_default = {
+        **manifest,
+        "summary": {**manifest["summary"], "selective_default": "direct"},
+        "global_preflight": {
+            **manifest["global_preflight"],
+            "selective_vpn_policy_ready": False,
+        },
+        "extra": {"rules_effective": {
+            **manifest["extra"]["rules_effective"],
+            "selective_default": "direct",
+        }},
+    }
+    direct_text = render_owned_table_candidate(direct_default)
+    direct_classify = _chain_block(direct_text, "fwrouter_classify")
+    assert 'goto fwrouter_direct comment "selective default direct"' in direct_classify
+    assert 'ip daddr @vpn_ipv4 drop comment "selective degraded block VPN IPv4"' in direct_classify
+
+
 def test_render_owned_table_candidate_keeps_decision_logic_in_classify_chain() -> None:
     manifest = {
         "summary": {
@@ -1137,6 +1222,7 @@ def test_render_owned_table_candidate_keeps_decision_logic_in_classify_chain() -
                 "proxy_bypass_mark_hex": "0x00000200",
             },
             "selective_vpn_ready": True,
+            "selective_vpn_policy_ready": True,
             "selective_degraded": False,
             "profile": {
                 "mihomo": {
@@ -1197,6 +1283,7 @@ def test_render_owned_table_candidate_marks_vpn_policy_required_for_scoped_selec
                 "proxy_bypass_mark_hex": "0x00000200",
             },
             "selective_vpn_ready": True,
+            "selective_vpn_policy_ready": True,
             "selective_degraded": False,
             "selective_rules": {
                 "requires_vpn_runtime": True,
@@ -2956,7 +3043,7 @@ def test_apply_pipeline_rolls_back_when_dnsmasq_selective_contract_reconcile_fai
     assert result["dataplane"]["details"]["dnsmasq_reconcile"]["ok"] is False
 
 
-def test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_open_to_direct(
+def test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_closed_for_vpn_default(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -3030,7 +3117,7 @@ def test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_open_to_dir
     monkeypatch.setattr(
         apply_service,
         "probe_live_global_mode",
-        lambda: _live_mode_probe("selective", selective_default="direct"),
+        lambda: _live_mode_probe("selective", selective_default="vpn"),
     )
     monkeypatch.setattr(
         apply_service,
@@ -3077,7 +3164,10 @@ def test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_open_to_dir
 
     candidate_text = Path(result["manifest"]["paths"]["candidate_nft_path"]).read_text(encoding="utf-8")
     assert 'selective degraded block VPN IPv4' in candidate_text
-    assert 'selective degraded default direct' in candidate_text
+    assert 'selective degraded default vpn blocked' in candidate_text
+    assert 'drop comment "selective default vpn"' in candidate_text
+    assert 'goto fwrouter_direct comment "selective degraded default direct"' not in candidate_text
+    assert result["dataplane"]["details"]["active_mode_matches_intent"] is True
 
 
 def test_apply_pipeline_fwrouter_subject_vpn_override_is_ignored_for_host_output(

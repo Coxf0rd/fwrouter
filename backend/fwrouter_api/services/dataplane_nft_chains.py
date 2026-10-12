@@ -33,7 +33,7 @@ def _build_classify_chain_lines(
     *,
     mode: str,
     selective_default: str,
-    selective_vpn_ready: bool,
+    selective_vpn_policy_ready: bool,
     selective_degraded: bool,
     scoped_steering_rules: list[str],
 ) -> list[str]:
@@ -66,28 +66,38 @@ def _build_classify_chain_lines(
                 '        ip6 daddr @direct_ipv6 goto fwrouter_direct comment "selective direct IPv6"',
                 (
                     '        ip daddr @vpn_ipv4 goto fwrouter_vpn comment "selective vpn IPv4"'
-                    if selective_vpn_ready
+                    if selective_vpn_policy_ready
                     else '        ip daddr @vpn_ipv4 drop comment "selective degraded block VPN IPv4"'
                 ),
                 (
                     '        ip daddr @dns_vpn_ipv4 goto fwrouter_vpn comment "selective dns vpn IPv4"'
-                    if selective_vpn_ready
+                    if selective_vpn_policy_ready
                     else '        ip daddr @dns_vpn_ipv4 drop comment "selective degraded block DNS VPN IPv4"'
                 ),
                 (
                     '        ip6 daddr @vpn_ipv6 goto fwrouter_vpn comment "selective vpn IPv6"'
-                    if selective_vpn_ready
+                    if selective_vpn_policy_ready
                     else '        ip6 daddr @vpn_ipv6 drop comment "selective degraded block VPN IPv6"'
                 ),
             ]
         )
-        target = "vpn_full" if selective_vpn_ready and selective_default == "vpn" else "direct"
-        classify_comment = (
-            f"selective default {selective_default}"
-            if selective_vpn_ready and not selective_degraded
-            else "selective degraded default direct"
-        )
-        classify_lines.append(f'        goto fwrouter_{target} comment "{classify_comment}"')
+        if selective_default == "vpn":
+            if selective_vpn_policy_ready:
+                classify_lines.append('        goto fwrouter_vpn_full comment "selective default vpn"')
+            else:
+                classify_lines.extend([
+                    '        counter comment "selective degraded default vpn blocked"',
+                    '        drop comment "selective default vpn"',
+                ])
+        else:
+            classify_comment = (
+                "selective degraded default direct"
+                if selective_degraded
+                else "selective default direct"
+            )
+            classify_lines.append(
+                f'        goto fwrouter_direct comment "{classify_comment}"'
+            )
 
     classify_lines.append("    }")
     return classify_lines
