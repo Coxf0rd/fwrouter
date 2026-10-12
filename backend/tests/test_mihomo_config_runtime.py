@@ -111,8 +111,8 @@ def _base_candidate() -> dict:
         "rules": ["MATCH,DIRECT"],
         "proxies": [{"name": "Test VPN", "type": "socks5", "server": "1.1.1.1", "port": 1080}],
         "proxy-groups": [
-            {"name": "vpn-auto", "type": "select", "proxies": ["Test VPN", "DIRECT"]},
-            {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "Test VPN", "DIRECT"]},
+            {"name": "vpn-auto", "type": "select", "proxies": ["Test VPN", "REJECT"]},
+            {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "Test VPN", "REJECT"]},
         ],
         "listeners": [
             {

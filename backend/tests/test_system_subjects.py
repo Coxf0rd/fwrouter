@@ -22,7 +22,11 @@ def _client() -> TestClient:
     return TestClient(create_app(enable_startup_tasks=False))
 
 
-def test_system_subjects_endpoint_exposes_builtin_fwrouter_subject(monkeypatch, tmp_path: Path) -> None:
+def test_system_subjects_endpoint_exposes_builtin_fwrouter_subject(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     ensure_builtin_system_subjects()
@@ -42,7 +46,11 @@ def test_system_subjects_endpoint_exposes_builtin_fwrouter_subject(monkeypatch, 
     assert ssh_host["can_delete"] is False
 
 
-def test_system_subjects_delete_tombstones_missing_host_subject(monkeypatch, tmp_path: Path) -> None:
+def test_system_subjects_delete_tombstones_missing_host_subject(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 

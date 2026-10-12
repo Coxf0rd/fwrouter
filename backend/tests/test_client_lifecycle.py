@@ -138,7 +138,11 @@ def _seed_xray_subject(
         )
 
 
-def test_xray_online_requires_confirmed_activity(monkeypatch, tmp_path: Path) -> None:
+def test_xray_online_requires_confirmed_activity(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_xray_subject("xray:fresh", email="fresh", last_traffic_at=_utc(60))

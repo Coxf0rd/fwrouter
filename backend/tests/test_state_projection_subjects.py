@@ -29,7 +29,10 @@ def _seed_lan_subject(*, active: bool, applied_mode: str | None = "global") -> N
         )
 
 
-def test_subject_projection_marks_inactive_as_inactive_not_degraded(monkeypatch) -> None:
+def test_subject_projection_marks_inactive_as_inactive_not_degraded(
+    monkeypatch,
+    isolated_host_observations,
+) -> None:
     _seed_lan_subject(active=False)
     monkeypatch.setattr(
         "fwrouter_api.services.subject_policy.build_runtime_enforcement_state",

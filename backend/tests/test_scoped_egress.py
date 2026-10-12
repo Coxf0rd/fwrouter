@@ -474,7 +474,11 @@ def _create_apply_job() -> dict[str, object]:
     )
 
 
-def test_subject_effective_state_exposes_scoped_runtime(monkeypatch, tmp_path: Path) -> None:
+def test_subject_effective_state_exposes_scoped_runtime(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_server("server-1")
@@ -529,7 +533,11 @@ def test_subject_effective_state_exposes_scoped_runtime_for_selective_lan(monkey
     assert scoped_runtime["materialized_by"] == "nft_subject_classify"
 
 
-def test_subject_server_override_endpoint_switches_selector_without_apply(monkeypatch, tmp_path: Path) -> None:
+def test_subject_server_override_endpoint_switches_selector_without_apply(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     register_extended_handlers(get_default_job_manager())
@@ -581,6 +589,7 @@ def test_subject_server_override_endpoint_switches_selector_without_apply(monkey
 def test_subject_server_override_pending_when_subject_not_in_vpn_path(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -652,6 +661,7 @@ def test_user_subject_server_override_is_blocked_when_admin_mode_direct(
 def test_clear_subject_user_mode_returns_client_to_global(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -808,7 +818,11 @@ def test_subject_server_override_applies_for_selective_vpn_rules(
         assert reconcile_calls == []
 
 
-def test_apply_pipeline_renders_scoped_vpn_rules(monkeypatch, tmp_path: Path) -> None:
+def test_apply_pipeline_renders_scoped_vpn_rules(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -846,7 +860,11 @@ def test_apply_pipeline_renders_scoped_vpn_rules(monkeypatch, tmp_path: Path) ->
     assert get_subject_server_override("lan-candidate") is not None
 
 
-def test_docker_subject_server_override_is_counted_as_scoped_when_matcher_resolves(monkeypatch, tmp_path: Path) -> None:
+def test_docker_subject_server_override_is_counted_as_scoped_when_matcher_resolves(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     register_extended_handlers(get_default_job_manager())
@@ -945,7 +963,11 @@ def test_scoped_egress_flags_selective_runtime_when_transparent_tcp_is_unhealthy
     assert "selective_materialized_but_transparent_tcp_unhealthy" in statuses
 
 
-def test_system_summary_exposes_scoped_egress_blocked_warning(monkeypatch, tmp_path: Path) -> None:
+def test_system_summary_exposes_scoped_egress_blocked_warning(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     register_extended_handlers(get_default_job_manager())

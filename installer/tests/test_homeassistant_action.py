@@ -113,9 +113,9 @@ def test_switch_best_confirms_changed_logical_server_and_reports_provenance() ->
     message = run_switch(selector_result(outcome="selected", changed=True))
 
     assert "auto_transition=selected" in message
-    assert "effective_change=changed" in message
-    assert "logical=Norway" in message
-    assert "effective=Norway" in message
+    assert "effective_route_change=changed" in message
+    assert "logical_server=Norway" in message
+    assert "logical-new" not in message
     assert "reason=api_controlled_switch" in message
     assert "source=api" in message
     assert "attribution=caller_supplied_unverified" in message
@@ -125,7 +125,7 @@ def test_switch_best_keeps_noop_distinct_from_change() -> None:
     message = run_switch(selector_result(outcome="noop", changed=False))
 
     assert "auto_transition=noop" in message
-    assert "effective_change=unchanged" in message
+    assert "effective_route_change=unchanged" in message
 
 
 def test_switch_best_verifies_fixed_effective_server_after_auto_selector_change() -> None:
@@ -141,9 +141,9 @@ def test_switch_best_verifies_fixed_effective_server_after_auto_selector_change(
         summary=summary,
     )
 
-    assert "logical=Norway" in message
-    assert "effective=Sweden" in message
-    assert "effective_change=unchanged" in message
+    assert "logical_server=Norway" in message
+    assert "logical-fixed" not in message
+    assert "effective_route_change=unchanged" in message
 
 
 def test_switch_best_direct_effective_route_does_not_fall_back_to_logical_id() -> None:
@@ -159,8 +159,10 @@ def test_switch_best_direct_effective_route_does_not_fall_back_to_logical_id() -
         summary=summary,
     )
 
-    assert "effective=direct" in message
-    assert "effective_change=unchanged" in message
+    assert "logical_server=Norway" in message
+    assert "logical-new" not in message
+    assert "effective_server=" not in message
+    assert "effective_route_change=unchanged" in message
     assert "sub:" not in message
 
 

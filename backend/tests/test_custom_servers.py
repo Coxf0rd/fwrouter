@@ -140,7 +140,11 @@ def test_custom_https_proxy_update_keeps_vpn_auto_manual_only_priority(
     assert updated["preferences"]["global_list"] is True
 
 
-def test_custom_https_proxy_server_runtime_raw_includes_credentials(monkeypatch, tmp_path: Path) -> None:
+def test_custom_https_proxy_server_runtime_raw_includes_credentials(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -223,7 +227,11 @@ def test_custom_socks5_proxy_server_runtime_raw_uses_socks5(monkeypatch, tmp_pat
     assert "tls" not in custom_row["raw"]
 
 
-def test_mihomo_config_renders_simple_rules(monkeypatch, tmp_path: Path) -> None:
+def test_mihomo_config_renders_simple_rules(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -443,6 +451,7 @@ def test_subscription_refresh_identity_churn_preserves_custom_server_state(
 def test_custom_server_transfer_redacts_credentials_by_default_and_imports_with_secrets(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

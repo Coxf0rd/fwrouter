@@ -389,6 +389,7 @@ def test_github_git_source_fetches_commit_date_without_clone(
 def test_rules_full_update_accepts_broad_big_vpn_source(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -413,6 +414,7 @@ def test_rules_full_update_accepts_broad_big_vpn_source(
 def test_rules_full_update_publishes_big_vpn_policy_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -437,6 +439,7 @@ def test_rules_full_update_publishes_big_vpn_policy_metadata(
 def test_rules_full_update_skips_big_vpn_download_when_git_version_is_current(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -519,6 +522,7 @@ def test_big_vpn_value_list_compiles_subsumed_suffixes_and_collapses_cidrs(
 def test_rules_full_update_preserves_last_good_artifacts_on_policy_violation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -550,6 +554,7 @@ def test_rules_full_update_preserves_last_good_artifacts_on_policy_violation(
 def test_rules_full_update_fetch_failure_preserves_active_metadata_counts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -583,7 +588,7 @@ def test_rules_full_update_fetch_failure_preserves_active_metadata_counts(
     assert current_metadata["big_vpn"]["last_error_code"] == "RULES_SOURCE_TIMEOUT"
 
 
-def test_dataplane_manifest_bounds_heavy_effective_payloads() -> None:
+def test_dataplane_manifest_bounds_heavy_effective_payloads(isolated_host_observations) -> None:
     manifest = build_dataplane_manifest_from_state(
         plan_id="plan-1",
         reason="pytest",

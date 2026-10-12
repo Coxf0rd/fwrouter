@@ -127,7 +127,10 @@ def test_public_system_responses_do_not_expose_database_paths_or_exceptions(monk
     assert "paths" not in response.json()["data"]
 
 
-def test_routing_global_get_does_not_expire_fixed_server_ttl(monkeypatch) -> None:
+def test_routing_global_get_does_not_expire_fixed_server_ttl(
+    monkeypatch,
+    isolated_host_observations,
+) -> None:
     with db_session() as connection:
         connection.execute(
             """

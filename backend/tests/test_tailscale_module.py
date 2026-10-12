@@ -102,7 +102,11 @@ def test_enable_tailscale_module_syncs_inventory_and_marks_running(monkeypatch, 
     assert "external_network_client subjects were synced" in str(module["status_text"])
 
 
-def test_enable_tailscale_module_marks_degraded_on_probe_failure(monkeypatch, tmp_path: Path) -> None:
+def test_enable_tailscale_module_marks_degraded_on_probe_failure(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _register_tailscale_connection()
@@ -152,7 +156,11 @@ def test_disable_tailscale_module_marks_control_plane_paused(monkeypatch, tmp_pa
     assert result["module"]["apply_state"] == "clean"
 
 
-def test_runtime_summary_exposes_tailscale_probe(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_exposes_tailscale_probe(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _register_tailscale_connection()

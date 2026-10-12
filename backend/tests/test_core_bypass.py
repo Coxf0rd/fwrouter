@@ -160,7 +160,11 @@ def test_core_bypass_api_contract(monkeypatch, tmp_path: Path) -> None:
         )
 
 
-def test_watchdog_auto_check_pauses_when_core_bypass_is_active(monkeypatch, tmp_path: Path) -> None:
+def test_watchdog_auto_check_pauses_when_core_bypass_is_active(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     register_extended_handlers(get_default_job_manager())

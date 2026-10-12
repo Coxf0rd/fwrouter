@@ -61,7 +61,11 @@ def _set_block(candidate: str, set_name: str) -> str:
     return candidate[start:end + len("\n    }")]
 
 
-def test_apply_pipeline_persists_running_phase_result(monkeypatch, tmp_path: Path) -> None:
+def test_apply_pipeline_persists_running_phase_result(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     observed_results: list[dict[str, object] | None] = []
@@ -125,7 +129,11 @@ def test_apply_pipeline_persists_running_phase_result(monkeypatch, tmp_path: Pat
     assert observed_results[0]["apply"]["events"][0]["phase"] == "render_candidate"
 
 
-def test_apply_pipeline_writes_render_failure_artifact(monkeypatch, tmp_path: Path) -> None:
+def test_apply_pipeline_writes_render_failure_artifact(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     job = _create_apply_job()
@@ -144,7 +152,11 @@ def test_apply_pipeline_writes_render_failure_artifact(monkeypatch, tmp_path: Pa
     assert payload["dataplane"]["error_code"] == "APPLY_RENDER_CANDIDATE_FAILED"
 
 
-def test_apply_pipeline_accepts_prebuilt_manifest(monkeypatch, tmp_path: Path) -> None:
+def test_apply_pipeline_accepts_prebuilt_manifest(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     job = _create_apply_job()
@@ -557,7 +569,11 @@ def test_dataplane_scripts_are_safe_owned_table_only(monkeypatch, tmp_path: Path
     assert 'resolve_vpn_policy_required "$SNAPSHOT_PATH"' in rollback_content
 
 
-def test_apply_pipeline_writes_candidate_artifacts(monkeypatch, tmp_path: Path) -> None:
+def test_apply_pipeline_writes_candidate_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _enable_vpn_module()
@@ -633,7 +649,11 @@ def test_apply_pipeline_writes_candidate_artifacts(monkeypatch, tmp_path: Path) 
     ]
 
 
-def test_apply_pipeline_hot_swaps_global_mode_classify_chain(monkeypatch, tmp_path: Path) -> None:
+def test_apply_pipeline_hot_swaps_global_mode_classify_chain(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _enable_vpn_module()
@@ -751,7 +771,9 @@ def test_apply_pipeline_requires_existing_job_for_fk(monkeypatch, tmp_path: Path
     assert count == 0
 
 
-def test_render_owned_table_candidate_classifies_tailscale_exit_node_payload() -> None:
+def test_render_owned_table_candidate_classifies_tailscale_exit_node_payload(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -787,7 +809,9 @@ def test_render_owned_table_candidate_classifies_tailscale_exit_node_payload() -
     assert 'oifname "tailscale0" accept comment "immunity: tailscale egress"' in candidate
 
 
-def test_render_owned_table_candidate_uses_auto_merge_for_interval_sets() -> None:
+def test_render_owned_table_candidate_uses_auto_merge_for_interval_sets(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -842,7 +866,9 @@ def test_render_owned_table_candidate_uses_auto_merge_for_interval_sets() -> Non
     assert candidate.count("auto-merge;") >= 2
 
 
-def test_render_owned_table_candidate_includes_cloudflare_secure_dns_bypass_endpoints() -> None:
+def test_render_owned_table_candidate_includes_cloudflare_secure_dns_bypass_endpoints(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -879,7 +905,10 @@ def test_render_owned_table_candidate_includes_cloudflare_secure_dns_bypass_endp
     assert "162.159.61.4" in candidate
 
 
-def test_render_owned_table_candidate_ignores_rules_effective_summary(monkeypatch) -> None:
+def test_render_owned_table_candidate_ignores_rules_effective_summary(
+    monkeypatch,
+    isolated_host_observations,
+) -> None:
     monkeypatch.setattr(
         "fwrouter_api.services.dataplane_nft.read_effective_rules_artifact",
         lambda: {
@@ -1090,7 +1119,9 @@ def test_render_owned_table_candidate_uses_port_only_tproxy_target(
     assert "tproxy to :5203" in candidate
 
 
-def test_render_owned_table_candidate_uses_split_redir_and_udp_tproxy_contract() -> None:
+def test_render_owned_table_candidate_uses_split_redir_and_udp_tproxy_contract(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -1214,7 +1245,9 @@ def test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_po
     assert 'ip saddr 192.0.2.71 goto fwrouter_direct comment "scoped selective degraded default direct: lan:policy-ready-check"' in direct_classify
 
 
-def test_render_owned_table_candidate_keeps_decision_logic_in_classify_chain() -> None:
+def test_render_owned_table_candidate_keeps_decision_logic_in_classify_chain(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -1273,7 +1306,9 @@ def test_render_owned_table_candidate_keeps_decision_logic_in_classify_chain() -
     assert 'tproxy to :5202' not in classify_chain
 
 
-def test_render_owned_table_candidate_marks_vpn_policy_required_for_scoped_selective_in_direct_mode() -> None:
+def test_render_owned_table_candidate_marks_vpn_policy_required_for_scoped_selective_in_direct_mode(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "direct",
@@ -1332,7 +1367,9 @@ def test_render_owned_table_candidate_marks_vpn_policy_required_for_scoped_selec
     assert 'fwrouter vpn policy contract required v1' in candidate
 
 
-def test_render_owned_table_candidate_blocks_disabled_host_network_docker_listener() -> None:
+def test_render_owned_table_candidate_blocks_disabled_host_network_docker_listener(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {"global_mode": "direct", "selective_default": "direct"},
         "global_preflight": {
@@ -1366,7 +1403,9 @@ def test_render_owned_table_candidate_blocks_disabled_host_network_docker_listen
     assert 'iifname != "lo" meta l4proto tcp tcp dport 8123 reject comment "disabled service listener: docker:compose:homeassistant"' in input_chain
 
 
-def test_render_owned_table_candidate_blocks_disabled_bridge_docker_in_both_directions() -> None:
+def test_render_owned_table_candidate_blocks_disabled_bridge_docker_in_both_directions(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {"global_mode": "direct", "selective_default": "direct"},
         "global_preflight": {
@@ -1405,7 +1444,9 @@ def test_render_owned_table_candidate_blocks_disabled_bridge_docker_in_both_dire
     assert 'ip daddr 172.23.0.8 reject with icmpx type admin-prohibited comment "disabled subject host-to-target block: docker:app:web"' in output_chain
 
 
-def test_render_owned_table_candidate_blocks_disabled_non_root_process_egress_only() -> None:
+def test_render_owned_table_candidate_blocks_disabled_non_root_process_egress_only(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {"global_mode": "direct", "selective_default": "direct"},
         "global_preflight": {
@@ -1672,6 +1713,7 @@ def test_build_dataplane_manifest_recomputes_subject_effective_state_from_planne
 
 def test_build_dataplane_manifest_preserves_planned_user_override_for_subject_mode(
     monkeypatch,
+    isolated_host_observations,
 ) -> None:
     monkeypatch.setattr(
         "fwrouter_api.services.routing_manifest.build_global_preflight",
@@ -1907,7 +1949,9 @@ def test_build_dataplane_manifest_ignores_vless_forced_vpn_for_transparent_polic
     assert manifest["vpn_contour"] is None
 
 
-def test_render_owned_table_candidate_does_not_infer_transparent_vpn_requirement_from_vless_forced_vpn_only() -> None:
+def test_render_owned_table_candidate_does_not_infer_transparent_vpn_requirement_from_vless_forced_vpn_only(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "direct",
@@ -1997,7 +2041,9 @@ def test_render_owned_table_candidate_keeps_direct_and_vpn_terminal_chains_separ
     assert 'skip mihomo outbound recapture' in vpn_chain
 
 
-def test_render_owned_table_candidate_counts_vpn_rx_only_for_proxy_marked_output() -> None:
+def test_render_owned_table_candidate_counts_vpn_rx_only_for_proxy_marked_output(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "direct",
@@ -2047,7 +2093,9 @@ def test_render_owned_table_candidate_counts_vpn_rx_only_for_proxy_marked_output
     assert '\n        ip daddr 192.168.0.10 counter name "cnt_lan_aa_bb_vpn_rx"' not in output_chain
 
 
-def test_render_owned_table_candidate_places_immunity_before_classify_capture() -> None:
+def test_render_owned_table_candidate_places_immunity_before_classify_capture(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -2122,6 +2170,7 @@ def test_promote_last_good_syncs_current_and_applied_nft_artifacts(tmp_path: Pat
 def test_apply_pipeline_apply_mode_records_owned_table_success(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2194,6 +2243,7 @@ def test_apply_pipeline_apply_mode_records_owned_table_success(
 def test_apply_pipeline_skips_global_profile_prewarm_for_selective_default(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2246,6 +2296,7 @@ def test_apply_pipeline_skips_global_profile_prewarm_for_selective_default(
 def test_apply_pipeline_retries_transient_live_mode_probe_before_rollback(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2297,6 +2348,7 @@ def test_apply_pipeline_retries_transient_live_mode_probe_before_rollback(
 def test_apply_pipeline_apply_failure_invokes_owned_table_rollback(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2366,6 +2418,7 @@ def test_apply_pipeline_apply_failure_invokes_owned_table_rollback(
 def test_apply_pipeline_failed_selective_apply_does_not_promote_current_or_applied(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2409,6 +2462,7 @@ def test_apply_pipeline_failed_selective_apply_does_not_promote_current_or_appli
 def test_apply_pipeline_apply_mode_records_verified_global_vpn_success(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2463,6 +2517,7 @@ def test_apply_pipeline_apply_mode_records_verified_global_vpn_success(
 def test_apply_pipeline_global_vpn_verify_uses_requested_mode_while_applied_mode_is_stale(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2509,6 +2564,7 @@ def test_apply_pipeline_global_vpn_verify_uses_requested_mode_while_applied_mode
 def test_apply_pipeline_apply_mode_records_selective_ip_only_success(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2601,6 +2657,7 @@ def test_apply_pipeline_apply_mode_records_selective_ip_only_success(
 def test_apply_pipeline_apply_mode_records_selective_domain_aware_success(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2716,6 +2773,7 @@ def test_apply_pipeline_apply_mode_records_selective_domain_aware_success(
 def test_apply_pipeline_subject_only_fast_apply_reconciles_dnsmasq_but_skips_global_probe(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2835,6 +2893,7 @@ def test_apply_pipeline_subject_only_fast_apply_reconciles_dnsmasq_but_skips_glo
 def test_apply_pipeline_subject_only_fast_apply_hot_swaps_classify_chain(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2972,6 +3031,7 @@ def test_apply_pipeline_subject_only_fast_apply_hot_swaps_classify_chain(
 def test_apply_pipeline_rolls_back_when_dnsmasq_selective_contract_reconcile_fails(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -3183,6 +3243,7 @@ def test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_closed_for_
 def test_apply_pipeline_fwrouter_subject_vpn_override_is_ignored_for_host_output(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -3256,6 +3317,7 @@ def test_apply_pipeline_fwrouter_subject_vpn_override_is_ignored_for_host_output
 def test_apply_pipeline_rollback_handles_missing_previous_table(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -3290,6 +3352,7 @@ def test_apply_pipeline_rollback_handles_missing_previous_table(
 def test_apply_pipeline_vpn_verify_failure_rolls_back_and_keeps_state_unchanged(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -3338,6 +3401,7 @@ def test_apply_pipeline_vpn_verify_failure_rolls_back_and_keeps_state_unchanged(
 def test_apply_pipeline_detects_live_mode_mismatch_and_rolls_back(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -3390,6 +3454,7 @@ def test_apply_pipeline_detects_live_mode_mismatch_and_rolls_back(
 def test_apply_pipeline_timeout_returns_failed_without_promotion(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -3433,6 +3498,7 @@ def test_apply_pipeline_timeout_returns_failed_without_promotion(
 def test_apply_pipeline_reports_rollback_failure_without_broad_reset(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -3473,7 +3539,11 @@ def test_apply_pipeline_reports_rollback_failure_without_broad_reset(
     assert row["status"] == "failed"
 
 
-def test_apply_pipeline_result_exposes_owned_table_enforcement(monkeypatch, tmp_path: Path) -> None:
+def test_apply_pipeline_result_exposes_owned_table_enforcement(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _enable_vpn_module()

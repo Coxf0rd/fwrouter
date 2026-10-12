@@ -153,7 +153,11 @@ def test_runtime_status_script_failure_remains_unavailable(
     assert dataplane_status._read_live_dataplane_payload() is None
 
 
-def test_build_nft_rule_sets_protects_custom_proxy_ip(monkeypatch, tmp_path: Path) -> None:
+def test_build_nft_rule_sets_protects_custom_proxy_ip(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -291,7 +295,11 @@ def test_read_effective_rules_artifact_fresh_bypasses_stale_cache_and_inflight(
     assert read_effective_rules_artifact(fresh=True) is None
 
 
-def test_external_vpn_module_can_supply_vpn_contour(monkeypatch, tmp_path: Path) -> None:
+def test_external_vpn_module_can_supply_vpn_contour(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     monkeypatch.setattr(
@@ -467,7 +475,11 @@ def test_selective_vpn_policy_prepare_is_separate_from_egress_verification(
         assert direct_readback.get("vpn_egress_ready") is not True
 
 
-def test_external_vpn_module_without_ready_runtime_is_ignored(monkeypatch, tmp_path: Path) -> None:
+def test_external_vpn_module_without_ready_runtime_is_ignored(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     monkeypatch.setattr(
@@ -516,6 +528,7 @@ def test_build_nft_rule_sets_includes_local_interface_networks(monkeypatch, tmp_
 def test_build_nft_rule_sets_keeps_big_vpn_ip_aggregates(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -537,6 +550,7 @@ def test_build_nft_rule_sets_keeps_big_vpn_ip_aggregates(
 def test_build_nft_rule_sets_forces_android_connectivity_domains_direct(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fwrouter_api.db.connection import db_session
+from _test_support import configure_test_state_dir as _configure_env
+from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.services.watchdog_runtime_state import update_watchdog_runtime_state
 from fwrouter_api.services.state_projection import build_module_state_projection
 
 
@@ -32,10 +34,17 @@ def test_module_projection_separates_legacy_disabled_from_live_projection(monkey
     assert core["projection"]["state"] == "disabled"
 
 
-def test_module_projection_reports_enabled_running_as_healthy(monkeypatch) -> None:
+def test_module_projection_reports_enabled_running_as_healthy(monkeypatch, tmp_path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    update_watchdog_runtime_state(path_key="pytest-watchdog")
     monkeypatch.setattr(
-        "fwrouter_api.services.state_projection._module_runtime_context",
-        lambda: {},
+        "fwrouter_api.services.state_projection.build_runtime_enforcement_state",
+        lambda: {"traffic_enforcement_guaranteed": False, "enforcement_level": "owned_table_missing"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.state_projection._safe_health",
+        lambda _adapter: {"runtime_state": "stopped", "checked_at": None},
     )
     with db_session() as connection:
         connection.execute(

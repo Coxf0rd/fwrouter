@@ -40,15 +40,37 @@ const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
 const settingsJs = fs.readFileSync(path.join(root, "static/js/settings.js"), "utf8");
 const tabSources = Array.from(indexHtml.matchAll(/data-log-source="([^"]+)"/g)).map((match) => match[1]);
 assert.deepStrictEqual(tabSources, ["all", "error", "watchdog", "routing", "server", "system", "diagnostic", "rules", "diagnostics", "controls"]);
-assert.match(indexHtml, /settings-view\.css\?v=20261001c/);
-assert.match(indexHtml, /fwrouter-i18n\.js\?v=20261001c/);
+function readVersionedAsset(match, label) {
+  assert(match, `${label} must be linked with a cachebuster`);
+  assert.match(match[2], /^\d{8}[a-z]$/);
+  const assetPath = path.join(root, match[1].split("?")[0].replace(/^\//, ""));
+  assert(fs.statSync(assetPath).isFile(), `${label} must resolve to a checked-in asset`);
+  return { path: assetPath, source: fs.readFileSync(assetPath, "utf8") };
+}
+
+const settingsCssAsset = readVersionedAsset(
+  indexHtml.match(/<link rel="stylesheet" href="([^"]*settings-view\.css\?v=([^"]+))"/),
+  "settings-view stylesheet",
+);
+assert.match(settingsCssAsset.source, /settings-events-table__head/);
+assert.match(settingsCssAsset.source, /settings-events__empty/);
+const i18nAsset = readVersionedAsset(
+  indexHtml.match(/<script src="([^"]*fwrouter-i18n\.js\?v=([^"]+))"/),
+  "i18n script",
+);
+assert.match(i18nAsset.source, /setLocale/);
 assert.match(indexHtml, /fwrouter-labels\.js\?v=20260929b/);
 assert.match(indexHtml, /fwrouter-settings-inventory\.js\?v=20261001a/);
 assert.match(indexHtml, /fwrouter-settings-events\.js\?v=20260930a/);
 assert.match(indexHtml, /fwrouter-settings-journal\.js\?v=20260930a/);
 assert.match(indexHtml, /fwrouter-settings-domain-state\.js\?v=20260930a/);
 assert.match(indexHtml, /fwrouter-settings-lazy-read\.js\?v=20260929a/);
-assert.match(indexHtml, /settings\.js\?v=20261001c/);
+const linkedSettingsJs = readVersionedAsset(
+  indexHtml.match(/<script src="([^"]*settings\.js\?v=([^"]+))"/),
+  "settings script",
+);
+assert.strictEqual(linkedSettingsJs.source, settingsJs);
+assert.match(linkedSettingsJs.source, /function invalidateSettingsCaches/);
 assert.match(indexHtml, /<details class="admin-advanced settings-rules-editor">/);
 assert.doesNotMatch(indexHtml, /settings-rules-editor" open/);
 assert.match(indexHtml, /id="vpnSubscriptionUrlList"/);

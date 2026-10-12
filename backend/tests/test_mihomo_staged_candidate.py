@@ -56,6 +56,7 @@ def test_candidate_validator_reads_explicit_candidate_path(monkeypatch, tmp_path
         "vpn_auto_present": True,
         "vpn_global_present": True,
         "vpn_global_has_vpn_auto": True,
+        "selector_groups_ok": True,
         "transparent_required": False,
         "transparent_listener_count": 0,
         "transparent_listener_present": False,

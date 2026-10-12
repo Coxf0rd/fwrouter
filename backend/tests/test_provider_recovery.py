@@ -366,6 +366,7 @@ def test_policy_disabled_phase_two_advances_to_existing_emergency_direct_phase(m
 
 def test_emergency_direct_manifest_and_nft_candidate_preserve_intent_and_block_disabled_subject(
     monkeypatch,
+    isolated_host_observations,
 ):
     _install_pending_state(monkeypatch, {
         "provider_managed": True,
