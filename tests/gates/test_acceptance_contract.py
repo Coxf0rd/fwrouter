@@ -2848,6 +2848,7 @@ class AcceptanceContractTests(unittest.TestCase):
             path.write_text(json.dumps(unexpected), encoding="utf-8")
             self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
                 path, plan, runtime_inputs, hosted_paths=[], required_partitions=[]))
+            path.write_text(json.dumps(receipt), encoding="utf-8")
             self.assertEqual([path], aggregate_hosted.group_hosted_receipts(
                 [path], ["functional-ordinary"], 1)[0]["functional-ordinary"])
             alias = json.loads(json.dumps(receipt))

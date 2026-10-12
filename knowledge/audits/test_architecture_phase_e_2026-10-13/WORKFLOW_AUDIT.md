@@ -1,9 +1,9 @@
 # Phase E workflow and CI selection audit
 
-Audit date: 2026-10-13  
-Repository: `Coxf0rd/fwrouter`  
-Branch: `stage/test-architecture-ci-stabilization`  
-Current HEAD inspected: `3e12141c5d7be5d740450e6c13001a8fbc827f3b`  
+Audit date: 2026-10-13
+Repository: `Coxf0rd/fwrouter`
+Branch: `stage/test-architecture-ci-stabilization`
+Current HEAD inspected: `3e12141c5d7be5d740450e6c13001a8fbc827f3b`
 Scope: read-only inventory and workflow, selection, GHCR, permission, event, and hosted-run evidence review. No workflow was edited and no local test, Docker, application import, native run, push, PR, or settings change was performed.
 
 ## Result
@@ -102,10 +102,10 @@ Current-head branch push workflow results are PASS for the two executed workflow
 
 ## Audit conclusion
 
-Workflow and selection source review: **PARTIAL**; affected selection is fail-closed, while temporary push duplication and main-smoke receipt completeness remain open findings.  
-GHCR permission split / digest consumer source review: **PASS**.  
-Feature branch push fast evidence on current HEAD: **PASS**.  
-Actual PR/main event validation: **NOT RUN**.  
-Repository required-check enforcement: **FAIL / NOT CONFIGURED**.  
-Dependency-image-change publisher event policy: **FAIL / MARKER-ONLY**.  
+Workflow and selection source review: **PARTIAL**; affected selection is fail-closed, while temporary push duplication and main-smoke receipt completeness remain open findings.
+GHCR permission split / digest consumer source review: **PASS**.
+Feature branch push fast evidence on current HEAD: **PASS**.
+Actual PR/main event validation: **NOT RUN**.
+Repository required-check enforcement: **FAIL / NOT CONFIGURED**.
+Dependency-image-change publisher event policy: **FAIL / MARKER-ONLY**.
 Phase E workflow acceptance: **BLOCKED** pending disposition of the temporary trigger, a main-smoke evidence contract, dependency image change trigger, required-check configuration authorization, and real PR/main event evidence. No PR, merge, settings change, or production action was performed.

@@ -248,29 +248,52 @@ class GateContractTests(unittest.TestCase):
 
     def test_main_push_smoke_reuses_ordinary_or_runs_one_exact_native_diagnostic(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
-        self.assertIn("run_main_smoke={'true' if '${{ github.event_name }}' == 'push' else 'false'}", workflow)
-        self.assertIn("--suite xray-diagnostic", workflow)
-        self.assertIn("if [ '${{ steps.plan.outputs.needs_qcp }}' = true ]; then", workflow)
-        self.assertIn("if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ]; then", workflow)
-        self.assertIn("args+=(--require-main-smoke)", workflow)
-        self.assertIn("args+=(--main-smoke-report", workflow)
-        self.assertNotIn("needs_qcp }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke", workflow)
-        self.assertNotIn("needs_xray_docker }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke", workflow)
+        required = (
+            "run_main_smoke={'true' if '${{ github.event_name }}' == 'push' else 'false'}",
+            "--suite xray-diagnostic",
+            "if [ '${{ steps.plan.outputs.needs_qcp }}' = true ]; then",
+            "if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ]; then",
+            "args+=(--require-main-smoke)", "args+=(--main-smoke-report",
+        )
+        forbidden = (
+            "needs_qcp }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke",
+            "needs_xray_docker }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke",
+        )
+        self.assertTrue(all(item in workflow for item in required)
+                        and all(item not in workflow for item in forbidden),
+                        "main push must require one native smoke and select QCP/Docker-Xray only by affected plan")
 
     def test_temporary_main_equivalent_path_is_branch_marker_scoped_and_uses_fixed_base(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
-        self.assertIn("branches: [main, stage/test-architecture-ci-stabilization]", workflow)
-        self.assertIn("github.event_name == 'pull_request'", workflow)
-        self.assertIn("github.ref == 'refs/heads/main'", workflow)
-        self.assertIn("contains(github.event.head_commit.message || '', 'ci:main-equivalent')", workflow)
-        self.assertIn("EVENT_REF: ${{ github.ref }}", workflow)
-        self.assertIn("HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}", workflow)
-        self.assertIn("PHASE_E_BASE_SHA: 3e12141c5d7be5d740450e6c13001a8fbc827f3b", workflow)
-        self.assertIn('elif [ "$EVENT_REF" = refs/heads/stage/test-architecture-ci-stabilization ]', workflow)
-        self.assertIn('[[ "$HEAD_COMMIT_MESSAGE" == *ci:main-equivalent* ]]', workflow)
-        self.assertLess(workflow.index('[[ "$HEAD_COMMIT_MESSAGE" == *ci:main-equivalent* ]]'),
-                        workflow.index('BASE="$PHASE_E_BASE_SHA"'))
-        self.assertNotIn('BASE="$PHASE_E_BASE_SHA"\n          else', workflow)
+        trigger = workflow.split("permissions:", 1)[0]
+        job = workflow.split("  affected:", 1)[1].split("    steps:", 1)[0]
+        plan_step = workflow.split('if [ "$EVENT_NAME" = pull_request ]; then', 1)[1].split(
+            'if [ -z "$BASE"', 1)[0]
+        base_selection = 'if [ "$EVENT_NAME" = pull_request ]; then' + plan_step
+        fixed_assignment = base_selection.find('BASE="$PHASE_E_BASE_SHA"')
+        ref_guard = base_selection.rfind(
+            'elif [ "$EVENT_REF" = refs/heads/stage/test-architecture-ci-stabilization ]',
+            0, fixed_assignment)
+        marker_guard = base_selection.find(
+            '[[ "$HEAD_COMMIT_MESSAGE" == *ci:main-equivalent* ]]', ref_guard, fixed_assignment)
+        fallback = base_selection.find('BASE="$PUSH_BASE_SHA"', fixed_assignment)
+        scoped_branches = (base_selection.count('BASE="$PHASE_E_BASE_SHA"') == 1
+                           and 'BASE="$PR_BASE_SHA"' in base_selection
+                           and ref_guard >= 0 and marker_guard > ref_guard
+                           and fallback > fixed_assignment
+                           and "else" in base_selection[fixed_assignment:fallback])
+        contract = (
+            "branches: [main, stage/test-architecture-ci-stabilization]" in trigger
+            and "github.event_name == 'pull_request'" in job
+            and "github.ref == 'refs/heads/main'" in job
+            and "contains(github.event.head_commit.message || '', 'ci:main-equivalent')" in job
+            and "PHASE_E_BASE_SHA: 3e12141c5d7be5d740450e6c13001a8fbc827f3b" in workflow
+            and 'EVENT_REF: ${{ github.ref }}' in workflow
+            and 'HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}' in workflow
+            and scoped_branches
+        )
+        self.assertTrue(contract,
+                        "temporary main-equivalent run must be marker/ref scoped, with PR/main and push bases preserved")
 
     def test_unit_fixture_junit_contract_rejects_missing_and_skipped_cases(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fwrouter-unit-junit-contract-") as temp:

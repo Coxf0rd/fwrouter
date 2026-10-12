@@ -3,7 +3,7 @@
 
 ## Current acceptance pointer — 2026-10-13
 
-**Phase D: ACCEPTED (hosted implementation/mandatory gates). Entire Test Architecture & CI Stabilization milestone: OPEN; Phase E not started.** Source `a10dd9c`, [run38305978196](https://github.com/Coxf0rd/fwrouter/actions/runs/38305978196): affected1429 PASS/0 FAIL/0 SKIP; qualified26+1 and minimal application/native1 PASS; ordinary26/Provider-kernel11/packet1 PASS twice with exact source/plan/native/capture/cleanup receipts. Historical exact-seven7/7 PASS, no baseline allowlist. Targeted cache/prewarm/state300 nodes PASS five times (38305595288). See Phase D REPORT and `FULL_BUNDLE_CHECKPOINT_38305978196.json` for scope/resource limits.
+**Phase D: ACCEPTED (hosted implementation/mandatory gates). Entire Test Architecture & CI Stabilization milestone: OPEN; Phase E IN PROGRESS / BLOCKED on real PR/main event and settings gates.** Source `a10dd9c`, [run38305978196](https://github.com/Coxf0rd/fwrouter/actions/runs/38305978196): affected1429 PASS/0 FAIL/0 SKIP; qualified26+1 and minimal application/native1 PASS; ordinary26/Provider-kernel11/packet1 PASS twice with exact source/plan/native/capture/cleanup receipts. Historical exact-seven7/7 PASS, no baseline allowlist. Targeted cache/prewarm/state300 nodes PASS five times (38305595288). See Phase D REPORT and `FULL_BUNDLE_CHECKPOINT_38305978196.json` for scope/resource limits.
 
 L0–L4 primary proofs plus L5 affected-regression anchors; no L6/L7 execution. GHCR digest-pinned Debian12 base and fresh-source consumers confirmed; Compose is not Debian host/reboot acceptance. Actual PR/main event execution and protected required-check promotion remain for authorized final CI acceptance. No production changes/deploy or CD. Operational Performance Fixes remains PAUSED/BLOCKED in its preserved branch. Do not start Phase E or a new milestone automatically. Earlier checkpoint/status sections below preserve history and are superseded only within the exact scope above.
 
@@ -354,3 +354,24 @@ Target environment: GitHub-hosted Ubuntu host, existing isolated Compose, Debian
 
 ### Phase D factual checkpoint — 2026-10-12
 Provider cohort run38208049662:11/0/0, both reentry fencing cases confirmed. GHCR ordinary application consumer run38210552876:1/0/0 native application plus historical exact seven7/0/0; fresh-source overlay build9.307s and anonymous pull28.411s with actual DockerRoot boundary measurements. Kernel/packet/recovery retain pinned legacy build. New selective packet extension currently fails native mode/default apply verification (run38210175218); target-switch packet proof not reached. Full functional/affected/reproducibility gates remain OPEN; PhaseD BLOCKED. No production changes/PhaseE/CD/L7. Detailed scope and evidence: PhaseD REPORT.
+
+
+## Phase E planned release/development boundaries — 2026-10-13
+
+Status: **PLANNED/TODO**, not implemented or accepted by this CI audit. Existing Stage5–10 ordering and dependencies are unchanged.
+
+| Future requirement | Placement and acceptance boundary |
+|---|---|
+| Configuration Matrix & Security Acceptance | Stage5 contracts, validated under Stage9: supported environment/config modes, LAN/subnet/protocol/provider combinations, persistence/migrations, permissions, authorization, secret-handling and negative outcomes. |
+| DNS Performance & Reliability | Hardening before Stage9: measured query latency, cache/reload/failure/recovery, DNS routing and leak prevention; optimize only with comparable evidence. Hosted DNS routing proof is not performance or physical-host acceptance. |
+| Rescue `rescue0` Network Isolation Audit | Separate host/rescue acceptance in Stage9/release preparation: independent management access, subnet/interface/firewall isolation and recovery. No rescue implementation/change is authorized here. |
+| Production Documentation | Existing documentation milestone: RU/EN README, screenshots, architecture, user/operator/developer/install/upgrade/recovery guides and complete test/CI documentation. |
+| Server-Wide Cleanup & Storage Audit | Stage6 inventory plus final hardening: read-only cross-project storage/permissions/unused-service evidence first; any deletion/cleanup needs separately reviewed scope. No volumes/data/container deletion or blanket prune. |
+| Production Live Acceptance | Mandatory after separately approved exact-release deployment: Health/readiness/native parity, Core/provider/Xray state, packet/internet semantics, management access and bounded observation; CI/merge never substitutes for live acceptance. |
+| External Integration Framework & SDK | Late, after Stage8 contracts, Stage7 extraction and DB/Core/Modules stabilization; versioned external API/events/auth ownership, separate from premature infrastructure or current CI implementation. |
+
+### Git/release target policy
+
+One logical milestone branch/PR → required CI PASS → operator PR review → **Squash and Merge (one resulting main commit)** → Release Candidate → Release Acceptance → separately approved manual Deployment → Production Live Acceptance. Squash/delete-merged-head policy is the current target; historical retain-branch wording is superseded by the explicit Phase E decision. Only completed/confirmed merged branches may be deleted; this unfinished branch and operational branch are untouched.
+
+Current repository inspection: squash/merge/rebase all permitted; auto-delete heads already enabled; Main requires PR but no required-status-check rule. Required affected-check enforcement and squash-only setting need explicit approval; no settings changed. Real PR/main events remain NOT RUN. CD is **DEFERRED**, no automatic production deployment. Merge alone does not authorize deployment. Network-impacting release acceptance needs working Rescue SSH/VPN and an independently usable rollback.
