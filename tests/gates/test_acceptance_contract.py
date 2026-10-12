@@ -3412,7 +3412,11 @@ class AcceptanceContractTests(unittest.TestCase):
         calls = []
         original_result = {
             "ok": True, "mode": "selective", "selective_default": "vpn",
-            "error_code": None, "raw_chain": "SECRET_SENTINEL",
+            "error_code": None,
+            "raw_chain": ('chain fwrouter_classify {\n'
+                          ' ip daddr @vpn_ipv4 goto fwrouter_vpn comment '
+                          '"scoped selective default vpn: SECRET_SENTINEL"\n'
+                          ' goto fwrouter_vpn_full comment "selective default vpn"\n}'),
         }
         expected_error = RuntimeError("SECRET_SENTINEL")
         raise_probe = {"enabled": False}
@@ -3454,6 +3458,18 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertTrue(all(event == {
             "schema": "fwrouter-acceptance-live-mode-probe/v1", "sequence": event["sequence"],
             "ok": True, "mode": "selective", "selective_default": "vpn", "error_code": None,
+            "comment_categories": {
+                "classify_chain_present": True,
+                "global_direct": False,
+                "global_vpn": False,
+                "global_selective_default_vpn": True,
+                "global_selective_default_direct": False,
+                "global_selective_degraded_default_direct": False,
+                "scoped_selective_rules": True,
+                "scoped_selective_default_vpn": True,
+                "scoped_selective_default_direct": False,
+                "scoped_selective_degraded_default_direct": False,
+            },
         } for event in events))
         self.assertNotIn("SECRET_SENTINEL", captured.getvalue())
         self.assertNotIn("raw_chain", captured.getvalue())
@@ -3466,7 +3482,8 @@ class AcceptanceContractTests(unittest.TestCase):
         for required in ("original_probe()", "return result",
                          '"FWROUTER_ACCEPTANCE_LIVE_MODE_PROBE "', 'state["count"] < 64'):
             self.assertIn(required, observer_source)
-        for forbidden in ("raw_chain", "str(result)", "repr(result)", "traceback", "SECRET_SENTINEL"):
+        for forbidden in ("json.dumps(result)", "str(result)", "repr(result)", "traceback",
+                          "SECRET_SENTINEL"):
             self.assertNotIn(forbidden, observer_source)
         install_calls = [node for node in ast.walk(worker_tree)
                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)

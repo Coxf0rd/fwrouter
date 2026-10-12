@@ -778,6 +778,8 @@ def _install_acceptance_live_mode_probe_observer() -> None:
             mode = result.get("mode") if isinstance(result, dict) else None
             selective_default = result.get("selective_default") if isinstance(result, dict) else None
             error_code = result.get("error_code") if isinstance(result, dict) else None
+            raw_chain = result.get("raw_chain") if isinstance(result, dict) else None
+            raw_chain = raw_chain if isinstance(raw_chain, str) else ""
             receipt = {
                 "schema": "fwrouter-acceptance-live-mode-probe/v1",
                 "sequence": state["count"],
@@ -787,6 +789,20 @@ def _install_acceptance_live_mode_probe_observer() -> None:
                                        and selective_default in allowed_defaults else None),
                 "error_code": (error_code if isinstance(error_code, str) and error_code in allowed_errors
                                else "other" if isinstance(error_code, str) and error_code else None),
+                "comment_categories": {
+                    "classify_chain_present": 'chain fwrouter_classify {' in raw_chain,
+                    "global_direct": 'goto fwrouter_direct comment "global direct v1"' in raw_chain,
+                    "global_vpn": 'goto fwrouter_vpn_full comment "global vpn v1"' in raw_chain,
+                    "global_selective_default_vpn": 'comment "selective default vpn"' in raw_chain,
+                    "global_selective_default_direct": 'comment "selective default direct"' in raw_chain,
+                    "global_selective_degraded_default_direct": (
+                        'comment "selective degraded default direct"' in raw_chain),
+                    "scoped_selective_rules": 'comment "scoped selective ' in raw_chain,
+                    "scoped_selective_default_vpn": 'comment "scoped selective default vpn:' in raw_chain,
+                    "scoped_selective_default_direct": 'comment "scoped selective default direct:' in raw_chain,
+                    "scoped_selective_degraded_default_direct": (
+                        'comment "scoped selective degraded default direct:' in raw_chain),
+                },
             }
             print("FWROUTER_ACCEPTANCE_LIVE_MODE_PROBE " + json.dumps(
                 receipt, sort_keys=True, separators=(",", ":")), flush=True)
