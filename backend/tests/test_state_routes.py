@@ -104,7 +104,10 @@ def test_system_summary_get_does_not_initialize_empty_database(monkeypatch) -> N
     assert [row["name"] for row in after_tables] == [row["name"] for row in before_tables]
 
 
-def test_public_system_responses_do_not_expose_database_paths_or_exceptions(monkeypatch) -> None:
+def test_public_system_responses_do_not_expose_database_paths_or_exceptions(
+    monkeypatch,
+    isolated_host_observations,
+) -> None:
     from fwrouter_api.routes import system
 
     def failed_db_session():
@@ -124,7 +127,10 @@ def test_public_system_responses_do_not_expose_database_paths_or_exceptions(monk
             assert "unable to open" not in str(payload)
 
     response = TestClient(create_app(enable_startup_tasks=False)).get("/api/v2/system/summary")
-    assert "paths" not in response.json()["data"]
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert "paths" not in payload["data"]
     from fwrouter_api.services import runtime_prewarm
 
     assert runtime_prewarm._PREWARM_RUNNING is True
