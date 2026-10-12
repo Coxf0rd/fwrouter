@@ -412,7 +412,7 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
             routing=future_routing,
             job_id=str(job["job_id"]),
         )
-        if not mihomo_reconcile.get("ok"):
+        if mihomo_reconcile.get("fallback_required") is True:
             mihomo_reconcile = _reconcile_vpn_runtime_for_apply(
                 routing=future_routing,
                 job_id=str(job["job_id"]),

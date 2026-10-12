@@ -24,6 +24,7 @@ from fwrouter_api.services.mihomo_reconcile_fingerprint import (
     write_mihomo_reconcile_fingerprint_state,
 )
 from fwrouter_api.services import mihomo_reconcile_fingerprint as mihomo_reconcile_fingerprint_service
+from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -1207,10 +1208,15 @@ def test_reconcile_mihomo_selective_default_fast_requires_full_compile_when_udp_
         ),
         encoding="utf-8",
     )
+    candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
+    base_before = base_path.read_bytes()
+    candidate_before = candidate_path.read_bytes() if candidate_path.exists() else None
+    with db_session() as connection:
+        revision_before = read_selection_revision(connection)
     monkeypatch.setattr(
         mihomo_config_service,
         "restart_mihomo_container",
-        lambda **kwargs: {"ok": True, "action": kwargs.get("action"), "reason": "pytest"},
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("deferred fast path must not restart")),
     )
 
     result = mihomo_config_service.reconcile_mihomo_selective_default_fast(
@@ -1220,11 +1226,13 @@ def test_reconcile_mihomo_selective_default_fast_requires_full_compile_when_udp_
 
     assert result["ok"] is False
     assert result["fast_path"] is True
-    assert result["reconcile_reason"] == "compiled_policy_requires_full_reconcile"
-    text = base_path.read_text(encoding="utf-8")
-    assert "  - MATCH,DIRECT\n" in text
-    assert "  resolved_selective_default: direct\n" in text
-    assert "  transparent_final_match_rule: MATCH,DIRECT\n" in text
+    assert result["fallback_required"] is True
+    assert result["reconcile_action"] == "none"
+    assert result["reconcile_reason"] == "verified_publication_requires_full_reconcile"
+    assert base_path.read_bytes() == base_before
+    assert (candidate_path.read_bytes() if candidate_path.exists() else None) == candidate_before
+    with db_session() as connection:
+        assert read_selection_revision(connection) == revision_before
 
 
 def test_reconcile_rollback_classifies_actual_direct_and_mandatory_vpn_configs(

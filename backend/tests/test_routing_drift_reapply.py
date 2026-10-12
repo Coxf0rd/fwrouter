@@ -157,6 +157,8 @@ def test_set_selective_default_reapplies_when_live_dataplane_drift_is_detected(m
     _seed_selective_routing()
 
     pipeline_calls: list[dict[str, object]] = []
+    fast_reconcile_calls: list[dict[str, object]] = []
+    full_reconcile_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
         orchestrator,
@@ -168,7 +170,26 @@ def test_set_selective_default_reapplies_when_live_dataplane_drift_is_detected(m
         "validate_global_mode_request",
         lambda mode, routing=None: {"ok": True, "mode": mode, "preflight": {}},
     )
-    monkeypatch.setattr(orchestrator, "reconcile_mihomo_runtime", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(
+        orchestrator,
+        "mihomo_runtime_satisfies_routing",
+        lambda routing: {"ok": False, "reason": "pytest_drift"},
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "reconcile_mihomo_selective_default_fast",
+        lambda **kwargs: fast_reconcile_calls.append(kwargs) or {
+            "ok": False,
+            "fast_path": True,
+            "fallback_required": True,
+            "reconcile_reason": "verified_publication_requires_full_reconcile",
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "reconcile_mihomo_runtime",
+        lambda **kwargs: full_reconcile_calls.append(kwargs) or {"ok": True},
+    )
     monkeypatch.setattr(orchestrator, "_load_user_override_map", lambda: {})
     monkeypatch.setattr(orchestrator, "_load_server_override_map", lambda: {})
     monkeypatch.setattr(orchestrator, "_load_subjects_with_overrides", lambda **kwargs: [])
@@ -191,8 +212,57 @@ def test_set_selective_default_reapplies_when_live_dataplane_drift_is_detected(m
     assert result["ok"] is True
     assert result["stage"] == "commit"
     assert len(pipeline_calls) == 1
+    assert len(fast_reconcile_calls) == 1
+    assert len(full_reconcile_calls) == 1
     assert pipeline_calls[0]["extra"]["rules_effective"]["selective_default"] == "direct"
     assert pipeline_calls[0]["extra"]["rules_effective"]["default_action"] == "DIRECT"
+
+
+def test_set_selective_default_does_not_retry_unmarked_fast_failure(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_selective_routing()
+
+    full_reconcile_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        orchestrator,
+        "probe_live_global_mode",
+        lambda: {"ok": True, "mode": "direct", "selective_default": "direct"},
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_applied_manifest_routing_drift",
+        lambda routing=None: {"detected": True, "mismatches": {"selective_default": True}},
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "mihomo_runtime_satisfies_routing",
+        lambda routing: {"ok": False, "reason": "pytest_drift"},
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "reconcile_mihomo_selective_default_fast",
+        lambda **kwargs: {
+            "ok": False,
+            "fast_path": True,
+            "fallback_required": False,
+            "reconcile_reason": "runtime_mutation_failed",
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "reconcile_mihomo_runtime",
+        lambda **kwargs: full_reconcile_calls.append(kwargs) or {"ok": True},
+    )
+
+    result = orchestrator._execute_set_selective_default(
+        {"job_id": "job-selective-default-no-retry", "requested_by": "pytest"},
+        {"selective_default": "direct"},
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "MIHOMO_RECONCILE_FAILED"
+    assert full_reconcile_calls == []
 
 
 def test_set_selective_default_skips_full_mihomo_reconcile_when_runtime_matches(
