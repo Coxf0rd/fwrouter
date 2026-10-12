@@ -1207,8 +1207,11 @@ def test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_po
     }
     direct_text = render_owned_table_candidate(direct_default)
     direct_classify = _chain_block(direct_text, "fwrouter_classify")
-    assert 'goto fwrouter_direct comment "selective default direct"' in direct_classify
+    assert 'ip daddr @direct_ipv4 goto fwrouter_direct comment "selective direct IPv4"' in direct_classify
     assert 'ip daddr @vpn_ipv4 drop comment "selective degraded block VPN IPv4"' in direct_classify
+    assert 'goto fwrouter_direct comment "selective degraded default direct"' in direct_classify
+    assert 'ip saddr 192.0.2.71 ip daddr @direct_ipv4 goto fwrouter_direct comment "scoped selective direct IPv4: lan:policy-ready-check"' in direct_classify
+    assert 'ip saddr 192.0.2.71 goto fwrouter_direct comment "scoped selective degraded default direct: lan:policy-ready-check"' in direct_classify
 
 
 def test_render_owned_table_candidate_keeps_decision_logic_in_classify_chain() -> None:
