@@ -74,18 +74,30 @@ jobs:
           set -euo pipefail
           python tests/acceptance/provision.py --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV"
           cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" "$RUNNER_TEMP/fwrouter-runtime-inputs.json"
-      - name: Run full L6 hosted functional, qualified child, native, and browser checks
+      - name: Run full L6 hosted profile bundle, then qualified child and Xray checks
         run: |
           set -euo pipefail
           failures=0
-          for attempt in 1 2; do
-            set +e
-            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite functional \
-              > "$RUNNER_TEMP/fwrouter-l6-functional-$attempt.log" 2>&1
-            code=$?
-            set -e
-            if [ "$code" -ne 0 ]; then failures=1; fi
-          done
+          run_bundle() {
+            attempt="$1"
+            failed=0
+            for suite in functional-ordinary provider-cohort packet-diagnostic; do
+              set +e
+              /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
+                > "$RUNNER_TEMP/fwrouter-l6-${suite}-${attempt}.log" 2>&1
+              code=$?
+              set -e
+              cat "$RUNNER_TEMP/fwrouter-l6-${suite}-${attempt}.log"
+              if [ "$code" -ne 0 ]; then failed=1; fi
+            done
+            return "$failed"
+          }
+          run_bundle 1 || failures=1
+          if [ "$failures" -eq 0 ]; then
+            run_bundle 2 || failures=1
+          else
+            echo 'second hosted profile bundle not run because the first bundle failed'
+          fi
           set +e
           /usr/bin/time -v python tests/acceptance/qualified_child.py --run \
             > "$RUNNER_TEMP/fwrouter-l6-qcp.log" 2>&1

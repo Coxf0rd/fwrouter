@@ -38,6 +38,20 @@ class GateContractTests(unittest.TestCase):
         self.assertTrue(all(row["primary_level"] not in {"L0", "L5", "L6"} for row in self.manifest["test_files"]))
         self.assertEqual(len(self.manifest["test_files"]), len(gate.manifest_paths(self.manifest)))
 
+    def test_existing_standard_library_contracts_have_explicit_routine_runner_adapters(self) -> None:
+        paths = {row["path"] for row in self.manifest["test_files"]}
+        self.assertEqual({
+            "tests/gates/test_network_fixture_contract.py",
+            "tests/acceptance/test_dependency_image_contract.py",
+            "tests/acceptance/test_consume_dependency_image_contract.py",
+        }, gate.STDLIB_CONTRACT_PATHS - {
+            "tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
+            "tests/gates/test_smoke_contract.py",
+        })
+        self.assertTrue(gate.STDLIB_CONTRACT_PATHS <= paths)
+        self.assertTrue(all(not next(row for row in self.manifest["test_files"] if row["path"] == path).get("native")
+                            for path in gate.STDLIB_CONTRACT_PATHS))
+
     def test_unknown_changed_path_fails_closed(self) -> None:
         with self.assertRaises(gate.GateError):
             gate.domain_for_path("unmapped/binary.blob", self.manifest)
@@ -116,6 +130,122 @@ class GateContractTests(unittest.TestCase):
                     "unexpected": "native"}
         with self.assertRaisesRegex(ValueError, "unknown field\\(s\\): unexpected"):
             gate_plugin._merged_node_metadata(row, override)
+
+    def test_exact_routine_node_overrides_carve_only_the_two_reviewed_xray_baseline_nodes(self) -> None:
+        overrides = [row for row in self.manifest["node_overrides"] if "execution_profile" in row]
+        self.assertEqual({
+            ("backend/tests/test_xray.py", "test_legacy_subscription_get_is_read_only"),
+            ("backend/tests/test_xray.py", "test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged"),
+        }, {(row["path"], row["node"]) for row in overrides})
+        self.assertTrue(all(row["execution_profile"] is None and row["primary_level"] == "L1"
+                            for row in overrides))
+        base = next(row for row in self.manifest["test_files"]
+                    if row["path"] == "backend/tests/test_xray.py")
+        self.assertEqual("qualified-child-process", base["execution_profile"])
+        self.assertEqual(sorted(name for _path, name in gate.ROUTINE_PROFILE_CARVEOUTS),
+                         gate.routine_node_override_names(self.manifest, "backend/tests/test_xray.py"))
+        self.assertEqual([], gate.routine_node_override_names(
+            self.manifest, "backend/tests/test_xray_native_readback.py"))
+        for override in overrides:
+            metadata = gate_plugin._merged_node_metadata(base, override)
+            self.assertIsNone(metadata["execution_profile"])
+
+    def test_exact_routine_node_override_cannot_clear_an_unprofiled_file_or_add_profile(self) -> None:
+        unprofiled = {"path": "backend/tests/test_provider_configuration.py",
+                      "primary_level": "L2", "domain": "provider"}
+        with self.assertRaisesRegex(gate.GateError, "carve exact nodes out of a profiled file"):
+            invalid = copy.deepcopy(self.manifest)
+            invalid["node_overrides"].append({"path": unprofiled["path"], "node": "test_x",
+                                                "primary_level": "L2", "execution_profile": None})
+            gate.validate_manifest(invalid)
+        invalid = copy.deepcopy(self.manifest)
+        invalid["node_overrides"].append({
+            "path": "backend/tests/test_xray.py", "node": "test_xray_writer_guard_serializes_processes",
+            "primary_level": "L1", "execution_profile": "hosted-kernel-packet",
+        })
+        with self.assertRaisesRegex(gate.GateError, "carve exact nodes out of a profiled file"):
+            gate.validate_manifest(invalid)
+        invalid = copy.deepcopy(self.manifest)
+        invalid["node_overrides"].append({
+            "path": "backend/tests/test_xray.py", "node": "test_unreviewed_xray_case",
+            "primary_level": "L1", "execution_profile": None,
+        })
+        with self.assertRaisesRegex(gate.GateError, "exact two reviewed routine Xray node carve-outs"):
+            gate.validate_manifest(invalid)
+
+    def test_fixed_unit_fixture_cohort_is_exact_catalogued_and_non_native(self) -> None:
+        self.assertEqual(24, len(gate.UNIT_FIXTURE_PATHS))
+        self.assertEqual(len(gate.UNIT_FIXTURE_PATHS), len(set(gate.UNIT_FIXTURE_PATHS)))
+        rows = {row["path"]: row for row in self.manifest["test_files"]}
+        self.assertTrue(set(gate.UNIT_FIXTURE_PATHS) <= rows.keys())
+        self.assertTrue(all(not rows[path].get("native") and not rows[path].get("execution_profile")
+                            for path in gate.UNIT_FIXTURE_PATHS))
+
+    def test_unit_fixture_junit_contract_rejects_missing_and_skipped_cases(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-unit-junit-contract-") as temp:
+            path = Path(temp) / "report.xml"
+            path.write_text('<testsuite tests="1" failures="0" errors="0" skipped="0">'
+                            '<testcase name="ok"/></testsuite>', encoding="utf-8")
+            self.assertEqual(["ok"], gate.validate_junit_report(path, 4096, 1))
+            path.write_text('<testsuite tests="1" failures="0" errors="0" skipped="1">'
+                            '<testcase name="skip"><skipped/></testcase></testsuite>', encoding="utf-8")
+            with self.assertRaisesRegex(gate.GateError, "failed or skipped"):
+                gate.validate_junit_report(path, 4096, 1)
+            with self.assertRaisesRegex(gate.GateError, "case count"):
+                gate.validate_junit_report(path, 4096, 2)
+
+    def test_unit_fixture_junit_maps_exact_pytest_node_ids(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-unit-junit-nodeid-contract-") as temp:
+            path = Path(temp) / "report.xml"
+            path.write_text('<testsuite tests="1" failures="0" errors="0" skipped="0">'
+                            '<testcase classname="tests.test_example.TestExample" name="test_case"/>'
+                            '</testsuite>', encoding="utf-8")
+            expected = {"backend/tests/test_example.py::TestExample::test_case"}
+            self.assertEqual(sorted(expected), gate.validate_junit_report(path, 4096, 1, expected))
+            path.write_text('<testsuite tests="1" failures="0" errors="0" skipped="0">'
+                            '<testcase classname="tests.test_example" name="unexpected"/>'
+                            '</testsuite>', encoding="utf-8")
+            with self.assertRaisesRegex(gate.GateError, "exact pytest node ID"):
+                gate.validate_junit_report(path, 4096, 1, expected)
+
+    def test_published_junit_redacts_diagnostics_and_preserves_case_identity(self) -> None:
+        raw = (b'<testsuite tests="1"><properties><property name="api_token" value="SECRET_VALUE"/>'
+               b'</properties><testcase classname="tests.test_example" name="test_case">'
+               b'<failure message="token=FAIL_VALUE">Trace token=TRACE_VALUE</failure>'
+               b'<system-err>Bearer BEARER_VALUE</system-err></testcase></testsuite>')
+        sanitized = gate.sanitize_junit_artifact(raw, 4096)
+        self.assertNotIn(b"SECRET_VALUE", sanitized)
+        self.assertNotIn(b"FAIL_VALUE", sanitized)
+        self.assertNotIn(b"TRACE_VALUE", sanitized)
+        self.assertNotIn(b"BEARER_VALUE", sanitized)
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(sanitized)
+        case = root.find("testcase")
+        self.assertIsNotNone(case)
+        assert case is not None
+        self.assertEqual({"classname": "tests.test_example", "name": "test_case"}, case.attrib)
+        property_row = root.find("./properties/property")
+        self.assertIsNotNone(property_row)
+        assert property_row is not None
+        self.assertEqual("[REDACTED]", property_row.get("value"))
+
+    def test_three_profile_hosted_partition_sets_are_exact_and_exhaustive(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "fwrouter_hosted_partition_contract", gate.ROOT / "tests/gates/aggregate_hosted.py")
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+        partitions = module.hosted_partition_nodeids()
+        self.assertEqual({"functional-ordinary", "provider-cohort", "packet-diagnostic"}, set(partitions))
+        self.assertEqual((26, 11, 1), tuple(len(partitions[key]) for key in
+                                             ("functional-ordinary", "provider-cohort", "packet-diagnostic")))
+        self.assertEqual(38, len(set().union(*partitions.values())))
+        self.assertFalse(partitions["functional-ordinary"] & partitions["provider-cohort"])
+        self.assertFalse(partitions["packet-diagnostic"] & set().union(
+            partitions["functional-ordinary"], partitions["provider-cohort"]))
+        self.assertEqual(set(module.functional_nodeids()),
+                         partitions["functional-ordinary"] | partitions["provider-cohort"])
 
     def test_dependency_closure_is_transitive_and_cycle_safe(self) -> None:
         graph = {"a": ["b"], "b": ["c"], "c": ["a", "d"], "d": []}

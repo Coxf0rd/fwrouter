@@ -59,6 +59,57 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_functional_provider_and_packet_node_sets_are_exact_and_disjoint(self):
+        ordinary = launcher.expected_acceptance_nodeids("functional-ordinary")
+        provider = launcher.expected_acceptance_nodeids("provider-cohort")
+        packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
+        functional = aggregate_hosted.functional_nodeids()
+        self.assertEqual((26, 11, 1), (len(ordinary), len(provider), len(packet)))
+        self.assertFalse(ordinary & provider)
+        self.assertFalse(packet & (ordinary | provider))
+        self.assertEqual(functional, ordinary | provider)
+        with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
+            launcher.expected_acceptance_nodeids("functional")
+        self.assertEqual(38, len(ordinary | provider | packet))
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_suite_node_receipt(
+                [{"nodeid": nodeid, "status": "passed",
+                  "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}}
+                 for nodeid in functional],
+                "functional-ordinary", sorted(functional))
+
+    def test_aggregate_requires_only_the_selected_exact_hosted_profile_partitions(self):
+        manifests = json.loads((launcher.ROOT / "tests/gates/manifest.json").read_text(encoding="utf-8"))
+        rows = manifests["test_files"]
+        app_rows = [row for row in rows if row.get("execution_profile") == "hosted-isolated-compose"]
+        packet_rows = [row for row in rows if row.get("execution_profile") == "hosted-kernel-packet"]
+        self.assertEqual(["functional-ordinary", "provider-cohort"],
+                         aggregate_hosted.required_hosted_partitions(app_rows))
+        self.assertEqual(["packet-diagnostic"], aggregate_hosted.required_hosted_partitions(packet_rows))
+        self.assertEqual([], aggregate_hosted.required_hosted_partitions([]))
+
+    def test_aggregate_rejects_missing_duplicate_and_unexpected_hosted_partitions(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-profile-bundle-contract-") as temp:
+            root = Path(temp)
+            paths = []
+            for index, suite in enumerate(("functional-ordinary", "functional-ordinary",
+                                           "provider-cohort", "packet-diagnostic", "functional")):
+                path = root / f"receipt-{index}.json"
+                path.write_text(json.dumps({"suite": suite}), encoding="utf-8")
+                paths.append(path)
+            grouped, problems = aggregate_hosted.group_hosted_receipts(
+                paths, ["functional-ordinary", "provider-cohort", "packet-diagnostic"], 1)
+        self.assertEqual(2, len(grouped["functional-ordinary"]))
+        self.assertEqual(1, len(grouped["provider-cohort"]))
+        self.assertEqual(1, len(grouped["packet-diagnostic"]))
+        self.assertEqual(2, len(problems))
+        self.assertTrue(any("unexpected profile partition" in item for item in problems))
+        self.assertTrue(any("functional-ordinary receipts: 2; required: 1" in item for item in problems))
+        _, missing = aggregate_hosted.group_hosted_receipts(
+            [paths[0]], ["functional-ordinary", "provider-cohort", "packet-diagnostic"], 1)
+        self.assertEqual(2, len(missing))
+        self.assertTrue(all("required: 1" in item for item in missing))
+
     def test_packet_base_image_inspect_failure_is_staged_bounded_and_redacted(self):
         stderr = (b"x" * 5000 + b" /var/lib/docker/image/metadata token=TOKEN_SENTINEL "
                   b"Bearer BEARER_SENTINEL")
@@ -1618,17 +1669,16 @@ class AcceptanceContractTests(unittest.TestCase):
     def test_phase_d_functional_repeat_status_starts_green_and_preserves_failures(self):
         workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
             encoding="utf-8")
-        start = workflow.index("      - name: Run all 37 functional application/browser scenarios")
+        start = workflow.index("      - name: Run exact hosted functional profile bundle")
         end = workflow.index("      - name: Aggregate exact full-phase", start)
         step = workflow[start:end]
-        self.assertRegex(step, r"(?m)^\s+first=0$")
-        self.assertRegex(step, r"(?m)^\s+/usr/bin/time -v python tests/acceptance/launcher\.py --run --suite functional\s*\\\s*$")
-        self.assertIn("|| first=$?", step)
-        self.assertIn('if [ "$first" -eq 0 ]; then', step)
-        self.assertRegex(step, r"(?m)^\s+second=0$")
-        self.assertIn("|| second=$?", step)
+        for suite in ("functional-ordinary", "provider-cohort", "packet-diagnostic"):
+            self.assertIn(suite, workflow)
+        self.assertIn("run_bundle 1 || first=$?", step)
+        self.assertIn('if [ "$first" -ne 0 ]; then', step)
+        self.assertIn("NOT_RUN_first_bundle_failed", step)
+        self.assertIn("run_bundle 2 || second=$?", step)
         self.assertIn('test "$second" -eq 0', step)
-        self.assertIn('exit "$first"', step)
 
     def test_qualified_child_diagnostics_and_mihomo_banner_are_bounded_and_pinned(self):
         generated = qualified_child._preflight_code()
@@ -2572,13 +2622,14 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertNotIn("different-private-url", output.getvalue())
 
     def test_hosted_receipt_aggregation_rejects_source_plan_and_skipped_node_mismatch(self):
-        expected = aggregate_hosted.functional_nodeids()
+        expected = aggregate_hosted.hosted_partition_nodeids()["functional-ordinary"]
         source = "a" * 40
         plan_digest = "b" * 64
         nonce = "c" * 32
         profile = {
-            "schema": "fwrouter-acceptance-profile/v2", "source_revision": source,
-            "plan_digest": plan_digest,
+            "schema": "fwrouter-acceptance-profile/v2", "profile": "hosted-native-process",
+            "source_revision": source,
+            "plan_digest": plan_digest, "suite_nonce": nonce,
             "xray": {"version": provision.INPUTS["xray"]["version"],
                      "sha256": provision.BINARY_SHA256["xray"]},
             "mihomo": {"version": provision.INPUTS["mihomo"]["version"],
@@ -2595,7 +2646,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 for nodeid in nodeids]
         receipt = {
             "schema_version": 1, "scope": "hosted-native-process", "status": "passed",
-            "suite": "functional", "source_revision": source, "plan_digest": plan_digest,
+            "suite": "functional-ordinary", "source_revision": source, "plan_digest": plan_digest,
             "container_confinement": "passed", "runtime_preflight": "passed",
             "cleanup": "owned_resources_removed", "temporary_artifacts_removed": True,
             "suite_nonce": nonce, "profile_sha256": profile_sha,
@@ -2628,25 +2679,102 @@ class AcceptanceContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="fwrouter-aggregate-contract-") as temp:
             path = Path(temp) / "receipt.json"
             path.write_text(json.dumps(receipt), encoding="utf-8")
-            self.assertEqual([], aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
+            self.assertEqual([], aggregate_hosted.validate_functional_receipt(
+                path, plan, expected, runtime_inputs, suite="functional-ordinary"))
+            self.assertEqual([path], aggregate_hosted.group_hosted_receipts(
+                [path], ["functional-ordinary"], 1)[0]["functional-ordinary"])
+            alias = json.loads(json.dumps(receipt))
+            alias["suite"] = "functional"
+            path.write_text(json.dumps(alias), encoding="utf-8")
+            self.assertTrue(aggregate_hosted.validate_functional_receipt(
+                path, plan, expected, runtime_inputs, suite="functional-ordinary"))
+            self.assertTrue(aggregate_hosted.group_hosted_receipts(
+                [path], ["functional-ordinary"], 1)[1])
             repeat = json.loads(json.dumps(receipt))
             repeat["suite_nonce"] = "f" * 32
             repeat["application_receipt"]["suite_nonce"] = repeat["suite_nonce"]
             path.write_text(json.dumps(repeat), encoding="utf-8")
-            self.assertEqual([], aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
+            self.assertEqual([], aggregate_hosted.validate_functional_receipt(
+                path, plan, expected, runtime_inputs, suite="functional-ordinary"))
+            partitions = aggregate_hosted.hosted_partition_nodeids()
+            for suite, profile_name in (("provider-cohort", "hosted-kernel-dataplane"),
+                                        ("packet-diagnostic", "hosted-kernel-packet")):
+                partition_receipt = json.loads(json.dumps(receipt))
+                ids = sorted(partitions[suite])
+                partition_receipt["suite"] = suite
+                partition_receipt["scope"] = profile_name
+                partition_receipt["tests"] = {"nodeids": ids, "tests": len(ids),
+                                               "failures": 0, "errors": 0, "skipped": 0}
+                partition_receipt["profile"]["profile"] = profile_name
+                partition_receipt["application_receipt"]["scope"] = profile_name
+                partition_receipt["application_receipt"]["tests"] = [
+                    {"nodeid": nodeid, "status": "passed",
+                     "phases": {phase: "passed" for phase in ("setup", "call", "teardown")}}
+                    for nodeid in ids]
+                digest = hashlib.sha256((json.dumps(partition_receipt["profile"], sort_keys=True,
+                                                    indent=2) + "\n").encode()).hexdigest()
+                partition_receipt["profile_sha256"] = digest
+                partition_receipt["application_receipt"]["profile_sha256"] = digest
+                path.write_text(json.dumps(partition_receipt), encoding="utf-8")
+                self.assertEqual([], aggregate_hosted.validate_functional_receipt(
+                    path, plan, set(ids), runtime_inputs, suite=suite))
             for field, value in (("source_revision", "e" * 40), ("plan_digest", "f" * 64)):
                 changed = dict(receipt)
                 changed[field] = value
                 path.write_text(json.dumps(changed), encoding="utf-8")
-                self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
+                self.assertTrue(aggregate_hosted.validate_functional_receipt(
+                    path, plan, expected, runtime_inputs, suite="functional-ordinary"))
             changed = json.loads(json.dumps(receipt))
             changed["application_receipt"]["tests"][0]["phases"]["teardown"] = "skipped"
             path.write_text(json.dumps(changed), encoding="utf-8")
-            self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
+            self.assertTrue(aggregate_hosted.validate_functional_receipt(
+                path, plan, expected, runtime_inputs, suite="functional-ordinary"))
             changed = json.loads(json.dumps(receipt))
             changed["profile"]["xray"]["version"] = "latest"
             path.write_text(json.dumps(changed), encoding="utf-8")
-            self.assertTrue(aggregate_hosted.validate_functional_receipt(path, plan, expected, runtime_inputs))
+            self.assertTrue(aggregate_hosted.validate_functional_receipt(
+                path, plan, expected, runtime_inputs, suite="functional-ordinary"))
+
+    def test_verified_docker_xray_receipt_contributes_only_its_exact_native_node(self):
+        source = "a" * 40
+        digest = "b" * 64
+        nonce = "c" * 32
+        image_id = "sha256:" + "d" * 64
+        nodeid = "backend/tests/test_xray_native_readback.py::test_loaded_client_readback_against_isolated_xray_26_2_6"
+        profile = {
+            "schema": "fwrouter-qualified-docker-xray-profile/v1", "profile": "qualified-docker-xray",
+            "source_revision": source, "plan_digest": digest, "suite_nonce": nonce,
+            "image_id": image_id, "xray_binary_sha256": provision.BINARY_SHA256["xray"],
+            "xray_version": provision.INPUTS["xray"]["version"],
+        }
+        profile_sha = hashlib.sha256((json.dumps(profile, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
+        receipt = {
+            "schema": "fwrouter-qualified-docker-xray-receipt/v1", "scope": "qualified-docker-xray",
+            "status": "passed", "source_revision": source, "plan_digest": digest,
+            "suite_nonce": nonce, "cleanup": "owned_resources_removed", "image_id": image_id,
+            "expected_ids": [nodeid], "xray_binary_sha256": provision.BINARY_SHA256["xray"],
+            "profile_sha256": profile_sha,
+            "tests": {"node_status": {nodeid: "passed"}, "passed": 1, "failed": 0,
+                      "skipped": 0, "contract_valid": True},
+        }
+        runtime_inputs = {"native": {"xray": {"binary_sha256": provision.BINARY_SHA256["xray"]}}}
+        plan = {"source_commit": source, "plan_digest": digest}
+        with tempfile.TemporaryDirectory(prefix="fwrouter-xray-receipt-contract-") as temp:
+            path = Path(temp) / "qualified-xray-docker-receipt.json"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            path.with_name("profile.json").write_text(json.dumps(profile), encoding="utf-8")
+            problems, statuses = aggregate_hosted.validate_xray_docker_receipt(path, plan, runtime_inputs)
+            self.assertEqual([], problems)
+            self.assertEqual({nodeid: "passed"}, statuses)
+            receipt["plan_digest"] = "e" * 64
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            problems, statuses = aggregate_hosted.validate_xray_docker_receipt(path, plan, runtime_inputs)
+        self.assertTrue(problems)
+        self.assertEqual({}, statuses)
+
+    def test_verified_receipt_families_share_a_distinct_nonce_namespace(self):
+        self.assertTrue(aggregate_hosted.run_nonces_are_distinct(["a" * 32, "b" * 32]))
+        self.assertFalse(aggregate_hosted.run_nonces_are_distinct(["a" * 32, "a" * 32]))
 
     def test_provision_inputs_are_exact_versioned_https_assets(self):
         self.assertRegex(provision.BASE_IMAGE, r"^python:3\.11-bookworm@sha256:[0-9a-f]{64}$")
@@ -3014,7 +3142,7 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual("NOTRUN", receipt["status"])
 
     def test_junit_requires_exact_suite_node_ids_without_skips_or_duplicates(self):
-        for suite in ("functional", "recovery", "reentry-diagnostic"):
+        for suite in ("functional-ordinary", "recovery", "reentry-diagnostic"):
             with self.subTest(suite=suite), tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-junit-") as temp:
                 expected = launcher.expected_acceptance_nodeids(suite)
                 root = ET.Element("testsuite")
@@ -3069,10 +3197,20 @@ class AcceptanceContractTests(unittest.TestCase):
             and node.args[0].value == "--suite"
             for keyword in node.keywords if keyword.arg == "choices"
         ]
-        self.assertEqual([("functional", "recovery", "xray-diagnostic", "provider-diagnostic",
+        self.assertEqual([("functional-ordinary", "recovery", "xray-diagnostic", "provider-diagnostic",
                            "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
                            "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight",
                            "kernel-recovery-diagnostic", "packet-diagnostic")], suite_choices)
+        suite_defaults = [
+            ast.literal_eval(keyword.value)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument" and node.args
+            and isinstance(node.args[0], ast.Constant) and node.args[0].value == "--suite"
+            for keyword in node.keywords if keyword.arg == "default"
+        ]
+        self.assertEqual(["functional-ordinary"], suite_defaults)
+        self.assertIn("'functional' is ambiguous", source)
 
     def test_recovery_diagnostic_is_exactly_the_two_fixed_recovery_nodes(self):
         expected = {
@@ -3128,7 +3266,8 @@ class AcceptanceContractTests(unittest.TestCase):
         with self.assertRaises(launcher.NotRun):
             launcher.expected_acceptance_nodeids("reentry-diagnostic-extra")
 
-        catalog_rows = launcher.expected_acceptance_nodeids("functional")
+        catalog_rows = (launcher.expected_acceptance_nodeids("functional-ordinary")
+                        | launcher.expected_acceptance_nodeids("provider-cohort"))
         self.assertTrue(expected.issubset(catalog_rows))
         scenarios = json.loads((Path(__file__).parents[2] / "tests/acceptance/scenarios.json").read_text())
         selected_scenarios = {row["nodeid"]: row for row in scenarios["scenarios"]

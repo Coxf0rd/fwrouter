@@ -92,9 +92,15 @@ jobs:
                           and row["path"] in selected
                           and row["path"] != "backend/tests/test_xray_native_readback.py"
                           for row in manifest["test_files"])
+          selected_rows = [row for row in manifest["test_files"] if row["path"] in selected]
+          needs_functional = any(row.get("execution_profile") == "hosted-isolated-compose"
+                                 for row in selected_rows)
+          needs_packet = any(row.get("execution_profile") == "hosted-kernel-packet"
+                             for row in selected_rows)
           with open(sys.argv[2], "a", encoding="utf-8") as output:
               output.write(f"plan_digest={plan['plan_digest']}\n")
-              output.write(f"needs_hosted={'true' if 'hosted-isolated-compose' in profiles else 'false'}\n")
+              output.write(f"needs_hosted={'true' if needs_functional else 'false'}\n")
+              output.write(f"needs_packet={'true' if needs_packet else 'false'}\n")
               output.write(f"needs_qcp={'true' if needs_qcp else 'false'}\n")
               output.write(f"needs_xray_docker={'true' if 'backend/tests/test_xray_native_readback.py' in selected else 'false'}\n")
               output.write(f"run_main_smoke={'true' if '${{ github.event_name }}' == 'push' else 'false'}\n")
@@ -126,12 +132,23 @@ jobs:
           set -euo pipefail
           failures=0
           if [ '${{ steps.plan.outputs.needs_hosted }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
+            for suite in functional-ordinary provider-cohort; do
+              set +e
+              /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
+                > "$RUNNER_TEMP/fwrouter-$suite-main.log" 2>&1
+              result=$?
+              set -e
+              cat "$RUNNER_TEMP/fwrouter-$suite-main.log"
+              if [ "$result" -ne 0 ]; then failures=1; fi
+            done
+          fi
+          if [ '${{ steps.plan.outputs.needs_packet }}' = true ]; then
             set +e
-            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite functional \
-              > "$RUNNER_TEMP/fwrouter-functional-main.log" 2>&1
+            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite packet-diagnostic \
+              > "$RUNNER_TEMP/fwrouter-packet-main.log" 2>&1
             result=$?
             set -e
-            cat "$RUNNER_TEMP/fwrouter-functional-main.log"
+            cat "$RUNNER_TEMP/fwrouter-packet-main.log"
             if [ "$result" -ne 0 ]; then failures=1; fi
           fi
           if [ '${{ steps.plan.outputs.needs_qcp }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
@@ -164,7 +181,7 @@ jobs:
           if [ -f "$RUNNER_TEMP/fwrouter-runtime-inputs.json" ]; then
             args+=(--runtime-inputs "$RUNNER_TEMP/fwrouter-runtime-inputs.json")
           fi
-          if [ '${{ steps.plan.outputs.needs_hosted }}' = true ]; then
+          if [ '${{ steps.plan.outputs.needs_hosted }}' = true ] || [ '${{ steps.plan.outputs.needs_packet }}' = true ]; then
             while IFS= read -r receipt; do args+=(--hosted-report "$receipt"); done \
               < <(find "$RUNNER_TEMP" -type f -name hosted-acceptance-report.json -print | sort)
           fi

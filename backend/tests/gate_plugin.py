@@ -9,7 +9,9 @@ from typing import Any
 import pytest
 
 _NODE_STATUSES: dict[str, str] = {}
-_NODE_OVERRIDE_FIELDS = frozenset({"path", "node", "primary_level"})
+_NODE_OVERRIDE_FIELDS = frozenset({"path", "node", "primary_level", "execution_profile"})
+# `execution_profile` is merged only when the override contains that key;
+# explicit null clears the file profile, while absence preserves inheritance.
 
 
 def _repo_root() -> Path:

@@ -2397,7 +2397,9 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
     """Reviewable source registry, checked without importing application tests."""
     if suite in _KERNEL_SUITES:
         return set()
-    if suite not in {"functional", "recovery", *_DIAGNOSTIC_SUITES}:
+    if suite == "functional":
+        raise NotRun("'functional' is ambiguous; select functional-ordinary, provider-cohort, or the full profile bundle")
+    if suite not in {"functional-ordinary", "recovery", *_DIAGNOSTIC_SUITES}:
         raise NotRun("unknown acceptance suite")
     import importlib.util
     path = ROOT / "tests/acceptance/source_catalog.py"
@@ -2432,6 +2434,16 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
             raise NotRun("fixed diagnostic node set is absent from its exact source catalog suite")
         return diagnostics
     selected = {row["nodeid"] for row in rows if row["suite"] == suite}
+    if suite == "functional-ordinary":
+        functional = {row["nodeid"] for row in rows if row["suite"] == "functional"}
+        packet = {row["nodeid"] for row in rows if row["suite"] == "packet"}
+        provider = set(_PROVIDER_COHORT_NODEIDS)
+        if (len(functional) != 37 or len(packet) != 1 or len(provider) != 11
+                or not provider <= functional or functional & packet):
+            raise NotRun("functional profile partitions differ from the reviewed 37+1 inventory")
+        selected = functional - provider
+        if len(selected) != 26 or selected & provider or selected | provider != functional:
+            raise NotRun("ordinary/provider profile partitions are not disjoint and exhaustive")
     if not selected:
         raise NotRun("acceptance suite has no registered scenarios")
     return selected
@@ -3345,7 +3357,9 @@ def prepare_packet_base_image(docker: str, image_ref: str, *, cwd: Path, env: di
 
 def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: str,
                           allow_recovery: bool = False) -> dict[str, Any]:
-    if suite not in {"functional", "recovery", *_DIAGNOSTIC_SUITES, *_KERNEL_SUITES} or (suite == "recovery") != allow_recovery:
+    if suite == "functional":
+        raise NotRun("'functional' is ambiguous; select functional-ordinary or use the full ordinary+provider profile bundle")
+    if suite not in {"functional-ordinary", "recovery", *_DIAGNOSTIC_SUITES, *_KERNEL_SUITES} or (suite == "recovery") != allow_recovery:
         raise NotRun("release recovery requires both --suite recovery and --allow-recovery")
     reasons = qualify_host(env, facts)
     if reasons:
@@ -3839,7 +3853,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                     or capture_result.get("tcp_snaplen") != 54 or capture_result.get("udp_snaplen") != 42
                     or capture_result.get("packet_limit_per_capture") != PACKET_CAPTURE_LIMIT):
                 raise NotRun("bounded header-only packet captures did not start")
-        if suite in _DIAGNOSTIC_SUITES:
+        if suite in _DIAGNOSTIC_SUITES or suite == "functional-ordinary":
             if suite == "xray-diagnostic":
                 cli = _docker_exec_capture([docker, "exec", container_id, "/opt/fwrouter-test/bin/xray",
                                             "run", "-test", "-config",
@@ -3861,7 +3875,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             command = [docker, "exec", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
                        "--env", "PYTHONDONTWRITEBYTECODE=1", container_id,
                        "python", "-m", "pytest", "-p", "no:cacheprovider",
-                       f"--junitxml={junit_in}", "-m", marker, "tests/application_acceptance", "-q"]
+                       f"--junitxml={junit_in}", "-m", marker,
+                       *sorted(expected_acceptance_nodeids(suite)), "-q"]
         command_env = dict(docker_env)
         command_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         command_env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -4200,7 +4215,17 @@ def git_files() -> list[str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", action="store_true", help="execute only after independent hosted qualification")
-    parser.add_argument("--suite", choices=("functional", "recovery", "xray-diagnostic", "provider-diagnostic", "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic", "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight", "kernel-recovery-diagnostic", "packet-diagnostic"), default="functional")
+    def suite_argument(value: str) -> str:
+        if value == "functional":
+            raise argparse.ArgumentTypeError(
+                "'functional' is ambiguous; select functional-ordinary or provider-cohort, or run both as the full profile bundle")
+        return value
+    parser.add_argument("--suite", type=suite_argument,
+                        choices=("functional-ordinary", "recovery", "xray-diagnostic", "provider-diagnostic",
+                                 "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
+                                 "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight",
+                                 "kernel-recovery-diagnostic", "packet-diagnostic"),
+                        default="functional-ordinary")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()
     receipt: dict[str, Any] = {"schema_version": 1, "status": "NOTRUN", "scope": "hosted-native-process"}

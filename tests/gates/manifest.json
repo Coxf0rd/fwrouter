@@ -97,6 +97,18 @@
   "history_note": "Historical 52 IDs remain non-exempt. Exact current/baseline comparison is corroboration only until per-ID reproduction and approval evidence are recorded.",
   "node_overrides": [
     {
+      "execution_profile": null,
+      "node": "test_legacy_subscription_get_is_read_only",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
+      "execution_profile": null,
+      "node": "test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
       "path": "backend/tests/test_provider_configuration.py",
       "node": "test_automatic_member_switch_policy_is_local_persistent_and_revision_neutral",
       "primary_level": "L2"
@@ -5138,7 +5150,7 @@
       "execution_profile": "hosted-kernel-packet"
     }
   ],
-  "version": "2026.10.11.1",
+  "version": "2026.10.12.1",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

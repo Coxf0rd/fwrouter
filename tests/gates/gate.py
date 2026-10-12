@@ -22,6 +22,7 @@ import queue
 import signal
 import shutil
 import time
+import xml.etree.ElementTree as ET
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,36 @@ PROVIDER_COHORT_NODEIDS = {
     "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
     "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
 }
+ROUTINE_PROFILE_CARVEOUTS = {
+    ("backend/tests/test_xray.py", "test_legacy_subscription_get_is_read_only"),
+    ("backend/tests/test_xray.py", "test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged"),
+}
+UNIT_FIXTURE_PATHS = (
+    "backend/tests/test_apply_pipeline.py",
+    "backend/tests/test_bootstrap.py",
+    "backend/tests/test_client_lifecycle.py",
+    "backend/tests/test_control_plane_transfer.py",
+    "backend/tests/test_core_bypass.py",
+    "backend/tests/test_custom_servers.py",
+    "backend/tests/test_database_admin.py",
+    "backend/tests/test_dataplane_global.py",
+    "backend/tests/test_mihomo_config_runtime.py",
+    "backend/tests/test_mihomo_staged_candidate.py",
+    "backend/tests/test_provider_recovery.py",
+    "backend/tests/test_rules.py",
+    "backend/tests/test_runtime_summary.py",
+    "backend/tests/test_scoped_egress.py",
+    "backend/tests/test_state_projection_subjects.py",
+    "backend/tests/test_state_projection_modules.py",
+    "backend/tests/test_state_projection_xray.py",
+    "backend/tests/test_state_routes.py",
+    "backend/tests/test_system_subjects.py",
+    "backend/tests/test_tailscale_module.py",
+    "backend/tests/test_xray_debounce.py",
+    "backend/tests/test_isolation_bootstrap.py",
+    "installer/tests/test_homeassistant_action.py",
+    "ui/tests/settings-events.test.js",
+)
 PACKET_EXECUTION_PATH = "tests/application_acceptance/test_packet_dataplane.py"
 EXECUTION_PROFILES = {"qualified-child-process", "hosted-isolated-compose",
                       KERNEL_DATAPLANE_EXECUTION_PROFILE, PACKET_EXECUTION_PROFILE}
@@ -63,6 +94,12 @@ TEST_FILE_GLOBS = (
     "tests/application_acceptance/test_*.py",
     "tests/gates/test_*.py",
 )
+STDLIB_CONTRACT_PATHS = {
+    "tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
+    "tests/gates/test_smoke_contract.py", "tests/gates/test_network_fixture_contract.py",
+    "tests/acceptance/test_dependency_image_contract.py",
+    "tests/acceptance/test_consume_dependency_image_contract.py",
+}
 
 
 class GateError(RuntimeError):
@@ -160,6 +197,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     if not isinstance(overrides, list):
         raise GateError("node_overrides must be a list")
     override_ids: set[tuple[str, str]] = set()
+    routine_profile_carveouts: set[tuple[str, str]] = set()
     for row in overrides:
         key = (row.get("path", ""), row.get("node", ""))
         if key in override_ids or key[0] not in seen or not key[1]:
@@ -167,6 +205,15 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         override_ids.add(key)
         if row.get("primary_level") not in LEVELS - {"L0", "L5", "L6"}:
             raise GateError(f"node override must have one primary level: {row!r}")
+        if "execution_profile" in row:
+            # Presence is meaningful: an explicit null is the narrowly reviewed
+            # routine carve-out; omitting the key inherits the file profile.
+            routine_profile_carveouts.add(key)
+            base = next(item for item in manifest["test_files"] if item["path"] == key[0])
+            if row["execution_profile"] is not None or base.get("execution_profile") not in EXECUTION_PROFILES:
+                raise GateError(f"routine node overrides may only carve exact nodes out of a profiled file: {row!r}")
+    if routine_profile_carveouts != ROUTINE_PROFILE_CARVEOUTS:
+        raise GateError("manifest must preserve the exact two reviewed routine Xray node carve-outs")
     rules = manifest.get("path_rules")
     if not isinstance(rules, list) or not rules:
         raise GateError("path_rules must be a nonempty deterministic mapping")
@@ -1126,6 +1173,96 @@ def node_status_from_plugin(path: Path, max_bytes: int) -> dict[str, str]:
     return statuses
 
 
+def read_junit_case_names(path: Path, max_bytes: int) -> list[str]:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > max_bytes:
+        raise GateError("unit fixture JUnit report is missing, unsafe, or oversized")
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError) as exc:
+        raise GateError("unit fixture JUnit report is malformed") from exc
+    cases = list(root.iter("testcase"))
+    if not cases:
+        raise GateError("unit fixture JUnit report contains no test cases")
+    return [case.get("name", "") for case in cases]
+
+
+def validate_junit_report(path: Path, max_bytes: int, expected_count: int,
+                          expected_nodeids: set[str] | None = None) -> list[str]:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > max_bytes:
+        raise GateError("unit fixture JUnit report is missing, unsafe, or oversized")
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError) as exc:
+        raise GateError("unit fixture JUnit report is malformed") from exc
+    cases = list(root.iter("testcase"))
+    if len(cases) != expected_count or not cases:
+        raise GateError("unit fixture JUnit case count does not match exact node status report")
+    bad = [case for case in cases if any(case.find(tag) is not None for tag in ("failure", "error", "skipped"))]
+    if bad:
+        raise GateError("unit fixture JUnit report contains failed or skipped cases")
+    if expected_nodeids is not None:
+        expected_pairs: dict[tuple[str, str], str] = {}
+        for nodeid in expected_nodeids:
+            parts = nodeid.split("::")
+            path, tail = parts[0], parts[-1]
+            if path.startswith("backend/"):
+                junit_module = path.removeprefix("backend/").removesuffix(".py").replace("/", ".")
+            else:
+                junit_module = path.removesuffix(".py").replace("/", ".")
+            class_parts = parts[1:-1]
+            classname = ".".join([junit_module, *class_parts]) if class_parts else junit_module
+            for candidate in {classname, path, path.removesuffix(".py")}:
+                pair = (candidate, tail)
+                if pair in expected_pairs and expected_pairs[pair] != nodeid:
+                    raise GateError("JUnit node identity mapping is ambiguous")
+                expected_pairs[pair] = nodeid
+        mapped: list[str] = []
+        for case in cases:
+            pair = (case.get("classname", ""), case.get("name", ""))
+            nodeid = expected_pairs.get(pair)
+            if nodeid is None:
+                raise GateError("JUnit case identity does not match an exact pytest node ID")
+            mapped.append(nodeid)
+        if len(mapped) != len(set(mapped)) or set(mapped) != expected_nodeids:
+            raise GateError("JUnit node IDs are missing, duplicated, or unexpected")
+        return mapped
+    return [case.get("name", "") for case in cases]
+
+
+def sanitize_junit_artifact(raw: bytes, max_bytes: int) -> bytes:
+    """Redact public JUnit diagnostics while preserving test case identities."""
+    if not raw or len(raw) > max_bytes:
+        raise GateError("unit fixture JUnit report is empty or oversized")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise GateError("unit fixture JUnit report is malformed") from exc
+    for element in root.iter():
+        tag = element.tag.rsplit("}", 1)[-1]
+        is_case = tag == "testcase"
+        for key, value in list(element.attrib.items()):
+            if is_case and key in {"classname", "name"}:
+                continue
+            element.attrib[key] = "[REDACTED]" if tag == "property" else redact_failure_output(value)
+        if element.text:
+            element.text = "[REDACTED]" if tag == "property" else redact_failure_output(element.text)
+        if element.tail:
+            element.tail = redact_failure_output(element.tail)
+    sanitized = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    if len(sanitized) > max_bytes:
+        raise GateError("sanitized unit fixture JUnit report exceeded its artifact bound")
+    return sanitized
+
+
+def routine_node_override_names(manifest: dict[str, Any], path: str) -> list[str]:
+    # Only explicit null overrides clear a file profile. Missing keys inherit it.
+    return sorted(
+        row["node"] for row in manifest.get("node_overrides", [])
+        if row.get("path") == path and "execution_profile" in row
+        and row.get("execution_profile") is None
+    )
+
+
 def node_status_from_tap(output: str, test_path: str) -> dict[str, str]:
     # Node's TAP reporter gives exact nested test names. Preserve them as raw
     # names with their file path so historical file-level IDs remain distinct.
@@ -1283,6 +1420,149 @@ def parse_l0_yaml(relative: str, source: str) -> Any:
         loader.dispose()
 
 
+def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
+    manifest = load_manifest(Path(args.manifest))
+    rows = {row["path"]: row for row in manifest["test_files"]}
+    if set(UNIT_FIXTURE_PATHS) - rows.keys():
+        raise GateError("fixed unit fixture cohort contains paths absent from the validated manifest")
+    cohort = [rows[path] for path in UNIT_FIXTURE_PATHS]
+    if any(row.get("native") or row.get("execution_profile") for row in cohort):
+        raise GateError("unit fixture cohort cannot contain native or qualified-profile suites")
+    missing = [path for path in UNIT_FIXTURE_PATHS if not (ROOT / path).is_file()]
+    if missing:
+        raise GateError("fixed unit fixture files are missing: " + ", ".join(missing))
+
+    owned = Path(tempfile.mkdtemp(prefix="fwrouter-unit-fixtures-", dir="/tmp"))
+    env = clean_test_environment(owned)
+    env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "backend/tests"), str(ROOT / "backend")])
+    artifact_root = Path(args.artifact_dir) if args.artifact_dir else None
+    if artifact_root is not None:
+        artifact_root.mkdir(parents=True, exist_ok=True)
+    executions: list[dict[str, Any]] = []
+    failed = False
+    try:
+        rev_code, revision, rev_truncated = run_process(
+            ["git", "rev-parse", "HEAD"], 10, 256, cwd=ROOT, env=env)
+        if rev_code or rev_truncated or not re.fullmatch(r"[0-9a-f]{40}\s*", revision):
+            raise GateError("cannot identify source revision for unit fixture evidence")
+        for row in cohort:
+            path = row["path"]
+            suite_root, reports_root = create_suite_root(owned, "unit-fixture-" + path)
+            report_id = hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+            node_report_path = reports_root / f"{report_id}.nodes.json"
+            junit_path = reports_root / f"{report_id}.junit.xml"
+            suite_env = dict(env)
+            suite_env["FWROUTER_PYTEST_COORDINATOR_ROOT"] = str(suite_root.resolve())
+            suite_env["FWROUTER_GATE_NODE_REPORT"] = str(node_report_path)
+            if path.startswith("ui/"):
+                argv = [
+                    "node", "--test", "--test-reporter=tap", "--test-reporter-destination=stdout",
+                    "--test-reporter=junit", f"--test-reporter-destination={junit_path}", path,
+                ]
+                cwd = ROOT
+            else:
+                rel = path.removeprefix("backend/")
+                argv = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-p", "no:cacheprovider",
+                        "--basetemp", str(suite_root / "pytest-tmp"), f"--junitxml={junit_path}", rel]
+                cwd = ROOT / "backend" if path.startswith("backend/") else ROOT
+            code, output, truncated = run_process(
+                argv, row["timeout_seconds"], row["max_output_bytes"], cwd=cwd, env=suite_env)
+            artifact_id = hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+            junit_bytes = b""
+            junit_error = None
+            if not junit_path.is_symlink() and junit_path.is_file():
+                if junit_path.stat().st_size <= row["max_artifact_bytes"]:
+                    candidate_bytes = junit_path.read_bytes()
+                    if len(candidate_bytes) <= row["max_artifact_bytes"]:
+                        try:
+                            junit_bytes = sanitize_junit_artifact(
+                                candidate_bytes, row["max_artifact_bytes"])
+                        except GateError as exc:
+                            junit_error = str(exc)
+                    else:
+                        junit_error = "unit fixture JUnit report exceeded its artifact bound"
+                else:
+                    junit_error = "unit fixture JUnit report exceeded its artifact bound"
+            else:
+                junit_error = "unit fixture JUnit report is missing or unsafe"
+            if junit_bytes:
+                if junit_path.is_symlink():
+                    junit_bytes = b""
+                    junit_error = "unit fixture JUnit report became unsafe"
+                else:
+                    junit_path.write_bytes(junit_bytes)
+                    if artifact_root is not None:
+                        (artifact_root / f"{artifact_id}.junit.xml").write_bytes(junit_bytes)
+            if artifact_root is not None:
+                log_bytes = redact_failure_output(output).encode("utf-8")
+                (artifact_root / f"{artifact_id}.log").write_bytes(log_bytes)
+            observed: dict[str, str] = {}
+            validation_error = None
+            junit_case_names: list[str] = []
+            if junit_bytes:
+                try:
+                    junit_case_names = read_junit_case_names(
+                        junit_path, row["max_artifact_bytes"])
+                except GateError as exc:
+                    junit_error = str(exc)
+            try:
+                observed = (node_status_from_tap(output, path) if path.startswith("ui/") else
+                            node_status_from_plugin(node_report_path, row["max_artifact_bytes"]))
+            except GateError as exc:
+                observed = {}
+                validation_error = str(exc)
+            if validation_error is None:
+                if junit_error:
+                    validation_error = junit_error
+                else:
+                    try:
+                        validate_junit_report(
+                            junit_path, row["max_artifact_bytes"], len(observed),
+                            None if path.startswith("ui/") else set(observed))
+                    except GateError as exc:
+                        validation_error = str(exc)
+            junit_digest = hashlib.sha256(junit_bytes).hexdigest() if junit_bytes else None
+            complete = (validation_error is None and bool(observed)
+                        and all(status == "passed" for status in observed.values()))
+            status = "passed" if code == 0 and not truncated and complete else "failed"
+            failed |= status != "passed"
+            executions.append({
+                "path": path, "status": status, "exit_code": code,
+                "node_count": len(observed), "node_status": observed,
+                "junit_case_count": len(junit_case_names),
+                "junit_case_names": junit_case_names,
+                "junit_report_bytes": len(junit_bytes),
+                "junit_report_sha256": junit_digest,
+                "junit_digest_scope": "published_sanitized_junit_xml",
+                "junit_identity_validation": ("exact_tap_ids_by_count"
+                                               if path.startswith("ui/") else "exact_pytest_nodeids"),
+                "output_limit_exceeded": truncated,
+                "captured_output_redacted": redact_failure_output(output) if status != "passed" else "",
+                "validation_error": validation_error,
+            })
+        report = {
+            "schema_version": 1, "kind": "fwrouter-unit-fixture-validation/v1",
+            "source_commit": revision.strip(), "manifest_version": manifest["version"],
+            "paths": list(UNIT_FIXTURE_PATHS), "executions": executions,
+            "junit_identity_limitations": [
+                "Node's built-in JUnit reporter has no stable node IDs; its case count/status is cross-checked against exact TAP IDs."
+            ],
+            "status": "failed" if failed else "passed",
+        }
+        report["report_digest"] = canonical_digest(report)
+        payload = json.dumps(report, sort_keys=True, indent=2) + "\n"
+        if len(payload.encode("utf-8")) > MAX_REPORT_BYTES:
+            raise GateError("unit fixture evidence report exceeded its size bound")
+        if args.output:
+            Path(args.output).write_text(payload, encoding="utf-8")
+        if artifact_root is not None:
+            (artifact_root / "unit-fixtures-report.json").write_text(payload, encoding="utf-8")
+        print(payload, end="")
+        return 1 if failed else 0
+    finally:
+        shutil.rmtree(owned, ignore_errors=True)
+
+
 def command_run(args: argparse.Namespace) -> int:
     manifest = load_manifest(Path(args.manifest))
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
@@ -1356,6 +1636,37 @@ def command_run(args: argparse.Namespace) -> int:
         for row in selected:
             path = row["path"]
             if path in deferred_paths:
+                local_node_names = routine_node_override_names(manifest, path)
+                local_node_status: dict[str, str] = {}
+                local_node_problem: str | None = None
+                if local_node_names:
+                    suite_root, reports_root = create_suite_root(owned, row["id"] + "-routine-nodes")
+                    report_id = hashlib.sha256((row["id"] + "-routine-nodes").encode("utf-8")).hexdigest()[:16]
+                    node_report_path = reports_root / f"{report_id}.nodes.json"
+                    suite_env = dict(env)
+                    suite_env["FWROUTER_PYTEST_COORDINATOR_ROOT"] = str(suite_root.resolve())
+                    suite_env["FWROUTER_GATE_NODE_REPORT"] = str(node_report_path)
+                    rel = path.removeprefix("backend/")
+                    argv = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-p", "no:cacheprovider",
+                            "--basetemp", str(suite_root / "pytest-tmp"),
+                            *(f"{rel}::{name}" for name in local_node_names)]
+                    code, output, truncated = run_process(argv, row["timeout_seconds"], row["max_output_bytes"],
+                                                          cwd=ROOT / "backend", env=suite_env)
+                    local_node_status = node_status_from_plugin(node_report_path, row["max_artifact_bytes"])
+                    expected_local = {f"{path}::{name}" for name in local_node_names}
+                    if (code != 0 or truncated or set(local_node_status) != expected_local
+                            or any(status != "passed" for status in local_node_status.values())):
+                        local_node_problem = "exact routine node carve-out failed or was incomplete"
+                        blocked.append(f"{path}: {local_node_problem}")
+                        if len(failure_diagnostics) < 64:
+                            failure_diagnostics.append({
+                                "path": path, "suite": row["id"] + "-routine-nodes", "exit_code": code,
+                                "output_limit_exceeded": truncated,
+                                "failed_or_skipped_node_ids": sorted(
+                                    node for node, status in local_node_status.items() if status != "passed"),
+                                "captured_output_redacted": redact_failure_output(output),
+                            })
+                    node_status.update(local_node_status)
                 executions.append({
                     "suite": row["id"], "path": path,
                     "primary_level": row["primary_level"],
@@ -1365,6 +1676,8 @@ def command_run(args: argparse.Namespace) -> int:
                     "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(),
                     "fixture_owner": row["fixture_owner"],
                     "execution_profile": row["execution_profile"],
+                    **({"routine_node_status": local_node_status,
+                        "routine_node_problem": local_node_problem} if local_node_names else {}),
                 })
                 continue
             if row.get("execution_profile") in EXECUTION_PROFILES:
@@ -1401,8 +1714,7 @@ def command_run(args: argparse.Namespace) -> int:
             elif path == "installer/test-install.sh":
                 argv = ["sh", path]
                 cwd = ROOT
-            elif path in {"tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
-                          "tests/gates/test_smoke_contract.py"}:
+            elif path in STDLIB_CONTRACT_PATHS:
                 argv = [sys.executable, path]
                 cwd = ROOT
             else:
@@ -1537,6 +1849,11 @@ def parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate")
     validate.add_argument("--manifest", default=str(MANIFEST))
     validate.set_defaults(func=command_validate)
+    unit_fixtures = sub.add_parser("validate-unit-fixtures")
+    unit_fixtures.add_argument("--manifest", default=str(MANIFEST))
+    unit_fixtures.add_argument("--output")
+    unit_fixtures.add_argument("--artifact-dir")
+    unit_fixtures.set_defaults(func=command_validate_unit_fixtures)
     lint_changed = sub.add_parser("lint-changed")
     lint_changed.add_argument("--base", required=True)
     lint_changed.set_defaults(func=command_lint_changed)

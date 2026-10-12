@@ -55,6 +55,11 @@ def verify_digest(value: dict[str, Any], field: str, label: str) -> None:
         raise gate.GateError(f"{label} digest is missing or invalid")
 
 
+def run_nonces_are_distinct(nonces: list[str]) -> bool:
+    """Receipt families share one run identity namespace after validation."""
+    return len(nonces) == len(set(nonces))
+
+
 def functional_nodeids() -> set[str]:
     path = ROOT / "tests" / "acceptance" / "scenarios.json"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -67,13 +72,65 @@ def functional_nodeids() -> set[str]:
     return set(selected)
 
 
-def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[str],
-                                runtime_inputs: dict[str, Any]) -> list[str]:
-    receipt = read_json(path)
+def hosted_partition_nodeids() -> dict[str, set[str]]:
+    scenarios = json.loads((ROOT / "tests" / "acceptance" / "scenarios.json").read_text(encoding="utf-8"))
+    rows = scenarios.get("scenarios") if isinstance(scenarios, dict) else None
+    if scenarios.get("schema") != "fwrouter-acceptance-scenarios/v1" or not isinstance(rows, list):
+        raise gate.GateError("hosted profile partition registry has an unsupported schema")
+    functional = functional_nodeids()
+    packet = {row.get("nodeid") for row in rows if row.get("suite") == "packet"}
+    provider = set(gate.PROVIDER_COHORT_NODEIDS)
+    ordinary = functional - provider
+    partitions = {"functional-ordinary": ordinary, "provider-cohort": provider,
+                  "packet-diagnostic": packet}
+    all_ids = [nodeid for ids in partitions.values() for nodeid in ids]
+    if (len(functional) != 37 or len(ordinary) != 26 or len(provider) != 11 or len(packet) != 1
+            or not provider <= functional or functional & packet or len(all_ids) != len(set(all_ids))
+            or ordinary | provider != functional or ordinary | provider | packet != functional | packet):
+        raise gate.GateError("hosted profiles are not a disjoint exhaustive 26+11+1 partition")
+    return partitions
+
+
+def required_hosted_partitions(rows: list[dict[str, Any]]) -> list[str]:
+    profiles = {row.get("execution_profile") for row in rows}
+    required: set[str] = set()
+    if "hosted-isolated-compose" in profiles:
+        required.update({"functional-ordinary", "provider-cohort"})
+    if gate.PACKET_EXECUTION_PROFILE in profiles:
+        required.add("packet-diagnostic")
+    return sorted(required)
+
+
+def group_hosted_receipts(paths: list[Path], required: list[str], repeats: int
+                          ) -> tuple[dict[str, list[Path]], list[str]]:
+    grouped = {suite: [] for suite in required}
     problems: list[str] = []
-    if receipt.get("schema_version") != 1 or receipt.get("scope") != "hosted-native-process":
+    for path in paths:
+        suite = read_json(path).get("suite")
+        if suite not in grouped:
+            problems.append(f"{path.name}: unexpected profile partition receipt")
+            continue
+        grouped[suite].append(path)
+    for suite, suite_paths in grouped.items():
+        if len(suite_paths) != repeats:
+            problems.append(f"hosted {suite} receipts: {len(suite_paths)}; required: {repeats}")
+    return grouped, problems
+
+
+def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[str],
+                                runtime_inputs: dict[str, Any], *, suite: str) -> list[str]:
+    receipt = read_json(path)
+    expected_profile = {"functional-ordinary": "hosted-native-process",
+                        "provider-cohort": "hosted-kernel-dataplane",
+                        "packet-diagnostic": "hosted-kernel-packet"}.get(suite)
+    problems: list[str] = []
+    if expected_profile is None:
+        return ["hosted receipt suite is not an approved application profile"]
+    if receipt.get("schema_version") != 1 or receipt.get("scope") != expected_profile:
         problems.append("unsupported receipt schema or execution scope")
-    if receipt.get("suite") != "functional" or receipt.get("status") != "passed":
+    recorded_suite = receipt.get("suite")
+    suite_matches = recorded_suite == suite
+    if not suite_matches or receipt.get("status") != "passed":
         problems.append(f"suite status is {receipt.get('status', 'missing')}")
     if receipt.get("source_revision") != plan.get("source_commit"):
         problems.append("receipt source commit does not match the change plan")
@@ -92,7 +149,7 @@ def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[
         tests = {}
     nodeids = tests.get("nodeids", [])
     if set(nodeids) != expected or len(nodeids) != len(expected):
-        problems.append("JUnit node IDs do not exactly match the functional registry")
+        problems.append("JUnit node IDs do not exactly match the selected profile partition")
     if any(tests.get(field) != 0 for field in ("failures", "errors", "skipped")):
         problems.append("JUnit contains failures, errors, or skips")
     if tests.get("tests") != len(expected):
@@ -102,7 +159,7 @@ def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[
         problems.append("application-owned receipt is absent")
         inner = {}
     if (inner.get("schema") != "fwrouter-application-acceptance-receipt/v2"
-            or inner.get("scope") != "hosted-native-process"
+            or inner.get("scope") != expected_profile
             or inner.get("source_revision") != plan.get("source_commit")
             or inner.get("plan_digest") != plan.get("plan_digest")
             or inner.get("suite_nonce") != nonce
@@ -116,7 +173,7 @@ def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[
     else:
         inner_ids = {row.get("nodeid") for row in inner_rows if isinstance(row, dict)}
         if inner_ids != expected or len(inner_rows) != len(expected):
-            problems.append("application receipt node IDs do not exactly match the functional registry")
+            problems.append("application receipt node IDs do not exactly match the selected profile partition")
         for row in inner_rows:
             phases = row.get("phases") if isinstance(row, dict) else None
             if (not isinstance(row, dict) or row.get("status") != "passed"
@@ -132,8 +189,10 @@ def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[
         if hashlib.sha256(encoded_profile).hexdigest() != receipt.get("profile_sha256"):
             problems.append("profile digest does not match the archived profile fields")
         if (profile.get("schema") != "fwrouter-acceptance-profile/v2"
+                or profile.get("profile") != expected_profile
                 or profile.get("source_revision") != plan.get("source_commit")
-                or profile.get("plan_digest") != plan.get("plan_digest")):
+                or profile.get("plan_digest") != plan.get("plan_digest")
+                or profile.get("suite_nonce") != nonce):
             problems.append("profile source or plan binding is invalid")
         xray = profile.get("xray") if isinstance(profile.get("xray"), dict) else {}
         mihomo = profile.get("mihomo") if isinstance(profile.get("mihomo"), dict) else {}
@@ -222,7 +281,7 @@ def validate_qcp_receipt(path: Path, plan: dict[str, Any], runtime_inputs: dict[
 
 
 def validate_xray_docker_receipt(path: Path, plan: dict[str, Any],
-                                 runtime_inputs: dict[str, Any]) -> list[str]:
+                                 runtime_inputs: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
     receipt = read_json(path)
     problems: list[str] = []
     nodeid = "backend/tests/test_xray_native_readback.py::test_loaded_client_readback_against_isolated_xray_26_2_6"
@@ -262,7 +321,7 @@ def validate_xray_docker_receipt(path: Path, plan: dict[str, Any],
         problems.append("qualified Docker-Xray binary does not match the verified hosted pin")
     if not isinstance(receipt.get("image_id"), str) or not receipt["image_id"].startswith("sha256:"):
         problems.append("qualified Docker-Xray immutable image ID is missing")
-    return problems
+    return problems, (statuses if not problems else {})
 
 
 def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_paths: list[Path],
@@ -289,6 +348,7 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
     required_xray_docker = sorted(path for path in deferred if path == xray_docker_path)
     required_hosted = sorted(path for path in deferred
                              if rows[path].get("execution_profile") == "hosted-isolated-compose")
+    required_partitions = required_hosted_partitions([rows[path] for path in selected])
     observed_deferred = set(unit.get("deferred_remote_suites", []))
     if observed_deferred != deferred:
         raise gate.GateError("unit report did not defer exactly the profile-bound suites")
@@ -306,22 +366,37 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
     problems: list[str] = []
     if unit.get("blocked_reasons"):
         problems.extend(f"unit: {reason}" for reason in unit["blocked_reasons"])
-    hosted_ids = functional_nodeids()
+    partition_ids = hosted_partition_nodeids()
+    hosted_statuses: dict[str, str] = {}
     receipts: list[dict[str, Any]] = []
+    verified_run_nonces: list[str] = []
     runtime_inputs: dict[str, Any] = {}
-    if required_hosted:
+    if required_partitions:
         if runtime_inputs_path is None:
             raise gate.GateError("hosted runtime input manifest is required to verify extracted binary hashes")
         runtime_inputs = read_json(runtime_inputs_path)
         validate_runtime_inputs(runtime_inputs)
-        if len(hosted_paths) < minimum_repeats:
-            problems.append(f"functional hosted receipts: {len(hosted_paths)}; required: {minimum_repeats}")
-        for path in hosted_paths:
-            problems.extend(f"hosted {path.name}: {reason}" for reason in
-                            validate_functional_receipt(path, plan, hosted_ids, runtime_inputs))
-            receipts.append(read_json(path))
-        if len({receipt.get("suite_nonce") for receipt in receipts}) != len(receipts):
-            problems.append("hosted repetitions do not have distinct run nonces")
+        receipts_by_suite, grouping_problems = group_hosted_receipts(
+            hosted_paths, required_partitions, minimum_repeats)
+        problems.extend(grouping_problems)
+        for suite in required_partitions:
+            paths = receipts_by_suite[suite]
+            for path in paths:
+                receipt = read_json(path)
+                receipt_problems = validate_functional_receipt(
+                    path, plan, partition_ids[suite], runtime_inputs, suite=suite)
+                problems.extend(f"hosted {path.name}: {reason}" for reason in receipt_problems)
+                if not receipt_problems:
+                    receipts.append(receipt)
+                    verified_run_nonces.append(receipt["suite_nonce"])
+                    for nodeid in partition_ids[suite]:
+                        previous = hosted_statuses.get(nodeid)
+                        if previous is not None and previous != "passed":
+                            problems.append(f"hosted repetitions disagree for {nodeid}")
+                        hosted_statuses[nodeid] = "passed"
+        nonces = [receipt.get("suite_nonce") for receipt in receipts]
+        if len(set(nonces)) != len(nonces):
+            problems.append("hosted profile runs do not have distinct suite nonces")
     elif hosted_paths:
         problems.append("unexpected hosted receipt supplied when no hosted profile is selected")
 
@@ -340,11 +415,15 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
         for path in qcp_paths:
             qcp_problems, statuses = validate_qcp_receipt(path, plan, runtime_inputs)
             problems.extend(f"QCP {path.name}: {reason}" for reason in qcp_problems)
+            if qcp_problems:
+                statuses = {}
             nonce = read_json(path).get("suite_nonce")
             if nonce in qcp_nonces:
                 problems.append("qualified-child receipts repeat the same run nonce")
             if isinstance(nonce, str):
                 qcp_nonces.add(nonce)
+                if not qcp_problems:
+                    verified_run_nonces.append(nonce)
             for nodeid, status in statuses.items():
                 if nodeid in qcp_statuses and qcp_statuses[nodeid] != status:
                     problems.append(f"qualified-child repetitions disagree for {nodeid}")
@@ -352,6 +431,7 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
     elif qcp_paths:
         problems.append("unexpected qualified-child receipt supplied when no QCP profile is selected")
 
+    xray_docker_statuses: dict[str, str] = {}
     if required_xray_docker:
         if runtime_inputs_path is None:
             raise gate.GateError("hosted runtime input manifest is required for Docker-Xray receipt")
@@ -361,22 +441,29 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
         if len(xray_docker_paths) != 1:
             problems.append("NOT RUN: exactly one qualified Docker-Xray receipt is required")
         for path in xray_docker_paths:
-            problems.extend(f"Docker-Xray {path.name}: {reason}" for reason in
-                            validate_xray_docker_receipt(path, plan, runtime_inputs))
+            xray_problems, statuses = validate_xray_docker_receipt(path, plan, runtime_inputs)
+            problems.extend(f"Docker-Xray {path.name}: {reason}" for reason in xray_problems)
+            if not xray_problems:
+                xray_docker_statuses.update(statuses)
+                verified_run_nonces.append(read_json(path)["suite_nonce"])
     elif xray_docker_paths:
         problems.append("unexpected Docker-Xray receipt supplied when no exact Docker-Xray suite is selected")
 
+    if not run_nonces_are_distinct(verified_run_nonces):
+        problems.append("verified hosted and isolated receipts do not have distinct run nonces")
+
     merged_status = dict(unit.get("node_status", {}))
-    if receipts:
-        # Multiple clean repetitions corroborate the same cases. They are not
-        # duplicate coverage; each report was independently validated above.
-        for nodeid in hosted_ids:
-            if nodeid in merged_status and merged_status[nodeid] != "passed":
-                problems.append(f"hosted pass conflicts with unit status for {nodeid}")
-            merged_status[nodeid] = "passed"
+    for nodeid, status in hosted_statuses.items():
+        if nodeid in merged_status and merged_status[nodeid] != status:
+            problems.append(f"hosted pass conflicts with unit status for {nodeid}")
+        merged_status[nodeid] = status
     for nodeid, status in qcp_statuses.items():
         if nodeid in merged_status and merged_status[nodeid] != status:
             problems.append(f"qualified-child pass conflicts with unit status for {nodeid}")
+        merged_status[nodeid] = status
+    for nodeid, status in xray_docker_statuses.items():
+        if nodeid in merged_status and merged_status[nodeid] != status:
+            problems.append(f"Docker-Xray pass conflicts with unit status for {nodeid}")
         merged_status[nodeid] = status
     baseline = gate.load_baseline(ROOT / manifest["baseline_policy_file"])
     classification = gate.classify(plan, {"node_status": merged_status}, baseline)
@@ -389,6 +476,8 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
     completed_levels = set(unit.get("completed_levels", []))
     for path in required_hosted:
         completed_levels.add(rows[path]["primary_level"])
+    if "packet-diagnostic" in required_partitions:
+        completed_levels.add(rows[gate.PACKET_EXECUTION_PATH]["primary_level"])
     if qcp_statuses:
         for path in qualified_child:
             completed_levels.add(rows[path]["primary_level"])
@@ -397,7 +486,7 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
     missing_levels = sorted(set(plan.get("required_levels", [])) - completed_levels)
     if missing_levels:
         problems.append("required levels are incomplete: " + ", ".join(missing_levels))
-    if deferred and not required_hosted and not qualified_child:
+    if deferred and not required_partitions and not qualified_child:
         problems.append("profile selection has no matching hosted receipt adapter")
     return {
         "schema_version": 1,
@@ -410,6 +499,7 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
         "qualified_child_receipt_count": len(qcp_paths),
         "qualified_xray_docker_receipt_count": len(xray_docker_paths),
         "hosted_receipt_count": len(receipts),
+        "hosted_required_partitions": required_partitions,
         "hosted_repeats_required": minimum_repeats,
         "completed_levels": sorted(completed_levels),
         "missing_levels": missing_levels,
