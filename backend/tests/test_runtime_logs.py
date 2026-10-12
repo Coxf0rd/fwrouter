@@ -13,10 +13,7 @@ from fwrouter_api.services import mihomo_reconcile as mihomo_reconcile_service
 from fwrouter_api.services import (
     mihomo_reconcile_fingerprint as mihomo_reconcile_fingerprint_service,
 )
-from fwrouter_api.services.mihomo_reconcile_fingerprint import (
-    current_mihomo_input_fingerprint,
-    write_mihomo_reconcile_fingerprint_state,
-)
+from fwrouter_api.services.mihomo_reconcile_fingerprint import mihomo_udp_policy_receipt_matches
 from fwrouter_api.services import xray as xray_service
 from fwrouter_api.services import logs_retention
 
@@ -62,14 +59,6 @@ def test_mihomo_reconcile_skip_writes_only_technical_log(monkeypatch, tmp_path: 
     candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
     base_path.parent.mkdir(parents=True, exist_ok=True)
     base_path.write_text(yaml.safe_dump(candidate_config, sort_keys=False), encoding="utf-8")
-    fingerprint = current_mihomo_input_fingerprint({"selective_default": "direct"})
-    assert write_mihomo_reconcile_fingerprint_state(
-        fingerprint=fingerprint,
-        result={"reconcile_action": "none", "reconcile_reason": "unchanged_config"},
-        native_proof=unit_native_udp_proof,
-        expected_active_hash=mihomo_reconcile_fingerprint_service.active_config_hash(),
-        expected_runtime_incarnation=runtime_incarnation,
-    ) is True
 
     monkeypatch.setattr(mihomo_config_service, "write_operational_log", _op)
     monkeypatch.setattr(mihomo_config_service, "write_technical_log", _tech)
@@ -122,11 +111,12 @@ def test_mihomo_reconcile_skip_writes_only_technical_log(monkeypatch, tmp_path: 
     result = mihomo_config_service.reconcile_mihomo_runtime({"selective_default": "direct"})
 
     assert result["ok"] is True
-    assert result["reconcile_reason"] == "input_fingerprint_unchanged"
-    assert candidate_generation_calls == []
+    assert result["reconcile_reason"] == "unchanged_config"
+    assert candidate_generation_calls == ["write"]
     assert restart_calls == []
     assert written_operational == []
     assert written_technical[-1]["event_type"] == "mihomo_reconcile_skipped"
+    assert mihomo_udp_policy_receipt_matches() is True
 
 
 def test_xray_materialize_failure_writes_both_log_types(monkeypatch, tmp_path: Path) -> None:

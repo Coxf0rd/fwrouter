@@ -109,7 +109,7 @@ def _patch_failing_dataplane(monkeypatch):
     monkeypatch.setattr("fwrouter_api.services.apply.DEFAULT_DATAPLANE_ADAPTER", adapter)
     return adapter
 
-def test_global_mode_success_commit_contract(monkeypatch, tmp_path: Path) -> None:
+def test_global_mode_success_commit_contract(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_subject("lan-follow")
@@ -158,7 +158,9 @@ def test_global_mode_success_commit_contract(monkeypatch, tmp_path: Path) -> Non
     assert "lan-follow" in result.get("affected_subject_ids", [])
 
 
-def test_repair_global_direct_runtime_clears_stale_routing_error(monkeypatch, tmp_path: Path) -> None:
+def test_repair_global_direct_runtime_clears_stale_routing_error(
+    monkeypatch, tmp_path: Path, isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     ensure_routing_global_state()
