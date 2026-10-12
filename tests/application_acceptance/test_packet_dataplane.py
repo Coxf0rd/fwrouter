@@ -1728,6 +1728,72 @@ def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
                 incarnation_sha256 = hashlib.sha256(raw_incarnation.strip().encode("utf-8")).hexdigest()
         except Exception:
             pass
+        reconcile_state = {
+            "receipt_present": False,
+            "shape_valid": False,
+            "active_hash_matches": False,
+            "runtime_incarnation_matches": False,
+            "version_matches": False,
+            "native_top_level_rules_match": False,
+            "native_selector_membership_match": False,
+            "subrule_config_guard_match": False,
+            "error_code": "missing",
+        }
+        receipt_path = config_path.parent / "reconcile-state.json"
+        try:
+            receipt_info = receipt_path.lstat()
+            if (receipt_path.is_symlink() or not stat.S_ISREG(receipt_info.st_mode)
+                    or receipt_info.st_size > 262144):
+                reconcile_state["error_code"] = "bounds"
+            else:
+                reconcile_state["receipt_present"] = True
+                with receipt_path.open("rb") as handle:
+                    receipt_bytes = handle.read(262145)
+                if len(receipt_bytes) > 262144:
+                    reconcile_state["error_code"] = "bounds"
+                else:
+                    receipt = json.loads(receipt_bytes)
+                    if not isinstance(receipt, dict):
+                        reconcile_state["error_code"] = "shape"
+                    else:
+                        active_hash = receipt.get("active_config_hash")
+                        runtime_incarnation = receipt.get("runtime_incarnation")
+                        fingerprint_version = receipt.get("version")
+                        udp_policy_version = receipt.get("udp_policy_version")
+                        native_flags = (
+                            receipt.get("native_top_level_rules_match"),
+                            receipt.get("native_selector_membership_match"),
+                            receipt.get("subrule_config_guard_match"),
+                        )
+                        hash_shape = (isinstance(active_hash, str) and len(active_hash) == 64
+                                      and all(ch in "0123456789abcdef" for ch in active_hash))
+                        runtime_shape = (isinstance(runtime_incarnation, str)
+                                         and 0 < len(runtime_incarnation.strip())
+                                         and len(runtime_incarnation) <= 1024)
+                        version_shape = (type(fingerprint_version) is int
+                                         and type(udp_policy_version) is int)
+                        flags_shape = all(type(flag) is bool for flag in native_flags)
+                        reconcile_state.update({
+                            "shape_valid": hash_shape and runtime_shape and version_shape and flags_shape,
+                            "active_hash_matches": hash_shape and active_hash == native_config_sha256,
+                            "runtime_incarnation_matches": (
+                                runtime_shape and hashlib.sha256(runtime_incarnation.strip().encode("utf-8")).hexdigest()
+                                == incarnation_sha256
+                            ),
+                            "version_matches": (version_shape and fingerprint_version == 2
+                                                and udp_policy_version == 1),
+                            "native_top_level_rules_match": native_flags[0] is True,
+                            "native_selector_membership_match": native_flags[1] is True,
+                            "subrule_config_guard_match": native_flags[2] is True,
+                            "error_code": None if hash_shape and runtime_shape and version_shape and flags_shape
+                            else "shape",
+                        })
+        except FileNotFoundError:
+            pass
+        except (OSError, TypeError):
+            reconcile_state["error_code"] = "io_error"
+        except (UnicodeError, json.JSONDecodeError):
+            reconcile_state["error_code"] = "invalid_json"
         code, response = http_json(f"{stack['api']}/mihomo")
         data = response.get("data") if isinstance(response, dict) else None
         mihomo = data.get("mihomo") if isinstance(data, dict) else None
@@ -1774,6 +1840,7 @@ def _mihomo_packet_path_proof(stack: dict[str, Any]) -> dict[str, Any]:
             "vpn_udp_selector_membership_matches": udp_policy.get("selector_membership_matches") is True,
             "vpn_udp_guarded_rules_match": udp_policy.get("guarded_rules_match") is True,
             "vpn_udp_native_rules_match": udp_policy.get("native_top_level_rules_match") is True,
+            "reconcile_state_receipt": reconcile_state,
         }
     except Exception as exc:
         return {"available": False, "error_class": type(exc).__name__[:64]}

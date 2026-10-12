@@ -84,6 +84,63 @@ def _literal_assignments() -> dict[str, object]:
 
 
 class NetworkFixtureContractTests(unittest.TestCase):
+    def test_mihomo_path_receipt_projection_is_fixed_bounded_and_redacted(self):
+        tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))
+        proof = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "_mihomo_packet_path_proof")
+        packet_lines = PACKET_TEST.read_text(encoding="utf-8").splitlines()
+        source = "\n".join(packet_lines[proof.lineno - 1:proof.end_lineno])
+        state_assign = next(node for node in ast.walk(proof) if isinstance(node, ast.Assign)
+                            and any(isinstance(target, ast.Name) and target.id == "reconcile_state"
+                                    for target in node.targets)
+                            and isinstance(node.value, ast.Dict))
+        schema = {key.value for key in state_assign.value.keys if isinstance(key, ast.Constant)}
+        self.assertEqual(schema, {
+            "receipt_present", "shape_valid", "active_hash_matches", "runtime_incarnation_matches",
+            "version_matches", "native_top_level_rules_match", "native_selector_membership_match",
+            "subrule_config_guard_match", "error_code",
+        })
+        error_values = {node.value for node in ast.walk(proof)
+                        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and node.value in {"missing", "bounds", "shape", "io_error", "invalid_json"}}
+        self.assertEqual(error_values, {"missing", "bounds", "shape", "io_error", "invalid_json"})
+        path_assign = next(node for node in ast.walk(proof) if isinstance(node, ast.Assign)
+                           and any(isinstance(target, ast.Name) and target.id == "receipt_path"
+                                   for target in node.targets))
+        self.assertIsInstance(path_assign.value, ast.BinOp)
+        self.assertIsInstance(path_assign.value.left, ast.Attribute)
+        self.assertEqual(path_assign.value.left.attr, "parent")
+        self.assertEqual(path_assign.value.right.value, "reconcile-state.json")
+        self.assertIn("receipt_path.lstat()", source)
+        self.assertIn("receipt_path.is_symlink()", source)
+        self.assertIn("stat.S_ISREG(receipt_info.st_mode)", source)
+        self.assertIn("receipt_info.st_size > 262144", source)
+        self.assertIn('receipt_path.open("rb")', source)
+        self.assertIn('handle.read(262145)', source)
+        self.assertIn("len(receipt_bytes) > 262144", source)
+        self.assertIn('"version_matches": (version_shape and fingerprint_version == 2', source)
+        self.assertIn('"reconcile_state_receipt": reconcile_state', source)
+        for raw_field in ('"active_config_hash":', '"runtime_incarnation":', '"fingerprint_hash":',
+                          '"candidate_config_hash":'):
+            self.assertNotIn(raw_field, source)
+        bounded_receipt = {
+            "receipt_present": True, "shape_valid": True, "active_hash_matches": True,
+            "runtime_incarnation_matches": True, "version_matches": True,
+            "native_top_level_rules_match": True, "native_selector_membership_match": True,
+            "subrule_config_guard_match": True, "error_code": None,
+        }
+        self.assertLessEqual(len(json.dumps(bounded_receipt, separators=(",", ":")).encode("ascii")), 512)
+        projector = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "_record_phase_diagnostic")
+        projector_source = ast.unparse(projector)
+        self.assertIn("MAX_PHASE_DIAGNOSTIC_BYTES", projector_source)
+        self.assertIn("packet phase diagnostic exceeded its fixed byte bound", projector_source)
+        diagnostic_bound = next(node for node in tree.body if isinstance(node, ast.Assign)
+                                and any(isinstance(target, ast.Name)
+                                        and target.id == "MAX_PHASE_DIAGNOSTIC_BYTES"
+                                        for target in node.targets))
+        self.assertEqual(ast.literal_eval(diagnostic_bound.value), 4096)
+
     def test_dns53_failure_receipt_is_bounded_and_recorded_before_502_assertion(self):
         packet_source = PACKET_TEST.read_text(encoding="utf-8")
         packet_tree = ast.parse(packet_source)
@@ -1578,6 +1635,95 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertEqual(json.loads(events[0][1]), receipt)
         self.assertEqual(str(caught.exception), "{'status': 502, 'shape': 'dict'}")
         self.assertNotIn("198.18.240.2", events[0][1])
+
+    def test_dns53_resolved_flow_accepts_direct_client_peer_but_rejects_unknown_peer(self):
+        fixture_tree = _tree()
+        selected = [node for node in fixture_tree.body if isinstance(node, ast.ClassDef)
+                    and node.name == "DNS53FlowProbeFailure"]
+        flow_probe = next(node for node in fixture_tree.body if isinstance(node, ast.FunctionDef)
+                          and node.name == "_probe_dns53_resolved_flows")
+        selected.append(flow_probe)
+        fixture_ns = {
+            "FixtureError": type("FixtureError", (RuntimeError,), {}),
+            "DNS53FlowProbeFailure": type("DNS53FlowProbeFailure", (RuntimeError,), {}),
+            "DNS_VPN_SERVICE_VIP": "198.51.100.77", "SERVICE_VIP": "203.0.113.53",
+            "CLIENT_IP": "10.240.0.2", "ENDPOINT_WAN_IP": "198.18.240.2",
+            "ROUTER_WAN_IP": "198.18.240.1", "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081,
+            "CONTROL_TIMEOUT": 3.0, "DNS_SELECTED_PROBE_BODY": b"fixed-probe", "json": json,
+        }
+
+        def run_with_direct_peer(direct_peer):
+            calls = []
+
+            class FakeTcp:
+                def __init__(self, peer):
+                    body = json.dumps({"ok": True, "peer": peer}, separators=(",", ":")).encode("ascii")
+                    self.chunks = [b"HTTP/1.1 200 OK\r\nContent-Length: "
+                                   + str(len(body)).encode("ascii") + b"\r\n\r\n" + body, b""]
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def settimeout(self, _timeout):
+                    pass
+
+                def sendall(self, _payload):
+                    pass
+
+                def recv(self, _size):
+                    return self.chunks.pop(0)
+
+            class FakeUdp:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def settimeout(self, _timeout):
+                    pass
+
+                def sendto(self, _payload, address):
+                    self.address = address
+
+                def recvfrom(self, _size):
+                    return b"fixed-probe", self.address
+
+            def create_connection(address, timeout):
+                del timeout
+                peer = "198.51.100.77" if address[0] == "198.51.100.77" else direct_peer
+                return FakeTcp(peer)
+
+            fixture_ns.update({
+                "_dns53_request": lambda name, *, tcp: (
+                    calls.append((name, tcp)) or
+                    ("answer", "198.51.100.77" if name == "probe.vpn.test" else "203.0.113.53")
+                ),
+                "socket": mock.Mock(AF_INET=2, SOCK_DGRAM=2, create_connection=create_connection,
+                                    socket=lambda *_args: FakeUdp()),
+            })
+            return calls, fixture_ns["_probe_dns53_resolved_flows"]
+
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(FIXTURE), "exec"), fixture_ns)
+        calls, probe = run_with_direct_peer("10.240.0.2")
+        result = probe()
+        self.assertEqual(result["results"], {
+            "vpn": {"answer": "198.51.100.77", "tcp": True, "udp": True},
+            "direct": {"answer": "203.0.113.53", "tcp": True, "udp": True},
+        })
+        self.assertEqual(calls, [("probe.vpn.test", False), ("probe.direct.test", False)])
+
+        calls, probe = run_with_direct_peer("192.0.2.99")
+        with self.assertRaises(fixture_ns["DNS53FlowProbeFailure"]) as failure:
+            probe()
+        self.assertEqual(calls, [("probe.vpn.test", False), ("probe.direct.test", False)])
+        self.assertEqual(failure.exception.receipt(), {
+            "schema": "fwrouter-dns53-flow-failure/v1", "query_label": "direct",
+            "stage": "tcp_peer", "error_code": "response_mismatch", "peer_class": "other",
+        })
 
     def test_dns53_failure_receipt_identifies_first_fixed_probe_and_projects_before_502(self):
         tree = _tree()

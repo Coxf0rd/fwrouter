@@ -1406,10 +1406,11 @@ def _probe_dns53_resolved_flows() -> dict[str, Any]:
         if not isinstance(answer, dict) or answer.get("ok") is not True:
             fail(label, "tcp_shape")
         peer = answer.get("peer")
-        # Permit only the endpoint's known local aliases here. The acceptance
-        # phase separately checks the recorded last peer for each domain and
-        # transport, so DIRECT-versus-VPN policy remains an explicit assertion.
-        allowed_peers = {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP}
+        # Permit the endpoint's known local aliases and the client source used
+        # by the DIRECT path. The acceptance phase separately checks the
+        # recorded peer for each domain and transport, so DIRECT-versus-VPN
+        # policy remains an explicit assertion.
+        allowed_peers = {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP, CLIENT_IP}
         if peer not in allowed_peers:
             peer_class = ("missing" if not isinstance(peer, str) else "allowed" if peer in allowed_peers
                           else "endpoint_wan" if peer == ENDPOINT_WAN_IP
