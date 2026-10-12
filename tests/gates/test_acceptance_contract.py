@@ -644,6 +644,9 @@ class AcceptanceContractTests(unittest.TestCase):
                         rules.index(next(rule for rule in rules if 'oifname "lo" accept' in rule)))
         self.assertTrue(any("udp dport { 9081, 5353 } accept" in rule and "input" in rule for rule in rules))
         self.assertTrue(any("tcp dport { 5202, 5204 } accept" in rule for rule in rules))
+        self.assertEqual(sum('output ip daddr 198.18.240.2 tcp dport 5302 accept comment "fwrouter packet guard selector vless allow v1"' in rule
+                             for rule in rules), 1)
+        self.assertFalse(any("tcp dport 5302" in rule and "198.18.240.2" not in rule for rule in rules))
         self.assertTrue(any("udp dport { 5203, 5205 } accept" in rule for rule in rules))
         self.assertTrue(any("udp dport { 9081, 5353 } accept" in rule and "forward" in rule for rule in rules))
         exact_rules = (

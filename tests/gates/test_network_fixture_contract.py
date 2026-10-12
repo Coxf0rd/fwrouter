@@ -308,14 +308,15 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("record_property", {arg.arg for arg in scenario.args.args})
         phase_calls = [node for node in ast.walk(scenario) if isinstance(node, ast.Call)
                        and isinstance(node.func, ast.Name) and node.func.id == "_probe_phase"]
-        self.assertEqual(len(phase_calls), 4)
+        self.assertEqual(len(phase_calls), 5)
         source = PACKET_TEST.read_text(encoding="utf-8")
         for label in ("vpn-supported-udp", "vpn-unknown-udp", "vpn-unsupported-udp",
                       "vpn-endpoint-unavailable", "vpn-empty-pool", "vpn-tcp-after-unknown",
                       "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                       "provider-recovery-confirmations", "provider-recovery-confirmation-1",
-                      "provider-reentry"):
+                      "provider-reentry", "vpn-after-selector-switch"):
             self.assertIn(label, source)
+
         self.assertIn('provider_calls_after_first == [("GET", "/configs", {}, None)]', source)
         self.assertIn('provider_calls_after_recovery == provider_calls_after_first', source)
         self.assertIn('"mihomo_path": _packet_refresh_native_proof(stack)', source)
@@ -384,6 +385,32 @@ class NetworkFixtureContractTests(unittest.TestCase):
                                 for keyword in call.keywords)
                             or any(isinstance(arg, ast.Name) and arg.id == "record_property" for arg in call.args)
                             for call in phase_calls))
+
+    def test_packet_scenario_proves_public_selector_change_with_second_owned_inbound(self):
+        scenario = _function_source(
+            "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks")
+        baseline = scenario.index("provider_binding_before_selector = binding_for(source_ref)")
+        membership = scenario.index("_upsert_subscription_servers(")
+        pool = scenario.index("set(candidate_ids) == {logical_id, ordinary_server.server_id}")
+        public_switch = scenario.index('f"{api}/selector/vpn-auto/switch"')
+        post_switch_probe = scenario.index(
+            '_probe_phase(stack, DNS_VPN_SERVICE_VIP, "vpn-after-selector-switch"')
+        self.assertLess(baseline, membership)
+        self.assertLess(membership, pool)
+        self.assertLess(pool, public_switch)
+        self.assertLess(public_switch, post_switch_probe)
+        for required in (
+            '"selected_member_id") is None', 'ENDPOINT_SELECTOR_PORT',
+            '"active_auto_server_id") == ordinary_server.server_id',
+            '"native_incarnation_stable"', '"endpoint_peer_matches_vip_b"',
+            '"client_dns_vpn_tcp_9080"', '"client_dns_vpn_udp_9081"',
+            '"router_dns_vpn_tcp_9080"', '"router_dns_vpn_udp_9081"',
+            '"router_tcp_9080"', '"router_udp_9081"', '"router_dns_5353"',
+            'ENDPOINT_SELECTOR_PORT)) > 0',
+            '"provider_binding_unchanged"', 'bridge.snapshot_calls() == provider_calls_before_selector',
+            '"provider_candidate_only"',
+        ):
+            self.assertIn(required, scenario)
 
     def test_bounded_negative_udp_probe_is_fixed_and_reports_timeout_without_network(self):
         fixture = _fixture_module()
@@ -670,6 +697,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             ready = fixture._endpoint_status(control, FakeRuntime())
             self.assertTrue(ready["ready"])
             self.assertTrue(all(ready["sockets"].values()))
+            self.assertTrue(ready["sockets"]["xray_tcp_5302"])
 
             del control.role_servers
             missing = fixture._endpoint_status(control, FakeRuntime())
@@ -781,7 +809,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "tcp": {"snaplen": 54, "filter": "(tcp and dst host 203.0.113.53 and dst port 9080) or "
                                                   "(tcp and dst host 198.51.100.77 and dst port 9080) or "
                                                   "(tcp and dst host 10.250.240.2 and dst port 9080) or "
-                                                  "(tcp and dst host 198.18.240.2 and dst port 5301) or "
+                                                  "(tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302)) or "
                                                   "(tcp and dst host 1.1.1.1 and dst port 53)"},
             "udp": {"snaplen": 42, "filter": "(udp and dst host 203.0.113.53 and "
                                                   "(dst port 9081 or dst port 5353)) or "
@@ -1099,7 +1127,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "DNS_VPN_SERVICE_VIP": "198.51.100.77",
             "DNS_BYPASS_NEGATIVE_IP": "8.8.8.8",
             "SERVICE_VIP": "203.0.113.53", "PROTECTED_VIP": "10.250.240.2",
-            "ENDPOINT_XRAY_PORT": 5301,
+            "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
             "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
             "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_CONTROL_PORT": 8082,
             "DNS_NAME": "probe.fwrouter.test", "DNS_NEGATIVE_NAME": "missing.fwrouter.test",
@@ -1109,6 +1137,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         for key, value in expected.items():
             self.assertEqual(value, values[key], key)
         self.assertRegex(values["XRAY_ID"], r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+        self.assertRegex(values["XRAY_SELECTOR_ID"], r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
         vip = ipaddress.ip_address(values["SERVICE_VIP"])
         for network in ("10.0.0.0/8", "100.64.0.0/10", "172.16.0.0/12", "192.168.0.0/16",
                         "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4"):
@@ -1281,6 +1310,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "DNS_BYPASS_NEGATIVE_IP": "8.8.8.8", "LEAK_DNS_TARGET": "127.0.0.11",
             "LEAK_RESERVED_TARGET": "192.0.2.1", "LEAK_RESERVED_PORT": 9,
             "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_XRAY_PORT": 5301,
+            "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
             "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
             "PROTECTED_UDP_PORT": 9081,
             "_run_fixed": lambda _args, *, input_bytes: (captured.update(script=input_bytes)
@@ -1301,6 +1331,15 @@ class NetworkFixtureContractTests(unittest.TestCase):
                         rules.index('add rule inet fwrouter_packet_fixture output oifname "lo" accept'))
         self.assertIn("add rule inet fwrouter_packet_fixture output meta nfproto ipv6 oifname != \"lo\" drop",
                       rules)
+        namespace["_install_guard"]("endpoint")
+        endpoint_rules = captured["script"].decode("ascii").splitlines()
+        self.assertIn(
+            "add rule inet fwrouter_packet_fixture input ip saddr { 10.240.0.2, 198.18.240.1, "
+            "198.18.240.2, 203.0.113.53, 198.51.100.77, 10.250.240.2 } ip daddr 198.18.240.2 "
+            "tcp dport { 5301, 5302, 8082 } accept", endpoint_rules)
+        self.assertIn(
+            "add rule inet fwrouter_packet_fixture output ip daddr 198.18.240.2 "
+            "tcp dport { 5301, 5302, 8082 } accept", endpoint_rules)
 
     def test_dns53_flow_failure_receipt_is_fixed_and_projects_before_502(self):
         fixture_tree = _tree()
@@ -1518,9 +1557,37 @@ class NetworkFixtureContractTests(unittest.TestCase):
         config = _function_source("_expected_xray_config")
         start = _function_source("_start_xray")
         self.assertIn("XRAY_ID", config)
+        self.assertIn("XRAY_SELECTOR_ID", config)
+        self.assertIn("ENDPOINT_XRAY_SELECTOR_PORT", config)
         self.assertIn('"protocol": "vless"', config)
         self.assertIn('"protocol": "freedom"', config)
-        self.assertIn('"rules": []', config)
+        self.assertIn('"sendThrough": SERVICE_VIP', config)
+        self.assertIn('"sendThrough": DNS_VPN_SERVICE_VIP', config)
+        self.assertIn('"fixture-vless-a"', config)
+        self.assertIn('"fixture-vless-b"', config)
+        tree = _tree()
+        config_node = next(node for node in tree.body
+                           if isinstance(node, ast.FunctionDef) and node.name == "_expected_xray_config")
+        namespace = {"Any": object, "ENDPOINT_WAN_IP": "198.18.240.2",
+                     "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
+                     "XRAY_ID": "88c7ce2a-465e-4e72-9c56-2a9e2fc84a51",
+                     "XRAY_SELECTOR_ID": "e27bc911-23fb-4d12-8d51-bb1b9cb2cd08",
+                     "SERVICE_VIP": "203.0.113.53", "DNS_VPN_SERVICE_VIP": "198.51.100.77"}
+        exec(compile(ast.Module(body=[config_node], type_ignores=[]), str(FIXTURE), "exec"), namespace)
+        observed = namespace["_expected_xray_config"]()
+        self.assertEqual([row["port"] for row in observed["inbounds"]], [5301, 5302])
+        self.assertEqual([row["tag"] for row in observed["inbounds"]],
+                         ["fixture-vless-a", "fixture-vless-b"])
+        self.assertEqual([row["settings"]["clients"][0]["id"] for row in observed["inbounds"]],
+                         [namespace["XRAY_ID"], namespace["XRAY_SELECTOR_ID"]])
+        self.assertEqual([row["tag"] for row in observed["outbounds"]],
+                         ["fixture-egress-a", "fixture-egress-b"])
+        self.assertEqual([row["sendThrough"] for row in observed["outbounds"]],
+                         ["203.0.113.53", "198.51.100.77"])
+        self.assertEqual(observed["routing"]["rules"], [
+            {"type": "field", "inboundTag": ["fixture-vless-a"], "outboundTag": "fixture-egress-a"},
+            {"type": "field", "inboundTag": ["fixture-vless-b"], "outboundTag": "fixture-egress-b"},
+        ])
         self.assertIn("_assert_xray_config(config)", start)
         self.assertIn("os.O_EXCL | os.O_NOFOLLOW", start)
         self.assertIn('"run", "-test", "-config"', start)

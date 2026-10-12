@@ -53,6 +53,7 @@ WAN_NET = "198.18.240.0/29"
 SERVICE_VIP = "203.0.113.53"
 PROTECTED_VIP = "10.250.240.2"
 ENDPOINT_XRAY_PORT = 5301
+ENDPOINT_XRAY_SELECTOR_PORT = 5302
 HTTP_PORT = 9080
 UDP_ECHO_PORT = 9081
 DNS_PORT = 5353
@@ -61,6 +62,7 @@ CLIENT_CONTROL_PORT = 8081
 ENDPOINT_CONTROL_PORT = 8082
 XRAY_PATH = Path("/opt/fwrouter-test/bin/xray")
 XRAY_ID = "88c7ce2a-465e-4e72-9c56-2a9e2fc84a51"
+XRAY_SELECTOR_ID = "e27bc911-23fb-4d12-8d51-bb1b9cb2cd08"
 DNS_NAME = "probe.fwrouter.test"
 DNS_NEGATIVE_NAME = "missing.fwrouter.test"
 DNS_IP = SERVICE_VIP
@@ -495,7 +497,7 @@ def _install_guard(role: str) -> None:
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ct state established,related accept')
         input_rules.extend((
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {ENDPOINT_WAN_IP} '
-            f'tcp dport {{ {ENDPOINT_XRAY_PORT}, {ENDPOINT_CONTROL_PORT} }} accept',
+            f'tcp dport {{ {ENDPOINT_XRAY_PORT}, {ENDPOINT_XRAY_SELECTOR_PORT}, {ENDPOINT_CONTROL_PORT} }} accept',
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {SERVICE_VIP} '
             f'tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {SERVICE_VIP} '
@@ -512,7 +514,7 @@ def _install_guard(role: str) -> None:
         output_rules.extend((
             f'add rule inet {TABLE_NAME} output ip daddr {allowed_sources} ct state established,related accept',
             f'add rule inet {TABLE_NAME} output ip daddr {ENDPOINT_WAN_IP} '
-            f'tcp dport {{ {ENDPOINT_XRAY_PORT}, {ENDPOINT_CONTROL_PORT} }} accept',
+            f'tcp dport {{ {ENDPOINT_XRAY_PORT}, {ENDPOINT_XRAY_SELECTOR_PORT}, {ENDPOINT_CONTROL_PORT} }} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} '
             f'udp dport {{ {UDP_ECHO_PORT}, {DNS_PORT} }} accept',
@@ -564,14 +566,28 @@ def _guard_counter(name: str) -> int:
 def _expected_xray_config() -> dict[str, Any]:
     return {
         "log": {"loglevel": "warning"},
-        "inbounds": [{
-            "listen": ENDPOINT_WAN_IP, "port": ENDPOINT_XRAY_PORT, "protocol": "vless",
-            "tag": "fixture-vless", "settings": {
-                "clients": [{"id": XRAY_ID, "level": 0}], "decryption": "none",
-            }, "streamSettings": {"network": "tcp"},
-        }],
-        "outbounds": [{"protocol": "freedom", "tag": "fixture-egress"}],
-        "routing": {"rules": []},
+        "inbounds": [
+            {
+                "listen": ENDPOINT_WAN_IP, "port": ENDPOINT_XRAY_PORT, "protocol": "vless",
+                "tag": "fixture-vless-a", "settings": {
+                    "clients": [{"id": XRAY_ID, "level": 0}], "decryption": "none",
+                }, "streamSettings": {"network": "tcp"},
+            },
+            {
+                "listen": ENDPOINT_WAN_IP, "port": ENDPOINT_XRAY_SELECTOR_PORT, "protocol": "vless",
+                "tag": "fixture-vless-b", "settings": {
+                    "clients": [{"id": XRAY_SELECTOR_ID, "level": 0}], "decryption": "none",
+                }, "streamSettings": {"network": "tcp"},
+            },
+        ],
+        "outbounds": [
+            {"protocol": "freedom", "tag": "fixture-egress-a", "sendThrough": SERVICE_VIP},
+            {"protocol": "freedom", "tag": "fixture-egress-b", "sendThrough": DNS_VPN_SERVICE_VIP},
+        ],
+        "routing": {"rules": [
+            {"type": "field", "inboundTag": ["fixture-vless-a"], "outboundTag": "fixture-egress-a"},
+            {"type": "field", "inboundTag": ["fixture-vless-b"], "outboundTag": "fixture-egress-b"},
+        ]},
     }
 
 
@@ -1566,6 +1582,7 @@ def _endpoint_status(control_server: Any, runtime: _XrayRuntime | None) -> dict[
     servers = getattr(control_server, "role_servers", ())
     sockets = {
         "xray_tcp_5301": _tcp_listener_present(ENDPOINT_WAN_IP, ENDPOINT_XRAY_PORT),
+        "xray_tcp_5302": _tcp_listener_present(ENDPOINT_WAN_IP, ENDPOINT_XRAY_SELECTOR_PORT),
         "http_tcp_9080": bool(servers and _server_socket_ready(servers[0], SERVICE_VIP, HTTP_PORT, tcp=True)),
         "control_tcp_8082": _server_socket_ready(control_server, ENDPOINT_WAN_IP,
                                                    ENDPOINT_CONTROL_PORT, tcp=True),
@@ -1612,6 +1629,7 @@ def _serve(role: str, profile: dict[str, Any]) -> None:
             servers[1].xray_lock = threading.Lock()
             deadline = time.monotonic() + READINESS_TIMEOUT
             _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_XRAY_PORT, deadline, runtime)
+            _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_XRAY_SELECTOR_PORT, deadline, runtime)
             for server in servers:
                 thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
                 thread.start()

@@ -36,7 +36,7 @@ PACKET_LIMIT = 512
 FLOWS = {
     "tcp": {
         "snaplen": 54,
-        "filter": "(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and dst port 5301) or (tcp and dst host 1.1.1.1 and dst port 53)",
+        "filter": "(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302)) or (tcp and dst host 1.1.1.1 and dst port 53)",
     },
     "udp": {
         "snaplen": 42,

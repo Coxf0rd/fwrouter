@@ -29,6 +29,8 @@ from .xray_support import assert_mihomo_launch_matches_active
 CLIENT_IP = "10.240.0.2"
 ROUTER_WAN_IP = "198.18.240.1"
 ENDPOINT_IP = "198.18.240.2"
+ENDPOINT_SELECTOR_PORT = 5302
+SELECTOR_XRAY_ID = "e27bc911-23fb-4d12-8d51-bb1b9cb2cd08"
 SERVICE_VIP = "203.0.113.53"
 DNS_VPN_SERVICE_VIP = "198.51.100.77"
 PROTECTED_VIP = "10.250.240.2"
@@ -594,7 +596,7 @@ def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
         _src_port, dst_port = struct.unpack_from("!HH", frame, transport)
         if dst_port not in expected_ports:
             continue
-        if dst_port == 5301 and (src, dst, protocol) != (ROUTER_WAN_IP, ENDPOINT_IP, 6):
+        if dst_port in {5301, ENDPOINT_SELECTOR_PORT} and (src, dst, protocol) != (ROUTER_WAN_IP, ENDPOINT_IP, 6):
             raise AssertionError("captured VLESS flow differs from the fixed router-to-endpoint tuple")
         if dst_port == 53 and (src, dst, protocol) != (ROUTER_WAN_IP, "1.1.1.1", protocol):
             raise AssertionError("captured DNS53 flow differs from the fixed router-to-owned-upstream tuple")
@@ -609,7 +611,7 @@ def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
 
 
 def _packet_counts() -> dict[tuple[str, str, str, int], int]:
-    tcp = _pcap_counts(TCP_CAPTURE_PATH, TCP_SNAPLEN, 6, {53, 5301, 9080})
+    tcp = _pcap_counts(TCP_CAPTURE_PATH, TCP_SNAPLEN, 6, {53, 5301, ENDPOINT_SELECTOR_PORT, 9080})
     udp = _pcap_counts(UDP_CAPTURE_PATH, UDP_SNAPLEN, 17, {53, 9081, 5353})
     return {**tcp, **udp}
 
@@ -1536,8 +1538,12 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "provider-reentry",
                      "vpn-tcp-after-unknown", "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
                      "protected-direct-under-global-vpn",
-                     "emergency-direct", "vpn-after-reentry", "native-dns53-under-global-vpn", "provider-enable-job",
-                     "vpn-auto-exclusive-job", "provider-refresh-supported", "provider-refresh-unknown",
+                     "emergency-direct", "vpn-after-reentry", "vpn-after-selector-switch",
+                     "native-dns53-under-global-vpn", "provider-enable-job",
+                     "vpn-auto-exclusive-job", "vpn-auto-exclusive-disable-selector-packet",
+                     "vpn-auto-exclusive-restore-selector-packet",
+                     "vpn-auto-selector-change",
+                     "provider-refresh-supported", "provider-refresh-unknown",
                      "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
@@ -1773,7 +1779,8 @@ def _probe_phase(stack: dict[str, Any], expected_peer: str, label: str,
         "phase": label, "service": "egress-guard"
     }
     router_guard = _probe_router_egress_guards()
-    return {"observations": after, "core_counters": core_counters,
+    return {"observations": after, "endpoint_observation_delta": diagnostic["endpoint_observation_delta"],
+            "core_counters": core_counters,
             "mihomo_path": diagnostic["mihomo_path"], "leak": {
         "stub_drop_packets": leak["stub_drop_packets"],
         "reserved_drop_packets": leak["reserved_drop_packets"],
@@ -2630,7 +2637,8 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert client_ready.get("ready") is True and client_ready.get("role") == "client"
     assert endpoint_ready.get("ready") is True and endpoint_ready.get("role") == "endpoint"
     assert endpoint_ready.get("sockets") == {
-        "xray_tcp_5301": True, "http_tcp_9080": True, "control_tcp_8082": True,
+        "xray_tcp_5301": True, "xray_tcp_5302": True,
+        "http_tcp_9080": True, "control_tcp_8082": True,
         "udp_echo_9081": True, "dns_udp_5353": True,
         "protected_tcp_9080": True, "protected_udp_9081": True,
         "dns_upstream_tcp_53": True, "dns_upstream_udp_53": True,
@@ -2980,6 +2988,245 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert code == 200 and vpn_state.get("ok") is True
     assert vpn_state["data"]["vpn"]["effective"]["server_health"]["active"]["server_id"] == logical_id
 
+    # Add one ordinary native candidate only after the provider-specific
+    # recovery/capability assertions. It targets the second owned Xray inbound
+    # and is selected through the public Core selector API below.
+    provider_binding_before_selector = binding_for(source_ref)
+    provider_calls_before_selector = bridge.snapshot_calls()
+    from fwrouter_api.adapters.subscription import parse_subscription_payload
+    from fwrouter_api.services.subscription import _upsert_subscription_servers
+
+    selector_source_url = "https://selector-change.invalid/ordinary"
+    ordinary_payload = (
+        f"vless://{SELECTOR_XRAY_ID}@{ENDPOINT_IP}:{ENDPOINT_SELECTOR_PORT}"
+        "?type=tcp&encryption=none#selector-packet-candidate"
+    )
+    parsed = parse_subscription_payload(ordinary_payload)
+    assert parsed.status.value == "success" and len(parsed.servers) == 1, {
+        "ordinary_candidate_parsed": parsed.status.value == "success",
+        "ordinary_candidate_count": len(parsed.servers),
+    }
+    ordinary_server = parsed.servers[0]
+    inventory = _upsert_subscription_servers(
+        [ordinary_server], servers_by_url={selector_source_url: [ordinary_server]},
+    )
+    assert inventory.get("seen_count") == 1
+    code, ordinary_preference = http_json(
+        f"{api}/servers/{ordinary_server.server_id}/preferences", method="PATCH",
+        payload={"vpn_auto": True, "vpn_auto_priority": 0, "reconcile_mihomo": True,
+                 "requested_by": "hosted-packet-selector-change"},
+    )
+    assert code == 200 and ordinary_preference.get("ok") is True, {
+        "ordinary_candidate_preference_status": code,
+    }
+    preference_data = ordinary_preference.get("data", {}).get("server_preferences", {})
+    preference_values = (preference_data.get("server") or {}).get("preferences") or {}
+    assert preference_values.get("vpn_auto") is True and preference_values.get("vpn_auto_priority") == 0
+
+    code, exclusive_disabled = http_json(
+        f"{api}/subscription/sources/{source_ref}/vpn-auto-exclusive", method="POST",
+        payload={"enabled": False},
+    )
+    disable_job = await_core_job(api, exclusive_disabled) if (
+        code == 200 and exclusive_disabled.get("ok") is True
+        and exclusive_disabled.get("data", {}).get("accepted") is True
+    ) else None
+    _record_job_stage(record_property, "vpn-auto-exclusive-disable-selector-packet", http_status=code,
+                      accepted=exclusive_disabled, job=disable_job, stack=stack)
+    assert code == 200 and exclusive_disabled.get("data", {}).get("accepted") is True, {
+        "exclusive_disable_status": code,
+    }
+    assert disable_job is not None and disable_job.get("status") == "success", {
+        "exclusive_disable_job_status": disable_job.get("status") if isinstance(disable_job, dict) else None,
+    }
+    assert get_vpn_auto_exclusive_source_ref() is None
+    from fwrouter_api.services.selector import get_vpn_auto_state
+    candidate_state = get_vpn_auto_state(read_only=True)
+    candidate_ids = candidate_state.get("auto_selectable_candidate_ids")
+    exact_candidate_pool = (isinstance(candidate_ids, list)
+                            and set(candidate_ids) == {logical_id, ordinary_server.server_id})
+    assert exact_candidate_pool and candidate_state.get("active_auto_server_id") == logical_id, {
+        "candidate_pool_count": len(candidate_ids) if isinstance(candidate_ids, list) else None,
+        "provider_candidate_present": isinstance(candidate_ids, list) and logical_id in candidate_ids,
+        "ordinary_candidate_present": isinstance(candidate_ids, list) and ordinary_server.server_id in candidate_ids,
+        "active_is_provider_candidate": candidate_state.get("active_auto_server_id") == logical_id,
+    }
+    selector_fence_before = _read_packet_selection_fence()
+    assert selector_fence_before.get("active_server_id") == logical_id
+    assert selector_fence_before.get("provenance_server_id") == logical_id
+
+    code, switched = http_json(
+        f"{api}/selector/vpn-auto/switch", method="POST",
+        payload={"confirm_switch": True, "exclude_active": True, "update_ping_state": False,
+                 "limit": 20, "timeout_ms": 1000, "reason": "hosted_packet_selector_change"},
+        timeout=90,
+    )
+    selector = switched.get("data", {}).get("selector", {}) if isinstance(switched, dict) else {}
+    switched_fence = _read_packet_selection_fence()
+    selector_response_receipt = {
+        "phase": "vpn-auto-selector-switch-response",
+        "http_200": code == 200,
+        "api_ok": isinstance(switched, dict) and switched.get("ok") is True,
+        "applied": selector.get("applied") is True,
+        "selected_ordinary_candidate": selector.get("selected_server_id") == ordinary_server.server_id,
+        "ordinary_candidate_active": selector.get("active_after") == ordinary_server.server_id,
+        "selection_revision": switched_fence.get("revision")
+        if type(switched_fence.get("revision")) is int else None,
+    }
+    selector_response_json = json.dumps(selector_response_receipt, sort_keys=True,
+                                        separators=(",", ":"), ensure_ascii=True)
+    assert len(selector_response_json.encode("ascii")) <= MAX_PHASE_DIAGNOSTIC_BYTES
+    record_property("packet_selector_switch_response", selector_response_json)
+    assert code == 200 and switched.get("ok") is True and selector.get("ok") is True \
+        and selector.get("applied") is True, {"selector_switch_status": code}
+    assert selector.get("selected_server_id") == ordinary_server.server_id \
+        and selector.get("active_after") == ordinary_server.server_id \
+        and selector.get("selected_member_id") is None, {
+            "selected_ordinary_candidate": selector.get("selected_server_id") == ordinary_server.server_id,
+            "ordinary_candidate_active": selector.get("active_after") == ordinary_server.server_id,
+            "no_member_selection": selector.get("selected_member_id") is None,
+        }
+    selector_fence_after = switched_fence
+    core_selector_state = get_vpn_auto_state(read_only=True)
+    ordinary_runtime_name = get_logical_runtime_name(ordinary_server.server_id)
+    code, native_selector = http_json("http://127.0.0.1:5200/proxies/vpn-auto")
+    assert code == 200 and native_selector.get("now") == ordinary_runtime_name, {
+        "native_selector_status": code,
+        "native_selector_matches_ordinary": isinstance(native_selector, dict)
+        and native_selector.get("now") == ordinary_runtime_name,
+    }
+    config_path = stack["state"] / "generated" / "mihomo" / "config.yaml"
+    assert_mihomo_launch_matches_active(native, config_path)
+    loaded_config = yaml.safe_load(config_path.read_bytes())
+    loaded_proxies = loaded_config.get("proxies") if isinstance(loaded_config, dict) else None
+    ordinary_proxy = [row for row in loaded_proxies if isinstance(row, dict)
+                      and row.get("name") == ordinary_runtime_name] if isinstance(loaded_proxies, list) else []
+    native_target_matches = (len(ordinary_proxy) == 1 and ordinary_proxy[0].get("type") == "vless"
+                             and ordinary_proxy[0].get("server") == ENDPOINT_IP
+                             and ordinary_proxy[0].get("port") == ENDPOINT_SELECTOR_PORT)
+    assert native_target_matches, {
+        "native_candidate_count": len(ordinary_proxy),
+        "native_candidate_target_matches": native_target_matches,
+    }
+    incarnation_before_probe = _mihomo_packet_path_proof(stack).get("native_incarnation_sha256")
+    assert (selector_fence_after.get("active_server_id") == ordinary_server.server_id
+            and selector_fence_after.get("provenance_server_id") == ordinary_server.server_id
+            and type(selector_fence_after.get("revision")) is int
+            and selector_fence_after["revision"] > selector_fence_before.get("revision", -1)
+            and core_selector_state.get("active_auto_server_id") == ordinary_server.server_id
+            and isinstance(incarnation_before_probe, str)), {
+        "fence_revision_advanced": (type(selector_fence_after.get("revision")) is int
+                                     and selector_fence_after.get("revision", 0)
+                                     > selector_fence_before.get("revision", -1)),
+        "core_active_matches_ordinary": core_selector_state.get("active_auto_server_id") == ordinary_server.server_id,
+        "native_incarnation_available": isinstance(incarnation_before_probe, str),
+    }
+    binding_after_selector = binding_for(source_ref)
+    provider_binding_unchanged = all(
+        binding_after_selector.get(key) == provider_binding_before_selector.get(key)
+        for key in ("logical_server_id", "current_member_id", "applied_member_id", "binding_revision")
+    )
+    assert provider_binding_unchanged and bridge.snapshot_calls() == provider_calls_before_selector, {
+        "provider_binding_unchanged": provider_binding_unchanged,
+        "provider_api_calls_unchanged": bridge.snapshot_calls() == provider_calls_before_selector,
+    }
+
+    packets_before_selector_probe = _packet_counts()
+    core_before_selector_probe = _core_counter_snapshot()
+    selector_phase = _probe_phase(stack, DNS_VPN_SERVICE_VIP, "vpn-after-selector-switch",
+                                  core_before_selector_probe, record_property, source_ref)
+    packets_after_selector_probe = _wait_packet_counts(lambda counts:
+        _flow_delta(packets_before_selector_probe, counts,
+                    (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", ENDPOINT_SELECTOR_PORT)) > 0)
+    selector_flow = _flow_delta(packets_before_selector_probe, packets_after_selector_probe,
+                                (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", ENDPOINT_SELECTOR_PORT))
+    selector_core = selector_phase["core_counters"]
+    selector_direct_leaks = {
+        "tcp_9080": _flow_delta(packets_before_selector_probe, packets_after_selector_probe,
+                                (CLIENT_IP, SERVICE_VIP, "tcp", 9080)),
+        "client_dns_vpn_tcp_9080": _flow_delta(
+            packets_before_selector_probe, packets_after_selector_probe,
+            (CLIENT_IP, DNS_VPN_SERVICE_VIP, "tcp", 9080)),
+        "udp_9081": _flow_delta(packets_before_selector_probe, packets_after_selector_probe,
+                                (CLIENT_IP, SERVICE_VIP, "udp", 9081)),
+        "client_dns_vpn_udp_9081": _flow_delta(
+            packets_before_selector_probe, packets_after_selector_probe,
+            (CLIENT_IP, DNS_VPN_SERVICE_VIP, "udp", 9081)),
+        "dns_5353": _flow_delta(packets_before_selector_probe, packets_after_selector_probe,
+                                (CLIENT_IP, SERVICE_VIP, "udp", 5353)),
+        "router_tcp_9080": _flow_delta(packets_before_selector_probe, packets_after_selector_probe,
+                                        (ROUTER_WAN_IP, SERVICE_VIP, "tcp", 9080)),
+        "router_udp_9081": _flow_delta(packets_before_selector_probe, packets_after_selector_probe,
+                                        (ROUTER_WAN_IP, SERVICE_VIP, "udp", 9081)),
+        "router_dns_5353": _flow_delta(packets_before_selector_probe, packets_after_selector_probe,
+                                       (ROUTER_WAN_IP, SERVICE_VIP, "udp", 5353)),
+        "router_dns_vpn_tcp_9080": _flow_delta(
+            packets_before_selector_probe, packets_after_selector_probe,
+            (ROUTER_WAN_IP, DNS_VPN_SERVICE_VIP, "tcp", 9080)),
+        "router_dns_vpn_udp_9081": _flow_delta(
+            packets_before_selector_probe, packets_after_selector_probe,
+            (ROUTER_WAN_IP, DNS_VPN_SERVICE_VIP, "udp", 9081)),
+    }
+    selector_observations = selector_phase["observations"]
+    endpoint_peer_matches = all(selector_observations["last_peers"].get(kind) == DNS_VPN_SERVICE_VIP
+                                for kind in ("http", "udp", "dns"))
+    incarnation_after_probe = selector_phase["mihomo_path"].get("native_incarnation_sha256")
+    selector_packet_diagnostic = {
+        "phase": "vpn-auto-selector-change",
+        "candidate_pool_exact_two": exact_candidate_pool,
+        "public_selector_applied_ordinary": selector.get("applied") is True
+        and selector.get("active_after") == ordinary_server.server_id,
+        "fence_advanced_to_ordinary": selector_fence_after.get("active_server_id") == ordinary_server.server_id
+        and selector_fence_after.get("revision", 0) > selector_fence_before.get("revision", -1),
+        "native_now_matches_ordinary": native_selector.get("now") == ordinary_runtime_name,
+        "native_target_5302": native_target_matches,
+        "provider_binding_unchanged": provider_binding_unchanged,
+        "provider_api_calls_unchanged": bridge.snapshot_calls() == provider_calls_before_selector,
+        "native_incarnation_stable": incarnation_after_probe == incarnation_before_probe,
+        "endpoint_peer_matches_vip_b": endpoint_peer_matches,
+        "endpoint_observation_delta": selector_phase["endpoint_observation_delta"],
+        "selector_vless_capture_delta": selector_flow,
+        "core_counter_delta": selector_core,
+        "direct_client_leak_delta": selector_direct_leaks,
+    }
+    _record_phase_diagnostic(record_property, selector_packet_diagnostic)
+    assert endpoint_peer_matches and selector_flow > 0, selector_packet_diagnostic
+    assert (selector_core.get("vpn_tcp_classified", 0) > 0
+            and selector_core.get("vpn_udp_classified", 0) > 0
+            and selector_core.get("vpn_udp_handoff_packets", 0) > 0), selector_packet_diagnostic
+    assert all(count == 0 for count in selector_direct_leaks.values()), selector_packet_diagnostic
+    assert incarnation_after_probe == incarnation_before_probe, selector_packet_diagnostic
+    assert provider_binding_unchanged and bridge.snapshot_calls() == provider_calls_before_selector, selector_packet_diagnostic
+
+    code, exclusive_restored = http_json(
+        f"{api}/subscription/sources/{source_ref}/vpn-auto-exclusive", method="POST",
+        payload={"enabled": True},
+    )
+    restore_job = await_core_job(api, exclusive_restored) if (
+        code == 200 and exclusive_restored.get("ok") is True
+        and exclusive_restored.get("data", {}).get("accepted") is True
+    ) else None
+    _record_job_stage(record_property, "vpn-auto-exclusive-restore-selector-packet", http_status=code,
+                      accepted=exclusive_restored, job=restore_job, stack=stack)
+    assert code == 200 and exclusive_restored.get("data", {}).get("accepted") is True
+    assert restore_job is not None and restore_job.get("status") == "success"
+    assert get_vpn_auto_exclusive_source_ref() == source_ref
+    restored_candidate_state = get_vpn_auto_state(read_only=True)
+    restored_candidate_ids = restored_candidate_state.get("auto_selectable_candidate_ids")
+    assert (isinstance(restored_candidate_ids, list)
+            and set(restored_candidate_ids) == {logical_id}
+            and restored_candidate_state.get("active_auto_server_id") == logical_id), {
+        "restored_candidate_pool_count": len(restored_candidate_ids)
+        if isinstance(restored_candidate_ids, list) else None,
+        "provider_candidate_only": isinstance(restored_candidate_ids, list)
+        and set(restored_candidate_ids) == {logical_id},
+        "provider_is_current_after_restore": restored_candidate_state.get("active_auto_server_id") == logical_id,
+    }
+    final_binding = binding_for(source_ref)
+    assert all(final_binding.get(key) == provider_binding_before_selector.get(key)
+               for key in ("logical_server_id", "current_member_id", "applied_member_id", "binding_revision"))
+    assert bridge.snapshot_calls() == provider_calls_before_selector
+
     _write_capture_summary({
         "core_counter_mapping": {
             "direct_lan_forward": "unscoped inet fwrouter_v2 fwrouter_direct / global direct path counter; also counts host-output and host-local direct branches, diagnostic only (not flow-specific leak proof)",
@@ -3046,4 +3293,5 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
                                "observations": reentry_phase["observations"],
                                "egress_guard": reentry_phase["leak"],
                                "router_guard": reentry_phase["router_guard"]},
+        "vpn_after_selector_change": selector_packet_diagnostic,
     })
