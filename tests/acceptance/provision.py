@@ -35,6 +35,9 @@ CHROMIUM_BINARY_SHA256 = "2fa605e3639b8cfbe8037d0b8e0324dbf7f9e6ad7beb345374ecd2
 ACCEPTANCE_DIR = Path(__file__).resolve().parent
 DEPENDENCY_LOCK_PATH = ACCEPTANCE_DIR / "dependency-image.lock.json"
 DEPENDENCY_CONSUMER_LOCK_PATH = ACCEPTANCE_DIR / "dependency-image-consumer.lock.json"
+PUBLISH_REPOSITORY = "Coxf0rd/fwrouter"
+PUBLISH_REF = "refs/heads/stage/test-architecture-ci-stabilization"
+PUBLISH_MARKER = "ci:publish-dependencies"
 INPUTS = {
     "xray": {
         "version": "26.2.6",
@@ -263,10 +266,50 @@ def load_dependency_image_reference() -> tuple[str, str]:
     return image_ref, lock_sha256
 
 
+def validate_source_assets_publisher_environment(env: dict[str, str]) -> None:
+    """Limit source-asset provisioning to the trusted hosted publisher job."""
+    if (env.get("GITHUB_ACTIONS") != "true" or env.get("RUNNER_ENVIRONMENT") != "github-hosted"
+            or env.get("GITHUB_REPOSITORY") != PUBLISH_REPOSITORY
+            or env.get("GITHUB_REF") != PUBLISH_REF
+            or env.get("GITHUB_EVENT_NAME") != "push"
+            or env.get("FWROUTER_DEPENDENCY_PUBLISH_MARKER") != PUBLISH_MARKER):
+        raise ValueError("source-assets-only provisioning requires the authorized hosted publisher job")
+
+
+def load_provision_dependency_reference(*, source_assets_only: bool,
+                                        env: dict[str, str]) -> tuple[str | None, str]:
+    """Resolve publisher lock metadata or the strict consumer image reference."""
+    if not source_assets_only:
+        return load_dependency_image_reference()
+    validate_source_assets_publisher_environment(env)
+    try:
+        dependency_lock = json.loads(DEPENDENCY_LOCK_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("checked-in dependency lock is unavailable or invalid") from exc
+    if (not isinstance(dependency_lock, dict)
+            or dependency_lock.get("schema") != "fwrouter-acceptance-dependency-lock/v1"
+            or dependency_lock.get("platform") != "linux/amd64"):
+        raise ValueError("dependency lock schema or platform is not supported")
+    lock_sha256 = hashlib.sha256(json.dumps(
+        dependency_lock, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
+    return None, lock_sha256
+
+
+def dependency_environment_outputs(image_ref: str | None, lock_sha256: str) -> dict[str, str]:
+    """Export image variables only when a validated consumer reference exists."""
+    if image_ref is None:
+        return {}
+    return {"FWROUTER_ACCEPTANCE_DEPENDENCY_IMAGE": image_ref,
+            "FWROUTER_ACCEPTANCE_DEPENDENCY_LOCK_SHA256": lock_sha256}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runner-temp", type=Path, required=True)
     parser.add_argument("--github-env", type=Path, required=True)
+    parser.add_argument("--source-assets-only", action="store_true",
+                        help="trusted publisher role: provision locked source assets without exporting an image reference")
     args = parser.parse_args()
     runner_temp = args.runner_temp.resolve(strict=True)
     if args.github_env.is_symlink() or not args.github_env.resolve(strict=True).is_relative_to(runner_temp):
@@ -278,15 +321,15 @@ def main() -> int:
         raise SystemExit("provisioning directory already exists; use a fresh hosted job")
     root.mkdir(mode=0o700)
     try:
-        dependency_image_ref, dependency_lock_sha256 = load_dependency_image_reference()
+        dependency_image_ref, dependency_lock_sha256 = load_provision_dependency_reference(
+            source_assets_only=args.source_assets_only, env=dict(os.environ))
     except ValueError as exc:
         shutil.rmtree(root, ignore_errors=True)
         raise SystemExit(str(exc)) from exc
     outputs: dict[str, str] = {"FWROUTER_ACCEPTANCE_BASE_IMAGE": BASE_IMAGE,
-                               "FWROUTER_ACCEPTANCE_DEPENDENCY_IMAGE": dependency_image_ref,
-                               "FWROUTER_ACCEPTANCE_DEPENDENCY_LOCK_SHA256": dependency_lock_sha256,
                                "FWROUTER_ACCEPTANCE_PLAYWRIGHT_VERSION": PLAYWRIGHT_VERSION,
                                "FWROUTER_ACCEPTANCE_CHROMIUM_VERSION": CHROMIUM_VERSION}
+    outputs.update(dependency_environment_outputs(dependency_image_ref, dependency_lock_sha256))
     source_hashes: dict[str, str] = {}
     asset_measurements: dict[str, dict[str, int | float]] = {}
     try:
@@ -339,6 +382,7 @@ def main() -> int:
         if not valid_asset_measurements(asset_measurements):
             raise ValueError("provisioned asset measurements failed their numeric schema")
         manifest = {"schema": "fwrouter-hosted-inputs/v1", "base_image": BASE_IMAGE,
+                    "dependency_image_mode": "source-assets-only" if args.source_assets_only else "consumer",
                     "dependency_image": dependency_image_ref,
                     "dependency_lock_sha256": dependency_lock_sha256,
                     "playwright": PLAYWRIGHT_VERSION,

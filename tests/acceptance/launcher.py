@@ -3115,11 +3115,13 @@ def validate_dependency_image_reference(env: dict[str, str]) -> tuple[str, str]:
     specifications = lock.get("apt_packages")
     if not isinstance(specifications, list) or not specifications:
         raise NotRun("application dependency lock package inventory is invalid")
+    package_names = set()
     for specification in specifications:
         match = re.fullmatch(r"([a-z0-9][a-z0-9+.-]*)(?:=([A-Za-z0-9.+:~_-]+))?", specification) \
             if isinstance(specification, str) else None
-        if match is None or match.group(1) in apt_versions:
+        if match is None or match.group(1) in package_names:
             raise NotRun("application dependency lock package inventory is invalid")
+        package_names.add(match.group(1))
         if match.group(2):
             apt_versions[match.group(1)] = match.group(2)
     if apt_versions != KERNEL_PACKET_TOOL_PACKAGE_VERSIONS:

@@ -15,6 +15,7 @@ ACCEPTANCE = ROOT / "tests" / "acceptance"
 sys.path.insert(0, str(ACCEPTANCE))
 import prepare_dependency_image as prepare
 import publish_dependency_image as publisher
+import provision
 
 
 class DependencyImageContractTests(unittest.TestCase):
@@ -68,7 +69,7 @@ class DependencyImageContractTests(unittest.TestCase):
             "requirements-browser.txt", "dependency-image.lock.json", "Dockerfile",
         }, keys)
         for path in (ACCEPTANCE / "prepare_dependency_image.py", ACCEPTANCE / "publish_dependency_image.py",
-                     ACCEPTANCE / "test_dependency_image_contract.py"):
+                     ACCEPTANCE / "provision.py", ACCEPTANCE / "test_dependency_image_contract.py"):
             parsed = ast.parse(path.read_text(encoding="utf-8"))
             imported = {alias.name.split(".")[0] for node in ast.walk(parsed)
                         if isinstance(node, ast.Import) for alias in node.names}
@@ -97,6 +98,44 @@ class DependencyImageContractTests(unittest.TestCase):
             rejected[field] = value
             with self.subTest(field=field), self.assertRaises(publisher.PublishError):
                 publisher.validate_publisher_environment(rejected)
+
+    def test_source_assets_only_provisioning_is_publisher_gated_and_avoids_consumer_lock(self):
+        trusted = {
+            "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
+            "GITHUB_REPOSITORY": "Coxf0rd/fwrouter",
+            "GITHUB_REF": "refs/heads/stage/test-architecture-ci-stabilization",
+            "GITHUB_EVENT_NAME": "push", "FWROUTER_DEPENDENCY_PUBLISH_MARKER": "ci:publish-dependencies",
+        }
+        with mock.patch.object(provision, "load_dependency_image_reference",
+                               side_effect=AssertionError("consumer lock must not be loaded")):
+            image_ref, lock_digest = provision.load_provision_dependency_reference(
+                source_assets_only=True, env=trusted)
+        self.assertIsNone(image_ref)
+        self.assertEqual({}, provision.dependency_environment_outputs(image_ref, lock_digest))
+        self.assertEqual(prepare._canonical_digest(json.loads(
+            (ACCEPTANCE / "dependency-image.lock.json").read_text(encoding="utf-8"))), lock_digest)
+        with mock.patch.object(provision, "load_dependency_image_reference",
+                               return_value=("ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:" + "a" * 64,
+                                             "b" * 64)) as consumer_reference:
+            ordinary_ref, ordinary_digest = provision.load_provision_dependency_reference(
+                source_assets_only=False, env=trusted)
+        consumer_reference.assert_called_once_with()
+        self.assertEqual({"FWROUTER_ACCEPTANCE_DEPENDENCY_IMAGE": ordinary_ref,
+                          "FWROUTER_ACCEPTANCE_DEPENDENCY_LOCK_SHA256": ordinary_digest},
+                         provision.dependency_environment_outputs(ordinary_ref, ordinary_digest))
+        for field, value in (("RUNNER_ENVIRONMENT", "self-hosted"),
+                             ("GITHUB_REPOSITORY", "fork/fwrouter"),
+                             ("GITHUB_REF", "refs/heads/main"),
+                             ("GITHUB_EVENT_NAME", "pull_request"),
+                             ("FWROUTER_DEPENDENCY_PUBLISH_MARKER", "")):
+            rejected = dict(trusted, **{field: value})
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                provision.load_provision_dependency_reference(source_assets_only=True, env=rejected)
+
+    def test_publisher_workflow_uses_explicit_asset_only_mode_and_parses_provision_source(self):
+        workflow = (ROOT / ".github/workflows/publish-acceptance-dependencies.yml").read_text(encoding="utf-8")
+        self.assertIn("--source-assets-only", workflow)
+        self.assertIn('"tests/acceptance/provision.py"', workflow)
 
     def test_measurement_schema_keeps_bytes_and_durations_bounded_and_typed(self):
         measurements = {
