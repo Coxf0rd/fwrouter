@@ -1186,3 +1186,10 @@ The reviewed plan is now being implemented: ordinary component fixtures own the 
 The only application change in this checkpoint is probe-cache ownership: an invalidated loader completes its original callers but cannot publish over, or remove, a replacement in-flight entry. Matching clear invalidates matching cached and pending entries together. Deterministic barrier tests compare current behavior with a SHA-256 pinned exact pre-fence source fixture; this is not an alternate application runtime or a baseline allowlist. Local source review is not test execution.
 
 The first hosted gate expands the existing acceptance-tail cohort to include cache/prewarm/startup/UI dispatch contracts and retains five independent repetitions, stopping on the first failure. Required shared-cache affected gates remain unchanged. Phase D stays BLOCKED until actual source-matched execution receipts are available. No production tests, deploy, Phase E/CD, L6/L7, PR or merge.
+
+
+### First cache/prewarm hosted checkpoint 38303356534
+
+Source `e9a476e`, [run38303356534](https://github.com/Coxf0rd/fwrouter/actions/runs/38303356534): **293 PASS / 1 FAIL / 0 SKIP**, first repetition only; repetitions2–5 NOT RUN by stop-on-failure policy. All selective apply, prewarm admission/lifecycle, startup/UI dispatch, installer and gate/receipt contracts pass. The exact prior-cache regression demonstrates stale publication and replacement-entry deletion while the current implementation passes those predicates.
+
+The sole failure is a new matching-clear test assertion: its result bucket wraps the returned dictionary, while the expected value omitted that wrapper. Corrected to the explicit `result` bucket with the same nested fresh value; no application change or relaxed cache predicate. Raw JUnit/report retained untracked under `evidence/run_38303356534/targeted`; corrected hosted repetition is pending. Phase D remains BLOCKED on execution/reproducibility and the final source-matched affected/native gate.

@@ -274,7 +274,7 @@ def test_matching_clear_invalidates_only_matching_cache_and_inflight_entries() -
 
         def invoke_replacement():
             try:
-                replacement_result["value"] = get_live_probe_cache(
+                replacement_result["result"] = get_live_probe_cache(
                     "scope.drop", ttl_seconds=60, loader=replacement_loader,
                 )
             except BaseException as exc:
@@ -301,7 +301,7 @@ def test_matching_clear_invalidates_only_matching_cache_and_inflight_entries() -
         replacement_release.set()
         replacement.join(5)
         assert not replacement.is_alive()
-        assert replacement_result == {"value": "fresh"}
+        assert replacement_result == {"result": {"value": "fresh"}}
         assert live_probe_cache.peek_live_probe_cache("scope.drop") == {"value": "fresh"}
     finally:
         release.set()
