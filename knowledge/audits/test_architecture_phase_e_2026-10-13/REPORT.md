@@ -76,3 +76,45 @@ Next permitted gate uses the normal affected job body through temporary `ci:main
 [Consumer38313177705](https://github.com/Coxf0rd/fwrouter/actions/runs/38313177705) passed anonymous digest-pinned GHCR cold/warm readback: cold pull35.462s, warm pull0.154s, installed dependency manifest486 packages, image2,616,513,753 bytes. Same-job layer reuse is measured; downloads on fresh jobs remain expected. No image publication or dependency rebuild was performed. Fast38313177661 passed; optional diagnostic38313177721 intentionally did not execute on the consumer-only marker.
 
 The wheel build step in the otherwise successful affected run exposed a confirmed false-green: `pip wheel backend` downloaded PyPI package `backend==0.2.4.1` and produced its6447-byte wheel. This did not build local `fwrouter-api`; therefore backend packaging acceptance is FAIL despite the successful job conclusion. Application/native receipts retain their independent validity. The fix uses explicit local path `./backend` and verifies wheel identity and packaged source; a targeted hosted build proof is required before closing this defect. Raw logs and receipts remain untracked under `evidence/run_38313177638`.
+
+
+## Final technical scope and release gates
+
+| Phase | Status |
+|---|---|
+| Phase A | Audit completed;38345d4 retained |
+| Phase B | ACCEPTED;f50d7e6 retained |
+| Phase C | Required source coverage completed; hosted execution confirmed within Phase D scope |
+| Phase D | ACCEPTED — exact required hosted scope, not L6/L7/host release |
+| Phase E | BLOCKED — real PR/main events and required-check/squash promotion not authorized |
+| Overall CI Milestone | BLOCKED — final promotion gates remain |
+
+### Workflow ownership
+
+| Event/utility | Owner/gate | Evidence boundary |
+|---|---|---|
+| Feature push | Fast affected L0–L1 | Current branch hosted fast checks |
+| PR→main | Stable `Affected L0-L5 with hosted profiles` | Source/contracts and branch-equivalent body; true PR NOT RUN |
+| Main push | Same affected gate + build + strict native smoke | Branch-equivalent body and targeted source-wheel proof; true main NOT RUN |
+| Nightly/manual/release | L6 full workflow | Existing independent policy; NOT RUN in E |
+| Manual/release | L7 staging workflow | Explicit isolation/release acknowledgment; NOT RUN in E |
+| Dependency changes/manual | Trusted GHCR publisher | Event admission/negative contracts; existing D publication proof; new true main/manual event NOT RUN |
+| Application/native/browser | Read-only immutable GHCR consumer | Fresh checkout overlay and exact source/profile receipts |
+| Explicit diagnostic markers | Optional Phase D utility / GHCR cold-warm utility | Not required checks, not release/deployment proof |
+
+### Quality, security and resource disposition
+
+No new application behavior, kernel rules, runtime binaries, image dependency versions or production state changed. Source review and accepted receipts preserve Core ownership, CAS/revision/incarnation fences, native proof, packet counters/captures and cleanup. Ordinary token permissions remain contents-read; publisher alone has packages-write. No production secrets, fork write credentials, host networking or uncontrolled privileged containers are added. Narrow NET_ADMIN/test namespace privileges retain their existing preflight proof. Local work did not run tests/application imports/native/Compose. Public artifacts retain bounded identities/hashes and synthetic credentials; high-confidence token/private-key scans of reviewed text artifacts found no candidates, which is not a universal secret-leak proof.
+
+Confirmed excess work removed: duplicate diagnostic preflight on unmarked pushes; unnecessary publisher authorization clone on unrelated branch pushes; unplanned full main smoke when no affected native profile is selected. The latter savings are source-derived until a true main event is measured. The existing2.62GB immutable dependency base is retained: measured cold/warm consumer35.462/0.154s; no controlled alternative proves a split/shrink wins. Current affected job wall8m33s; ordinary244.382s and Provider158.566s. These differ from D measurements and are not claimed as application performance improvements. Runner aggregate CPU/RAM peaks, comprehensive disk/cache hit metrics and a matched cold/warm whole-pipeline experiment remain unmeasured; process high-water/temp observations from D do not substitute for whole-run peaks.
+
+Backend packaging false-green is now corrected: [38314460619](https://github.com/Coxf0rd/fwrouter/actions/runs/38314460619) built local `fwrouter-api==0.1.0`, one wheel,247 packaged Python files matching checkout byte-for-byte, no metadata errors. Synthetic regression cases reject wrong PyPI identity, stale bytes, missing files and multiple wheels. Metadata is retained even on verification failure. This narrow proof did not repeat native/packet workloads.
+
+### Remaining mandatory authorization / acceptance
+
+1. Permission to create the milestone PR, then prove the real PR event and stable affected status context. No PR has been created.
+2. Permission to configure required affected status-check enforcement and squash-only merge policy. Current Main ruleset requires a PR but no CI status; all three merge methods remain allowed. Auto-delete is already enabled; no settings changed.
+3. After the operator reviews and performs Squash and Merge, prove the real main event. Agent merge is forbidden. This gate cannot be completed before that decision.
+4. New default-branch/manual dependency-publisher event remains unexecuted; negative admission contracts plus prior publisher/consumer evidence are explicitly narrower. No forced image rebuild/publication was performed for unchanged inputs.
+
+CI→PR review→operator Squash and Merge→release candidate→release acceptance→separately approved manual deployment→Production Live Acceptance remains the release sequence. Merge does not authorize deploy. CD DEFERRED. L6/L7 and Debian host/systemd/reboot/physical-kernel acceptance are independent release gates, not a Compose claim. Rescue access and independent rollback must precede dangerous network deployment. Operational Performance Fixes remains preserved and PAUSED/BLOCKED; no other milestone started.

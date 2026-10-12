@@ -50,3 +50,8 @@ The canonical roadmap and mirror preserve the overall stage order and include br
 - External Integration Framework & SDK after Core/Modules stabilization: Core/Modules milestones and late telemetry exist, but this framework/SDK requirement is not present.
 
 These are roadmap synchronization follow-ups for the milestone owner; this audit makes no roadmap edits and does not implement these future scopes.
+
+
+## Phase E owner disposition
+
+The named future requirements above have now been added as PLANNED/TODO to canonical/mirror roadmaps without implementation or stage-order changes. Existing full packet evidence remains applicable because Phase E did not alter packet harness, topology, native binaries or routing. Scoped hosted38313177638 revalidated affected ordinary26 and Provider/kernel11 application/native/browser cases. Source-only review alone is not their acceptance evidence. Debian host/reboot/systemd remains a separate release gate; no production activity occurred.

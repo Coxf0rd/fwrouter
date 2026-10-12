@@ -274,15 +274,16 @@ class GateContractTests(unittest.TestCase):
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
         wheel_step = workflow.split("- name: Build backend wheel on main", 1)[1].split(
             "- name: Provision exact runtime inputs", 1)[0]
-        marker_job = workflow.split("  wheel-audit:", 1)[1].split("  affected:", 1)[0]
+        trigger = workflow.split("permissions:", 1)[0]
+        affected = workflow.split("  affected:", 1)[1]
         artifact_step = workflow.split("- name: Retain bounded reports", 1)[1]
         verifier = (gate.ROOT / "tests/gates/verify_backend_wheel.py").read_text(encoding="utf-8")
         contract = (
             'python -m pip wheel --no-deps --wheel-dir "$wheel_dir" ./backend' in wheel_step
             and '"$wheel_dir" "$RUNNER_TEMP/fwrouter-wheel-metadata.json"' in wheel_step
-            and '"$wheel_dir" "$RUNNER_TEMP/fwrouter-wheel-metadata.json"' in marker_job
-            and 'github.ref == \'refs/heads/stage/test-architecture-ci-stabilization\'' in marker_job
-            and "ci:wheel-equivalent" in marker_job
+            and "branches: [main]" in trigger
+            and "github.event_name == 'pull_request'" in affected
+            and "github.ref == 'refs/heads/main'" in affected
             and 'endswith(".dist-info/METADATA")' in verifier
             and 'project.get("project", {}).get("name")' in verifier
             and 'project.get("project", {}).get("version")' in verifier
@@ -352,37 +353,26 @@ class GateContractTests(unittest.TestCase):
                 passed, _ = run_case(mutation)
                 self.assertFalse(passed, f"{label} must be rejected")
 
-    def test_temporary_main_equivalent_path_is_branch_marker_scoped_and_uses_fixed_base(self) -> None:
+    def test_pr_and_main_workflow_event_policy_uses_only_event_bases(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
         trigger = workflow.split("permissions:", 1)[0]
         job = workflow.split("  affected:", 1)[1].split("    steps:", 1)[0]
         plan_step = workflow.split('if [ "$EVENT_NAME" = pull_request ]; then', 1)[1].split(
             'if [ -z "$BASE"', 1)[0]
-        base_selection = 'if [ "$EVENT_NAME" = pull_request ]; then' + plan_step
-        fixed_assignment = base_selection.find('BASE="$PHASE_E_BASE_SHA"')
-        ref_guard = base_selection.rfind(
-            'elif [ "$EVENT_REF" = refs/heads/stage/test-architecture-ci-stabilization ]',
-            0, fixed_assignment)
-        marker_guard = base_selection.find(
-            '[[ "$HEAD_COMMIT_MESSAGE" == *ci:main-equivalent* ]]', ref_guard, fixed_assignment)
-        fallback = base_selection.find('BASE="$PUSH_BASE_SHA"', fixed_assignment)
-        scoped_branches = (base_selection.count('BASE="$PHASE_E_BASE_SHA"') == 1
-                           and 'BASE="$PR_BASE_SHA"' in base_selection
-                           and ref_guard >= 0 and marker_guard > ref_guard
-                           and fallback > fixed_assignment
-                           and "else" in base_selection[fixed_assignment:fallback])
         contract = (
-            "branches: [main, stage/test-architecture-ci-stabilization]" in trigger
+            "pull_request:\n    branches: [main]\n  push:\n    branches: [main]" in trigger
             and "github.event_name == 'pull_request'" in job
             and "github.ref == 'refs/heads/main'" in job
-            and "contains(github.event.head_commit.message || '', 'ci:main-equivalent')" in job
-            and "PHASE_E_BASE_SHA: 3e12141c5d7be5d740450e6c13001a8fbc827f3b" in workflow
-            and 'EVENT_REF: ${{ github.ref }}' in workflow
-            and 'HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}' in workflow
-            and scoped_branches
+            and 'BASE="$PR_BASE_SHA"' in plan_step
+            and 'BASE="$PUSH_BASE_SHA"' in plan_step
+            and 'PHASE_E_BASE_SHA' not in workflow
+            and 'ci:main-equivalent' not in workflow
+            and 'ci:wheel-equivalent' not in workflow
+            and 'stage/test-architecture-ci-stabilization' not in trigger
+            and '  wheel-audit:' not in workflow
         )
         self.assertTrue(contract,
-                        "temporary main-equivalent run must be marker/ref scoped, with PR/main and push bases preserved")
+                        "affected CI must be limited to PR/main events with event-derived base SHAs")
 
     def test_unit_fixture_junit_contract_rejects_missing_and_skipped_cases(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fwrouter-unit-junit-contract-") as temp:

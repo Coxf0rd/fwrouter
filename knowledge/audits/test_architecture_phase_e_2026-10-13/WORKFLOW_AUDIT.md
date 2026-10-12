@@ -109,3 +109,10 @@ Actual PR/main event validation: **NOT RUN**.
 Repository required-check enforcement: **FAIL / NOT CONFIGURED**.
 Dependency-image-change publisher event policy: **FAIL / MARKER-ONLY**.
 Phase E workflow acceptance: **BLOCKED** pending disposition of the temporary trigger, a main-smoke evidence contract, dependency image change trigger, required-check configuration authorization, and real PR/main event evidence. No PR, merge, settings change, or production action was performed.
+
+
+## Final correction disposition — 2026-10-13
+
+The original findings above are historical review evidence. Phase E fixes supersede the duplicate unmarked diagnostic push, marker-only publisher admission and incomplete/unplanned main-smoke findings: optional diagnostics now require explicit markers; trusted dependency-change/manual publishing is admitted before checkout; main smoke uses selected ordinary proof or one registered diagnostic and the aggregate rejects missing native evidence. Normal affected job source was exercised by branch main-equivalent38313177638, including37 application/native/browser cases and strict receipts. This does not prove a real PR/main event. Read-only GHCR consumer38313177705 passed cold/warm pulls. A separate false-green wheel build was found in that run and fixed with explicit local path and exact wheel/source verification, proven by38314460619.
+
+Marker-scoped Phase D diagnostic and anonymous cold/warm consumer utilities remain optional, bounded milestone troubleshooting tools. They do not run on ordinary unmarked pushes, replace the stable required affected context, or authorize release/deploy. The temporary normal-workflow main-equivalent and wheel-only branch routes are retired after proof. No additional workflows, image layers or testbed were introduced. Repository required-check enforcement and squash-only policy still require authorized settings changes; true PR/main events remain NOT RUN.
