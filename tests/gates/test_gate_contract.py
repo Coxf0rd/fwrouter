@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -26,6 +27,12 @@ PLUGIN_SPEC = importlib.util.spec_from_file_location("fwrouter_gate_plugin_contr
 assert PLUGIN_SPEC is not None and PLUGIN_SPEC.loader is not None
 gate_plugin = importlib.util.module_from_spec(PLUGIN_SPEC)
 PLUGIN_SPEC.loader.exec_module(gate_plugin)
+WHEEL_VERIFIER_PATH = Path(__file__).with_name("verify_backend_wheel.py")
+WHEEL_VERIFIER_SPEC = importlib.util.spec_from_file_location(
+    "fwrouter_wheel_verifier_contract", WHEEL_VERIFIER_PATH)
+assert WHEEL_VERIFIER_SPEC is not None and WHEEL_VERIFIER_SPEC.loader is not None
+wheel_verifier = importlib.util.module_from_spec(WHEEL_VERIFIER_SPEC)
+WHEEL_VERIFIER_SPEC.loader.exec_module(wheel_verifier)
 
 
 class GateContractTests(unittest.TestCase):
@@ -262,6 +269,88 @@ class GateContractTests(unittest.TestCase):
         self.assertTrue(all(item in workflow for item in required)
                         and all(item not in workflow for item in forbidden),
                         "main push must require one native smoke and select QCP/Docker-Xray only by affected plan")
+
+    def test_main_wheel_build_is_explicit_source_and_checks_retained_project_identity(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        wheel_step = workflow.split("- name: Build backend wheel on main", 1)[1].split(
+            "- name: Provision exact runtime inputs", 1)[0]
+        marker_job = workflow.split("  wheel-audit:", 1)[1].split("  affected:", 1)[0]
+        artifact_step = workflow.split("- name: Retain bounded reports", 1)[1]
+        verifier = (gate.ROOT / "tests/gates/verify_backend_wheel.py").read_text(encoding="utf-8")
+        contract = (
+            'python -m pip wheel --no-deps --wheel-dir "$wheel_dir" ./backend' in wheel_step
+            and '"$wheel_dir" "$RUNNER_TEMP/fwrouter-wheel-metadata.json"' in wheel_step
+            and '"$wheel_dir" "$RUNNER_TEMP/fwrouter-wheel-metadata.json"' in marker_job
+            and 'github.ref == \'refs/heads/stage/test-architecture-ci-stabilization\'' in marker_job
+            and "ci:wheel-equivalent" in marker_job
+            and 'endswith(".dist-info/METADATA")' in verifier
+            and 'project.get("project", {}).get("name")' in verifier
+            and 'project.get("project", {}).get("version")' in verifier
+            and 'payload_bytes[name] == source_files[name]' in verifier
+            and '"fwrouter_api/__init__.py"' in verifier
+            and "fwrouter-wheel-metadata.json" in wheel_step
+            and "fwrouter-wheel-metadata.json" in artifact_step
+            and "if: always()" in artifact_step
+        )
+        self.assertTrue(contract, "main wheel must prove and retain the built source distribution identity")
+
+    def test_wheel_verifier_checks_identity_exact_payload_and_single_wheel(self) -> None:
+        source_payload = {
+            "fwrouter_api/__init__.py": b"\"\"\"Synthetic package.\"\"\"\n",
+            "fwrouter_api/module.py": b"VALUE = 'source'\n",
+        }
+
+        def write_wheel(directory: Path, filename: str, *, name: str = "fwrouter-api",
+                        version: str = "1.2.3", payload: dict[str, bytes] | None = None) -> None:
+            wheel = directory / filename
+            with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(
+                    "fwrouter_api-1.2.3.dist-info/METADATA",
+                    f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\n",
+                )
+                for path, content in (source_payload if payload is None else payload).items():
+                    archive.writestr(path, content)
+
+        def run_case(mutate) -> tuple[bool, dict[str, object]]:
+            with tempfile.TemporaryDirectory(prefix="fwrouter-wheel-verifier-contract-") as temp:
+                root = Path(temp)
+                backend = root / "backend"
+                package = backend / "fwrouter_api"
+                package.mkdir(parents=True)
+                (backend / "pyproject.toml").write_text(
+                    '[project]\nname = "fwrouter-api"\nversion = "1.2.3"\n', encoding="utf-8")
+                for relative, content in source_payload.items():
+                    (backend / relative).write_bytes(content)
+                wheel_dir = root / "wheels"
+                wheel_dir.mkdir()
+                mutate(wheel_dir)
+                output = root / "audit.json"
+                with mock.patch.object(wheel_verifier, "ROOT", root):
+                    passed = wheel_verifier.verify(wheel_dir, output)
+                return passed, json.loads(output.read_text(encoding="utf-8"))
+
+        passed, summary = run_case(
+            lambda directory: write_wheel(directory, "fwrouter_api-1.2.3-py3-none-any.whl"))
+        self.assertTrue(passed, "correct source wheel should pass identity and payload verification")
+        self.assertTrue(summary["wheels"][0]["matches_current_source"])
+
+        negative_cases = (
+            ("wrong PyPI identity", lambda d: write_wheel(
+                d, "backend-0.2.4.1-py3-none-any.whl", name="backend", version="0.2.4.1")),
+            ("stale payload", lambda d: write_wheel(
+                d, "fwrouter_api-1.2.3-py3-none-any.whl",
+                payload={**source_payload, "fwrouter_api/module.py": b"VALUE = 'stale'\n"})),
+            ("missing source payload", lambda d: write_wheel(
+                d, "fwrouter_api-1.2.3-py3-none-any.whl",
+                payload={"fwrouter_api/__init__.py": source_payload["fwrouter_api/__init__.py"]})),
+            ("second wheel", lambda d: (
+                write_wheel(d, "fwrouter_api-1.2.3-py3-none-any.whl"),
+                write_wheel(d, "fwrouter_api-1.2.3-2-py3-none-any.whl"))),
+        )
+        for label, mutation in negative_cases:
+            with self.subTest(case=label):
+                passed, _ = run_case(mutation)
+                self.assertFalse(passed, f"{label} must be rejected")
 
     def test_temporary_main_equivalent_path_is_branch_marker_scoped_and_uses_fixed_base(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
