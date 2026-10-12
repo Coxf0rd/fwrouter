@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from fwrouter_api.core.config import get_settings
 import fwrouter_api.services.apply as apply_service
 from fwrouter_api.services import dataplane_status as dataplane_status_service
+from fwrouter_api.services import core_bypass as core_bypass_service
 import fwrouter_api.services.routing_manifest as routing_manifest_service
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
@@ -97,6 +98,10 @@ class _SuccessfulUnitApplyAdapter:
         self.observed_mode = "unknown"
         self.mode_before_apply = "unknown"
         self.readbacks: list[str] = []
+        self.observed_selective_default: str | None = None
+        self.selective_default_before_apply: str | None = None
+        self.observed_bypass = False
+        self.bypass_before_apply = False
 
     def check(self, plan):  # noqa: ANN001
         self.calls.append("check")
@@ -123,6 +128,37 @@ class _SuccessfulUnitApplyAdapter:
 
     def apply(self, plan):  # noqa: ANN001
         self.calls.append("apply")
+        try:
+            manifest = json.loads(Path(plan.manifest_path or "").read_text(encoding="utf-8"))
+        except (OSError, TypeError, json.JSONDecodeError):
+            manifest = None
+        extra = manifest.get("extra") if isinstance(manifest, dict) else None
+        core_bypass = extra.get("core_bypass") if isinstance(extra, dict) else None
+        routing = manifest.get("routing_global_state") if isinstance(manifest, dict) else None
+        if not isinstance(core_bypass, dict) or not isinstance(core_bypass.get("enabled"), bool):
+            return DataplaneResult(
+                ok=False,
+                operation=DataplaneOperation.APPLY,
+                message="unit adapter requires explicit core bypass manifest state",
+                details={"stage": "manifest_readback"},
+                error_code="PYTEST_CORE_BYPASS_MANIFEST_MISSING",
+                error_message="generated apply manifest has no explicit core bypass state",
+            )
+        if not isinstance(routing, dict):
+            return DataplaneResult(
+                ok=False,
+                operation=DataplaneOperation.APPLY,
+                message="unit adapter requires explicit routing mode in apply manifest",
+                details={"stage": "manifest_readback"},
+                error_code="PYTEST_ROUTING_MODE_MISSING",
+                error_message="generated apply manifest has no routing mode",
+            )
+        target_mode = str(routing.get("desired_mode") or routing.get("applied_mode") or "direct").lower()
+        target_selective_default = (
+            str(routing.get("selective_default") or "direct").lower()
+            if target_mode == "selective"
+            else None
+        )
         result = DataplaneResult(
             ok=True,
             operation=DataplaneOperation.APPLY,
@@ -131,12 +167,16 @@ class _SuccessfulUnitApplyAdapter:
                 "stage": "verify",
                 "owned_table": "inet fwrouter_v2",
                 "table_exists": True,
-                "routing_mode": "direct",
+                "routing_mode": target_mode,
             },
         )
         if result.ok:
             self.mode_before_apply = self.observed_mode
-            self.observed_mode = "direct"
+            self.selective_default_before_apply = self.observed_selective_default
+            self.bypass_before_apply = self.observed_bypass
+            self.observed_mode = target_mode
+            self.observed_selective_default = target_selective_default
+            self.observed_bypass = core_bypass["enabled"]
         return result
 
     def rollback(self, plan):  # noqa: ANN001
@@ -149,6 +189,8 @@ class _SuccessfulUnitApplyAdapter:
         )
         if result.ok:
             self.observed_mode = self.mode_before_apply
+            self.observed_selective_default = self.selective_default_before_apply
+            self.observed_bypass = self.bypass_before_apply
         return result
 
     def probe_live_mode(self) -> dict[str, object]:
@@ -156,7 +198,7 @@ class _SuccessfulUnitApplyAdapter:
         return {
             "ok": self.observed_mode == "direct",
             "mode": self.observed_mode,
-            "selective_default": None,
+            "selective_default": self.observed_selective_default,
             "error_code": None if self.observed_mode == "direct" else "PYTEST_MODE_NOT_APPLIED",
             "error_message": None if self.observed_mode == "direct" else "unit adapter has not applied direct mode",
             "raw_chain": None,
@@ -166,6 +208,7 @@ class _SuccessfulUnitApplyAdapter:
 
 def _install_successful_unit_apply(monkeypatch) -> _SuccessfulUnitApplyAdapter:
     adapter = _SuccessfulUnitApplyAdapter()
+    monkeypatch.setattr(core_bypass_service, "_live_core_bypass_active", lambda: adapter.observed_bypass)
     monkeypatch.setattr(apply_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
     monkeypatch.setattr(apply_service, "probe_live_global_mode", adapter.probe_live_mode)
     monkeypatch.setattr(dataplane_status_service, "_read_live_dataplane_payload", lambda: None)
@@ -207,6 +250,7 @@ def test_core_bypass_enable_and_disable_roundtrip(
 
     assert enable_job["status"] == "success"
     assert adapter.calls == ["check", "apply"]
+    assert adapter.observed_bypass is True
     assert get_core_bypass_state()["enabled"] is True
     assert get_module_state("core")["runtime_state"] == "paused"
     assert get_module_state("watchdog")["desired_state"] == "enabled"
@@ -227,6 +271,7 @@ def test_core_bypass_enable_and_disable_roundtrip(
     assert disable_job["status"] == "success", _core_bypass_job_failure_context(disable_job)
     assert adapter.calls == ["check", "apply", "check", "apply"]
     assert adapter.readbacks == ["direct", "direct"]
+    assert adapter.observed_bypass is False
     assert get_core_bypass_state()["enabled"] is False
     assert get_module_state("core")["runtime_state"] == "running"
     assert get_module_state("watchdog")["desired_state"] == "enabled"
@@ -248,6 +293,7 @@ def test_core_bypass_failed_disable_keeps_bypass_enabled(
     )
     assert enable_job["status"] == "success"
     assert adapter.calls == ["check", "apply"]
+    assert adapter.observed_bypass is True
 
     monkeypatch.setattr(apply_service, "DEFAULT_DATAPLANE_ADAPTER", _FailingApplyAdapter())
 
@@ -259,6 +305,7 @@ def test_core_bypass_failed_disable_keeps_bypass_enabled(
 
     assert disable_job["status"] == "failed", _core_bypass_job_failure_context(disable_job)
     assert get_core_bypass_state()["enabled"] is True
+    assert adapter.observed_bypass is True
     core_module = get_module_state("core")
     assert core_module["apply_state"] == "failed", {
         "job": _core_bypass_job_failure_context(disable_job),

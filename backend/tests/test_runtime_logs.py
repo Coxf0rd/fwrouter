@@ -5,9 +5,18 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.services import mihomo_config as mihomo_config_service
+from fwrouter_api.services import mihomo_reconcile as mihomo_reconcile_service
+from fwrouter_api.services import (
+    mihomo_reconcile_fingerprint as mihomo_reconcile_fingerprint_service,
+)
+from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+    current_mihomo_input_fingerprint,
+    write_mihomo_reconcile_fingerprint_state,
+)
 from fwrouter_api.services import xray as xray_service
 from fwrouter_api.services import logs_retention
 
@@ -17,7 +26,24 @@ from fwrouter_api.services import logs_retention
 def test_mihomo_reconcile_skip_writes_only_technical_log(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
-    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._mihomo_incarnation", lambda: "pytest-runtime")
+    runtime_incarnation = "pytest-runtime"
+    monkeypatch.setattr(mihomo_reconcile_service, "_mihomo_incarnation", lambda: runtime_incarnation)
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint_service,
+        "_current_runtime_incarnation",
+        lambda: runtime_incarnation,
+    )
+    unit_native_udp_proof = {
+        "ok": True,
+        "native_top_level_rules_match": True,
+        "selector_membership_matches": True,
+        "guarded_rules_match": True,
+    }
+    monkeypatch.setattr(
+        mihomo_reconcile_service,
+        "_native_udp_policy_proof",
+        lambda: dict(unit_native_udp_proof),
+    )
     monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
 
     written_operational: list[dict] = []
@@ -32,21 +58,56 @@ def test_mihomo_reconcile_skip_writes_only_technical_log(monkeypatch, tmp_path: 
         return kwargs
 
     candidate_config = mihomo_config_service.build_mihomo_config({"selective_default": "direct"})
+    base_path = Path(mihomo_config_service._resolved_base_config_path())
+    candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    base_path.write_text(yaml.safe_dump(candidate_config, sort_keys=False), encoding="utf-8")
+    fingerprint = current_mihomo_input_fingerprint({"selective_default": "direct"})
+    assert write_mihomo_reconcile_fingerprint_state(
+        fingerprint=fingerprint,
+        result={"reconcile_action": "none", "reconcile_reason": "unchanged_config"},
+        native_proof=unit_native_udp_proof,
+        expected_active_hash=mihomo_reconcile_fingerprint_service.active_config_hash(),
+        expected_runtime_incarnation=runtime_incarnation,
+    ) is True
+
     monkeypatch.setattr(mihomo_config_service, "write_operational_log", _op)
     monkeypatch.setattr(mihomo_config_service, "write_technical_log", _tech)
-    monkeypatch.setattr(mihomo_config_service, "get_mihomo_config_status", lambda: {
+    monkeypatch.setattr(mihomo_config_service, "get_mihomo_config_status", lambda **_kwargs: {
         "base_config": candidate_config,
         "candidate_config": candidate_config,
+        "base_path": str(base_path),
+        "candidate_path": str(candidate_path),
+        "base_exists": base_path.is_file(),
+        "candidate_exists": candidate_path.is_file(),
     })
-    monkeypatch.setattr(mihomo_config_service, "write_mihomo_candidate_config", lambda routing=None: {
-        "candidate_path": "candidate",
-        "rules": candidate_config["rules"],
-        "handoff_assignments": [],
-        "resolved_selective_default": "direct",
-        "final_match_rule": "MATCH,DIRECT",
-        "transparent_final_match_rule": "MATCH,DIRECT",
-        "config": candidate_config,
-    })
+    candidate_generation_calls: list[str] = []
+
+    def _fake_write_mihomo_candidate_config(routing=None):
+        candidate_generation_calls.append("write")
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_text(yaml.safe_dump(candidate_config, sort_keys=False), encoding="utf-8")
+        return {
+            "candidate_path": str(candidate_path),
+            "rules": candidate_config["rules"],
+            "handoff_assignments": [],
+            "resolved_selective_default": "direct",
+            "final_match_rule": "MATCH,DIRECT",
+            "transparent_final_match_rule": "MATCH,DIRECT",
+            "config": candidate_config,
+        }
+
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "write_mihomo_candidate_config",
+        _fake_write_mihomo_candidate_config,
+    )
+    restart_calls: list[str] = []
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "restart_mihomo_container",
+        lambda **kwargs: restart_calls.append(str(kwargs.get("action") or "restart")),
+    )
     monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", lambda routing=None: {
         "ok": True,
         "resolved_selective_default": "direct",
@@ -61,6 +122,9 @@ def test_mihomo_reconcile_skip_writes_only_technical_log(monkeypatch, tmp_path: 
     result = mihomo_config_service.reconcile_mihomo_runtime({"selective_default": "direct"})
 
     assert result["ok"] is True
+    assert result["reconcile_reason"] == "input_fingerprint_unchanged"
+    assert candidate_generation_calls == []
+    assert restart_calls == []
     assert written_operational == []
     assert written_technical[-1]["event_type"] == "mihomo_reconcile_skipped"
 

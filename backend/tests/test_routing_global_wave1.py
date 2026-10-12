@@ -149,7 +149,11 @@ def test_global_mode_success_commit_contract(monkeypatch, tmp_path: Path) -> Non
     )
     
     result = set_global_mode("direct", requested_by="pytest")
-    assert result["ok"] is True
+    assert result["ok"] is True, {
+        "stage": result.get("stage"),
+        "code": result.get("code"),
+        "message": str(result.get("message") or "")[:200],
+    }
     assert result["stage"] == "commit"
     assert "lan-follow" in result.get("affected_subject_ids", [])
 
@@ -185,7 +189,11 @@ def test_repair_global_direct_runtime_clears_stale_routing_error(monkeypatch, tm
 
     result = repair_global_direct_runtime_sync(requested_by="pytest")
 
-    assert result["status"] == "success"
+    assert result["status"] == "success", {
+        "status": result.get("status"),
+        "error_code": result.get("error_code"),
+        "error_message": str(result.get("error_message") or "")[:200],
+    }
     routing = get_routing_global_state()
     assert routing is not None
     assert routing["apply_state"] == "clean"
