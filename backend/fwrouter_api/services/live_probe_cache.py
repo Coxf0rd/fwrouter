@@ -46,17 +46,21 @@ def get_live_probe_cache(
     try:
         value = loader()
         expires_at = monotonic() + max(float(ttl_seconds), 0.0)
+        holder["value"] = value
 
         with _CACHE_LOCK:
-            _CACHE[key] = (expires_at, value)
-        holder["value"] = value
+            current = _INFLIGHT.get(key)
+            if current is not None and current[0] is event and current[1] is holder:
+                _CACHE[key] = (expires_at, value)
         return value
     except Exception as exc:
         holder["error"] = exc
         raise
     finally:
         with _CACHE_LOCK:
-            _INFLIGHT.pop(key, None)
+            current = _INFLIGHT.get(key)
+            if current is not None and current[0] is event and current[1] is holder:
+                _INFLIGHT.pop(key, None)
         event.set()
 
 
@@ -80,9 +84,10 @@ def clear_live_probe_cache() -> None:
 
 def clear_live_probe_cache_matching(predicate: Callable[[str], bool]) -> None:
     with _CACHE_LOCK:
-        for key in list(_CACHE):
+        for key in set(_CACHE) | set(_INFLIGHT):
             if predicate(key):
                 _CACHE.pop(key, None)
+                _INFLIGHT.pop(key, None)
 
 
 def clear_live_probe_cache_for_connection(connection_id: str) -> None:

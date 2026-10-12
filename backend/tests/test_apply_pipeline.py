@@ -2793,6 +2793,8 @@ def test_apply_pipeline_apply_mode_records_selective_ip_only_success(
     assert result["supported_modes"]["selective"] is True
 
     candidate_text, candidate_diagnostic = _candidate_nft_diagnostic(result)
+    assert candidate_diagnostic["mihomo"]["adapter"] == "fake"
+    assert candidate_diagnostic["mihomo"]["runtime_state"] == "running"
     assert "selective direct IPv4" in candidate_text
     assert "8.8.8.0/24" in candidate_text
     assert 'ip daddr @vpn_ipv4 goto fwrouter_vpn comment "selective vpn IPv4"' in candidate_text, (
@@ -2928,6 +2930,8 @@ def test_apply_pipeline_apply_mode_records_selective_domain_aware_success(
     assert result["dataplane"]["details"]["dnsmasq_reconcile"]["restart_reason"] == "nft_table_recreated"
 
     candidate_text, candidate_diagnostic = _candidate_nft_diagnostic(result)
+    assert candidate_diagnostic["mihomo"]["adapter"] == "fake"
+    assert candidate_diagnostic["mihomo"]["runtime_state"] == "running"
     assert 'set secure_dns_bypass_ipv4' in candidate_text
     assert 'reject secure DNS bypass TCP from LAN' in candidate_text
     assert 'reject secure DNS bypass UDP from LAN' in candidate_text

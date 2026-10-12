@@ -200,12 +200,19 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual({
             "backend/tests/test_apply_pipeline.py", "installer/test-install.sh",
             "tests/gates/test_gate_contract.py", "tests/gates/test_acceptance_contract.py",
+            "backend/tests/test_live_probe_cache.py", "backend/tests/test_runtime_prewarm.py",
+            "backend/tests/test_main_startup_scrub.py", "backend/tests/test_ui_state.py",
         }, set(gate.UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS))
+        self.assertEqual(8, len(gate.UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS))
         rows = {row["path"]: row for row in self.manifest["test_files"]}
         for paths in gate.UNIT_FIXTURE_COHORTS.values():
             self.assertTrue(set(paths) <= rows.keys())
             self.assertTrue(all(not rows[path].get("native") and not rows[path].get("execution_profile")
                                 for path in paths))
+        prewarm = rows["backend/tests/test_runtime_prewarm.py"]
+        self.assertEqual(("L2", "runtime", False),
+                         (prewarm["primary_level"], prewarm["domain"], prewarm["native"]))
+        self.assertIsNone(prewarm.get("execution_profile"))
 
     def test_acceptance_tail_installer_is_a_strict_junit_runner_and_bundle_fails_fast(self) -> None:
         source = GATE_PATH.read_text(encoding="utf-8")

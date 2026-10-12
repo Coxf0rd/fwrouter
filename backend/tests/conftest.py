@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from threading import Thread as _PythonThread
 from types import SimpleNamespace
 
 if any(name == "fwrouter_api" or name.startswith("fwrouter_api.") for name in sys.modules):
@@ -201,8 +202,30 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     _cleanup_pytest_artifacts()
 
 
+def _ordinary_component_profile() -> bool:
+    """Leave qualified native acceptance scheduling under its real profile."""
+    return (
+        _ISOLATION_BOOTSTRAP.QUALIFIED_CHILD_PROFILE is None
+        and _ISOLATION_BOOTSTRAP.QUALIFIED_DOCKER_XRAY_PROFILE is None
+    )
+
+
 @pytest.fixture(autouse=True)
 def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, request: pytest.FixtureRequest):
+    from fwrouter_api.services import runtime_prewarm
+
+    ordinary_profile = _ordinary_component_profile()
+    if ordinary_profile:
+        with runtime_prewarm._PREWARM_LOCK:
+            if runtime_prewarm._PREWARM_RUNNING:
+                pytest.fail(
+                    "unowned FWRouter runtime prewarm was still active before component-test isolation"
+                )
+            # All import aliases share this admission flag. Holding it busy
+            # prevents incidental Apply/UI/startup hooks from starting an
+            # asynchronous read-model worker in ordinary component tests.
+            monkeypatch.setattr(runtime_prewarm, "_PREWARM_RUNNING", True)
+
     if "live_dataplane" not in request.keywords:
         if not get_default_job_manager().wait_for_idle():
             pytest.fail("prior FWRouter test job manager did not become idle before isolation")
@@ -232,10 +255,56 @@ def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, re
 
     yield
 
+    if ordinary_profile:
+        with runtime_prewarm._PREWARM_LOCK:
+            if not runtime_prewarm._PREWARM_RUNNING:
+                pytest.fail("ordinary component test unexpectedly changed the prewarm admission guard")
     if not get_default_job_manager().wait_for_idle():
         pytest.fail("FWRouter test job manager did not become idle during teardown")
     get_settings.cache_clear()
     clear_live_probe_cache()
+
+
+@pytest.fixture
+def controlled_runtime_prewarm(monkeypatch: pytest.MonkeyPatch) -> list[_PythonThread]:
+    """Opt a lifecycle test into real prewarm threads and join each one on teardown."""
+    from fwrouter_api.services import runtime_prewarm
+
+    threads: list[_PythonThread] = []
+    original_thread = _PythonThread
+
+    def tracked_thread(*args, **kwargs):
+        thread = original_thread(*args, **kwargs)
+        threads.append(thread)
+        return thread
+
+    with runtime_prewarm._PREWARM_LOCK:
+        guarded = runtime_prewarm._PREWARM_RUNNING
+        if _ordinary_component_profile() and not guarded:
+            pytest.fail("controlled prewarm fixture requires the ordinary component admission guard")
+        if not _ordinary_component_profile() and guarded:
+            pytest.fail("qualified profile already had an unowned prewarm before lifecycle-test opt-in")
+        monkeypatch.setattr(runtime_prewarm, "_PREWARM_RUNNING", False)
+    monkeypatch.setattr(runtime_prewarm, "Thread", tracked_thread)
+
+    try:
+        yield threads
+    finally:
+        # Tests release their Event barriers in their own finally blocks. Join
+        # before restoring the global admission flag so no worker can escape
+        # the owning test's isolation window.
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(timeout=5.0)
+        alive = [thread.name for thread in threads if thread.is_alive()]
+        with runtime_prewarm._PREWARM_LOCK:
+            running = runtime_prewarm._PREWARM_RUNNING
+            if _ordinary_component_profile():
+                monkeypatch.setattr(runtime_prewarm, "_PREWARM_RUNNING", True)
+        if alive:
+            pytest.fail(f"controlled runtime prewarm threads did not finish within the join bound: {alive!r}")
+        if running:
+            pytest.fail("controlled runtime prewarm left its admission guard set after worker completion")
 
 
 @pytest.fixture

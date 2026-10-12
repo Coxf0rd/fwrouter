@@ -1,6 +1,7 @@
 # Selective component stability — implementation contract
 
-Status: PLAN ONLY; no implementation or new test execution.
+Status: IMPLEMENTATION IN PROGRESS; hosted execution pending.
+User authorized implementation; production remains unchanged.
 Reviewed source: 8ff2648 (documentation), application/test checkpoint ec8455c.
 Evidence: [SELECTIVE_DIAGNOSTIC_38300332724.json](SELECTIVE_DIAGNOSTIC_38300332724.json), [REPORT.md](REPORT.md).
 

@@ -1177,3 +1177,12 @@ Proposed narrow stabilization: explicitly own/drain prewarm work before test ada
 ### Reviewed next implementation plan — 2026-10-13
 
 [SELECTIVE_STABILITY_FIX_PLAN.md](SELECTIVE_STABILITY_FIX_PLAN.md) defines the smallest reviewed package: explicit component-test prewarm ownership with dedicated controlled lifecycle coverage, plus identity-fenced cache publication/removal and deterministic invalidation tests. No new production wait API or epoch map, routing changes, blind retries, or broad speculative refactoring. Required affected gates remain policy-derived because cache is shared. Plan only: no code changes or new test runs. Phase D remains BLOCKED; no Phase E/CD/deploy.
+
+
+### Selective stability implementation checkpoint — hosted execution pending
+
+The reviewed plan is now being implemented: ordinary component fixtures own the existing prewarm admission flag, dedicated lifecycle tests explicitly track and join real worker threads, and selective candidate assertions require the intended fake/running health input. Qualified native profiles and Compose application scheduling are preserved.
+
+The only application change in this checkpoint is probe-cache ownership: an invalidated loader completes its original callers but cannot publish over, or remove, a replacement in-flight entry. Matching clear invalidates matching cached and pending entries together. Deterministic barrier tests compare current behavior with a SHA-256 pinned exact pre-fence source fixture; this is not an alternate application runtime or a baseline allowlist. Local source review is not test execution.
+
+The first hosted gate expands the existing acceptance-tail cohort to include cache/prewarm/startup/UI dispatch contracts and retains five independent repetitions, stopping on the first failure. Required shared-cache affected gates remain unchanged. Phase D stays BLOCKED until actual source-matched execution receipts are available. No production tests, deploy, Phase E/CD, L6/L7, PR or merge.

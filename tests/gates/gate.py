@@ -95,6 +95,10 @@ UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS = (
     "installer/test-install.sh",
     "tests/gates/test_gate_contract.py",
     "tests/gates/test_acceptance_contract.py",
+    "backend/tests/test_live_probe_cache.py",
+    "backend/tests/test_runtime_prewarm.py",
+    "backend/tests/test_main_startup_scrub.py",
+    "backend/tests/test_ui_state.py",
 )
 UNIT_FIXTURE_COHORTS = {
     "default": UNIT_FIXTURE_PATHS,

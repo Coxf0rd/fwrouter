@@ -188,3 +188,10 @@ Narrow fixture run38265018734: distinct353 PASS/24 FAIL/0 SKIP (reported354 incl
 Latest narrow hosted run38270929907 (abc3b33):371 PASS/7 FAIL/0 SKIP across378 unit/component testcases; earlier362/15 checkpoint and57 gate/108 acceptance preflight retained as history. Confirmed fixture corrections preserve actual application transitions and strict guards; native forwarding acceptance is separate. Seven remaining apply/bypass fixture paths under targeted correction; full26+11+1 bundle and affected reproducibility remain OPEN. PhaseD BLOCKED; no production/PhaseE/CD/L7 changes.
 
 Latest residual unit acceptance38291091850 (37ae2b6):149 PASS/0 FAIL/0 SKIP; preflight57/108/41/13 PASS. Known shared fixture/runner clusters are closed only in unit scope. Next mandatory gate: qualified native + fixed-base affected L0-L5 + exact26 ordinary/11 Provider-kernel/1 packet bundle and green-only repeat. PhaseD BLOCKED pending complete current-source acceptance; no L6/L7/production/PhaseE/CD execution.
+
+
+## Ordinary component prewarm ownership (2026-10-13)
+
+Ordinary backend component fixtures reserve the existing prewarm admission flag before setup and retain it through teardown, preventing unowned asynchronous read-model loading across restored adapter fixtures. Dedicated runtime-prewarm lifecycle tests opt into tracked real Python threads, release Event barriers and bounded-join all workers before fixture restoration/cache clearing. This is component isolation, not application/native prewarm acceptance. Qualified child/native profiles and application Compose services keep real scheduling.
+
+Probe-cache invalidation tests use deterministic Event barriers and an exact hash-pinned prior-source fixture to demonstrate the stale-publication defect. They assert original waiter completion, replacement-entry ownership, matching invalidation, exception propagation and TTL/force-refresh behavior. Execution receipts are required before claiming PASS; no sleeps, retry-to-green, global healthy mocks or production host tests.
