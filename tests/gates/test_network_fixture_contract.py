@@ -1533,6 +1533,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "FixtureError": type("FixtureError", (RuntimeError,), {}),
             "DNS53ProbeFailure": type("DNS53ProbeFailure", (RuntimeError,), {}),
             "DNS53FlowProbeFailure": type("DNS53FlowProbeFailure", (RuntimeError,), {}),
+            "CLIENT_IP": "10.240.0.2", "ENDPOINT_WAN_IP": "198.18.240.2",
+            "ROUTER_WAN_IP": "198.18.240.1",
         }
         exec(compile(ast.Module(body=selected, type_ignores=[]), str(FIXTURE), "exec"), fixture_ns)
         self.assertTrue(all(stage in _function_source("_probe_dns53_resolved_flows") for stage in (
