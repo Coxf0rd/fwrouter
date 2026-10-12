@@ -20,3 +20,7 @@ The temporary branch-validation workflow exercises the same gate/helper implemen
 ## Remaining policy boundaries
 
 Source workflow definitions do not prove an actual remote PASS. Required-check repository rules must be bound to verified stable job contexts separately; current Main ruleset requires PR but has no required-status-check rule. No production deployment, host systemd/nftables/reboot or production lifecycle parity is inferred from process-backed acceptance.
+
+## 2026-10-13 exact hosted checkpoint
+
+Full branch equivalent38296514745/source91438ff is PASS: routine1421, qualified child26/Xray1, exact ordinary26 + Provider/kernel11 + packet1 twice, strict source/plan aggregate eligible=true. Historical exact-seven PASS;0 required skips. This is not an actual PR/main event and does not authorize deployment. Final push-fast stage enablement and ordinary/L6 failure-propagation changes await their narrow hosted contract checkpoint; L6/L7 themselves are NOT RUN. Temporary branch triggers remain for Phase D/E diagnostics and must be removed before eventual milestone PR delivery.

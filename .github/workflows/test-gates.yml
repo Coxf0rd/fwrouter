@@ -113,6 +113,7 @@ jobs:
           set -e
           printf 'unit_exit=%s\n' "$result" >> "$GITHUB_OUTPUT"
           tail -c 65536 "$RUNNER_TEMP/fwrouter-affected-unit.log" || true
+          exit "$result"
       - name: Build backend wheel on main
         if: github.event_name == 'push'
         run: |
@@ -173,10 +174,23 @@ jobs:
           test "$failures" -eq 0
       - name: Aggregate immutable source, unit, QCP, browser, and native evidence
         if: always() && steps.plan.outputs.plan_digest != ''
+        env:
+          UNIT_EXIT: ${{ steps.plan.outputs.unit_exit }}
         run: |
           set -euo pipefail
           plan="$RUNNER_TEMP/fwrouter-affected-plan.json"
           unit="$RUNNER_TEMP/fwrouter-affected-unit.json"
+          case "$UNIT_EXIT" in
+            ''|*[!0-9]*) unit_exit=1 ;;
+            *) unit_exit="$UNIT_EXIT" ;;
+          esac
+          if [ "$unit_exit" -gt 255 ]; then unit_exit=1; fi
+          if [ "$unit_exit" -ne 0 ]; then
+            python tests/gates/aggregate_hosted.py --plan "$plan" --unit-report "$unit" \
+              --unit-failure-report --unit-exit-code "$unit_exit" \
+              --output "$RUNNER_TEMP/fwrouter-aggregate.json"
+            exit $?
+          fi
           args=(--plan "$plan" --unit-report "$unit" --output "$RUNNER_TEMP/fwrouter-aggregate.json")
           if [ -f "$RUNNER_TEMP/fwrouter-runtime-inputs.json" ]; then
             args+=(--runtime-inputs "$RUNNER_TEMP/fwrouter-runtime-inputs.json")

@@ -2,7 +2,7 @@ name: FWRouter push fast lane
 
 on:
   push:
-    branches-ignore: [main, stage/test-architecture-ci-stabilization]
+    branches-ignore: [main]
 
 permissions:
   contents: read

@@ -981,6 +981,56 @@ class GateContractTests(unittest.TestCase):
         self.assertFalse(result["actual_staging_execution"])
         self.assertEqual([], result["selected_tests"])
 
+    def test_pr_main_and_l6_stop_after_unit_failure_and_persist_nonpromoting_report(self) -> None:
+        affected = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        unit_step = affected.split("id: plan", 1)[1].split("- name: Build backend wheel", 1)[0]
+        self.assertRegex(unit_step, r"printf\s+['\"]unit_exit=%s\\n['\"]\s+.*GITHUB_OUTPUT")
+        self.assertIn('exit "$result"', unit_step)
+        self.assertLess(unit_step.index('exit "$result"'), affected.index("Provision exact runtime inputs"))
+        aggregate = affected.split("- name: Aggregate immutable source", 1)[1].split(
+            "- name: Record runner use", 1)[0]
+        self.assertIn("if: always()", aggregate)
+        self.assertIn("--unit-failure-report --unit-exit-code", aggregate)
+        self.assertLess(aggregate.index("--unit-failure-report"), aggregate.index("args=(--plan"))
+
+        l6 = (gate.ROOT / ".github/workflows/test-full-suite.yml").read_text(encoding="utf-8")
+        routine = l6.split("id: routine", 1)[1].split("- name: Provision exact native", 1)[0]
+        self.assertRegex(routine, r"printf\s+['\"]unit_exit=%s\\n['\"]\s+.*GITHUB_OUTPUT")
+        self.assertIn('exit "$result"', routine)
+        l6_aggregate = l6.split("- name: Aggregate full L6 evidence", 1)[1].split(
+            "- name: Upload L6 evidence", 1)[0]
+        self.assertIn("if: always()", l6_aggregate)
+        self.assertIn("--unit-failure-report --unit-exit-code", l6_aggregate)
+        self.assertLess(l6_aggregate.index("--unit-failure-report"), l6_aggregate.index("args=(--plan"))
+
+    def test_workflow_unit_exit_normalization_preserves_success_and_fails_closed(self) -> None:
+        for workflow_name in ("test-gates.yml", "test-full-suite.yml"):
+            with self.subTest(workflow=workflow_name):
+                workflow = (gate.ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
+                normalization = workflow.split('case "$UNIT_EXIT" in', 1)[1].split(
+                    'if [ "$unit_exit" -gt 255 ]', 1)[0]
+                script = (
+                    'UNIT_EXIT="$1"\ncase "$UNIT_EXIT" in' + normalization
+                    + 'printf "%s\\n" "$unit_exit"\n'
+                    + 'if [ "$unit_exit" -gt 255 ]; then unit_exit=1; fi\n'
+                    + 'printf "%s\\n" "$unit_exit"\n'
+                )
+                for raw, expected in (("0", "0\n0\n"), ("1", "1\n1\n"),
+                                      ("255", "255\n255\n"), ("invalid", "1\n1\n"),
+                                      ("", "1\n1\n"), ("256", "256\n1\n")):
+                    completed = subprocess.run(
+                        ["bash", "-c", script, "unit-exit-contract", raw],
+                        capture_output=True, text=True, timeout=3, check=False,
+                    )
+                    self.assertEqual(0, completed.returncode, completed.stderr)
+                    self.assertEqual(expected, completed.stdout)
+
+    def test_push_fast_lane_includes_stage_but_excludes_main(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/push-fast.yml").read_text(encoding="utf-8")
+        trigger = workflow.split("on:", 1)[1].split("permissions:", 1)[0]
+        self.assertIn("branches-ignore: [main]", trigger)
+        self.assertNotIn("stage/test-architecture-ci-stabilization", trigger)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

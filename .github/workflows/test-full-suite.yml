@@ -53,6 +53,7 @@ jobs:
         run: |
           python tests/gates/isolation_smoke.py
       - name: Create manual L6 plan and run routine cohorts
+        id: routine
         run: |
           set -euo pipefail
           python tests/gates/gate.py validate
@@ -68,7 +69,9 @@ jobs:
             --defer-hosted --output "$REPORT" > "$RUNNER_TEMP/fwrouter-l6-unit.log" 2>&1
           result=$?
           set -e
-          printf 'unit_exit=%s\n' "$result"
+          printf 'unit_exit=%s\n' "$result" >> "$GITHUB_OUTPUT"
+          tail -c 65536 "$RUNNER_TEMP/fwrouter-l6-unit.log" || true
+          exit "$result"
       - name: Provision exact native and browser inputs
         run: |
           set -euo pipefail
@@ -113,8 +116,24 @@ jobs:
           printf 'hosted_exit=%s\n' "$failures"
           test "$failures" -eq 0
       - name: Aggregate full L6 evidence
+        if: always()
+        env:
+          UNIT_EXIT: ${{ steps.routine.outputs.unit_exit }}
         run: |
           set -euo pipefail
+          case "$UNIT_EXIT" in
+            ''|*[!0-9]*) unit_exit=1 ;;
+            *) unit_exit="$UNIT_EXIT" ;;
+          esac
+          if [ "$unit_exit" -gt 255 ]; then unit_exit=1; fi
+          if [ "$unit_exit" -ne 0 ]; then
+            python tests/gates/aggregate_hosted.py \
+              --plan "$RUNNER_TEMP/fwrouter-l6-plan.json" \
+              --unit-report "$RUNNER_TEMP/fwrouter-l6-unit.json" \
+              --unit-failure-report --unit-exit-code "$unit_exit" \
+              --output "$RUNNER_TEMP/fwrouter-l6-aggregate.json"
+            exit $?
+          fi
           args=(--plan "$RUNNER_TEMP/fwrouter-l6-plan.json" --unit-report "$RUNNER_TEMP/fwrouter-l6-unit.json" \
             --runtime-inputs "$RUNNER_TEMP/fwrouter-runtime-inputs.json" --minimum-repeats 2 \
             --output "$RUNNER_TEMP/fwrouter-l6-aggregate.json")
