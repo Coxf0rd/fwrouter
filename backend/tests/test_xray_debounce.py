@@ -9,6 +9,7 @@ import pytest
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import get_default_job_manager
+from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
 from fwrouter_api.services.xray_vpn_auto_pending import (
     XRAY_VPN_AUTO_DEBOUNCE_SECONDS,
     XRAY_VPN_AUTO_PENDING_KEY,
@@ -102,20 +103,88 @@ def test_manual_preferences_only_debounce_eligibility_shape(monkeypatch) -> None
         calls.append(enabled)
         return {"ok": True}
 
+    def selection_revision() -> int:
+        with db_session() as connection:
+            return read_selection_revision(connection)
+
     # Cross the auto-eligibility boundary; intent/audit and pending marker commit together.
     assert update_server_preferences("eligible", vpn_auto_priority=0, reconcile_after_preferences=callback)["ok"]
+    first_selection_revision = selection_revision()
+    assert first_selection_revision == 1
     state = get_xray_vpn_auto_pending_state()
     assert state["pending"] is True and state["revision"] == 1
-    # 0 <-> 1 remains eligible and does not enqueue another Xray batch.
+    # Priority still advances the Core fence and reconcile path, but 0 -> 1
+    # leaves the Xray eligible identity set unchanged.
     assert update_server_preferences("eligible", vpn_auto_priority=1, reconcile_after_preferences=callback)["ok"]
+    assert selection_revision() == first_selection_revision + 1
     assert get_xray_vpn_auto_pending_state()["revision"] == 1
     # A global-list-only update still uses immediate Mihomo callback, never Xray pending.
     assert update_server_preferences("eligible", global_list=False, reconcile_after_preferences=callback)["ok"]
     assert get_xray_vpn_auto_pending_state()["revision"] == 1
+    assert selection_revision() == first_selection_revision + 1
     # Enabling vpn_auto while priority remains -1 is not an eligible Xray identity.
     assert update_server_preferences("manual-only", vpn_auto=True, reconcile_after_preferences=callback)["ok"]
     assert get_xray_vpn_auto_pending_state()["revision"] == 1
-    assert calls == [True, False, True, True]
+    assert selection_revision() == first_selection_revision + 1
+    assert calls == [True, True, True]
+
+
+def test_ordinary_exclusive_pool_preference_edit_has_no_runtime_or_xray_work(monkeypatch) -> None:
+    from fwrouter_api.services.server_preferences import (
+        _eligible_vpn_auto_server_ids,
+        update_server_preferences,
+    )
+    from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
+
+    _seed_server("outside-exclusive", vpn_auto=True, priority=0)
+    _seed_server("inside-exclusive", vpn_auto=True, priority=0)
+    source_ref = "src:" + "a" * 64
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subscription_server_memberships "
+            "(source_id, server_id, source_url, entry_identity_hash, is_active) "
+            "VALUES (?, ?, ?, ?, 1)",
+            (source_ref, "inside-exclusive", f"saved:{source_ref}", "entry:inside-exclusive"),
+        )
+        connection.execute(
+            "INSERT INTO settings (key, value_json, updated_at) "
+            "VALUES ('vpn_auto_exclusive_source_ref', ?, CURRENT_TIMESTAMP)",
+            (json.dumps({"source_ref": source_ref}),),
+        )
+        eligible_before = _eligible_vpn_auto_server_ids(connection)
+
+    assert get_vpn_auto_exclusive_source_ref() == source_ref
+    assert eligible_before == ["inside-exclusive"]
+
+    runtime_calls: list[bool] = []
+    selector_calls: list[bool] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.server_preferences._maybe_reselect_vpn_auto_after_membership_change",
+        lambda **_: selector_calls.append(True) or {"ok": True, "triggered": False},
+    )
+    result = update_server_preferences(
+        "outside-exclusive",
+        vpn_auto_priority=1,
+        reconcile_after_preferences=lambda *, enabled: runtime_calls.append(enabled) or {"ok": True},
+    )
+
+    assert result["ok"] is True
+    assert result["mihomo_reconcile"] is None
+    assert result["auto_select"] is None
+    assert result["xray_vpn_auto_reconcile"] is None
+    assert runtime_calls == []
+    assert selector_calls == []
+    with db_session() as connection:
+        assert read_selection_revision(connection) == 0
+        assert _eligible_vpn_auto_server_ids(connection) == eligible_before
+        outside = connection.execute(
+            "SELECT vpn_auto, vpn_auto_priority FROM server_preferences WHERE server_id=?",
+            ("outside-exclusive",),
+        ).fetchone()
+        assert outside is not None and outside["vpn_auto"] == 1 and outside["vpn_auto_priority"] == 1
+        binding_count = connection.execute("SELECT COUNT(*) FROM provider_bindings").fetchone()[0]
+    assert binding_count == 0
+    assert get_xray_vpn_auto_pending_state()["revision"] == 0
 
 
 def test_bulk_membership_batches_only_changed_eligible_set(monkeypatch) -> None:
