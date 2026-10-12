@@ -55,6 +55,54 @@ def verify_digest(value: dict[str, Any], field: str, label: str) -> None:
         raise gate.GateError(f"{label} digest is missing or invalid")
 
 
+def unit_failure_report(plan_path: Path, unit_path: Path, unit_exit_code: int) -> dict[str, Any]:
+    """Publish bounded failure evidence when the routine unit gate stops the bundle."""
+    if not isinstance(unit_exit_code, int) or isinstance(unit_exit_code, bool) or not 1 <= unit_exit_code <= 255:
+        raise gate.GateError("unit failure report requires a nonzero process exit code")
+    manifest = gate.load_manifest()
+    plan = read_json(plan_path)
+    gate.ensure_plan(plan, manifest, allow_l6=bool(plan.get("full_suite_required")))
+    unit = read_json(unit_path)
+    verify_digest(unit, "report_digest", "unit report")
+    if (unit.get("source_commit") != plan.get("source_commit")
+            or unit.get("plan_digest") != plan.get("plan_digest")
+            or unit.get("manifest_version") != manifest.get("version")
+            or unit.get("manifest_digest") != gate.canonical_digest(manifest)):
+        raise gate.GateError("unit report does not match source, plan, and manifest")
+    reasons = unit.get("blocked_reasons", [])
+    if not isinstance(reasons, list):
+        raise gate.GateError("unit report blocked reasons are malformed")
+    summary = {
+        "schema_version": 1,
+        "report_kind": "routine-unit-failure",
+        "aggregate_status": "blocked",
+        "eligible": False,
+        "source_commit": plan["source_commit"],
+        "plan_digest": plan["plan_digest"],
+        "unit_report_digest": unit["report_digest"],
+        "unit_exit_code": unit_exit_code,
+        "unit_blocked_reasons": [gate.redact_failure_output(str(item))[:1024] for item in reasons[:32]],
+        "not_run": ["runtime-input-provisioning", "hosted-functional-profile-bundle",
+                    "hosted-receipt-aggregation"],
+    }
+    summary["report_digest"] = gate.canonical_digest(summary)
+    return summary
+
+
+def aggregate_error_report(error: Exception) -> dict[str, Any]:
+    """Represent an aggregate validation exception without implying a receipt."""
+    summary = {
+        "schema_version": 1,
+        "report_kind": "aggregate-error",
+        "aggregate_status": "invalid-or-incomplete-evidence",
+        "eligible": False,
+        "error_type": type(error).__name__[:80],
+        "error_summary": gate.redact_failure_output(str(error))[:1024],
+    }
+    summary["report_digest"] = gate.canonical_digest(summary)
+    return summary
+
+
 def run_nonces_are_distinct(nonces: list[str]) -> bool:
     """Receipt families share one run identity namespace after validation."""
     return len(nonces) == len(set(nonces))
@@ -519,8 +567,20 @@ def main() -> int:
     parser.add_argument("--minimum-repeats", type=int, default=1, choices=(1, 2))
     parser.add_argument("--runtime-inputs", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--unit-failure-report", action="store_true",
+                        help="write a bounded non-promoting report after the routine unit gate fails")
+    parser.add_argument("--unit-exit-code", type=int,
+                        help="nonzero routine unit process status for --unit-failure-report")
     args = parser.parse_args()
     try:
+        if args.unit_failure_report:
+            if args.unit_exit_code is None:
+                raise gate.GateError("--unit-failure-report requires --unit-exit-code")
+            result = unit_failure_report(args.plan, args.unit_report, args.unit_exit_code)
+            if args.output:
+                gate.atomic_json(args.output, result)
+            print(json.dumps(result, sort_keys=True, indent=2))
+            return 1
         result = aggregate(args.plan, args.unit_report, args.hosted_report, args.qcp_report,
                            args.xray_docker_report,
                            minimum_repeats=args.minimum_repeats,
@@ -530,7 +590,12 @@ def main() -> int:
         print(json.dumps(result, sort_keys=True, indent=2))
         return 0 if result["eligible"] else 1
     except (gate.GateError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        print(f"aggregate: {exc}", file=sys.stderr)
+        print(f"aggregate: {gate.redact_failure_output(str(exc))[:1024]}", file=sys.stderr)
+        if args.output:
+            try:
+                gate.atomic_json(args.output, aggregate_error_report(exc))
+            except (OSError, ValueError) as write_exc:
+                print(f"aggregate: could not persist bounded error report: {write_exc}", file=sys.stderr)
         return 2
 
 

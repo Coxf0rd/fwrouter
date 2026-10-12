@@ -90,9 +90,16 @@ UNIT_FIXTURE_RESIDUAL_PATHS = (
     "backend/tests/test_selector.py",
     "backend/tests/test_watchdog.py",
 )
+UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS = (
+    "backend/tests/test_apply_pipeline.py",
+    "installer/test-install.sh",
+    "tests/gates/test_gate_contract.py",
+    "tests/gates/test_acceptance_contract.py",
+)
 UNIT_FIXTURE_COHORTS = {
     "default": UNIT_FIXTURE_PATHS,
     "residual": UNIT_FIXTURE_RESIDUAL_PATHS,
+    "acceptance-tail": UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS,
 }
 PACKET_EXECUTION_PATH = "tests/application_acceptance/test_packet_dataplane.py"
 EXECUTION_PROFILES = {"qualified-child-process", "hosted-isolated-compose",
@@ -1243,6 +1250,25 @@ def validate_junit_report(path: Path, max_bytes: int, expected_count: int,
     return [case.get("name", "") for case in cases]
 
 
+def write_installer_smoke_junit(path: Path, test_path: str, exit_code: int,
+                                output_truncated: bool) -> dict[str, str]:
+    """Publish one exact shell-smoke case without treating truncation as success."""
+    passed = exit_code == 0 and not output_truncated
+    root = ET.Element("testsuite", {
+        "tests": "1", "failures": "0" if passed else "1", "errors": "0", "skipped": "0",
+    })
+    case = ET.SubElement(root, "testcase", {
+        "classname": test_path.replace("/", "."), "name": "installer-staged-deploy-smoke",
+    })
+    if not passed:
+        ET.SubElement(case, "failure", {
+            "message": "installer smoke command failed or exceeded output bound",
+        })
+    payload = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    path.write_bytes(payload)
+    return {f"{test_path}::installer-staged-deploy-smoke": "passed" if passed else "failed"}
+
+
 def sanitize_junit_artifact(raw: bytes, max_bytes: int) -> bytes:
     """Redact public JUnit diagnostics while preserving test case identities."""
     if not raw or len(raw) > max_bytes:
@@ -1499,19 +1525,29 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
             suite_env["FWROUTER_PYTEST_COORDINATOR_ROOT"] = str(suite_root.resolve())
             suite_env["FWROUTER_GATE_NODE_REPORT"] = str(node_report_path)
             suite_env["TMPDIR"] = str(suite_root / "tmp")
-            if path.startswith("ui/"):
+            installer_node_status: dict[str, str] | None = None
+            if path == "installer/test-install.sh":
+                argv = ["sh", path]
+                cwd = ROOT
+            elif path.startswith("ui/"):
                 argv = [
                     "node", "--test", "--test-reporter=tap", "--test-reporter-destination=stdout",
                     "--test-reporter=junit", f"--test-reporter-destination={junit_path}", path,
                 ]
                 cwd = ROOT
-            else:
+            elif (path.startswith("backend/") or path.startswith("integrations/")
+                  or path.startswith("installer/tests/") or path in STDLIB_CONTRACT_PATHS):
                 rel = path.removeprefix("backend/")
                 argv = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-p", "no:cacheprovider",
                         "--basetemp", str(suite_root / "pytest-tmp"), f"--junitxml={junit_path}", rel]
                 cwd = ROOT / "backend" if path.startswith("backend/") else ROOT
+            else:
+                raise GateError(f"unit fixture cohort has no reviewed runner adapter: {path}")
             code, output, truncated = run_process(
                 argv, row["timeout_seconds"], row["max_output_bytes"], cwd=cwd, env=suite_env)
+            if path == "installer/test-install.sh":
+                installer_node_status = write_installer_smoke_junit(
+                    junit_path, path, code, truncated)
             artifact_id = hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
             junit_bytes = b""
             junit_error = None
@@ -1554,6 +1590,8 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
             try:
                 if path.startswith("ui/"):
                     observed, tap_file_status = node_tap_results(output, path, require_observed=True)
+                elif path == "installer/test-install.sh":
+                    observed = installer_node_status or {}
                 else:
                     observed = node_status_from_plugin(node_report_path, row["max_artifact_bytes"])
             except GateError as exc:
@@ -1584,8 +1622,10 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
                 "junit_report_bytes": len(junit_bytes),
                 "junit_report_sha256": junit_digest,
                 "junit_digest_scope": "published_sanitized_junit_xml",
-                "junit_identity_validation": ("exact_tap_ids_by_count"
-                                               if path.startswith("ui/") else "exact_pytest_nodeids"),
+                "junit_identity_validation": (
+                    "exact_tap_ids_by_count" if path.startswith("ui/") else
+                    "exact_installer_smoke_nodeid" if path == "installer/test-install.sh" else
+                    "exact_pytest_nodeids"),
                 "output_limit_exceeded": truncated,
                 "captured_output_redacted": redact_failure_output(output) if status != "passed" else "",
                 "validation_error": validation_error,

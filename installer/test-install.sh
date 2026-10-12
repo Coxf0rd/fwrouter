@@ -137,6 +137,29 @@ if ! command -v docker >/dev/null 2>&1; then
   assert_contains "$runtime_deps" 'docker'
 fi
 
+# Force the non-root predicate in a test-owned PATH so this refusal is checked
+# consistently even when a developer runs the smoke as root. The refusal runs
+# before apt-get and cannot mutate host dependencies.
+fake_nonroot_bin="$TEST_ROOT/nonroot-bin"
+mkdir -p "$fake_nonroot_bin"
+cat >"$fake_nonroot_bin/id" <<'EOF'
+#!/bin/sh
+echo 1000
+EOF
+chmod 0755 "$fake_nonroot_bin/id"
+cat >"$fake_nonroot_bin/apt-get" <<'EOF'
+#!/bin/sh
+echo "test fixture blocked apt-get" >&2
+exit 99
+EOF
+chmod 0755 "$fake_nonroot_bin/apt-get"
+root_guard="$(mktemp "$TEST_ROOT/root-guard.XXXXXX")"
+if PATH="$fake_nonroot_bin:$PATH" "$DEPS_SH" --component backend >"$root_guard" 2>&1; then
+  fail "host dependency installation unexpectedly succeeded without root"
+fi
+assert_contains "$root_guard" 'install-host-dependencies.sh: must run as root'
+assert_not_contains "$root_guard" 'test fixture blocked apt-get'
+
 deploy_target="$(make_target)"
 deploy_repo="$(make_target)"
 (

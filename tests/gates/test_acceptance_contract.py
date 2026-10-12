@@ -59,6 +59,54 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_routine_unit_failure_report_is_bound_bounded_and_never_eligible(self):
+        path = "backend/tests/test_apply_pipeline.py"
+        manifest = aggregate_hosted.gate.load_manifest()
+        source, base = "a" * 40, "b" * 40
+        with mock.patch.object(aggregate_hosted.gate, "git",
+                               side_effect=lambda _cmd, revision: source if revision == "HEAD" else base), \
+             mock.patch.object(aggregate_hosted.gate, "changed_paths", return_value=[path]):
+            plan = aggregate_hosted.gate.make_plan(base, manifest, [path])
+            unit = {
+                "schema_version": 1, "source_commit": source, "plan_digest": plan["plan_digest"],
+                "manifest_version": manifest["version"],
+                "manifest_digest": aggregate_hosted.gate.canonical_digest(manifest),
+                "blocked_reasons": ["installer failed token=SECRET_SENTINEL"] * 40,
+            }
+            unit["report_digest"] = aggregate_hosted.gate.canonical_digest(unit)
+            with tempfile.TemporaryDirectory(prefix="fwrouter-unit-failure-report-contract-") as temp:
+                root = Path(temp)
+                plan_path, unit_path = root / "plan.json", root / "unit.json"
+                plan_path.write_text(json.dumps(plan), encoding="utf-8")
+                unit_path.write_text(json.dumps(unit), encoding="utf-8")
+                result = aggregate_hosted.unit_failure_report(plan_path, unit_path, 1)
+        self.assertEqual(("routine-unit-failure", "blocked", False, 1),
+                         (result["report_kind"], result["aggregate_status"],
+                          result["eligible"], result["unit_exit_code"]))
+        self.assertEqual(32, len(result["unit_blocked_reasons"]))
+        self.assertLessEqual(max(map(len, result["unit_blocked_reasons"])), 1024)
+        self.assertNotIn("SECRET_SENTINEL", json.dumps(result))
+        digest = result.pop("report_digest")
+        self.assertEqual(aggregate_hosted.gate.canonical_digest(result), digest)
+        self.assertIn("hosted-functional-profile-bundle", result["not_run"])
+
+    def test_aggregate_exception_persists_distinct_ineligible_error_report(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-aggregate-error-contract-") as temp:
+            output_path = Path(temp) / "aggregate.json"
+            with mock.patch.object(sys, "argv", ["aggregate_hosted.py", "--plan", "unused-plan",
+                                                   "--unit-report", "unused-unit", "--output", str(output_path)]), \
+                 mock.patch.object(aggregate_hosted, "aggregate",
+                                   side_effect=aggregate_hosted.gate.GateError(
+                                       "invalid api_token=SECRET_SENTINEL evidence")), \
+                 mock.patch("builtins.print"), mock.patch("sys.stderr", io.StringIO()):
+                self.assertEqual(2, aggregate_hosted.main())
+            result = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(("aggregate-error", "invalid-or-incomplete-evidence", False),
+                         (result["report_kind"], result["aggregate_status"], result["eligible"]))
+        self.assertNotIn("SECRET_SENTINEL", json.dumps(result))
+        digest = result.pop("report_digest")
+        self.assertEqual(aggregate_hosted.gate.canonical_digest(result), digest)
+
     def test_functional_provider_and_packet_node_sets_are_exact_and_disjoint(self):
         ordinary = launcher.expected_acceptance_nodeids("functional-ordinary")
         provider = launcher.expected_acceptance_nodeids("provider-cohort")

@@ -46,6 +46,7 @@ jobs:
               "ci:validate-udp-unit": "udp-unit",
               "ci:validate-unit-fixtures": "unit-fixtures",
               "ci:validate-unit-residual": "unit-residual",
+              "ci:validate-unit-acceptance-tail": "unit-acceptance-tail",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
           selected = [stage for marker, stage in markers.items() if marker in message]
@@ -61,7 +62,7 @@ jobs:
   unit-fixtures:
     name: Fixed isolated unit fixture cohort
     needs: [select-stage]
-    if: needs.select-stage.outputs.stage == 'unit-fixtures' || needs.select-stage.outputs.stage == 'unit-residual'
+    if: needs.select-stage.outputs.stage == 'unit-fixtures' || needs.select-stage.outputs.stage == 'unit-residual' || needs.select-stage.outputs.stage == 'unit-acceptance-tail'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -81,7 +82,7 @@ jobs:
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
       - name: Run exact fixed unit fixture cohort
         env:
-          UNIT_FIXTURE_COHORT: ${{ needs.select-stage.outputs.stage == 'unit-residual' && 'residual' || 'default' }}
+          UNIT_FIXTURE_COHORT: ${{ needs.select-stage.outputs.stage == 'unit-residual' && 'residual' || (needs.select-stage.outputs.stage == 'unit-acceptance-tail' && 'acceptance-tail' || 'default') }}
         run: |
           mkdir -p "$RUNNER_TEMP/phase-d-unit-fixtures"
           python tests/gates/gate.py validate-unit-fixtures \
@@ -726,6 +727,7 @@ jobs:
           with open(sys.argv[2],"a",encoding="utf-8") as out:
               out.write("FWROUTER_ACCEPTANCE_PLAN_DIGEST="+plan["plan_digest"]+"\n")
           PY
+          exit "$result"
       - name: Provision exact runtime inputs
         id: provision
         run: |
@@ -764,9 +766,26 @@ jobs:
           run_bundle 2 || second=$?
           test "$second" -eq 0
       - name: Aggregate exact full-phase source, L0-L5, native, application, and browser evidence
-        if: always() && steps.affected.outcome == 'success' && steps.provision.outcome == 'success'
+        if: always()
+        env:
+          AFFECTED_OUTCOME: ${{ steps.affected.outcome }}
         run: |
           set -euo pipefail
+          if [[ "$AFFECTED_OUTCOME" != success ]]; then
+            unit_exit=1
+            if [ -s "$RUNNER_TEMP/phase-d-full/unit-exit.txt" ]; then
+              unit_exit="$(sed -n 's/^unit_exit=//p' "$RUNNER_TEMP/phase-d-full/unit-exit.txt" | tail -n 1)"
+            fi
+            case "$unit_exit" in
+              ''|*[!0-9]*|0) unit_exit=1 ;;
+            esac
+            if [ "$unit_exit" -gt 255 ]; then unit_exit=1; fi
+            python tests/gates/aggregate_hosted.py \
+              --plan "$RUNNER_TEMP/phase-d-full/plan.json" \
+              --unit-report "$RUNNER_TEMP/phase-d-full/unit.json" \
+              --unit-failure-report --unit-exit-code "$unit_exit" \
+              --output "$RUNNER_TEMP/phase-d-full/aggregate.json"
+          fi
           args=(--plan "$RUNNER_TEMP/phase-d-full/plan.json" \
             --unit-report "$RUNNER_TEMP/phase-d-full/unit.json" \
             --runtime-inputs "$RUNNER_TEMP/phase-d-full/runtime-inputs.json" \

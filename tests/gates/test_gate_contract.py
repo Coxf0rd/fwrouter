@@ -193,14 +193,44 @@ class GateContractTests(unittest.TestCase):
             set(gate.UNIT_FIXTURE_PATHS) & set(gate.UNIT_FIXTURE_RESIDUAL_PATHS),
         )
         self.assertEqual(
-            {"default": gate.UNIT_FIXTURE_PATHS, "residual": gate.UNIT_FIXTURE_RESIDUAL_PATHS},
+            {"default": gate.UNIT_FIXTURE_PATHS, "residual": gate.UNIT_FIXTURE_RESIDUAL_PATHS,
+             "acceptance-tail": gate.UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS},
             gate.UNIT_FIXTURE_COHORTS,
         )
+        self.assertEqual({
+            "backend/tests/test_apply_pipeline.py", "installer/test-install.sh",
+            "tests/gates/test_gate_contract.py", "tests/gates/test_acceptance_contract.py",
+        }, set(gate.UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS))
         rows = {row["path"]: row for row in self.manifest["test_files"]}
         for paths in gate.UNIT_FIXTURE_COHORTS.values():
             self.assertTrue(set(paths) <= rows.keys())
             self.assertTrue(all(not rows[path].get("native") and not rows[path].get("execution_profile")
                                 for path in paths))
+
+    def test_acceptance_tail_installer_is_a_strict_junit_runner_and_bundle_fails_fast(self) -> None:
+        source = GATE_PATH.read_text(encoding="utf-8")
+        self.assertIn('if path == "installer/test-install.sh":', source)
+        with tempfile.TemporaryDirectory(prefix="fwrouter-installer-junit-contract-") as temp:
+            report = Path(temp) / "installer.xml"
+            path = "installer/test-install.sh"
+            expected = {f"{path}::installer-staged-deploy-smoke"}
+            passed = gate.write_installer_smoke_junit(report, path, 0, False)
+            self.assertEqual({next(iter(expected)): "passed"}, passed)
+            self.assertEqual(sorted(expected), gate.validate_junit_report(report, 4096, 1, expected))
+            failed = gate.write_installer_smoke_junit(report, path, 1, False)
+            self.assertEqual({next(iter(expected)): "failed"}, failed)
+            with self.assertRaisesRegex(gate.GateError, "failed or skipped"):
+                gate.validate_junit_report(report, 4096, 1, expected)
+            truncated = gate.write_installer_smoke_junit(report, path, 0, True)
+            self.assertEqual({next(iter(expected)): "failed"}, truncated)
+            with self.assertRaisesRegex(gate.GateError, "failed or skipped"):
+                gate.validate_junit_report(report, 4096, 1, expected)
+        workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
+        self.assertIn('"ci:validate-unit-acceptance-tail": "unit-acceptance-tail"', workflow)
+        self.assertIn('unit_exit=%s\\n" "$result"', workflow)
+        self.assertIn('exit "$result"', workflow)
+        self.assertIn('if: always()\n        env:\n          AFFECTED_OUTCOME:', workflow)
+        self.assertIn('--unit-failure-report --unit-exit-code "$unit_exit"', workflow)
 
     def test_unit_fixture_junit_contract_rejects_missing_and_skipped_cases(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fwrouter-unit-junit-contract-") as temp:
