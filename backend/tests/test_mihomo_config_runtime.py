@@ -1507,8 +1507,18 @@ def _seed_fingerprint_servers() -> None:
                 (server_id,),
             )
         connection.execute(
+            """INSERT OR IGNORE INTO routing_global_state
+               (id, desired_mode, applied_mode, selective_default, server_mode)
+               VALUES (1, 'direct', 'direct', 'direct', 'auto')"""
+        )
+        updated = connection.execute(
             "UPDATE routing_global_state SET active_auto_server_id='auto-a' WHERE id=1"
         )
+        assert updated.rowcount == 1
+        seeded = connection.execute(
+            "SELECT active_auto_server_id FROM routing_global_state WHERE id=1"
+        ).fetchone()
+        assert seeded is not None and seeded["active_auto_server_id"] == "auto-a"
         connection.execute("DELETE FROM settings WHERE key='vpn_auto_exclusive_source_ref'")
 
 
@@ -1552,9 +1562,14 @@ def test_mihomo_fingerprint_ignores_derived_auto_selection_but_tracks_generation
     assert changed_optional_intent["hash"] != baseline["hash"]
 
     with db_session() as connection:
-        connection.execute(
+        updated = connection.execute(
             "UPDATE routing_global_state SET active_auto_server_id='auto-b' WHERE id=1"
         )
+        selected = connection.execute(
+            "SELECT active_auto_server_id FROM routing_global_state WHERE id=1"
+        ).fetchone()
+    assert updated.rowcount == 1
+    assert selected is not None and selected["active_auto_server_id"] == "auto-b"
     selection_only_routing = {**routing, "active_auto_server_id": "auto-b"}
     assert current_mihomo_input_fingerprint(selection_only_routing)["hash"] == baseline["hash"]
     assert selection_only_routing["active_auto_server_id"] == "auto-b"
@@ -1602,10 +1617,15 @@ def test_mihomo_publication_fence_rejects_newer_selection_with_stable_derived_in
     before = current_mihomo_input_fingerprint({"active_auto_server_id": "auto-a"})
     with db_session() as connection:
         initial_revision = read_selection_revision(connection)
-        connection.execute(
+        updated = connection.execute(
             "UPDATE routing_global_state SET active_auto_server_id='auto-b' WHERE id=1"
         )
         next_revision = advance_selection_revision(connection, expected_revision=initial_revision)
+        selected = connection.execute(
+            "SELECT active_auto_server_id FROM routing_global_state WHERE id=1"
+        ).fetchone()
+    assert updated.rowcount == 1
+    assert selected is not None and selected["active_auto_server_id"] == "auto-b"
     assert next_revision == initial_revision + 1
     after = current_mihomo_input_fingerprint({"active_auto_server_id": "auto-b"})
     assert after["hash"] == before["hash"]
