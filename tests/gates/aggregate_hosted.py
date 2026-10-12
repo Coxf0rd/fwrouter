@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "tests" / "gates"))
 import gate  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests" / "acceptance"))
 import provision  # noqa: E402
+import launcher as acceptance_launcher  # noqa: E402
 
 
 def read_json(path: Path, *, maximum: int = 8 * 1024 * 1024) -> dict[str, Any]:
@@ -123,10 +124,13 @@ def functional_nodeids() -> set[str]:
 def hosted_partition_nodeids() -> dict[str, set[str]]:
     scenarios = json.loads((ROOT / "tests" / "acceptance" / "scenarios.json").read_text(encoding="utf-8"))
     rows = scenarios.get("scenarios") if isinstance(scenarios, dict) else None
-    if scenarios.get("schema") != "fwrouter-acceptance-scenarios/v1" or not isinstance(rows, list):
+    if (not isinstance(scenarios, dict)
+            or scenarios.get("schema") != "fwrouter-acceptance-scenarios/v1"
+            or not isinstance(rows, list)):
         raise gate.GateError("hosted profile partition registry has an unsupported schema")
     functional = functional_nodeids()
-    packet = {row.get("nodeid") for row in rows if row.get("suite") == "packet"}
+    packet = {row.get("nodeid") for row in rows
+              if isinstance(row, dict) and row.get("suite") == "packet"}
     provider = set(gate.PROVIDER_COHORT_NODEIDS)
     ordinary = functional - provider
     partitions = {"functional-ordinary": ordinary, "provider-cohort": provider,
@@ -137,6 +141,21 @@ def hosted_partition_nodeids() -> dict[str, set[str]]:
             or ordinary | provider != functional or ordinary | provider | packet != functional | packet):
         raise gate.GateError("hosted profiles are not a disjoint exhaustive 26+11+1 partition")
     return partitions
+
+
+def main_smoke_nodeid() -> str:
+    """Resolve the native application smoke node through the checked-in registry."""
+    scenarios = json.loads((ROOT / "tests" / "acceptance" / "scenarios.json").read_text(encoding="utf-8"))
+    rows = scenarios.get("scenarios") if isinstance(scenarios, dict) else None
+    if (not isinstance(scenarios, dict)
+            or scenarios.get("schema") != "fwrouter-acceptance-scenarios/v1"
+            or not isinstance(rows, list)):
+        raise gate.GateError("main smoke scenario registry has an unsupported schema")
+    expected = acceptance_launcher._DIAGNOSTIC_NODEIDS.get("xray-diagnostic")
+    matches = [row for row in rows if isinstance(row, dict) and row.get("nodeid") == expected]
+    if not expected or len(matches) != 1 or matches[0].get("suite") != "functional":
+        raise gate.GateError("registered native application smoke node is absent or ambiguous")
+    return expected
 
 
 def required_hosted_partitions(rows: list[dict[str, Any]]) -> list[str]:
@@ -170,7 +189,8 @@ def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[
     receipt = read_json(path)
     expected_profile = {"functional-ordinary": "hosted-native-process",
                         "provider-cohort": "hosted-kernel-dataplane",
-                        "packet-diagnostic": "hosted-kernel-packet"}.get(suite)
+                        "packet-diagnostic": "hosted-kernel-packet",
+                        "xray-diagnostic": "hosted-native-process"}.get(suite)
     problems: list[str] = []
     if expected_profile is None:
         return ["hosted receipt suite is not an approved application profile"]
@@ -275,6 +295,35 @@ def validate_functional_receipt(path: Path, plan: dict[str, Any], expected: set[
     return problems
 
 
+def validate_main_smoke_receipt(path: Path, plan: dict[str, Any],
+                                runtime_inputs: dict[str, Any], *,
+                                hosted_paths: list[Path],
+                                required_partitions: list[str]) -> list[str]:
+    """Require a strict native application receipt without promoting a partial partition."""
+    if path.is_symlink() or not path.is_file():
+        return ["NOT RUN: main native application smoke receipt is missing or unsafe"]
+    receipt = read_json(path)
+    suite = receipt.get("suite")
+    expected_node = main_smoke_nodeid()
+    if suite == "functional-ordinary":
+        if ("functional-ordinary" not in required_partitions
+                or path.resolve() not in {item.resolve() for item in hosted_paths}):
+            return ["main smoke ordinary receipt is not the selected validated hosted partition"]
+        expected = hosted_partition_nodeids()["functional-ordinary"]
+    elif suite == "xray-diagnostic":
+        expected = {expected_node}
+    else:
+        return ["main smoke receipt is outside the approved native application scopes"]
+    problems = validate_functional_receipt(path, plan, expected, runtime_inputs, suite=suite)
+    if problems:
+        return [f"main smoke {path.name}: {reason}" for reason in problems]
+    inner_rows = receipt.get("application_receipt", {}).get("tests", [])
+    observed = {row.get("nodeid") for row in inner_rows if isinstance(row, dict)}
+    if expected_node not in observed:
+        return ["main smoke receipt does not include the registered native application node"]
+    return []
+
+
 def validate_qcp_receipt(path: Path, plan: dict[str, Any], runtime_inputs: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
     receipt = read_json(path)
     problems: list[str] = []
@@ -374,7 +423,9 @@ def validate_xray_docker_receipt(path: Path, plan: dict[str, Any],
 
 def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_paths: list[Path],
               xray_docker_paths: list[Path], *, minimum_repeats: int,
-              runtime_inputs_path: Path | None = None) -> dict[str, Any]:
+              runtime_inputs_path: Path | None = None,
+              require_main_smoke: bool = False,
+              main_smoke_path: Path | None = None) -> dict[str, Any]:
     manifest = gate.load_manifest()
     plan = read_json(plan_path)
     gate.ensure_plan(plan, manifest, allow_l6=bool(plan.get("full_suite_required")))
@@ -497,6 +548,31 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
     elif xray_docker_paths:
         problems.append("unexpected Docker-Xray receipt supplied when no exact Docker-Xray suite is selected")
 
+    main_smoke_statuses: dict[str, str] = {}
+    if require_main_smoke:
+        if main_smoke_path is None:
+            problems.append("NOT RUN: required main native application smoke report was not supplied")
+        else:
+            try:
+                if not runtime_inputs:
+                    if runtime_inputs_path is None:
+                        raise gate.GateError("main smoke requires the pinned hosted runtime input manifest")
+                    runtime_inputs = read_json(runtime_inputs_path)
+                    validate_runtime_inputs(runtime_inputs)
+                smoke_problems = validate_main_smoke_receipt(
+                    main_smoke_path, plan, runtime_inputs, hosted_paths=hosted_paths,
+                    required_partitions=required_partitions)
+                problems.extend(smoke_problems)
+                if not smoke_problems:
+                    main_smoke_statuses[main_smoke_nodeid()] = "passed"
+                    smoke_receipt = read_json(main_smoke_path)
+                    if smoke_receipt.get("suite") == "xray-diagnostic":
+                        verified_run_nonces.append(smoke_receipt["suite_nonce"])
+            except (gate.GateError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                problems.append("main smoke: " + gate.redact_failure_output(str(exc))[:512])
+    elif main_smoke_path is not None:
+        problems.append("unexpected main smoke report supplied without --require-main-smoke")
+
     if not run_nonces_are_distinct(verified_run_nonces):
         problems.append("verified hosted and isolated receipts do not have distinct run nonces")
 
@@ -512,6 +588,10 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
     for nodeid, status in xray_docker_statuses.items():
         if nodeid in merged_status and merged_status[nodeid] != status:
             problems.append(f"Docker-Xray pass conflicts with unit status for {nodeid}")
+        merged_status[nodeid] = status
+    for nodeid, status in main_smoke_statuses.items():
+        if nodeid in merged_status and merged_status[nodeid] != status:
+            problems.append(f"main smoke pass conflicts with unit status for {nodeid}")
         merged_status[nodeid] = status
     baseline = gate.load_baseline(ROOT / manifest["baseline_policy_file"])
     classification = gate.classify(plan, {"node_status": merged_status}, baseline)
@@ -531,6 +611,10 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
             completed_levels.add(rows[path]["primary_level"])
     if required_xray_docker and xray_docker_paths:
         completed_levels.add(rows[xray_docker_path]["primary_level"])
+    if main_smoke_statuses:
+        smoke_path = main_smoke_nodeid().split("::", 1)[0]
+        if smoke_path in rows:
+            completed_levels.add(rows[smoke_path]["primary_level"])
     missing_levels = sorted(set(plan.get("required_levels", [])) - completed_levels)
     if missing_levels:
         problems.append("required levels are incomplete: " + ", ".join(missing_levels))
@@ -546,6 +630,8 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
         "qualified_child_process_not_run": qualified_child,
         "qualified_child_receipt_count": len(qcp_paths),
         "qualified_xray_docker_receipt_count": len(xray_docker_paths),
+        "main_smoke_required": require_main_smoke,
+        "main_smoke_status": "passed" if main_smoke_statuses else ("not-run" if require_main_smoke else "not-required"),
         "hosted_receipt_count": len(receipts),
         "hosted_required_partitions": required_partitions,
         "hosted_repeats_required": minimum_repeats,
@@ -566,6 +652,8 @@ def main() -> int:
     parser.add_argument("--xray-docker-report", action="append", default=[], type=Path)
     parser.add_argument("--minimum-repeats", type=int, default=1, choices=(1, 2))
     parser.add_argument("--runtime-inputs", type=Path)
+    parser.add_argument("--require-main-smoke", action="store_true")
+    parser.add_argument("--main-smoke-report", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--unit-failure-report", action="store_true",
                         help="write a bounded non-promoting report after the routine unit gate fails")
@@ -584,7 +672,9 @@ def main() -> int:
         result = aggregate(args.plan, args.unit_report, args.hosted_report, args.qcp_report,
                            args.xray_docker_report,
                            minimum_repeats=args.minimum_repeats,
-                           runtime_inputs_path=args.runtime_inputs)
+                           runtime_inputs_path=args.runtime_inputs,
+                           require_main_smoke=args.require_main_smoke,
+                           main_smoke_path=args.main_smoke_report)
         if args.output:
             gate.atomic_json(args.output, result)
         print(json.dumps(result, sort_keys=True, indent=2))

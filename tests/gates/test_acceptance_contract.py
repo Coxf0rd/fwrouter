@@ -107,6 +107,56 @@ class AcceptanceContractTests(unittest.TestCase):
         digest = result.pop("report_digest")
         self.assertEqual(aggregate_hosted.gate.canonical_digest(result), digest)
 
+    def test_aggregate_missing_required_main_smoke_is_ineligible(self):
+        manifest = aggregate_hosted.gate.load_manifest()
+        path = "backend/tests/test_configuration_contract.py"
+        source = "a" * 40
+        plan = {
+            "schema_version": 1, "source_commit": source, "plan_digest": "b" * 64,
+            "selected_files": [path], "required_levels": ["L0", "L2"], "full_suite_required": False,
+        }
+        unit = {
+            "schema_version": 1, "source_commit": source, "plan_digest": plan["plan_digest"],
+            "manifest_version": manifest["version"],
+            "manifest_digest": aggregate_hosted.gate.canonical_digest(manifest),
+            "deferred_remote_suites": [], "executions": [{"path": path, "status": "passed"}],
+            "blocked_reasons": [], "completed_levels": ["L0", "L2"],
+            "l0": {"status": "passed"}, "node_status": {},
+        }
+        unit["report_digest"] = aggregate_hosted.gate.canonical_digest(unit)
+        with tempfile.TemporaryDirectory(prefix="fwrouter-main-smoke-required-contract-") as temp:
+            root = Path(temp)
+            plan_path, unit_path = root / "plan.json", root / "unit.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            unit_path.write_text(json.dumps(unit), encoding="utf-8")
+            with mock.patch.object(aggregate_hosted.gate, "ensure_plan"), \
+                 mock.patch.object(aggregate_hosted.gate, "classify", return_value={"eligible": True}), \
+                 mock.patch.object(aggregate_hosted.gate, "load_baseline", return_value={}):
+                result = aggregate_hosted.aggregate(
+                    plan_path, unit_path, [], [], [], minimum_repeats=1,
+                    require_main_smoke=True)
+        self.assertFalse(result["eligible"])
+        self.assertEqual("not-run", result["main_smoke_status"])
+        self.assertTrue(any("required main native application smoke" in item
+                            for item in result["blocked_reasons"]))
+
+    def test_main_smoke_registry_rejects_non_object_root_and_non_object_rows(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-main-smoke-registry-contract-") as temp:
+            root = Path(temp)
+            acceptance = root / "tests" / "acceptance"
+            acceptance.mkdir(parents=True)
+            registry = acceptance / "scenarios.json"
+            with mock.patch.object(aggregate_hosted, "ROOT", root):
+                registry.write_text("[]", encoding="utf-8")
+                with self.assertRaises(aggregate_hosted.gate.GateError):
+                    aggregate_hosted.main_smoke_nodeid()
+                registry.write_text(json.dumps({
+                    "schema": "fwrouter-acceptance-scenarios/v1",
+                    "scenarios": [None],
+                }), encoding="utf-8")
+                with self.assertRaises(aggregate_hosted.gate.GateError):
+                    aggregate_hosted.main_smoke_nodeid()
+
     def test_functional_provider_and_packet_node_sets_are_exact_and_disjoint(self):
         ordinary = launcher.expected_acceptance_nodeids("functional-ordinary")
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
@@ -2730,6 +2780,74 @@ class AcceptanceContractTests(unittest.TestCase):
             path.write_text(json.dumps(receipt), encoding="utf-8")
             self.assertEqual([], aggregate_hosted.validate_functional_receipt(
                 path, plan, expected, runtime_inputs, suite="functional-ordinary"))
+            self.assertEqual([], aggregate_hosted.validate_main_smoke_receipt(
+                path, plan, runtime_inputs, hosted_paths=[path],
+                required_partitions=["functional-ordinary"]))
+            self.assertIn(aggregate_hosted.main_smoke_nodeid(), expected)
+            self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                path, plan, runtime_inputs, hosted_paths=[],
+                required_partitions=["functional-ordinary"]))
+            stale = json.loads(json.dumps(receipt))
+            stale["source_revision"] = "e" * 40
+            path.write_text(json.dumps(stale), encoding="utf-8")
+            self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                path, plan, runtime_inputs, hosted_paths=[path],
+                required_partitions=["functional-ordinary"]))
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            missing = Path(temp) / "missing-main-smoke.json"
+            self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                missing, plan, runtime_inputs, hosted_paths=[], required_partitions=[]))
+            diagnostic = json.loads(json.dumps(receipt))
+            diagnostic_node = aggregate_hosted.main_smoke_nodeid()
+            diagnostic["suite"] = "xray-diagnostic"
+            diagnostic_row = next(row for row in diagnostic["application_receipt"]["tests"]
+                                  if row["nodeid"] == diagnostic_node)
+            diagnostic["tests"] = {"nodeids": [diagnostic_node], "tests": 1,
+                                    "failures": 0, "errors": 0, "skipped": 0}
+            diagnostic["application_receipt"]["tests"] = [diagnostic_row]
+            path.write_text(json.dumps(diagnostic), encoding="utf-8")
+            self.assertEqual([], aggregate_hosted.validate_main_smoke_receipt(
+                path, plan, runtime_inputs, hosted_paths=[], required_partitions=[]))
+            grouped, partition_problems = aggregate_hosted.group_hosted_receipts(
+                [path], ["functional-ordinary", "provider-cohort"], 1)
+            self.assertEqual([], grouped["functional-ordinary"])
+            self.assertEqual([], grouped["provider-cohort"])
+            self.assertEqual(3, len(partition_problems))
+            diagnostic_cases = (
+                ("source_revision", "e" * 40), ("plan_digest", "f" * 64),
+                ("cleanup", "uncertain"),
+            )
+            for field, value in diagnostic_cases:
+                changed = json.loads(json.dumps(diagnostic))
+                changed[field] = value
+                path.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                    path, plan, runtime_inputs, hosted_paths=[], required_partitions=[]))
+            invalid_digest = json.loads(json.dumps(diagnostic))
+            invalid_digest["profile_sha256"] = "0" * 64
+            invalid_digest["application_receipt"]["profile_sha256"] = "0" * 64
+            path.write_text(json.dumps(invalid_digest), encoding="utf-8")
+            self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                path, plan, runtime_inputs, hosted_paths=[], required_partitions=[]))
+            wrong_inputs = json.loads(json.dumps(runtime_inputs))
+            wrong_inputs["native"]["xray"]["binary_sha256"] = "0" * 64
+            path.write_text(json.dumps(diagnostic), encoding="utf-8")
+            self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                path, plan, wrong_inputs, hosted_paths=[], required_partitions=[]))
+            skipped = json.loads(json.dumps(diagnostic))
+            skipped["tests"]["skipped"] = 1
+            skipped["application_receipt"]["tests"][0]["phases"]["call"] = "skipped"
+            skipped["application_receipt"]["tests"][0]["status"] = "skipped"
+            path.write_text(json.dumps(skipped), encoding="utf-8")
+            self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                path, plan, runtime_inputs, hosted_paths=[], required_partitions=[]))
+            unexpected = json.loads(json.dumps(diagnostic))
+            unexpected_node = "tests/application_acceptance/test_xray_api.py::unexpected_node"
+            unexpected["tests"]["nodeids"] = [unexpected_node]
+            unexpected["application_receipt"]["tests"][0]["nodeid"] = unexpected_node
+            path.write_text(json.dumps(unexpected), encoding="utf-8")
+            self.assertTrue(aggregate_hosted.validate_main_smoke_receipt(
+                path, plan, runtime_inputs, hosted_paths=[], required_partitions=[]))
             self.assertEqual([path], aggregate_hosted.group_hosted_receipts(
                 [path], ["functional-ordinary"], 1)[0]["functional-ordinary"])
             alias = json.loads(json.dumps(receipt))

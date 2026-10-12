@@ -35,9 +35,6 @@ CHROMIUM_BINARY_SHA256 = "2fa605e3639b8cfbe8037d0b8e0324dbf7f9e6ad7beb345374ecd2
 ACCEPTANCE_DIR = Path(__file__).resolve().parent
 DEPENDENCY_LOCK_PATH = ACCEPTANCE_DIR / "dependency-image.lock.json"
 DEPENDENCY_CONSUMER_LOCK_PATH = ACCEPTANCE_DIR / "dependency-image-consumer.lock.json"
-PUBLISH_REPOSITORY = "Coxf0rd/fwrouter"
-PUBLISH_REF = "refs/heads/stage/test-architecture-ci-stabilization"
-PUBLISH_MARKER = "ci:publish-dependencies"
 INPUTS = {
     "xray": {
         "version": "26.2.6",
@@ -268,12 +265,16 @@ def load_dependency_image_reference() -> tuple[str, str]:
 
 def validate_source_assets_publisher_environment(env: dict[str, str]) -> None:
     """Limit source-asset provisioning to the trusted hosted publisher job."""
-    if (env.get("GITHUB_ACTIONS") != "true" or env.get("RUNNER_ENVIRONMENT") != "github-hosted"
-            or env.get("GITHUB_REPOSITORY") != PUBLISH_REPOSITORY
-            or env.get("GITHUB_REF") != PUBLISH_REF
-            or env.get("GITHUB_EVENT_NAME") != "push"
-            or env.get("FWROUTER_DEPENDENCY_PUBLISH_MARKER") != PUBLISH_MARKER):
-        raise ValueError("source-assets-only provisioning requires the authorized hosted publisher job")
+    try:
+        from publish_dependency_image import authorize_publisher_event
+
+        mode = env.get("FWROUTER_DEPENDENCY_PUBLISH_MODE", "")
+        if (env.get("GITHUB_ACTIONS") != "true" or env.get("RUNNER_ENVIRONMENT") != "github-hosted"
+                or mode not in {"main-dependency-change", "main-manual", "stage-marker"}
+                or authorize_publisher_event(env) != mode):
+            raise ValueError
+    except Exception as exc:
+        raise ValueError("source-assets-only provisioning requires the authorized hosted publisher job") from exc
 
 
 def load_provision_dependency_reference(*, source_assets_only: bool,

@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: [main, stage/test-architecture-ci-stabilization]
 
 permissions:
   contents: read
@@ -16,6 +16,11 @@ concurrency:
 jobs:
   affected:
     name: Affected L0-L5 with hosted profiles
+    if: >-
+      github.event_name == 'pull_request' ||
+      github.ref == 'refs/heads/main' ||
+      (github.ref == 'refs/heads/stage/test-architecture-ci-stabilization' &&
+       contains(github.event.head_commit.message || '', 'ci:main-equivalent'))
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     steps:
@@ -70,11 +75,21 @@ jobs:
         id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BASE_SHA: ${{ github.event.before }}
+          PHASE_E_BASE_SHA: 3e12141c5d7be5d740450e6c13001a8fbc827f3b
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" = pull_request ]; then BASE="$PR_BASE_SHA"; else BASE="$PUSH_BASE_SHA"; fi
+          if [ "$EVENT_NAME" = pull_request ]; then
+            BASE="$PR_BASE_SHA"
+          elif [ "$EVENT_REF" = refs/heads/stage/test-architecture-ci-stabilization ] && \
+               [[ "$HEAD_COMMIT_MESSAGE" == *ci:main-equivalent* ]]; then
+            BASE="$PHASE_E_BASE_SHA"
+          else
+            BASE="$PUSH_BASE_SHA"
+          fi
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
             echo "Cannot resolve immutable event base SHA" >&2
             exit 2
@@ -132,7 +147,7 @@ jobs:
         run: |
           set -euo pipefail
           failures=0
-          if [ '${{ steps.plan.outputs.needs_hosted }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
+          if [ '${{ steps.plan.outputs.needs_hosted }}' = true ]; then
             for suite in functional-ordinary provider-cohort; do
               set +e
               /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
@@ -142,6 +157,14 @@ jobs:
               cat "$RUNNER_TEMP/fwrouter-$suite-main.log"
               if [ "$result" -ne 0 ]; then failures=1; fi
             done
+          elif [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
+            set +e
+            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite xray-diagnostic \
+              > "$RUNNER_TEMP/fwrouter-xray-diagnostic-main.log" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/fwrouter-xray-diagnostic-main.log"
+            if [ "$result" -ne 0 ]; then failures=1; fi
           fi
           if [ '${{ steps.plan.outputs.needs_packet }}' = true ]; then
             set +e
@@ -152,7 +175,7 @@ jobs:
             cat "$RUNNER_TEMP/fwrouter-packet-main.log"
             if [ "$result" -ne 0 ]; then failures=1; fi
           fi
-          if [ '${{ steps.plan.outputs.needs_qcp }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
+          if [ '${{ steps.plan.outputs.needs_qcp }}' = true ]; then
             set +e
             /usr/bin/time -v python tests/acceptance/qualified_child.py --run \
               > "$RUNNER_TEMP/fwrouter-qcp.log" 2>&1
@@ -161,7 +184,7 @@ jobs:
             cat "$RUNNER_TEMP/fwrouter-qcp.log"
             if [ "$result" -ne 0 ]; then failures=1; fi
           fi
-          if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
+          if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ]; then
             set +e
             /usr/bin/time -v python tests/acceptance/qualified_xray_docker.py --run \
               > "$RUNNER_TEMP/fwrouter-xray-docker.log" 2>&1
@@ -206,6 +229,30 @@ jobs:
           if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ]; then
             while IFS= read -r receipt; do args+=(--xray-docker-report "$receipt"); done \
               < <(find "$RUNNER_TEMP" -type f -name qualified-xray-docker-receipt.json -print | sort)
+          fi
+          if [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
+            args+=(--require-main-smoke)
+            if [ '${{ steps.plan.outputs.needs_hosted }}' = true ]; then
+              expected_suite=functional-ordinary
+            else
+              expected_suite=xray-diagnostic
+            fi
+            smoke_candidates=()
+            while IFS= read -r receipt; do
+              suite=$(python - "$receipt" <<'PY'
+          import json, sys
+          try:
+              with open(sys.argv[1], encoding="utf-8") as stream:
+                  print(json.load(stream).get("suite", ""))
+          except (OSError, ValueError):
+              print("")
+          PY
+              )
+              if [ "$suite" = "$expected_suite" ]; then smoke_candidates+=("$receipt"); fi
+            done < <(find "$RUNNER_TEMP" -type f -name hosted-acceptance-report.json -print | sort)
+            if [ "${#smoke_candidates[@]}" -eq 1 ]; then
+              args+=(--main-smoke-report "${smoke_candidates[0]}")
+            fi
           fi
           python tests/gates/aggregate_hosted.py "${args[@]}"
       - name: Record runner use and Docker cleanup state

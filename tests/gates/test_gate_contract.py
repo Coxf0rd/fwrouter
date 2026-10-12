@@ -246,6 +246,32 @@ class GateContractTests(unittest.TestCase):
         self.assertIn('if: always()\n        env:\n          AFFECTED_OUTCOME:', workflow)
         self.assertIn('--unit-failure-report --unit-exit-code "$unit_exit"', workflow)
 
+    def test_main_push_smoke_reuses_ordinary_or_runs_one_exact_native_diagnostic(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        self.assertIn("run_main_smoke={'true' if '${{ github.event_name }}' == 'push' else 'false'}", workflow)
+        self.assertIn("--suite xray-diagnostic", workflow)
+        self.assertIn("if [ '${{ steps.plan.outputs.needs_qcp }}' = true ]; then", workflow)
+        self.assertIn("if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ]; then", workflow)
+        self.assertIn("args+=(--require-main-smoke)", workflow)
+        self.assertIn("args+=(--main-smoke-report", workflow)
+        self.assertNotIn("needs_qcp }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke", workflow)
+        self.assertNotIn("needs_xray_docker }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke", workflow)
+
+    def test_temporary_main_equivalent_path_is_branch_marker_scoped_and_uses_fixed_base(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        self.assertIn("branches: [main, stage/test-architecture-ci-stabilization]", workflow)
+        self.assertIn("github.event_name == 'pull_request'", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("contains(github.event.head_commit.message || '', 'ci:main-equivalent')", workflow)
+        self.assertIn("EVENT_REF: ${{ github.ref }}", workflow)
+        self.assertIn("HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}", workflow)
+        self.assertIn("PHASE_E_BASE_SHA: 3e12141c5d7be5d740450e6c13001a8fbc827f3b", workflow)
+        self.assertIn('elif [ "$EVENT_REF" = refs/heads/stage/test-architecture-ci-stabilization ]', workflow)
+        self.assertIn('[[ "$HEAD_COMMIT_MESSAGE" == *ci:main-equivalent* ]]', workflow)
+        self.assertLess(workflow.index('[[ "$HEAD_COMMIT_MESSAGE" == *ci:main-equivalent* ]]'),
+                        workflow.index('BASE="$PHASE_E_BASE_SHA"'))
+        self.assertNotIn('BASE="$PHASE_E_BASE_SHA"\n          else', workflow)
+
     def test_unit_fixture_junit_contract_rejects_missing_and_skipped_cases(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fwrouter-unit-junit-contract-") as temp:
             path = Path(temp) / "report.xml"

@@ -77,60 +77,118 @@ class DependencyImageContractTests(unittest.TestCase):
                          if isinstance(node, ast.ImportFrom) and node.module}
             self.assertTrue(imported.isdisjoint({"backend", "fwrouter_api", "fastapi"}))
 
-    def test_publisher_environment_fails_closed_outside_authorized_hosted_push(self):
-        trusted = {
-            "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
-            "GITHUB_REPOSITORY": "Coxf0rd/fwrouter",
-            "GITHUB_REF": "refs/heads/stage/test-architecture-ci-stabilization",
-            "GITHUB_EVENT_NAME": "push", "FWROUTER_DEPENDENCY_PUBLISH_MARKER": "ci:publish-dependencies",
-            "GITHUB_TOKEN": "synthetic-host-token", "RUNNER_TEMP": "/tmp",
+    def _publisher_env(self, root, *, event, ref, message="", acknowledge=""):
+        payload = {
+            "ref": ref,
+            "repository": {"full_name": "Coxf0rd/fwrouter"},
+            "head_commit": {"message": message},
+            "before": "1" * 40,
+            "after": "2" * 40,
         }
-        publisher.validate_publisher_environment(trusted)
-        for field, value in (
-            ("GITHUB_REPOSITORY", "fork/fwrouter"),
-            ("GITHUB_REF", "refs/heads/main"),
-            ("GITHUB_EVENT_NAME", "pull_request"),
-            ("FWROUTER_DEPENDENCY_PUBLISH_MARKER", ""),
-            ("RUNNER_ENVIRONMENT", "self-hosted"),
-            ("GITHUB_TOKEN", ""),
-        ):
-            rejected = dict(trusted)
-            rejected[field] = value
-            with self.subTest(field=field), self.assertRaises(publisher.PublishError):
-                publisher.validate_publisher_environment(rejected)
+        event_path = root / "event.json"
+        event_path.write_text(json.dumps(payload), encoding="utf-8")
+        return {
+            "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
+            "GITHUB_REPOSITORY": "Coxf0rd/fwrouter", "GITHUB_REF": ref,
+            "GITHUB_EVENT_NAME": event, "GITHUB_SHA": "2" * 40,
+            "GITHUB_EVENT_PATH": str(event_path), "GITHUB_TOKEN": "synthetic-host-token",
+            "RUNNER_TEMP": str(root), "MANUAL_ACKNOWLEDGE": acknowledge,
+        }
+
+    def test_publisher_authorizes_main_dependency_push_manual_main_and_explicit_stage_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            main_push = self._publisher_env(root, event="push", ref="refs/heads/main")
+            with mock.patch.object(publisher.subprocess, "run", return_value=mock.Mock(
+                    returncode=0, stdout=b"tests/acceptance/dependency-image.lock.json\n")) as git_diff:
+                self.assertEqual("main-dependency-change", publisher.authorize_publisher_event(main_push))
+                main_push["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "main-dependency-change"
+                publisher.validate_publisher_environment(main_push)
+                self.assertIn("--diff-filter=ACMRD", git_diff.call_args.args[0])
+
+            manual = self._publisher_env(
+                root, event="workflow_dispatch", ref="refs/heads/main",
+                acknowledge=publisher.MANUAL_ACKNOWLEDGMENT,
+            )
+            self.assertEqual("main-manual", publisher.authorize_publisher_event(manual))
+            manual["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "main-manual"
+            publisher.validate_publisher_environment(manual)
+
+            stage = self._publisher_env(
+                root, event="push", ref="refs/heads/stage/test-architecture-ci-stabilization",
+                message="audit ci:publish-dependencies",
+            )
+            self.assertEqual("stage-marker", publisher.authorize_publisher_event(stage))
+            stage["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "stage-marker"
+            publisher.validate_publisher_environment(stage)
+            for field, value in (
+                ("GITHUB_REPOSITORY", "attacker/fwrouter"),
+                ("GITHUB_REF", "refs/heads/main"),
+                ("GITHUB_EVENT_NAME", "pull_request"),
+                ("RUNNER_ENVIRONMENT", "self-hosted"),
+                ("GITHUB_TOKEN", ""),
+                ("RUNNER_TEMP", ""),
+            ):
+                rejected = dict(stage, **{field: value})
+                with self.subTest(field=field), self.assertRaises(publisher.PublishError):
+                    publisher.validate_publisher_environment(rejected)
+
+    def test_publisher_rejects_untrusted_refs_repositories_events_and_unchanged_main_push(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            stage_without_marker = self._publisher_env(
+                root, event="push", ref="refs/heads/stage/test-architecture-ci-stabilization")
+            self.assertEqual("", publisher.authorize_publisher_event(stage_without_marker))
+            fork = dict(stage_without_marker, GITHUB_REPOSITORY="attacker/fwrouter")
+            self.assertEqual("", publisher.authorize_publisher_event(fork))
+            pull_request = dict(stage_without_marker, GITHUB_EVENT_NAME="pull_request")
+            self.assertEqual("", publisher.authorize_publisher_event(pull_request))
+
+            main_push = self._publisher_env(root, event="push", ref="refs/heads/main")
+            with mock.patch.object(publisher.subprocess, "run", return_value=mock.Mock(
+                    returncode=0, stdout=b"backend/fwrouter_api/main.py\n")):
+                self.assertEqual("", publisher.authorize_publisher_event(main_push))
+                main_push["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "main-dependency-change"
+                with self.assertRaises(publisher.PublishError):
+                    publisher.validate_publisher_environment(main_push)
+
+            manual = self._publisher_env(root, event="workflow_dispatch", ref="refs/heads/main")
+            with self.assertRaisesRegex(publisher.PublishError, "exact acknowledgment"):
+                publisher.authorize_publisher_event(manual)
 
     def test_source_assets_only_provisioning_is_publisher_gated_and_avoids_consumer_lock(self):
-        trusted = {
-            "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
-            "GITHUB_REPOSITORY": "Coxf0rd/fwrouter",
-            "GITHUB_REF": "refs/heads/stage/test-architecture-ci-stabilization",
-            "GITHUB_EVENT_NAME": "push", "FWROUTER_DEPENDENCY_PUBLISH_MARKER": "ci:publish-dependencies",
-        }
-        with mock.patch.object(provision, "load_dependency_image_reference",
-                               side_effect=AssertionError("consumer lock must not be loaded")):
-            image_ref, lock_digest = provision.load_provision_dependency_reference(
-                source_assets_only=True, env=trusted)
-        self.assertIsNone(image_ref)
-        self.assertEqual({}, provision.dependency_environment_outputs(image_ref, lock_digest))
-        self.assertEqual(prepare._canonical_digest(json.loads(
-            (ACCEPTANCE / "dependency-image.lock.json").read_text(encoding="utf-8"))), lock_digest)
-        with mock.patch.object(provision, "load_dependency_image_reference",
-                               return_value=("ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:" + "a" * 64,
-                                             "b" * 64)) as consumer_reference:
-            ordinary_ref, ordinary_digest = provision.load_provision_dependency_reference(
-                source_assets_only=False, env=trusted)
-        consumer_reference.assert_called_once_with()
-        self.assertEqual({"FWROUTER_ACCEPTANCE_DEPENDENCY_IMAGE": ordinary_ref,
-                          "FWROUTER_ACCEPTANCE_DEPENDENCY_LOCK_SHA256": ordinary_digest},
-                         provision.dependency_environment_outputs(ordinary_ref, ordinary_digest))
-        for field, value in (("RUNNER_ENVIRONMENT", "self-hosted"),
-                             ("GITHUB_REPOSITORY", "fork/fwrouter"),
-                             ("GITHUB_REF", "refs/heads/main"),
-                             ("GITHUB_EVENT_NAME", "pull_request"),
-                             ("FWROUTER_DEPENDENCY_PUBLISH_MARKER", "")):
-            rejected = dict(trusted, **{field: value})
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                provision.load_provision_dependency_reference(source_assets_only=True, env=rejected)
+        with tempfile.TemporaryDirectory() as temporary:
+            trusted = self._publisher_env(
+                Path(temporary), event="push",
+                ref="refs/heads/stage/test-architecture-ci-stabilization",
+                message="ci:publish-dependencies",
+            )
+            trusted["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "stage-marker"
+            with mock.patch.object(provision, "load_dependency_image_reference",
+                                   side_effect=AssertionError("consumer lock must not be loaded")):
+                image_ref, lock_digest = provision.load_provision_dependency_reference(
+                    source_assets_only=True, env=trusted)
+            self.assertIsNone(image_ref)
+            self.assertEqual({}, provision.dependency_environment_outputs(image_ref, lock_digest))
+            self.assertEqual(prepare._canonical_digest(json.loads(
+                (ACCEPTANCE / "dependency-image.lock.json").read_text(encoding="utf-8"))), lock_digest)
+            with mock.patch.object(provision, "load_dependency_image_reference",
+                                   return_value=("ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:" + "a" * 64,
+                                                 "b" * 64)) as consumer_reference:
+                ordinary_ref, ordinary_digest = provision.load_provision_dependency_reference(
+                    source_assets_only=False, env=trusted)
+            consumer_reference.assert_called_once_with()
+            self.assertEqual({"FWROUTER_ACCEPTANCE_DEPENDENCY_IMAGE": ordinary_ref,
+                              "FWROUTER_ACCEPTANCE_DEPENDENCY_LOCK_SHA256": ordinary_digest},
+                             provision.dependency_environment_outputs(ordinary_ref, ordinary_digest))
+            for field, value in (("RUNNER_ENVIRONMENT", "self-hosted"),
+                                 ("GITHUB_REPOSITORY", "fork/fwrouter"),
+                                 ("GITHUB_REF", "refs/heads/main"),
+                                 ("GITHUB_EVENT_NAME", "pull_request"),
+                                 ("FWROUTER_DEPENDENCY_PUBLISH_MODE", "")):
+                rejected = dict(trusted, **{field: value})
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    provision.load_provision_dependency_reference(source_assets_only=True, env=rejected)
 
     def test_publisher_workflow_uses_explicit_asset_only_mode_and_parses_provision_source(self):
         workflow = (ROOT / ".github/workflows/publish-acceptance-dependencies.yml").read_text(encoding="utf-8")
@@ -308,10 +366,13 @@ class DependencyImageContractTests(unittest.TestCase):
 
     def test_workflow_runs_contracts_before_host_registry_auth_and_never_on_pr(self):
         workflow = (ROOT / ".github/workflows/publish-acceptance-dependencies.yml").read_text(encoding="utf-8")
-        self.assertIn("branches: [stage/test-architecture-ci-stabilization]", workflow)
+        self.assertIn("branches: [main, stage/test-architecture-ci-stabilization]", workflow)
         self.assertIn("github.repository == 'Coxf0rd/fwrouter'", workflow)
-        self.assertIn("github.ref == 'refs/heads/stage/test-architecture-ci-stabilization'", workflow)
-        self.assertIn("contains(github.event.head_commit.message, 'ci:publish-dependencies')", workflow)
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("--authorize-event", workflow)
+        self.assertIn("needs.authorize-publisher.outputs.mode != ''", workflow)
+        self.assertIn("FWROUTER_DEPENDENCY_PUBLISH_MODE", workflow)
+        self.assertIn("DEPENDENCY_INPUT_PATHS", (ACCEPTANCE / "publish_dependency_image.py").read_text())
         self.assertIn("packages: write", workflow)
         self.assertNotIn("pull_request", workflow)
         self.assertIn("persist-credentials: false", workflow)

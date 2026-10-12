@@ -20,8 +20,17 @@ from prepare_dependency_image import (
 
 
 OWNER = "Coxf0rd/fwrouter"
-BRANCH = "refs/heads/stage/test-architecture-ci-stabilization"
 MARKER = "ci:publish-dependencies"
+MANUAL_ACKNOWLEDGMENT = "PUBLISH ACCEPTANCE DEPENDENCIES"
+PUBLISH_MODES = {"main-dependency-change", "main-manual", "stage-marker"}
+DEPENDENCY_INPUT_PATHS = frozenset({
+    "tests/acceptance/prepare_dependency_image.py",
+    "tests/acceptance/provision.py",
+    "tests/acceptance/Dependencies.Dockerfile",
+    "tests/acceptance/dependency-image.lock.json",
+    "tests/acceptance/requirements-browser.txt",
+    "tests/gates/requirements-ci.txt",
+})
 REGISTRY_IMAGE = "ghcr.io/coxf0rd/fwrouter-acceptance-dependencies"
 OWNER_LABEL = "io.fwrouter.acceptance.dependencies.lock-sha256"
 BASE_LABEL = "org.opencontainers.image.base.name"
@@ -35,15 +44,80 @@ class PublishError(RuntimeError):
     """The trusted publisher refused its environment or image inputs."""
 
 
+def _read_event(env: dict[str, str]) -> dict[str, Any]:
+    event_path = env.get("GITHUB_EVENT_PATH", "")
+    if not event_path:
+        raise PublishError("publisher event payload is unavailable")
+    try:
+        payload = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PublishError("publisher event payload is invalid") from exc
+    if not isinstance(payload, dict):
+        raise PublishError("publisher event payload is invalid")
+    repository = payload.get("repository")
+    if not isinstance(repository, dict) or repository.get("full_name") != OWNER:
+        raise PublishError("publisher event repository is not authorized")
+    payload_ref = payload.get("ref")
+    if payload_ref and not str(payload_ref).startswith("refs/"):
+        payload_ref = f"refs/heads/{payload_ref}"
+    if payload_ref != env.get("GITHUB_REF"):
+        raise PublishError("publisher event ref does not match the runner ref")
+    return payload
+
+
+def _changed_dependency_paths(env: dict[str, str], payload: dict[str, Any]) -> set[str]:
+    before = payload.get("before")
+    after = payload.get("after")
+    sha = env.get("GITHUB_SHA", "")
+    if (not isinstance(before, str) or not re.fullmatch(r"[0-9a-f]{40}", before)
+            or not isinstance(after, str) or not re.fullmatch(r"[0-9a-f]{40}", after)
+            or after != sha or before == "0" * 40):
+        raise PublishError("main dependency publication requires a bounded immutable push range")
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=ACMRD", f"{before}..{after}"],
+            capture_output=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PublishError("dependency path authorization could not inspect the push range") from exc
+    if result.returncode or len(result.stdout) > 256 * 1024:
+        raise PublishError("dependency path authorization could not inspect the push range")
+    try:
+        paths = result.stdout.decode("utf-8", "strict").splitlines()
+    except UnicodeDecodeError as exc:
+        raise PublishError("dependency path authorization returned invalid paths") from exc
+    return set(paths) & DEPENDENCY_INPUT_PATHS
+
+
+def authorize_publisher_event(env: dict[str, str]) -> str:
+    """Return an authorized publisher mode, or empty for an ordinary event."""
+    if env.get("GITHUB_REPOSITORY") != OWNER:
+        return ""
+    if env.get("GITHUB_ACTIONS") != "true" or env.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        raise PublishError("publisher requires a GitHub-hosted runner")
+    event_name = env.get("GITHUB_EVENT_NAME")
+    ref = env.get("GITHUB_REF")
+    payload = _read_event(env)
+    if event_name == "push" and ref == "refs/heads/main":
+        changed = _changed_dependency_paths(env, payload)
+        return "main-dependency-change" if changed else ""
+    if event_name == "workflow_dispatch" and ref == "refs/heads/main":
+        if env.get("MANUAL_ACKNOWLEDGE") != MANUAL_ACKNOWLEDGMENT:
+            raise PublishError("manual publication requires the exact acknowledgment on main")
+        return "main-manual"
+    if (event_name == "push" and ref == "refs/heads/stage/test-architecture-ci-stabilization"
+            and MARKER in str((payload.get("head_commit") or {}).get("message", ""))):
+        return "stage-marker"
+    return ""
+
+
 def validate_publisher_environment(env: dict[str, str]) -> None:
     if env.get("GITHUB_ACTIONS") != "true" or env.get("RUNNER_ENVIRONMENT") != "github-hosted":
         raise PublishError("publisher requires a GitHub-hosted runner")
-    if env.get("GITHUB_REPOSITORY") != OWNER or env.get("GITHUB_REF") != BRANCH:
-        raise PublishError("publisher is restricted to the authorized repository branch")
-    if env.get("GITHUB_EVENT_NAME") != "push":
-        raise PublishError("publisher requires the authorized marker commit")
-    if env.get("FWROUTER_DEPENDENCY_PUBLISH_MARKER") != MARKER:
-        raise PublishError("publisher authorization marker is missing")
+    mode = env.get("FWROUTER_DEPENDENCY_PUBLISH_MODE", "")
+    authorized_mode = authorize_publisher_event(env)
+    if mode not in PUBLISH_MODES or mode != authorized_mode:
+        raise PublishError("publisher event is not authorized for this ref and dependency input")
     if not env.get("GITHUB_TOKEN"):
         raise PublishError("publisher package credential is unavailable")
     if not env.get("RUNNER_TEMP"):
@@ -477,10 +551,26 @@ def publish(*, context: Path, input_receipt_path: Path, receipt_path: Path) -> d
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--context", type=Path, required=True)
-    parser.add_argument("--input-receipt", type=Path, required=True)
-    parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--authorize-event", action="store_true",
+                        help="validate the current GitHub event and emit an authorized publish mode")
+    parser.add_argument("--context", type=Path)
+    parser.add_argument("--input-receipt", type=Path)
+    parser.add_argument("--receipt", type=Path)
     args = parser.parse_args()
+    if args.authorize_event:
+        try:
+            mode = authorize_publisher_event(dict(os.environ))
+            output_path = os.environ.get("GITHUB_OUTPUT", "")
+            if not output_path:
+                raise PublishError("workflow output path is unavailable")
+            with Path(output_path).open("a", encoding="utf-8") as output:
+                output.write(f"mode={mode}\n")
+            print(f"Dependency publisher event authorization: {mode or 'not selected'}")
+            return 0
+        except Exception as exc:
+            raise SystemExit(f"dependency publisher authorization failed: {type(exc).__name__}: {exc}") from exc
+    if args.context is None or args.input_receipt is None or args.receipt is None:
+        parser.error("--context, --input-receipt, and --receipt are required unless --authorize-event is used")
     try:
         receipt = publish(context=args.context, input_receipt_path=args.input_receipt,
                           receipt_path=args.receipt)

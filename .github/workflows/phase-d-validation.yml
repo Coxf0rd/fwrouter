@@ -14,6 +14,9 @@ concurrency:
 jobs:
   select-stage:
     name: Require an explicit Phase D validation marker
+    if: >-
+      contains(github.event.head_commit.message, 'ci:validate-') &&
+      !contains(github.event.head_commit.message, 'ci:validate-dependencies')
     runs-on: ubuntu-24.04
     outputs:
       stage: ${{ steps.stage.outputs.stage }}
@@ -518,6 +521,74 @@ jobs:
           PY
           printf 'Acceptance launcher exit status: %s\n' "$launcher_status"
           exit "$launcher_status"
+      - name: Validate the strict application/native smoke receipt
+        if: success() && needs.select-stage.outputs.stage == 'minimal'
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "tests/gates")
+          import aggregate_hosted
+          import gate
+
+          root = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          plan_path = root / "phase-d-diagnostic-plan-copy.json"
+          inputs_path = root / "phase-diagnostic-runtime-inputs.json"
+          report_path = root / "phase-d-main-smoke-validation.json"
+          problems = []
+          source_commit = ""
+          plan_digest = ""
+          receipt_count = 0
+          try:
+              plan = aggregate_hosted.read_json(plan_path)
+              source_commit = str(plan.get("source_commit", ""))
+              plan_digest = str(plan.get("plan_digest", ""))
+              if source_commit != os.environ.get("EXPECTED_SOURCE_SHA"):
+                  problems.append("diagnostic plan source does not match this workflow SHA")
+              gate.ensure_plan(plan, gate.load_manifest())
+              runtime_inputs = aggregate_hosted.read_json(inputs_path)
+              aggregate_hosted.validate_runtime_inputs(runtime_inputs)
+              receipts = []
+              for candidate in root.rglob("hosted-acceptance-report.json"):
+                  try:
+                      value = aggregate_hosted.read_json(candidate)
+                  except (gate.GateError, OSError, ValueError, json.JSONDecodeError) as exc:
+                      problems.append(f"invalid hosted receipt {candidate.name}: {type(exc).__name__}")
+                      continue
+                  if value.get("suite") == "xray-diagnostic":
+                      receipts.append(candidate)
+              receipt_count = len(receipts)
+              if receipt_count != 1:
+                  problems.append(f"expected exactly one xray-diagnostic hosted receipt; found {receipt_count}")
+              else:
+                  problems.extend(aggregate_hosted.validate_main_smoke_receipt(
+                      receipts[0], plan, runtime_inputs,
+                      hosted_paths=[], required_partitions=[]))
+          except Exception as exc:
+              problems.append(f"validation failed: {type(exc).__name__}: {exc}")
+
+          errors = [gate.redact_failure_output(item)[:512] for item in problems[:8]]
+          result = {
+              "schema": "fwrouter-phase-d-main-smoke-validation/v1",
+              "status": "failed" if errors else "passed",
+              "source_commit": source_commit[:64],
+              "plan_digest": plan_digest[:64],
+              "receipt_count": receipt_count,
+              "errors": errors,
+          }
+          temporary = report_path.with_suffix(".tmp")
+          temporary.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          temporary.replace(report_path)
+          print(json.dumps(result, sort_keys=True))
+          if errors:
+              raise SystemExit(1)
+          PY
       - name: Retain bounded Xray diagnostic evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -527,6 +598,7 @@ jobs:
             ${{ runner.temp }}/phase-d-diagnostic-plan-copy.json
             ${{ runner.temp }}/phase-diagnostic-*.log
             ${{ runner.temp }}/phase-diagnostic-runtime-inputs.json
+            ${{ runner.temp }}/phase-d-main-smoke-validation.json
             ${{ runner.temp }}/fwrouter-acceptance-*-artifacts/**
           if-no-files-found: warn
           retention-days: 30
