@@ -702,12 +702,14 @@ class _DnsSelectedFlowObservations:
         self._counts = {"vpn_domain_tcp": 0, "vpn_domain_udp": 0,
                         "direct_domain_tcp": 0, "direct_domain_udp": 0}
         self._peers: dict[str, list[str]] = {key: [] for key in self._counts}
+        self._last_peers: dict[str, str | None] = {key: None for key in self._counts}
 
     def record(self, flow: str, peer: str) -> None:
         if flow not in self._counts:
             return
         with self._lock:
             self._counts[flow] += 1
+            self._last_peers[flow] = peer
             peers = self._peers[flow]
             if peer not in peers and len(peers) < 4:
                 peers.append(peer)
@@ -715,7 +717,8 @@ class _DnsSelectedFlowObservations:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             return {"counts": dict(self._counts), "peers": {key: list(value)
-                                                               for key, value in self._peers.items()}}
+                                                               for key, value in self._peers.items()},
+                    "last_peers": dict(self._last_peers)}
 
 
 _DNS_SELECTED_FLOW_OBS = _DnsSelectedFlowObservations()
@@ -1403,10 +1406,9 @@ def _probe_dns53_resolved_flows() -> dict[str, Any]:
         if not isinstance(answer, dict) or answer.get("ok") is not True:
             fail(label, "tcp_shape")
         peer = answer.get("peer")
-        # The phase runs under global VPN. A DNS DIRECT-domain set remains
-        # recorded and independently tested, while global VPN still tunnels
-        # this application flow; only the endpoint's own aliases may originate
-        # the post-proxy service connection.
+        # Permit only the endpoint's known local aliases here. The acceptance
+        # phase separately checks the recorded last peer for each domain and
+        # transport, so DIRECT-versus-VPN policy remains an explicit assertion.
         allowed_peers = {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP}
         if peer not in allowed_peers:
             peer_class = ("missing" if not isinstance(peer, str) else "allowed" if peer in allowed_peers

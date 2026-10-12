@@ -718,6 +718,51 @@ def _core_counter_snapshot() -> dict[str, int | None]:
     }
 
 
+def _core_selective_vpn_counter_snapshot() -> dict[str, int]:
+    """Read the transparent TCP/UDP VPN marks used by selective-mode traffic."""
+    try:
+        result = subprocess.run(
+            ("/usr/sbin/nft", "-j", "list", "table", "inet", CORE_NFT_TABLE),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=3, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise AssertionError("selective VPN counter readback did not complete within its bound") from exc
+    if (result.returncode or len(result.stdout) > MAX_CORE_NFT_JSON
+            or len(result.stderr) > 4096):
+        raise AssertionError("selective VPN counter readback failed or exceeded its fixed byte bound")
+    try:
+        payload = json.loads(result.stdout)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise AssertionError("selective VPN counter readback was not valid JSON") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("nftables"), list):
+        raise AssertionError("selective VPN counter readback has an invalid top-level shape")
+    wanted = {
+        "tcp": "fwrouter vpn mark tcp:5202",
+        "udp": "fwrouter vpn mark udp:5203",
+    }
+    counters: dict[str, list[int]] = {key: [] for key in wanted}
+    for item in payload["nftables"]:
+        rule = item.get("rule") if isinstance(item, dict) else None
+        if (not isinstance(rule, dict) or rule.get("family") != "inet"
+                or rule.get("table") != CORE_NFT_TABLE or rule.get("chain") != "fwrouter_vpn"):
+            continue
+        comment = rule.get("comment")
+        kind = next((key for key, prefix in wanted.items()
+                     if isinstance(comment, str) and comment.startswith(prefix)), None)
+        if kind is None:
+            continue
+        expr = rule.get("expr")
+        matches = [entry["counter"] for entry in expr if isinstance(entry, dict)
+                   and isinstance(entry.get("counter"), dict)] if isinstance(expr, list) else []
+        if len(matches) != 1 or type(matches[0].get("packets")) is not int:
+            raise AssertionError("selective VPN mark rule has no unique packet counter")
+        counters[kind].append(matches[0]["packets"])
+    if any(len(counters[key]) != 1 for key in wanted):
+        raise AssertionError("selective VPN TCP/UDP mark counters are not uniquely installed")
+    return {key: counters[key][0] for key in wanted}
+
+
 def _core_protected_exception_readback() -> dict[str, bool]:
     """Read the installed protected-address set and exact classify rule from native nft."""
     try:
@@ -1325,6 +1370,134 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     native_after = _packet_vpn_runtime_selection(stack)
     selection_after = _provider_selection_snapshot(source_ref)
+
+    routing_code, routing_projection = http_json(f"{api}/routing/global")
+    routing_data = routing_projection.get("data") if isinstance(routing_projection, dict) else None
+    original_routing = routing_data.get("routing") if isinstance(routing_data, dict) else None
+    original_mode = original_routing.get("applied_mode") if isinstance(original_routing, dict) else None
+    original_selective_default = (original_routing.get("selective_default")
+                                  if isinstance(original_routing, dict) else None)
+    assert (routing_code == 200 and isinstance(original_routing, dict)
+            and original_mode == "vpn" and original_selective_default in {"direct", "vpn"}), {
+                "routing_readback_status": routing_code,
+                "global_vpn_before_selective_probe": original_mode == "vpn",
+                "selective_default_valid": original_selective_default in {"direct", "vpn"},
+            }
+    selective_priority_proof: dict[str, Any] = {}
+    selective_provider_calls_before = stack["provider_bridge"].snapshot_calls()
+    try:
+        _apply_selective_default(api, "vpn", stack=stack, record_property=record_property,
+                                 phase="selective-default-vpn")
+        selective_data = _apply_global_mode(api, "selective", stack=stack, record_property=record_property)
+        _assert_packet_runtime(stack, mode="selective", policy_required=True)
+        selective_routing = selective_data.get("routing") if isinstance(selective_data, dict) else None
+        selective_runtime = selective_data.get("runtime_enforcement") if isinstance(selective_data, dict) else None
+        selective_mode_ready = (
+            isinstance(selective_routing, dict)
+            and selective_routing.get("applied_mode") == "selective"
+            and selective_routing.get("selective_default") == "vpn"
+            and isinstance(selective_runtime, dict)
+            and selective_runtime.get("live_global_mode") == "selective"
+            and selective_runtime.get("active_mode_matches_intent") is True
+        )
+        native_selective_before = _packet_vpn_runtime_selection(stack)
+        selection_selective_before = _provider_selection_snapshot(source_ref)
+        packets_selective_before = _packet_counts()
+        endpoint_flows_selective_before = _role_json(f"{ENDPOINT_CONTROL}/dns53-flow-observations")
+        core_selective_before = _core_counter_snapshot()
+        selective_vpn_before = _core_selective_vpn_counter_snapshot()
+        selective_flows = _role_json(f"{CLIENT_CONTROL}/probe/dns53-flows", method="POST",
+                                     failure_record_property=record_property)
+        packets_selective_after = _wait_packet_counts(lambda counts:
+            _flow_delta(packets_selective_before, counts, (CLIENT_IP, SERVICE_VIP, "tcp", 9080)) > 0
+            and _flow_delta(packets_selective_before, counts, (CLIENT_IP, SERVICE_VIP, "udp", 9081)) > 0
+            and _flow_delta(packets_selective_before, counts, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0)
+        endpoint_flows_selective_after = _role_json(f"{ENDPOINT_CONTROL}/dns53-flow-observations")
+        core_selective_after = _core_counter_snapshot()
+        selective_vpn_after = _core_selective_vpn_counter_snapshot()
+        _assert_packet_runtime(stack, mode="selective", policy_required=True)
+        native_selective_after = _packet_vpn_runtime_selection(stack)
+        selection_selective_after = _provider_selection_snapshot(source_ref)
+
+        counts_before = endpoint_flows_selective_before.get("counts")
+        counts_after = endpoint_flows_selective_after.get("counts")
+        counts_before = counts_before if isinstance(counts_before, dict) else {}
+        counts_after = counts_after if isinstance(counts_after, dict) else {}
+        selective_flow_delta = {
+            key: counts_after.get(key) - counts_before.get(key)
+            if type(counts_before.get(key)) is int and type(counts_after.get(key)) is int
+            and counts_after.get(key) >= counts_before.get(key) else None
+            for key in ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp")
+        }
+        last_peers = endpoint_flows_selective_after.get("last_peers")
+        last_peers = last_peers if isinstance(last_peers, dict) else {}
+        selective_last_peer_matches = {
+            "vpn_domain_tcp": last_peers.get("vpn_domain_tcp") == DNS_VPN_SERVICE_VIP,
+            "vpn_domain_udp": last_peers.get("vpn_domain_udp") == DNS_VPN_SERVICE_VIP,
+            "direct_domain_tcp": last_peers.get("direct_domain_tcp") == CLIENT_IP,
+            "direct_domain_udp": last_peers.get("direct_domain_udp") == CLIENT_IP,
+        }
+        selective_packet_delta = {
+            "direct_client_tcp": _flow_delta(packets_selective_before, packets_selective_after,
+                                               (CLIENT_IP, SERVICE_VIP, "tcp", 9080)),
+            "direct_client_udp": _flow_delta(packets_selective_before, packets_selective_after,
+                                               (CLIENT_IP, SERVICE_VIP, "udp", 9081)),
+            "direct_client_to_vpn_tcp": _flow_delta(packets_selective_before, packets_selective_after,
+                                                      (CLIENT_IP, DNS_VPN_SERVICE_VIP, "tcp", 9080)),
+            "direct_client_to_vpn_udp": _flow_delta(packets_selective_before, packets_selective_after,
+                                                      (CLIENT_IP, DNS_VPN_SERVICE_VIP, "udp", 9081)),
+            "direct_router_to_vpn_tcp": _flow_delta(packets_selective_before, packets_selective_after,
+                                                      (ROUTER_WAN_IP, DNS_VPN_SERVICE_VIP, "tcp", 9080)),
+            "direct_router_to_vpn_udp": _flow_delta(packets_selective_before, packets_selective_after,
+                                                      (ROUTER_WAN_IP, DNS_VPN_SERVICE_VIP, "udp", 9081)),
+            "provider_vless_tcp": _flow_delta(packets_selective_before, packets_selective_after,
+                                                (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)),
+        }
+        selective_core = _core_counter_delta(core_selective_before, core_selective_after)
+        selective_vpn_delta = {
+            key: selective_vpn_after[key] - selective_vpn_before[key]
+            for key in ("tcp", "udp")
+        }
+        selective_priority_proof = {
+            "phase": "native-dns53-selective-direct-priority",
+            "selective_mode_with_vpn_default": selective_mode_ready,
+            "resolved_flows_fixed": selective_flows.get("results") == {
+                "vpn": {"answer": DNS_VPN_SERVICE_VIP, "tcp": True, "udp": True},
+                "direct": {"answer": SERVICE_VIP, "tcp": True, "udp": True},
+            },
+            "flow_delta": selective_flow_delta,
+            "last_peer_matches": selective_last_peer_matches,
+            "direct_core_path_delta": selective_core["direct_lan_forward"],
+            "selective_vpn_mark_delta": selective_vpn_delta,
+            "packet_delta": selective_packet_delta,
+            "native_selector_stable": native_selective_before == native_selective_after,
+            "provider_selection_stable": selection_selective_before == selection_selective_after,
+        }
+    finally:
+        restored_mode_data = _apply_global_mode(api, original_mode, stack=stack,
+                                                record_property=record_property)
+        restored_default_data = _apply_selective_default(
+            api, original_selective_default, stack=stack, record_property=record_property,
+            phase="selective-default-restore",
+        )
+        restored_routing = (restored_default_data.get("routing")
+                            if isinstance(restored_default_data, dict) else None)
+        restored_runtime = (restored_default_data.get("runtime_enforcement")
+                            if isinstance(restored_default_data, dict) else None)
+        selective_priority_proof["state_restored"] = (
+            isinstance(restored_routing, dict)
+            and restored_routing.get("applied_mode") == original_mode
+            and restored_routing.get("selective_default") == original_selective_default
+            and isinstance(restored_runtime, dict)
+            and restored_runtime.get("live_global_mode") == original_mode
+            and restored_runtime.get("active_mode_matches_intent") is True
+            and isinstance(restored_mode_data, dict)
+        )
+        selective_priority_proof["provider_api_calls_unchanged"] = (
+            stack["provider_bridge"].snapshot_calls() == selective_provider_calls_before
+        )
+
+    _record_phase_diagnostic(record_property, selective_priority_proof)
     cleanup_code, cleanup = http_json(f"{api}/__acceptance/dns53/stop", method="POST")
 
     def count_delta(name: str) -> int:
@@ -1401,6 +1574,7 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "native_vpn_after": native_after,
         "native_vpn_stable": native_before == native_after,
         "selection_stable": selection_before == selection_after,
+        "selective_direct_priority": selective_priority_proof,
         "api_status": status_code,
         "cleanup": {"http_status": cleanup_code, "process_reaped": cleanup.get("process_reaped") is True,
                     "owned_paths_cleaned": cleanup.get("owned_paths_cleaned") is True},
@@ -1438,6 +1612,28 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "vpn_alias_tcp_client_direct", "vpn_alias_udp_client_direct")), proof
     assert core_delta["vpn_tcp_classified"] > 0 and core_delta["vpn_udp_classified"] > 0
     assert core_delta["vpn_udp_handoff_packets"] > 0
+    assert selective_priority_proof.get("selective_mode_with_vpn_default") is True, selective_priority_proof
+    assert selective_priority_proof.get("resolved_flows_fixed") is True, selective_priority_proof
+    assert selective_priority_proof.get("flow_delta") == {
+        "vpn_domain_tcp": 1, "vpn_domain_udp": 1,
+        "direct_domain_tcp": 1, "direct_domain_udp": 1,
+    }, selective_priority_proof
+    assert all(selective_priority_proof.get("last_peer_matches", {}).values()), selective_priority_proof
+    assert selective_priority_proof.get("direct_core_path_delta", 0) > 0, selective_priority_proof
+    assert all(selective_priority_proof.get("selective_vpn_mark_delta", {}).get(key, 0) > 0
+               for key in ("tcp", "udp")), selective_priority_proof
+    selective_packets = selective_priority_proof.get("packet_delta", {})
+    assert (selective_packets.get("direct_client_tcp", 0) > 0
+            and selective_packets.get("direct_client_udp", 0) > 0
+            and selective_packets.get("provider_vless_tcp", 0) > 0
+            and all(selective_packets.get(key) == 0 for key in (
+                "direct_client_to_vpn_tcp", "direct_client_to_vpn_udp",
+                "direct_router_to_vpn_tcp", "direct_router_to_vpn_udp",
+            ))), selective_priority_proof
+    assert selective_priority_proof.get("native_selector_stable") is True, selective_priority_proof
+    assert selective_priority_proof.get("provider_selection_stable") is True, selective_priority_proof
+    assert selective_priority_proof.get("provider_api_calls_unchanged") is True, selective_priority_proof
+    assert selective_priority_proof.get("state_restored") is True, selective_priority_proof
     assert guard_delta["router_dns_vpn_direct_output"]["packets"] == 0
     assert guard_delta["router_dns_vpn_direct_forward"]["packets"] == 0
     assert all(endpoint_peer_proof.values()), proof
@@ -1544,7 +1740,9 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "vpn-auto-exclusive-restore-selector-packet",
                      "vpn-auto-selector-change",
                      "provider-refresh-supported", "provider-refresh-unknown",
-                     "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn"}:
+                     "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn",
+                     "global-mode-selective", "selective-default-vpn", "selective-default-restore",
+                     "native-dns53-selective-direct-priority"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
@@ -2044,6 +2242,46 @@ def _apply_global_mode(api: str, mode: str, *, stack: dict[str, Any], record_pro
     }
     assert enforcement.get("active_mode_matches_intent") is True
     return projection["data"]
+
+
+def _apply_selective_default(api: str, selective_default: str, *, stack: dict[str, Any],
+                             record_property: Any, phase: str) -> dict[str, Any]:
+    if (selective_default not in {"direct", "vpn"}
+            or phase not in {"selective-default-vpn", "selective-default-restore"}):
+        raise AssertionError("selective-default acceptance request is outside its fixed contract")
+    code, accepted = http_json(
+        f"{api}/routing/global", method="POST",
+        payload={"selective_default": selective_default,
+                 "requested_by": "hosted-packet-dns-selective-priority", "run_now": True},
+    )
+    job = None
+    await_error_class = None
+    if code == 200 and isinstance(accepted, dict) and accepted.get("ok") is True:
+        try:
+            job = await_core_job(api, accepted)
+        except Exception as exc:
+            await_error_class = type(exc).__name__
+    diagnostic = {
+        "phase": phase,
+        "http_status": code if type(code) is int else None,
+        "accepted": isinstance(accepted, dict) and accepted.get("ok") is True,
+        "job": _bounded_job_summary(job),
+        "await_error_class": await_error_class[:64] if isinstance(await_error_class, str) else None,
+        "mihomo_path": _mihomo_packet_path_proof(stack),
+    }
+    _record_phase_diagnostic(record_property, diagnostic)
+    assert code == 200 and isinstance(accepted, dict) and accepted.get("ok") is True, diagnostic
+    assert await_error_class is None and isinstance(job, dict) and job.get("status") == "success", diagnostic
+    read_code, projection = http_json(f"{api}/routing/global")
+    data = projection.get("data") if isinstance(projection, dict) else None
+    routing = data.get("routing") if isinstance(data, dict) else None
+    assert (read_code == 200 and isinstance(routing, dict)
+            and routing.get("selective_default") == selective_default), {
+                **diagnostic, "readback_status": read_code,
+                "selective_default_matches": isinstance(routing, dict)
+                and routing.get("selective_default") == selective_default,
+            }
+    return data
 
 
 def _set_server_auto_eligibility(api: str, logical_id: str, enabled: bool,
@@ -2607,6 +2845,32 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
             "selection_stable": dns53.get("selection_stable") is True,
             "cleanup": (dns53.get("cleanup") or {}).get("owned_paths_cleaned") is True,
         },
+        "native_dns53_selective_direct_priority": {
+            "selective_mode_with_vpn_default": (dns53.get("selective_direct_priority") or {}).get(
+                "selective_mode_with_vpn_default") is True,
+            "resolved_flows_fixed": (dns53.get("selective_direct_priority") or {}).get(
+                "resolved_flows_fixed") is True,
+            "endpoint_last_peer_matches": {
+                key: ((dns53.get("selective_direct_priority") or {}).get("last_peer_matches") or {}).get(key) is True
+                for key in ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp")
+            },
+            "direct_core_path": number((dns53.get("selective_direct_priority") or {}).get(
+                "direct_core_path_delta")),
+            "selective_vpn_marks": counters(
+                (dns53.get("selective_direct_priority") or {}).get("selective_vpn_mark_delta"), ("tcp", "udp")),
+            "packet_delta": counters(
+                (dns53.get("selective_direct_priority") or {}).get("packet_delta"),
+                ("direct_client_tcp", "direct_client_udp", "direct_client_to_vpn_tcp",
+                 "direct_client_to_vpn_udp", "direct_router_to_vpn_tcp",
+                 "direct_router_to_vpn_udp", "provider_vless_tcp")),
+            "native_selector_stable": (dns53.get("selective_direct_priority") or {}).get(
+                "native_selector_stable") is True,
+            "provider_selection_stable": (dns53.get("selective_direct_priority") or {}).get(
+                "provider_selection_stable") is True,
+            "provider_api_calls_unchanged": (dns53.get("selective_direct_priority") or {}).get(
+                "provider_api_calls_unchanged") is True,
+            "state_restored": (dns53.get("selective_direct_priority") or {}).get("state_restored") is True,
+        },
     }
     summary = json.dumps({"schema": "fwrouter-packet-test-flows/v2", "phases": summary_phases},
                          sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
@@ -3014,7 +3278,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert inventory.get("seen_count") == 1
     code, ordinary_preference = http_json(
         f"{api}/servers/{ordinary_server.server_id}/preferences", method="PATCH",
-        payload={"vpn_auto": True, "vpn_auto_priority": 0, "reconcile_mihomo": True,
+        payload={"vpn_auto": True, "vpn_auto_priority": 1, "reconcile_mihomo": True,
                  "requested_by": "hosted-packet-selector-change"},
     )
     assert code == 200 and ordinary_preference.get("ok") is True, {
@@ -3022,7 +3286,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     }
     preference_data = ordinary_preference.get("data", {}).get("server_preferences", {})
     preference_values = (preference_data.get("server") or {}).get("preferences") or {}
-    assert preference_values.get("vpn_auto") is True and preference_values.get("vpn_auto_priority") == 0
+    assert preference_values.get("vpn_auto") is True and preference_values.get("vpn_auto_priority") == 1
 
     code, exclusive_disabled = http_json(
         f"{api}/subscription/sources/{source_ref}/vpn-auto-exclusive", method="POST",

@@ -417,6 +417,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             '"provider_candidate_only"',
         ):
             self.assertIn(required, scenario)
+        self.assertIn('"vpn_auto_priority": 1', scenario)
+        self.assertIn('get("vpn_auto_priority") == 1', scenario)
 
     def test_bounded_negative_udp_probe_is_fixed_and_reports_timeout_without_network(self):
         fixture = _fixture_module()
@@ -1198,6 +1200,11 @@ class NetworkFixtureContractTests(unittest.TestCase):
     def test_dns53_packet_acceptance_uses_real_native_service_and_fixed_private_upstream(self):
         source = (ROOT / "tests/application_acceptance/test_packet_dataplane.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
+        def packet_function_source(name):
+            selected = next(item for item in tree.body if isinstance(item, ast.FunctionDef)
+                            and item.name == name)
+            return "\n".join(source.splitlines()[selected.lineno - 1:selected.end_lineno])
+
         node = next(item for item in tree.body if isinstance(item, ast.FunctionDef)
                     and item.name == "_probe_dns53_policy_phase")
         phase = "\n".join(source.splitlines()[node.lineno - 1:node.end_lineno])
@@ -1242,6 +1249,43 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("vpn_udp_classified", phase)
         self.assertIn("vpn_alias_udp_router_direct", phase)
         self.assertIn('selected_flow_delta == {"vpn_domain_tcp": 1, "vpn_domain_udp": 1,', phase)
+        selective_default_set = phase.index('_apply_selective_default(api, "vpn"')
+        provider_calls_before = phase.index('selective_provider_calls_before = stack["provider_bridge"].snapshot_calls()')
+        selective_mode_set = phase.index('_apply_global_mode(api, "selective"')
+        selective_dns_probe = phase.index('f"{CLIENT_CONTROL}/probe/dns53-flows"', selective_mode_set)
+        mode_restore = phase.index('_apply_global_mode(api, original_mode')
+        default_restore = phase.index('restored_default_data = _apply_selective_default(')
+        self.assertLess(selective_default_set, selective_mode_set)
+        self.assertLess(provider_calls_before, selective_default_set)
+        self.assertLess(selective_mode_set, selective_dns_probe)
+        self.assertLess(selective_dns_probe, mode_restore)
+        self.assertLess(mode_restore, default_restore)
+        for required in (
+            '"native-dns53-selective-direct-priority"',
+            'selective_flows.get("results") == {',
+            '"direct_domain_tcp": last_peers.get("direct_domain_tcp") == CLIENT_IP',
+            '"direct_domain_udp": last_peers.get("direct_domain_udp") == CLIENT_IP',
+            '"vpn_domain_tcp": last_peers.get("vpn_domain_tcp") == DNS_VPN_SERVICE_VIP',
+            '"vpn_domain_udp": last_peers.get("vpn_domain_udp") == DNS_VPN_SERVICE_VIP',
+            'selective_core["direct_lan_forward"]',
+            '_core_selective_vpn_counter_snapshot()',
+            '"direct_client_to_vpn_tcp"', '"direct_router_to_vpn_udp"',
+            'selective_priority_proof.get("state_restored") is True',
+            'selective_priority_proof.get("provider_api_calls_unchanged") is True',
+            'stack["provider_bridge"].snapshot_calls() == selective_provider_calls_before',
+        ):
+            self.assertIn(required, phase)
+        selective_helper = packet_function_source("_apply_selective_default")
+        for required in (
+            'f"{api}/routing/global"', '"selective_default": selective_default',
+            '"selective-default-vpn", "selective-default-restore"',
+            'routing.get("selective_default") == selective_default',
+        ):
+            self.assertIn(required, selective_helper)
+        selective_counter = packet_function_source("_core_selective_vpn_counter_snapshot")
+        self.assertIn('"fwrouter vpn mark tcp:5202"', selective_counter)
+        self.assertIn('"fwrouter vpn mark udp:5203"', selective_counter)
+        self.assertIn('rule.get("chain") != "fwrouter_vpn"', selective_counter)
         self.assertIn('"vpn_domain_tcp_local"', phase)
         self.assertIn('"unexpected_upstream_rule_count") == 0', phase)
         self.assertIn('upstream_domains") == ["vpn.test"]', phase)
@@ -1266,6 +1310,13 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('GET /probe/dns-selected HTTP/1.1', fixture_source)
         self.assertIn('if data == DNS_SELECTED_PROBE_BODY:', fixture_source)
         self.assertIn('_DNS_SELECTED_FLOW_OBS.record(f"{suffix}_udp"', fixture_source)
+        selected_observations = fixture_source.split("class _DnsSelectedFlowObservations:", 1)[1].split(
+            "_DNS_SELECTED_FLOW_OBS =", 1)[0]
+        self.assertIn('self._last_peers[flow] = peer', selected_observations)
+        self.assertIn('"last_peers": dict(self._last_peers)', selected_observations)
+        self.assertIn('last_peers.get("direct_domain_tcp") == CLIENT_IP', phase)
+        self.assertIn('last_peers.get("vpn_domain_tcp") == DNS_VPN_SERVICE_VIP', phase)
+        self.assertIn('"native_dns53_selective_direct_priority"', packet_function_source("_write_capture_summary"))
 
     def test_profile_capability_and_namespace_checks_precede_fixed_network_commands(self):
         context = _function_source("_validate_owned_context")
