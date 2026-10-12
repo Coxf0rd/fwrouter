@@ -1383,8 +1383,13 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
                 "global_vpn_before_selective_probe": original_mode == "vpn",
                 "selective_default_valid": original_selective_default in {"direct", "vpn"},
             }
-    selective_priority_proof: dict[str, Any] = {}
+    selective_priority_proof: dict[str, Any] = {
+        "phase": "native-dns53-selective-direct-priority",
+    }
     selective_provider_calls_before = stack["provider_bridge"].snapshot_calls()
+    selective_primary_error: Exception | None = None
+    selective_primary_traceback = None
+    selective_restore_errors: dict[str, Exception] = {}
     try:
         _apply_selective_default(api, "vpn", stack=stack, record_property=record_property,
                                  phase="selective-default-vpn")
@@ -1473,13 +1478,24 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
             "native_selector_stable": native_selective_before == native_selective_after,
             "provider_selection_stable": selection_selective_before == selection_selective_after,
         }
+    except Exception as exc:
+        selective_primary_error = exc
+        selective_primary_traceback = exc.__traceback__
     finally:
-        restored_mode_data = _apply_global_mode(api, original_mode, stack=stack,
-                                                record_property=record_property)
-        restored_default_data = _apply_selective_default(
-            api, original_selective_default, stack=stack, record_property=record_property,
-            phase="selective-default-restore",
-        )
+        restored_mode_data = None
+        restored_default_data = None
+        try:
+            restored_mode_data = _apply_global_mode(api, original_mode, stack=stack,
+                                                    record_property=record_property)
+        except Exception as exc:
+            selective_restore_errors["mode"] = exc
+        try:
+            restored_default_data = _apply_selective_default(
+                api, original_selective_default, stack=stack, record_property=record_property,
+                phase="selective-default-restore",
+            )
+        except Exception as exc:
+            selective_restore_errors["default"] = exc
         restored_routing = (restored_default_data.get("routing")
                             if isinstance(restored_default_data, dict) else None)
         restored_runtime = (restored_default_data.get("runtime_enforcement")
@@ -1493,12 +1509,52 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
             and restored_runtime.get("active_mode_matches_intent") is True
             and isinstance(restored_mode_data, dict)
         )
+        def fixed_exception_class(exc: Exception) -> str:
+            name = type(exc).__name__
+            return name if name in {"AssertionError", "TimeoutError", "OSError", "RuntimeError",
+                                    "ValueError", "KeyError"} else "other"
+
+        selective_priority_proof["primary_failure_class"] = (
+            fixed_exception_class(selective_primary_error) if selective_primary_error is not None else None
+        )
+        selective_priority_proof["restoration_receipt"] = {
+            "mode_ok": isinstance(restored_mode_data, dict),
+            "mode_error_class": fixed_exception_class(selective_restore_errors["mode"])
+            if "mode" in selective_restore_errors else None,
+            "default_ok": isinstance(restored_default_data, dict),
+            "default_error_class": fixed_exception_class(selective_restore_errors["default"])
+            if "default" in selective_restore_errors else None,
+        }
         selective_priority_proof["provider_api_calls_unchanged"] = (
             stack["provider_bridge"].snapshot_calls() == selective_provider_calls_before
         )
 
+    cleanup_error = None
+    cleanup_code = None
+    cleanup: dict[str, Any] = {}
+    try:
+        cleanup_code, cleanup = http_json(f"{api}/__acceptance/dns53/stop", method="POST")
+    except Exception as exc:
+        cleanup_error = exc
+    selective_priority_proof["cleanup_receipt"] = {
+        "http_status": cleanup_code if type(cleanup_code) is int else None,
+        "stopped": cleanup.get("stopped") is True,
+        "process_reaped": cleanup.get("process_reaped") is True,
+        "owned_paths_cleaned": cleanup.get("owned_paths_cleaned") is True,
+        "error_class": fixed_exception_class(cleanup_error) if cleanup_error is not None else None,
+    }
     _record_phase_diagnostic(record_property, selective_priority_proof)
-    cleanup_code, cleanup = http_json(f"{api}/__acceptance/dns53/stop", method="POST")
+    if selective_primary_error is not None:
+        if selective_restore_errors:
+            raise selective_primary_error.with_traceback(selective_primary_traceback) from next(
+                iter(selective_restore_errors.values()))
+        if cleanup_error is not None:
+            raise selective_primary_error.with_traceback(selective_primary_traceback) from cleanup_error
+        raise selective_primary_error.with_traceback(selective_primary_traceback)
+    if selective_restore_errors:
+        raise next(iter(selective_restore_errors.values()))
+    if cleanup_error is not None:
+        raise cleanup_error
 
     def count_delta(name: str) -> int:
         before = (endpoint_before.get("counts") or {}).get(name)
@@ -2265,6 +2321,7 @@ def _apply_selective_default(api: str, selective_default: str, *, stack: dict[st
         "phase": phase,
         "http_status": code if type(code) is int else None,
         "accepted": isinstance(accepted, dict) and accepted.get("ok") is True,
+        "api_error": _bounded_reconcile_summary(accepted),
         "job": _bounded_job_summary(job),
         "await_error_class": await_error_class[:64] if isinstance(await_error_class, str) else None,
         "mihomo_path": _mihomo_packet_path_proof(stack),

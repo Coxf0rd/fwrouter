@@ -3403,6 +3403,80 @@ class AcceptanceContractTests(unittest.TestCase):
                          and node.func.id == "_install_acceptance_apply_exception_observer"]
         self.assertEqual(1, len(install_calls))
 
+    def test_packet_live_mode_probe_observer_is_bounded_and_preserves_probe_result(self):
+        worker_source = WORKER_PATH.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
+        observer = next(node for node in worker_tree.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_live_mode_probe_observer")
+        calls = []
+        original_result = {
+            "ok": True, "mode": "selective", "selective_default": "vpn",
+            "error_code": None, "raw_chain": "SECRET_SENTINEL",
+        }
+        expected_error = RuntimeError("SECRET_SENTINEL")
+        raise_probe = {"enabled": False}
+
+        def original_probe():
+            calls.append("called")
+            if raise_probe["enabled"]:
+                raise expected_error
+            return original_result
+
+        apply_service = SimpleNamespace(probe_live_global_mode=original_probe)
+        original_import = __import__
+
+        def acceptance_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "fwrouter_api.services":
+                return SimpleNamespace(apply=apply_service)
+            return original_import(name, globals, locals, fromlist, level)
+
+        namespace = {
+            "Any": __import__("typing").Any, "os": __import__("os"), "json": json,
+            "__builtins__": {**builtins.__dict__, "__import__": acceptance_import},
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(WORKER_PATH), "exec"), namespace)
+        with mock.patch.dict("os.environ", {
+                "FWROUTER_ENVIRONMENT": "test",
+                "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+        }), mock.patch("sys.stdout", io.StringIO()) as captured:
+            namespace["_install_acceptance_live_mode_probe_observer"]()
+            observed_probe = apply_service.probe_live_global_mode
+            for _ in range(66):
+                self.assertIs(observed_probe(), original_result)
+        lines = captured.getvalue().splitlines()
+        self.assertEqual(66, len(calls))
+        self.assertEqual(64, len(lines))
+        prefix = "FWROUTER_ACCEPTANCE_LIVE_MODE_PROBE "
+        self.assertTrue(all(line.startswith(prefix) for line in lines))
+        events = [json.loads(line.removeprefix(prefix)) for line in lines]
+        self.assertEqual(list(range(1, 65)), [event["sequence"] for event in events])
+        self.assertTrue(all(event == {
+            "schema": "fwrouter-acceptance-live-mode-probe/v1", "sequence": event["sequence"],
+            "ok": True, "mode": "selective", "selective_default": "vpn", "error_code": None,
+        } for event in events))
+        self.assertNotIn("SECRET_SENTINEL", captured.getvalue())
+        self.assertNotIn("raw_chain", captured.getvalue())
+
+        raise_probe["enabled"] = True
+        with self.assertRaises(RuntimeError) as raised:
+            observed_probe()
+        self.assertIs(raised.exception, expected_error)
+        observer_source = ast.get_source_segment(worker_source, observer) or ""
+        for required in ("original_probe()", "return result",
+                         '"FWROUTER_ACCEPTANCE_LIVE_MODE_PROBE "', 'state["count"] < 64'):
+            self.assertIn(required, observer_source)
+        for forbidden in ("raw_chain", "str(result)", "repr(result)", "traceback", "SECRET_SENTINEL"):
+            self.assertNotIn(forbidden, observer_source)
+        install_calls = [node for node in ast.walk(worker_tree)
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                         and node.func.id == "_install_acceptance_live_mode_probe_observer"]
+        self.assertEqual(1, len(install_calls))
+        self.assertIn('if acceptance_profile.get("profile") == "hosted-kernel-packet":\n'
+                      '        _install_acceptance_xray_generation_rollback_observer()\n'
+                      '        _install_acceptance_apply_exception_observer()\n'
+                      '        _install_acceptance_live_mode_probe_observer()', worker_source)
+
     def test_packet_dnsmasq_reconcile_diagnostic_is_bounded_and_preserves_result(self):
         worker_source = WORKER_PATH.read_text(encoding="utf-8")
         worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))

@@ -758,6 +758,43 @@ def _install_acceptance_apply_exception_observer() -> None:
     manager._get_handler = observed_get_handler
 
 
+def _install_acceptance_live_mode_probe_observer() -> None:
+    """Log bounded actual global-mode probe results without altering the probe."""
+    from fwrouter_api.services import apply as apply_service
+
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("live mode probe observer requires the qualified acceptance worker")
+    original_probe = apply_service.probe_live_global_mode
+    state = {"count": 0}
+    allowed_modes = {"direct", "selective", "vpn", "core_bypass", "unknown"}
+    allowed_defaults = {"direct", "vpn"}
+    allowed_errors = {"NFT_NOT_AVAILABLE", "NFT_CHAIN_READ_FAILED"}
+
+    def observed_probe() -> dict[str, Any]:
+        result = original_probe()
+        if state["count"] < 64:
+            state["count"] += 1
+            mode = result.get("mode") if isinstance(result, dict) else None
+            selective_default = result.get("selective_default") if isinstance(result, dict) else None
+            error_code = result.get("error_code") if isinstance(result, dict) else None
+            receipt = {
+                "schema": "fwrouter-acceptance-live-mode-probe/v1",
+                "sequence": state["count"],
+                "ok": result.get("ok") if isinstance(result, dict) and type(result.get("ok")) is bool else None,
+                "mode": mode if isinstance(mode, str) and mode in allowed_modes else "other",
+                "selective_default": (selective_default if isinstance(selective_default, str)
+                                       and selective_default in allowed_defaults else None),
+                "error_code": (error_code if isinstance(error_code, str) and error_code in allowed_errors
+                               else "other" if isinstance(error_code, str) and error_code else None),
+            }
+            print("FWROUTER_ACCEPTANCE_LIVE_MODE_PROBE " + json.dumps(
+                receipt, sort_keys=True, separators=(",", ":")), flush=True)
+        return result
+
+    apply_service.probe_live_global_mode = observed_probe
+
+
 def _install_acceptance_mihomo_fence_observer() -> None:
     """Capture bounded hash-only evidence when the real publication fence refuses."""
     from fwrouter_api.services import mihomo_reconcile as reconcile
@@ -2364,6 +2401,7 @@ def build_app(socket_path: Path):
     if acceptance_profile.get("profile") == "hosted-kernel-packet":
         _install_acceptance_xray_generation_rollback_observer()
         _install_acceptance_apply_exception_observer()
+        _install_acceptance_live_mode_probe_observer()
     _bind_acceptance_provider()
 
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"

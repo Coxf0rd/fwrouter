@@ -1295,11 +1295,35 @@ class NetworkFixtureContractTests(unittest.TestCase):
         selective_dns_probe = phase.index('f"{CLIENT_CONTROL}/probe/dns53-flows"', selective_mode_set)
         mode_restore = phase.index('_apply_global_mode(api, original_mode')
         default_restore = phase.index('restored_default_data = _apply_selective_default(')
+        selective_helper = packet_function_source("_apply_selective_default")
         self.assertLess(selective_default_set, selective_mode_set)
         self.assertLess(provider_calls_before, selective_default_set)
         self.assertLess(selective_mode_set, selective_dns_probe)
         self.assertLess(selective_dns_probe, mode_restore)
         self.assertLess(mode_restore, default_restore)
+        self.assertIn('selective_restore_errors["mode"] = exc', phase)
+        self.assertIn('selective_restore_errors["default"] = exc', phase)
+        self.assertIn('"mode_error_class": fixed_exception_class(selective_restore_errors["mode"])', phase)
+        self.assertIn('"default_error_class": fixed_exception_class(selective_restore_errors["default"])', phase)
+        self.assertIn('"api_error": _bounded_reconcile_summary(accepted)', selective_helper)
+        cleanup_start = phase.index('cleanup_code, cleanup = http_json(')
+        cleanup_receipt = phase.index('selective_priority_proof["cleanup_receipt"] = {')
+        diagnostic_record = phase.index('_record_phase_diagnostic(record_property, selective_priority_proof)')
+        primary_reraise = phase.index('if selective_primary_error is not None:')
+        self.assertLess(cleanup_start, cleanup_receipt)
+        self.assertLess(cleanup_receipt, diagnostic_record)
+        self.assertLess(diagnostic_record, primary_reraise)
+        self.assertIn('raise selective_primary_error.with_traceback(selective_primary_traceback)', phase)
+        self.assertIn('from next(\n                iter(selective_restore_errors.values()))', phase)
+        self.assertIn('from cleanup_error', phase)
+        self.assertIn('except Exception as exc:\n        cleanup_error = exc', phase)
+        self.assertIn('fixed_exception_class(cleanup_error)', phase)
+        proof_initialization = phase.index('selective_priority_proof: dict[str, Any] = {')
+        try_start = phase.index('    try:\n        _apply_selective_default(api, "vpn"')
+        self.assertLess(proof_initialization, try_start)
+        self.assertIn('"phase": "native-dns53-selective-direct-priority"', phase)
+        self.assertNotIn('str(selective_primary_error)', phase)
+        self.assertNotIn('str(cleanup_error)', phase)
         for required in (
             '"native-dns53-selective-direct-priority"',
             'selective_flows.get("results") == {',
@@ -1315,7 +1339,6 @@ class NetworkFixtureContractTests(unittest.TestCase):
             'stack["provider_bridge"].snapshot_calls() == selective_provider_calls_before',
         ):
             self.assertIn(required, phase)
-        selective_helper = packet_function_source("_apply_selective_default")
         for required in (
             'f"{api}/routing/global"', '"selective_default": selective_default',
             '"selective-default-vpn", "selective-default-restore"',
