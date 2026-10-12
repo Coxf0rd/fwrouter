@@ -1210,3 +1210,8 @@ The sole failed node is `test_state_routes.py::test_public_system_responses_do_n
 
 
 Targeted follow-up [38305280072](https://github.com/Coxf0rd/fwrouter/actions/runs/38305280072), source `1d440c3`: **299 PASS / 1 FAIL / 0 SKIP**, repeat1 only. The admission guard now remains reserved. The restored real isolated schema lets the healthy public-summary branch reach native DNS host discovery; the strict bootstrap correctly refuses `ip -json address show`. The prior broad `monkeypatch.undo()` reset test state and silently avoided this branch via schema failure. Add the existing explicit unavailable `isolated_host_observations` component fixture and require HTTP200/ok=True for the healthy schema projection; retain exact error/path redaction assertions. No host subprocess permit or healthy dataplane proof is invented. Fast lane38305280185 PASS. Corrected targeted execution pending; no broad retry before it passes.
+
+
+### Corrected nine-file targeted acceptance 38305595288 — PASS
+
+Source `ccdd1a8`, [run38305595288](https://github.com/Coxf0rd/fwrouter/actions/runs/38305595288): five repetitions, **300 PASS / 0 FAIL / 0 SKIP each**. Public system error/path redaction now includes a real healthy schema response with explicitly unavailable isolated host observations, retaining autouse guards. Cache barrier/old-source proof, prewarm lifecycle and exact selective assertions all PASS. Fast lane38305595170 PASS. Reviewed receipt: `SELECTIVE_STABILITY_CHECKPOINT_38305595288.json`. This supersedes the targeted isolation failures only; the final source-matched affected/native bundle is pending. Phase D remains BLOCKED until its aggregate completes. No production changes or Phase E/CD/L6/L7.
