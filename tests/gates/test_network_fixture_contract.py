@@ -1388,15 +1388,48 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertLess(proof_initialization, try_start)
         self.assertIn('"phase": "native-dns53-selective-direct-priority"', phase)
         self.assertIn('selective_priority_proof.get("last_peer_matches") == {', phase)
-        for class_mapping in (
-            'SERVICE_VIP: "service_vip"',
-            'DNS_VPN_SERVICE_VIP: "dns_vpn_vip"',
-            'CLIENT_IP: "client"',
-            '"127.0.0.1": "localhost"',
-            'return "missing"',
-            '}.get(peer, "other")',
-        ):
-            self.assertIn(class_mapping, phase)
+        classifier = next(item for item in ast.walk(node)
+                          if isinstance(item, ast.FunctionDef) and item.name == "fixed_peer_class")
+        classifier_namespace = {
+            "Any": object,
+            "SERVICE_VIP": "203.0.113.53",
+            "DNS_VPN_SERVICE_VIP": "198.51.100.77",
+            "CLIENT_IP": "10.240.0.2",
+        }
+        exec(compile(ast.Module(body=[classifier], type_ignores=[]),
+                     str(ROOT / "tests/application_acceptance/test_packet_dataplane.py"), "exec"),
+             classifier_namespace)
+        classify_peer = classifier_namespace["fixed_peer_class"]
+        self.assertEqual({
+            "service": classify_peer("203.0.113.53"),
+            "vpn_alias": classify_peer("198.51.100.77"),
+            "client": classify_peer("10.240.0.2"),
+            "loopback": classify_peer("127.0.0.1"),
+            "other": classify_peer("SECRET_PEER_SENTINEL"),
+            "missing": classify_peer(None),
+        }, {
+            "service": "service_vip", "vpn_alias": "dns_vpn_vip", "client": "client",
+            "loopback": "localhost", "other": "other", "missing": "missing",
+        })
+        self.assertNotIn("SECRET_PEER_SENTINEL", json.dumps({
+            key: classify_peer(value) for key, value in (
+                ("service", "203.0.113.53"), ("vpn_alias", "198.51.100.77"),
+                ("client", "10.240.0.2"), ("loopback", "127.0.0.1"),
+                ("other", "SECRET_PEER_SENTINEL"), ("missing", None),
+            )
+        }))
+        peer_class_comprehensions = [item for item in ast.walk(node)
+                                     if isinstance(item, ast.DictComp)
+                                     and isinstance(item.value, ast.Call)
+                                     and isinstance(item.value.func, ast.Name)
+                                     and item.value.func.id == "fixed_peer_class"]
+        self.assertEqual(1, len(peer_class_comprehensions))
+        peer_class_generator = peer_class_comprehensions[0].generators[0]
+        self.assertIsInstance(peer_class_generator.iter, ast.Tuple)
+        self.assertEqual(
+            ["vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp"],
+            [item.value for item in peer_class_generator.iter.elts],
+        )
         self.assertNotIn('str(selective_primary_error)', phase)
         self.assertNotIn('str(cleanup_error)', phase)
         for required in (
@@ -1406,10 +1439,6 @@ class NetworkFixtureContractTests(unittest.TestCase):
             '"direct_domain_udp": last_peers.get("direct_domain_udp") == CLIENT_IP',
             '"vpn_domain_tcp": last_peers.get("vpn_domain_tcp") == SERVICE_VIP',
             '"vpn_domain_udp": last_peers.get("vpn_domain_udp") == SERVICE_VIP',
-            '"vpn_domain_tcp": fixed_peer_class(last_peers.get("vpn_domain_tcp"))',
-            '"vpn_domain_udp": fixed_peer_class(last_peers.get("vpn_domain_udp"))',
-            '"direct_domain_tcp": fixed_peer_class(last_peers.get("direct_domain_tcp"))',
-            '"direct_domain_udp": fixed_peer_class(last_peers.get("direct_domain_udp"))',
             'selective_core["direct_lan_forward"]',
             '_core_selective_vpn_counter_snapshot()',
             '"direct_client_to_vpn_tcp"', '"direct_router_to_vpn_udp"',
@@ -1457,7 +1486,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn('self._last_peers[flow] = peer', selected_observations)
         self.assertIn('"last_peers": dict(self._last_peers)', selected_observations)
         self.assertIn('last_peers.get("direct_domain_tcp") == CLIENT_IP', phase)
-        self.assertIn('last_peers.get("vpn_domain_tcp") == DNS_VPN_SERVICE_VIP', phase)
+        self.assertIn('last_peers.get("vpn_domain_tcp") == SERVICE_VIP', phase)
         self.assertIn('"native_dns53_selective_direct_priority"', packet_function_source("_write_capture_summary"))
 
     def test_profile_capability_and_namespace_checks_precede_fixed_network_commands(self):
