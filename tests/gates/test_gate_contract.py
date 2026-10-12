@@ -1031,6 +1031,22 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("branches-ignore: [main]", trigger)
         self.assertNotIn("stage/test-architecture-ci-stabilization", trigger)
 
+    def test_acceptance_tail_diagnostic_repetitions_are_bounded_sequential_and_isolated(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
+        job = workflow.split("  unit-fixtures:", 1)[1].split("  bootstrap-and-fast:", 1)[0]
+        runner = job.split("- name: Run exact fixed unit fixture cohort", 1)[1].split(
+            "- name: Retain per-file JUnit", 1)[0]
+        self.assertIn("max_attempts=1", runner)
+        self.assertIn('if [ "$UNIT_FIXTURE_COHORT" = acceptance-tail ]; then max_attempts=5; fi', runner)
+        self.assertIn('while [ "$attempt" -le "$max_attempts" ]; do', runner)
+        self.assertIn('attempt_dir="$artifact_root/attempt-$attempt"', runner)
+        self.assertIn('--output "$attempt_dir/unit-fixtures-report.json"', runner)
+        self.assertIn('--artifact-dir "$attempt_dir"', runner)
+        self.assertIn('> "$attempt_dir/attempt-result.txt"', runner)
+        self.assertLess(runner.index('if [ "$result" -ne 0 ]'), runner.index('attempt=$((attempt + 1))'))
+        self.assertIn('exit "$result"', runner)
+        self.assertIn('${{ runner.temp }}/phase-d-unit-fixtures/**', job)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

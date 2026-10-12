@@ -84,11 +84,28 @@ jobs:
         env:
           UNIT_FIXTURE_COHORT: ${{ needs.select-stage.outputs.stage == 'unit-residual' && 'residual' || (needs.select-stage.outputs.stage == 'unit-acceptance-tail' && 'acceptance-tail' || 'default') }}
         run: |
-          mkdir -p "$RUNNER_TEMP/phase-d-unit-fixtures"
-          python tests/gates/gate.py validate-unit-fixtures \
-            --cohort "$UNIT_FIXTURE_COHORT" \
-            --output "$RUNNER_TEMP/phase-d-unit-fixtures/unit-fixtures-report.json" \
-            --artifact-dir "$RUNNER_TEMP/phase-d-unit-fixtures"
+          set -euo pipefail
+          artifact_root="$RUNNER_TEMP/phase-d-unit-fixtures"
+          mkdir -p "$artifact_root"
+          max_attempts=1
+          if [ "$UNIT_FIXTURE_COHORT" = acceptance-tail ]; then max_attempts=5; fi
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            attempt_dir="$artifact_root/attempt-$attempt"
+            mkdir -p "$attempt_dir"
+            result=0
+            python tests/gates/gate.py validate-unit-fixtures \
+              --cohort "$UNIT_FIXTURE_COHORT" \
+              --output "$attempt_dir/unit-fixtures-report.json" \
+              --artifact-dir "$attempt_dir" || result=$?
+            printf 'cohort=%s\nattempt=%s\nexit_code=%s\n' \
+              "$UNIT_FIXTURE_COHORT" "$attempt" "$result" > "$attempt_dir/attempt-result.txt"
+            if [ "$result" -ne 0 ]; then
+              printf 'acceptance-tail attempt %s failed; stopping repetitions\n' "$attempt"
+              exit "$result"
+            fi
+            attempt=$((attempt + 1))
+          done
       - name: Retain per-file JUnit, redacted logs, and cohort report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

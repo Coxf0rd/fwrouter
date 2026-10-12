@@ -501,9 +501,10 @@ def _failed_rollback_result() -> ScriptResult:
 
 def _enable_vpn_module() -> None:
     with db_session() as connection:
-        connection.execute(
+        result = connection.execute(
             "UPDATE modules SET desired_state = 'enabled' WHERE module_name = 'vpn'"
         )
+        assert result.rowcount == 1, "initialize_database must seed exactly one VPN module row"
 
 
 def _live_mode_probe(mode: str, *, selective_default: str | None = None) -> dict[str, object]:
@@ -516,6 +517,119 @@ def _live_mode_probe(mode: str, *, selective_default: str | None = None) -> dict
         "error_message": None,
         "raw_chain": f"mock live mode: {mode}",
     }
+
+
+def _candidate_nft_diagnostic(result: dict[str, object]) -> tuple[str, dict[str, object]]:
+    """Return a bounded, fixed-field receipt for candidate route failures."""
+    manifest_paths = result.get("manifest")
+    manifest_paths = manifest_paths if isinstance(manifest_paths, dict) else {}
+    paths = manifest_paths.get("paths")
+    paths = paths if isinstance(paths, dict) else {}
+    candidate_text = Path(str(paths["candidate_nft_path"])).read_text(encoding="utf-8")
+    candidate_manifest = json.loads(
+        Path(str(paths["candidate_manifest_path"])).read_text(encoding="utf-8")
+    )
+    candidate_preflight = candidate_manifest.get("global_preflight")
+    candidate_preflight = candidate_preflight if isinstance(candidate_preflight, dict) else {}
+    selective_rules = candidate_preflight.get("selective_rules")
+    selective_rules = selective_rules if isinstance(selective_rules, dict) else {}
+    health = candidate_preflight.get("mihomo")
+    health = health if isinstance(health, dict) else {}
+    health_details = health.get("details")
+    health_details = health_details if isinstance(health_details, dict) else {}
+    health_config = health_details.get("config")
+    health_config = health_config if isinstance(health_config, dict) else {}
+    health_contours = health_config.get("fwrouter_contours")
+    health_contours = health_contours if isinstance(health_contours, dict) else {}
+    transparent = health_contours.get("transparent_vpn")
+    transparent = transparent if isinstance(transparent, dict) else {}
+    explicit_proxy = health_contours.get("explicit_proxy")
+    explicit_proxy = explicit_proxy if isinstance(explicit_proxy, dict) else {}
+    domain_selective = health_contours.get("domain_selective")
+    domain_selective = domain_selective if isinstance(domain_selective, dict) else {}
+    vpn_udp_policy = health_details.get("vpn_udp_policy")
+    vpn_udp_policy = vpn_udp_policy if isinstance(vpn_udp_policy, dict) else {}
+    vpn_contour = candidate_preflight.get("vpn_contour")
+    vpn_contour = vpn_contour if isinstance(vpn_contour, dict) else {}
+    selectors = health_details.get("selectors")
+    selectors = selectors if isinstance(selectors, dict) else {}
+    profile = candidate_manifest.get("dataplane_profile")
+    profile = profile if isinstance(profile, dict) else {}
+    profile_mihomo = profile.get("mihomo")
+    profile_mihomo = profile_mihomo if isinstance(profile_mihomo, dict) else {}
+    profile_contours = profile_mihomo.get("contours")
+    profile_contours = profile_contours if isinstance(profile_contours, dict) else {}
+    summary = candidate_manifest.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    diagnostic: dict[str, object] = {
+        "summary": {
+            key: summary.get(key)
+            for key in ("global_mode", "selective_default", "requires_vpn_policy_routing")
+        },
+        "preflight": {
+            key: candidate_preflight.get(key)
+            for key in (
+                "selective_vpn_ready",
+                "selective_vpn_policy_ready",
+                "selective_degraded",
+                "selective_degraded_missing",
+                "vpn_policy_installed",
+                "vpn_prepare_missing",
+                "vpn_egress_ready",
+                "vpn_egress_target_present",
+                "vpn_external_path_verified",
+            )
+        },
+        "selective_rules": {
+            key: selective_rules.get(key)
+            for key in ("path_kind", "requires_vpn_runtime", "domain_rules_count", "vpn_rules_count")
+        },
+        "selective_missing": candidate_preflight.get("missing_by_mode", {}).get("selective")
+        if isinstance(candidate_preflight.get("missing_by_mode"), dict)
+        else None,
+        "vpn_contour": {
+            "adapter": vpn_contour.get("adapter"),
+            "tproxy_port": vpn_contour.get("tproxy_port"),
+            "redir_port": vpn_contour.get("redir_port"),
+            "contract_present": bool(vpn_contour),
+        },
+        "mihomo": {
+            "adapter": health_details.get("adapter"),
+            "runtime_state": health.get("runtime_state"),
+            "redir_port": health_config.get("redir_port"),
+            "tproxy_port": health_config.get("tproxy_port"),
+            "tun_enabled": health_config.get("tun_enabled"),
+            "policy_installed": vpn_udp_policy.get("policy_installed"),
+            "explicit_proxy_preserved": explicit_proxy.get("preserved"),
+            "domain_selective_ready": domain_selective.get("ready"),
+            "domain_uses_transparent": domain_selective.get("uses_transparent_contour"),
+            "domain_explicit_proxy_preserved": domain_selective.get("explicit_proxy_preserved"),
+            "transparent_isolated": transparent.get("isolated_from_explicit_proxy"),
+            "transparent_ready": transparent.get("ready"),
+            "transparent_tcp_ready": transparent.get("transparent_tcp_ready"),
+            "transparent_udp_ready": transparent.get("transparent_udp_ready"),
+            "profile_selective_path_kind": profile_contours.get("selective_path_kind"),
+            "vpn_global_exists": selectors.get("vpn_global_exists"),
+            "vpn_global_has_vpn_auto": selectors.get("vpn_global_has_vpn_auto"),
+            "vpn_global_now_is_auto": selectors.get("vpn_global_now") == "vpn-auto",
+            "vpn_auto_target_present": bool(selectors.get("vpn_auto_now")),
+        },
+    }
+    diagnostic["classify_lines"] = [
+        line.strip()
+        for line in candidate_text.splitlines()
+        if line.strip().startswith(("ip daddr @vpn_ipv4 ", "ip daddr @direct_ipv4 "))
+        or 'comment "selective default direct"' in line
+        or 'comment "selective degraded default direct"' in line
+    ][:8]
+    diagnostic["vpn_mark_lines"] = [
+        line.strip()
+        for line in candidate_text.splitlines()
+        if 'comment "fwrouter vpn mark tcp:' in line
+        or 'comment "fwrouter vpn mark udp:' in line
+        or 'comment "vpn path placeholder' in line
+    ][:4]
+    return candidate_text, diagnostic
 
 
 def _unit_ready_dnsmasq_selective_status() -> dict[str, object]:
@@ -2678,89 +2792,12 @@ def test_apply_pipeline_apply_mode_records_selective_ip_only_success(
     assert result["traffic_enforcement_guaranteed"] is True
     assert result["supported_modes"]["selective"] is True
 
-    candidate_text = Path(result["manifest"]["paths"]["candidate_nft_path"]).read_text(encoding="utf-8")
-    candidate_manifest = json.loads(
-        Path(result["manifest"]["paths"]["candidate_manifest_path"]).read_text(encoding="utf-8")
-    )
-    candidate_preflight = candidate_manifest.get("global_preflight")
-    candidate_preflight = candidate_preflight if isinstance(candidate_preflight, dict) else {}
-    health = candidate_preflight.get("mihomo")
-    health = health if isinstance(health, dict) else {}
-    health_details = health.get("details")
-    health_details = health_details if isinstance(health_details, dict) else {}
-    health_config = health_details.get("config")
-    health_config = health_config if isinstance(health_config, dict) else {}
-    health_contours = health_config.get("fwrouter_contours")
-    health_contours = health_contours if isinstance(health_contours, dict) else {}
-    transparent = health_contours.get("transparent_vpn")
-    transparent = transparent if isinstance(transparent, dict) else {}
-    explicit_proxy = health_contours.get("explicit_proxy")
-    explicit_proxy = explicit_proxy if isinstance(explicit_proxy, dict) else {}
-    domain_selective = health_contours.get("domain_selective")
-    domain_selective = domain_selective if isinstance(domain_selective, dict) else {}
-    vpn_udp_policy = health_details.get("vpn_udp_policy")
-    vpn_udp_policy = vpn_udp_policy if isinstance(vpn_udp_policy, dict) else {}
-    selectors = health_details.get("selectors")
-    selectors = selectors if isinstance(selectors, dict) else {}
-    profile = candidate_manifest.get("dataplane_profile")
-    profile = profile if isinstance(profile, dict) else {}
-    profile_mihomo = profile.get("mihomo")
-    profile_mihomo = profile_mihomo if isinstance(profile_mihomo, dict) else {}
-    profile_contours = profile_mihomo.get("contours")
-    profile_contours = profile_contours if isinstance(profile_contours, dict) else {}
-    candidate_diagnostic = {
-        "summary": {
-            "global_mode": (candidate_manifest.get("summary") or {}).get("global_mode"),
-            "selective_default": (candidate_manifest.get("summary") or {}).get("selective_default"),
-            "requires_vpn_policy_routing": (candidate_manifest.get("summary") or {}).get(
-                "requires_vpn_policy_routing"
-            ),
-        },
-        "preflight": {
-            key: candidate_preflight.get(key)
-            for key in (
-                "selective_vpn_ready",
-                "selective_vpn_policy_ready",
-                "selective_degraded",
-                "selective_degraded_missing",
-                "vpn_policy_installed",
-                "vpn_prepare_missing",
-                "vpn_egress_ready",
-                "vpn_egress_target_present",
-                "vpn_external_path_verified",
-            )
-        },
-        "mihomo": {
-            "adapter": health_details.get("adapter"),
-            "runtime_state": health.get("runtime_state"),
-            "redir_port": health_config.get("redir_port"),
-            "tproxy_port": health_config.get("tproxy_port"),
-            "tun_enabled": health_config.get("tun_enabled"),
-            "policy_installed": vpn_udp_policy.get("policy_installed"),
-            "explicit_proxy_preserved": explicit_proxy.get("preserved"),
-            "transparent_isolated": transparent.get("isolated_from_explicit_proxy"),
-            "transparent_ready": transparent.get("ready"),
-            "transparent_tcp_ready": transparent.get("transparent_tcp_ready"),
-            "transparent_udp_ready": transparent.get("transparent_udp_ready"),
-            "profile_selective_path_kind": profile_contours.get("selective_path_kind"),
-            "vpn_global_exists": selectors.get("vpn_global_exists"),
-            "vpn_global_has_vpn_auto": selectors.get("vpn_global_has_vpn_auto"),
-            "vpn_global_now_is_auto": selectors.get("vpn_global_now") == "vpn-auto",
-            "vpn_auto_target_present": bool(selectors.get("vpn_auto_now")),
-        },
-    }
-    candidate_classify_lines = [
-        line.strip()
-        for line in candidate_text.splitlines()
-        if line.strip().startswith(("ip daddr @vpn_ipv4 ", "ip daddr @direct_ipv4 "))
-        or 'comment "selective default direct"' in line
-        or 'comment "selective degraded default direct"' in line
-    ][:8]
+    candidate_text, candidate_diagnostic = _candidate_nft_diagnostic(result)
     assert "selective direct IPv4" in candidate_text
     assert "8.8.8.0/24" in candidate_text
     assert 'ip daddr @vpn_ipv4 goto fwrouter_vpn comment "selective vpn IPv4"' in candidate_text, (
         "selective IP-only VPN rule was not rendered; "
-        f"candidate_state={candidate_diagnostic!r}; classify={candidate_classify_lines!r}"
+        f"candidate_state={candidate_diagnostic!r}"
     )
     assert 'ip daddr @vpn_ipv4 drop comment "selective degraded block VPN IPv4"' not in candidate_text
     assert 'selective degraded default direct' in candidate_text
@@ -2890,11 +2927,14 @@ def test_apply_pipeline_apply_mode_records_selective_domain_aware_success(
     assert result["dataplane"]["details"]["dnsmasq_reconcile"]["ok"] is True
     assert result["dataplane"]["details"]["dnsmasq_reconcile"]["restart_reason"] == "nft_table_recreated"
 
-    candidate_text = Path(result["manifest"]["paths"]["candidate_nft_path"]).read_text(encoding="utf-8")
+    candidate_text, candidate_diagnostic = _candidate_nft_diagnostic(result)
     assert 'set secure_dns_bypass_ipv4' in candidate_text
     assert 'reject secure DNS bypass TCP from LAN' in candidate_text
     assert 'reject secure DNS bypass UDP from LAN' in candidate_text
-    assert 'fwrouter vpn mark tcp:5202' in candidate_text
+    assert 'fwrouter vpn mark tcp:5202' in candidate_text, (
+        "domain-aware VPN candidate omitted its transparent TCP mark; "
+        f"candidate_state={candidate_diagnostic!r}"
+    )
     assert 'fwrouter vpn mark udp:5203' in candidate_text
     assert 'meta l4proto tcp meta mark set 0x00000101' in candidate_text
     assert 'meta mark 0x00000101 meta l4proto tcp' in candidate_text
