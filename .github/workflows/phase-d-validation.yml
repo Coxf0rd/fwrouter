@@ -137,6 +137,18 @@ jobs:
             > "$RUNNER_TEMP/phase-d-preflight/network-fixture-contract.log" 2>&1
           python tests/gates/test_smoke_contract.py \
             > "$RUNNER_TEMP/phase-d-preflight/smoke-contract.log" 2>&1
+      - name: Run qualified source-manifest regression before native profiles
+        if: >-
+          needs.select-stage.outputs.stage == 'qualified' ||
+          needs.select-stage.outputs.stage == 'functional'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/qualified-source-manifest-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/qualified-source-manifest-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/qualified-source-manifest-nodeids.log" \
+            tests/test_isolation_bootstrap.py::test_qualified_source_digest_uses_shared_complete_allowlisted_inventory
       - name: Run exact selective live-mode and preflight regressions
         if: >-
           needs.select-stage.outputs.stage == 'reentry-diagnostic' ||

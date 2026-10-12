@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from contextlib import closing
+import hashlib
+import os
 import socket
 import sqlite3
 import subprocess
-import os
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -55,6 +56,49 @@ def test_bootstrap_allows_sqlite_only_inside_owned_state(tmp_path: Path) -> None
         connection.execute("INSERT INTO probe (value) VALUES (1)")
         connection.commit()
         assert connection.execute("SELECT value FROM probe").fetchone() == (1,)
+
+
+def test_qualified_source_digest_uses_shared_complete_allowlisted_inventory(tmp_path: Path) -> None:
+    assert {
+        "host/libexec/fwrouter/dataplane-common.sh",
+        "host/libexec/fwrouter/dataplane-check.sh",
+        "host/libexec/fwrouter/dataplane-apply.sh",
+        "host/libexec/fwrouter/dataplane-rollback.sh",
+    } <= set(isolation_bootstrap.QUALIFIED_SOURCE_FILES)
+    source_paths = list(isolation_bootstrap.QUALIFIED_SOURCE_FILES)
+    for root in isolation_bootstrap.QUALIFIED_SOURCE_ROOTS:
+        source_paths.append(f"{root}/source.py")
+    for relative in source_paths:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"source:{relative}".encode())
+    pycache = tmp_path / "backend/tests/__pycache__/ignored.pyc"
+    pycache.parent.mkdir(parents=True)
+    pycache.write_bytes(b"generated")
+
+    expected_paths = sorted(source_paths)
+    expected = hashlib.sha256()
+    for relative in expected_paths:
+        expected.update(relative.encode("utf-8") + b"\0")
+        expected.update((tmp_path / relative).read_bytes())
+
+    assert isolation_bootstrap._qualified_source_digest(
+        tmp_path, symlink_error="test source tree contains a symlink",
+    ) == expected.hexdigest()
+
+    changed_script = tmp_path / "host/libexec/fwrouter/dataplane-check.sh"
+    changed_script.write_bytes(changed_script.read_bytes() + b"changed")
+    assert isolation_bootstrap._qualified_source_digest(
+        tmp_path, symlink_error="test source tree contains a symlink",
+    ) != expected.hexdigest()
+
+    linked_script = tmp_path / "host/libexec/fwrouter/dataplane-apply.sh"
+    linked_script.unlink()
+    linked_script.symlink_to(changed_script)
+    with pytest.raises(RuntimeError, match="test source tree contains a symlink"):
+        isolation_bootstrap._qualified_source_digest(
+            tmp_path, symlink_error="test source tree contains a symlink",
+        )
 
 
 def test_isolated_host_observations_keep_external_source_probe_unavailable(

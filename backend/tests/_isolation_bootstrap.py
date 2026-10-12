@@ -66,6 +66,43 @@ QUALIFIED_CHILD_XRAY_FILES = {
     "/workspace/backend/tests/test_xray_default_runner_archive.py",
 }
 QUALIFIED_DOCKER_XRAY_FILE: str | None = None
+QUALIFIED_SOURCE_ROOTS = (
+    "backend/fwrouter_api", "backend/tests", "ui", "tests/application_acceptance", "tests/acceptance",
+)
+QUALIFIED_SOURCE_FILES = (
+    "backend/pyproject.toml",
+    "tests/gates/requirements-ci.txt",
+    "host/libexec/fwrouter/traffic-collect.sh",
+    "host/libexec/fwrouter/dataplane-common.sh",
+    "host/libexec/fwrouter/dataplane-check.sh",
+    "host/libexec/fwrouter/dataplane-apply.sh",
+    "host/libexec/fwrouter/dataplane-rollback.sh",
+)
+
+
+def _qualified_source_digest(root: Path, *, symlink_error: str) -> str:
+    """Hash the same allowlisted source inventory exported by the acceptance launcher."""
+    source_files: list[Path] = []
+    for base in QUALIFIED_SOURCE_ROOTS:
+        tree = root / base
+        members = list(tree.rglob("*"))
+        if any(member.is_symlink() for member in members):
+            raise RuntimeError(symlink_error)
+        source_files.extend(member for member in members if member.is_file()
+                            and "/__pycache__/" not in f"/{member.relative_to(root).as_posix()}/")
+    for relative in QUALIFIED_SOURCE_FILES:
+        member = root / relative
+        if member.is_symlink():
+            raise RuntimeError(symlink_error)
+        source_files.append(member)
+    digest = hashlib.sha256()
+    for member in sorted(source_files, key=lambda item: item.relative_to(root).as_posix()):
+        relative = member.relative_to(root).as_posix()
+        digest.update(relative.encode("utf-8") + b"\0")
+        with member.open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+    return digest.hexdigest()
 
 
 def path_is_protected(value: object) -> bool:
@@ -162,25 +199,10 @@ def _load_qualified_child_profile() -> tuple[dict[str, object] | None, str | Non
     if (revision.get("source_revision") != profile.get("source_revision")
             or revision.get("source_manifest_sha256") != profile.get("source_manifest_sha256")):
         raise RuntimeError("qualified child profile does not match the source revision manifest")
-    source_hash = hashlib.sha256()
-    source_files: list[Path] = []
-    for base in ("backend/fwrouter_api", "backend/tests", "ui", "tests/application_acceptance", "tests/acceptance"):
-        root = Path("/workspace") / base
-        members = list(root.rglob("*"))
-        if any(member.is_symlink() for member in members):
-            raise RuntimeError("qualified child source tree contains a symlink")
-        source_files.extend(member for member in members if member.is_file()
-                            and "/__pycache__/" not in f"/{member.relative_to('/workspace').as_posix()}/")
-    source_files.extend((Path("/workspace/backend/pyproject.toml"),
-                         Path("/workspace/tests/gates/requirements-ci.txt"),
-                         Path("/workspace/host/libexec/fwrouter/traffic-collect.sh")))
-    for member in sorted(source_files, key=lambda item: item.relative_to("/workspace").as_posix()):
-        relative = member.relative_to("/workspace").as_posix()
-        source_hash.update(relative.encode("utf-8") + b"\0")
-        with member.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                source_hash.update(block)
-    if source_hash.hexdigest() != profile.get("source_manifest_sha256"):
+    source_digest = _qualified_source_digest(
+        Path("/workspace"), symlink_error="qualified child source tree contains a symlink",
+    )
+    if source_digest != profile.get("source_manifest_sha256"):
         raise RuntimeError("qualified child checked-out source digest does not match the profile")
     return profile, hashlib.sha256(payload).hexdigest()
 
@@ -348,25 +370,10 @@ def _load_qualified_docker_xray_profile() -> tuple[dict[str, object] | None, str
             or not stat.S_ISREG(marker_info.st_mode) or marker_info.st_uid != os.getuid()
             or marker.read_text(encoding="utf-8") != COORDINATOR_MARKER_CONTENT):
         raise RuntimeError("qualified Docker Xray test root ownership marker is invalid")
-    source_files: list[Path] = []
-    root = workspace
-    for base in ("backend/fwrouter_api", "backend/tests", "ui", "tests/application_acceptance", "tests/acceptance"):
-        tree = root / base
-        members = list(tree.rglob("*"))
-        if any(item.is_symlink() for item in members):
-            raise RuntimeError("qualified Docker Xray source tree contains a symlink")
-        source_files.extend(item for item in members if item.is_file()
-                            and "/__pycache__/" not in f"/{item.relative_to(root).as_posix()}/")
-    source_files.extend((root / "backend/pyproject.toml", root / "tests/gates/requirements-ci.txt",
-                         root / "host/libexec/fwrouter/traffic-collect.sh"))
-    digest = hashlib.sha256()
-    for item in sorted(source_files, key=lambda value: value.relative_to(root).as_posix()):
-        relative = item.relative_to(root).as_posix()
-        digest.update(relative.encode("utf-8") + b"\0")
-        with item.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(block)
-    if digest.hexdigest() != profile["source_manifest_sha256"]:
+    source_digest = _qualified_source_digest(
+        workspace, symlink_error="qualified Docker Xray source tree contains a symlink",
+    )
+    if source_digest != profile["source_manifest_sha256"]:
         raise RuntimeError("qualified Docker Xray source manifest does not match this checkout")
     xray_binary = profile.get("xray_binary")
     runner_temp = Path(os.environ.get("RUNNER_TEMP", "/nonexistent")).resolve(strict=True)
