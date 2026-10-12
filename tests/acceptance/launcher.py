@@ -3016,6 +3016,16 @@ def mark_cleanup_unconfirmed(receipt: dict[str, Any], reason: str) -> None:
         receipt["reason"] = f"acceptance result downgraded because cleanup was unconfirmed: {reason}"
 
 
+def runtime_cleanup_plan(*, creation_attempted: bool, packet_mode: bool,
+                         network_id: str | None) -> tuple[bool, set[str]]:
+    """Bound Compose resource discovery to runs that attempted runtime creation."""
+    if not creation_attempted:
+        return False, set()
+    if packet_mode:
+        return True, set(PACKET_NETWORKS)
+    return False, {"isolated"} if network_id else set()
+
+
 def _docker_id_present(kind: str, identifier: str, *, cwd: Path, env: dict[str, str]) -> bool:
     if kind == "container":
         argv = ["docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", f"id={identifier}"]
@@ -3240,6 +3250,24 @@ def prepare_dependency_base_image(docker: str, image_ref: str, *, lock_digest: s
     return receipt["dependency_base_image"]
 
 
+def prepare_packet_dependency_base_image(docker: str, image_ref: str, *, lock_digest: str,
+                                         cwd: Path, env: dict[str, str],
+                                         receipt: dict[str, Any]) -> dict[str, str]:
+    """Qualify the shared dependency base and retain full image-inspect identity checks."""
+    metadata = prepare_dependency_base_image(
+        docker, image_ref, lock_digest=lock_digest, cwd=cwd, env=env, receipt=receipt)
+    rows = _docker_json([docker, "image", "inspect", image_ref], cwd=cwd, env=env,
+                        stage="immutable packet dependency base metadata")
+    inherited_env = validate_pinned_python_base_environment(rows, image_ref)
+    receipt["packet_base_image_environment"] = {
+        "image_id": metadata["image_id"], "digest": metadata["digest"],
+        "lock_sha256": lock_digest, "environment_names": sorted(inherited_env),
+        "environment_sha256": hashlib.sha256(json.dumps(
+            inherited_env, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+    }
+    return inherited_env
+
+
 def _base_image_cache_presence(docker: str, image: str, *, cwd: Path,
                                env: dict[str, str]) -> tuple[bool, float]:
     started = time.monotonic()
@@ -3388,13 +3416,14 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                       "compose_logs": str(artifact_dir / "compose-logs.txt")},
         "diagnostic_only": suite in _DIAGNOSTIC_SUITES or kernel_profile,
         "expected_ids": sorted(expected_acceptance_nodeids(suite)),
-        "container_confinement": "not_checked", "tests": None,
+        "container_confinement": "not_checked", "runtime_creation_attempted": False, "tests": None,
     }
     container_id: str | None = None
     network_id: str | None = None
     packet_container_ids: dict[str, str] = {}
     packet_network_ids: dict[str, str] = {}
     packet_capture_started = False
+    runtime_creation_attempted = False
     image_id: str | None = None
     docker_env.update({
         "FWROUTER_ACCEPTANCE_CONTEXT": str(context),
@@ -3524,18 +3553,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                                     application_dockerfile=selected_dockerfile)
         inherited_base_env: dict[str, str] = {}
         if packet_mode:
-            base_metadata = prepare_dependency_base_image(
+            inherited_base_env = prepare_packet_dependency_base_image(
                 docker, selected_base_image, lock_digest=dependency_lock_digest,
                 cwd=ROOT, env=docker_env, receipt=receipt)
-            base_rows = _docker_json([docker, "image", "inspect", selected_base_image], cwd=ROOT,
-                                     env=docker_env, stage="immutable packet dependency base metadata")
-            inherited_base_env = validate_pinned_python_base_environment(base_rows[0], selected_base_image)
-            receipt["packet_base_image_environment"] = {
-                "image_id": base_metadata["image_id"], "digest": base_metadata["digest"],
-                "lock_sha256": dependency_lock_digest, "environment_names": sorted(inherited_base_env),
-                "environment_sha256": hashlib.sha256(json.dumps(
-                    inherited_base_env, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-            }
         else:
             if dependency_profile:
                 prepare_dependency_base_image(
@@ -3588,6 +3608,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if image_raw[0].get("Architecture") != "amd64" or image_raw[0].get("Os") != "linux":
             raise NotRun("acceptance image must be Linux amd64")
         roles = ("application", "lanclient", "endpoint") if packet_mode else ("application",)
+        runtime_creation_attempted = True
+        receipt["runtime_creation_attempted"] = True
         subprocess.run([docker, "compose", *compose_args, "-p", project, "create", *roles],
                        cwd=ROOT, env=docker_env, check=True, timeout=60,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -4016,7 +4038,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         # Every cleanup target is resolved by exact ID and ownership labels.
         # No `compose down`, global prune, or project-name-only deletion.
         cleanup_container_ids = dict(packet_container_ids) if packet_mode else ({"router": container_id} if container_id else {})
-        if packet_mode:
+        discover_packet_roles, cleanup_network_names = runtime_cleanup_plan(
+            creation_attempted=runtime_creation_attempted, packet_mode=packet_mode, network_id=network_id)
+        if discover_packet_roles:
             for role, service_name in (("router", "application"), ("client", "lanclient"), ("endpoint", "endpoint")):
                 try:
                     discovered = _docker_text(
@@ -4051,7 +4075,6 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                         raise NotRun("container remains after owned-resource removal")
             except (NotRun, OSError, subprocess.SubprocessError):
                 mark_cleanup_unconfirmed(receipt, f"container:{role}")
-        cleanup_network_names = (set(PACKET_NETWORKS) if packet_mode else ({"isolated"} if network_id else set()))
         for network_name in sorted(cleanup_network_names):
             try:
                 cleanup_id = packet_network_ids.get(network_name) if packet_mode else network_id

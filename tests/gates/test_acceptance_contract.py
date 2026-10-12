@@ -202,6 +202,42 @@ class AcceptanceContractTests(unittest.TestCase):
         with self.assertRaises(launcher.NotRun):
             launcher.validate_pinned_python_base_environment(wrong_arch, image_ref)
 
+    def test_packet_dependency_base_qualification_passes_full_inspect_rows(self):
+        image_ref = "python:3.11-bookworm@sha256:" + "a" * 64
+        inspected = [{"Id": "sha256:" + "c" * 64,
+                      "RepoDigests": ["python@sha256:" + "a" * 64],
+                      "Os": "linux", "Architecture": "amd64",
+                      "Config": {"Env": [f"PATH={launcher.PYTHON_BASE_FIXED_ENV['PATH']}",
+                                             f"LANG={launcher.PYTHON_BASE_FIXED_ENV['LANG']}",
+                                             "PYTHON_VERSION=3.11.13"]}}]
+        metadata = {"image_id": inspected[0]["Id"], "digest": "a" * 64,
+                    "lock_sha256": "b" * 64, "size_bytes": 2_600_000_000}
+        receipt = {}
+        with mock.patch.object(launcher, "prepare_dependency_base_image", return_value=metadata) as prepare, \
+             mock.patch.object(launcher, "_docker_json", return_value=inspected) as inspect:
+            inherited = launcher.prepare_packet_dependency_base_image(
+                "/usr/bin/docker", image_ref, lock_digest="b" * 64,
+                cwd=Path("/tmp"), env={}, receipt=receipt)
+        self.assertEqual({"PYTHON_VERSION": "3.11.13"}, inherited)
+        self.assertEqual(inspected[0]["Id"], receipt["packet_base_image_environment"]["image_id"])
+        prepare.assert_called_once()
+        self.assertEqual("immutable packet dependency base metadata", inspect.call_args.kwargs["stage"])
+
+        with mock.patch.object(launcher, "prepare_dependency_base_image", return_value=metadata), \
+             mock.patch.object(launcher, "_docker_json", return_value=inspected[0]):
+            with self.assertRaises(launcher.NotRun):
+                launcher.prepare_packet_dependency_base_image(
+                    "/usr/bin/docker", image_ref, lock_digest="b" * 64,
+                    cwd=Path("/tmp"), env={}, receipt={})
+
+    def test_runtime_cleanup_plan_skips_compose_discovery_before_creation(self):
+        self.assertEqual((False, set()), launcher.runtime_cleanup_plan(
+            creation_attempted=False, packet_mode=True, network_id=None))
+        discover_roles, networks = launcher.runtime_cleanup_plan(
+            creation_attempted=True, packet_mode=True, network_id=None)
+        self.assertTrue(discover_roles)
+        self.assertEqual(set(launcher.PACKET_NETWORKS), networks)
+
     def test_packet_runtime_environment_matches_base_values_and_rejects_unknown_or_changed_values(self):
         metadata = {"PYTHON_VERSION": "3.11.13", "PYTHON_SHA256": "b" * 64}
         expected = {
