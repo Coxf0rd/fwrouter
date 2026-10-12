@@ -227,8 +227,14 @@ class GateContractTests(unittest.TestCase):
                 gate.validate_junit_report(report, 4096, 1, expected)
         workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
         self.assertIn('"ci:validate-unit-acceptance-tail": "unit-acceptance-tail"', workflow)
-        self.assertIn('unit_exit=%s\\n" "$result"', workflow)
-        self.assertIn('exit "$result"', workflow)
+        affected = workflow.split("id: affected", 1)[1].split(
+            "- name: Provision exact runtime inputs", 1)[0]
+        self.assertRegex(affected, r"printf\s+['\"]unit_exit=%s\\n['\"]\s+['\"]\$result['\"]")
+        self.assertLess(affected.index("unit_exit=%s\\n"), affected.index('exit "$result"'))
+        self.assertLess(affected.index("GITHUB_ENV"), affected.index('exit "$result"'))
+        self.assertNotIn("if: always()", affected)
+        self.assertIn("- name: Provision exact runtime inputs", workflow)
+        self.assertIn("- name: Run exact hosted functional profile bundle", workflow)
         self.assertIn('if: always()\n        env:\n          AFFECTED_OUTCOME:', workflow)
         self.assertIn('--unit-failure-report --unit-exit-code "$unit_exit"', workflow)
 
