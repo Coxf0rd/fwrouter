@@ -3287,6 +3287,12 @@ class AcceptanceContractTests(unittest.TestCase):
                 "router_dns_udp_output": {"packets": 1},
                 "raw": "RAW_GUARD_SENTINEL",
             },
+            "selective_direct_priority": {
+                "last_peer_classes": {
+                    "vpn_domain_tcp": "service_vip", "vpn_domain_udp": "service_vip",
+                    "direct_domain_tcp": "client", "direct_domain_udp": "client",
+                },
+            },
             "cleanup": {"http_status": 200, "process_reaped": True, "owned_paths_cleaned": True},
         }
         original_native = proof["native_dnsmasq"]["raw_native_payload"]
@@ -3301,12 +3307,21 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertLessEqual(len(encoded.encode("ascii")), 4096)
         self.assertIn('"native_dnsmasq_reference":"dns53-native-daemon"', encoded)
         self.assertIn('"native_vpn_stable":true', encoded)
+        self.assertIn('"selective_direct_priority_peer_classes":{"direct_domain_tcp":"client",'
+                      '"direct_domain_udp":"client","vpn_domain_tcp":"service_vip",'
+                      '"vpn_domain_udp":"service_vip"}', encoded)
         for secret in ("RAW_NATIVE_SENTINEL", "RAW_RUNTIME_SENTINEL", "RAW_TARGET_SENTINEL",
                        "RAW_COUNTER_SENTINEL", "RAW_GUARD_SENTINEL"):
             self.assertNotIn(secret, encoded)
         self.assertNotIn('"native_dnsmasq":', encoded)
         self.assertNotIn('"native_vpn_before":', encoded)
         self.assertNotIn('"endpoint_peers":', encoded)
+        proof["selective_direct_priority"]["last_peer_classes"]["vpn_domain_tcp"] = "RAW_PEER_SENTINEL"
+        proof["selective_direct_priority"]["last_peer_classes"]["direct_domain_udp"] = None
+        redacted = namespace["_dns53_phase_junit_projection"](proof)
+        self.assertEqual(redacted["selective_direct_priority_peer_classes"]["vpn_domain_tcp"], "other")
+        self.assertEqual(redacted["selective_direct_priority_peer_classes"]["direct_domain_udp"], "missing")
+        self.assertNotIn("RAW_PEER_SENTINEL", json.dumps(redacted))
         proof["resolved_flow_core_delta"].update({
             "vpn_tcp_classified": 1_000_001,
             "vpn_udp_classified": -1,

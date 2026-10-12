@@ -1052,6 +1052,17 @@ def _dns53_phase_junit_projection(proof: dict[str, Any]) -> dict[str, Any]:
     guard_packets = {
         name: counts(guard.get(name), ("packets",))["packets"] for name in guard_names
     }
+    selective_priority = proof.get("selective_direct_priority")
+    selective_priority = selective_priority if isinstance(selective_priority, dict) else {}
+    raw_selective_peer_classes = selective_priority.get("last_peer_classes")
+    raw_selective_peer_classes = raw_selective_peer_classes if isinstance(raw_selective_peer_classes, dict) else {}
+    peer_class_values = {"service_vip", "dns_vpn_vip", "client", "localhost", "other", "missing"}
+    selective_peer_classes = {}
+    for key in ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp"):
+        value = raw_selective_peer_classes.get(key)
+        selective_peer_classes[key] = value if isinstance(value, str) and value in peer_class_values else (
+            "missing" if value is None else "other"
+        )
     return {
         "phase": "native-dns53-under-global-vpn",
         "client_answers_fixed": isinstance(proof.get("client_queries"), dict)
@@ -1089,6 +1100,7 @@ def _dns53_phase_junit_projection(proof: dict[str, Any]) -> dict[str, Any]:
              "vpn_alias_tcp_client_direct", "vpn_alias_udp_client_direct"),
         ),
         "native_dnsmasq_reference": "dns53-native-daemon",
+        "selective_direct_priority_peer_classes": selective_peer_classes,
         "native_nftset_probe_targets": targets,
         "capture_router_to_owned_upstream": counts(
             proof.get("capture_router_to_owned_upstream"), ("udp_upstream", "tcp_upstream"),
@@ -1436,11 +1448,25 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         }
         last_peers = endpoint_flows_selective_after.get("last_peers")
         last_peers = last_peers if isinstance(last_peers, dict) else {}
+        def fixed_peer_class(peer: Any) -> str:
+            if not isinstance(peer, str):
+                return "missing"
+            return {
+                SERVICE_VIP: "service_vip",
+                DNS_VPN_SERVICE_VIP: "dns_vpn_vip",
+                CLIENT_IP: "client",
+                "127.0.0.1": "localhost",
+            }.get(peer, "other")
+
         selective_last_peer_matches = {
-            "vpn_domain_tcp": last_peers.get("vpn_domain_tcp") == DNS_VPN_SERVICE_VIP,
-            "vpn_domain_udp": last_peers.get("vpn_domain_udp") == DNS_VPN_SERVICE_VIP,
+            "vpn_domain_tcp": last_peers.get("vpn_domain_tcp") == SERVICE_VIP,
+            "vpn_domain_udp": last_peers.get("vpn_domain_udp") == SERVICE_VIP,
             "direct_domain_tcp": last_peers.get("direct_domain_tcp") == CLIENT_IP,
             "direct_domain_udp": last_peers.get("direct_domain_udp") == CLIENT_IP,
+        }
+        selective_last_peer_classes = {
+            key: fixed_peer_class(last_peers.get(key))
+            for key in ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp")
         }
         selective_packet_delta = {
             "direct_client_tcp": _flow_delta(packets_selective_before, packets_selective_after,
@@ -1472,6 +1498,7 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
             },
             "flow_delta": selective_flow_delta,
             "last_peer_matches": selective_last_peer_matches,
+            "last_peer_classes": selective_last_peer_classes,
             "direct_core_path_delta": selective_core["direct_lan_forward"],
             "selective_vpn_mark_delta": selective_vpn_delta,
             "packet_delta": selective_packet_delta,
@@ -1674,7 +1701,10 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "vpn_domain_tcp": 1, "vpn_domain_udp": 1,
         "direct_domain_tcp": 1, "direct_domain_udp": 1,
     }, selective_priority_proof
-    assert all(selective_priority_proof.get("last_peer_matches", {}).values()), selective_priority_proof
+    assert selective_priority_proof.get("last_peer_matches") == {
+        "vpn_domain_tcp": True, "vpn_domain_udp": True,
+        "direct_domain_tcp": True, "direct_domain_udp": True,
+    }, selective_priority_proof
     assert selective_priority_proof.get("direct_core_path_delta", 0) > 0, selective_priority_proof
     assert all(selective_priority_proof.get("selective_vpn_mark_delta", {}).get(key, 0) > 0
                for key in ("tcp", "udp")), selective_priority_proof
@@ -2808,6 +2838,17 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
         return {key: number(values.get(key, {}).get("packets")
                             if isinstance(values.get(key), dict) else None) for key in keys}
 
+    def endpoint_peer_classes(source: Any) -> dict[str, str]:
+        values = source if isinstance(source, dict) else {}
+        allowed = {"service_vip", "dns_vpn_vip", "client", "localhost", "other", "missing"}
+        result = {}
+        for key in ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp"):
+            value = values.get(key)
+            result[key] = value if isinstance(value, str) and value in allowed else (
+                "missing" if value is None else "other"
+            )
+        return result
+
     def native_empty(source: Any) -> dict[str, Any]:
         value = source if isinstance(source, dict) else {}
         enforcement = value.get("runtime_enforcement") if isinstance(value.get("runtime_enforcement"), dict) else {}
@@ -2978,6 +3019,8 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
                 key: ((dns53.get("selective_direct_priority") or {}).get("last_peer_matches") or {}).get(key) is True
                 for key in ("vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp")
             },
+            "endpoint_peer_classes": endpoint_peer_classes(
+                (dns53.get("selective_direct_priority") or {}).get("last_peer_classes")),
             "direct_core_path": number((dns53.get("selective_direct_priority") or {}).get(
                 "direct_core_path_delta")),
             "selective_vpn_marks": counters(

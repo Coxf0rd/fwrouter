@@ -296,6 +296,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
                         "resolved_flows_fixed": True,
                         "last_peer_matches": {key: True for key in (
                             "vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp")},
+                        "last_peer_classes": {
+                            "vpn_domain_tcp": "service_vip", "vpn_domain_udp": "service_vip",
+                            "direct_domain_tcp": "client", "direct_domain_udp": "client",
+                        },
                         "direct_core_path_delta": 17,
                         "selective_vpn_mark_delta": {"tcp": 3, "udp": 4},
                         "packet_delta": {
@@ -360,6 +364,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 "endpoint_last_peer_matches": {
                     "vpn_domain_tcp": True, "vpn_domain_udp": True,
                     "direct_domain_tcp": True, "direct_domain_udp": True,
+                },
+                "endpoint_peer_classes": {
+                    "vpn_domain_tcp": "service_vip", "vpn_domain_udp": "service_vip",
+                    "direct_domain_tcp": "client", "direct_domain_udp": "client",
                 },
                 "direct_core_path": 17,
                 "selective_vpn_marks": {"tcp": 3, "udp": 4},
@@ -1379,6 +1387,16 @@ class NetworkFixtureContractTests(unittest.TestCase):
         try_start = phase.index('    try:\n        _apply_selective_default(api, "vpn"')
         self.assertLess(proof_initialization, try_start)
         self.assertIn('"phase": "native-dns53-selective-direct-priority"', phase)
+        self.assertIn('selective_priority_proof.get("last_peer_matches") == {', phase)
+        for class_mapping in (
+            'SERVICE_VIP: "service_vip"',
+            'DNS_VPN_SERVICE_VIP: "dns_vpn_vip"',
+            'CLIENT_IP: "client"',
+            '"127.0.0.1": "localhost"',
+            'return "missing"',
+            '}.get(peer, "other")',
+        ):
+            self.assertIn(class_mapping, phase)
         self.assertNotIn('str(selective_primary_error)', phase)
         self.assertNotIn('str(cleanup_error)', phase)
         for required in (
@@ -1386,8 +1404,12 @@ class NetworkFixtureContractTests(unittest.TestCase):
             'selective_flows.get("results") == {',
             '"direct_domain_tcp": last_peers.get("direct_domain_tcp") == CLIENT_IP',
             '"direct_domain_udp": last_peers.get("direct_domain_udp") == CLIENT_IP',
-            '"vpn_domain_tcp": last_peers.get("vpn_domain_tcp") == DNS_VPN_SERVICE_VIP',
-            '"vpn_domain_udp": last_peers.get("vpn_domain_udp") == DNS_VPN_SERVICE_VIP',
+            '"vpn_domain_tcp": last_peers.get("vpn_domain_tcp") == SERVICE_VIP',
+            '"vpn_domain_udp": last_peers.get("vpn_domain_udp") == SERVICE_VIP',
+            '"vpn_domain_tcp": fixed_peer_class(last_peers.get("vpn_domain_tcp"))',
+            '"vpn_domain_udp": fixed_peer_class(last_peers.get("vpn_domain_udp"))',
+            '"direct_domain_tcp": fixed_peer_class(last_peers.get("direct_domain_tcp"))',
+            '"direct_domain_udp": fixed_peer_class(last_peers.get("direct_domain_udp"))',
             'selective_core["direct_lan_forward"]',
             '_core_selective_vpn_counter_snapshot()',
             '"direct_client_to_vpn_tcp"', '"direct_router_to_vpn_udp"',
