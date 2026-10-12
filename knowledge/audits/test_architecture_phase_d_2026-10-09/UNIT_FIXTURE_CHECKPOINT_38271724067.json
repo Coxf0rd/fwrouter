@@ -1,0 +1,17 @@
+{
+  "run_id": 38271724067,
+  "source": "01f187e5bf547daff343fe6399f2178cca475ed2",
+  "scope": "hosted isolated24-file unit cohort",
+  "status": "BLOCKED",
+  "counts": {
+    "passed": 376,
+    "failed": 2,
+    "skipped": 0
+  },
+  "remaining": [
+    "backend/tests/test_core_bypass.py::test_core_bypass_enable_and_disable_roundtrip",
+    "backend/tests/test_core_bypass.py::test_core_bypass_failed_disable_keeps_bypass_enabled"
+  ],
+  "application_native_bundle": "NOT RUN",
+  "production": "unchanged"
+}

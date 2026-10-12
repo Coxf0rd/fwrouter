@@ -1096,3 +1096,10 @@ Selective candidate marker is produced before external VPN proof: expected selec
 
 
 Reviewed remaining fixture corrections: unavailable unrelated dataplane status loader replaces host check/counter access only in affected component tests; adapter operation counts are now exactly one check/apply/rollback where expected. Core unit mode observation starts unknown and becomes direct only after successful apply, preserving disable verification and failed-disable persistent-state assertions. Candidate selective marker/explicit VPN-CIDR goto and actual DNSmasq module readiness seams align with pre-apply versus post-apply evidence. Hosted repeat is PENDING; no assertions/fencing/native proof are relaxed, no source/runtime changes.
+
+
+### Narrow hosted checkpoint38271724067 —376 PASS/2 FAIL
+
+Source01f187e, [run38271724067](https://github.com/Coxf0rd/fwrouter/actions/runs/38271724067):376 PASS/2 FAIL/0 SKIP,378 testcases. All apply tests, selective candidate/post-apply distinction, DNS component seams, unavailable host observation and no-op/native-schema fixtures PASS in their unit scope. Two Core bypass disable assertions remain FAIL; exact job failure cause is not established, so assertions remain strict and the next run includes whitelisted bounded job/error/stage context. Raw evidence retained in evidence/run_38271724067, reviewed summary UNIT_FIXTURE_CHECKPOINT_38271724067.json.
+
+Rather than re-running24 files or the broad suite, the same isolated gate now offers an exact residual6 cohort: Core bypass plus reconcile-watchdog, routing-global, runtime-logs, selector and watchdog. The five latter suites contain14 historical broad-run failures not yet freshly verified; this is not an allowlist or a claim of current failures. Core is the sole deliberate overlap with default24. Native/profiled suites remain rejected, empty/skipped/incomplete evidence FAIL; artifact/cleanup protections unchanged. Remote residual execution PENDING. Full26+11+1 bundle, affected and reproducibility OPEN; PhaseD BLOCKED, production/PhaseE/CD/L7 untouched.

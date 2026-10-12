@@ -30,6 +30,24 @@ def _client() -> TestClient:
     return TestClient(create_app(enable_startup_tasks=False))
 
 
+def _core_bypass_job_failure_context(job: dict) -> dict[str, str | None]:
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    apply_result = result.get("apply") if isinstance(result.get("apply"), dict) else {}
+    dataplane = apply_result.get("dataplane") if isinstance(apply_result.get("dataplane"), dict) else {}
+
+    def _bounded(value) -> str | None:  # noqa: ANN001
+        return str(value)[:240] if value is not None else None
+
+    return {
+        "status": _bounded(job.get("status")),
+        "error_code": _bounded(job.get("error_code")),
+        "error_message": _bounded(job.get("error_message")),
+        "result_stage": _bounded(result.get("stage") or apply_result.get("stage")),
+        "dataplane_error_code": _bounded(dataplane.get("error_code")),
+        "dataplane_error_message": _bounded(dataplane.get("error_message") or dataplane.get("message")),
+    }
+
+
 class _FailingApplyAdapter:
     def check(self, plan):  # noqa: ANN001
         return DataplaneResult(
@@ -206,7 +224,7 @@ def test_core_bypass_enable_and_disable_roundtrip(
         run_now=True,
     )
 
-    assert disable_job["status"] == "success"
+    assert disable_job["status"] == "success", _core_bypass_job_failure_context(disable_job)
     assert adapter.calls == ["check", "apply", "check", "apply"]
     assert adapter.readbacks == ["direct", "direct"]
     assert get_core_bypass_state()["enabled"] is False
@@ -239,9 +257,16 @@ def test_core_bypass_failed_disable_keeps_bypass_enabled(
         run_now=True,
     )
 
-    assert disable_job["status"] == "failed"
+    assert disable_job["status"] == "failed", _core_bypass_job_failure_context(disable_job)
     assert get_core_bypass_state()["enabled"] is True
-    assert get_module_state("core")["apply_state"] == "failed"
+    core_module = get_module_state("core")
+    assert core_module["apply_state"] == "failed", {
+        "job": _core_bypass_job_failure_context(disable_job),
+        "core": {
+            key: str(core_module.get(key))[:240]
+            for key in ("runtime_state", "apply_state", "error_code", "error_message")
+        },
+    }
     assert get_module_state("core")["runtime_state"] == "paused"
 
 

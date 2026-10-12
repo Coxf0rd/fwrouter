@@ -82,6 +82,18 @@ UNIT_FIXTURE_PATHS = (
     "installer/tests/test_homeassistant_action.py",
     "ui/tests/settings-events.test.js",
 )
+UNIT_FIXTURE_RESIDUAL_PATHS = (
+    "backend/tests/test_core_bypass.py",
+    "backend/tests/test_reconcile_watchdog.py",
+    "backend/tests/test_routing_global_wave1.py",
+    "backend/tests/test_runtime_logs.py",
+    "backend/tests/test_selector.py",
+    "backend/tests/test_watchdog.py",
+)
+UNIT_FIXTURE_COHORTS = {
+    "default": UNIT_FIXTURE_PATHS,
+    "residual": UNIT_FIXTURE_RESIDUAL_PATHS,
+}
 PACKET_EXECUTION_PATH = "tests/application_acceptance/test_packet_dataplane.py"
 EXECUTION_PROFILES = {"qualified-child-process", "hosted-isolated-compose",
                       KERNEL_DATAPLANE_EXECUTION_PROFILE, PACKET_EXECUTION_PROFILE}
@@ -1454,12 +1466,13 @@ def parse_l0_yaml(relative: str, source: str) -> Any:
 def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
     manifest = load_manifest(Path(args.manifest))
     rows = {row["path"]: row for row in manifest["test_files"]}
-    if set(UNIT_FIXTURE_PATHS) - rows.keys():
+    cohort_paths = UNIT_FIXTURE_COHORTS[args.cohort]
+    if set(cohort_paths) - rows.keys():
         raise GateError("fixed unit fixture cohort contains paths absent from the validated manifest")
-    cohort = [rows[path] for path in UNIT_FIXTURE_PATHS]
+    cohort = [rows[path] for path in cohort_paths]
     if any(row.get("native") or row.get("execution_profile") for row in cohort):
         raise GateError("unit fixture cohort cannot contain native or qualified-profile suites")
-    missing = [path for path in UNIT_FIXTURE_PATHS if not (ROOT / path).is_file()]
+    missing = [path for path in cohort_paths if not (ROOT / path).is_file()]
     if missing:
         raise GateError("fixed unit fixture files are missing: " + ", ".join(missing))
 
@@ -1580,7 +1593,7 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
         report = {
             "schema_version": 1, "kind": "fwrouter-unit-fixture-validation/v1",
             "source_commit": revision.strip(), "manifest_version": manifest["version"],
-            "paths": list(UNIT_FIXTURE_PATHS), "executions": executions,
+            "cohort": args.cohort, "paths": list(cohort_paths), "executions": executions,
             "junit_identity_limitations": [
                 "Node's built-in JUnit reporter has no stable node IDs; its case count/status is cross-checked against exact TAP IDs."
             ],
@@ -1894,6 +1907,7 @@ def parser() -> argparse.ArgumentParser:
     unit_fixtures.add_argument("--manifest", default=str(MANIFEST))
     unit_fixtures.add_argument("--output")
     unit_fixtures.add_argument("--artifact-dir")
+    unit_fixtures.add_argument("--cohort", choices=tuple(UNIT_FIXTURE_COHORTS), default="default")
     unit_fixtures.set_defaults(func=command_validate_unit_fixtures)
     lint_changed = sub.add_parser("lint-changed")
     lint_changed.add_argument("--base", required=True)

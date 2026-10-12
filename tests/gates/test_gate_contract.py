@@ -176,10 +176,31 @@ class GateContractTests(unittest.TestCase):
     def test_fixed_unit_fixture_cohort_is_exact_catalogued_and_non_native(self) -> None:
         self.assertEqual(24, len(gate.UNIT_FIXTURE_PATHS))
         self.assertEqual(len(gate.UNIT_FIXTURE_PATHS), len(set(gate.UNIT_FIXTURE_PATHS)))
+        self.assertEqual(
+            {
+                "backend/tests/test_reconcile_watchdog.py",
+                "backend/tests/test_routing_global_wave1.py",
+                "backend/tests/test_runtime_logs.py",
+                "backend/tests/test_selector.py",
+                "backend/tests/test_watchdog.py",
+                "backend/tests/test_core_bypass.py",
+            },
+            set(gate.UNIT_FIXTURE_RESIDUAL_PATHS),
+        )
+        self.assertEqual(6, len(gate.UNIT_FIXTURE_RESIDUAL_PATHS))
+        self.assertEqual(
+            {"backend/tests/test_core_bypass.py"},
+            set(gate.UNIT_FIXTURE_PATHS) & set(gate.UNIT_FIXTURE_RESIDUAL_PATHS),
+        )
+        self.assertEqual(
+            {"default": gate.UNIT_FIXTURE_PATHS, "residual": gate.UNIT_FIXTURE_RESIDUAL_PATHS},
+            gate.UNIT_FIXTURE_COHORTS,
+        )
         rows = {row["path"]: row for row in self.manifest["test_files"]}
-        self.assertTrue(set(gate.UNIT_FIXTURE_PATHS) <= rows.keys())
-        self.assertTrue(all(not rows[path].get("native") and not rows[path].get("execution_profile")
-                            for path in gate.UNIT_FIXTURE_PATHS))
+        for paths in gate.UNIT_FIXTURE_COHORTS.values():
+            self.assertTrue(set(paths) <= rows.keys())
+            self.assertTrue(all(not rows[path].get("native") and not rows[path].get("execution_profile")
+                                for path in paths))
 
     def test_unit_fixture_junit_contract_rejects_missing_and_skipped_cases(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fwrouter-unit-junit-contract-") as temp:

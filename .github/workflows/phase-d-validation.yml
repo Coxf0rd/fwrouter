@@ -45,6 +45,7 @@ jobs:
               "ci:validate-packet": "packet-diagnostic",
               "ci:validate-udp-unit": "udp-unit",
               "ci:validate-unit-fixtures": "unit-fixtures",
+              "ci:validate-unit-residual": "unit-residual",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
           selected = [stage for marker, stage in markers.items() if marker in message]
@@ -60,7 +61,7 @@ jobs:
   unit-fixtures:
     name: Fixed isolated unit fixture cohort
     needs: [select-stage]
-    if: needs.select-stage.outputs.stage == 'unit-fixtures'
+    if: needs.select-stage.outputs.stage == 'unit-fixtures' || needs.select-stage.outputs.stage == 'unit-residual'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -79,16 +80,19 @@ jobs:
       - name: Install hashed test dependencies
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
       - name: Run exact fixed unit fixture cohort
+        env:
+          UNIT_FIXTURE_COHORT: ${{ needs.select-stage.outputs.stage == 'unit-residual' && 'residual' || 'default' }}
         run: |
           mkdir -p "$RUNNER_TEMP/phase-d-unit-fixtures"
           python tests/gates/gate.py validate-unit-fixtures \
+            --cohort "$UNIT_FIXTURE_COHORT" \
             --output "$RUNNER_TEMP/phase-d-unit-fixtures/unit-fixtures-report.json" \
             --artifact-dir "$RUNNER_TEMP/phase-d-unit-fixtures"
       - name: Retain per-file JUnit, redacted logs, and cohort report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: phase-d-unit-fixtures-${{ github.sha }}
+          name: phase-d-unit-fixtures-${{ needs.select-stage.outputs.stage }}-${{ github.sha }}
           path: ${{ runner.temp }}/phase-d-unit-fixtures/**
           if-no-files-found: warn
           retention-days: 30
