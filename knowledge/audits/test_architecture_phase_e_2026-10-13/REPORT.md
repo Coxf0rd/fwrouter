@@ -60,3 +60,10 @@ This is package publication authority for a reviewed candidate, not approval of 
 
 
 Targetecad77a rejected before native execution (38312388324/38312388295): one new flag predicate accidentally required `diagnostic_only=false` for every non-singleton scope, breaking existing ordinary synthetic receipts and the accepted Provider/kernel/packet scopes. Corrected to explicit per-scope semantics: singleton diagnostic requirestrue; ordinary cannot be labeled diagnostic; specialized kernel/packet scopes retain their existing flags and full exact-native/profile/node proof. Regression fixtures now exercise their real `diagnostic_only=true` shape. This is a caught CI-validation regression, not an application failure; neither rejected run is claimed PASS.
+
+
+### Targeted hosted validation38312819928 — PASS
+
+Source2ec589d: [run38312819928](https://github.com/Coxf0rd/fwrouter/actions/runs/38312819928) PASS. Pinned workflow lint, syntax/bootstrap/isolation/catalog and changed contract suites PASS; historical seven exact IDs PASS. Actual Xray native application singleton1/0/0, owned cleanup and the new strict main-smoke validator PASS on the same source/plan/profile/runtime inputs. Fast38312819923 PASS. Publisher jobs intentionally skipped on this ordinary validation push after the new early gate; no package publication. Native success and validator success are both recorded in `TARGETED_CHECKPOINT_38312819928.json`. This remains branch evidence, not actual PR/main event.
+
+Next permitted gate uses the normal affected job body through temporary `ci:main-equivalent`, fixed Phase E baseline3e12141, full policy-selected affected coverage once (no repeat blanket D campaign). The separate read-only GHCR cold/warm consumer marker verifies registry/interface changes against the existing immutable image; no dependency version/image rebuild or publication is required. Temporary normal-job branch trigger will be removed afterward.
