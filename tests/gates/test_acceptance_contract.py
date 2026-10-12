@@ -3632,7 +3632,8 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual(34, calls["apply"])
         observer_source = ast.get_source_segment(worker_source, observer) or ""
         for required in ("original_preflight(*args, **kwargs)", "return original_result",
-                         'state["count"] < 64', '"unknown_missing_count"',
+                         'state["count"] < 64', '"selective_degraded_unknown_missing_count"',
+                         '"selective_unknown_missing_count"', '"vpn_unknown_missing_count"',
                          '"FWROUTER_ACCEPTANCE_PREFLIGHT "'):
             self.assertIn(required, observer_source)
         for forbidden in ("json.dumps(original_result)", "str(original_result)",
