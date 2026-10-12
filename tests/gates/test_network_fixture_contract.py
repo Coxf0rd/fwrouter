@@ -234,6 +234,24 @@ class NetworkFixtureContractTests(unittest.TestCase):
                         ("router_dns_vpn_direct_output", 0), ("router_dns_vpn_direct_forward", 0))},
                     "selection_stable": True,
                     "cleanup": {"owned_paths_cleaned": True},
+                    "selective_direct_priority": {
+                        "selective_mode_with_vpn_default": True,
+                        "resolved_flows_fixed": True,
+                        "last_peer_matches": {key: True for key in (
+                            "vpn_domain_tcp", "vpn_domain_udp", "direct_domain_tcp", "direct_domain_udp")},
+                        "direct_core_path_delta": 17,
+                        "selective_vpn_mark_delta": {"tcp": 3, "udp": 4},
+                        "packet_delta": {
+                            "direct_client_tcp": 2, "direct_client_udp": 3,
+                            "direct_client_to_vpn_tcp": 0, "direct_client_to_vpn_udp": 0,
+                            "direct_router_to_vpn_tcp": 0, "direct_router_to_vpn_udp": 0,
+                            "provider_vless_tcp": 1,
+                        },
+                        "native_selector_stable": True,
+                        "provider_selection_stable": True,
+                        "provider_api_calls_unchanged": True,
+                        "state_restored": True,
+                    },
                 },
                 "ignored_large_diagnostic": "x" * 100_000,
             }
@@ -244,7 +262,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             self.assertEqual(encoded["schema"], "fwrouter-packet-test-flows/v2")
             summary = encoded["phases"]
             self.assertEqual(set(summary), {"direct_before_vpn", "vpn", "protected_direct", "udp_capability",
-                                            "emergency_direct", "vpn_after_reentry", "native_dns53_policy"})
+                                            "emergency_direct", "vpn_after_reentry", "native_dns53_policy",
+                                            "native_dns53_selective_direct_priority"})
             self.assertEqual(summary["protected_direct"]["endpoint"], {"tcp": 1, "udp": 1})
             self.assertEqual(summary["protected_direct"]["capture"], {"tcp_9080": 2, "udp_9081": 1})
             self.assertEqual(summary["protected_direct"]["core_vpn_classified"],
@@ -277,6 +296,27 @@ class NetworkFixtureContractTests(unittest.TestCase):
                                                              "direct_domain_tcp": 1, "direct_domain_udp": 1})
             self.assertTrue(all(dns53["endpoint_peer_proof"].values()))
             self.assertTrue(dns53["selection_stable"] and dns53["cleanup"])
+            selective = summary["native_dns53_selective_direct_priority"]
+            self.assertEqual(selective, {
+                "selective_mode_with_vpn_default": True,
+                "resolved_flows_fixed": True,
+                "endpoint_last_peer_matches": {
+                    "vpn_domain_tcp": True, "vpn_domain_udp": True,
+                    "direct_domain_tcp": True, "direct_domain_udp": True,
+                },
+                "direct_core_path": 17,
+                "selective_vpn_marks": {"tcp": 3, "udp": 4},
+                "packet_delta": {
+                    "direct_client_tcp": 2, "direct_client_udp": 3,
+                    "direct_client_to_vpn_tcp": 0, "direct_client_to_vpn_udp": 0,
+                    "direct_router_to_vpn_tcp": 0, "direct_router_to_vpn_udp": 0,
+                    "provider_vless_tcp": 1,
+                },
+                "native_selector_stable": True,
+                "provider_selection_stable": True,
+                "provider_api_calls_unchanged": True,
+                "state_restored": True,
+            })
 
     def test_packet_phase_diagnostics_are_bounded_junit_json_emitted_before_probes_assert(self):
         tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))

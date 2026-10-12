@@ -924,3 +924,6 @@ Run [38209343291](https://github.com/Coxf0rd/fwrouter/actions/runs/38209343291),
 
 
 Source-only packet extension now separately exercises selective mode with VPN default and the existing explicit DIRECT-domain rule: public API/jobs apply mode/default, real DNS-resolved TCP/UDP flows distinguish LAN-source DIRECT from VPN endpoint-source forwarding, nft counters and fixed capture tuples prove each route, provider-call bracket must remain unchanged, and mode/default are restored with readback. Existing full-VPN assertions remain separate. Native packet validation of this extension and selector target switch is **NOT RUN** pending hosted execution.
+
+
+Run [38209940670](https://github.com/Coxf0rd/fwrouter/actions/runs/38209940670), source `9b4749d`, passed syntax/lint but stopped in the network-fixture contract (38 PASS/1 FAIL) because its exact capture-summary section set omitted the newly added selective DNS section. The correction supplies a full selective fixture proof and asserts its exact bounded projection, including zero extra provider calls, retaining the4096-byte cap. Native/packet job was SKIPPED/NOT RUN. Artifact retained under `evidence/run_38209940670/`; fetching the full workflow log initially hit the GitHub logs receiver timeout, which is a retrieval issue separate from test failure.
