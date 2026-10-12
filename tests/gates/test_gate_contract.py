@@ -208,6 +208,43 @@ class GateContractTests(unittest.TestCase):
             with self.assertRaisesRegex(gate.GateError, "exact pytest node ID"):
                 gate.validate_junit_report(path, 4096, 1, expected)
 
+    def test_node_tap_file_wrapper_is_one_test_case_with_file_level_status(self) -> None:
+        test_path = "ui/tests/settings-events.test.js"
+        tap = ("TAP version 13\n# Subtest: ui/tests/settings-events.test.js\n"
+               "ok 1 - ui/tests/settings-events.test.js\n  ---\n  duration_ms: 4\n  ...\n"
+               "1..1\n# tests 1\n# pass 1\n# fail 0\n")
+        self.assertEqual({test_path: "passed"}, gate.node_status_from_tap(
+            tap, test_path, include_file_status=False))
+        self.assertEqual({test_path: "passed"}, gate.node_status_from_tap(tap, test_path))
+        with self.assertRaisesRegex(gate.GateError, "no observed test cases"):
+            gate.node_status_from_tap("TAP version 13\n1..0\n# tests 0\n", test_path,
+                                      include_file_status=False, require_observed=True)
+
+    def test_node_tap_nested_file_wrapper_preserves_only_actual_case_identity(self) -> None:
+        test_path = "ui/tests/settings-events.test.js"
+        tap = ("TAP version 13\n# Subtest: ui/tests/settings-events.test.js\n"
+               "    # Subtest: rejects malformed event\n"
+               "    ok 1 - rejects malformed event\n"
+               "    1..1\n"
+               "ok 1 - ui/tests/settings-events.test.js\n1..1\n")
+        cases, file_status = gate.node_tap_results(tap, test_path, require_observed=True)
+        self.assertEqual({test_path + "::rejects malformed event": "passed"}, cases)
+        self.assertEqual("passed", file_status)
+        failed_wrapper = tap.replace("ok 1 - ui/tests/settings-events.test.js",
+                                     "not ok 1 - ui/tests/settings-events.test.js")
+        failed_cases, failed_file_status = gate.node_tap_results(
+            failed_wrapper, test_path, require_observed=True)
+        self.assertEqual({test_path + "::rejects malformed event": "passed"}, failed_cases)
+        self.assertEqual("failed", failed_file_status)
+
+    def test_suite_root_has_private_owned_tmp_directory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-suite-root-contract-") as temp:
+            root, reports = gate.create_suite_root(Path(temp), "suite")
+            self.assertTrue((root / ".fwrouter-gate-test-root-owned").is_file())
+            self.assertTrue((root / "tmp").is_dir())
+            self.assertEqual(0, (root / "tmp").stat().st_mode & 0o077)
+            self.assertTrue(reports.is_relative_to(root))
+
     def test_published_junit_redacts_diagnostics_and_preserves_case_identity(self) -> None:
         raw = (b'<testsuite tests="1"><properties><property name="api_token" value="SECRET_VALUE"/>'
                b'</properties><testcase classname="tests.test_example" name="test_case">'

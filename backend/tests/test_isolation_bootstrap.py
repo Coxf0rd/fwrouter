@@ -120,7 +120,9 @@ def test_qualified_docker_xray_copy_requires_inspected_reserved_container_and_ow
 ) -> None:
     container_name = "native-xray-readback-test-0123456789ab"
     container_id = "a" * 64
-    profile = {"container_name": container_name, "suite_nonce": "0123456789abcdef" * 2}
+    image_id = "sha256:" + "c" * 64
+    profile = {"container_name": container_name, "suite_nonce": "0123456789abcdef" * 2,
+               "image_id": image_id}
     command = ["docker", "cp", f"{container_id}:/etc/xray/config.json", str(tmp_path / "config.json")]
     inspected = SimpleNamespace(stdout=f"{container_id}\n")
 

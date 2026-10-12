@@ -2694,6 +2694,11 @@ class AcceptanceContractTests(unittest.TestCase):
             repeat = json.loads(json.dumps(receipt))
             repeat["suite_nonce"] = "f" * 32
             repeat["application_receipt"]["suite_nonce"] = repeat["suite_nonce"]
+            repeat["profile"]["suite_nonce"] = repeat["suite_nonce"]
+            repeat_profile_sha = hashlib.sha256((json.dumps(
+                repeat["profile"], sort_keys=True, indent=2) + "\n").encode()).hexdigest()
+            repeat["profile_sha256"] = repeat_profile_sha
+            repeat["application_receipt"]["profile_sha256"] = repeat_profile_sha
             path.write_text(json.dumps(repeat), encoding="utf-8")
             self.assertEqual([], aggregate_hosted.validate_functional_receipt(
                 path, plan, expected, runtime_inputs, suite="functional-ordinary"))

@@ -1136,6 +1136,8 @@ def create_suite_root(owned: Path, suite_id: str) -> tuple[Path, Path]:
     )
     reports = root / "reports"
     reports.mkdir(mode=0o700)
+    temporary = root / "tmp"
+    temporary.mkdir(mode=0o700)
     return root, reports
 
 
@@ -1263,10 +1265,11 @@ def routine_node_override_names(manifest: dict[str, Any], path: str) -> list[str
     )
 
 
-def node_status_from_tap(output: str, test_path: str) -> dict[str, str]:
-    # Node's TAP reporter gives exact nested test names. Preserve them as raw
-    # names with their file path so historical file-level IDs remain distinct.
+def node_tap_results(output: str, test_path: str, *, require_observed: bool = False
+                     ) -> tuple[dict[str, str], str]:
+    """Return actual TAP cases and aggregate file status separately."""
     statuses: dict[str, str] = {}
+    wrapper_status: str | None = None
     stack: list[tuple[int, str]] = []
     for line in output.splitlines():
         indent = len(line) - len(line.lstrip(" "))
@@ -1275,26 +1278,54 @@ def node_status_from_tap(output: str, test_path: str) -> dict[str, str]:
         if subtest:
             while stack and stack[-1][0] >= indent:
                 stack.pop()
-            stack.append((indent, subtest.group(1)))
+            name = subtest.group(1)
+            if not (indent == 0 and name in {test_path, Path(test_path).name}):
+                stack.append((indent, name))
             continue
         match = re.match(r"(?:ok|not ok)\s+\d+\s+-\s+(.+?)(?:\s+#\s+(SKIP|TODO).*)?$", text)
         if not match:
             continue
-        while stack and stack[-1][0] >= indent:
-            stack.pop()
         name, directive = match.groups()
-        parts = [entry[1] for entry in stack] + [name]
-        node = test_path + "::" + " > ".join(parts)
+        closes_subtest = bool(stack and stack[-1][0] == indent and stack[-1][1] == name)
+        while stack and stack[-1][0] >= indent and not closes_subtest:
+            stack.pop()
+        if indent == 0 and name in {test_path, Path(test_path).name}:
+            node = test_path
+        else:
+            parts = [entry[1] for entry in stack] if closes_subtest else [entry[1] for entry in stack] + [name]
+            node = test_path + "::" + " > ".join(parts)
         status = "failed" if text.startswith("not ok") else ("skipped" if directive == "SKIP" else "passed")
-        statuses[node] = status
-        stack.append((indent, name))
-    if not statuses and "not ok" in output:
+        if node == test_path:
+            wrapper_status = status
+        else:
+            statuses[node] = status
+        if closes_subtest:
+            stack.pop()
+        elif node != test_path:
+            stack.append((indent, name))
+    if not statuses and wrapper_status is None and require_observed:
+        raise GateError("Node TAP output contains no observed test cases")
+    if not statuses and wrapper_status is None and "not ok" in output:
         statuses[f"{test_path}::unparsed-tap-failure"] = "failed"
+    elif not statuses and wrapper_status is not None:
+        # The wrapper is the only observed case when no nested cases exist.
+        statuses[test_path] = wrapper_status
     elif not statuses:
         statuses[f"{test_path}::node-test-file"] = "passed"
-    statuses[test_path] = "failed" if any(value == "failed" for value in statuses.values()) else (
+    aggregate = "failed" if (wrapper_status == "failed"
+                             or any(value == "failed" for value in statuses.values())) else (
         "skipped" if statuses and all(value == "skipped" for value in statuses.values()) else "passed"
     )
+    return statuses, aggregate
+
+
+def node_status_from_tap(output: str, test_path: str, *, include_file_status: bool = True,
+                         require_observed: bool = False) -> dict[str, str]:
+    # Routine classification retains the file-level aggregate used by existing
+    # baselines. Strict cohort accounting consumes node_tap_results directly.
+    statuses, aggregate = node_tap_results(output, test_path, require_observed=require_observed)
+    if include_file_status:
+        statuses[test_path] = aggregate
     return statuses
 
 
@@ -1454,6 +1485,7 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
             suite_env = dict(env)
             suite_env["FWROUTER_PYTEST_COORDINATOR_ROOT"] = str(suite_root.resolve())
             suite_env["FWROUTER_GATE_NODE_REPORT"] = str(node_report_path)
+            suite_env["TMPDIR"] = str(suite_root / "tmp")
             if path.startswith("ui/"):
                 argv = [
                     "node", "--test", "--test-reporter=tap", "--test-reporter-destination=stdout",
@@ -1497,6 +1529,7 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
                 log_bytes = redact_failure_output(output).encode("utf-8")
                 (artifact_root / f"{artifact_id}.log").write_bytes(log_bytes)
             observed: dict[str, str] = {}
+            tap_file_status: str | None = None
             validation_error = None
             junit_case_names: list[str] = []
             if junit_bytes:
@@ -1506,8 +1539,10 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
                 except GateError as exc:
                     junit_error = str(exc)
             try:
-                observed = (node_status_from_tap(output, path) if path.startswith("ui/") else
-                            node_status_from_plugin(node_report_path, row["max_artifact_bytes"]))
+                if path.startswith("ui/"):
+                    observed, tap_file_status = node_tap_results(output, path, require_observed=True)
+                else:
+                    observed = node_status_from_plugin(node_report_path, row["max_artifact_bytes"])
             except GateError as exc:
                 observed = {}
                 validation_error = str(exc)
@@ -1523,12 +1558,14 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
                         validation_error = str(exc)
             junit_digest = hashlib.sha256(junit_bytes).hexdigest() if junit_bytes else None
             complete = (validation_error is None and bool(observed)
-                        and all(status == "passed" for status in observed.values()))
+                        and all(status == "passed" for status in observed.values())
+                        and tap_file_status in (None, "passed"))
             status = "passed" if code == 0 and not truncated and complete else "failed"
             failed |= status != "passed"
             executions.append({
                 "path": path, "status": status, "exit_code": code,
                 "node_count": len(observed), "node_status": observed,
+                **({"file_status": tap_file_status} if path.startswith("ui/") else {}),
                 "junit_case_count": len(junit_case_names),
                 "junit_case_names": junit_case_names,
                 "junit_report_bytes": len(junit_bytes),
@@ -1646,6 +1683,7 @@ def command_run(args: argparse.Namespace) -> int:
                     suite_env = dict(env)
                     suite_env["FWROUTER_PYTEST_COORDINATOR_ROOT"] = str(suite_root.resolve())
                     suite_env["FWROUTER_GATE_NODE_REPORT"] = str(node_report_path)
+                    suite_env["TMPDIR"] = str(suite_root / "tmp")
                     rel = path.removeprefix("backend/")
                     argv = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-p", "no:cacheprovider",
                             "--basetemp", str(suite_root / "pytest-tmp"),
@@ -1701,6 +1739,7 @@ def command_run(args: argparse.Namespace) -> int:
                 node_report_path = reports_root / f"{report_id}.nodes.json"
                 suite_env["FWROUTER_PYTEST_COORDINATOR_ROOT"] = str(suite_root.resolve())
                 suite_env["FWROUTER_GATE_NODE_REPORT"] = str(node_report_path)
+                suite_env["TMPDIR"] = str(suite_root / "tmp")
                 argv = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-p", "no:cacheprovider", "--basetemp", str(suite_root / "pytest-tmp"), rel]
                 if plan.get("manual_subset"):
                     argv.extend(["-m", f"level(value='{plan['subset_selector']['level']}')"])
@@ -1709,6 +1748,8 @@ def command_run(args: argparse.Namespace) -> int:
                 if cwd == ROOT:
                     suite_env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "backend/tests"), str(ROOT / "backend")])
             elif path.startswith("ui/"):
+                suite_root, _reports_root = create_suite_root(owned, row["id"])
+                suite_env["TMPDIR"] = str(suite_root / "tmp")
                 argv = ["node", "--test", "--test-reporter=tap", path]
                 cwd = ROOT
             elif path == "installer/test-install.sh":
