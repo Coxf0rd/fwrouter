@@ -142,8 +142,7 @@ def _table_fingerprint() -> dict[str, Any]:
         "routing_global_state": _query_rows(
             """
             SELECT id, desired_mode, applied_mode, selective_default, server_mode,
-                   desired_fixed_server_id, applied_fixed_server_id,
-                   active_auto_server_id, fixed_server_until
+                   desired_fixed_server_id, applied_fixed_server_id, fixed_server_until
             FROM routing_global_state
             ORDER BY id
             """
@@ -196,9 +195,15 @@ def _source_fingerprint() -> dict[str, Any]:
 
 
 def current_mihomo_input_fingerprint(routing: dict[str, Any] | None = None) -> dict[str, Any]:
+    routing_projection = dict(routing) if isinstance(routing, dict) else None
+    if routing_projection is not None:
+        # Core's current vpn-auto selection is enforced by the independent
+        # selection revision fence. It does not alter Mihomo's generated
+        # structure; intent and fixed-server fields remain fingerprinted.
+        routing_projection.pop("active_auto_server_id", None)
     payload = {
         "version": FINGERPRINT_VERSION,
-        "routing": routing if isinstance(routing, dict) else None,
+        "routing": routing_projection,
         "tables": _table_fingerprint(),
         "files": _input_files_fingerprint(),
         "source": _source_fingerprint(),

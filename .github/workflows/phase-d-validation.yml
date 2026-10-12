@@ -156,6 +156,8 @@ jobs:
             tests/test_apply_pipeline.py::test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_policy_ready \
             tests/test_apply_pipeline.py::test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_closed_for_vpn_default \
             tests/test_mihomo_config_runtime.py::test_reconcile_mihomo_selective_default_fast_requires_full_compile_when_udp_guard_sequence_changes \
+            tests/test_mihomo_config_runtime.py::test_mihomo_fingerprint_ignores_derived_auto_selection_but_tracks_generation_inputs \
+            tests/test_mihomo_config_runtime.py::test_mihomo_publication_fence_rejects_newer_selection_with_stable_derived_input_hash \
             tests/test_routing_drift_reapply.py::test_set_selective_default_reapplies_when_live_dataplane_drift_is_detected \
             tests/test_routing_drift_reapply.py::test_set_selective_default_does_not_retry_unmarked_fast_failure
       - name: Run exact manual-rules actor and apply-audit regressions
