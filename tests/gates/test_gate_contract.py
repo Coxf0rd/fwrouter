@@ -202,8 +202,9 @@ class GateContractTests(unittest.TestCase):
             "tests/gates/test_gate_contract.py", "tests/gates/test_acceptance_contract.py",
             "backend/tests/test_live_probe_cache.py", "backend/tests/test_runtime_prewarm.py",
             "backend/tests/test_main_startup_scrub.py", "backend/tests/test_ui_state.py",
+            "backend/tests/test_state_routes.py",
         }, set(gate.UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS))
-        self.assertEqual(8, len(gate.UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS))
+        self.assertEqual(9, len(gate.UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS))
         rows = {row["path"]: row for row in self.manifest["test_files"]}
         for paths in gate.UNIT_FIXTURE_COHORTS.values():
             self.assertTrue(set(paths) <= rows.keys())

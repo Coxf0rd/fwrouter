@@ -99,6 +99,7 @@ UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS = (
     "backend/tests/test_runtime_prewarm.py",
     "backend/tests/test_main_startup_scrub.py",
     "backend/tests/test_ui_state.py",
+    "backend/tests/test_state_routes.py",
 )
 UNIT_FIXTURE_COHORTS = {
     "default": UNIT_FIXTURE_PATHS,

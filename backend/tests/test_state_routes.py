@@ -110,21 +110,24 @@ def test_public_system_responses_do_not_expose_database_paths_or_exceptions(monk
     def failed_db_session():
         raise sqlite3.OperationalError("unable to open /srv/private/fwrouter.db")
 
-    monkeypatch.setattr(system, "db_session", failed_db_session)
-    monkeypatch.setattr(system, "get_cached_schema_state", failed_db_session)
-    client = TestClient(create_app(enable_startup_tasks=False))
+    with monkeypatch.context() as faultpatch:
+        faultpatch.setattr(system, "db_session", failed_db_session)
+        faultpatch.setattr(system, "get_cached_schema_state", failed_db_session)
+        client = TestClient(create_app(enable_startup_tasks=False))
 
-    for path in ("/api/v2/health", "/api/v2/system/summary"):
-        payload = client.get(path).json()
-        assert payload["ok"] is False
-        assert payload["error"]["code"] == "DATABASE_UNAVAILABLE"
-        assert payload["error"]["message"] == "The control-plane database is unavailable."
-        assert "/srv/private" not in str(payload)
-        assert "unable to open" not in str(payload)
+        for path in ("/api/v2/health", "/api/v2/system/summary"):
+            payload = client.get(path).json()
+            assert payload["ok"] is False
+            assert payload["error"]["code"] == "DATABASE_UNAVAILABLE"
+            assert payload["error"]["message"] == "The control-plane database is unavailable."
+            assert "/srv/private" not in str(payload)
+            assert "unable to open" not in str(payload)
 
-    monkeypatch.undo()
     response = TestClient(create_app(enable_startup_tasks=False)).get("/api/v2/system/summary")
     assert "paths" not in response.json()["data"]
+    from fwrouter_api.services import runtime_prewarm
+
+    assert runtime_prewarm._PREWARM_RUNNING is True
 
 
 def test_routing_global_get_does_not_expire_fixed_server_ttl(
