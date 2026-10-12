@@ -1,0 +1,52 @@
+{
+  "run_id": 38291091850,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38291091850",
+  "source": "37ae2b66694c9e0344dcef305f118ec6afe41339",
+  "cohort": "residual6",
+  "counts": {
+    "passed": 149,
+    "failed": 0,
+    "skipped": 0
+  },
+  "status": "PASS_UNIT_SCOPE_ONLY",
+  "files": [
+    {
+      "path": "backend/tests/test_core_bypass.py",
+      "passed": 4,
+      "junit_report_sha256": "6217b3468825cb96ee1f912d809dbf3029dfa670223ee68f9d9696ae159628bb"
+    },
+    {
+      "path": "backend/tests/test_reconcile_watchdog.py",
+      "passed": 2,
+      "junit_report_sha256": "35150c2c8fbc18ac228ebb89d4d94316dbaf8cf9430818b643710558897dd7e0"
+    },
+    {
+      "path": "backend/tests/test_routing_global_wave1.py",
+      "passed": 2,
+      "junit_report_sha256": "b0ac3b7a1a487a7c58cf677875c386972e30af8842c515bf5f29bca1cf6acf0b"
+    },
+    {
+      "path": "backend/tests/test_runtime_logs.py",
+      "passed": 7,
+      "junit_report_sha256": "81fa61c8cf0d57f7675370a3023fd7a1c9054c2552aa17779caa1d69f70b2f79"
+    },
+    {
+      "path": "backend/tests/test_selector.py",
+      "passed": 61,
+      "junit_report_sha256": "815a45ad7304adfaca787e5d3952805feca86d3c5b1128eed9e38672456389ae"
+    },
+    {
+      "path": "backend/tests/test_watchdog.py",
+      "passed": 73,
+      "junit_report_sha256": "ffeaf4cfada5d39c87eb331b3bf8100528529dad93cb8931077a1dbee4beadef"
+    }
+  ],
+  "preflight": {
+    "gate": 57,
+    "acceptance": 108,
+    "network_fixture": 41,
+    "smoke": 13
+  },
+  "application_native_bundle": "PENDING",
+  "production": "unchanged"
+}

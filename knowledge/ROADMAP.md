@@ -1,5 +1,7 @@
 # FWRouter engineering roadmap mirror
 
+Latest residual unit acceptance38291091850 (37ae2b6):149 PASS/0 FAIL/0 SKIP; preflight57/108/41/13 PASS. Known shared fixture/runner clusters are closed only in unit scope. Next mandatory gate: qualified native + fixed-base affected L0-L5 + exact26 ordinary/11 Provider-kernel/1 packet bundle and green-only repeat. PhaseD BLOCKED pending complete current-source acceptance; no L6/L7/production/PhaseE/CD execution.
+
 Latest narrow hosted run38270929907 (abc3b33):371 PASS/7 FAIL/0 SKIP across378 unit/component testcases; earlier362/15 checkpoint and57 gate/108 acceptance preflight retained as history. Confirmed fixture corrections preserve actual application transitions and strict guards; native forwarding acceptance is separate. Seven remaining apply/bypass fixture paths under targeted correction; full26+11+1 bundle and affected reproducibility remain OPEN. PhaseD BLOCKED; no production/PhaseE/CD/L7 changes.
 
 Latest narrow hosted run38265018734 (2384fd7): fixed24 cohort353 distinct testcase PASS/24 FAIL/0 SKIP; reported354 includes one synthetic Node file-summary. Xray debounce21/21 PASS; gate54 PASS; acceptance106 PASS/1 FAIL/1 ERROR. Confirmed suite TMPDIR/Node accounting and incomplete receipt/native fixtures require targeted correction; other application assertions remain under attribution. No broad rerun or production changes; PhaseD BLOCKED. See PhaseD REPORT and UNIT_FIXTURE_CHECKPOINT_38265018734.json.
