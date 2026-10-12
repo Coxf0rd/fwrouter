@@ -1,6 +1,6 @@
 {
-  "image_ref": "ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:a740f6dfb93434004417fb886570d08a2e8f429c2331df0af6b2dd67bd7d31f2",
-  "lock_sha256": "a516426543e80fe598dbb4a19c45957a0f1a39fe0e66f134a7706310803e92d2",
+  "image_ref": "ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:60a64001e52af2ea8a3c470f9026ffd46d36705c8db58216eaa8218a5fa88d70",
+  "lock_sha256": "36c687ec8a2f6d78be8af5829d459fce666c3da65de5c402fd83feb41738847a",
   "platform": "linux/amd64",
   "schema": "fwrouter-acceptance-dependency-consumer-ref/v1"
 }
