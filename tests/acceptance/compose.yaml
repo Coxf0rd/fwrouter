@@ -2,7 +2,7 @@ services:
   application:
     build:
       context: ${FWROUTER_ACCEPTANCE_CONTEXT:?prepared allowlisted context required}
-      dockerfile: tests/acceptance/Dockerfile
+      dockerfile: ${FWROUTER_ACCEPTANCE_DOCKERFILE:?profile-selected acceptance Dockerfile required}
       args:
         BASE_IMAGE: ${FWROUTER_ACCEPTANCE_BASE_IMAGE:?immutable base image required}
         ACCEPTANCE_RUN_ID: ${FWROUTER_ACCEPTANCE_RUN_ID:?unique run id required}

@@ -32,6 +32,9 @@ BINARY_SHA256 = {
 }
 CHROMIUM_BUNDLE_SHA256 = "647bf352134d85b31b35213471c67a07400f36b32e60b136e2651745f7320232"
 CHROMIUM_BINARY_SHA256 = "2fa605e3639b8cfbe8037d0b8e0324dbf7f9e6ad7beb345374ecd26764e2d92b"
+ACCEPTANCE_DIR = Path(__file__).resolve().parent
+DEPENDENCY_LOCK_PATH = ACCEPTANCE_DIR / "dependency-image.lock.json"
+DEPENDENCY_CONSUMER_LOCK_PATH = ACCEPTANCE_DIR / "dependency-image-consumer.lock.json"
 INPUTS = {
     "xray": {
         "version": "26.2.6",
@@ -233,6 +236,33 @@ def write_github_env(path: Path, values: dict[str, str]) -> None:
             stream.write(f"{key}={value}\n")
 
 
+def load_dependency_image_reference() -> tuple[str, str]:
+    """Read the anonymous consumer pin and bind it to the checked-in dependency lock."""
+    try:
+        dependency_lock = json.loads(DEPENDENCY_LOCK_PATH.read_text(encoding="utf-8"))
+        consumer_lock = json.loads(DEPENDENCY_CONSUMER_LOCK_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("checked-in dependency image locks are unavailable or invalid") from exc
+    if not isinstance(dependency_lock, dict) or not isinstance(consumer_lock, dict):
+        raise ValueError("checked-in dependency image locks must be JSON objects")
+    lock_sha256 = hashlib.sha256(json.dumps(
+        dependency_lock, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
+    image_ref = consumer_lock.get("image_ref")
+    if (consumer_lock.get("schema") != "fwrouter-acceptance-dependency-consumer-ref/v1"
+            or consumer_lock.get("platform") != "linux/amd64"
+            or consumer_lock.get("lock_sha256") != lock_sha256
+            or not isinstance(image_ref, str)
+            or not image_ref.startswith("ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:")
+            or len(image_ref.rsplit("sha256:", 1)[-1]) != 64
+            or any(char not in "0123456789abcdef" for char in image_ref.rsplit("sha256:", 1)[-1])):
+        raise ValueError("consumer image reference is not bound to the reviewed amd64 dependency lock")
+    if (dependency_lock.get("schema") != "fwrouter-acceptance-dependency-lock/v1"
+            or dependency_lock.get("platform") != "linux/amd64"):
+        raise ValueError("dependency lock schema or platform is not supported")
+    return image_ref, lock_sha256
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runner-temp", type=Path, required=True)
@@ -247,7 +277,14 @@ def main() -> int:
     if root.exists() or root.is_symlink():
         raise SystemExit("provisioning directory already exists; use a fresh hosted job")
     root.mkdir(mode=0o700)
+    try:
+        dependency_image_ref, dependency_lock_sha256 = load_dependency_image_reference()
+    except ValueError as exc:
+        shutil.rmtree(root, ignore_errors=True)
+        raise SystemExit(str(exc)) from exc
     outputs: dict[str, str] = {"FWROUTER_ACCEPTANCE_BASE_IMAGE": BASE_IMAGE,
+                               "FWROUTER_ACCEPTANCE_DEPENDENCY_IMAGE": dependency_image_ref,
+                               "FWROUTER_ACCEPTANCE_DEPENDENCY_LOCK_SHA256": dependency_lock_sha256,
                                "FWROUTER_ACCEPTANCE_PLAYWRIGHT_VERSION": PLAYWRIGHT_VERSION,
                                "FWROUTER_ACCEPTANCE_CHROMIUM_VERSION": CHROMIUM_VERSION}
     source_hashes: dict[str, str] = {}
@@ -302,6 +339,8 @@ def main() -> int:
         if not valid_asset_measurements(asset_measurements):
             raise ValueError("provisioned asset measurements failed their numeric schema")
         manifest = {"schema": "fwrouter-hosted-inputs/v1", "base_image": BASE_IMAGE,
+                    "dependency_image": dependency_image_ref,
+                    "dependency_lock_sha256": dependency_lock_sha256,
                     "playwright": PLAYWRIGHT_VERSION,
                     "asset_measurements": asset_measurements,
                     "chromium": {"version": CHROMIUM_VERSION, "revision": CHROMIUM_REVISION,

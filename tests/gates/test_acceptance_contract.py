@@ -3755,6 +3755,107 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertFalse(launcher.valid_image_measurements(
             {**measurements, "download_url": "https://assets.example.invalid/private"}))
 
+    def test_dependency_reference_requires_exact_digest_and_lock_binding(self):
+        lock = json.loads(launcher.DEPENDENCY_LOCK_PATH.read_text(encoding="utf-8"))
+        consumer = json.loads(launcher.DEPENDENCY_CONSUMER_LOCK_PATH.read_text(encoding="utf-8"))
+        lock_digest = hashlib.sha256(json.dumps(
+            lock, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")).hexdigest()
+        env = {"FWROUTER_ACCEPTANCE_DEPENDENCY_IMAGE": consumer["image_ref"],
+               "FWROUTER_ACCEPTANCE_DEPENDENCY_LOCK_SHA256": lock_digest}
+        with tempfile.TemporaryDirectory(prefix="fwrouter-dependency-lock-contract-") as temporary:
+            dependency_path = Path(temporary) / "dependency.json"
+            consumer_path = Path(temporary) / "consumer.json"
+            dependency_path.write_text(json.dumps(lock), encoding="utf-8")
+            consumer_path.write_text(json.dumps(consumer), encoding="utf-8")
+            with mock.patch.object(launcher, "DEPENDENCY_LOCK_PATH", dependency_path), \
+                    mock.patch.object(launcher, "DEPENDENCY_CONSUMER_LOCK_PATH", consumer_path):
+                self.assertEqual((consumer["image_ref"], lock_digest),
+                                 launcher.validate_dependency_image_reference(env))
+                invalid_digest = dict(consumer, image_ref="ghcr.io/coxf0rd/fwrouter-acceptance-dependencies:latest")
+                consumer_path.write_text(json.dumps(invalid_digest), encoding="utf-8")
+                invalid_env = dict(env, FWROUTER_ACCEPTANCE_DEPENDENCY_IMAGE=invalid_digest["image_ref"])
+                with self.assertRaises(launcher.NotRun):
+                    launcher.validate_dependency_image_reference(invalid_env)
+                invalid_lock = dict(consumer, lock_sha256="0" * 64)
+                consumer_path.write_text(json.dumps(invalid_lock), encoding="utf-8")
+                with self.assertRaises(launcher.NotRun):
+                    launcher.validate_dependency_image_reference(env)
+
+    def test_dependency_base_image_requires_digest_arch_label_repo_and_size(self):
+        image_ref = "ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:" + "a" * 64
+        lock_digest = "b" * 64
+        image = {"Id": "sha256:" + "c" * 64, "RepoDigests": [image_ref],
+                 "Os": "linux", "Architecture": "amd64", "Size": 1024,
+                 "Config": {"Labels": {
+                     "io.fwrouter.acceptance.dependencies.lock-sha256": lock_digest}}}
+        qualified = launcher.validate_dependency_base_image([image], image_ref=image_ref,
+                                                              lock_digest=lock_digest)
+        self.assertEqual(image["Id"], qualified["image_id"])
+        self.assertEqual(1024, qualified["size_bytes"])
+        mutations = (
+            ("Architecture", "arm64"),
+            ("Os", "windows"),
+            ("RepoDigests", ["ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:" + "d" * 64]),
+            ("Size", launcher.DOCKER_ROOT_MAX_DEPENDENCY_IMAGE_BYTES + 1),
+        )
+        for field, bad_value in mutations:
+            invalid = json.loads(json.dumps(image))
+            invalid[field] = bad_value
+            with self.subTest(field=field), self.assertRaises(launcher.NotRun):
+                launcher.validate_dependency_base_image([invalid], image_ref=image_ref,
+                                                         lock_digest=lock_digest)
+        wrong_label = json.loads(json.dumps(image))
+        wrong_label["Config"]["Labels"]["io.fwrouter.acceptance.dependencies.lock-sha256"] = "0" * 64
+        with self.assertRaises(launcher.NotRun):
+            launcher.validate_dependency_base_image([wrong_label], image_ref=image_ref,
+                                                     lock_digest=lock_digest)
+
+    def test_docker_root_measurement_uses_info_path_and_backing_filesystem_capacity(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-docker-root-contract-") as temporary:
+            root_path = Path(temporary)
+            info = SimpleNamespace(returncode=0, stdout=(str(root_path) + "\n").encode("utf-8"), stderr=b"")
+            fs = SimpleNamespace(f_blocks=100, f_frsize=4096, f_bavail=25, f_bfree=30)
+            with mock.patch.object(launcher.subprocess, "run", return_value=info) as docker_info, \
+                    mock.patch.object(launcher.os, "statvfs", return_value=fs):
+                measured = launcher.measure_docker_root("/usr/bin/docker", cwd=root_path, env={"PATH": "/bin"})
+            docker_info.assert_called_once_with(
+                ["/usr/bin/docker", "info", "--format", "{{.DockerRootDir}}"], cwd=root_path,
+                env={"PATH": "/bin"}, capture_output=True, timeout=10, check=False)
+            self.assertEqual(100 * 4096, measured["total_bytes"])
+            self.assertEqual(70 * 4096, measured["used_bytes"])
+            self.assertEqual(25 * 4096, measured["available_bytes"])
+            self.assertEqual(hashlib.sha256(str(root_path.resolve()).encode()).hexdigest(),
+                             measured["path_sha256"])
+            self.assertNotIn(str(root_path), json.dumps(measured))
+            low_space = dict(measured, available_bytes=1)
+            with mock.patch.object(launcher, "measure_docker_root", return_value=low_space):
+                with self.assertRaises(launcher.NotRun):
+                    launcher.record_docker_root_sample({}, "after_build", docker="docker", cwd=root_path,
+                                                       env={}, minimum_free=2)
+
+    def test_dependency_receipt_requires_all_phase_samples_and_does_not_claim_peak(self):
+        sample = {"path_sha256": "a" * 64, "device_major": 8, "device_minor": 1,
+                  "total_bytes": 1000, "used_bytes": 500, "available_bytes": 400}
+        measurements = {
+            "base_image_present_before_build": False, "base_image_inspect_seconds": 0.1,
+            "base_image_pull_seconds": 1.0, "base_image_pull_count": 1,
+            "compose_build_seconds": 2.0, "built_image_bytes": 100,
+            "docker_root_budget_bytes": launcher.DOCKER_ROOT_COLD_PULL_MIN_FREE_BYTES,
+            "docker_root_samples": {stage: dict(sample) for stage in
+                                    ("before_pull", "after_pull", "after_build", "after_tests", "after_cleanup")},
+        }
+        self.assertTrue(launcher.valid_image_measurements(measurements, require_complete_docker_root=True))
+        for stage in ("after_tests", "after_cleanup"):
+            incomplete = json.loads(json.dumps(measurements))
+            del incomplete["docker_root_samples"][stage]
+            self.assertFalse(launcher.valid_image_measurements(incomplete, require_complete_docker_root=True))
+            self.assertTrue(launcher.valid_image_measurements(incomplete))
+        malformed = json.loads(json.dumps(measurements))
+        malformed["docker_root_samples"]["after_tests"]["private_path"] = "/tmp/docker-root"
+        self.assertFalse(launcher.valid_image_measurements(malformed))
+        self.assertNotIn("peak", " ".join(measurements["docker_root_samples"]))
+
     def test_provider_cohort_is_the_fixed_prior_member_delay_failures(self):
         expected = {
             "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
@@ -4313,6 +4414,8 @@ class AcceptanceContractTests(unittest.TestCase):
 
     def test_compose_config_rejects_host_integration_and_extra_environment(self):
         run_id = "run-id"
+        dependency_ref = "ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:" + "a" * 64
+        dockerfile = launcher.DEPENDENCY_APPLICATION_DOCKERFILE
         with tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-compose-") as temp:
             profile = Path(temp) / "profile.json"
             profile.write_text("{}")
@@ -4322,6 +4425,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 "tmpfs": ["/tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777"],
                 "command": ["-c", "import signal; signal.pause()"],
                 "labels": {launcher.OWNER_LABEL: launcher.OWNER_VALUE, launcher.RUN_LABEL: run_id},
+                "build": {"dockerfile": dockerfile, "args": {"BASE_IMAGE": dependency_ref}},
                 "networks": {"isolated": {"ipv4_address": launcher.GENERAL_NETWORK["address"]}},
                 "volumes": [{"source": str(profile),
                     "target": "/run/fwrouter-acceptance/profile.json", "read_only": True}],
@@ -4346,39 +4450,66 @@ class AcceptanceContractTests(unittest.TestCase):
                                       "gateway": launcher.GENERAL_NETWORK["gateway"]}]},
                 "labels": {launcher.OWNER_LABEL: launcher.OWNER_VALUE,
                                                launcher.RUN_LABEL: run_id}}}}
-            launcher.validate_compose_config(config, run_id=run_id, profile_path=profile)
+            launcher.validate_compose_config(config, run_id=run_id, profile_path=profile,
+                                             base_image_ref=dependency_ref, application_dockerfile=dockerfile)
+            wrong_base = json.loads(json.dumps(config))
+            wrong_base["services"]["application"]["build"]["args"]["BASE_IMAGE"] = "python:3.12-slim"
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_compose_config(wrong_base, run_id=run_id, profile_path=profile,
+                                                 base_image_ref=dependency_ref,
+                                                 application_dockerfile=dockerfile)
+            wrong_dockerfile = json.loads(json.dumps(config))
+            wrong_dockerfile["services"]["application"]["build"]["dockerfile"] = launcher.LEGACY_APPLICATION_DOCKERFILE
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_compose_config(wrong_dockerfile, run_id=run_id, profile_path=profile,
+                                                 base_image_ref=dependency_ref,
+                                                 application_dockerfile=dockerfile)
+            with self.assertRaises(TypeError):
+                launcher.validate_compose_config(config, run_id=run_id, profile_path=profile)
             wrong_handoff = json.loads(json.dumps(config))
             wrong_handoff["services"]["application"]["networks"]["isolated"]["ipv4_address"] = "172.18.0.2"
             with self.assertRaises(launcher.NotRun):
-                launcher.validate_compose_config(wrong_handoff, run_id=run_id, profile_path=profile)
+                launcher.validate_compose_config(wrong_handoff, run_id=run_id, profile_path=profile,
+                                                 base_image_ref=dependency_ref, application_dockerfile=dockerfile)
             wrong_subnet = json.loads(json.dumps(config))
             wrong_subnet["networks"]["isolated"]["ipam"]["config"][0]["subnet"] = "172.19.0.0/24"
             with self.assertRaises(launcher.NotRun):
-                launcher.validate_compose_config(wrong_subnet, run_id=run_id, profile_path=profile)
+                launcher.validate_compose_config(wrong_subnet, run_id=run_id, profile_path=profile,
+                                                 base_image_ref=dependency_ref, application_dockerfile=dockerfile)
             polluted = json.loads(json.dumps(config))
             polluted["services"]["application"]["environment"]["HTTP_PROXY"] = "http://example.invalid"
             with self.assertRaises(launcher.NotRun):
-                launcher.validate_compose_config(polluted, run_id=run_id, profile_path=profile)
+                launcher.validate_compose_config(polluted, run_id=run_id, profile_path=profile,
+                                                 base_image_ref=dependency_ref, application_dockerfile=dockerfile)
             host_port = json.loads(json.dumps(config))
             host_port["services"]["application"]["ports"] = ["10085:10085"]
             with self.assertRaises(launcher.NotRun):
-                launcher.validate_compose_config(host_port, run_id=run_id, profile_path=profile)
+                launcher.validate_compose_config(host_port, run_id=run_id, profile_path=profile,
+                                                 base_image_ref=dependency_ref, application_dockerfile=dockerfile)
             kernel = json.loads(json.dumps(config))
             kernel["services"]["application"]["user"] = "0:0"
             kernel["services"]["application"]["cap_add"] = ["NET_ADMIN"]
             kernel["services"]["application"]["build"] = {"args": {
-                "FWROUTER_KERNEL_PREFLIGHT": "1", "DEBIAN_SNAPSHOT": launcher.KERNEL_DEBIAN_SNAPSHOT}}
-            launcher.validate_compose_config(kernel, run_id=run_id, profile_path=profile, kernel_preflight=True)
+                "BASE_IMAGE": "python:3.12-slim@sha256:" + "b" * 64,
+                "FWROUTER_KERNEL_PREFLIGHT": "1", "DEBIAN_SNAPSHOT": launcher.KERNEL_DEBIAN_SNAPSHOT},
+                "dockerfile": launcher.LEGACY_APPLICATION_DOCKERFILE}
+            launcher.validate_compose_config(kernel, run_id=run_id, profile_path=profile, kernel_preflight=True,
+                                             base_image_ref="python:3.12-slim@sha256:" + "b" * 64,
+                                             application_dockerfile=launcher.LEGACY_APPLICATION_DOCKERFILE)
             extra_capability = json.loads(json.dumps(kernel))
             extra_capability["services"]["application"]["cap_add"] = ["NET_ADMIN", "SYS_ADMIN"]
             with self.assertRaises(launcher.NotRun):
                 launcher.validate_compose_config(extra_capability, run_id=run_id,
-                                                 profile_path=profile, kernel_preflight=True)
+                                                 profile_path=profile, kernel_preflight=True,
+                                                 base_image_ref="python:3.12-slim@sha256:" + "b" * 64,
+                                                 application_dockerfile=launcher.LEGACY_APPLICATION_DOCKERFILE)
             user_downgrade = json.loads(json.dumps(kernel))
             user_downgrade["services"]["application"]["user"] = "10001:10001"
             with self.assertRaises(launcher.NotRun):
                 launcher.validate_compose_config(user_downgrade, run_id=run_id,
-                                                 profile_path=profile, kernel_preflight=True)
+                                                 profile_path=profile, kernel_preflight=True,
+                                                 base_image_ref="python:3.12-slim@sha256:" + "b" * 64,
+                                                 application_dockerfile=launcher.LEGACY_APPLICATION_DOCKERFILE)
 
     def test_general_handoff_host_preflight_refuses_overlapping_routes(self):
         success = SimpleNamespace(returncode=0, stdout=b'[{"dst":"10.0.0.0/8"}]', stderr=b"")

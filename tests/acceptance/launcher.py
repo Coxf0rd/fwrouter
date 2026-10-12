@@ -31,6 +31,16 @@ OWNER_LABEL = "io.fwrouter.acceptance.owner"
 RUN_LABEL = "io.fwrouter.acceptance.run"
 OWNER_VALUE = "fwrouter-test-harness-v1"
 PROFILE_SCHEMA = "fwrouter-acceptance-profile/v2"
+DEPENDENCY_CONSUMER_LOCK_PATH = ROOT / "tests/acceptance/dependency-image-consumer.lock.json"
+DEPENDENCY_LOCK_PATH = ROOT / "tests/acceptance/dependency-image.lock.json"
+DEPENDENCY_APPLICATION_DOCKERFILE = "tests/acceptance/Application.Dependencies.Dockerfile"
+LEGACY_APPLICATION_DOCKERFILE = "tests/acceptance/Dockerfile"
+DOCKER_ROOT_MAX_DEPENDENCY_IMAGE_BYTES = 4 * 1024 ** 3
+DOCKER_ROOT_COLD_PULL_MIN_FREE_BYTES = 5 * 1024 ** 3
+DOCKER_ROOT_WARM_BUILD_MIN_FREE_BYTES = 1024 ** 3
+DOCKER_ROOT_AFTER_BUILD_MIN_FREE_BYTES = 512 * 1024 ** 2
+DOCKER_ROOT_AFTER_RUN_MIN_FREE_BYTES = 512 * 1024 ** 2
+DOCKER_ROOT_AFTER_CLEANUP_MIN_FREE_BYTES = 256 * 1024 ** 2
 MAX_RECEIPT_BYTES = 2 * 1024 * 1024
 MAX_TEST_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_TEST_SECONDS = 900
@@ -596,7 +606,8 @@ def export_build_context(root: Path, destination: Path, *, tracked: list[str], b
 
 
 def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path: Path,
-                            kernel_preflight: bool = False) -> None:
+                            kernel_preflight: bool = False, base_image_ref: str,
+                            application_dockerfile: str) -> None:
     services = config.get("services")
     networks = config.get("networks")
     if not isinstance(services, dict) or set(services) != {"application"}:
@@ -604,6 +615,14 @@ def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path
     if not isinstance(networks, dict) or set(networks) != {"isolated"}:
         raise NotRun("Compose must define exactly one isolated network")
     service = services["application"]
+    build = service.get("build", {})
+    build_args = build.get("args") if isinstance(build, dict) else None
+    if (not isinstance(build, dict) or not isinstance(build_args, dict)
+            or not isinstance(base_image_ref, str) or not base_image_ref
+            or not isinstance(application_dockerfile, str) or not application_dockerfile
+            or build.get("dockerfile") != application_dockerfile
+            or build_args.get("BASE_IMAGE") != base_image_ref):
+        raise NotRun("application image base or Dockerfile differs from the selected profile")
     forbidden_fields = {"env_file", "secrets", "configs", "volumes_from", "extra_hosts",
                         "sysctls", "runtime", "devices", "pid", "ipc", "privileged"}
     if forbidden_fields & service.keys():
@@ -1216,7 +1235,8 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
     if services["endpoint"].get("sysctls") != {"net.ipv4.ip_unprivileged_port_start": "53"}:
         raise NotRun("endpoint must use only the fixed namespaced DNS port sysctl")
     build_args = app.get("build", {}).get("args", {})
-    if (build_args.get("BASE_IMAGE") != base_image_ref
+    if (app.get("build", {}).get("dockerfile") != LEGACY_APPLICATION_DOCKERFILE
+            or build_args.get("BASE_IMAGE") != base_image_ref
             or build_args.get("FWROUTER_KERNEL_PREFLIGHT") != "1"
             or build_args.get("FWROUTER_KERNEL_PACKET") != "1"
             or build_args.get("DEBIAN_SNAPSHOT") != KERNEL_DEBIAN_SNAPSHOT):
@@ -2994,14 +3014,16 @@ def _docker_id_present(kind: str, identifier: str, *, cwd: Path, env: dict[str, 
     return bool(_docker_text(argv, cwd=cwd, env=env))
 
 
-def valid_image_measurements(value: Any) -> bool:
+def valid_image_measurements(value: Any, *, require_complete_docker_root: bool = False) -> bool:
     legacy_fields = {
         "base_image_present_before_build", "base_image_inspect_seconds",
         "compose_build_seconds", "built_image_bytes",
     }
     pull_fields = {"base_image_pull_seconds", "base_image_pull_count"}
-    if not isinstance(value, dict) or frozenset(value) not in {frozenset(legacy_fields),
-                                                               frozenset(legacy_fields | pull_fields)}:
+    docker_root_fields = {"docker_root_budget_bytes", "docker_root_samples"}
+    allowed = {frozenset(legacy_fields), frozenset(legacy_fields | pull_fields),
+               frozenset(legacy_fields | pull_fields | docker_root_fields)}
+    if not isinstance(value, dict) or frozenset(value) not in allowed:
         return False
     if not isinstance(value["base_image_present_before_build"], bool):
         return False
@@ -3025,7 +3047,170 @@ def valid_image_measurements(value: Any) -> bool:
         if value["base_image_present_before_build"] and pull_count != 0:
             return False
     size = value["built_image_bytes"]
-    return size is None or (isinstance(size, int) and not isinstance(size, bool) and size > 0)
+    if size is not None and (not isinstance(size, int) or isinstance(size, bool) or size <= 0):
+        return False
+    if docker_root_fields & value.keys():
+        if (not docker_root_fields <= value.keys()
+                or value["docker_root_budget_bytes"] != DOCKER_ROOT_COLD_PULL_MIN_FREE_BYTES
+                or not isinstance(value["docker_root_samples"], dict)):
+            return False
+        samples = value["docker_root_samples"]
+        if set(samples) - {"before_pull", "after_pull", "after_build", "after_tests", "after_cleanup"}:
+            return False
+        required_samples = {"before_pull", "after_pull", "after_build", "after_tests", "after_cleanup"}
+        if require_complete_docker_root and set(samples) != required_samples:
+            return False
+        for sample in samples.values():
+            if (not isinstance(sample, dict)
+                    or set(sample) != {"path_sha256", "device_major", "device_minor", "total_bytes",
+                                      "used_bytes", "available_bytes"}
+                    or not SHA_RE.fullmatch(str(sample.get("path_sha256", "")))):
+                return False
+            for key in ("device_major", "device_minor", "total_bytes", "used_bytes", "available_bytes"):
+                item = sample[key]
+                if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+                    return False
+            if (sample["total_bytes"] <= 0 or sample["used_bytes"] > sample["total_bytes"]
+                    or sample["available_bytes"] > sample["total_bytes"]):
+                return False
+    return True
+
+
+def validate_dependency_image_reference(env: dict[str, str]) -> tuple[str, str]:
+    try:
+        lock = json.loads(DEPENDENCY_LOCK_PATH.read_text(encoding="utf-8"))
+        consumer = json.loads(DEPENDENCY_CONSUMER_LOCK_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise NotRun("checked-in dependency image locks are unavailable or invalid") from exc
+    if not isinstance(lock, dict) or not isinstance(consumer, dict):
+        raise NotRun("checked-in dependency image locks must be JSON objects")
+    lock_digest = hashlib.sha256(json.dumps(
+        lock, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")).hexdigest()
+    image_ref = consumer.get("image_ref")
+    expected_ref = env.get("FWROUTER_ACCEPTANCE_DEPENDENCY_IMAGE")
+    if (consumer.get("schema") != "fwrouter-acceptance-dependency-consumer-ref/v1"
+            or consumer.get("platform") != "linux/amd64"
+            or consumer.get("lock_sha256") != lock_digest
+            or env.get("FWROUTER_ACCEPTANCE_DEPENDENCY_LOCK_SHA256") != lock_digest
+            or expected_ref != image_ref
+            or not isinstance(image_ref, str)
+            or not re.fullmatch(r"ghcr\.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:[0-9a-f]{64}", image_ref)
+            or lock.get("schema") != "fwrouter-acceptance-dependency-lock/v1"
+            or lock.get("platform") != "linux/amd64"):
+        raise NotRun("application dependency image reference is not bound to the checked-in amd64 lock")
+    return image_ref, lock_digest
+
+
+def measure_docker_root(docker: str, *, cwd: Path, env: dict[str, str]) -> dict[str, int | str]:
+    """Read DockerRootDir and its backing filesystem without changing host state."""
+    try:
+        proc = subprocess.run([docker, "info", "--format", "{{.DockerRootDir}}"], cwd=cwd,
+                              env=env, capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise NotRun("bounded Docker root inspection failed") from exc
+    if proc.returncode != 0 or len(proc.stdout) > 4096:
+        raise NotRun("Docker root inspection failed or exceeded its output bound")
+    try:
+        raw_path = proc.stdout.decode("utf-8", "strict").strip()
+    except UnicodeDecodeError as exc:
+        raise NotRun("Docker root inspection returned an invalid path") from exc
+    if not raw_path or "\n" in raw_path or "\r" in raw_path:
+        raise NotRun("Docker root inspection returned an invalid path")
+    root_path = Path(raw_path)
+    try:
+        resolved = root_path.resolve(strict=True)
+        info = resolved.stat()
+        if not root_path.is_absolute() or not resolved.is_dir():
+            raise OSError("not a directory")
+        stats = os.statvfs(resolved)
+    except OSError as exc:
+        raise NotRun("Docker root backing filesystem cannot be measured") from exc
+    total = stats.f_blocks * stats.f_frsize
+    available = stats.f_bavail * stats.f_frsize
+    if total <= 0 or available < 0 or available > total:
+        raise NotRun("Docker root filesystem returned invalid capacity")
+    return {
+        "path_sha256": hashlib.sha256(os.fsencode(str(resolved))).hexdigest(),
+        "device_major": os.major(info.st_dev),
+        "device_minor": os.minor(info.st_dev),
+        "total_bytes": total,
+        "used_bytes": max(0, total - stats.f_bfree * stats.f_frsize),
+        "available_bytes": available,
+    }
+
+
+def record_docker_root_sample(measurements: dict[str, Any], stage: str, *, docker: str,
+                              cwd: Path, env: dict[str, str], minimum_free: int) -> dict[str, Any]:
+    sample = measure_docker_root(docker, cwd=cwd, env=env)
+    measurements.setdefault("docker_root_samples", {})[stage] = sample
+    if sample["available_bytes"] < minimum_free:
+        raise NotRun(f"Docker root free space is below the {stage} acceptance bound")
+    return sample
+
+
+def validate_dependency_base_image(rows: Any, *, image_ref: str,
+                                   lock_digest: str) -> dict[str, Any]:
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        raise NotRun("dependency base image inspect returned an invalid identity")
+    image = rows[0]
+    repo_digests = image.get("RepoDigests")
+    config = image.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    size = image.get("Size")
+    if (not re.fullmatch(r"sha256:[0-9a-f]{64}", str(image.get("Id", "")))
+            or image.get("Os") != "linux" or image.get("Architecture") != "amd64"
+            or not isinstance(repo_digests, list)
+            or not any(isinstance(item, str) and item.endswith("@" + image_ref.rsplit("@", 1)[1])
+                       for item in repo_digests)
+            or not isinstance(labels, dict)
+            or labels.get("io.fwrouter.acceptance.dependencies.lock-sha256") != lock_digest
+            or not isinstance(size, int) or isinstance(size, bool)
+            or size <= 0 or size > DOCKER_ROOT_MAX_DEPENDENCY_IMAGE_BYTES):
+        raise NotRun("dependency base image digest, manifest label, platform, or size is unqualified")
+    return {"image_id": image["Id"], "size_bytes": size,
+            "digest": image_ref.rsplit("@", 1)[1], "lock_sha256": lock_digest}
+
+
+def prepare_dependency_base_image(docker: str, image_ref: str, *, lock_digest: str,
+                                  cwd: Path, env: dict[str, str],
+                                  receipt: dict[str, Any]) -> dict[str, Any]:
+    present, inspect_seconds = _base_image_cache_presence(docker, image_ref, cwd=cwd, env=env)
+    measurements = receipt.setdefault("image_measurements", {})
+    measurements.update({"base_image_present_before_build": present,
+                         "base_image_inspect_seconds": inspect_seconds,
+                         "base_image_pull_seconds": 0.0, "base_image_pull_count": 0,
+                         "docker_root_budget_bytes": DOCKER_ROOT_COLD_PULL_MIN_FREE_BYTES,
+                         "docker_root_samples": {}})
+    record_docker_root_sample(
+        measurements, "before_pull", docker=docker, cwd=cwd, env=env,
+        minimum_free=(DOCKER_ROOT_WARM_BUILD_MIN_FREE_BYTES if present
+                      else DOCKER_ROOT_COLD_PULL_MIN_FREE_BYTES))
+    pull_record = {"status": "cached" if present else "not_started", "attempts": 0,
+                   "exit_code": None, "duration_seconds": 0.0, "stderr": ""}
+    receipt["dependency_base_image"] = pull_record
+    if not present:
+        started = time.monotonic()
+        result = _docker_exec_capture([docker, "pull", "--platform", "linux/amd64", image_ref],
+                                     cwd=cwd, env=env, timeout=300)
+        duration = round(time.monotonic() - started, 3)
+        measurements["base_image_pull_seconds"] = duration
+        measurements["base_image_pull_count"] = 1
+        pull_record.update({"status": "passed" if result.get("exit_code") == 0 else "failed",
+                            "attempts": 1, "exit_code": result.get("exit_code"),
+                            "duration_seconds": duration,
+                            "stderr": _redact_public(result.get("stderr", ""), limit=2048)})
+        if result.get("exit_code") != 0:
+            raise NotRun("anonymous dependency image pull failed")
+    record_docker_root_sample(measurements, "after_pull", docker=docker, cwd=cwd, env=env,
+                              minimum_free=DOCKER_ROOT_WARM_BUILD_MIN_FREE_BYTES)
+    rows = _docker_json([docker, "image", "inspect", image_ref], cwd=cwd, env=env,
+                        stage="immutable dependency base image inspect")
+    receipt["dependency_base_image"] = validate_dependency_base_image(
+        rows, image_ref=image_ref, lock_digest=lock_digest)
+    receipt["dependency_base_image"]["pull"] = pull_record
+    pull_record["status"] = "cached" if present else "passed"
+    return receipt["dependency_base_image"]
 
 
 def _base_image_cache_presence(docker: str, image: str, *, cwd: Path,
@@ -3119,6 +3304,19 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     docker = shutil.which("docker", path=docker_env.get("PATH"))
     if not docker:
         raise NotRun("Docker CLI is unavailable on the qualified hosted runner")
+    packet_mode = suite == _PACKET_DIAGNOSTIC_SUITE
+    kernel_preflight = suite in _KERNEL_SUITES
+    kernel_dataplane = suite in {*_KERNEL_DATAPLANE_SUITES, _PACKET_DIAGNOSTIC_SUITE}
+    kernel_profile = kernel_preflight or kernel_dataplane
+    dependency_profile = not kernel_profile and suite != "recovery"
+    if dependency_profile:
+        dependency_image_ref, dependency_lock_digest = validate_dependency_image_reference(env)
+        selected_base_image = dependency_image_ref
+        selected_dockerfile = DEPENDENCY_APPLICATION_DOCKERFILE
+    else:
+        dependency_lock_digest = ""
+        selected_base_image = env["FWROUTER_ACCEPTANCE_BASE_IMAGE"]
+        selected_dockerfile = LEGACY_APPLICATION_DOCKERFILE
     root = runner_temp / project
     root.mkdir(mode=0o700)
     artifact_dir = runner_temp / f"{project}-artifacts"
@@ -3126,7 +3324,6 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     profile_dir = runner_temp / f"{project}-profile"
     profile_dir.mkdir(mode=0o755)
     profile_path = profile_dir / "profile.json"
-    packet_mode = suite == _PACKET_DIAGNOSTIC_SUITE
     packet_profile_paths = {
         "router": profile_path,
         "client": profile_dir / "client-profile.json",
@@ -3137,9 +3334,6 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     output_host = artifact_dir / "pytest-output.txt"
     compose_file = ROOT / "tests/acceptance/compose.yaml"
     compose_files = [compose_file]
-    kernel_preflight = suite in _KERNEL_SUITES
-    kernel_dataplane = suite in {*_KERNEL_DATAPLANE_SUITES, _PACKET_DIAGNOSTIC_SUITE}
-    kernel_profile = kernel_preflight or kernel_dataplane
     if kernel_profile:
         compose_files.append(ROOT / "tests/acceptance/compose.kernel-preflight.yaml")
     if packet_mode:
@@ -3153,7 +3347,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         "plan_digest": validate_plan_digest(env.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST", "")),
         "suite_nonce": run_id, "source_revision": subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip(),
-        "project": project, "suite": suite, "base_image": env["FWROUTER_ACCEPTANCE_BASE_IMAGE"],
+        "project": project, "suite": suite, "base_image": selected_base_image,
         "binary_sha256": {key: value["sha256"] for key, value in binaries.items()},
         "artifacts": {"directory": str(artifact_dir), "report": str(report_path),
                       "junit": str(junit_host), "pytest_log": str(output_host),
@@ -3177,7 +3371,8 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     image_id: str | None = None
     docker_env.update({
         "FWROUTER_ACCEPTANCE_CONTEXT": str(context),
-        "FWROUTER_ACCEPTANCE_BASE_IMAGE": env["FWROUTER_ACCEPTANCE_BASE_IMAGE"],
+        "FWROUTER_ACCEPTANCE_BASE_IMAGE": selected_base_image,
+        "FWROUTER_ACCEPTANCE_DOCKERFILE": selected_dockerfile,
         "FWROUTER_ACCEPTANCE_RUN_ID": run_id,
         "FWROUTER_ACCEPTANCE_PROFILE_FILE": str(profile_path),
         "FWROUTER_ACCEPTANCE_SOURCE_REVISION": subprocess.run(
@@ -3296,7 +3491,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 base_image_ref=env["FWROUTER_ACCEPTANCE_BASE_IMAGE"])
         else:
             validate_compose_config(config, run_id=run_id, profile_path=profile_path,
-                                    kernel_preflight=kernel_profile)
+                                    kernel_preflight=kernel_profile,
+                                    base_image_ref=selected_base_image,
+                                    application_dockerfile=selected_dockerfile)
         inherited_base_env: dict[str, str] = {}
         if packet_mode:
             receipt["image_measurements"] = {
@@ -3311,21 +3508,40 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 docker, env["FWROUTER_ACCEPTANCE_BASE_IMAGE"], cwd=ROOT, env=docker_env,
                 receipt=receipt)
         else:
-            base_image_present, base_inspect_seconds = _base_image_cache_presence(
-                docker, env["FWROUTER_ACCEPTANCE_BASE_IMAGE"], cwd=ROOT, env=docker_env)
-            receipt["image_measurements"] = {
-                "base_image_present_before_build": base_image_present,
-                "base_image_inspect_seconds": base_inspect_seconds,
-                "compose_build_seconds": 0.0,
-                "built_image_bytes": None,
-            }
+            if dependency_profile:
+                prepare_dependency_base_image(
+                    docker, selected_base_image, lock_digest=dependency_lock_digest,
+                    cwd=ROOT, env=docker_env, receipt=receipt)
+            else:
+                base_image_present, base_inspect_seconds = _base_image_cache_presence(
+                    docker, selected_base_image, cwd=ROOT, env=docker_env)
+                receipt["image_measurements"] = {
+                    "base_image_present_before_build": base_image_present,
+                    "base_image_inspect_seconds": base_inspect_seconds,
+                    "compose_build_seconds": 0.0,
+                    "built_image_bytes": None,
+                }
         build_started = time.monotonic()
         try:
-            subprocess.run([docker, "compose", *compose_args, "-p", project, "build", "application"],
-                           cwd=ROOT, env=docker_env, check=True, timeout=300,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            build_result = _docker_exec_capture(
+                [docker, "compose", *compose_args, "-p", project, "build", "application"],
+                cwd=ROOT, env=docker_env, timeout=300)
         finally:
             receipt["image_measurements"]["compose_build_seconds"] = round(time.monotonic() - build_started, 3)
+        if dependency_profile:
+            receipt["application_image_build"] = {
+                "status": "passed" if build_result["exit_code"] == 0 else "failed",
+                "exit_code": build_result["exit_code"],
+                "stderr": build_result["stderr"],
+            }
+        if build_result["exit_code"] != 0:
+            detail = ("; bounded stderr: " + build_result["stderr"][:2048]) if dependency_profile else ""
+            raise NotRun(f"acceptance application image build failed (exit_code={build_result['exit_code']}){detail}")
+        if dependency_profile:
+            record_docker_root_sample(
+                receipt["image_measurements"], "after_build", docker=docker,
+                cwd=ROOT, env=docker_env,
+                minimum_free=DOCKER_ROOT_AFTER_BUILD_MIN_FREE_BYTES)
         image_raw = _docker_json([docker, "image", "inspect", f"fwrouter-acceptance:{run_id}"], cwd=ROOT, env=docker_env)
         if not isinstance(image_raw, list) or len(image_raw) != 1:
             raise NotRun("acceptance image inspect failed")
@@ -3337,6 +3553,9 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if (image_labels.get(OWNER_LABEL) != OWNER_VALUE or image_labels.get(RUN_LABEL) != run_id
                 or image_labels.get("org.opencontainers.image.revision") != receipt["source_revision"] or not image_id):
             raise NotRun("built image lacks acceptance ownership label")
+        if (dependency_profile
+                and image_labels.get("io.fwrouter.acceptance.dependencies.image") != selected_base_image):
+            raise NotRun("application image does not identify the locked dependency base")
         if image_raw[0].get("Architecture") != "amd64" or image_raw[0].get("Os") != "linux":
             raise NotRun("acceptance image must be Linux amd64")
         roles = ("application", "lanclient", "endpoint") if packet_mode else ("application",)
@@ -3596,6 +3815,11 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         command_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         command_env["PYTHONDONTWRITEBYTECODE"] = "1"
         code, output, elapsed = _run_acceptance_tests(command, cwd=ROOT, env=command_env, output_path=output_host)
+        if dependency_profile:
+            record_docker_root_sample(
+                receipt["image_measurements"], "after_tests", docker=docker,
+                cwd=ROOT, env=docker_env,
+                minimum_free=DOCKER_ROOT_AFTER_RUN_MIN_FREE_BYTES)
         receipt.update({"pytest_exit_code": code, "pytest_elapsed_seconds": elapsed,
                         "pytest_output_bytes": output_host.stat().st_size,
                         "pytest_output_tail": output[-8192:]})
@@ -3848,6 +4072,23 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             except (NotRun, OSError, subprocess.SubprocessError, ValueError) as exc:
                 receipt["packet_host_post_cleanup_error"] = str(exc)[:512]
                 mark_cleanup_unconfirmed(receipt, "host route/firewall snapshot")
+        if dependency_profile and isinstance(receipt.get("image_measurements"), dict):
+            try:
+                record_docker_root_sample(
+                    receipt["image_measurements"], "after_cleanup", docker=docker,
+                    cwd=ROOT, env=docker_env,
+                    minimum_free=DOCKER_ROOT_AFTER_CLEANUP_MIN_FREE_BYTES)
+            except (NotRun, OSError, subprocess.SubprocessError):
+                receipt["docker_root_measurement"] = "failed"
+                if receipt.get("status") in {"passed", "partial"}:
+                    receipt["status"] = "failed"
+                    receipt["reason"] = "Docker root capacity could not be confirmed after owned cleanup"
+        if dependency_profile and receipt.get("status") in {"passed", "partial"}:
+            measurements = receipt.get("image_measurements", {})
+            samples = measurements.get("docker_root_samples", {}) if isinstance(measurements, dict) else {}
+            if not valid_image_measurements(measurements, require_complete_docker_root=True):
+                receipt["status"] = "failed"
+                receipt["reason"] = "Docker root capacity measurements are incomplete or invalid"
         any_owned_resources = bool(container_id or network_id or packet_container_ids or packet_network_ids or image_id)
         receipt.setdefault("cleanup", "owned_resources_removed" if any_owned_resources else "no_container_resources_created")
         if receipt.get("status") in {"passed", "partial"} and receipt.get("cleanup") != "owned_resources_removed":

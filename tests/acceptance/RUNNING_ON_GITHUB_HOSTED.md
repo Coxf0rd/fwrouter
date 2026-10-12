@@ -46,21 +46,31 @@ endpoint belongs in the application container.
 Source inventory: `python3 tests/acceptance/source_catalog.py` (AST only).
 Traceability: `knowledge/audits/test_architecture_phase_c_2026-10-08/TRACEABILITY_MATRIX.csv`.
 
-## Dependency-image optimization proposal (not implemented)
+## Dependency-image consumer
 
-Keep the existing single `application` Compose service and its isolated network.
-A future immutable Debian 12 dependency image may contain only the pinned OS
-packages, hash-locked Python dependencies, and digest-verified Xray, Mihomo, and
-Chromium inputs. It must not contain FWRouter source. Each run would still build
-a fresh application image from the allowlisted source context, with owner, run,
-source-revision, and dependency-image digest labels checked before startup.
-Publishing or consuming such an image through GHCR is not implemented and needs
-a separately reviewed gate; no registry credentials or self-hosted runners are
-part of the current design.
+Keep the single `application` Compose service and its isolated network. The
+published dependency image is source-free and pinned in
+`dependency-image-consumer.lock.json`. `Application.Dependencies.Dockerfile`
+provides the ordinary native-process profile overlay: it verifies the image
+manifest, lock, package receipt and executable hashes, then copies fresh
+allowlisted FWRouter source for the checked commit. The launcher/Compose
+selection and hosted acceptance remain pending. Kernel/packet profiles and the
+separately gated recovery suite retain the existing Python-base path with their
+current tool layers. No application or fork consumer receives GHCR write
+credentials or production secrets.
 
-Current instrumentation records per-asset archive/executable/expanded bytes and
-download/normalization durations, whether the pinned base image was already
-present before Compose build, elapsed Compose build time, and the resulting
-application image size. Base-image presence does not prove a BuildKit cache hit;
-the combined Compose build duration does not separate image pull time. Receipts
-must not record private paths, signed URLs, or credentials.
+The independent consumer passed anonymous cold and warm pull/readback in run
+38152526883. Its 2,598,192,591-byte image measurement and runner-temp disk receipt
+do not establish Docker-root capacity. Before the app consumer is accepted, the
+launcher must inspect the actual DockerRootDir and its backing filesystem, record
+capacity/used/available before pull, after pull, after overlay build, after the
+test phase, and after owned cleanup, and refuse to build when available headroom is
+below the declared bound. Keep runner-temp and Docker-root measurements distinct;
+never reclaim space with a global prune. Record base pull and overlay build time,
+base and built-image IDs/sizes, sampled Docker-root usage deltas at those phase
+boundaries, and cleanup result. These bounded samples do not measure continuous
+peak usage.
+The current source bound requires 5 GiB free before a cold pull, 1 GiB after pull
+and for a warm build, 512 MiB after build and after tests, and 256 MiB after
+owned cleanup. The dependency image inspect is capped at 4 GiB.
+Receipts must not record private paths, signed URLs, or credentials.
