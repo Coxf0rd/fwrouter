@@ -2994,6 +2994,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     provider_binding_before_selector = binding_for(source_ref)
     provider_calls_before_selector = bridge.snapshot_calls()
     from fwrouter_api.adapters.subscription import parse_subscription_payload
+    from fwrouter_api.services.logical_topology import get_logical_runtime_name
     from fwrouter_api.services.subscription import _upsert_subscription_servers
 
     selector_source_url = "https://selector-change.invalid/ordinary"

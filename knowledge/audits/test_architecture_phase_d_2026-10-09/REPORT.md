@@ -912,3 +912,6 @@ Run [38208049662](https://github.com/Coxf0rd/fwrouter/actions/runs/38208049662),
 
 
 Prepared source-only extension of the existing packet scenario: a second fixed owned VLESS inbound on TCP/5302, with distinct local egress source, is selected by the public Core selector after exact two-candidate eligibility is established. Assertions combine target-specific capture, native selector/config/readback, revision/provenance, endpoint request-source observations, unchanged provider binding and zero extra provider API calls, and client/router DIRECT-leak deltas. Existing capture byte/count limits and isolation remain unchanged. The extension is **NOT RUN** pending targeted hosted packet verification; no production action performed.
+
+
+Run [38209038153](https://github.com/Coxf0rd/fwrouter/actions/runs/38209038153), source `8a10af8`, stopped at hosted L0 Ruff F821: the new selector-packet scenario lacked its function-local `get_logical_runtime_name` import. Native/packet jobs were **SKIPPED**, not PASS. The correction imports the existing canonical logical-topology helper; assertions and routing semantics are unchanged. Raw logs/artifacts preserved under `evidence/run_38209038153/`.
