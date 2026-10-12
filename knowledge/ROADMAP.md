@@ -1,5 +1,7 @@
 # FWRouter engineering roadmap mirror
 
+Latest narrow hosted run38265018734 (2384fd7): fixed24 cohort353 distinct testcase PASS/24 FAIL/0 SKIP; reported354 includes one synthetic Node file-summary. Xray debounce21/21 PASS; gate54 PASS; acceptance106 PASS/1 FAIL/1 ERROR. Confirmed suite TMPDIR/Node accounting and incomplete receipt/native fixtures require targeted correction; other application assertions remain under attribution. No broad rerun or production changes; PhaseD BLOCKED. See PhaseD REPORT and UNIT_FIXTURE_CHECKPOINT_38265018734.json.
+
 ## Current broad-gate blockers — 2026-10-12
 
 Run [38257165004](https://github.com/Coxf0rd/fwrouter/actions/runs/38257165004), `becc5ed`: qualified native gates PASS; routine1324 PASS/114 FAIL,3 missing runner adapters; functional33 PASS/5 FAIL (38 collected, no SKIP). Confirmed shared causes: unit host-discovery needs explicit isolated fixtures while subprocess guard remains strict; functional file-level selection flattens kernel11/packet1 into ordinary profile. Implement exact exhaustive ordinary26 + Provider/kernel11 + packet1 partition with native/source/JUnit proof and no capability broadening. Remaining individual result-contract failures under attribution; no blanket baseline allowlist. Historical exact-seven five current PASS/two Xray uncollected. GHCR kernel/packet acceptance remains confirmed in scoped38255994863. Fresh full gates/reproducibility remain OPEN; Phase D BLOCKED. Production/Phase E/CD/L7 untouched.
