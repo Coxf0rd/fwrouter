@@ -327,6 +327,27 @@ def _patch_runtime(monkeypatch) -> None:
     )
 
 
+def _unit_vpn_policy_preflight(**_kwargs) -> dict:
+    """Provide explicit policy readiness to unit paths that require VPN eligibility."""
+    return {
+        "profile": {"profile": "pytest-unit-owned-table"},
+        "can_enforce_global_direct": True,
+        "can_enforce_global_selective": True,
+        "can_enforce_global_vpn": True,
+        "missing": [],
+        "selective_rules": {"requires_vpn_runtime": False, "path_kind": "ip_only"},
+        "vpn_contour": {"ready": True, "required": True},
+    }
+
+
+def _patch_subject_vpn_policy_preflight(monkeypatch) -> None:
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_global_preflight",
+        _unit_vpn_policy_preflight,
+    )
+
+
 def _seed_server(server_id: str) -> None:
     with db_session() as connection:
         connection.execute(
@@ -485,15 +506,7 @@ def test_subject_effective_state_exposes_scoped_runtime(
     _seed_routing_state(desired_mode="vpn", active_auto_server_id="server-1")
     _seed_lan_subject("lan-1", desired_mode="vpn", ip_address="192.168.10.4")
 
-    monkeypatch.setattr(
-        subject_policy_service,
-        "build_runtime_enforcement_state",
-        lambda: {
-            "supported_modes": {"direct": True, "selective": False, "vpn": True},
-            "enforcement_level": "global_vpn_enforced",
-            "traffic_enforcement_guaranteed": True,
-        },
-    )
+    _patch_subject_vpn_policy_preflight(monkeypatch)
 
     subject = get_subject_with_effective_state("lan-1")
 
@@ -542,6 +555,7 @@ def test_subject_server_override_endpoint_switches_selector_without_apply(
     initialize_database()
     register_extended_handlers(get_default_job_manager())
     _patch_runtime(monkeypatch)
+    _patch_subject_vpn_policy_preflight(monkeypatch)
     mihomo_adapter = _RecordingMihomoAdapter()
     monkeypatch.setattr(apply_orchestrator_service, "DEFAULT_MIHOMO_ADAPTER", mihomo_adapter)
     monkeypatch.setattr(
@@ -826,6 +840,10 @@ def test_apply_pipeline_renders_scoped_vpn_rules(
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "fwrouter_api.services.routing_manifest.build_global_preflight",
+        _unit_vpn_policy_preflight,
+    )
     _seed_server("server-1")
     _seed_routing_state(desired_mode="direct")
     _seed_lan_subject("lan-candidate", desired_mode="vpn", ip_address="192.168.40.7")
@@ -869,6 +887,7 @@ def test_docker_subject_server_override_is_counted_as_scoped_when_matcher_resolv
     initialize_database()
     register_extended_handlers(get_default_job_manager())
     _patch_runtime(monkeypatch)
+    _patch_subject_vpn_policy_preflight(monkeypatch)
     _seed_server("server-1")
     _seed_routing_state(desired_mode="direct")
     _seed_docker_subject("docker-scoped", desired_mode="vpn", ip_address="172.18.0.8")

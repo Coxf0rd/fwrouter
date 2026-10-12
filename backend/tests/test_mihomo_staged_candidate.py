@@ -72,6 +72,7 @@ def test_candidate_validator_reads_explicit_candidate_path(monkeypatch, tmp_path
         "transparent_inbound_rule_ok": True,
         "transparent_subrules_ok": True,
         "full_vpn_subrules_ok": True,
+        "expected_full_vpn_subrules": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
         "transparent_final_match_rule": "MATCH,DIRECT",
         "expected_transparent_final_match_rule": "MATCH,DIRECT",
         "transparent_state_consistency_ok": True,

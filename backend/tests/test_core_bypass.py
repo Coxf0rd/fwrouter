@@ -8,7 +8,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from fwrouter_api.core.config import get_settings
 import fwrouter_api.services.apply as apply_service
+import fwrouter_api.services.routing_manifest as routing_manifest_service
+import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
@@ -67,9 +70,89 @@ class _FailingApplyAdapter:
         )
 
 
-def test_core_bypass_enable_and_disable_roundtrip(monkeypatch, tmp_path: Path) -> None:
+class _SuccessfulUnitApplyAdapter:
+    """Explicit component-level success response; no host/native probe is performed."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def check(self, plan):  # noqa: ANN001
+        self.calls.append("check")
+        return DataplaneResult(
+            ok=True,
+            operation=DataplaneOperation.CHECK,
+            message="unit-owned-table check ok",
+            details={
+                "stage": "check",
+                "owned_table": "inet fwrouter_v2",
+                "table_exists": True,
+                "required_chains": {
+                    "prerouting": True,
+                    "input": True,
+                    "output": True,
+                    "forward": True,
+                    "postrouting": True,
+                    "fwrouter_classify": True,
+                    "fwrouter_direct": True,
+                    "fwrouter_vpn": True,
+                },
+            },
+        )
+
+    def apply(self, plan):  # noqa: ANN001
+        self.calls.append("apply")
+        return DataplaneResult(
+            ok=True,
+            operation=DataplaneOperation.APPLY,
+            message="unit-owned-table apply ok",
+            details={
+                "stage": "verify",
+                "owned_table": "inet fwrouter_v2",
+                "table_exists": True,
+                "routing_mode": "direct",
+            },
+        )
+
+    def rollback(self, plan):  # noqa: ANN001
+        self.calls.append("rollback")
+        return DataplaneResult(
+            ok=True,
+            operation=DataplaneOperation.ROLLBACK,
+            message="unit-owned-table rollback ok",
+            details={"stage": "rollback"},
+        )
+
+
+def _install_successful_unit_apply(monkeypatch) -> _SuccessfulUnitApplyAdapter:
+    adapter = _SuccessfulUnitApplyAdapter()
+    monkeypatch.setattr(apply_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
+    monkeypatch.setattr(apply_service, "build_global_preflight", _unit_bypass_preflight)
+    monkeypatch.setattr(routing_manifest_service, "build_global_preflight", _unit_bypass_preflight)
+    monkeypatch.setattr(subject_policy_service, "build_global_preflight", _unit_bypass_preflight)
+    return adapter
+
+
+def _unit_bypass_preflight(**_kwargs) -> dict:
+    """Unit-owned policy input for bypass transitions; makes no live health claim."""
+    return {
+        "profile": {"profile": "pytest-unit-owned-table"},
+        "can_enforce_global_direct": True,
+        "can_enforce_global_selective": False,
+        "can_enforce_global_vpn": False,
+        "missing": [],
+        "selective_rules": {"requires_vpn_runtime": False, "path_kind": "ip_only"},
+        "vpn_contour": None,
+    }
+
+
+def test_core_bypass_enable_and_disable_roundtrip(
+    monkeypatch, tmp_path: Path, isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_SCHEDULER_ENABLED", "true")
+    get_settings.cache_clear()
     initialize_database()
+    adapter = _install_successful_unit_apply(monkeypatch)
     register_extended_handlers(get_default_job_manager())
     set_module_desired_state("watchdog", "enabled", run_now=False)
 
@@ -80,6 +163,7 @@ def test_core_bypass_enable_and_disable_roundtrip(monkeypatch, tmp_path: Path) -
     )
 
     assert enable_job["status"] == "success"
+    assert adapter.calls == ["check", "apply"]
     assert get_core_bypass_state()["enabled"] is True
     assert get_module_state("core")["runtime_state"] == "paused"
     assert get_module_state("watchdog")["desired_state"] == "enabled"
@@ -98,15 +182,19 @@ def test_core_bypass_enable_and_disable_roundtrip(monkeypatch, tmp_path: Path) -
     )
 
     assert disable_job["status"] == "success"
+    assert adapter.calls == ["check", "apply", "check", "apply"]
     assert get_core_bypass_state()["enabled"] is False
     assert get_module_state("core")["runtime_state"] == "running"
     assert get_module_state("watchdog")["desired_state"] == "enabled"
     assert get_module_state("watchdog")["runtime_state"] == "paused"
 
 
-def test_core_bypass_failed_disable_keeps_bypass_enabled(monkeypatch, tmp_path: Path) -> None:
+def test_core_bypass_failed_disable_keeps_bypass_enabled(
+    monkeypatch, tmp_path: Path, isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    adapter = _install_successful_unit_apply(monkeypatch)
     register_extended_handlers(get_default_job_manager())
 
     enable_job = submit_core_bypass_job(
@@ -115,6 +203,7 @@ def test_core_bypass_failed_disable_keeps_bypass_enabled(monkeypatch, tmp_path: 
         run_now=True,
     )
     assert enable_job["status"] == "success"
+    assert adapter.calls == ["check", "apply"]
 
     monkeypatch.setattr(apply_service, "DEFAULT_DATAPLANE_ADAPTER", _FailingApplyAdapter())
 
@@ -130,9 +219,12 @@ def test_core_bypass_failed_disable_keeps_bypass_enabled(monkeypatch, tmp_path: 
     assert get_module_state("core")["runtime_state"] == "paused"
 
 
-def test_core_bypass_api_contract(monkeypatch, tmp_path: Path) -> None:
+def test_core_bypass_api_contract(
+    monkeypatch, tmp_path: Path, isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    adapter = _install_successful_unit_apply(monkeypatch)
     register_extended_handlers(get_default_job_manager())
 
     with _client() as client:
@@ -151,6 +243,7 @@ def test_core_bypass_api_contract(monkeypatch, tmp_path: Path) -> None:
         )
         assert enabled.status_code == 200
         assert enabled.json()["ok"] is True
+        assert adapter.calls == ["check", "apply"]
 
         summary = client.get("/api/v2/system/summary").json()["data"]
         assert summary["core"]["bypass"]["enabled"] is True
@@ -167,6 +260,7 @@ def test_watchdog_auto_check_pauses_when_core_bypass_is_active(
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    adapter = _install_successful_unit_apply(monkeypatch)
     register_extended_handlers(get_default_job_manager())
     set_module_desired_state("watchdog", "enabled", run_now=False)
     submit_core_bypass_job(
@@ -174,6 +268,7 @@ def test_watchdog_auto_check_pauses_when_core_bypass_is_active(
         requested_by="pytest",
         run_now=True,
     )
+    assert adapter.calls == ["check", "apply"]
 
     result = run_vpn_watchdog_auto_check()
 
