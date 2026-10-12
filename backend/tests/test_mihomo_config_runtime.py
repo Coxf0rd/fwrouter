@@ -891,6 +891,9 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch
     monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
 
     candidate_config = mihomo_config_service.build_mihomo_config({"selective_default": "direct"})
+    base_path = Path(mihomo_config_service._resolved_base_config_path())
+    candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
+    _write_yaml(base_path, candidate_config)
     restart_calls: list[str] = []
 
     def _fake_restart_mihomo_container(*, action: str = "restart", heartbeat=None):
@@ -901,8 +904,8 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch
     monkeypatch.setattr(mihomo_config_service, "get_mihomo_config_status", lambda **kwargs: {
         "base_config": candidate_config,
         "candidate_config": candidate_config,
-        "base_path": mihomo_config_service.BASE_CONFIG_PATH,
-        "candidate_path": mihomo_config_service.MIHOMO_CANDIDATE_CONFIG_PATH,
+        "base_path": str(base_path),
+        "candidate_path": str(candidate_path),
         "base_exists": True,
         "candidate_exists": True,
         "base_updated_at": "2026-06-08T00:00:00+00:00",
@@ -910,15 +913,23 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch
         "base_rules_count": len(candidate_config.get("rules") or []),
         "candidate_rules_count": len(candidate_config.get("rules") or []),
     })
-    monkeypatch.setattr(mihomo_config_service, "write_mihomo_candidate_config", lambda routing=None: {
-        "candidate_path": mihomo_config_service.MIHOMO_CANDIDATE_CONFIG_PATH,
-        "rules": candidate_config["rules"],
-        "handoff_assignments": [],
-        "resolved_selective_default": "direct",
-        "final_match_rule": "MATCH,DIRECT",
-        "transparent_final_match_rule": "MATCH,DIRECT",
-        "config": candidate_config,
-    })
+    def _fake_write_mihomo_candidate_config(routing=None):
+        _write_yaml(candidate_path, candidate_config)
+        return {
+            "candidate_path": str(candidate_path),
+            "rules": candidate_config["rules"],
+            "handoff_assignments": [],
+            "resolved_selective_default": "direct",
+            "final_match_rule": "MATCH,DIRECT",
+            "transparent_final_match_rule": "MATCH,DIRECT",
+            "config": candidate_config,
+        }
+
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "write_mihomo_candidate_config",
+        _fake_write_mihomo_candidate_config,
+    )
     monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", lambda routing=None: {
         "ok": True,
         "resolved_selective_default": "direct",
@@ -1479,6 +1490,7 @@ def test_xray_handoff_candidate_restores_required_missing_server_proxy(monkeypat
         "port": 443,
         "uuid": "old-uuid",
     }
+    expected_proxy = {**old_proxy, "udp": True}
     with db_session() as connection:
         connection.execute(
             """
@@ -1494,7 +1506,7 @@ def test_xray_handoff_candidate_restores_required_missing_server_proxy(monkeypat
         required_last_good_server_ids={"server-old"},
     )
 
-    assert proxies == [old_proxy]
+    assert proxies == [expected_proxy]
 
 
 def _seed_fingerprint_servers() -> None:
