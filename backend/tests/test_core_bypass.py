@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from fwrouter_api.core.config import get_settings
 import fwrouter_api.services.apply as apply_service
+from fwrouter_api.services import dataplane_status as dataplane_status_service
 import fwrouter_api.services.routing_manifest as routing_manifest_service
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
@@ -71,10 +72,13 @@ class _FailingApplyAdapter:
 
 
 class _SuccessfulUnitApplyAdapter:
-    """Explicit component-level success response; no host/native probe is performed."""
+    """Successful unit apply with an explicit, test-owned mode observation."""
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.observed_mode = "unknown"
+        self.mode_before_apply = "unknown"
+        self.readbacks: list[str] = []
 
     def check(self, plan):  # noqa: ANN001
         self.calls.append("check")
@@ -101,7 +105,7 @@ class _SuccessfulUnitApplyAdapter:
 
     def apply(self, plan):  # noqa: ANN001
         self.calls.append("apply")
-        return DataplaneResult(
+        result = DataplaneResult(
             ok=True,
             operation=DataplaneOperation.APPLY,
             message="unit-owned-table apply ok",
@@ -112,20 +116,41 @@ class _SuccessfulUnitApplyAdapter:
                 "routing_mode": "direct",
             },
         )
+        if result.ok:
+            self.mode_before_apply = self.observed_mode
+            self.observed_mode = "direct"
+        return result
 
     def rollback(self, plan):  # noqa: ANN001
         self.calls.append("rollback")
-        return DataplaneResult(
+        result = DataplaneResult(
             ok=True,
             operation=DataplaneOperation.ROLLBACK,
             message="unit-owned-table rollback ok",
             details={"stage": "rollback"},
         )
+        if result.ok:
+            self.observed_mode = self.mode_before_apply
+        return result
+
+    def probe_live_mode(self) -> dict[str, object]:
+        self.readbacks.append(self.observed_mode)
+        return {
+            "ok": self.observed_mode == "direct",
+            "mode": self.observed_mode,
+            "selective_default": None,
+            "error_code": None if self.observed_mode == "direct" else "PYTEST_MODE_NOT_APPLIED",
+            "error_message": None if self.observed_mode == "direct" else "unit adapter has not applied direct mode",
+            "raw_chain": None,
+            "pytest_unit_owned": True,
+        }
 
 
 def _install_successful_unit_apply(monkeypatch) -> _SuccessfulUnitApplyAdapter:
     adapter = _SuccessfulUnitApplyAdapter()
     monkeypatch.setattr(apply_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
+    monkeypatch.setattr(apply_service, "probe_live_global_mode", adapter.probe_live_mode)
+    monkeypatch.setattr(dataplane_status_service, "_read_live_dataplane_payload", lambda: None)
     monkeypatch.setattr(apply_service, "build_global_preflight", _unit_bypass_preflight)
     monkeypatch.setattr(routing_manifest_service, "build_global_preflight", _unit_bypass_preflight)
     monkeypatch.setattr(subject_policy_service, "build_global_preflight", _unit_bypass_preflight)
@@ -183,6 +208,7 @@ def test_core_bypass_enable_and_disable_roundtrip(
 
     assert disable_job["status"] == "success"
     assert adapter.calls == ["check", "apply", "check", "apply"]
+    assert adapter.readbacks == ["direct", "direct"]
     assert get_core_bypass_state()["enabled"] is False
     assert get_module_state("core")["runtime_state"] == "running"
     assert get_module_state("watchdog")["desired_state"] == "enabled"

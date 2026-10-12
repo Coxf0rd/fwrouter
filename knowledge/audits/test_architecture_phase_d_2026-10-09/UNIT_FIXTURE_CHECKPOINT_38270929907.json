@@ -1,0 +1,22 @@
+{
+  "run_id": 38270929907,
+  "source": "abc3b331017225bd69ecd8eaae1bf7efa67cd71e",
+  "scope": "hosted isolated24-file unit cohort",
+  "status": "BLOCKED",
+  "counts": {
+    "passed": 371,
+    "failed": 7,
+    "skipped": 0
+  },
+  "remaining": [
+    "backend/tests/test_apply_pipeline.py::test_apply_pipeline_apply_mode_records_selective_domain_aware_success",
+    "backend/tests/test_apply_pipeline.py::test_apply_pipeline_apply_mode_records_selective_ip_only_success",
+    "backend/tests/test_apply_pipeline.py::test_apply_pipeline_detects_live_mode_mismatch_and_rolls_back",
+    "backend/tests/test_apply_pipeline.py::test_apply_pipeline_vpn_verify_failure_rolls_back_and_keeps_state_unchanged",
+    "backend/tests/test_core_bypass.py::test_core_bypass_api_contract",
+    "backend/tests/test_core_bypass.py::test_core_bypass_enable_and_disable_roundtrip",
+    "backend/tests/test_core_bypass.py::test_core_bypass_failed_disable_keeps_bypass_enabled"
+  ],
+  "application_native_bundle": "NOT RUN",
+  "production": "unchanged"
+}

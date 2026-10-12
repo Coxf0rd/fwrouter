@@ -14,6 +14,7 @@ from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services import apply as apply_service
 from fwrouter_api.services import dataplane_global as dataplane_global_service
 from fwrouter_api.services import dataplane_status as dataplane_status_service
+from fwrouter_api.services import dnsmasq as dnsmasq_service
 from fwrouter_api.services.apply import ApplyMode, run_apply_pipeline
 from fwrouter_api.services.dataplane_nft import promote_last_good, render_owned_table_candidate
 from fwrouter_api.services.jobs import create_job
@@ -514,6 +515,48 @@ def _live_mode_probe(mode: str, *, selective_default: str | None = None) -> dict
         "error_code": None,
         "error_message": None,
         "raw_chain": f"mock live mode: {mode}",
+    }
+
+
+def _unit_ready_dnsmasq_selective_status() -> dict[str, object]:
+    """Complete test-owned readback for the domain-selective readiness contract."""
+    interface = "pytest-lan0"
+    address = "192.168.0.1"
+    return {
+        "ok": True,
+        "router_dns_ipv4": [address],
+        "router_dns_interfaces": [interface],
+        "rules_conf_path": "pytest-owned/rules.conf",
+        "rules_conf_exists": True,
+        "dhcp_dns_conf_path": "pytest-owned/dhcp-dns.conf",
+        "dhcp_dns_conf_exists": True,
+        "ipv6_lan_conf_path": "pytest-owned/ipv6-lan.conf",
+        "ipv6_lan_conf_exists": True,
+        "local_hosts_conf_path": "pytest-owned/local-hosts.conf",
+        "local_hosts_conf_exists": True,
+        "forced_dns_configured": True,
+        "ipv6_filter_configured": True,
+        "dns_capture_status": {
+            "ok": True,
+            "interfaces": [interface],
+            "bindings": [{"ifname": interface, "address": address}],
+            "rules_present": [
+                {"ifname": interface, "address": address, "udp": True, "tcp": True}
+            ],
+            "missing": [],
+        },
+        "nftset_probe_status": {
+            "ok": True,
+            "status": "ok",
+            "restart_recommended": False,
+            "probe_count": 2,
+            "probes": [
+                {"action": "DIRECT", "domain": "example.org", "ok": True},
+                {"action": "VPN", "domain": "example.com", "ok": True},
+            ],
+            "missing": [],
+        },
+        "missing": [],
     }
 
 
@@ -2638,7 +2681,12 @@ def test_apply_pipeline_apply_mode_records_selective_ip_only_success(
     candidate_text = Path(result["manifest"]["paths"]["candidate_nft_path"]).read_text(encoding="utf-8")
     assert "selective direct IPv4" in candidate_text
     assert "8.8.8.0/24" in candidate_text
-    assert "selective default direct" in candidate_text
+    assert 'ip daddr @vpn_ipv4 goto fwrouter_vpn comment "selective vpn IPv4"' in candidate_text
+    assert 'ip daddr @vpn_ipv4 drop comment "selective degraded block VPN IPv4"' not in candidate_text
+    assert 'selective degraded default direct' in candidate_text
+    assert candidate_text.index(
+        'ip daddr @direct_ipv4 goto fwrouter_direct comment "selective direct IPv4"'
+    ) < candidate_text.index('goto fwrouter_direct comment "selective degraded default direct"')
     assert 'chain prerouting {' in candidate_text
     assert 'reject secure DNS bypass TCP from LAN' in candidate_text
     assert 'reject secure DNS bypass UDP from LAN' in candidate_text
@@ -2687,7 +2735,12 @@ def test_apply_pipeline_apply_mode_records_selective_domain_aware_success(
     monkeypatch.setattr(
         apply_service,
         "inspect_dnsmasq_selective_status",
-        lambda: {"ok": True, "missing": []},
+        _unit_ready_dnsmasq_selective_status,
+    )
+    monkeypatch.setattr(
+        dnsmasq_service,
+        "inspect_dnsmasq_selective_status",
+        _unit_ready_dnsmasq_selective_status,
     )
     original_build_global_preflight = apply_service.build_global_preflight
     monkeypatch.setattr(
@@ -3364,7 +3417,7 @@ def test_apply_pipeline_vpn_verify_failure_rolls_back_and_keeps_state_unchanged(
     job = _create_apply_job()
     fake_runner = _FakeRunner(
         {
-            "dataplane_check": [_success_check_result(table_exists=False) for _ in range(8)],
+            "dataplane_check": [_success_check_result(table_exists=False)],
             "dataplane_apply": [_unverified_vpn_apply_result("missing")],
             "dataplane_rollback": [_success_rollback_result("missing")],
         }
@@ -3374,7 +3427,7 @@ def test_apply_pipeline_vpn_verify_failure_rolls_back_and_keeps_state_unchanged(
         "DEFAULT_DATAPLANE_ADAPTER",
         NftOwnedTableAdapter(runner=fake_runner),
     )
-    monkeypatch.setattr(dataplane_status_service, "DEFAULT_SCRIPT_RUNNER", fake_runner)
+    monkeypatch.setattr(dataplane_status_service, "_read_live_dataplane_payload", lambda: None)
     monkeypatch.setattr(
         dataplane_global_service,
         "DEFAULT_MIHOMO_ADAPTER",
@@ -3406,7 +3459,7 @@ def test_apply_pipeline_vpn_verify_failure_rolls_back_and_keeps_state_unchanged(
     assert result["rollback"]["ok"] is True
     assert sum(script_id == "dataplane_apply" for script_id, _args in fake_runner.calls) == 1
     assert sum(script_id == "dataplane_rollback" for script_id, _args in fake_runner.calls) == 1
-    assert 1 <= sum(script_id == "dataplane_check" for script_id, _args in fake_runner.calls) <= 8
+    assert sum(script_id == "dataplane_check" for script_id, _args in fake_runner.calls) == 1
     assert not Path(result["manifest"]["paths"]["applied_manifest_path"]).exists()
     assert not Path(result["manifest"]["paths"]["current_manifest_path"]).exists()
 
@@ -3422,7 +3475,7 @@ def test_apply_pipeline_unverified_vpn_egress_remains_fail_closed(
     job = _create_apply_job()
     fake_runner = _FakeRunner(
         {
-            "dataplane_check": [_success_check_result(table_exists=False) for _ in range(8)],
+            "dataplane_check": [_success_check_result(table_exists=False)],
             "dataplane_apply": [_unverified_vpn_apply_result("missing")],
         }
     )
@@ -3431,7 +3484,7 @@ def test_apply_pipeline_unverified_vpn_egress_remains_fail_closed(
         "DEFAULT_DATAPLANE_ADAPTER",
         NftOwnedTableAdapter(runner=fake_runner),
     )
-    monkeypatch.setattr(dataplane_status_service, "DEFAULT_SCRIPT_RUNNER", fake_runner)
+    monkeypatch.setattr(dataplane_status_service, "_read_live_dataplane_payload", lambda: None)
     monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(apply_service, "probe_live_global_mode", lambda: _live_mode_probe("vpn"))
 
@@ -3466,7 +3519,7 @@ def test_apply_pipeline_unverified_vpn_egress_remains_fail_closed(
     assert applied_manifest["runtime_enforcement"]["enforcement_level"] == "global_vpn_fail_closed"
     assert sum(script_id == "dataplane_apply" for script_id, _args in fake_runner.calls) == 1
     assert sum(script_id == "dataplane_rollback" for script_id, _args in fake_runner.calls) == 0
-    assert 1 <= sum(script_id == "dataplane_check" for script_id, _args in fake_runner.calls) <= 8
+    assert sum(script_id == "dataplane_check" for script_id, _args in fake_runner.calls) == 1
 
 
 def test_apply_pipeline_detects_live_mode_mismatch_and_rolls_back(
@@ -3480,7 +3533,7 @@ def test_apply_pipeline_detects_live_mode_mismatch_and_rolls_back(
     job = _create_apply_job()
     fake_runner = _FakeRunner(
         {
-            "dataplane_check": [_success_check_result(table_exists=False) for _ in range(8)],
+            "dataplane_check": [_success_check_result(table_exists=False)],
             "dataplane_apply": [_success_vpn_apply_result("missing")],
             "dataplane_rollback": [_success_rollback_result("missing")],
         }
@@ -3490,7 +3543,7 @@ def test_apply_pipeline_detects_live_mode_mismatch_and_rolls_back(
         "DEFAULT_DATAPLANE_ADAPTER",
         NftOwnedTableAdapter(runner=fake_runner),
     )
-    monkeypatch.setattr(dataplane_status_service, "DEFAULT_SCRIPT_RUNNER", fake_runner)
+    monkeypatch.setattr(dataplane_status_service, "_read_live_dataplane_payload", lambda: None)
     monkeypatch.setattr(dataplane_global_service, "DEFAULT_MIHOMO_ADAPTER", _ReadyMihomoAdapter())
     monkeypatch.setattr(
         apply_service,
@@ -3521,7 +3574,7 @@ def test_apply_pipeline_detects_live_mode_mismatch_and_rolls_back(
     assert result["rollback"]["ok"] is True
     assert sum(script_id == "dataplane_apply" for script_id, _args in fake_runner.calls) == 1
     assert sum(script_id == "dataplane_rollback" for script_id, _args in fake_runner.calls) == 1
-    assert 1 <= sum(script_id == "dataplane_check" for script_id, _args in fake_runner.calls) <= 8
+    assert sum(script_id == "dataplane_check" for script_id, _args in fake_runner.calls) == 1
     assert not Path(result["manifest"]["paths"]["applied_manifest_path"]).exists()
     assert not Path(result["manifest"]["paths"]["current_manifest_path"]).exists()
 
