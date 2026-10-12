@@ -17,8 +17,18 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 LOCK_PATH = ROOT / "tests/acceptance/dependency-image.lock.json"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+APT_SPEC_RE = re.compile(r"^(?P<name>[a-z0-9][a-z0-9+.-]*)(?:=(?P<version>[A-Za-z0-9.+:~_-]+))?$")
 LOCK_SCHEMA = "fwrouter-acceptance-dependency-lock/v1"
 INPUT_SCHEMA = "fwrouter-hosted-inputs/v1"
+KERNEL_PACKET_TOOL_VERSIONS = {
+    "nftables": "1.0.6-2+deb12u2",
+    "iproute2": "6.1.0-3",
+    "tcpdump": "4.99.3-1",
+    "libpcap0.8": "1.10.3-1",
+    "dnsmasq-base": "2.90-4~deb12u2",
+    "iptables": "1.8.9-2",
+    "bind9-dnsutils": "1:9.18.49-1~deb12u1",
+}
 
 
 class PreparationError(ValueError):
@@ -52,6 +62,34 @@ def _valid_duration(value: Any) -> bool:
         return False
 
 
+def locked_package_versions(apt_packages: list[str]) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for specification in apt_packages:
+        match = APT_SPEC_RE.fullmatch(specification) if isinstance(specification, str) else None
+        if match and match.group("version"):
+            versions[match.group("name")] = match.group("version")
+    return versions
+
+
+def installed_packages_match_lock(installed_packages: Any, apt_packages: list[str]) -> bool:
+    """Require each explicitly version-locked apt package in the dpkg receipt."""
+    if not isinstance(installed_packages, list) or not isinstance(apt_packages, list):
+        return False
+    matches = [APT_SPEC_RE.fullmatch(spec) if isinstance(spec, str) else None for spec in apt_packages]
+    if (not apt_packages or any(match is None for match in matches)
+            or len({match.group("name") for match in matches if match}) != len(apt_packages)):
+        return False
+    observed: dict[str, set[str]] = {}
+    for item in installed_packages:
+        if not isinstance(item, str) or "=" not in item:
+            return False
+        package, version = item.rsplit("=", 1)
+        package = package.split(":", 1)[0]
+        observed.setdefault(package, set()).add(version)
+    return all(observed.get(name) == {version}
+               for name, version in locked_package_versions(apt_packages).items())
+
+
 def validate_lock(lock: Any, *, root: Path = ROOT) -> dict[str, Any]:
     required = {
         "schema", "platform", "base_image", "debian_snapshot", "apt_packages",
@@ -75,10 +113,15 @@ def validate_lock(lock: Any, *, root: Path = ROOT) -> dict[str, Any]:
             or snapshot.get("signature_verification") != "apt-secure-required"):
         raise PreparationError("dependency lock must identify one signed fixed Debian snapshot")
     packages = lock.get("apt_packages")
+    parsed_packages = [APT_SPEC_RE.fullmatch(spec) if isinstance(spec, str) else None for spec in packages] \
+        if isinstance(packages, list) else []
+    names = [match.group("name") for match in parsed_packages if match]
     if (not isinstance(packages, list) or not packages
-            or any(not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9+.-]*", name) for name in packages)
-            or len(packages) != len(set(packages)) or packages != sorted(packages)):
+            or len(parsed_packages) != len(packages) or any(match is None for match in parsed_packages)
+            or len(names) != len(set(names)) or packages != sorted(packages)):
         raise PreparationError("dependency lock apt package list is invalid")
+    if locked_package_versions(packages) != KERNEL_PACKET_TOOL_VERSIONS:
+        raise PreparationError("dependency lock kernel/packet tool package versions are incomplete or changed")
     expected_requirements = {
         "tests/gates/requirements-ci.txt",
         "tests/acceptance/requirements-browser.txt",

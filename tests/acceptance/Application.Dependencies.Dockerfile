@@ -25,6 +25,10 @@ COPY host/libexec/fwrouter/dataplane-common.sh /workspace/host/libexec/fwrouter/
 COPY host/libexec/fwrouter/dataplane-check.sh /workspace/host/libexec/fwrouter/dataplane-check.sh
 COPY host/libexec/fwrouter/dataplane-apply.sh /workspace/host/libexec/fwrouter/dataplane-apply.sh
 COPY host/libexec/fwrouter/dataplane-rollback.sh /workspace/host/libexec/fwrouter/dataplane-rollback.sh
+COPY --chmod=0755 host/libexec/fwrouter/dataplane-common.sh /usr/local/libexec/fwrouter/dataplane-common.sh
+COPY --chmod=0755 host/libexec/fwrouter/dataplane-check.sh /usr/local/libexec/fwrouter/dataplane-check.sh
+COPY --chmod=0755 host/libexec/fwrouter/dataplane-apply.sh /usr/local/libexec/fwrouter/dataplane-apply.sh
+COPY --chmod=0755 host/libexec/fwrouter/dataplane-rollback.sh /usr/local/libexec/fwrouter/dataplane-rollback.sh
 RUN python /tmp/fwrouter-dependency/verify_dependency_image.py \
       --base-image "${BASE_IMAGE}" --source-revision "${SOURCE_REVISION}"
 

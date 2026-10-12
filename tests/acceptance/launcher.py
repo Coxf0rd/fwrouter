@@ -41,6 +41,11 @@ DOCKER_ROOT_WARM_BUILD_MIN_FREE_BYTES = 1024 ** 3
 DOCKER_ROOT_AFTER_BUILD_MIN_FREE_BYTES = 512 * 1024 ** 2
 DOCKER_ROOT_AFTER_RUN_MIN_FREE_BYTES = 512 * 1024 ** 2
 DOCKER_ROOT_AFTER_CLEANUP_MIN_FREE_BYTES = 256 * 1024 ** 2
+KERNEL_PACKET_TOOL_PACKAGE_VERSIONS = {
+    "nftables": "1.0.6-2+deb12u2", "iproute2": "6.1.0-3", "tcpdump": "4.99.3-1",
+    "libpcap0.8": "1.10.3-1", "dnsmasq-base": "2.90-4~deb12u2", "iptables": "1.8.9-2",
+    "bind9-dnsutils": "1:9.18.49-1~deb12u1",
+}
 MAX_RECEIPT_BYTES = 2 * 1024 * 1024
 MAX_TEST_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_TEST_SECONDS = 900
@@ -482,7 +487,7 @@ def validate_pinned_python_base_environment(image_inspect: Any, image_ref: str) 
     if not isinstance(raw_env, list) or len(raw_env) > 32:
         raise NotRun("pinned packet base image environment inventory is invalid")
     observed: dict[str, str] = {}
-    allowed_names = set(PYTHON_BASE_METADATA_ENV) | set(PYTHON_BASE_FIXED_ENV)
+    allowed_names = set(PYTHON_BASE_METADATA_ENV) | set(PYTHON_BASE_FIXED_ENV) | {"PYTHONDONTWRITEBYTECODE"}
     for entry in raw_env:
         if not isinstance(entry, str) or len(entry) > 8192 or "=" not in entry:
             raise NotRun("pinned packet base image environment entry is invalid")
@@ -494,11 +499,12 @@ def validate_pinned_python_base_environment(image_inspect: Any, image_ref: str) 
     missing_fixed = sorted(set(PYTHON_BASE_FIXED_ENV) - set(observed))
     mismatched_fixed = sorted(key for key, value in PYTHON_BASE_FIXED_ENV.items()
                               if observed.get(key) != value)
-    if unexpected or missing_fixed or mismatched_fixed:
+    mismatched_optional = ["PYTHONDONTWRITEBYTECODE"] if observed.get("PYTHONDONTWRITEBYTECODE", "1") != "1" else []
+    if unexpected or missing_fixed or mismatched_fixed or mismatched_optional:
         raise NotRun("pinned packet base image environment differs from approved names "
                      f"unexpected_names={_safe_env_field_names(unexpected, limit=16)} "
                      f"missing_fixed_names={missing_fixed} "
-                     f"mismatched_fixed_names={mismatched_fixed}")
+                     f"mismatched_fixed_names={mismatched_fixed + mismatched_optional}")
     return {key: observed[key] for key in sorted(PYTHON_BASE_METADATA_ENV) if key in observed}
 
 
@@ -646,12 +652,10 @@ def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path
     if service.get("command") != ["-c", "import signal; signal.pause()"]:
         raise NotRun("application container must remain idle until bounded preflight")
     if kernel_preflight:
-        build_args = service.get("build", {}).get("args", {})
-        if (build_args.get("FWROUTER_KERNEL_PREFLIGHT") != "1"
-                or build_args.get("DEBIAN_SNAPSHOT") != KERNEL_DEBIAN_SNAPSHOT):
-            raise NotRun("kernel profile must enable its fixed-snapshot tool and script layer")
-    elif service.get("build", {}).get("args", {}).get("FWROUTER_KERNEL_PREFLIGHT") not in (None, "0"):
-        raise NotRun("ordinary profile cannot enable the kernel-preflight image layer")
+        if {"FWROUTER_KERNEL_PREFLIGHT", "FWROUTER_KERNEL_PACKET", "DEBIAN_SNAPSHOT"} & build_args.keys():
+            raise NotRun("kernel profile cannot request an ad hoc package-install image layer")
+    elif {"FWROUTER_KERNEL_PREFLIGHT", "FWROUTER_KERNEL_PACKET", "DEBIAN_SNAPSHOT"} & build_args.keys():
+        raise NotRun("ordinary profile cannot request a kernel-tools image layer")
     labels = service.get("labels", {})
     if labels.get(OWNER_LABEL) != OWNER_VALUE or labels.get(RUN_LABEL) != run_id:
         raise NotRun("Compose ownership labels do not match this run")
@@ -1234,13 +1238,13 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
         raise NotRun("router namespaced forwarding and unprivileged DNS port sysctls differ from the packet profile")
     if services["endpoint"].get("sysctls") != {"net.ipv4.ip_unprivileged_port_start": "53"}:
         raise NotRun("endpoint must use only the fixed namespaced DNS port sysctl")
-    build_args = app.get("build", {}).get("args", {})
-    if (app.get("build", {}).get("dockerfile") != LEGACY_APPLICATION_DOCKERFILE
+    build = app.get("build")
+    build_args = build.get("args") if isinstance(build, dict) else None
+    if (not isinstance(build_args, dict)
+            or build.get("dockerfile") != DEPENDENCY_APPLICATION_DOCKERFILE
             or build_args.get("BASE_IMAGE") != base_image_ref
-            or build_args.get("FWROUTER_KERNEL_PREFLIGHT") != "1"
-            or build_args.get("FWROUTER_KERNEL_PACKET") != "1"
-            or build_args.get("DEBIAN_SNAPSHOT") != KERNEL_DEBIAN_SNAPSHOT):
-        raise NotRun("packet image must use the pinned base image and fixed kernel-tools snapshot build")
+            or {"FWROUTER_KERNEL_PREFLIGHT", "FWROUTER_KERNEL_PACKET", "DEBIAN_SNAPSHOT"} & build_args.keys()):
+        raise NotRun("packet image must use the immutable dependency base and fresh-source overlay")
     for name, spec in PACKET_NETWORKS.items():
         network = networks[name]
         if network.get("internal") is not True or network.get("enable_ipv6") is not False:
@@ -2560,7 +2564,11 @@ if kernel_mode:
     assert os.geteuid() == 0 and os.getegid() == 0
     kernel_key = "kernel_preflight" if p["profile"] == "hosted-kernel-preflight" else "kernel_dataplane"
     k = p[kernel_key]
-    assert set(k) == {"host_netns_inode_sha256", "dataplane_scripts"}
+    assert set(k) == {"host_netns_inode_sha256", "dataplane_scripts", "tool_package_versions"}
+    assert k["tool_package_versions"] == {
+      "nftables":"1.0.6-2+deb12u2", "iproute2":"6.1.0-3", "tcpdump":"4.99.3-1",
+      "libpcap0.8":"1.10.3-1", "dnsmasq-base":"2.90-4~deb12u2", "iptables":"1.8.9-2",
+      "bind9-dnsutils":"1:9.18.49-1~deb12u1"}
     own_ns_hash = hashlib.sha256(str(os.stat("/proc/self/ns/net").st_ino).encode()).hexdigest()
     assert own_ns_hash != k["host_netns_inode_sha256"]
     assert os.stat("/proc/self/ns/net").st_ino == os.stat("/proc/1/ns/net").st_ino
@@ -2701,6 +2709,8 @@ result = {"schema":"fwrouter-kernel-preflight/v1", "status":"failed", "tools":{}
           "capabilities_verified":True, "failure_command":None, "failure_exit_code":None,
           "failure_stdout_bytes":None, "failure_stderr_bytes":None,
           "cleanup_failure_type":None}
+assert set(k) == {"host_netns_inode_sha256", "dataplane_scripts", "tool_package_versions"}
+assert set(k["tool_package_versions"]) == {"nftables", "iproute2", "tcpdump", "libpcap0.8", "dnsmasq-base", "iptables", "bind9-dnsutils"}
 assert set(k["dataplane_scripts"]) == set(paths)
 for source, target in paths.items():
     expected = k["dataplane_scripts"][source]
@@ -2710,16 +2720,18 @@ for source, target in paths.items():
                        "sha256_match":path.is_file() and not path.is_symlink() and digest(path) == expected,
                        "mode_0755":path.is_file() and not path.is_symlink() and stat.S_IMODE(path.stat().st_mode) == 0o755})
     result["scripts"][target] = checks
-for name in ("nftables", "iproute2"):
+for name, expected_version in k["tool_package_versions"].items():
     proc = run(["dpkg-query", "-W", "-f=${db:Status-Status}:${Version}", name])
     value = proc.stdout.decode("ascii", "replace").strip() if proc.returncode == 0 else "unavailable"
     result["packages"][name] = {"installed":proc.returncode == 0 and value.startswith("installed:"),
-                                "version":value.split(":", 1)[1] if value.startswith("installed:") else None}
+                                "version":value.split(":", 1)[1] if value.startswith("installed:") else None,
+                                "locked_version":expected_version}
 nft, ip = shutil.which("nft", path=env["PATH"]), shutil.which("ip", path=env["PATH"])
 result["tools"] = {"nft":nft, "ip":ip}
 if (not all(check["exists"] and check["sha256_match"] and check["mode_0755"]
             for checks in result["scripts"].values() for check in checks)
-        or not all(value["installed"] for value in result["packages"].values()) or not nft or not ip):
+        or not all(value["installed"] and value["version"] == value["locked_version"]
+                   for value in result["packages"].values()) or not nft or not ip):
     result["failure_stage"] = "script_or_tool_preflight"
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     raise SystemExit(2)
@@ -3099,6 +3111,19 @@ def validate_dependency_image_reference(env: dict[str, str]) -> tuple[str, str]:
             or lock.get("schema") != "fwrouter-acceptance-dependency-lock/v1"
             or lock.get("platform") != "linux/amd64"):
         raise NotRun("application dependency image reference is not bound to the checked-in amd64 lock")
+    apt_versions = {}
+    specifications = lock.get("apt_packages")
+    if not isinstance(specifications, list) or not specifications:
+        raise NotRun("application dependency lock package inventory is invalid")
+    for specification in specifications:
+        match = re.fullmatch(r"([a-z0-9][a-z0-9+.-]*)(?:=([A-Za-z0-9.+:~_-]+))?", specification) \
+            if isinstance(specification, str) else None
+        if match is None or match.group(1) in apt_versions:
+            raise NotRun("application dependency lock package inventory is invalid")
+        if match.group(2):
+            apt_versions[match.group(1)] = match.group(2)
+    if apt_versions != KERNEL_PACKET_TOOL_PACKAGE_VERSIONS:
+        raise NotRun("application dependency lock does not pin the complete kernel/packet tool set")
     return image_ref, lock_digest
 
 
@@ -3308,7 +3333,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     kernel_preflight = suite in _KERNEL_SUITES
     kernel_dataplane = suite in {*_KERNEL_DATAPLANE_SUITES, _PACKET_DIAGNOSTIC_SUITE}
     kernel_profile = kernel_preflight or kernel_dataplane
-    dependency_profile = not kernel_profile and suite != "recovery"
+    dependency_profile = suite != "recovery"
     if dependency_profile:
         dependency_image_ref, dependency_lock_digest = validate_dependency_image_reference(env)
         selected_base_image = dependency_image_ref
@@ -3426,6 +3451,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             profile[kernel_profile_field] = {
                 "host_netns_inode_sha256": hashlib.sha256(
                     str(os.stat("/proc/self/ns/net").st_ino).encode()).hexdigest(),
+                "tool_package_versions": dict(KERNEL_PACKET_TOOL_PACKAGE_VERSIONS),
                 "dataplane_scripts": {relative: sha256_file(context / relative)
                                       for relative in KERNEL_SCRIPT_SOURCES},
             }
@@ -3488,7 +3514,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
         if packet_mode:
             validate_packet_compose_config(
                 config, run_id=run_id, profile_paths=packet_profile_paths,
-                base_image_ref=env["FWROUTER_ACCEPTANCE_BASE_IMAGE"])
+                base_image_ref=selected_base_image)
         else:
             validate_compose_config(config, run_id=run_id, profile_path=profile_path,
                                     kernel_preflight=kernel_profile,
@@ -3496,17 +3522,18 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                                     application_dockerfile=selected_dockerfile)
         inherited_base_env: dict[str, str] = {}
         if packet_mode:
-            receipt["image_measurements"] = {
-                "base_image_present_before_build": False,
-                "base_image_inspect_seconds": 0.0,
-                "base_image_pull_seconds": 0.0,
-                "base_image_pull_count": 0,
-                "compose_build_seconds": 0.0,
-                "built_image_bytes": None,
+            base_metadata = prepare_dependency_base_image(
+                docker, selected_base_image, lock_digest=dependency_lock_digest,
+                cwd=ROOT, env=docker_env, receipt=receipt)
+            base_rows = _docker_json([docker, "image", "inspect", selected_base_image], cwd=ROOT,
+                                     env=docker_env, stage="immutable packet dependency base metadata")
+            inherited_base_env = validate_pinned_python_base_environment(base_rows[0], selected_base_image)
+            receipt["packet_base_image_environment"] = {
+                "image_id": base_metadata["image_id"], "digest": base_metadata["digest"],
+                "lock_sha256": dependency_lock_digest, "environment_names": sorted(inherited_base_env),
+                "environment_sha256": hashlib.sha256(json.dumps(
+                    inherited_base_env, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             }
-            inherited_base_env = prepare_packet_base_image(
-                docker, env["FWROUTER_ACCEPTANCE_BASE_IMAGE"], cwd=ROOT, env=docker_env,
-                receipt=receipt)
         else:
             if dependency_profile:
                 prepare_dependency_base_image(

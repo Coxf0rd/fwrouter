@@ -117,7 +117,11 @@ class ConsumeDependencyImageContractTests(unittest.TestCase):
             "base_image": lock["base_image"],
             "platform": lock["platform"],
             "debian_snapshot": lock["debian_snapshot"],
-            "installed_packages": ["base-files=1", "python3=3"],
+            "installed_packages": sorted([
+                "base-files=1", "python3=3", "nftables=1.0.6-2+deb12u2", "iproute2=6.1.0-3",
+                "tcpdump=4.99.3-1", "libpcap0.8=1.10.3-1", "dnsmasq-base=2.90-4~deb12u2",
+                "iptables=1.8.9-2", "bind9-dnsutils=1:9.18.49-1~deb12u1",
+            ]),
             "requirements": lock["requirements"],
             "assets": lock["assets"],
             "playwright_version": lock["playwright_version"],

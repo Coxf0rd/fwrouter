@@ -4376,6 +4376,9 @@ class AcceptanceContractTests(unittest.TestCase):
         script_schema = schema["properties"]["kernel_dataplane"]["properties"]["dataplane_scripts"]
         self.assertFalse(script_schema["additionalProperties"])
         self.assertEqual(set(launcher.KERNEL_SCRIPT_SOURCES), set(script_schema["required"]))
+        tool_schema = schema["properties"]["kernel_dataplane"]["properties"]["tool_package_versions"]
+        self.assertEqual(set(launcher.KERNEL_PACKET_TOOL_PACKAGE_VERSIONS), set(tool_schema["required"]))
+        self.assertFalse(tool_schema["additionalProperties"])
 
         expected = {
             "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
@@ -4766,26 +4769,31 @@ class AcceptanceContractTests(unittest.TestCase):
             kernel["services"]["application"]["user"] = "0:0"
             kernel["services"]["application"]["cap_add"] = ["NET_ADMIN"]
             kernel["services"]["application"]["build"] = {"args": {
-                "BASE_IMAGE": "python:3.12-slim@sha256:" + "b" * 64,
-                "FWROUTER_KERNEL_PREFLIGHT": "1", "DEBIAN_SNAPSHOT": launcher.KERNEL_DEBIAN_SNAPSHOT},
-                "dockerfile": launcher.LEGACY_APPLICATION_DOCKERFILE}
+                "BASE_IMAGE": dependency_ref},
+                "dockerfile": launcher.DEPENDENCY_APPLICATION_DOCKERFILE}
             launcher.validate_compose_config(kernel, run_id=run_id, profile_path=profile, kernel_preflight=True,
-                                             base_image_ref="python:3.12-slim@sha256:" + "b" * 64,
-                                             application_dockerfile=launcher.LEGACY_APPLICATION_DOCKERFILE)
+                                             base_image_ref=dependency_ref,
+                                             application_dockerfile=launcher.DEPENDENCY_APPLICATION_DOCKERFILE)
             extra_capability = json.loads(json.dumps(kernel))
             extra_capability["services"]["application"]["cap_add"] = ["NET_ADMIN", "SYS_ADMIN"]
             with self.assertRaises(launcher.NotRun):
                 launcher.validate_compose_config(extra_capability, run_id=run_id,
                                                  profile_path=profile, kernel_preflight=True,
-                                                 base_image_ref="python:3.12-slim@sha256:" + "b" * 64,
-                                                 application_dockerfile=launcher.LEGACY_APPLICATION_DOCKERFILE)
+                                                 base_image_ref=dependency_ref,
+                                                 application_dockerfile=launcher.DEPENDENCY_APPLICATION_DOCKERFILE)
+            legacy_kernel = json.loads(json.dumps(kernel))
+            legacy_kernel["services"]["application"]["build"]["args"]["FWROUTER_KERNEL_PREFLIGHT"] = "1"
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_compose_config(legacy_kernel, run_id=run_id, profile_path=profile,
+                                                 kernel_preflight=True, base_image_ref=dependency_ref,
+                                                 application_dockerfile=launcher.DEPENDENCY_APPLICATION_DOCKERFILE)
             user_downgrade = json.loads(json.dumps(kernel))
             user_downgrade["services"]["application"]["user"] = "10001:10001"
             with self.assertRaises(launcher.NotRun):
                 launcher.validate_compose_config(user_downgrade, run_id=run_id,
                                                  profile_path=profile, kernel_preflight=True,
-                                                 base_image_ref="python:3.12-slim@sha256:" + "b" * 64,
-                                                 application_dockerfile=launcher.LEGACY_APPLICATION_DOCKERFILE)
+                                                 base_image_ref=dependency_ref,
+                                                 application_dockerfile=launcher.DEPENDENCY_APPLICATION_DOCKERFILE)
 
     def test_general_handoff_host_preflight_refuses_overlapping_routes(self):
         success = SimpleNamespace(returncode=0, stdout=b'[{"dst":"10.0.0.0/8"}]', stderr=b"")
@@ -4816,19 +4824,23 @@ class AcceptanceContractTests(unittest.TestCase):
         for key, value in acceptance_profile.MIHOMO_HANDOFF.items():
             self.assertEqual(value, schema["properties"]["mihomo_handoff"]["properties"][key]["const"])
 
-    def test_kernel_profile_and_source_allowlist_are_exact_and_fixed_snapshot_matches_lock(self):
+    def test_kernel_profile_and_source_allowlist_are_exact_and_tool_pins_match_lock(self):
         schema = json.loads((LAUNCHER_PATH.parent / "kernel_profile_schema.json").read_text(encoding="utf-8"))
         required = set(schema["required"])
         self.assertIn("kernel_preflight", required)
         kernel = schema["properties"]["kernel_preflight"]
         self.assertFalse(kernel["additionalProperties"])
+        lock = json.loads((LAUNCHER_PATH.parent / "dependency-image.lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(launcher.KERNEL_PACKET_TOOL_PACKAGE_VERSIONS,
+                         {item.split("=", 1)[0]: item.split("=", 1)[1]
+                          for item in lock["apt_packages"] if "=" in item})
+        self.assertEqual(set(launcher.KERNEL_PACKET_TOOL_PACKAGE_VERSIONS),
+                         set(kernel["properties"]["tool_package_versions"]["required"]))
         scripts = kernel["properties"]["dataplane_scripts"]["required"]
         self.assertEqual(set(launcher.KERNEL_SCRIPT_SOURCES), set(scripts))
         for path in launcher.KERNEL_SCRIPT_SOURCES:
             self.assertTrue(launcher._safe_source(path))
         self.assertFalse(launcher._safe_source("host/libexec/fwrouter/other-script.sh"))
-        lock = json.loads((LAUNCHER_PATH.parent / "dependency-image.lock.json").read_text(encoding="utf-8"))
-        self.assertEqual(lock["debian_snapshot"]["url"], launcher.KERNEL_DEBIAN_SNAPSHOT)
         workflow = Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml"
         source = workflow.read_text(encoding="utf-8")
         self.assertIn('"ci:validate-kernel": "kernel-preflight"', source)

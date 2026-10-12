@@ -17,6 +17,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 IMAGE_REF_RE = re.compile(
     r"^ghcr\.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:[0-9a-f]{64}$"
 )
+APT_SPEC_RE = re.compile(r"^(?P<name>[a-z0-9][a-z0-9+.-]*)(?:=(?P<version>[A-Za-z0-9.+:~_-]+))?$")
 
 
 def canonical_digest(value: dict[str, Any]) -> str:
@@ -69,6 +70,19 @@ def validate(base_image: str, source_revision: str) -> None:
     ).splitlines()
     if sorted(package_query) != manifest["installed_packages"]:
         raise ValueError("installed dpkg inventory differs from the dependency manifest")
+    installed_versions: dict[str, set[str]] = {}
+    for row in package_query:
+        package, version = row.rsplit("=", 1)
+        installed_versions.setdefault(package.split(":", 1)[0], set()).add(version)
+    seen_locked_names: set[str] = set()
+    for specification in dependency_lock["apt_packages"]:
+        match = APT_SPEC_RE.fullmatch(specification)
+        if match is None or match.group("name") in seen_locked_names:
+            raise ValueError("dependency apt lock contains an invalid package specification")
+        seen_locked_names.add(match.group("name"))
+        expected = match.group("version")
+        if expected and installed_versions.get(match.group("name")) != {expected}:
+            raise ValueError("installed dpkg package version differs from the dependency lock")
     requirements = dependency_lock["requirements"]
     for relative, expected in requirements.items():
         if not SHA256_RE.fullmatch(expected):

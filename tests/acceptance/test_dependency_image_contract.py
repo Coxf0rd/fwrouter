@@ -25,6 +25,8 @@ class DependencyImageContractTests(unittest.TestCase):
         self.assertEqual("apt-secure-required", checked["debian_snapshot"]["signature_verification"])
         self.assertFalse(checked["debian_snapshot"]["check_valid_until"])
         self.assertEqual(sorted(checked["apt_packages"]), checked["apt_packages"])
+        self.assertEqual(prepare.KERNEL_PACKET_TOOL_VERSIONS,
+                         prepare.locked_package_versions(checked["apt_packages"]))
         self.assertEqual(
             hashlib.sha256((ACCEPTANCE / "Dependencies.Dockerfile").read_bytes()).hexdigest(),
             checked["dockerfile_sha256"],
@@ -37,6 +39,19 @@ class DependencyImageContractTests(unittest.TestCase):
         self.assertIn("Acquire::Check-Valid-Until=false", recipe)
         self.assertIn("--require-hashes", recipe)
         self.assertNotIn("/workspace/backend", recipe)
+
+    def test_locked_package_versions_require_unique_exact_inventory(self):
+        versions = prepare.KERNEL_PACKET_TOOL_VERSIONS
+        inventory = [f"{name}={version}" for name, version in versions.items()]
+        self.assertTrue(prepare.installed_packages_match_lock(inventory, inventory))
+        self.assertFalse(prepare.installed_packages_match_lock(inventory[:-1], inventory))
+        self.assertFalse(prepare.installed_packages_match_lock(inventory, inventory + [inventory[0]]))
+        self.assertFalse(prepare.installed_packages_match_lock(inventory, inventory + ["nftables=1.0.5"]))
+        lock = json.loads((ACCEPTANCE / "dependency-image.lock.json").read_text(encoding="utf-8"))
+        invalid = dict(lock)
+        invalid["apt_packages"] = sorted([*lock["apt_packages"], "nftables=1.0.5"])
+        with self.assertRaises(prepare.PreparationError):
+            prepare.validate_lock(invalid, root=ROOT)
 
     def test_preparer_exports_only_the_fixed_source_free_input_inventory(self):
         source = (ACCEPTANCE / "prepare_dependency_image.py").read_text(encoding="utf-8")

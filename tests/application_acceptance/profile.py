@@ -23,6 +23,11 @@ MIHOMO_HANDOFF = {"address": "172.18.0.1", "subnet": "172.18.0.0/24", "gateway":
 PACKET_DNSMASQ_BASE_VERSION = "2.90-4~deb12u2"
 PACKET_BIND9_DNSUTILS_VERSION = "1:9.18.49-1~deb12u1"
 PACKET_IPTABLES_VERSION = "1.8.9-2"
+KERNEL_PACKET_TOOL_PACKAGE_VERSIONS = {
+    "nftables": "1.0.6-2+deb12u2", "iproute2": "6.1.0-3", "tcpdump": "4.99.3-1",
+    "libpcap0.8": "1.10.3-1", "dnsmasq-base": "2.90-4~deb12u2",
+    "iptables": "1.8.9-2", "bind9-dnsutils": "1:9.18.49-1~deb12u1",
+}
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 NONCE = re.compile(r"^[0-9a-f]{32}$")
@@ -128,12 +133,26 @@ def _require_host_qualification(profile_path: Path) -> dict[str, Any]:
 def _verify_kernel_dataplane_profile(profile: dict[str, Any], facts: dict[str, Any], *,
                                      expected_cap_eff: int = 1 << 12) -> None:
     kernel = profile.get("kernel_dataplane")
-    if not isinstance(kernel, dict) or set(kernel) != {"host_netns_inode_sha256", "dataplane_scripts"}:
+    if not isinstance(kernel, dict) or set(kernel) != {
+            "host_netns_inode_sha256", "dataplane_scripts", "tool_package_versions"}:
         raise ProfileError("kernel dataplane profile metadata is invalid")
     host_hash = kernel.get("host_netns_inode_sha256")
     scripts = kernel.get("dataplane_scripts")
-    if not SHA256.fullmatch(str(host_hash)) or not isinstance(scripts, dict) or set(scripts) != set(KERNEL_DATAPLANE_SCRIPTS):
+    package_versions = kernel.get("tool_package_versions")
+    if (not SHA256.fullmatch(str(host_hash)) or not isinstance(scripts, dict)
+            or set(scripts) != set(KERNEL_DATAPLANE_SCRIPTS)
+            or package_versions != KERNEL_PACKET_TOOL_PACKAGE_VERSIONS):
         raise ProfileError("kernel dataplane namespace or script manifest is invalid")
+    for package_name, expected_version in package_versions.items():
+        try:
+            result = subprocess.run(["/usr/bin/dpkg-query", "-W", "-f=${Version}", package_name],
+                                    check=False, capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+                                    env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
+            version = result.stdout.decode("ascii", "strict").strip()
+        except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+            raise ProfileError("pinned kernel package readback failed") from exc
+        if result.returncode != 0 or len(result.stdout) > 256 or len(result.stderr) > 1024 or version != expected_version:
+            raise ProfileError("installed kernel package version differs from the fixed acceptance lock")
     for source, target in KERNEL_DATAPLANE_SCRIPTS.items():
         expected = scripts.get(source)
         source_path = Path("/workspace") / source

@@ -30,9 +30,19 @@
     },
     "kernel_dataplane": {
       "type": "object", "additionalProperties": false,
-      "required": ["host_netns_inode_sha256", "dataplane_scripts"],
+      "required": ["host_netns_inode_sha256", "dataplane_scripts", "tool_package_versions"],
       "properties": {
         "host_netns_inode_sha256": {"$ref": "#/$defs/sha256"},
+        "tool_package_versions": {
+          "type": "object", "additionalProperties": false,
+          "required": ["nftables", "iproute2", "tcpdump", "libpcap0.8", "dnsmasq-base", "iptables", "bind9-dnsutils"],
+          "properties": {
+            "nftables": {"const": "1.0.6-2+deb12u2"}, "iproute2": {"const": "6.1.0-3"},
+            "tcpdump": {"const": "4.99.3-1"}, "libpcap0.8": {"const": "1.10.3-1"},
+            "dnsmasq-base": {"const": "2.90-4~deb12u2"}, "iptables": {"const": "1.8.9-2"},
+            "bind9-dnsutils": {"const": "1:9.18.49-1~deb12u1"}
+          }
+        },
         "dataplane_scripts": {
           "type": "object", "additionalProperties": false,
           "required": [

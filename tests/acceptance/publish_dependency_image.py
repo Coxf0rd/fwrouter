@@ -14,7 +14,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from prepare_dependency_image import LOCK_PATH, _canonical_digest, _file_digest, validate_lock
+from prepare_dependency_image import (
+    LOCK_PATH, _canonical_digest, _file_digest, installed_packages_match_lock, validate_lock,
+)
 
 
 OWNER = "Coxf0rd/fwrouter"
@@ -272,6 +274,8 @@ def validate_dependency_manifest(manifest: Any, *, lock: dict[str, Any],
         raise PublishError("dependency image manifest differs from the reviewed lock")
     if manifest["installed_packages"] != sorted(manifest["installed_packages"]):
         raise PublishError("dependency image package manifest is not sorted")
+    if not installed_packages_match_lock(manifest["installed_packages"], lock["apt_packages"]):
+        raise PublishError("dependency image package versions differ from the apt lock")
     return manifest
 
 

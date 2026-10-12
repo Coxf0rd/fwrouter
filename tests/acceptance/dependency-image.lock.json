@@ -12,7 +12,11 @@
     "signature_verification": "apt-secure-required"
   },
   "apt_packages": [
+    "bind9-dnsutils=1:9.18.49-1~deb12u1",
+    "dnsmasq-base=2.90-4~deb12u2",
     "fonts-liberation",
+    "iproute2=6.1.0-3",
+    "iptables=1.8.9-2",
     "jq",
     "libasound2",
     "libatk-bridge2.0-0",
@@ -28,6 +32,7 @@
     "libnspr4",
     "libnss3",
     "libpango-1.0-0",
+    "libpcap0.8=1.10.3-1",
     "libx11-6",
     "libx11-xcb1",
     "libxcb-dri3-0",
@@ -42,7 +47,9 @@
     "libxrandr2",
     "libxshmfence1",
     "libxss1",
-    "libxtst6"
+    "libxtst6",
+    "nftables=1.0.6-2+deb12u2",
+    "tcpdump=4.99.3-1"
   ],
   "requirements": {
     "tests/gates/requirements-ci.txt": "12dfef04ec38a69413a241860462c5693f9c4cf2a0bd5dfea396bcf349d8ba1a",

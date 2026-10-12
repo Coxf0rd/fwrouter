@@ -1,9 +1,6 @@
 services:
   application:
     cap_add: !override [NET_ADMIN, NET_RAW]
-    build:
-      args:
-        FWROUTER_KERNEL_PACKET: "1"
     networks: !override
       lan:
         ipv4_address: 10.240.0.1
