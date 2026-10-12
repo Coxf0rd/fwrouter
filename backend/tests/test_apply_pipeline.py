@@ -1130,7 +1130,9 @@ def test_render_owned_table_candidate_uses_split_redir_and_udp_tproxy_contract()
     assert "tproxy to :5203" in candidate
 
 
-def test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_policy_ready() -> None:
+def test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_policy_ready(
+    isolated_host_observations,
+) -> None:
     manifest = {
         "summary": {
             "global_mode": "selective",
@@ -3046,6 +3048,7 @@ def test_apply_pipeline_rolls_back_when_dnsmasq_selective_contract_reconcile_fai
 def test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_closed_for_vpn_default(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -3122,6 +3125,10 @@ def test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_closed_for_
     monkeypatch.setattr(
         apply_service,
         "inspect_dnsmasq_selective_status",
+        lambda: {"ok": True, "missing": []},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
         lambda: {"ok": True, "missing": []},
     )
     monkeypatch.setattr(
