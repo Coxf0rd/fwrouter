@@ -1179,6 +1179,32 @@
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
       "destructive": false,
+      "domain": "routing",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "module-owned deterministic classifier inputs; see test file and fixture_owner",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_dataplane_live",
+      "isolation": "pure classifier fixtures; no live nft command",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_dataplane_live.py",
+      "primary_level": "L1",
+      "risk_notes": "pure live-mode classifier and intent matching; no host runtime access",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
       "domain": "database",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,

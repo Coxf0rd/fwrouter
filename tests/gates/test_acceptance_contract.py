@@ -3134,8 +3134,48 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("needs.select-stage.outputs.stage == 'reentry-diagnostic'", workflow)
         self.assertIn('if [[ "$VALIDATION_STAGE" == reentry-diagnostic ]]; then suite=reentry-diagnostic; fi',
                       workflow)
+        selective_nodeids = (
+            "tests/test_dataplane_live.py::test_live_global_mode_classifies_normal_and_degraded_selective_defaults",
+            "tests/test_dataplane_live.py::test_live_global_mode_keeps_conflicting_selective_defaults_ambiguous",
+            "tests/test_dataplane_live.py::test_live_global_mode_does_not_infer_default_from_selective_marker_alone",
+        )
+        self.assertIn("Run exact selective live-mode and preflight regressions", workflow)
+        self.assertIn("needs.select-stage.outputs.stage == 'reentry-diagnostic' ||\n"
+                      "          needs.select-stage.outputs.stage == 'packet-diagnostic'", workflow)
+        step_start = workflow.index("      - name: Run exact selective live-mode and preflight regressions")
+        step_end = workflow.find("\n      - name:", step_start + 1)
+        self.assertNotEqual(-1, step_end)
+        selected_step = workflow[step_start:step_end]
+        self.assertEqual(list(selective_nodeids), re.findall(
+            r"tests/test_dataplane_live\.py::[A-Za-z0-9_]+", selected_step))
         self.assertIn('if [[ "$VALIDATION_STAGE" == recovery-diagnostic ]]; then suite=recovery-diagnostic; fi',
                       workflow)
+
+    def test_selective_live_mode_regressions_reject_ambiguous_and_unknown_defaults(self):
+        test_source = (Path(__file__).parents[2] / "backend/tests/test_dataplane_live.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(test_source)
+        test_functions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+        self.assertEqual({
+            "test_live_global_mode_classifies_normal_and_degraded_selective_defaults",
+            "test_live_global_mode_keeps_conflicting_selective_defaults_ambiguous",
+            "test_live_global_mode_does_not_infer_default_from_selective_marker_alone",
+        }, test_functions)
+        source = ast.get_source_segment(test_source, next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef)
+            and node.name == "test_live_global_mode_keeps_conflicting_selective_defaults_ambiguous"))
+        self.assertIsNotNone(source)
+        self.assertIn('("unknown", None)', source)
+        self.assertIn('expected_selective_default="direct"', source)
+        self.assertIn('expected_selective_default="vpn"', source)
+        manifest = json.loads((Path(__file__).parents[1] / "gates/manifest.json").read_text())
+        registered = [row for row in manifest["test_files"]
+                      if row["path"] == "backend/tests/test_dataplane_live.py"]
+        self.assertEqual(1, len(registered))
+        self.assertEqual("routing", registered[0]["domain"])
+        self.assertEqual("L1", registered[0]["primary_level"])
+        self.assertFalse(registered[0]["native"])
+        self.assertEqual("none", registered[0]["network"])
 
     def test_packet_diagnostic_is_one_fixed_l3_node_and_is_registered(self):
         nodeid = (
@@ -3493,6 +3533,116 @@ class AcceptanceContractTests(unittest.TestCase):
                       '        _install_acceptance_xray_generation_rollback_observer()\n'
                       '        _install_acceptance_apply_exception_observer()\n'
                       '        _install_acceptance_live_mode_probe_observer()', worker_source)
+
+    def test_packet_preflight_observer_is_bounded_redacted_and_preserves_results(self):
+        worker_source = WORKER_PATH.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
+        observer = next(node for node in worker_tree.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_preflight_observer")
+        calls = {"manifest": 0, "apply": 0}
+        result = {
+            "selective_rules": {"requires_vpn_runtime": True},
+            "selective_vpn_ready": False,
+            "selective_degraded": True,
+            "selective_degraded_missing": ["vpn_external_path_not_verified", "PRIVATE_REASON_SENTINEL"],
+            "missing_by_mode": {
+                "selective": ["vpn_external_path_not_verified", "PRIVATE_REASON_SENTINEL"],
+                "vpn": ["PRIVATE_REASON_SENTINEL"],
+            },
+            "vpn_external_path_verified": False,
+            "vpn_policy_installed": True,
+            "vpn_egress_target_present": False,
+            "vpn_egress_ready": False,
+        }
+        fail = {"enabled": False}
+        expected_error = RuntimeError("PREFLIGHT_ERROR_SENTINEL")
+
+        def original_preflight(origin):
+            def call(**kwargs):
+                calls[origin] += 1
+                if fail["enabled"] and origin == "apply":
+                    raise expected_error
+                return result
+            return call
+
+        manifest_service = SimpleNamespace(build_global_preflight=original_preflight("manifest"))
+        apply_service = SimpleNamespace(build_global_preflight=original_preflight("apply"))
+        original_import = __import__
+
+        def acceptance_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "fwrouter_api.services":
+                return SimpleNamespace(apply=apply_service, routing_manifest=manifest_service)
+            return original_import(name, globals, locals, fromlist, level)
+
+        namespace = {
+            "Any": __import__("typing").Any, "os": __import__("os"), "json": json,
+            "__builtins__": {**builtins.__dict__, "__import__": acceptance_import},
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(WORKER_PATH), "exec"), namespace)
+        with mock.patch.dict("os.environ", {
+                "FWROUTER_ENVIRONMENT": "test",
+                "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+        }), mock.patch("sys.stdout", io.StringIO()) as captured:
+            namespace["_install_acceptance_preflight_observer"]()
+            routing = {"applied_mode": "selective", "desired_mode": "vpn"}
+            check_details = {"vpn_external_path_verified": True}
+            for _ in range(33):
+                self.assertIs(manifest_service.build_global_preflight(
+                    routing=routing, check_details=check_details, require_runtime_verify=False), result)
+                self.assertIs(apply_service.build_global_preflight(
+                    routing=routing, check_details=check_details, require_runtime_verify=True), result)
+            lines = captured.getvalue().splitlines()
+            self.assertEqual(64, len(lines))
+            prefix = "FWROUTER_ACCEPTANCE_PREFLIGHT "
+            self.assertTrue(all(line.startswith(prefix) for line in lines))
+            events = [json.loads(line.removeprefix(prefix)) for line in lines]
+            self.assertEqual(list(range(1, 65)), [event["sequence"] for event in events])
+            self.assertEqual({"manifest", "apply"}, {event["origin"] for event in events})
+            expected_keys = {
+                "schema", "sequence", "origin", "routing_mode", "require_runtime_verify",
+                "selective_requires_vpn_runtime", "selective_vpn_ready", "selective_degraded",
+                "selective_degraded_missing", "selective_degraded_unknown_missing_count",
+                "selective_missing", "selective_unknown_missing_count", "vpn_missing",
+                "vpn_unknown_missing_count", "check_external_path_verified",
+                "preflight_external_path_verified", "vpn_policy_installed",
+                "vpn_egress_target_present", "vpn_egress_ready",
+            }
+            self.assertTrue(all(set(event) == expected_keys for event in events))
+            self.assertTrue(all(event["schema"] == "fwrouter-acceptance-preflight/v1"
+                                and event["check_external_path_verified"] is True
+                                and event["preflight_external_path_verified"] is False
+                                and event["vpn_policy_installed"] is True
+                                and event["vpn_egress_target_present"] is False
+                                for event in events))
+            self.assertTrue(all(event["routing_mode"] == "selective" for event in events))
+            self.assertTrue(all(event["selective_degraded_unknown_missing_count"] == 1
+                                and event["selective_unknown_missing_count"] == 1
+                                and event["vpn_unknown_missing_count"] == 1
+                                for event in events))
+            self.assertTrue(all(event["selective_missing"] == ["vpn_external_path_not_verified"]
+                                for event in events))
+            self.assertNotIn("PRIVATE_REASON_SENTINEL", captured.getvalue())
+            fail["enabled"] = True
+            with self.assertRaises(RuntimeError) as raised:
+                apply_service.build_global_preflight(routing=routing)
+            self.assertIs(raised.exception, expected_error)
+            self.assertEqual(64, len(captured.getvalue().splitlines()))
+        self.assertEqual(33, calls["manifest"])
+        self.assertEqual(34, calls["apply"])
+        observer_source = ast.get_source_segment(worker_source, observer) or ""
+        for required in ("original_preflight(*args, **kwargs)", "return original_result",
+                         'state["count"] < 64', '"unknown_missing_count"',
+                         '"FWROUTER_ACCEPTANCE_PREFLIGHT "'):
+            self.assertIn(required, observer_source)
+        for forbidden in ("json.dumps(original_result)", "str(original_result)",
+                          "traceback", "PRIVATE_REASON_SENTINEL"):
+            self.assertNotIn(forbidden, observer_source)
+        install_calls = [node for node in ast.walk(worker_tree)
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                         and node.func.id == "_install_acceptance_preflight_observer"]
+        self.assertEqual(1, len(install_calls))
+        self.assertIn('        _install_acceptance_preflight_observer()', worker_source)
 
     def test_packet_dnsmasq_reconcile_diagnostic_is_bounded_and_preserves_result(self):
         worker_source = WORKER_PATH.read_text(encoding="utf-8")

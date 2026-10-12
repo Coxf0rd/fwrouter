@@ -1,5 +1,11 @@
 # Test Architecture and CI/CD Foundation
 
+## Current hosted scope — 2026-10-12
+
+Provider cohort `38208049662`: **11 PASS / 0 FAIL / 0 SKIP**. Fresh-source, digest-pinned GHCR ordinary application/Xray consumer `38210552876`: **1 PASS / 0 FAIL / 0 SKIP**; the independent historical exact-seven gate is **7 PASS / 0 FAIL / 0 SKIP**. Kernel/packet profiles still use their separately pinned build. These supersede earlier pending claims only within their scoped gates.
+
+Packet extension `38211674568` remains **0 PASS / 1 FAIL / 0 SKIP** (68.008 s): native classify chain contains `selective degraded default direct`, while the mode parser returns UNKNOWN. The outer normal-selective marker predicate makes the existing inner degraded branch unreachable. A recognition correction and attribution of degraded generation are pending; selective DNS priority and actual selector-change packet proof were not reached. Fresh full functional/affected gates and reproducibility remain open. Phase D is **BLOCKED**; Phase E/CD/L7 and production remain untouched. Detailed chronology and raw-evidence references: [Phase D report](../audits/test_architecture_phase_d_2026-10-09/REPORT.md). Older dated sections are historical, not additional current execution plans.
+
 ## 2026-10-12 focused native re-entry checkpoint
 
 Hosted run [38207720641](https://github.com/Coxf0rd/fwrouter/actions/runs/38207720641), source `35a7353`, passes both exact native re-entry scenarios (**2 PASS / 0 FAIL / 0 SKIP**, JUnit suite 34.995 s) after focused preflight (46 gate, 94 acceptance, 38 network-fixture, 13 smoke contracts). Both the concurrent exclusive-intent race and real Mihomo-incarnation-change check pass; each current member probe is HTTP 200, 2 ms, `probe_ok=true`. This closes only those two re-entry cases. It does not prove provider-cohort, or packet forwarding after an actual VPN-auto selector change. Resource receipt: wall 35.008 s, CPU user/system 18.975/2.552 s, maximum process RSS 119844 KiB (per-process high-water mark), temporary bytes 2177688 before cleanup; cleanup errors empty. No production behavior changed. Phase D remains **BLOCKED**; see the [Phase D report](../audits/test_architecture_phase_d_2026-10-09/REPORT.md).

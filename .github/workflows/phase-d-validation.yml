@@ -137,6 +137,20 @@ jobs:
             > "$RUNNER_TEMP/phase-d-preflight/network-fixture-contract.log" 2>&1
           python tests/gates/test_smoke_contract.py \
             > "$RUNNER_TEMP/phase-d-preflight/smoke-contract.log" 2>&1
+      - name: Run exact selective live-mode and preflight regressions
+        if: >-
+          needs.select-stage.outputs.stage == 'reentry-diagnostic' ||
+          needs.select-stage.outputs.stage == 'packet-diagnostic'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/selective-live-mode-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/selective-live-mode-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/selective-live-mode-nodeids.log" \
+            tests/test_dataplane_live.py::test_live_global_mode_classifies_normal_and_degraded_selective_defaults \
+            tests/test_dataplane_live.py::test_live_global_mode_keeps_conflicting_selective_defaults_ambiguous \
+            tests/test_dataplane_live.py::test_live_global_mode_does_not_infer_default_from_selective_marker_alone
       - name: Run exact manual-rules actor and apply-audit regressions
         if: needs.select-stage.outputs.stage == 'packet-diagnostic'
         run: |

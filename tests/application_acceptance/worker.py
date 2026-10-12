@@ -811,6 +811,92 @@ def _install_acceptance_live_mode_probe_observer() -> None:
     apply_service.probe_live_global_mode = observed_probe
 
 
+def _install_acceptance_preflight_observer() -> None:
+    """Log fixed readiness inputs and outputs at manifest and apply preflight boundaries."""
+    from fwrouter_api.services import apply as apply_service, routing_manifest as manifest_service
+
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("preflight observer requires the qualified acceptance worker")
+    allowed_modes = {"direct", "selective", "vpn"}
+    allowed_missing = {
+        "domain_selective_enforcement_not_implemented",
+        "mihomo_tproxy_port_not_configured", "mihomo_tun_not_enabled",
+        "mihomo_global_egress_binding_unknown", "mihomo_controller_unreachable",
+        "mihomo_transparent_contour_not_ready", "mihomo_explicit_proxy_isolation_not_ready",
+        "dnsmasq_domain_selective_contract_not_ready", "effective_rules_artifact_missing",
+        "fwrouter_owned_table_required_chains_missing", "vpn_module_disabled",
+        "vpn_tproxy_contract_not_defined", "vpn_external_path_not_verified",
+        "active_dataplane_mode_mismatch", "vpn_tproxy_handoff_not_observed",
+        "vpn_udp_fail_closed_policy_unconfirmed",
+    }
+    state = {"count": 0}
+
+    def observe(service: Any, origin: str) -> None:
+        original_preflight = service.build_global_preflight
+
+        def observed_preflight(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            original_result = original_preflight(*args, **kwargs)
+            if state["count"] < 64:
+                state["count"] += 1
+                routing = kwargs.get("routing")
+                routing = routing if isinstance(routing, dict) else {}
+                requested_mode = routing.get("applied_mode") or routing.get("desired_mode")
+                requested_mode = requested_mode if isinstance(requested_mode, str) and requested_mode in allowed_modes else "other"
+                check_details = kwargs.get("check_details")
+                check_details = check_details if isinstance(check_details, dict) else {}
+                projected_result = original_result if isinstance(original_result, dict) else {}
+                selective_rules = projected_result.get("selective_rules")
+                selective_rules = selective_rules if isinstance(selective_rules, dict) else {}
+                missing_by_mode = projected_result.get("missing_by_mode")
+                missing_by_mode = missing_by_mode if isinstance(missing_by_mode, dict) else {}
+
+                def safe_missing(value: Any) -> tuple[list[str], int]:
+                    if not isinstance(value, list):
+                        return [], 0
+                    allowed = {item for item in value if isinstance(item, str) and item in allowed_missing}
+                    unknown_count = sum(isinstance(item, str) and item not in allowed_missing for item in value)
+                    return sorted(allowed)[:16], min(unknown_count, 1_000_000)
+
+                selective_degraded_missing, selective_degraded_unknown = safe_missing(
+                    projected_result.get("selective_degraded_missing"))
+                selective_missing, selective_unknown = safe_missing(missing_by_mode.get("selective"))
+                vpn_missing, vpn_unknown = safe_missing(missing_by_mode.get("vpn"))
+
+                def safe_bool(value: Any) -> bool | None:
+                    return value if type(value) is bool else None
+
+                receipt = {
+                    "schema": "fwrouter-acceptance-preflight/v1",
+                    "sequence": state["count"],
+                    "origin": origin,
+                    "routing_mode": requested_mode,
+                    "require_runtime_verify": safe_bool(kwargs.get("require_runtime_verify")),
+                    "selective_requires_vpn_runtime": safe_bool(selective_rules.get("requires_vpn_runtime")),
+                    "selective_vpn_ready": safe_bool(projected_result.get("selective_vpn_ready")),
+                    "selective_degraded": safe_bool(projected_result.get("selective_degraded")),
+                    "selective_degraded_missing": selective_degraded_missing,
+                    "selective_degraded_unknown_missing_count": selective_degraded_unknown,
+                    "selective_missing": selective_missing,
+                    "selective_unknown_missing_count": selective_unknown,
+                    "vpn_missing": vpn_missing,
+                    "vpn_unknown_missing_count": vpn_unknown,
+                    "check_external_path_verified": safe_bool(check_details.get("vpn_external_path_verified")),
+                    "preflight_external_path_verified": safe_bool(projected_result.get("vpn_external_path_verified")),
+                    "vpn_policy_installed": safe_bool(projected_result.get("vpn_policy_installed")),
+                    "vpn_egress_target_present": safe_bool(projected_result.get("vpn_egress_target_present")),
+                    "vpn_egress_ready": safe_bool(projected_result.get("vpn_egress_ready")),
+                }
+                print("FWROUTER_ACCEPTANCE_PREFLIGHT " + json.dumps(
+                    receipt, sort_keys=True, separators=(",", ":")), flush=True)
+            return original_result
+
+        service.build_global_preflight = observed_preflight
+
+    observe(manifest_service, "manifest")
+    observe(apply_service, "apply")
+
+
 def _install_acceptance_mihomo_fence_observer() -> None:
     """Capture bounded hash-only evidence when the real publication fence refuses."""
     from fwrouter_api.services import mihomo_reconcile as reconcile
@@ -2418,6 +2504,7 @@ def build_app(socket_path: Path):
         _install_acceptance_xray_generation_rollback_observer()
         _install_acceptance_apply_exception_observer()
         _install_acceptance_live_mode_probe_observer()
+        _install_acceptance_preflight_observer()
     _bind_acceptance_provider()
 
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"

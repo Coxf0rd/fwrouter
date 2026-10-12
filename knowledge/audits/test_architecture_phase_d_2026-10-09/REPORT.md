@@ -938,3 +938,8 @@ Run [38210552876](https://github.com/Coxf0rd/fwrouter/actions/runs/38210552876),
 
 
 The selective failure remains unattributed to an exact live-mode predicate. A test-only observer now retains actual apply-service live nft probe results (fixed boolean/mode/default/error-code and bounded sequence, no raw chain), without altering return or exception identity. The packet helper preserves the primary selective exception and separately records mode/default restoration and DNS cleanup failures. Diagnostic contracts remain NOT RUN until hosted execution; production logic unchanged.
+
+
+### Selective native marker attribution — 2026-10-12
+
+Run [38211674568](https://github.com/Coxf0rd/fwrouter/actions/runs/38211674568), source `4d067dd`, passed hosted static/bootstrap preflight but the targeted packet scenario failed (**0 PASS / 1 FAIL / 0 SKIP**). Actual probe receipts 7–10 show a readable classify chain containing `selective degraded default direct`, with no normal selective-default marker; the returned mode was UNKNOWN. Source confirms a parser defect: the outer selective-marker predicate excludes the degraded comment, making its inner degraded-default branch unreachable. Recognizing this marker must preserve effective DIRECT/degraded semantics; it does not prove VPN egress ready or authorize an implicit mandatory-VPN DIRECT path. Why this scenario generated degraded state remains under investigation. Selective packet and actual selector-switch assertions were not reached. Raw evidence is retained under `evidence/run_38211674568/`, untracked and not published as source. Production, Phase E/CD and L7 remain untouched; Phase D remains BLOCKED.

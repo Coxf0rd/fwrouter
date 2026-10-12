@@ -181,23 +181,7 @@ def _probe_live_global_mode_uncached() -> dict[str, Any]:
         }
 
     raw_chain = completed.stdout
-    mode = "unknown"
-    selective_default: str | None = None
-
-    if _NFT_CHAIN_MARKER_CORE_BYPASS in raw_chain:
-        mode = "core_bypass"
-    elif _NFT_CHAIN_MARKER_VPN in raw_chain:
-        mode = "vpn"
-    elif _NFT_CHAIN_MARKER_DIRECT in raw_chain:
-        mode = "direct"
-    elif _NFT_CHAIN_MARKER_SELECTIVE in raw_chain:
-        mode = "selective"
-        if 'comment "selective default vpn"' in raw_chain:
-            selective_default = "vpn"
-        elif 'comment "selective default direct"' in raw_chain:
-            selective_default = "direct"
-        elif 'comment "selective degraded default direct"' in raw_chain:
-            selective_default = "direct"
+    mode, selective_default = _classify_live_global_mode(raw_chain)
 
     return {
         "ok": True,
@@ -208,6 +192,34 @@ def _probe_live_global_mode_uncached() -> dict[str, Any]:
         "error_message": None,
         "raw_chain": raw_chain,
     }
+
+
+def _classify_live_global_mode(raw_chain: str) -> tuple[str, str | None]:
+    """Classify the terminal global-mode markers in the live classify chain."""
+    mode = "unknown"
+    selective_default: str | None = None
+
+    if _NFT_CHAIN_MARKER_CORE_BYPASS in raw_chain:
+        mode = "core_bypass"
+    elif _NFT_CHAIN_MARKER_VPN in raw_chain:
+        mode = "vpn"
+    elif _NFT_CHAIN_MARKER_DIRECT in raw_chain:
+        mode = "direct"
+    elif (_NFT_CHAIN_MARKER_SELECTIVE in raw_chain
+          or 'comment "selective degraded default direct"' in raw_chain):
+        mode = "selective"
+        defaults = set()
+        if 'comment "selective default vpn"' in raw_chain:
+            defaults.add("vpn")
+        if ('comment "selective default direct"' in raw_chain
+                or 'comment "selective degraded default direct"' in raw_chain):
+            defaults.add("direct")
+        if len(defaults) == 1:
+            selective_default = defaults.pop()
+        else:
+            mode = "unknown"
+
+    return mode, selective_default
 
 
 def live_mode_matches_intent(

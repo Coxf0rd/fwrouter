@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## Latest bounded native attribution — 2026-10-12
+
+Packet run `38211674568` remains 0 PASS / 1 FAIL / 0 SKIP (68.008 s). Live nft read succeeds and contains the degraded selective/default-DIRECT marker; the parser's outer normal-selective predicate prevents its degraded branch from running. Recognition correction and attribution of degraded generation are pending, without bypassing readiness or mandatory-VPN policy. Actual selective priority and target-switch packet assertions were not reached. Ordinary-profile GHCR application consumer `38210552876` is confirmed 1/1 native PASS plus historical exact-seven 7/7 PASS; kernel profiles retain their existing pinned build. Full functional/affected/reproducibility remain OPEN. Phase D BLOCKED; production, Phase E/CD/L7 untouched. See the current Phase D report; older dated entries remain historical evidence.
+
 ## Current targeted checkpoint — 2026-10-12 (native diagnostics)
 
 Run [38208049662](https://github.com/Coxf0rd/fwrouter/actions/runs/38208049662), `4fb724b`: fixed Provider application/native/browser cohort **11 PASS / 0 FAIL / 0 SKIP**, suite 150.318 s; cleanup errors empty. Earlier two re-entry failures are resolved by validated receipt publication before the harness barrier. Full functional/affected/historical gates, additional packet target-switch/selective proof, GHCR application consumption and reproducibility remain OPEN. Phase D BLOCKED; production unchanged.
