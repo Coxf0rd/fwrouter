@@ -99,16 +99,16 @@ class AcceptanceContractTests(unittest.TestCase):
                 paths.append(path)
             grouped, problems = aggregate_hosted.group_hosted_receipts(
                 paths, ["functional-ordinary", "provider-cohort", "packet-diagnostic"], 1)
-        self.assertEqual(2, len(grouped["functional-ordinary"]))
-        self.assertEqual(1, len(grouped["provider-cohort"]))
-        self.assertEqual(1, len(grouped["packet-diagnostic"]))
-        self.assertEqual(2, len(problems))
-        self.assertTrue(any("unexpected profile partition" in item for item in problems))
-        self.assertTrue(any("functional-ordinary receipts: 2; required: 1" in item for item in problems))
-        _, missing = aggregate_hosted.group_hosted_receipts(
-            [paths[0]], ["functional-ordinary", "provider-cohort", "packet-diagnostic"], 1)
-        self.assertEqual(2, len(missing))
-        self.assertTrue(all("required: 1" in item for item in missing))
+            self.assertEqual(2, len(grouped["functional-ordinary"]))
+            self.assertEqual(1, len(grouped["provider-cohort"]))
+            self.assertEqual(1, len(grouped["packet-diagnostic"]))
+            self.assertEqual(2, len(problems))
+            self.assertTrue(any("unexpected profile partition" in item for item in problems))
+            self.assertTrue(any("functional-ordinary receipts: 2; required: 1" in item for item in problems))
+            _, missing = aggregate_hosted.group_hosted_receipts(
+                [paths[0]], ["functional-ordinary", "provider-cohort", "packet-diagnostic"], 1)
+            self.assertEqual(2, len(missing))
+            self.assertTrue(all("required: 1" in item for item in missing))
 
     def test_packet_base_image_inspect_failure_is_staged_bounded_and_redacted(self):
         stderr = (b"x" * 5000 + b" /var/lib/docker/image/metadata token=TOKEN_SENTINEL "
@@ -2639,6 +2639,7 @@ class AcceptanceContractTests(unittest.TestCase):
                          "sha256": provision.CHROMIUM_BINARY_SHA256},
             "playwright_python": provision.PLAYWRIGHT_VERSION,
         }
+        self.assertEqual(nonce, profile["suite_nonce"])
         profile_sha = hashlib.sha256((json.dumps(profile, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
         nodeids = sorted(expected)
         rows = [{"nodeid": nodeid, "status": "passed",
