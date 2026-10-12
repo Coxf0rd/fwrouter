@@ -2001,7 +2001,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         fixture._ClientHandler.do_POST(body)
         self.assertEqual(body.response, (400, {"error": "body_not_allowed"}))
 
-    def test_fixed_http_peer_contract_accepts_the_owned_endpoint_vip_and_rejects_other_peers(self):
+    def test_fixed_http_peer_contract_accepts_both_owned_endpoint_vips_and_rejects_other_peers(self):
         fixture = _fixture_module()
 
         class FakeConnection:
@@ -2029,6 +2029,11 @@ class NetworkFixtureContractTests(unittest.TestCase):
                                side_effect=lambda _target, timeout: FakeConnection(fixture.SERVICE_VIP)):
             result = fixture._probe_http()
         self.assertEqual(result["peer"], fixture.SERVICE_VIP)
+
+        with mock.patch.object(fixture.socket, "create_connection",
+                               side_effect=lambda _target, timeout: FakeConnection(fixture.DNS_VPN_SERVICE_VIP)):
+            result = fixture._probe_http()
+        self.assertEqual(result["peer"], fixture.DNS_VPN_SERVICE_VIP)
 
         with mock.patch.object(fixture.socket, "create_connection",
                                side_effect=lambda _target, timeout: FakeConnection("192.0.2.1")):

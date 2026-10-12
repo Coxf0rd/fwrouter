@@ -1189,7 +1189,8 @@ def _probe_http() -> dict[str, Any]:
         if not isinstance(response, dict):
             raise FixtureError("bounded HTTP probe response was not an object")
         peer = response.get("peer")
-        if response.get("ok") is not True or peer not in {CLIENT_IP, ROUTER_WAN_IP, SERVICE_VIP}:
+        if response.get("ok") is not True or peer not in {
+                CLIENT_IP, ROUTER_WAN_IP, SERVICE_VIP, DNS_VPN_SERVICE_VIP}:
             raise FixtureError("bounded HTTP probe did not prove a fixed fixture peer")
         return {"service": "http", "response_bytes": len(data), "peer": peer}
 
