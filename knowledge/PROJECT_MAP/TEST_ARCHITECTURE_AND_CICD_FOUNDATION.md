@@ -1,5 +1,13 @@
 # Test Architecture and CI/CD Foundation
 
+
+## Current acceptance pointer — 2026-10-13
+
+**Phase D: ACCEPTED (hosted implementation/mandatory gates). Entire Test Architecture & CI Stabilization milestone: OPEN; Phase E not started.** Source `a10dd9c`, [run38305978196](https://github.com/Coxf0rd/fwrouter/actions/runs/38305978196): affected1429 PASS/0 FAIL/0 SKIP; qualified26+1 and minimal application/native1 PASS; ordinary26/Provider-kernel11/packet1 PASS twice with exact source/plan/native/capture/cleanup receipts. Historical exact-seven7/7 PASS, no baseline allowlist. Targeted cache/prewarm/state300 nodes PASS five times (38305595288). See Phase D REPORT and `FULL_BUNDLE_CHECKPOINT_38305978196.json` for scope/resource limits.
+
+L0–L4 primary proofs plus L5 affected-regression anchors; no L6/L7 execution. GHCR digest-pinned Debian12 base and fresh-source consumers confirmed; Compose is not Debian host/reboot acceptance. Actual PR/main event execution and protected required-check promotion remain for authorized final CI acceptance. No production changes/deploy or CD. Operational Performance Fixes remains PAUSED/BLOCKED in its preserved branch. Do not start Phase E or a new milestone automatically. Earlier checkpoint/status sections below preserve history and are superseded only within the exact scope above.
+
+
 ## Current full hosted checkpoint — 2026-10-13
 
 Run [38291414020](https://github.com/Coxf0rd/fwrouter/actions/runs/38291414020), source `dfa583f`: ordinary26, Provider/kernel11 and packet1 all PASS twice with distinct owned receipts, no FAIL/SKIP and clean cleanup. Qualified Mihomo/child26, native Xray1 and minimal application/native1 PASS. The current affected unit leg is1419 PASS/2 FAIL/0 SKIP; all historical exact-seven are included and PASS. Overall run remains FAIL: selective IP-only candidate assertion and installer dependency dry-run root requirement remain under targeted attribution. Unit CLI correctly returned1, but the workflow wrapper omitted propagating that exit and unnecessarily ran the hosted bundle; strict final aggregation still rejected the failed unit row. No false aggregate acceptance is claimed. Reviewed bounded evidence: `FULL_BUNDLE_CHECKPOINT_38291414020.json`; raw evidence remains untracked. Next gate is narrow fixes/verification, then complete source-matched aggregation. Phase D BLOCKED; production/Phase E/CD/L6/L7 untouched. Earlier checkpoint notes are historical scoped evidence.

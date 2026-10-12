@@ -1,7 +1,8 @@
 # Selective component stability — implementation contract
 
-Status: IMPLEMENTATION IN PROGRESS; hosted execution pending.
-User authorized implementation; production remains unchanged.
+Status: SOURCE IMPLEMENTED / TARGETED AND FINAL HOSTED PASS.
+Final source a10dd9c, run38305978196; exact affected/native/packet aggregate eligible with no blockers.
+Implementation commits e9a476e, e6664d7, 1d440c3, ccdd1a8; targeted run38305595288 has five repetitions of300 PASS/0 FAIL/0 SKIP. Production remains unchanged.
 Reviewed source: 8ff2648 (documentation), application/test checkpoint ec8455c.
 Evidence: [SELECTIVE_DIAGNOSTIC_38300332724.json](SELECTIVE_DIAGNOSTIC_38300332724.json), [REPORT.md](REPORT.md).
 
@@ -75,3 +76,9 @@ Any new failure must name its predicate and cohort before another run. Do not tu
 ## Time budget
 
 Implementation/review: approximately45-75 minutes. Targeted hosted execution: approximately5-15 minutes excluding GitHub queue. Final affected/native gate: approximately20-35 minutes if selected. Evidence/docs:10-15 minutes. Total planning range: roughly1.5-2.5 hours if no new root cause emerges; this is not a guarantee or a claim of completed work.
+
+
+## Review follow-ups outside this package
+
+- Existing connection-scoped/global external-VPN cache-key mismatch remains separate; no provider lifecycle change here.
+- Existing `prime_runtime_read_models_async` keeps its admission flag if Python `Thread.start()` itself raises, before the worker cleanup can run. Source-level edge identified in final review; failure execution NOT RUN. Track a bounded lifecycle correction separately rather than silently widening this cache/test-isolation package.

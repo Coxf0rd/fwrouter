@@ -1,10 +1,39 @@
 # Phase D — GitHub Actions CI
 
-Status: IN PROGRESS / acceptance still BLOCKED; resumed for targeted diagnosis of the existing infrastructure failures. Neither infrastructure acceptance nor Phase E is claimed.
-Source checkpoint: `6bdf37e`; branch `stage/test-architecture-ci-stabilization`.
+Status: ACCEPTED for Phase D hosted implementation and mandatory gates — 2026-10-13.
+Phase E and the entire CI milestone remain OPEN; neither production deployment nor protected PR/main promotion is claimed. Earlier dated BLOCKED statements below are historical scoped evidence.
+Initial source checkpoint: `6bdf37e`; accepted source: `a10dd9c` (run38305978196); branch `stage/test-architecture-ci-stabilization`.
 All executed application tests run on disposable GitHub-hosted Ubuntu 24.04.
 Local checks are source-only syntax/diff/YAML parsing. No production tests,
 deploy, restart, provider mutation, PR, merge or Operational branch changes.
+
+## Final Phase D hosted acceptance — 2026-10-13
+
+[Run38305978196](https://github.com/Coxf0rd/fwrouter/actions/runs/38305978196), source `a10dd9c`, **PASS**. Reviewed immutable/source-matched receipt: [FULL_BUNDLE_CHECKPOINT_38305978196.json](FULL_BUNDLE_CHECKPOINT_38305978196.json).
+
+| Mandatory scope | Actual execution | Result |
+|---|---|---|
+| Fixed-base affected routine unit/component | 1429 distinct nodes | 1429 PASS / 0 FAIL / 0 SKIP |
+| Qualified Mihomo/child process | 26 nodes | PASS; owned cleanup |
+| Qualified isolated Xray loaded readback | 1 node | PASS; owned cleanup |
+| Minimal application/native Xray | 1 scenario | PASS |
+| Ordinary application/browser | 26 scenarios, two distinct receipts | PASS both times |
+| Provider/kernel application/browser | 11 scenarios, two distinct receipts | PASS both times |
+| Actual kernel packet forwarding | 1 multi-phase scenario, two distinct receipts | PASS both times; captures retained |
+| Historical seven exact IDs | All selected and executed | 7 PASS / 0 FAIL; no allowlist |
+| Targeted cache/prewarm/state isolation | 300 nodes ×5 repetitions, run38305595288 | PASS all five |
+
+Aggregate is `eligible=true`, `blocked_reasons=[]`, `missing_levels=[]`: primary L0–L4 proofs plus the plan's ten L5 affected-regression anchors, not L6. All six hosted receipts share accepted source/plan, have distinct owned nonces and zero cleanup errors; qualified cleanup is complete. Baseline classification contains no approved failure exceptions and no novel failures. Deferred unit/native files are covered by qualified/hosted receipts; deferred rows are not counted as individual PASS.
+
+**Corrections in this final package:** (1) ordinary component fixtures reserve shared prewarm admission; dedicated lifecycle tests own and join real threads, while application/qualified scheduling remains real; (2) invalidated cache loaders cannot overwrite or remove a replacement entry, proven against the exact pinned prior source with Event barriers; (3) a public system redaction test no longer calls shared `monkeypatch.undo()`, preserves global isolation and now requires a real healthy schema response with explicit unavailable host observations. Selective candidate/steering, error/path redaction and fencing/native assertions remain strict. The precise prior background thread was not logged; source-confirmed cache race and reproduction are established independently, not an invented historical production attribution.
+
+Application source change is limited to cache ownership/invalidation; Core/provider/Xray routing contracts are unchanged in this package. No loader executes under the cache lock, no blind retries/new probes/sleeps added, and original pre-clear callers complete their own observation/error. Targeted first-run test bucket error and shared-undo/host-discovery defects were honestly recorded before correction, not relabeled PASS.
+
+**Resource evidence:** suite receipt wall times ordinary216.358/217.018s, Provider138.883/139.828s, packet65.734/67.249s. Maximum process RSS stays below194000KiB in these receipts; this is not aggregate container/runner peak. Owned temp bytes are approximately15.76MB ordinary,8.97MB Provider,2.99MB packet before cleanup. The digest-pinned GHCR base remains2616513753B; first pull48.047s, subsequent suite consumers use the already-cached image; fresh-source overlay builds continue. No zero-download promise across new jobs and no controlled performance comparison is inferred.
+
+**Remaining boundary, not Phase D blocker:** Phase E must review reproducibility/promotion and repository required checks; actual PR/main events have not been exercised because PR/merge are not authorized. Temporary branch validation/publisher triggers still require deliberate final-milestone disposition. L6 and L7 remain separate policy/manual gates, NOT RUN here. Compose proves container-native and Linux kernel namespace packet behavior, not Debian host systemd/production kernel/physical interface/reboot parity. Operational Performance branch acceptance, production release/deploy and CD remain separate.
+
+**Follow-ups outside this package:** connection/global external-VPN cache-key mismatch; pre-existing admission flag retention if Python `Thread.start()` raises. Both remain documented source findings, not regressions introduced here or executed failure proofs. Raw artifacts remain untracked under `evidence/run_38305978196`; no secrets/raw configs were added to Git. Production, operational branch, Phase E/CD, PR/merge untouched. Stop after this checkpoint.
 
 ## Initial remote evidence
 

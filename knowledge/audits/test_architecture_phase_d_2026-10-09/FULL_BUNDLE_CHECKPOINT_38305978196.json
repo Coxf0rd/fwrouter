@@ -1,0 +1,320 @@
+{
+  "run_id": 38305978196,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38305978196",
+  "source_commit": "a10dd9ca880850f125a351aaeccf175b8109be8f",
+  "overall_status": "PASS",
+  "phase_d_verdict": "ACCEPTED \u2014 hosted implementation/mandatory gates; Phase E and whole milestone still open",
+  "unit_counts": {
+    "passed": 1429,
+    "failed": 0,
+    "skipped": 0
+  },
+  "aggregate": {
+    "eligible": true,
+    "blocked_reasons": [],
+    "plan_digest": "5e15676579cf7eb3e1d3550efbe4a506e25d58498779ce9829f50d32d3cab86a",
+    "completed_levels": [
+      "L0",
+      "L1",
+      "L2",
+      "L3",
+      "L4"
+    ],
+    "missing_levels": [],
+    "hosted_receipt_count": 6,
+    "hosted_repeats_required": 2,
+    "hosted_required_partitions": [
+      "functional-ordinary",
+      "packet-diagnostic",
+      "provider-cohort"
+    ]
+  },
+  "L5_regression_policy": {
+    "anchors": [
+      "backend/tests/test_configuration_contract.py",
+      "backend/tests/test_db_migrations.py",
+      "backend/tests/test_health_contract.py",
+      "backend/tests/test_protocol_universal_dispatch.py",
+      "backend/tests/test_provider_protocol_flow.py",
+      "backend/tests/test_state_routes.py",
+      "backend/tests/test_vpn_auto_exclusive_api.py",
+      "installer/tests/test_homeassistant_action.py",
+      "ui/tests/domain-model.test.js",
+      "ui/tests/ui-action.test.js"
+    ],
+    "level": "L5",
+    "reasons": [
+      "api-contract",
+      "core",
+      "database",
+      "mihomo",
+      "protocol",
+      "provider",
+      "routing",
+      "runtime",
+      "selector",
+      "subscription",
+      "xray"
+    ]
+  },
+  "historical_exact_seven": {
+    "backend/tests/test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only": "passed",
+    "backend/tests/test_state_routes.py::test_state_endpoints_are_get_only_and_read_only": "passed",
+    "backend/tests/test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state": "passed",
+    "backend/tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged": "passed",
+    "backend/tests/test_xray.py::test_legacy_subscription_get_is_read_only": "passed",
+    "backend/tests/test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation": "passed",
+    "backend/tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity": "passed"
+  },
+  "qualified_receipts": [
+    {
+      "kind": "qualified-xray-docker-receipt.json",
+      "tests": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0
+      },
+      "cleanup": "owned_resources_removed"
+    },
+    {
+      "kind": "qualified-child-receipt.json",
+      "tests": {
+        "passed": 26,
+        "failed": 0,
+        "skipped": 0
+      },
+      "cleanup": "owned_resources_removed"
+    }
+  ],
+  "hosted_receipts": [
+    {
+      "suite": "provider-cohort",
+      "suite_nonce": "5c26659d3bab40919841192ca0402ee9",
+      "tests": {
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "cleanup": "owned_resources_removed",
+      "resources": {
+        "cpu_system_seconds": 11.32,
+        "cpu_user_seconds": 63.851,
+        "max_rss_kib": 192640,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 8975044,
+        "wall_seconds": 138.883
+      },
+      "pytest_elapsed_seconds": 139.651,
+      "dependency_image": {
+        "digest": "sha256:60a64001e52af2ea8a3c470f9026ffd46d36705c8db58216eaa8218a5fa88d70",
+        "image_id": "sha256:0741e5f3e55f39e2ebed6cb211d7fcb43502fc2c180d8fa319ef0299566c3018",
+        "lock_sha256": "36c687ec8a2f6d78be8af5829d459fce666c3da65de5c402fd83feb41738847a",
+        "pull": {
+          "attempts": 0,
+          "duration_seconds": 0.0,
+          "exit_code": null,
+          "status": "cached"
+        },
+        "size_bytes": 2616513753
+      },
+      "application_image_build": {
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "packet_capture_count": 0
+    },
+    {
+      "suite": "functional-ordinary",
+      "suite_nonce": "ffcd1678e0604cf496d62eeab9d43b64",
+      "tests": {
+        "tests": 26,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "cleanup": "owned_resources_removed",
+      "resources": {
+        "cpu_system_seconds": 17.285,
+        "cpu_user_seconds": 92.516,
+        "max_rss_kib": 192872,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 15764504,
+        "wall_seconds": 216.358
+      },
+      "pytest_elapsed_seconds": 217.076,
+      "dependency_image": {
+        "digest": "sha256:60a64001e52af2ea8a3c470f9026ffd46d36705c8db58216eaa8218a5fa88d70",
+        "image_id": "sha256:0741e5f3e55f39e2ebed6cb211d7fcb43502fc2c180d8fa319ef0299566c3018",
+        "lock_sha256": "36c687ec8a2f6d78be8af5829d459fce666c3da65de5c402fd83feb41738847a",
+        "pull": {
+          "attempts": 1,
+          "duration_seconds": 48.047,
+          "exit_code": 0,
+          "status": "passed"
+        },
+        "size_bytes": 2616513753
+      },
+      "application_image_build": {
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "packet_capture_count": 0
+    },
+    {
+      "suite": "packet-diagnostic",
+      "suite_nonce": "f5ef718c1d7a48c0801b3150172e5539",
+      "tests": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "cleanup": "owned_resources_removed",
+      "resources": {
+        "cpu_system_seconds": 5.694,
+        "cpu_user_seconds": 29.565,
+        "max_rss_kib": 139804,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 2992714,
+        "wall_seconds": 65.734
+      },
+      "pytest_elapsed_seconds": 66.514,
+      "dependency_image": {
+        "digest": "sha256:60a64001e52af2ea8a3c470f9026ffd46d36705c8db58216eaa8218a5fa88d70",
+        "image_id": "sha256:0741e5f3e55f39e2ebed6cb211d7fcb43502fc2c180d8fa319ef0299566c3018",
+        "lock_sha256": "36c687ec8a2f6d78be8af5829d459fce666c3da65de5c402fd83feb41738847a",
+        "pull": {
+          "attempts": 0,
+          "duration_seconds": 0.0,
+          "exit_code": null,
+          "status": "cached"
+        },
+        "size_bytes": 2616513753
+      },
+      "application_image_build": {
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "packet_capture_count": 2
+    },
+    {
+      "suite": "packet-diagnostic",
+      "suite_nonce": "327aa2a00b9f4f22b02ca24bbd28b85e",
+      "tests": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "cleanup": "owned_resources_removed",
+      "resources": {
+        "cpu_system_seconds": 5.878,
+        "cpu_user_seconds": 30.913,
+        "max_rss_kib": 138888,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 2992700,
+        "wall_seconds": 67.249
+      },
+      "pytest_elapsed_seconds": 68.04,
+      "dependency_image": {
+        "digest": "sha256:60a64001e52af2ea8a3c470f9026ffd46d36705c8db58216eaa8218a5fa88d70",
+        "image_id": "sha256:0741e5f3e55f39e2ebed6cb211d7fcb43502fc2c180d8fa319ef0299566c3018",
+        "lock_sha256": "36c687ec8a2f6d78be8af5829d459fce666c3da65de5c402fd83feb41738847a",
+        "pull": {
+          "attempts": 0,
+          "duration_seconds": 0.0,
+          "exit_code": null,
+          "status": "cached"
+        },
+        "size_bytes": 2616513753
+      },
+      "application_image_build": {
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "packet_capture_count": 2
+    },
+    {
+      "suite": "provider-cohort",
+      "suite_nonce": "40b504c09ab540f08e3a0ac103807227",
+      "tests": {
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "cleanup": "owned_resources_removed",
+      "resources": {
+        "cpu_system_seconds": 11.653,
+        "cpu_user_seconds": 65.171,
+        "max_rss_kib": 191784,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 8973899,
+        "wall_seconds": 139.828
+      },
+      "pytest_elapsed_seconds": 140.625,
+      "dependency_image": {
+        "digest": "sha256:60a64001e52af2ea8a3c470f9026ffd46d36705c8db58216eaa8218a5fa88d70",
+        "image_id": "sha256:0741e5f3e55f39e2ebed6cb211d7fcb43502fc2c180d8fa319ef0299566c3018",
+        "lock_sha256": "36c687ec8a2f6d78be8af5829d459fce666c3da65de5c402fd83feb41738847a",
+        "pull": {
+          "attempts": 0,
+          "duration_seconds": 0.0,
+          "exit_code": null,
+          "status": "cached"
+        },
+        "size_bytes": 2616513753
+      },
+      "application_image_build": {
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "packet_capture_count": 0
+    },
+    {
+      "suite": "functional-ordinary",
+      "suite_nonce": "8a0c16e3a0af42119f81b5a10e07a85c",
+      "tests": {
+        "tests": 26,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "cleanup": "owned_resources_removed",
+      "resources": {
+        "cpu_system_seconds": 17.693,
+        "cpu_user_seconds": 93.54,
+        "max_rss_kib": 193196,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 15763307,
+        "wall_seconds": 217.018
+      },
+      "pytest_elapsed_seconds": 217.754,
+      "dependency_image": {
+        "digest": "sha256:60a64001e52af2ea8a3c470f9026ffd46d36705c8db58216eaa8218a5fa88d70",
+        "image_id": "sha256:0741e5f3e55f39e2ebed6cb211d7fcb43502fc2c180d8fa319ef0299566c3018",
+        "lock_sha256": "36c687ec8a2f6d78be8af5829d459fce666c3da65de5c402fd83feb41738847a",
+        "pull": {
+          "attempts": 0,
+          "duration_seconds": 0.0,
+          "exit_code": null,
+          "status": "cached"
+        },
+        "size_bytes": 2616513753
+      },
+      "application_image_build": {
+        "exit_code": 0,
+        "status": "passed"
+      },
+      "packet_capture_count": 0
+    }
+  ],
+  "limitations": [
+    "Actual PR/main event execution and protected required-check promotion not performed; no PR/merge authorized.",
+    "L6/L7 NOT RUN; L7 remains explicit manual/release gate.",
+    "Debian host systemd/kernel/reboot parity not established by Compose.",
+    "No production tests/deploy/runtime changes; operational branch and Phase E/CD untouched.",
+    "Per-process max RSS is not aggregate service/runner peak."
+  ]
+}
