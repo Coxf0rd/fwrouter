@@ -38,6 +38,11 @@ jobs:
           EVENT_BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
+          # A new branch push has the zero SHA, not a previous commit.
+          # Resolve its immutable fork point from the fully fetched main ref.
+          if [ "$EVENT_BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            EVENT_BEFORE="$(git merge-base HEAD refs/remotes/origin/main)"
+          fi
           if [ -z "$EVENT_BEFORE" ] || ! git cat-file -e "$EVENT_BEFORE^{commit}" 2>/dev/null; then
             echo "Push has no resolvable immutable before SHA" >&2
             exit 2
