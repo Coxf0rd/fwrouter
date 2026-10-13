@@ -111,3 +111,7 @@ The corrective lifecycle now also drains already-started JobManager workers with
 Controller readiness after a Mihomo restart now probes only /version with a bounded request; it explicitly does not prove policy. Fresh selector restoration health/readback and final generation/incarnation/revision publication proof remain mandatory. This avoids redundant full rules readback in startup and does not cache mutation proof. Hosted scale and live acceptance remain pending.
 
 The adapter may retain one bounded safe YAML parse keyed by exact current config text and loader identity. Current bytes are still read on every health invocation, and native selectors/rules plus policy/receipt proof are recomputed. This is parse reuse only, not cached applied-state or native proof; file mtime/size cannot validate it.
+
+## Controlled stabilization rollout — 2026-10-14
+
+Feature-source4ffd686 is installed backend/docs only after hosted full scope PASS. Live startup still fails120s readiness and20s shutdown; API/dependents held. Native generation checkpoint remainsxray_applied with8 UUID replacements among78, so final identity/native publication is not accepted. Native routing/DNS/Rescue observed preserved. Further activation/recovery requires diagnosis of nonempty profile convergence and checkpoint-owned safe restore; do not restore insecure archived generator. See the runtime stability LIVE_ACCEPTANCE report.
