@@ -4618,9 +4618,8 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertFalse(launcher.valid_image_measurements(malformed))
         self.assertNotIn("peak", " ".join(measurements["docker_root_samples"]))
 
-    def test_kernel_cohort_contains_provider_failures_and_full_startup_scale(self):
+    def test_kernel_provider_cohort_remains_exact_without_startup_scale(self):
         expected = {
-            "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
             "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
             "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
             "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
@@ -4633,7 +4632,7 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
             "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
         }
-        self.assertEqual(12, len(expected))
+        self.assertEqual(11, len(expected))
         self.assertEqual(expected, set(launcher._PROVIDER_COHORT_NODEIDS))
         self.assertEqual(expected, launcher.expected_acceptance_nodeids("provider-cohort"))
         self.assertIn("provider-cohort", launcher._KERNEL_DATAPLANE_SUITES)
