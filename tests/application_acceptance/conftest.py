@@ -138,7 +138,7 @@ def acceptance_stack(request):
         worker_path = ("/opt/fwrouter-test/bin:/usr/sbin:/sbin:/usr/bin:/bin" if kernel_profile
                        else "/opt/fwrouter-test/bin:/usr/bin:/bin")
 
-        def start_worker(*, startup_tasks: bool = False) -> tuple[subprocess.Popen[bytes], str]:
+        def start_worker(*, startup_tasks: bool = False, on_spawn=None) -> tuple[subprocess.Popen[bytes], str]:
             port = _free_loopback_port()
             logs = (suite_root / f"uvicorn-{port}.log").open("ab")
             env = {
@@ -169,6 +169,8 @@ def acceptance_stack(request):
             owned_workers.append(proc)
             proc._acceptance_log_path = logs.name
             logs.close()
+            if on_spawn is not None:
+                on_spawn(proc)
             base = f"http://127.0.0.1:{port}/api/v2"
             deadline = time.monotonic() + (45 if startup_tasks else 15)
             while time.monotonic() < deadline:

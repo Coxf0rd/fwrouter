@@ -3337,6 +3337,9 @@ def main() -> None:
         async def observed_lifespan(application):
             async with original_lifespan(application) as lifespan_state:
                 yield lifespan_state
+            if any(thread.is_alive() and thread.name.startswith("fwrouter-")
+                   for thread in threading.enumerate()):
+                raise RuntimeError("owned application worker survived lifespan cleanup")
             # Uvicorn 0.34 re-raises the captured SIGTERM after clean shutdown.
             # This marker is emitted only after actual application cleanup.
             print("FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE", flush=True)

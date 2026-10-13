@@ -225,7 +225,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         "status": "started",
         "limitations": [
             "no host systemd or host dataplane claim",
-            "periodic RSS begins after readiness; Linux VmHWM includes preceding process startup",
+            "periodic RSS begins at owned process spawn; Linux VmHWM retains prior process peaks",
             "native /rules request counters are unavailable in the current worker harness",
             "fixture has no reconciled Mihomo receipt; policy_installed is expected false",
         ],
@@ -258,14 +258,22 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         assert len(native_identities_before) == 78
         metrics["synthetic_xray_loaded_clients"] = 78
         native.restart_mihomo_child()
+
+        def observe_spawn(worker) -> None:
+            nonlocal active_worker, sampler
+            active_worker = worker
+            sampler = _RssSampler(worker.pid)
+            sampler.start()
+
         start = time.monotonic()
-        active_worker, api = stack["start_worker"](startup_tasks=True)
-        metrics["startup_wall_seconds"] = round(time.monotonic() - start, 4)
+        try:
+            active_worker, api = stack["start_worker"](startup_tasks=True, on_spawn=observe_spawn)
+        finally:
+            metrics["startup_wall_seconds"] = round(time.monotonic() - start, 4)
         stack["worker"] = active_worker
         stack["api"] = api
 
-        sampler = _RssSampler(active_worker.pid)
-        sampler.start()
+        assert sampler is not None
         metrics["rss_hwm_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmHWM")
         waves: list[list[dict[str, Any]]] = []
         metrics["waves"] = waves
@@ -295,12 +303,12 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
                     assert state.get("runtime_vpn_auto_targets") == ["REJECT"], state
 
         metrics["waves"] = waves
-        metrics["rss_peak_kib_post_ready"] = sampler.peak_kib
+        metrics["rss_peak_kib_sampled_process_lifetime"] = sampler.peak_kib
         lifetime_peak = max(sampler.high_water_samples) if sampler.high_water_samples else None
         metrics["rss_hwm_kib_process_lifetime"] = lifetime_peak
         assert lifetime_peak is not None and lifetime_peak < RSS_LIMIT_KIB, {"rss_hwm_kib": lifetime_peak}
         assert sampler.peak_kib is not None and sampler.peak_kib < RSS_LIMIT_KIB, {
-            "rss_peak_kib_post_ready": sampler.peak_kib,
+            "rss_peak_kib_sampled_process_lifetime": sampler.peak_kib,
             "limit_kib": RSS_LIMIT_KIB,
         }
 
@@ -322,7 +330,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
     finally:
         if sampler is not None:
             sampler.stop()
-            metrics["rss_peak_kib_post_ready"] = sampler.peak_kib
+            metrics["rss_peak_kib_sampled_process_lifetime"] = sampler.peak_kib
             metrics["rss_hwm_kib_process_lifetime"] = max(sampler.high_water_samples) if sampler.high_water_samples else None
         if active_worker.poll() is None:
             shutdown = _stop_owned_worker(active_worker)
