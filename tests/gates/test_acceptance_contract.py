@@ -272,7 +272,7 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual(functional, ordinary | provider)
         with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
             launcher.expected_acceptance_nodeids("functional")
-        self.assertEqual(38, len(ordinary | provider | packet))
+        self.assertEqual(39, len(ordinary | provider | packet))
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(
                 [{"nodeid": nodeid, "status": "passed",

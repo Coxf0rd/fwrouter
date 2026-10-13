@@ -470,7 +470,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual({"functional-ordinary", "provider-cohort", "packet-diagnostic"}, set(partitions))
         self.assertEqual((27, 11, 1), tuple(len(partitions[key]) for key in
                                              ("functional-ordinary", "provider-cohort", "packet-diagnostic")))
-        self.assertEqual(38, len(set().union(*partitions.values())))
+        self.assertEqual(39, len(set().union(*partitions.values())))
         self.assertFalse(partitions["functional-ordinary"] & partitions["provider-cohort"])
         self.assertFalse(partitions["packet-diagnostic"] & set().union(
             partitions["functional-ordinary"], partitions["provider-cohort"]))
