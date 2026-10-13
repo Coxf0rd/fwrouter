@@ -1,5 +1,12 @@
 # FWRouter engineering roadmap mirror
 
+## 2026-10-13 — controlled production rollout; Live Acceptance BLOCKED
+
+User authorized backend/docs deployment of exact maina4a7a33 and accepted incomplete host rollback qualification. Standard installer from verified Git export completed;434 files/guard verified, Xray78/78, native DIRECT/VPN TCP and observed VPN UDP/no-clear-fallback PASS. Generated Rescue LAN hostnames/DHCP DNS corrected. Production is updated, not UNCHANGED.
+
+Live Acceptance remains **BLOCKED**: startup254s vs31s,16/31 health timeouts during15min, repeated40s traffic collector timeout and increased API RAM; two inherited native Rescue LAN ingress entries still await Core reconciliation. Only traffic collection timer temporarily held (enabled state unchanged); no host/Rescue/network-policy weakening or unsafe old rollback. Source parser correction is [PR7](https://github.com/Coxf0rd/fwrouter/pull/7), scoped217+26 PASS at38396231843; fix not merged/deployed. See `knowledge/audits/production_deployment_live_acceptance_2026-10-13/LIVE_ACCEPTANCE.md`. CI CLOSED, CD DEFERRED; no next milestone. Prior readiness statuses below remain historical and are superseded only within this scope.
+
+
 ## 2026-10-13 — pre-deployment safety follow-up
 
 CI milestone is CLOSED (merged ef46147; actual main run 38363962787 PASS). External Rescue is PASS by user-confirmed manual external verification; the earlier inability to test it is superseded, without invented automated evidence. A separate `fix/predeploy-rescue-isolation-safe-rollback` safety branch addresses reserved Rescue LAN discovery and qualified recovery targets. Source and scoped hosted qualification passed (38381629814:1461/0/0); PR #6 required checks determine final merge readiness; full host rollback activation is NOT QUALIFIED; production rollout and live acceptance remain NOT RUN / BLOCKED. Archived 3d285c3/c1e00b5 is not a safe mandatory-VPN rollback target. Host/readiness guard remains outside deployment scope. See the safety report at `/srv/fwrouter/knowledge/audits/predeploy_rescue_safe_rollback_2026-10-13/REPORT.md`. No Operational Performance Fixes, Stage 5 or CD work is started.
