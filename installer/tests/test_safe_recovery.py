@@ -260,7 +260,9 @@ def test_archived_generator_is_not_a_safe_mandatory_vpn_rollback_target() -> Non
     options = dict(mode="selective", selective_default="vpn",
                    selective_vpn_policy_ready=False, selective_degraded=True,
                    scoped_steering_rules=[])
-    old = namespace["_build_classify_chain_lines"](**options)
+    old_options = {**options}
+    old_options["selective_vpn_ready"] = old_options.pop("selective_vpn_policy_ready")
+    old = namespace["_build_classify_chain_lines"](**old_options)
     new = _build_classify_chain_lines(**options)
     assert old[-2] == '        goto fwrouter_direct comment "selective degraded default direct"'
     assert new[-2] == '        drop comment "selective default vpn"'

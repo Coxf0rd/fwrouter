@@ -347,7 +347,7 @@ def _check_isolated_target(target: Path) -> Path:
             child_info = child.lstat()
             if child.is_symlink():
                 raise RecoveryError("stage target contains a symlink")
-            if child_info.st_dev != resolved.stat().st_dev or child_info.st_nlink > 1:
+            if child_info.st_dev != resolved.stat().st_dev or (stat.S_ISREG(child_info.st_mode) and child_info.st_nlink > 1):
                 raise RecoveryError("stage target contains a mount boundary or hard-linked file")
             if not (stat.S_ISDIR(child_info.st_mode) or stat.S_ISREG(child_info.st_mode)):
                 raise RecoveryError("stage target contains a special file")
