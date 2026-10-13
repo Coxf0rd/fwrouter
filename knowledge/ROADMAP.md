@@ -2,7 +2,7 @@
 
 ### Runtime stabilization qualification — 2026-10-14
 
-PR8 remains under qualification; production API/dependent workers stay stopped and no new deployment has occurred. Hosted38444740666 confirms ordinary26 PASS, Provider/kernel11 PASS plus one full-startup FAIL, and complete packet1 PASS including stale Rescue LAN marker repair with independent NAT preservation. Startup stack proves repeated common rules/preflight processing per Xray client; operation-local projection reuse and always-owned prewarm/JobManager cleanup are prepared, pending hosted validation. Source/test PASS is not live acceptance. Controlled local-source deployment before final PR readiness is user-authorized only after applicable qualification and backup/safe-recovery checks; unsafe implicit-DIRECT rollback remains prohibited. See the API runtime stability report.
+PR8 remains under qualification; production API/dependent workers stay stopped and no new deployment has occurred. Hosted38456264173 confirms Provider11 PASS and complete packet1 PASS, including stale Rescue marker repair; ordinary25 PASS/1 Chromium launch crash and scaled full-startup FAIL remain. API VmHWM739720KiB is partial failure evidence. Per-client projection/ownership fixes are implemented; latest startup stack identifies duplicate full native rules health during controller readiness. Bounded controller-only /version readiness is prepared while fresh selector/native publication proof remains mandatory. Controlled local-source deployment before final PR readiness is user-authorized after qualification and backup/safe-recovery checks; unsafe implicit-DIRECT rollback remains prohibited. See the API runtime stability report.
 
 ## 2026-10-13 — API scale stabilization after PR7 merge
 

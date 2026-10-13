@@ -1037,6 +1037,14 @@ class MihomoHttpAdapter(MihomoAdapter):
 
         return data
 
+    def controller_ready(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
+        """Check controller availability without reading or proving runtime policy."""
+        version = self._get_json("/version", timeout_seconds=timeout_seconds)
+        value = version.get("version")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Mihomo controller returned an invalid version response.")
+        return {"ok": True, "version": value.strip()}
+
     def _put_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         with httpx.Client(timeout=self.timeout_seconds, trust_env=False) as client:
             response = client.put(
