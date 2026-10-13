@@ -11,6 +11,8 @@ import time
 import uuid
 from typing import Any
 
+import pytest
+
 from .http_support import http_json
 
 
@@ -108,7 +110,7 @@ def _seed_scale_rules_source(state: Path) -> dict[str, Any]:
     if paths["effective_json_path"].resolve(strict=False) != expected_artifact.resolve(strict=False):
         raise AssertionError("scale rules artifact path escaped the owned test state")
 
-    vpn_lines = [f"scale-{index:06d}.test" for index in range(99_627)]
+    vpn_lines = ["vpn.test" if index == 0 else f"scale-{index:06d}.test" for index in range(99_627)]
     big_vpn_text = "\n".join(vpn_lines) + "\n"
     manual_text = "DIRECT protected.test\n"
     manual_validation = rules_service.validate_manual_rules(manual_text)
@@ -243,9 +245,9 @@ def _inspect_generated_scale_config(path: Path) -> dict[str, Any]:
                 continue
             rule = line[2:].rstrip("\r\n")
             top_level_rule_count += 1
-            if rule.startswith("DOMAIN-SUFFIX,scale-") and rule.endswith(",vpn-global"):
+            if (rule.startswith("DOMAIN-SUFFIX,scale-") or rule.startswith("DOMAIN-SUFFIX,vpn.test,")) and rule.endswith(",vpn-global"):
                 vpn_suffix_count += 1
-            if rule.startswith("AND,((NETWORK,udp),(DOMAIN-SUFFIX,scale-") and rule.endswith(")),REJECT"):
+            if (rule.startswith("AND,((NETWORK,udp),(DOMAIN-SUFFIX,scale-") or rule.startswith("AND,((NETWORK,udp),(DOMAIN-SUFFIX,vpn.test)")) and rule.endswith(")),REJECT"):
                 udp_guard_count += 1
             if rule == "DOMAIN,protected.test,DIRECT":
                 protected_direct_present = True
@@ -380,6 +382,7 @@ def _write_metrics(payload: dict[str, Any]) -> None:
     os.replace(temporary, target)
 
 
+@pytest.mark.packet
 def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(acceptance_stack) -> None:
     stack = acceptance_stack
     native = stack["native"]
@@ -489,6 +492,10 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         assert xray_reconcile.get("status") == "success", xray_reconcile
         dnsmasq_reconcile = apply_reconcile["dnsmasq_reconcile"]
         assert dnsmasq_reconcile.get("ok") is True, dnsmasq_reconcile
+        dns_fixture = observation.get("dns_fixture")
+        assert isinstance(dns_fixture, dict) and all(dns_fixture.get(key) is True for key in (
+            "configured", "daemon_running", "daemon_uid_matches",
+        )), dns_fixture
 
         generated_config = _inspect_generated_scale_config(config_path)
         metrics["generated_config_after_recovery"] = generated_config

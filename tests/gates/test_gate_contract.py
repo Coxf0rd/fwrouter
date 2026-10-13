@@ -468,7 +468,7 @@ class GateContractTests(unittest.TestCase):
         spec.loader.exec_module(module)
         partitions = module.hosted_partition_nodeids()
         self.assertEqual({"functional-ordinary", "provider-cohort", "packet-diagnostic"}, set(partitions))
-        self.assertEqual((26, 12, 1), tuple(len(partitions[key]) for key in
+        self.assertEqual((26, 11, 2), tuple(len(partitions[key]) for key in
                                              ("functional-ordinary", "provider-cohort", "packet-diagnostic")))
         self.assertEqual(39, len(set().union(*partitions.values())))
         self.assertFalse(partitions["functional-ordinary"] & partitions["provider-cohort"])
@@ -690,7 +690,7 @@ class GateContractTests(unittest.TestCase):
 
     def test_provider_cohort_profile_binding_is_exact_and_does_not_elevate_file_plans(self) -> None:
         bindings = self.manifest["node_execution_profiles"]
-        self.assertEqual(12, len(bindings))
+        self.assertEqual(11, len(bindings))
         self.assertEqual(gate.PROVIDER_COHORT_NODEIDS, {row["nodeid"] for row in bindings})
         self.assertTrue(all(row["suite"] == "provider-cohort"
                             and row["execution_profile"] == "hosted-kernel-dataplane"
@@ -706,7 +706,7 @@ class GateContractTests(unittest.TestCase):
 
         missing = copy.deepcopy(self.manifest)
         missing["node_execution_profiles"].pop()
-        with self.assertRaisesRegex(gate.GateError, "exact 12 provider-cohort"):
+        with self.assertRaisesRegex(gate.GateError, "exact 11 provider-cohort"):
             gate.validate_manifest(missing)
         wrong_profile = copy.deepcopy(self.manifest)
         wrong_profile["node_execution_profiles"][0]["execution_profile"] = "hosted-kernel-packet"
@@ -723,6 +723,10 @@ class GateContractTests(unittest.TestCase):
         path = gate.PACKET_EXECUTION_PATH
         row = next(item for item in self.manifest["test_files"] if item["path"] == path)
         self.assertEqual("hosted-kernel-packet", row["execution_profile"])
+        scale_path = gate.PACKET_SCALE_EXECUTION_PATH
+        scale_row = next(item for item in self.manifest["test_files"] if item["path"] == scale_path)
+        self.assertEqual("application-runtime-scale", scale_row["id"])
+        self.assertEqual("hosted-kernel-packet", scale_row["execution_profile"])
         # Exercise the runner's manual-subset contract with a manifest containing
         # only this row. A normal affected plan intentionally expands its domain,
         # which is outside this focused dispatch contract.
@@ -756,7 +760,8 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(["hosted-kernel-packet"], plan["required_execution_profiles"])
 
         widened = copy.deepcopy(self.manifest)
-        unrelated = next(item for item in widened["test_files"] if item["path"] != path)
+        unrelated = next(item for item in widened["test_files"]
+                         if item["path"] not in {path, scale_path})
         unrelated["execution_profile"] = "hosted-kernel-packet"
         with self.assertRaisesRegex(gate.GateError, "reserved for the exact opt-in L3 packet suite"):
             gate.validate_manifest(widened)
@@ -809,7 +814,8 @@ class GateContractTests(unittest.TestCase):
                       if row["domain"] == "application-acceptance"]
         self.assertTrue(acceptance)
         packet_rows = [row for row in acceptance if row.get("execution_profile") == gate.PACKET_EXECUTION_PROFILE]
-        self.assertEqual([gate.PACKET_EXECUTION_PATH], [row["path"] for row in packet_rows])
+        self.assertEqual({gate.PACKET_EXECUTION_PATH, gate.PACKET_SCALE_EXECUTION_PATH},
+                         {row["path"] for row in packet_rows})
         self.assertTrue(all(row.get("opt_in") is True and row.get("native") is True
                             and row.get("execution_profile") in {"hosted-isolated-compose",
                                                                   gate.PACKET_EXECUTION_PROFILE}

@@ -95,7 +95,6 @@ _DIAGNOSTIC_NODEIDS = {
     "browser-diagnostic": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 }
 _PROVIDER_COHORT_NODEIDS = (
-    "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
     "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
@@ -130,6 +129,7 @@ _KERNEL_DATAPLANE_SUITES = {_KERNEL_RECOVERY_SUITE, "provider-cohort", "reentry-
 _PACKET_DIAGNOSTIC_SUITE = "packet-diagnostic"
 _PACKET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_packet_dataplane.py::test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks",
+    "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
 )
 _DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic",
                       "recovery-diagnostic", "reentry-diagnostic", _KERNEL_RECOVERY_SUITE,
@@ -2440,9 +2440,9 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         functional = {row["nodeid"] for row in rows if row["suite"] == "functional"}
         packet = {row["nodeid"] for row in rows if row["suite"] == "packet"}
         provider = set(_PROVIDER_COHORT_NODEIDS)
-        if (len(functional) != 38 or len(packet) != 1 or len(provider) != 12
+        if (len(functional) != 37 or len(packet) != 2 or len(provider) != 11
                 or not provider <= functional or functional & packet):
-            raise NotRun("functional profile partitions differ from the reviewed 38+1 inventory")
+            raise NotRun("functional profile partitions differ from the reviewed 37+2 inventory")
         selected = functional - provider
         if len(selected) != 26 or selected & provider or selected | provider != functional:
             raise NotRun("ordinary/provider profile partitions are not disjoint and exhaustive")

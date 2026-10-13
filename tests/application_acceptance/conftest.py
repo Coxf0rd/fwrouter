@@ -140,8 +140,8 @@ def acceptance_stack(request):
                        else "/opt/fwrouter-test/bin:/usr/bin:/bin")
 
         def start_worker(*, startup_tasks: bool = False, startup_recovery: bool = False, on_spawn=None) -> tuple[subprocess.Popen[bytes], str]:
-            if startup_recovery and (not startup_tasks or profile.get("profile") != "hosted-kernel-dataplane"):
-                pytest.fail("startup recovery requires the qualified kernel-dataplane worker")
+            if startup_recovery and (not startup_tasks or profile.get("profile") != "hosted-kernel-packet"):
+                pytest.fail("startup recovery requires the qualified packet worker with native DNS")
             port = _free_loopback_port()
             logs = (suite_root / f"uvicorn-{port}.log").open("ab")
             env = {

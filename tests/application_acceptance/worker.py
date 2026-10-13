@@ -2560,7 +2560,7 @@ def build_app(socket_path: Path):
     if os.environ.get("FWROUTER_STARTUP_RECOVERY_ENABLED") not in {"0", "1"}:
         raise RuntimeError("invalid acceptance startup recovery flag")
     if os.environ.get("FWROUTER_STARTUP_RECOVERY_ENABLED") == "1" and (
-        acceptance_profile.get("profile") != "hosted-kernel-dataplane"
+        acceptance_profile.get("profile") != "hosted-kernel-packet"
         or os.environ.get("FWROUTER_STARTUP_TASKS_ENABLED") != "1"
     ):
         raise RuntimeError("startup recovery is not authorized outside qualified kernel worker")
@@ -2666,6 +2666,11 @@ def build_app(socket_path: Path):
                                 (result.get("startup_apply_reconcile") or {}).items() if key in {
                                     "intended_routing", "scoped_subject_routing", "xray_subscription_profiles", "dnsmasq_reconcile"}},
         })
+        if acceptance_profile.get("profile") == "hosted-kernel-packet" and result.get("startup_recovery_enabled") is True:
+            dns_fixture = _packet_dnsmasq_fixture(state, acceptance_profile)
+            bootstrap_observation["dns_fixture"] = {key: dns_fixture.get(key) is True for key in (
+                "configured", "daemon_running", "daemon_uid_matches",
+            )}
         return result
 
     application_main.bootstrap_backend = observed_bootstrap
@@ -3067,6 +3072,8 @@ def build_app(socket_path: Path):
         app.add_api_route("/api/v2/__acceptance/dns53/configure", configure_packet_dns53, methods=["POST"])
         app.add_api_route("/api/v2/__acceptance/dns53/status", packet_dns53_status, methods=["GET"])
         app.add_api_route("/api/v2/__acceptance/dns53/stop", stop_packet_dns53, methods=["POST"])
+        if os.environ.get("FWROUTER_STARTUP_RECOVERY_ENABLED") == "1":
+            _packet_dnsmasq_fixture(state, acceptance_profile)
     return app
 
 

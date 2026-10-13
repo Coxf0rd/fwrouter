@@ -5302,7 +5302,7 @@
       ],
       "slow": true,
       "timeout_seconds": 900,
-      "execution_profile": "hosted-isolated-compose"
+      "execution_profile": "hosted-kernel-packet"
     }
   ],
   "version": "2026.10.13.2",
@@ -5359,11 +5359,6 @@
     },
     {
       "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
-      "execution_profile": "hosted-kernel-dataplane",
-      "suite": "provider-cohort"
-    },
-    {
-      "nodeid": "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
       "execution_profile": "hosted-kernel-dataplane",
       "suite": "provider-cohort"
     }

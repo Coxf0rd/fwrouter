@@ -266,7 +266,7 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((26, 12, 1), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((26, 11, 2), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
@@ -3671,22 +3671,30 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertFalse(registered[0]["native"])
         self.assertEqual("none", registered[0]["network"])
 
-    def test_packet_diagnostic_is_one_fixed_l3_node_and_is_registered(self):
+    def test_packet_diagnostic_nodes_are_fixed_and_registered(self):
         nodeid = (
             "tests/application_acceptance/test_packet_dataplane.py::"
             "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"
         )
-        self.assertEqual({nodeid}, launcher.expected_acceptance_nodeids("packet-diagnostic"))
+        scale_nodeid = (
+            "tests/application_acceptance/test_runtime_scale.py::"
+            "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
+        )
+        self.assertEqual({nodeid, scale_nodeid}, launcher.expected_acceptance_nodeids("packet-diagnostic"))
         with self.assertRaises(launcher.NotRun):
             launcher.expected_acceptance_nodeids("packet-diagnostic-extra")
-        failed = [{"nodeid": nodeid, "status": "failed",
-                   "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}]
-        launcher.validate_suite_node_receipt(failed, "packet-diagnostic", [nodeid])
-        skipped = [dict(failed[0], status="skipped")]
+        expected_nodes = {nodeid, scale_nodeid}
+        failed = [
+            {"nodeid": nodeid, "status": "failed",
+             "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}},
+            {"nodeid": scale_nodeid, "status": "passed",
+             "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}},
+        ]
+        launcher.validate_suite_node_receipt(failed, "packet-diagnostic", sorted(expected_nodes))
+        skipped = [dict(row, status="skipped") if row["nodeid"] == scale_nodeid else row for row in failed]
         with self.assertRaises(launcher.NotRun):
-            launcher.validate_suite_node_receipt(skipped, "packet-diagnostic", [nodeid])
-        row = next(item for item in launcher.expected_acceptance_nodeids("packet-diagnostic"))
-        self.assertEqual(nodeid, row)
+            launcher.validate_suite_node_receipt(skipped, "packet-diagnostic", sorted(expected_nodes))
+        self.assertEqual(expected_nodes, launcher.expected_acceptance_nodeids("packet-diagnostic"))
         packet_source = (Path(__file__).parents[1] / "application_acceptance" / "test_packet_dataplane.py").read_text(
             encoding="utf-8")
         packet_tree = ast.parse(packet_source)

@@ -136,10 +136,10 @@ def hosted_partition_nodeids() -> dict[str, set[str]]:
     partitions = {"functional-ordinary": ordinary, "provider-cohort": provider,
                   "packet-diagnostic": packet}
     all_ids = [nodeid for ids in partitions.values() for nodeid in ids]
-    if (len(functional) != 38 or len(ordinary) != 26 or len(provider) != 12 or len(packet) != 1
+    if (len(functional) != 37 or len(ordinary) != 26 or len(provider) != 11 or len(packet) != 2
             or not provider <= functional or functional & packet or len(all_ids) != len(set(all_ids))
             or ordinary | provider != functional or ordinary | provider | packet != functional | packet):
-        raise gate.GateError("hosted profiles are not a disjoint exhaustive 26+12+1 partition")
+        raise gate.GateError("hosted profiles are not a disjoint exhaustive 26+11+2 partition")
     return partitions
 
 

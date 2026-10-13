@@ -40,7 +40,6 @@ PACKET_EXECUTION_PROFILE = "hosted-kernel-packet"
 KERNEL_DATAPLANE_EXECUTION_PROFILE = "hosted-kernel-dataplane"
 PROVIDER_COHORT_SUITE = "provider-cohort"
 PROVIDER_COHORT_NODEIDS = {
-    "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
     "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
@@ -108,6 +107,7 @@ UNIT_FIXTURE_COHORTS = {
     "acceptance-tail": UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS,
 }
 PACKET_EXECUTION_PATH = "tests/application_acceptance/test_packet_dataplane.py"
+PACKET_SCALE_EXECUTION_PATH = "tests/application_acceptance/test_runtime_scale.py"
 EXECUTION_PROFILES = {"qualified-child-process", "hosted-isolated-compose",
                       KERNEL_DATAPLANE_EXECUTION_PROFILE, PACKET_EXECUTION_PROFILE}
 TEST_FILE_GLOBS = (
@@ -194,8 +194,9 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if profile == KERNEL_DATAPLANE_EXECUTION_PROFILE:
             raise GateError(f"{path}: hosted-kernel-dataplane is reserved for exact provider-cohort node bindings")
         if profile == PACKET_EXECUTION_PROFILE and (
-            path != PACKET_EXECUTION_PATH
-            or row.get("id") != "application-packet-dataplane"
+            path not in {PACKET_EXECUTION_PATH, PACKET_SCALE_EXECUTION_PATH}
+            or row.get("id") != ("application-packet-dataplane" if path == PACKET_EXECUTION_PATH
+                                  else "application-runtime-scale")
             or row.get("domain") != "application-acceptance"
             or row.get("primary_level") != "L3"
             or row.get("native") is not True
@@ -217,7 +218,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError("node execution profiles are reserved for exact hosted provider-cohort nodes")
         node_profile_ids.add(nodeid)
     if node_profile_ids != PROVIDER_COHORT_NODEIDS:
-        raise GateError("manifest must bind the exact 12 provider-cohort nodes to hosted-kernel-dataplane")
+        raise GateError("manifest must bind the exact 11 provider-cohort nodes to hosted-kernel-dataplane")
     overrides = manifest.get("node_overrides", [])
     if not isinstance(overrides, list):
         raise GateError("node_overrides must be a list")

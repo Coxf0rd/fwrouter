@@ -820,7 +820,7 @@ class NativeXrayProcess:
             return {"ok": True, "message": "native process launch config archive", "details": {"archive_bytes_b64": base64.b64encode(data).decode("ascii"), "native_config_path": str(self._native_config_path), "native_argv": self._native_argv}}
         if action == "mihomo_test_config":
             path = Path(str(payload.get("path", ""))).resolve(strict=True)
-            if not path.is_relative_to(self.root.resolve()) or path.stat().st_size > 4 * 1024 * 1024:
+            if not path.is_relative_to(self.root.resolve()) or path.stat().st_size > 32 * 1024 * 1024:
                 raise ValueError("Mihomo candidate path is outside acceptance state")
             proc = self._native_cli("mihomo", self.mihomo_binary, ["-t", "-f", str(path)], timeout=15,
                 env={"PATH": "/opt/fwrouter-test/bin:/usr/bin:/bin", "HOME": str(self.root),
