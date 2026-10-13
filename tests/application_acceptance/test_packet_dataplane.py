@@ -3082,7 +3082,6 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
         os.fsync(stream.fileno())
 
 
-@pytest.mark.packet
 def _qualify_stale_rescue_lan_cleanup(api: str, stack: dict[str, Any], record_property: Any) -> None:
     """Seed historical owned drift only in the already-qualified router namespace."""
     assert stack["profile"].get("profile") == "hosted-kernel-packet"
@@ -3126,6 +3125,7 @@ def _qualify_stale_rescue_lan_cleanup(api: str, stack: dict[str, Any], record_pr
         nft("delete", "table", "ip", fixture_table)
 
 
+@pytest.mark.packet
 def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks(
         acceptance_stack, record_property):
     stack = acceptance_stack
