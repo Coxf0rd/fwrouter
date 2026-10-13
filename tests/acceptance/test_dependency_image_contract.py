@@ -97,7 +97,7 @@ class DependencyImageContractTests(unittest.TestCase):
             "EXPECTED_SHA": expected_sha,
         }
 
-    def test_publisher_authorizes_main_dependency_push_manual_main_and_explicit_stage_marker(self):
+    def test_publisher_authorizes_main_dependency_push_and_reviewed_manual_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             main_push = self._publisher_env(root, event="push", ref="refs/heads/main")
@@ -149,9 +149,10 @@ class DependencyImageContractTests(unittest.TestCase):
                 root, event="push", ref="refs/heads/stage/test-architecture-ci-stabilization",
                 message="audit ci:publish-dependencies",
             )
-            self.assertEqual("stage-marker", publisher.authorize_publisher_event(stage))
+            self.assertEqual("", publisher.authorize_publisher_event(stage))
             stage["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "stage-marker"
-            publisher.validate_publisher_environment(stage)
+            with self.assertRaises(publisher.PublishError):
+                publisher.validate_publisher_environment(stage)
             for field, value in (
                 ("GITHUB_REPOSITORY", "attacker/fwrouter"),
                 ("GITHUB_REF", "refs/heads/main"),
@@ -190,11 +191,11 @@ class DependencyImageContractTests(unittest.TestCase):
     def test_source_assets_only_provisioning_is_publisher_gated_and_avoids_consumer_lock(self):
         with tempfile.TemporaryDirectory() as temporary:
             trusted = self._publisher_env(
-                Path(temporary), event="push",
-                ref="refs/heads/stage/test-architecture-ci-stabilization",
-                message="ci:publish-dependencies",
+                Path(temporary), event="workflow_dispatch",
+                ref="refs/heads/feature/dependency-update",
+                acknowledge=publisher.REVIEWED_BRANCH_ACKNOWLEDGMENT,
             )
-            trusted["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "stage-marker"
+            trusted["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "reviewed-branch-manual"
             with mock.patch.object(provision, "load_dependency_image_reference",
                                    side_effect=AssertionError("consumer lock must not be loaded")):
                 image_ref, lock_digest = provision.load_provision_dependency_reference(
@@ -220,6 +221,15 @@ class DependencyImageContractTests(unittest.TestCase):
                 rejected = dict(trusted, **{field: value})
                 with self.subTest(field=field), self.assertRaises(ValueError):
                     provision.load_provision_dependency_reference(source_assets_only=True, env=rejected)
+
+            marker_push = self._publisher_env(
+                Path(temporary), event="push",
+                ref="refs/heads/stage/test-architecture-ci-stabilization",
+                message="ci:publish-dependencies",
+            )
+            marker_push["FWROUTER_DEPENDENCY_PUBLISH_MODE"] = "stage-marker"
+            with self.assertRaises(ValueError):
+                provision.load_provision_dependency_reference(source_assets_only=True, env=marker_push)
 
     def test_publisher_workflow_uses_explicit_asset_only_mode_and_parses_provision_source(self):
         workflow = (ROOT / ".github/workflows/publish-acceptance-dependencies.yml").read_text(encoding="utf-8")

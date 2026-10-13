@@ -20,11 +20,10 @@ from prepare_dependency_image import (
 
 
 OWNER = "Coxf0rd/fwrouter"
-MARKER = "ci:publish-dependencies"
 MANUAL_ACKNOWLEDGMENT = "PUBLISH ACCEPTANCE DEPENDENCIES"
 REVIEWED_BRANCH_ACKNOWLEDGMENT = "PUBLISH REVIEWED BRANCH DEPENDENCIES"
 PUBLISH_MODES = {
-    "main-dependency-change", "main-manual", "reviewed-branch-manual", "stage-marker",
+    "main-dependency-change", "main-manual", "reviewed-branch-manual",
 }
 DEPENDENCY_INPUT_PATHS = frozenset({
     "tests/acceptance/prepare_dependency_image.py",
@@ -119,9 +118,6 @@ def authorize_publisher_event(env: dict[str, str]) -> str:
         if not re.fullmatch(r"[0-9a-f]{40}", expected_sha) or expected_sha != env.get("GITHUB_SHA"):
             raise PublishError("reviewed branch publication requires the exact full source SHA")
         return "reviewed-branch-manual"
-    if (event_name == "push" and ref == "refs/heads/stage/test-architecture-ci-stabilization"
-            and MARKER in str((payload.get("head_commit") or {}).get("message", ""))):
-        return "stage-marker"
     return ""
 
 
