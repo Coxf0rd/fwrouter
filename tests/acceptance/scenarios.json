@@ -164,6 +164,12 @@
       "contract": "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"
     },
     {
+      "nodeid": "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
+    },
+    {
       "nodeid": "tests/application_acceptance/test_xray_api.py::test_api_xray_client_create_delete_has_native_loaded_readback",
       "suite": "functional",
       "level": "L3",

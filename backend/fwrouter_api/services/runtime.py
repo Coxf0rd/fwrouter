@@ -34,15 +34,11 @@ from fwrouter_api.services.system_subjects import enrich_system_subject_summary
 from fwrouter_api.services.external_ingress import probe_external_ingress_runtime
 from fwrouter_api.services.external_connections_registry import list_external_connections
 from fwrouter_api.services.traffic import get_traffic_accounting_state
-from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+from fwrouter_api.services.live_probe_cache import get_live_probe_cache, get_readonly_mihomo_health
 
 
 def _cached_mihomo_health():
-    return get_live_probe_cache(
-        "dataplane_global.mihomo_health",
-        ttl_seconds=2.0,
-        loader=DEFAULT_MIHOMO_ADAPTER.health,
-    )
+    return get_readonly_mihomo_health(DEFAULT_MIHOMO_ADAPTER)
 
 
 def _cached_xray_health():

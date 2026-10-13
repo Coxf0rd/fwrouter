@@ -638,7 +638,7 @@ class MihomoHttpAdapter(MihomoAdapter):
             return {}
         return {"Authorization": f"Bearer {secret}"}
 
-    def _config_runtime_details(self) -> dict[str, Any]:
+    def _config_runtime_details(self, *, config_text: str | None = None) -> dict[str, Any]:
         contours = {}
         if self.contours_path.exists():
             try:
@@ -666,7 +666,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 "fwrouter_contours": contours,
             }
 
-        config_text = self._config_text()
+        config_text = self._config_text() if config_text is None else config_text
         listener_ports = self._scan_listener_ports(text=config_text)
         mixed_port = listener_ports["mixed_port"]
         tproxy_port = listener_ports["tproxy_port"]
@@ -981,44 +981,38 @@ class MihomoHttpAdapter(MihomoAdapter):
                 canonical = normalize_native_rule_type(native_type, payload)
                 return (*canonical, target) if canonical is not None else None
 
-            normalized_native_rules: list[tuple[str, str, str]] = []
             has_native_indexes = any(isinstance(item, dict) and "index" in item for item in native_rules)
+            configured_rules = sequences["rules"]
+            native_top_level_rules_ok = isinstance(configured_rules, list) and len(native_rules) == len(configured_rules)
             for position, item in enumerate(native_rules):
+                if not native_top_level_rules_ok:
+                    break
                 if not isinstance(item, dict):
-                    normalized_native_rules = []
+                    native_top_level_rules_ok = False
                     break
                 native_rule_type = str(item.get("type") or "").strip()
                 payload = str(item.get("payload") or "").strip()
                 target = str(item.get("proxy") or "").strip()
                 extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
                 if native_rule_type not in native_type_to_config or not target:
-                    normalized_native_rules = []
+                    native_top_level_rules_ok = False
                     break
                 if "disabled" in extra and type(extra.get("disabled")) is not bool:
-                    normalized_native_rules = []
+                    native_top_level_rules_ok = False
                     break
                 if extra.get("disabled") is True:
-                    normalized_native_rules = []
+                    native_top_level_rules_ok = False
                     break
                 if has_native_indexes:
                     index = item.get("index")
                     if type(index) is not int or index != position:
-                        normalized_native_rules = []
+                        native_top_level_rules_ok = False
                         break
                 canonical = normalize_native_rule_type(native_rule_type, payload)
-                if canonical is None:
-                    normalized_native_rules = []
+                configured = normalize_config_rule(str(configured_rules[position]))
+                if canonical is None or configured is None or (*canonical, target) != configured:
+                    native_top_level_rules_ok = False
                     break
-                normalized_native_rules.append((*canonical, target))
-            configured_rules = sequences["rules"]
-            native_top_level_rules_ok = bool(
-                isinstance(configured_rules, list)
-                and normalized_native_rules == [
-                    normalized for value in configured_rules
-                    if (normalized := normalize_config_rule(str(value))) is not None
-                ]
-                and len(normalized_native_rules) == len(configured_rules)
-            )
         return {
             "policy_installed": bool(group_readback_ok and rules_readback_ok),
             "selector_membership_matches": group_readback_ok,
@@ -1070,7 +1064,8 @@ class MihomoHttpAdapter(MihomoAdapter):
             return False
 
     def health(self) -> MihomoHealth:
-        config_details = self._config_runtime_details()
+        config_text = self._config_text()
+        config_details = self._config_runtime_details(config_text=config_text)
         try:
             version = self._get_json("/version")
             proxies = self._proxies()
@@ -1080,7 +1075,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 native_rules = native_rules_value if isinstance(native_rules_value, list) else None
             except (httpx.HTTPError, OSError, ValueError):
                 native_rules = None
-            udp_policy = self._vpn_udp_policy_readback(self._config_text(), proxies, native_rules)
+            udp_policy = self._vpn_udp_policy_readback(config_text, proxies, native_rules)
             udp_policy["wiring_proven"] = udp_policy["policy_installed"]
             try:
                 from fwrouter_api.services.mihomo_reconcile_fingerprint import mihomo_udp_policy_receipt_matches

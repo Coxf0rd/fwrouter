@@ -51,5 +51,6 @@ def stop_active_observation_scheduler(*, timeout_seconds: float = 2.0) -> bool:
         _STOP.set()
         _THREAD.join(timeout=timeout_seconds)
         stopped = not _THREAD.is_alive()
-        _THREAD = None
+        if stopped:
+            _THREAD = None
         return stopped

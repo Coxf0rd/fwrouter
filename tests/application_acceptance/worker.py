@@ -22,6 +22,7 @@ def _clean_environment() -> None:
     keep = {
         "PATH", "LANG", "LC_ALL", "TZ", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE",
         "FWROUTER_STATE_DIR", "FWROUTER_ENVIRONMENT", "FWROUTER_STARTUP_TASKS_ENABLED",
+        "FWROUTER_STARTUP_RECOVERY_ENABLED",
         "FWROUTER_ACCEPTANCE_RPC_SOCKET", "FWROUTER_ACCEPTANCE_PROFILE",
         "FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL",
         "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL", "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT",
@@ -33,7 +34,8 @@ def _clean_environment() -> None:
     os.environ.clear()
     os.environ.update(clean)
     os.environ["FWROUTER_ENVIRONMENT"] = "test"
-    os.environ["FWROUTER_STARTUP_TASKS_ENABLED"] = "0"
+    os.environ.setdefault("FWROUTER_STARTUP_TASKS_ENABLED", "0")
+    os.environ["FWROUTER_STARTUP_RECOVERY_ENABLED"] = "0"
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 
@@ -2593,7 +2595,7 @@ def build_app(socket_path: Path):
     register_extended_handlers(get_default_job_manager())
 
     from fwrouter_api.main import create_app
-    app = create_app(enable_startup_tasks=False)
+    app = create_app(enable_startup_tasks=os.environ.get("FWROUTER_STARTUP_TASKS_ENABLED") == "1")
     _bind_xray_checkpoint_barrier(socket_path, state)
     mihomo_adapter = _bind_acceptance_mihomo(socket_path, state)
     _install_acceptance_mihomo_fence_observer()

@@ -138,14 +138,16 @@ def acceptance_stack(request):
         worker_path = ("/opt/fwrouter-test/bin:/usr/sbin:/sbin:/usr/bin:/bin" if kernel_profile
                        else "/opt/fwrouter-test/bin:/usr/bin:/bin")
 
-        def start_worker() -> tuple[subprocess.Popen[bytes], str]:
+        def start_worker(*, startup_tasks: bool = False) -> tuple[subprocess.Popen[bytes], str]:
             port = _free_loopback_port()
             logs = (suite_root / f"uvicorn-{port}.log").open("ab")
             env = {
                 "PATH": worker_path, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "TZ": "UTC",
                 "PYTHONPATH": "/workspace/backend:/workspace/tests:/workspace", "PYTHONDONTWRITEBYTECODE": "1",
                 "FWROUTER_STATE_DIR": str(state), "FWROUTER_ENVIRONMENT": "test",
-                "FWROUTER_STARTUP_TASKS_ENABLED": "0", "FWROUTER_ACCEPTANCE_RPC_SOCKET": str(rpc_socket),
+                "FWROUTER_STARTUP_TASKS_ENABLED": "1" if startup_tasks else "0",
+                "FWROUTER_STARTUP_RECOVERY_ENABLED": "0",
+                "FWROUTER_ACCEPTANCE_RPC_SOCKET": str(rpc_socket),
                 "FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
                 "FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL": provider_bridge.base_url,
                 "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": str(parent_root),
@@ -167,7 +169,7 @@ def acceptance_stack(request):
             owned_workers.append(proc)
             logs.close()
             base = f"http://127.0.0.1:{port}/api/v2"
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + (45 if startup_tasks else 15)
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
                     pytest.fail(f"owned API worker exited before readiness: {suite_root / f'uvicorn-{port}.log'}")
@@ -179,7 +181,7 @@ def acceptance_stack(request):
                     threading.Event().wait(0.1)
             proc.terminate()
             proc.wait(timeout=3)
-            pytest.fail("owned API worker did not become ready within 15 seconds")
+            pytest.fail("owned API worker did not become ready within the qualified startup deadline")
 
         worker, api = start_worker()
         stack = {

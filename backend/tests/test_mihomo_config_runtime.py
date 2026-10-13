@@ -1681,3 +1681,30 @@ def test_mihomo_publication_fence_rejects_newer_selection_with_stable_derived_in
                 "selection_revision": next_revision,
             },
         ) is False
+
+
+def test_checkpoint_policy_safe_loaders_preserve_failclosed_decisions(monkeypatch) -> None:
+    from fwrouter_api.services import mihomo_reconcile as service
+    import yaml
+
+    safe = yaml.safe_dump({
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]},
+        ],
+        "rules": ["DOMAIN-SUFFIX,example.test,vpn-global",
+                  "AND,((NETWORK,udp),(DOMAIN-SUFFIX,example.test)),REJECT"],
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,DIRECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
+    })
+    cases = (safe, "rules: [", "!!python/object/apply:builtins.eval ['1+1']", "- not-a-mapping")
+    expected = ((True, True), (False, True), (False, True), (False, True))
+    def decisions():
+        return tuple((service._config_has_failclosed_udp_policy(text),
+                      service._config_has_mandatory_vpn_routes(text, routing={"desired_mode": "vpn"}))
+                     for text in cases)
+    assert decisions() == expected
+    monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
+    assert decisions() == expected

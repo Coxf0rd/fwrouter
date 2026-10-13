@@ -26,6 +26,7 @@ from fwrouter_api.services.runtime_adapters import (
 )
 from fwrouter_api.services.server_ping import check_server_delay, check_server_delays
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql, is_auto_eligible
+from fwrouter_api.services.live_probe_cache import get_readonly_mihomo_health
 from fwrouter_api.adapters.xray_common import xray_writer_guard
 from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
 from fwrouter_api.services.vpn_auto_selection_state import (
@@ -575,6 +576,8 @@ def _active_selector_runtime() -> tuple[dict[str, Any], Any | None]:
 def _runtime_health_or_error(
     adapter: dict[str, Any],
     operations: Any | None,
+    *,
+    read_only: bool = False,
 ) -> tuple[Any | None, dict[str, str] | None]:
     adapter_id = str(adapter.get("adapter_id") or "unknown")
     if operations is None or RUNTIME_CAPABILITY_HEALTH not in _runtime_capabilities(adapter):
@@ -583,7 +586,8 @@ def _runtime_health_or_error(
             "error_message": f"Active VPN runtime adapter does not expose health: {adapter_id}.",
         }
     try:
-        return operations.health(), None
+        health = get_readonly_mihomo_health(operations) if read_only else operations.health()
+        return health, None
     except Exception as exc:
         return None, {
             "error_code": "VPN_RUNTIME_CONTROLLER_UNREACHABLE",
@@ -626,7 +630,11 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
 
     runtime_adapter, runtime_operations = _active_selector_runtime()
     runtime_capabilities = _runtime_capabilities(runtime_adapter)
-    health, health_error = _runtime_health_or_error(runtime_adapter, runtime_operations)
+    health, health_error = _runtime_health_or_error(
+        runtime_adapter,
+        runtime_operations,
+        read_only=read_only,
+    )
     runtime_state = "failed" if health is None else getattr(health.runtime_state, "value", str(health.runtime_state))
     details = health.details if health is not None and isinstance(health.details, dict) else {}
     selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}

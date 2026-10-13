@@ -269,6 +269,7 @@ def _docker_copy_capture(docker: str, container: str, source: str, destination: 
         "/tmp/fwrouter-receipts/native-process-diagnostics.json",
         "/tmp/fwrouter-receipts/worker-service-logs.json",
         "/tmp/fwrouter-receipts/state-snapshot.json",
+        "/tmp/fwrouter-receipts/runtime-scale-metrics.json",
     }:
         capture_name = PACKET_CAPTURE_SOURCES.get(source)
         if capture_name is None:
@@ -2438,11 +2439,11 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         functional = {row["nodeid"] for row in rows if row["suite"] == "functional"}
         packet = {row["nodeid"] for row in rows if row["suite"] == "packet"}
         provider = set(_PROVIDER_COHORT_NODEIDS)
-        if (len(functional) != 37 or len(packet) != 1 or len(provider) != 11
+        if (len(functional) != 38 or len(packet) != 1 or len(provider) != 11
                 or not provider <= functional or functional & packet):
-            raise NotRun("functional profile partitions differ from the reviewed 37+1 inventory")
+            raise NotRun("functional profile partitions differ from the reviewed 38+1 inventory")
         selected = functional - provider
-        if len(selected) != 26 or selected & provider or selected | provider != functional:
+        if len(selected) != 27 or selected & provider or selected | provider != functional:
             raise NotRun("ordinary/provider profile partitions are not disjoint and exhaustive")
     if not selected:
         raise NotRun("acceptance suite has no registered scenarios")
@@ -4045,6 +4046,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 ("/tmp/fwrouter-receipts/native-process-diagnostics.json", "native-process-diagnostics.json"),
                 ("/tmp/fwrouter-receipts/worker-service-logs.json", "worker-service-logs.json"),
                 ("/tmp/fwrouter-receipts/state-snapshot.json", "state-snapshot.json"),
+                ("/tmp/fwrouter-receipts/runtime-scale-metrics.json", "runtime-scale-metrics.json"),
             ):
                 result = _docker_copy_capture(docker, container_id, source, artifact_dir / filename, env=docker_env)
                 exports[filename] = result

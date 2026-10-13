@@ -223,7 +223,7 @@ def _capture_mihomo_reconcile_checkpoint(
 
 def _config_has_failclosed_udp_policy(config_text: str) -> bool:
     try:
-        loaded = yaml.safe_load(config_text) or {}
+        loaded = yaml.load(config_text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
     except yaml.YAMLError:
         return False
     if not isinstance(loaded, dict):
@@ -259,7 +259,7 @@ def _config_has_mandatory_vpn_routes(
     config_text: str, *, routing: dict[str, Any] | None = None,
 ) -> bool:
     try:
-        loaded = yaml.safe_load(config_text) or {}
+        loaded = yaml.load(config_text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
     except yaml.YAMLError:
         return True
     if not isinstance(loaded, dict):

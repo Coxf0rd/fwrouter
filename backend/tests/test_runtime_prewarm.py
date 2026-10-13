@@ -94,3 +94,56 @@ def test_warm_runtime_read_models_invokes_each_read_model_once(monkeypatch) -> N
     runtime_prewarm.warm_runtime_read_models(include_global_profiles=True)
 
     assert calls == ["runtime", "system", "clients", "router", "settings", "profiles"]
+
+
+def test_prewarm_stop_cancels_between_read_model_projections(
+    controlled_runtime_prewarm,
+    monkeypatch,
+) -> None:
+    from fwrouter_api.services import global_mode_profiles, runtime, system_summary, ui_state
+
+    entered_projection = Event()
+    release_projection = Event()
+    calls: list[str] = []
+
+    def blocked_runtime_projection() -> None:
+        calls.append("runtime")
+        entered_projection.set()
+        if not release_projection.wait(timeout=4.0):
+            raise AssertionError("test did not release the prewarm projection barrier")
+
+    monkeypatch.setattr(runtime, "get_runtime_summary", blocked_runtime_projection)
+    monkeypatch.setattr(system_summary, "build_system_summary", lambda: calls.append("system"))
+    monkeypatch.setattr(ui_state, "list_ui_clients", lambda: calls.append("clients"))
+    monkeypatch.setattr(ui_state, "get_ui_router_summary", lambda: calls.append("router"))
+    monkeypatch.setattr(ui_state, "get_ui_settings_workspace", lambda: calls.append("settings"))
+    monkeypatch.setattr(
+        global_mode_profiles,
+        "compile_all_global_mode_profiles",
+        lambda: calls.append("profiles"),
+    )
+
+    try:
+        assert runtime_prewarm.prime_runtime_read_models_async(include_global_profiles=True)
+        assert entered_projection.wait(timeout=2.0)
+        assert runtime_prewarm.stop_runtime_read_models_prewarm(timeout_seconds=0.0) is False
+        release_projection.set()
+        assert runtime_prewarm.stop_runtime_read_models_prewarm(timeout_seconds=2.0) is True
+        assert not controlled_runtime_prewarm[0].is_alive()
+        assert calls == ["runtime"]
+        assert runtime_prewarm._PREWARM_RUNNING is False
+    finally:
+        release_projection.set()
+        for worker in controlled_runtime_prewarm:
+            worker.join(timeout=2.0)
+        runtime_prewarm._PREWARM_STOP.clear()
+
+
+def test_shutdown_closes_prewarm_admission_until_next_lifespan(monkeypatch) -> None:
+    monkeypatch.setattr(runtime_prewarm, "_PREWARM_THREAD", None)
+    monkeypatch.setattr(runtime_prewarm, "_PREWARM_RUNNING", False)
+    monkeypatch.setattr(runtime_prewarm, "_PREWARM_STOP", Event())
+    assert runtime_prewarm.stop_runtime_read_models_prewarm(timeout_seconds=0) is True
+    assert runtime_prewarm.prime_runtime_read_models_async() is False
+    assert runtime_prewarm.resume_runtime_read_models_prewarm() is True
+    assert runtime_prewarm._PREWARM_STOP.is_set() is False

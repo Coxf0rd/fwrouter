@@ -188,7 +188,7 @@ def test_mihomo_health_uses_one_proxies_request(monkeypatch) -> None:
         "vpn-global": {"all": ["vpn-auto"], "now": "vpn-auto"},
     }
     monkeypatch.setattr(adapter, "_get_json", lambda path: calls.append(path) or ({"version": "1"} if path == "/version" else {"proxies": proxies} if path == "/proxies" else {"connections": []}))
-    monkeypatch.setattr(adapter, "_config_runtime_details", lambda: {})
+    monkeypatch.setattr(adapter, "_config_runtime_details", lambda **_kwargs: {})
     monkeypatch.setattr(adapter, "_transparent_session_observation", lambda value: {})
     health = adapter.health()
     assert calls.count("/proxies") == 1

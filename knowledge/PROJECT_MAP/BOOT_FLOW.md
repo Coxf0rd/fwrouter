@@ -101,3 +101,7 @@ Expected protection:
 - it then reads `nft list chain inet fwrouter_v2 fwrouter_classify`
 - if a persisted scoped subject is absent from the live chain, backend runs normal `set_subject_admin_mode(..., requested_by="startup-scoped-subject-recovery")`
 - re-apply must rebuild a subject-aware manifest; `global=direct` must not be considered pure-direct runtime while per-client `selective`/`vpn` exists
+
+## API lifecycle scale follow-up — 2026-10-13
+
+See [runtime stabilization audit](../audits/api_runtime_stability_2026-10-13/REPORT.md). Source-only changes preserve native writers and existing startup recovery gates: readonly health uses the existing2s singleflight; scheduler references survive stop timeouts; prewarm closes admission on stop; all stop signals precede a shared join budget. Partial startup exceptions execute cleanup. This is not host/systemd stop qualification. Production API and dependent timers remain held pending verified fix rollout; do not infer service activation from the enabled-unit reference above.

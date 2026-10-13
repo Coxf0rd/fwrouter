@@ -147,6 +147,64 @@ def test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types() -> None:
     )["selector_membership_matches"] is False
 
 
+def test_vpn_udp_native_stream_comparison_fails_closed_on_late_mismatch_and_malformed_rule() -> None:
+    from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
+
+    rules = []
+    native_rules = []
+    for index in range(128):
+        domain = f"stream-{index}.example.test"
+        rule = f"DOMAIN,{domain},vpn-global"
+        rules.extend([rule, _mandatory_vpn_udp_guard(rule)])
+        native_rules.extend([
+            {"type": "Domain", "payload": domain, "proxy": "vpn-global", "index": len(native_rules)},
+            {
+                "type": "AND",
+                "payload": f"((Network,udp) && (Domain,{domain}))",
+                "proxy": "REJECT",
+                "index": len(native_rules),
+            },
+        ])
+    rules.append("MATCH,DIRECT")
+    native_rules.append({"type": "Match", "payload": "", "proxy": "DIRECT", "index": len(native_rules)})
+    config = yaml.safe_dump({
+        "rules": rules,
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]},
+        ],
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,DIRECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
+    }, sort_keys=False)
+    proxies = {
+        "vpn-auto": {"all": ["REJECT"], "now": "REJECT"},
+        "vpn-global": {"all": ["vpn-auto", "REJECT"], "now": "vpn-auto"},
+    }
+
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        config, proxies, native_rules,
+    )["native_top_level_rules_match"] is True
+
+    missing_final_rule = native_rules[:-1]
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        config, proxies, missing_final_rule,
+    )["native_top_level_rules_match"] is False
+
+    late_mismatch = [dict(item) for item in native_rules]
+    late_mismatch[-1]["proxy"] = "REJECT"
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        config, proxies, late_mismatch,
+    )["native_top_level_rules_match"] is False
+
+    malformed_late_rule = [dict(item) for item in native_rules]
+    malformed_late_rule[-1]["type"] = "UnknownNativeType"
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        config, proxies, malformed_late_rule,
+    )["native_top_level_rules_match"] is False
+
+
 
 def test_vpn_udp_safe_yaml_readers_preserve_large_native_proof_and_reject_stale_readback(monkeypatch) -> None:
     from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
@@ -182,6 +240,16 @@ def test_vpn_udp_safe_yaml_readers_preserve_large_native_proof_and_reject_stale_
     accelerated = MihomoHttpAdapter._vpn_udp_policy_readback(text, proxies, native_rules)
     assert accelerated["policy_installed"] is True
     assert accelerated["native_top_level_rules_match"] is True
+    late_mismatch = [dict(rule) for rule in native_rules]
+    late_mismatch[-1]["proxy"] = "REJECT"
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        text, proxies, late_mismatch,
+    )["native_top_level_rules_match"] is False
+    malformed_native = [dict(rule) for rule in native_rules]
+    malformed_native[-1]["type"] = "UnknownNativeType"
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        text, proxies, malformed_native,
+    )["native_top_level_rules_match"] is False
     monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
     fallback = MihomoHttpAdapter._vpn_udp_policy_readback(text, proxies, native_rules)
     assert fallback == accelerated
@@ -260,6 +328,15 @@ def test_mihomo_health_marks_loopback_bound_transparent_listener_degraded(tmp_pa
     )
 
     adapter = MihomoHttpAdapter(base_url=DEFAULT_BASE_URL, config_path=config_path, contours_path=contours_path)
+    config_reads = 0
+    original_config_text = adapter._config_text
+
+    def counted_config_text() -> str:
+        nonlocal config_reads
+        config_reads += 1
+        return original_config_text()
+
+    adapter._config_text = counted_config_text  # type: ignore[method-assign]
     adapter._get_json = lambda path: (  # type: ignore[method-assign]
         {"version": "test"}
         if path == "/version"
@@ -268,6 +345,7 @@ def test_mihomo_health_marks_loopback_bound_transparent_listener_degraded(tmp_pa
 
     health = adapter.health()
 
+    assert config_reads == 1
     assert health.runtime_state == MihomoRuntimeState.DEGRADED
     assert "transparent TPROXY listener bind is invalid" in health.message
     contours = health.details["config"]["fwrouter_contours"]

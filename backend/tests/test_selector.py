@@ -16,6 +16,7 @@ from fwrouter_api.services.selector import (
     restore_mihomo_selector_state,
     select_vpn_auto_server,
 )
+from fwrouter_api.services import selector as selector_service
 from fwrouter_api.services.selector import (
     _load_selector_candidates,
     _runtime_target_identity,
@@ -151,6 +152,36 @@ def _seed_ping_state(
                 json.dumps({"source": source}, ensure_ascii=False, sort_keys=True),
             ),
         )
+
+
+def test_runtime_health_uses_shared_snapshot_only_for_read_only_calls(monkeypatch) -> None:
+    class _Operations:
+        def __init__(self):
+            self.calls = 0
+
+        def health(self):
+            self.calls += 1
+            return {"source": "fresh", "call": self.calls}
+
+    operations = _Operations()
+    cache_calls = []
+
+    def shared_snapshot(adapter):
+        cache_calls.append(adapter)
+        return {"source": "cached"}
+
+    monkeypatch.setattr(selector_service, "get_readonly_mihomo_health", shared_snapshot)
+    adapter = {"adapter_id": "mihomo", "capabilities": [RUNTIME_CAPABILITY_HEALTH]}
+
+    read_health, read_error = selector_service._runtime_health_or_error(
+        adapter, operations, read_only=True,
+    )
+    fresh_health, fresh_error = selector_service._runtime_health_or_error(adapter, operations)
+
+    assert read_error is None and read_health == {"source": "cached"}
+    assert fresh_error is None and fresh_health == {"source": "fresh", "call": 1}
+    assert cache_calls == [operations]
+    assert operations.calls == 1
 
 
 def _seed_canonical_health(server_id: str, status: str, latency_ms: int | None, *, lane: str = "background", checked_at: str = "CURRENT_TIMESTAMP") -> None:
@@ -2453,7 +2484,7 @@ def test_vpn_auto_state_endpoint_does_not_create_routing_state(monkeypatch, tmp_
     )
     monkeypatch.setattr(
         "fwrouter_api.services.selector._runtime_health_or_error",
-        lambda adapter, operations: (
+        lambda adapter, operations, **_kwargs: (
             SimpleNamespace(
                 runtime_state="running",
                 details={"selectors": {"vpn_auto_targets": [], "vpn_global_targets": []}},

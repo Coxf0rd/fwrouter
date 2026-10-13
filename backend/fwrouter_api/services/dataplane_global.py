@@ -12,7 +12,7 @@ import httpx
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, MihomoHealth, MihomoRuntimeState
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+from fwrouter_api.services.live_probe_cache import get_live_probe_cache, get_readonly_mihomo_health
 from fwrouter_api.services.modules import get_module_state
 from fwrouter_api.services.network_contract import (
     DEFAULT_PROTECTED_IPV4_NETWORKS,
@@ -264,9 +264,8 @@ def _bool_chain_map(required_chains: dict[str, Any] | None) -> dict[str, bool]:
 
 
 def _mihomo_health() -> MihomoHealth:
-    return get_live_probe_cache(
-        "dataplane_global.mihomo_health",
-        ttl_seconds=2.0,
+    return get_readonly_mihomo_health(
+        DEFAULT_MIHOMO_ADAPTER,
         loader=_mihomo_health_uncached,
     )
 

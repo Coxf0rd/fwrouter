@@ -1,5 +1,10 @@
 # FWRouter engineering roadmap mirror
 
+## 2026-10-13 — API scale stabilization after PR7 merge
+
+PR7 is merged as main1b302e9; actual main38400414256 PASS (217 routine +26 qualified native child, mandatory native smoke and eligible source/plan aggregate). Production still runsa4a7a33 with API/dependent workers/timers held. Parser-only correction does not qualify full startup/memory/shutdown. Branch `fix/api-runtime-health-scale-stability` addresses duplicated readonly health, temporary rule allocations, scheduler/prewarm ownership and stale owned Rescue LAN markers; realistic hosted scale acceptance is pending. No deploy/restart/firewall change. Live Acceptance remains BLOCKED; next stages remain paused. See `knowledge/audits/api_runtime_stability_2026-10-13/REPORT.md`.
+
+
 ## 2026-10-13 — controlled production rollout; Live Acceptance BLOCKED
 
 User authorized backend/docs deployment of exact maina4a7a33 and accepted incomplete host rollback qualification. Standard installer from verified Git export completed;434 files/guard verified, Xray78/78, native DIRECT/VPN TCP and observed VPN UDP/no-clear-fallback PASS. Generated Rescue LAN hostnames/DHCP DNS corrected. Production is updated, not UNCHANGED.
