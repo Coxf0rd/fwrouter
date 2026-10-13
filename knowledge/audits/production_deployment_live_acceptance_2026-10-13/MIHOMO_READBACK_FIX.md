@@ -19,3 +19,18 @@ Performance benchmark is read-only against a protected snapshot, isolated child 
 ## Acceptance boundary
 
 Hosted CI and actual PR checks must pass before user Squash and Merge. No direct main push, automatic merge or live patch. Production acceptance remains BLOCKED while this startup/readback regression and any mandatory live gates remain unresolved. Post-merge deployment of a new SHA requires user decision; current a4a7a33 source is preserved in production.
+
+## Measured parser result and hosted source qualification
+
+Same protected20,754,596-byte mounted-config snapshot, Python3.11.2/PyYAML6.0.3:
+
+| Reader | Parse seconds | Peak RSS KiB |
+|---|---:|---:|
+| SafeLoader |16.9186|368284|
+| CSafeLoader |1.8588|255132|
+
+Both complete parsed objects have identical semantic SHA256. The measured parser component is9.10x faster and uses30.7% less peakRSS; this does not claim whole-application or production latency improvement before deployment.
+
+[PR #7](https://github.com/Coxf0rd/fwrouter/pull/7), source44f95d5: actual required [run38393827054](https://github.com/Coxf0rd/fwrouter/actions/runs/38393827054) PASS:217 routine cases plus26 qualified native child cases,0FAIL/0SKIP. Both added regression functions executed; strict aggregate eligible, no blocked reasons/missing levels. Fast38393779028 PASS. This is scoped affected L0–L3/qualified native evidence; no new browser/packet full cohort is claimed from this run. The documentation-only final HEAD still requires its own actual protected check.
+
+Current a4a7a33 production remains **BLOCKED**:15-minute observation31 samples had16 five-second health timeouts; full routing projection took38.275s and Mihomo status exceeded90s. Traffic collection repeatedly timed out at40s. Its timer is temporarily held to stop adding overlapping requests; enabled configuration and host guard are unchanged. Core remainsclean and native DIRECT/VPN TCP/UDP connectivity/78 identities pass. Native nft still has two inherited Rescue LAN ingress entries (IPv6 block/DNS acceptance); DNS/DHCP generated roles are corrected but complete kernel ingress reconciliation is not claimed. No further network reapply is attempted through an overloaded control plane. These remaining live outcomes must be reassessed after user merge and approved deployment of the fix; no old unsafe generator/DB/native rollback is used.
