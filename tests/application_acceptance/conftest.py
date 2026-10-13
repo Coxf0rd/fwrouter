@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import signal
 import resource
 import shutil
 import socket
@@ -184,8 +185,14 @@ def acceptance_stack(request):
                         return proc, base
                 except (OSError, ValueError, TimeoutError):
                     threading.Event().wait(0.1)
+            # The worker registered a traceback-only handler; no locals/config are dumped.
+            os.kill(proc.pid, signal.SIGUSR1)
+            threading.Event().wait(0.2)
             proc.terminate()
-            proc.wait(timeout=3)
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass  # Final fixture cleanup owns termination; retain startup failure attribution.
             pytest.fail("owned API worker did not become ready within the qualified startup deadline")
 
         worker, api = start_worker()

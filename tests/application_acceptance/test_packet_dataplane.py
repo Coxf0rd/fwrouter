@@ -1913,7 +1913,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
     label = diagnostic.get("phase")
     if label not in {"direct-before-vpn", "vpn", "vpn-supported-udp", "vpn-unknown-udp",
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
-                     "vpn-empty-pool-native",
+                     "vpn-empty-pool-native", "stale-rescue-lan-cleanup",
                      "provider-recovery-confirmations",
                      "provider-recovery-confirmation-1", "dns53-manual-apply", "dns53-status-read", "dns53-native-daemon",
                      "provider-reentry",

@@ -2608,6 +2608,27 @@ def build_app(socket_path: Path):
         "recovery_enabled": False, "foundation_ok": False, "completed": False,
     }
     original_bootstrap = application_main.bootstrap_backend
+    import faulthandler
+    import signal
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
+    from fwrouter_api.services import bootstrap as bootstrap_service
+
+    def observe_phase(name, original):
+        def observed(*args, **kwargs):
+            started = time.monotonic()
+            print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({"phase": name, "event": "enter"}), flush=True)
+            try:
+                return original(*args, **kwargs)
+            finally:
+                print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
+                    "phase": name, "event": "exit", "seconds": round(time.monotonic() - started, 4),
+                }), flush=True)
+        return observed
+
+    for phase in ("recover_startup_live_routing_from_persisted_mode", "recover_startup_mihomo_selector",
+                  "recover_startup_intended_routing", "recover_startup_scoped_subject_routing",
+                  "recover_startup_xray_subscription_profiles", "_run_startup_dnsmasq_reconcile_step"):
+        setattr(bootstrap_service, phase, observe_phase(phase, getattr(bootstrap_service, phase)))
 
     def phase_summary(value: Any) -> dict[str, Any]:
         value = value if isinstance(value, dict) else {}
