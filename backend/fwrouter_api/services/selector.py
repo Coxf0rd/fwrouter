@@ -595,7 +595,7 @@ def _runtime_health_or_error(
         }
 
 
-def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
+def get_vpn_auto_state(*, read_only: bool = False, cache_runtime: bool = False) -> dict[str, Any]:
     from fwrouter_api.services.servers import ensure_routing_global_state, get_routing_global_state
     from fwrouter_api.services.traffic import get_traffic_accounting_state
 
@@ -633,7 +633,9 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
     health, health_error = _runtime_health_or_error(
         runtime_adapter,
         runtime_operations,
-        read_only=read_only,
+        # Non-mutating internal reads also serve publication/fencing proofs.
+        # Only presentation callers explicitly opt into a bounded cached view.
+        read_only=read_only and cache_runtime,
     )
     runtime_state = "failed" if health is None else getattr(health.runtime_state, "value", str(health.runtime_state))
     details = health.details if health is not None and isinstance(health.details, dict) else {}

@@ -3330,6 +3330,18 @@ def main() -> None:
     )
     try:
         app = build_app(socket_path)
+        from contextlib import asynccontextmanager
+        original_lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def observed_lifespan(application):
+            async with original_lifespan(application) as lifespan_state:
+                yield lifespan_state
+            # Uvicorn 0.34 re-raises the captured SIGTERM after clean shutdown.
+            # This marker is emitted only after actual application cleanup.
+            print("FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE", flush=True)
+
+        app.router.lifespan_context = observed_lifespan
         import uvicorn
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
     finally:

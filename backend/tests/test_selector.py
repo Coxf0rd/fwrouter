@@ -1996,6 +1996,23 @@ def test_get_vpn_auto_state_reports_no_candidates(monkeypatch, tmp_path: Path) -
     assert state["problem_code"] == "vpn_auto_no_candidates"
 
 
+def test_nonmutating_selector_proof_is_fresh_unless_presentation_opts_into_cache(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    calls = []
+
+    def observe(_adapter, _operations, *, read_only=False):
+        calls.append(read_only)
+        return None, {"error_code": "VPN_RUNTIME_CONTROLLER_UNREACHABLE", "error_message": "fixture"}
+
+    monkeypatch.setattr(selector_service, "_runtime_health_or_error", observe)
+    get_vpn_auto_state(read_only=True)
+    get_vpn_auto_state(read_only=True, cache_runtime=True)
+    get_vpn_auto_state(cache_runtime=True)
+    assert calls == [False, True, False]
+
+
 def test_get_vpn_auto_state_handles_missing_mihomo_health(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2461,6 +2478,7 @@ def test_vpn_auto_state_endpoint_returns_diagnostics(monkeypatch, tmp_path: Path
             "enabled_candidates_count": 0,
             "problem_code": "vpn_auto_no_candidates",
             "read_only": kwargs.get("read_only"),
+            "cache_runtime": kwargs.get("cache_runtime"),
         },
     )
 
@@ -2470,6 +2488,7 @@ def test_vpn_auto_state_endpoint_returns_diagnostics(monkeypatch, tmp_path: Path
     assert response.status_code == 200
     assert response.json()["data"]["vpn_auto"]["problem_code"] == "vpn_auto_no_candidates"
     assert response.json()["data"]["vpn_auto"]["read_only"] is True
+    assert response.json()["data"]["vpn_auto"]["cache_runtime"] is True
 
 
 def test_vpn_auto_state_endpoint_does_not_create_routing_state(monkeypatch, tmp_path: Path) -> None:

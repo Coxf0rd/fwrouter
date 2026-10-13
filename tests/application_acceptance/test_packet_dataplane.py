@@ -3083,6 +3083,49 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
 
 
 @pytest.mark.packet
+def _qualify_stale_rescue_lan_cleanup(api: str, stack: dict[str, Any], record_property: Any) -> None:
+    """Seed historical owned drift only in the already-qualified router namespace."""
+    assert stack["profile"].get("profile") == "hosted-kernel-packet"
+    from fwrouter_api.services.dataplane_live import applied_nft_markers_match_live
+    from fwrouter_api.core.config import get_settings
+
+    def nft(*args: str, script: str | None = None) -> str:
+        result = subprocess.run(
+            ("/usr/sbin/nft", *args), input=script.encode("ascii") if script else None,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3, check=False,
+        )
+        assert result.returncode == 0 and len(result.stdout) < MAX_CORE_NFT_JSON and len(result.stderr) < 4096, {
+            "rescue_drift_nft_exit": result.returncode,
+        }
+        return result.stdout.decode("utf-8")
+
+    fixture_table = "fwrouter_rescue_fixture"
+    nft("-f", "-", script=(
+        f"add table ip {fixture_table}\n"
+        f"add chain ip {fixture_table} prerouting {{ type nat hook prerouting priority -101; policy accept; }}\n"
+        f'add rule ip {fixture_table} prerouting iifname "rescue0" udp dport 53 dnat to 10.254.254.1:53\n'
+    ))
+    try:
+        rescue_before = nft("list", "table", "ip", fixture_table)
+        nft("-f", "-", script=(
+            'add rule inet fwrouter_v2 prerouting iifname "rescue0" meta nfproto ipv6 reject with icmpv6 type admin-prohibited comment "block IPv6 from LAN ingress rescue0"\n'
+            'add rule inet fwrouter_v2 prerouting iifname "rescue0" meta l4proto { tcp, udp } th dport 53 accept comment "allow LAN DNS capture before VPN classify rescue0"\n'
+        ))
+        applied = get_settings().paths.generated_dir / "dataplane" / "applied.nft"
+        before = applied_nft_markers_match_live(applied)
+        assert before.get("ok") is False and before.get("stale_lan_role_markers_count") == 2, before
+        _apply_global_mode(api, "direct", stack=stack, record_property=record_property)
+        after = applied_nft_markers_match_live(applied)
+        assert after.get("ok") is True and after.get("stale_lan_role_markers_count") == 0, after
+        assert nft("list", "table", "ip", fixture_table) == rescue_before
+        _record_phase_diagnostic(record_property, {
+            "phase": "stale-rescue-lan-cleanup", "stale_before": 2, "stale_after": 0,
+            "core_apply_verified": True, "independent_rescue_nat_unchanged": True,
+        })
+    finally:
+        nft("delete", "table", "ip", fixture_table)
+
+
 def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks(
         acceptance_stack, record_property):
     stack = acceptance_stack
@@ -3171,6 +3214,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
 
     _set_health_available(True)
     _apply_global_mode(api, "direct", stack=stack, record_property=record_property)
+    _qualify_stale_rescue_lan_cleanup(api, stack, record_property)
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     capture_baseline = _packet_counts()
     core_before_direct = _core_counter_snapshot()

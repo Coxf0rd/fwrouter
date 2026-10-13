@@ -53,7 +53,7 @@ def get_vpn_auto_selector_endpoint(
 
 @router.get("/selector/vpn-auto/state", response_model=ApiResponse)
 def get_vpn_auto_selector_state_endpoint() -> ApiResponse:
-    return ApiResponse(ok=True, data={"vpn_auto": get_vpn_auto_state(read_only=True)})
+    return ApiResponse(ok=True, data={"vpn_auto": get_vpn_auto_state(read_only=True, cache_runtime=True)})
 
 
 @router.post("/selector/vpn-auto/switch", response_model=ApiResponse)

@@ -167,6 +167,7 @@ def acceptance_stack(request):
                 start_new_session=True,
             )
             owned_workers.append(proc)
+            proc._acceptance_log_path = logs.name
             logs.close()
             base = f"http://127.0.0.1:{port}/api/v2"
             deadline = time.monotonic() + (45 if startup_tasks else 15)

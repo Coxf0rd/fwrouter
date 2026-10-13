@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
@@ -149,8 +150,15 @@ def _stop_owned_worker(worker, *, timeout_seconds: float = 8.0) -> dict[str, Any
         return {"elapsed_seconds": round(time.monotonic() - started, 4), "return_code": None,
                 "graceful": False, "error_type": type(exc).__name__}
     elapsed = time.monotonic() - started
+    log_path = getattr(worker, "_acceptance_log_path", None)
+    cleanup_observed = False
+    if log_path:
+        with Path(log_path).open("rb") as stream:
+            stream.seek(max(0, Path(log_path).stat().st_size - 4096))
+            cleanup_observed = b"FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE" in stream.read(4096)
     return {"elapsed_seconds": round(elapsed, 4), "return_code": return_code,
-            "graceful": return_code == 0 and elapsed < timeout_seconds}
+            "application_cleanup_observed": cleanup_observed,
+            "graceful": cleanup_observed and return_code in {0, -signal.SIGTERM} and elapsed < timeout_seconds}
 
 
 def _timed_get(api: str, route: str) -> dict[str, Any]:
@@ -229,7 +237,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
     worker_was_stopped = False
     try:
         initial_stop = _stop_owned_worker(active_worker)
-        worker_was_stopped = initial_stop["return_code"] == 0
+        worker_was_stopped = initial_stop["graceful"]
         metrics["initial_worker_shutdown"] = initial_stop
         assert worker_was_stopped and initial_stop["elapsed_seconds"] < 8.0, initial_stop
 
@@ -319,7 +327,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         if active_worker.poll() is None:
             shutdown = _stop_owned_worker(active_worker)
             metrics["final_worker_shutdown"] = shutdown
-            if shutdown.get("return_code") != 0 or not shutdown.get("graceful"):
+            if not shutdown.get("graceful"):
                 metrics["status"] = "failed"
                 _write_metrics(metrics)
                 raise AssertionError(f"restarted API worker failed graceful SIGTERM: {shutdown}")
