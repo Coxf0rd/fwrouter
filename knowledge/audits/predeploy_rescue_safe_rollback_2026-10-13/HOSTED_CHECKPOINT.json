@@ -69,5 +69,29 @@
     "installer_returncode": 0,
     "installed_backend_files_verified": 434,
     "retained_extra_files": []
+  },
+  "additional_guard_checkpoint": {
+    "run_id": "38379311911",
+    "source_sha": "1686c12f766d624d10689a45d0833fa623246ee1",
+    "routine_counts": {
+      "passed": 1395
+    },
+    "aggregate_eligible": true,
+    "blocked_reasons": [],
+    "qualified_native_pass": 27,
+    "ordinary_pass": 26,
+    "provider_pass": 11,
+    "packet_pass": 1,
+    "failures": 0,
+    "skips": 0,
+    "recovery_stage": {
+      "status": "isolated_stage_complete",
+      "runtime_qualification": "not_established",
+      "scope": "isolated_backend_file_copy",
+      "source_sha": "1686c12f766d624d10689a45d0833fa623246ee1",
+      "installer_returncode": 0,
+      "installed_backend_files_verified": 434,
+      "retained_extra_files": []
+    }
   }
 }

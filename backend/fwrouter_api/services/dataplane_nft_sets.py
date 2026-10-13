@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.services.dataplane_nft_constants import OWNED_TABLE
+from fwrouter_api.services.network_contract import reserved_interface_role
 
 
 def _safe_set_suffix(value: str) -> str:
@@ -75,7 +76,7 @@ def _resolve_lan_ingress_interfaces(manifest: dict[str, Any] | None) -> list[str
         {
             str(value).strip()
             for value in router_dns_interfaces
-            if str(value).strip()
+            if isinstance(value, str) and value.strip() and reserved_interface_role(value.strip()) is None
         }
     )
 

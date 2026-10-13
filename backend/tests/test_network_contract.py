@@ -146,3 +146,13 @@ def test_reserved_rescue_role_precedes_empty_or_explicit_lan_allowlist(monkeypat
     assert lan_interface_allowed("tun-custom") is True
     assert lan_interface_allowed("br-custom") is False
     assert network_contract_manifest()["reserved_interface_roles"] == {"rescue0": "rescue"}
+
+
+def test_native_ingress_projection_rechecks_reserved_role_on_stale_manifest() -> None:
+    from fwrouter_api.services.dataplane_nft_sets import _resolve_lan_ingress_interfaces
+    manifest = {"global_preflight": {"dnsmasq_selective_status": {
+        "router_dns_interfaces": ["rescue0", "lan0", "lan0", "vlan100", None, 17],
+    }}}
+    assert _resolve_lan_ingress_interfaces(manifest) == ["lan0", "vlan100"]
+    manifest["global_preflight"]["dnsmasq_selective_status"]["router_dns_interfaces"] = ["rescue0"]
+    assert _resolve_lan_ingress_interfaces(manifest) == []
