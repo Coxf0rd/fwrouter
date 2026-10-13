@@ -121,3 +121,10 @@ Next correction reuses only the pure safe YAML parse for exactly identical curre
 ## Parser-cache fixture correction — 38462833271
 
 Routine rejected one new test: the YAML flow sequence `rules: [MATCH,DIRECT]` means two scalars, not one comma-containing rule. Corrected the fixture to quote `"MATCH,DIRECT"`, preserving its expected single routing rule and all cache assertions. No application defect or assertion weakening. Native profiles NOT RUN in this run. Fresh protected backup `api-stability-20261013T202715Z`: schema integrityok/FK0; both archives fully read;434 installed backend files exactly matcha4a7a33. The archive is a fail-closed containment baseline, not a claimed stable control-plane or qualified Debian host rollback.
+
+
+## Complete startup reaches DNS proof — 38463718242
+
+Source0d4ab44: ordinary26 PASS, Provider11 PASS, original packet1 PASS; scale1 FAIL, all cleanup owned. Full startup34.0951s and observed graceful shutdown2.6185s satisfy unchanged timing budgets; API VmHWM782460KiB is below1.5GiB. Actual Xray reconcile succeeds, but DNS selective contract fails, so concurrency/steady waves remain NOT RUN and no live rollout is authorized by these partial results alone.
+
+Source trace confirms synthetic manual DIRECT protected.test is the first non-reserved DIRECT domain selected by the real DNS nftset probe. The owned endpoint only answers direct.test/vpn.test; protected.test receives no address. The scale fixture now explicitly includes DIRECT direct.test before retained protected.test and asserts the actual production probe target selection is exactly the two owned endpoint names. This keeps the protected routing check and real DNS/nftset verification; no DNS production behavior or safety assertion is relaxed. Hosted verification pending.

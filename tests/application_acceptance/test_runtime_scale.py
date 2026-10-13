@@ -112,7 +112,7 @@ def _seed_scale_rules_source(state: Path) -> dict[str, Any]:
 
     vpn_lines = ["vpn.test" if index == 0 else f"scale-{index:06d}.test" for index in range(99_627)]
     big_vpn_text = "\n".join(vpn_lines) + "\n"
-    manual_text = "DIRECT protected.test\n"
+    manual_text = "DIRECT direct.test\nDIRECT protected.test\n"
     manual_validation = rules_service.validate_manual_rules(manual_text)
     big_vpn_validation = rules_service.validate_value_list(
         big_vpn_text,
@@ -132,6 +132,10 @@ def _seed_scale_rules_source(state: Path) -> dict[str, Any]:
         selective_default="direct",
         big_vpn_validation=big_vpn_validation,
     )
+    from fwrouter_api.services.dnsmasq import _iter_dnsmasq_probe_targets
+    probe_targets = _iter_dnsmasq_probe_targets(effective_artifact["rules"])
+    if {row["action"]: row["domain"] for row in probe_targets} != {"DIRECT": "direct.test", "VPN": "vpn.test"}:
+        raise AssertionError("scale DNS readiness targets are not served by the owned endpoints")
     rules_state = get_rules_state()
     for key, path in paths.items():
         if key in rules_state and key.endswith("_path"):
