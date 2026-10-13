@@ -133,3 +133,8 @@ Source trace confirms synthetic manual DIRECT protected.test is the first non-re
 ## Sorted DNS target fixture — 38465658033
 
 Ordinary26/Provider11/original packet1 PASS; scale refuses fixture before startup because its new target assertion exposes compiler ordering: lexical VPN scale-* domains precede vpn.test. Thus the previous DNS attribution was incomplete, not proof that adding DIRECT alone resolves it. The owned DNS fixture only answers vpn.test/direct.test and their subdomains. All synthetic scale VPN names now use scale-*.vpn.test (same99627 VPN domain count), and target assertion accepts only that owned VPN namespace and exact direct.test. No production DNS behavior changes; full DNS contract and workload remain pending.
+
+
+## Preserve nonredundant scale rules — 38467607741
+
+Ordinary26/Provider11/original packet1 PASS; scale1 FAIL before startup because the source validator correctly removes child suffixes already covered by parent vpn.test. This invalidated the intended99627-rule workload. Fixture uses99627 independent scale-*.vpn.test siblings without the parent suffix, still within the owned endpoint namespace. Exact count and DNS target assertions remain, preventing reduced-load false acceptance. Native startup/DNS/load for this fixture remains pending. No production change.
