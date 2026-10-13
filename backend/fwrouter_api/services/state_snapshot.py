@@ -68,8 +68,10 @@ def adapter_health_model_snapshot(health: Any) -> dict[str, Any]:
     }
 
 
-def mihomo_health_model_snapshot() -> Any:
+def mihomo_health_model_snapshot(*, force_refresh: bool = False) -> Any:
     try:
+        if force_refresh:
+            return mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER.health()
         return get_readonly_mihomo_health(mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER)
     except Exception as exc:
         return mihomo_adapter_module.MihomoHealth(
@@ -269,7 +271,8 @@ class StateSnapshot:
     def mihomo_health_model(self) -> Any:
         return self._probe(
             "mihomo_health_model",
-            mihomo_health_model_snapshot,
+            (lambda: mihomo_health_model_snapshot(force_refresh=True))
+            if self.force_refresh else mihomo_health_model_snapshot,
         )
 
     def xray_health(self) -> dict[str, Any]:

@@ -30,6 +30,23 @@ def _projection_item(entity_type: str, entity_id: str, *, role: str | None = Non
     }
 
 
+def test_forced_state_snapshot_bypasses_inner_readonly_mihomo_cache(monkeypatch) -> None:
+    clear_live_probe_cache()
+    calls = []
+
+    def health():
+        value = SimpleNamespace(runtime_state="running", details={}, observation=len(calls) + 1)
+        calls.append(value)
+        return value
+
+    monkeypatch.setattr(state_snapshot.mihomo_adapter_module, "DEFAULT_MIHOMO_ADAPTER", SimpleNamespace(health=health))
+    first = StateSnapshot().mihomo_health_model()
+    assert StateSnapshot().mihomo_health_model() is first
+    forced = StateSnapshot(force_refresh=True).mihomo_health_model()
+    assert forced is not first and forced.observation == 2
+    assert len(calls) == 2
+
+
 def test_live_probe_cache_reuses_value_and_force_refresh_bypasses() -> None:
     clear_live_probe_cache()
     calls = {"count": 0}
