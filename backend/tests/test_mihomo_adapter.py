@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -274,6 +277,210 @@ def test_vpn_udp_yaml_parse_errors_and_unsafe_constructors_fail_closed(monkeypat
     for document in documents:
         assert MihomoHttpAdapter._vpn_udp_policy_readback(document, {})["policy_installed"] is False
     assert not sentinel.exists()
+
+
+def test_policy_parse_cache_reuses_exact_content_and_invalidates_same_size_rewrite(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("rules: [old]\n", encoding="utf-8")
+    adapter = MihomoHttpAdapter(config_path=config_path)
+    parse_calls: list[str] = []
+    original_parse = adapter._parse_vpn_udp_policy_config
+
+    def counted_parse(text: str) -> dict[str, Any]:
+        parse_calls.append(text)
+        return original_parse(text)
+
+    monkeypatch.setattr(adapter, "_parse_vpn_udp_policy_config", counted_parse)
+
+    first_text = adapter._config_text()
+    first = adapter._parsed_vpn_udp_policy_config(first_text)
+    assert adapter._parsed_vpn_udp_policy_config(adapter._config_text()) is first
+    assert len(parse_calls) == 1
+
+    old_mtime_ns = config_path.stat().st_mtime_ns
+    config_path.write_text("rules: [new]\n", encoding="utf-8")
+    os.utime(config_path, ns=(old_mtime_ns, old_mtime_ns))
+    changed_text = adapter._config_text()
+    assert len(changed_text.encode("utf-8")) == len(first_text.encode("utf-8"))
+    assert config_path.stat().st_mtime_ns == old_mtime_ns
+    changed = adapter._parsed_vpn_udp_policy_config(changed_text)
+
+    assert changed is not first
+    assert changed["rules"] == ["new"]
+    assert parse_calls == [first_text, changed_text]
+
+
+def test_policy_parse_cache_never_caches_proof_or_native_rule_readback(tmp_path: Path) -> None:
+    adapter = MihomoHttpAdapter(config_path=tmp_path / "unused.yaml")
+    config_text = yaml.safe_dump({
+        "rules": ["MATCH,DIRECT"],
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]},
+        ],
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,DIRECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
+    }, sort_keys=False)
+    parsed = adapter._parsed_vpn_udp_policy_config(config_text)
+    proxies = {
+        "vpn-auto": {"all": ["REJECT"], "now": "REJECT"},
+        "vpn-global": {"all": ["vpn-auto", "REJECT"], "now": "vpn-auto"},
+    }
+    fresh_native_rules = [{"type": "Match", "payload": "", "proxy": "DIRECT"}]
+
+    valid = adapter._vpn_udp_policy_readback(
+        config_text, proxies, fresh_native_rules, _parsed_config=parsed,
+    )
+    changed_native = adapter._vpn_udp_policy_readback(
+        config_text,
+        proxies,
+        [{"type": "Match", "payload": "", "proxy": "REJECT"}],
+        _parsed_config=parsed,
+    )
+
+    assert valid["native_top_level_rules_match"] is True
+    assert changed_native["native_top_level_rules_match"] is False
+    assert changed_native["guarded_rules_match"] is True
+
+
+def test_mihomo_health_reuses_only_parse_and_rereads_native_policy_each_call(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_yaml(config_path, {
+        "rules": ["MATCH,DIRECT"],
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]},
+        ],
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,DIRECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
+    })
+    adapter = MihomoHttpAdapter(config_path=config_path)
+    monkeypatch.setattr(adapter, "_config_runtime_details", lambda **_kwargs: {})
+    proxies = {
+        "vpn-auto": {"all": ["REJECT"], "now": "REJECT"},
+        "vpn-global": {"all": ["vpn-auto", "REJECT"], "now": "vpn-auto"},
+    }
+    valid_native_rules = [{"type": "Match", "payload": "", "proxy": "DIRECT"}]
+    bad_native_rules = [{"type": "Match", "payload": "", "proxy": "REJECT"}]
+    current_native = [valid_native_rules]
+    endpoint_calls: dict[str, int] = {}
+
+    def fake_get_json(path: str) -> dict[str, Any]:
+        endpoint_calls[path] = endpoint_calls.get(path, 0) + 1
+        if path == "/version":
+            return {"version": "test"}
+        if path == "/proxies":
+            return {"proxies": proxies}
+        if path == "/rules":
+            return {"rules": current_native[0]}
+        if path == "/connections":
+            return {"connections": []}
+        raise AssertionError(f"unexpected controller endpoint: {path}")
+
+    monkeypatch.setattr(adapter, "_get_json", fake_get_json)
+    receipt_module = __import__(
+        "fwrouter_api.services.mihomo_reconcile_fingerprint", fromlist=["mihomo_udp_policy_receipt_matches"],
+    )
+    monkeypatch.setattr(receipt_module, "mihomo_udp_policy_receipt_matches", lambda: True)
+    parse_calls = 0
+    original_parse = adapter._parse_vpn_udp_policy_config
+
+    def counted_parse(text: str) -> dict[str, Any]:
+        nonlocal parse_calls
+        parse_calls += 1
+        return original_parse(text)
+
+    monkeypatch.setattr(adapter, "_parse_vpn_udp_policy_config", counted_parse)
+
+    first_health = adapter.health()
+    current_native[0] = bad_native_rules
+    second_health = adapter.health()
+
+    assert parse_calls == 1
+    assert endpoint_calls == {"/version": 2, "/proxies": 2, "/rules": 2, "/connections": 2}
+    assert first_health.details["vpn_udp_policy"]["policy_installed"] is True
+    assert second_health.details["vpn_udp_policy"]["native_top_level_rules_match"] is False
+    assert second_health.details["vpn_udp_policy"]["policy_installed"] is False
+
+
+def test_policy_parse_cache_rejects_changed_unsafe_content_and_loader_changes(monkeypatch, tmp_path: Path) -> None:
+    sentinel = tmp_path / "unsafe-cache-constructor-ran"
+    adapter = MihomoHttpAdapter(config_path=tmp_path / "unused.yaml")
+    safe_text = "rules: [MATCH,DIRECT]\n"
+    unsafe_text = f"!!python/object/apply:os.system ['touch {sentinel}']"
+
+    safe = adapter._parsed_vpn_udp_policy_config(safe_text)
+    unsafe = adapter._parsed_vpn_udp_policy_config(unsafe_text)
+    assert safe["rules"] == ["MATCH,DIRECT"]
+    assert unsafe == {}
+    assert not sentinel.exists()
+
+    cached_loader = adapter._policy_config_cache[1]
+    monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
+    fallback = adapter._parsed_vpn_udp_policy_config(safe_text)
+    assert adapter._policy_config_cache[1] is not cached_loader
+    assert fallback == safe
+
+
+def test_policy_parse_cache_does_not_retain_oversized_config(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(mihomo_module, "MAX_CACHED_POLICY_CONFIG_BYTES", 4)
+    adapter = MihomoHttpAdapter(config_path=tmp_path / "unused.yaml")
+    text = "rules: [MATCH,DIRECT]\n"
+
+    first = adapter._parsed_vpn_udp_policy_config(text)
+    assert adapter._policy_config_cache is None
+    second = adapter._parsed_vpn_udp_policy_config(text)
+
+    assert second == first
+    assert second is not first
+
+
+def test_policy_parse_cache_serializes_concurrent_same_content_parse(monkeypatch, tmp_path: Path) -> None:
+    adapter = MihomoHttpAdapter(config_path=tmp_path / "unused.yaml")
+    text = "rules: [MATCH,DIRECT]\n"
+    parse_entered = threading.Event()
+    second_call_entered = threading.Event()
+    release_parse = threading.Event()
+    parse_calls = 0
+    original_parse = adapter._parse_vpn_udp_policy_config
+
+    def blocked_parse(config_text: str) -> dict[str, Any]:
+        nonlocal parse_calls
+        parse_calls += 1
+        parse_entered.set()
+        assert release_parse.wait(timeout=2)
+        return original_parse(config_text)
+
+    monkeypatch.setattr(adapter, "_parse_vpn_udp_policy_config", blocked_parse)
+
+    def first_call() -> dict[str, Any]:
+        return adapter._parsed_vpn_udp_policy_config(text)
+
+    def second_call() -> dict[str, Any]:
+        second_call_entered.set()
+        return adapter._parsed_vpn_udp_policy_config(text)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(first_call)
+        assert parse_entered.wait(timeout=2)
+        second = executor.submit(second_call)
+        try:
+            assert second_call_entered.wait(timeout=2)
+        finally:
+            release_parse.set()
+        first_value = first.result(timeout=2)
+        second_value = second.result(timeout=2)
+
+    assert parse_calls == 1
+    assert first_value is second_value
 
 
 def test_vpn_udp_active_server_does_not_fall_through_when_owned_selector_rejects() -> None:

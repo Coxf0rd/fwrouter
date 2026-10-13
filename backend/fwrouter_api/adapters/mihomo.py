@@ -12,6 +12,7 @@ import ipaddress
 import json
 import re
 import socket
+import threading
 import httpx
 import yaml
 
@@ -23,6 +24,7 @@ TRANSPARENT_TPROXY_LISTENER_NAME = "fwrouter-tproxy"
 TRANSPARENT_TPROXY_LISTENER_BIND = "0.0.0.0"
 TRANSPARENT_TPROXY_PROXY_NAME = "vpn-global"
 TRANSPARENT_TPROXY_RULE_NAME = "fwrouter-transparent"
+MAX_CACHED_POLICY_CONFIG_BYTES = 32 * 1024 * 1024
 BUILTIN_PROXY_NAMES = {
     "COMPATIBLE",
     "DIRECT",
@@ -402,6 +404,8 @@ class MihomoHttpAdapter(MihomoAdapter):
         self.timeout_seconds = timeout_seconds
         self._secret_cache_mtime_ns: int | None = None
         self._secret_cache_value: str = ""
+        self._policy_config_cache_lock = threading.Lock()
+        self._policy_config_cache: tuple[str, type[Any], dict[str, Any]] | None = None
 
     def _config_text(self) -> str:
         if not self.config_path.exists():
@@ -799,22 +803,41 @@ class MihomoHttpAdapter(MihomoAdapter):
         }
 
     @staticmethod
-    def _vpn_udp_policy_readback(
-        config_text: str,
-        proxies: dict[str, Any],
-        native_rules: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        """Prove the active config and controller selectors are fail-closed for VPN UDP."""
+    def _parse_vpn_udp_policy_config(config_text: str) -> dict[str, Any]:
+        """Parse policy config with the same safe loader and fail-closed behavior."""
         try:
-            # Read the complete current configuration on every proof. libyaml's
-            # safe constructor avoids Python scanner overhead for large rulesets;
-            # do not cache this security-sensitive result across runtime changes.
             loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
             config = yaml.load(config_text, Loader=loader) or {}
         except yaml.YAMLError:
             config = {}
-        if not isinstance(config, dict):
-            config = {}
+        return config if isinstance(config, dict) else {}
+
+    def _parsed_vpn_udp_policy_config(self, config_text: str) -> dict[str, Any]:
+        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+        with self._policy_config_cache_lock:
+            cached = self._policy_config_cache
+            if cached is not None and cached[0] == config_text and cached[1] is loader:
+                return cached[2]
+
+            config = self._parse_vpn_udp_policy_config(config_text)
+            if len(config_text.encode("utf-8")) <= MAX_CACHED_POLICY_CONFIG_BYTES:
+                self._policy_config_cache = (config_text, loader, config)
+            else:
+                self._policy_config_cache = None
+            return config
+
+    @staticmethod
+    def _vpn_udp_policy_readback(
+        config_text: str,
+        proxies: dict[str, Any],
+        native_rules: list[dict[str, Any]] | None = None,
+        *,
+        _parsed_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Prove the active config and controller selectors are fail-closed for VPN UDP."""
+        # `health()` passes only an internal parse of the exact bytes it just
+        # read. Direct callers retain the original parse-on-every-call behavior.
+        config = _parsed_config if _parsed_config is not None else MihomoHttpAdapter._parse_vpn_udp_policy_config(config_text)
         configured_groups = [
             item for item in (config.get("proxy-groups") or [])
             if isinstance(item, dict) and str(item.get("name") or "").strip()
@@ -1083,7 +1106,13 @@ class MihomoHttpAdapter(MihomoAdapter):
                 native_rules = native_rules_value if isinstance(native_rules_value, list) else None
             except (httpx.HTTPError, OSError, ValueError):
                 native_rules = None
-            udp_policy = self._vpn_udp_policy_readback(config_text, proxies, native_rules)
+            parsed_policy_config = self._parsed_vpn_udp_policy_config(config_text)
+            udp_policy = self._vpn_udp_policy_readback(
+                config_text,
+                proxies,
+                native_rules,
+                _parsed_config=parsed_policy_config,
+            )
             udp_policy["wiring_proven"] = udp_policy["policy_installed"]
             try:
                 from fwrouter_api.services.mihomo_reconcile_fingerprint import mihomo_udp_policy_receipt_matches
