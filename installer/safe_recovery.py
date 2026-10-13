@@ -102,6 +102,10 @@ def _tracked_source_files(repo_root: Path) -> list[tuple[str, Path, int]]:
         file_info = candidate.stat()
         if file_info.st_size > MAX_FILE_BYTES:
             raise RecoveryError(f"source file exceeds size limit: {relative}")
+        # The standard installer intentionally excludes the checked-in env
+        # template as well as live credentials; neither belongs in recovery.
+        if relative == "backend/.env.example":
+            continue
         if relative.startswith("backend/"):
             components = safe.parts[1:]
             if any(part in {".env", ".venv", ".pytest_cache", "__pycache__", ".git"}
