@@ -139,7 +139,7 @@ def test_prewarm_stop_cancels_between_read_model_projections(
         runtime_prewarm._PREWARM_STOP.clear()
 
 
-def test_shutdown_closes_prewarm_admission_until_next_lifespan(monkeypatch) -> None:
+def test_shutdown_closes_prewarm_admission_until_next_lifespan(monkeypatch, controlled_runtime_prewarm) -> None:
     monkeypatch.setattr(runtime_prewarm, "_PREWARM_THREAD", None)
     monkeypatch.setattr(runtime_prewarm, "_PREWARM_RUNNING", False)
     monkeypatch.setattr(runtime_prewarm, "_PREWARM_STOP", Event())

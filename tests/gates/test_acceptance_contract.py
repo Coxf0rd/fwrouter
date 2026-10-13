@@ -266,7 +266,7 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((26, 11, 1), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((27, 11, 1), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
@@ -3652,6 +3652,8 @@ class AcceptanceContractTests(unittest.TestCase):
             "test_live_global_mode_classifies_normal_and_degraded_selective_defaults",
             "test_live_global_mode_keeps_conflicting_selective_defaults_ambiguous",
             "test_live_global_mode_does_not_infer_default_from_selective_marker_alone",
+            "test_applied_nft_markers_detect_stale_reserved_lan_ingress_rules",
+            "test_applied_nft_markers_ignore_current_lan_and_unrelated_rescue_comments",
         }, test_functions)
         source = ast.get_source_segment(test_source, next(
             node for node in tree.body if isinstance(node, ast.FunctionDef)

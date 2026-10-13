@@ -468,7 +468,7 @@ class GateContractTests(unittest.TestCase):
         spec.loader.exec_module(module)
         partitions = module.hosted_partition_nodeids()
         self.assertEqual({"functional-ordinary", "provider-cohort", "packet-diagnostic"}, set(partitions))
-        self.assertEqual((26, 11, 1), tuple(len(partitions[key]) for key in
+        self.assertEqual((27, 11, 1), tuple(len(partitions[key]) for key in
                                              ("functional-ordinary", "provider-cohort", "packet-diagnostic")))
         self.assertEqual(38, len(set().union(*partitions.values())))
         self.assertFalse(partitions["functional-ordinary"] & partitions["provider-cohort"])

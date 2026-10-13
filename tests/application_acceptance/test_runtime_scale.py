@@ -92,10 +92,10 @@ def _write_scale_config(path: Path) -> dict[str, Any]:
     }
 
 
-def _read_rss_kib(pid: int) -> int | None:
+def _read_rss_kib(pid: int, *, field: str = "VmRSS") -> int | None:
     try:
         for line in Path(f"/proc/{pid}/status").read_text(encoding="ascii").splitlines():
-            if line.startswith("VmRSS:"):
+            if line.startswith(field + ":"):
                 return int(line.split()[1])
     except (OSError, ValueError, IndexError):
         return None
@@ -108,12 +108,11 @@ class _RssSampler:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._sample, name="scale-rss-sampler", daemon=True)
         self.samples: list[int] = []
+        self.high_water_samples: list[int] = []
 
     def _sample(self) -> None:
         while not self._stop.is_set():
-            value = _read_rss_kib(self.pid)
-            if value is not None:
-                self.samples.append(value)
+            self._sample_once()
             self._stop.wait(0.05)
 
     def start(self) -> None:
@@ -124,6 +123,9 @@ class _RssSampler:
         value = _read_rss_kib(self.pid)
         if value is not None:
             self.samples.append(value)
+        high_water = _read_rss_kib(self.pid, field="VmHWM")
+        if high_water is not None:
+            self.high_water_samples.append(high_water)
 
     def stop(self) -> None:
         self._stop.set()
@@ -215,12 +217,12 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         "status": "started",
         "limitations": [
             "no host systemd or host dataplane claim",
-            "API RSS sampling begins after worker readiness; startup peak is unmeasured",
+            "periodic RSS begins after readiness; Linux VmHWM includes preceding process startup",
             "native /rules request counters are unavailable in the current worker harness",
             "fixture has no reconciled Mihomo receipt; policy_installed is expected false",
         ],
         "native_rules_request_count": None,
-        "rss_scope": "owned API worker VmRSS sampled after readiness, not startup peak or aggregate memory",
+        "rss_scope": "owned API VmRSS plus process-lifetime Linux VmHWM; not aggregate/native memory",
     }
     sampler: _RssSampler | None = None
     active_worker = stack["worker"]
@@ -256,6 +258,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
 
         sampler = _RssSampler(active_worker.pid)
         sampler.start()
+        metrics["rss_hwm_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmHWM")
         waves: list[list[dict[str, Any]]] = []
         metrics["waves"] = waves
         for wave_number in range(4):
@@ -285,6 +288,9 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
 
         metrics["waves"] = waves
         metrics["rss_peak_kib_post_ready"] = sampler.peak_kib
+        lifetime_peak = max(sampler.high_water_samples) if sampler.high_water_samples else None
+        metrics["rss_hwm_kib_process_lifetime"] = lifetime_peak
+        assert lifetime_peak is not None and lifetime_peak < RSS_LIMIT_KIB, {"rss_hwm_kib": lifetime_peak}
         assert sampler.peak_kib is not None and sampler.peak_kib < RSS_LIMIT_KIB, {
             "rss_peak_kib_post_ready": sampler.peak_kib,
             "limit_kib": RSS_LIMIT_KIB,
@@ -309,6 +315,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         if sampler is not None:
             sampler.stop()
             metrics["rss_peak_kib_post_ready"] = sampler.peak_kib
+            metrics["rss_hwm_kib_process_lifetime"] = max(sampler.high_water_samples) if sampler.high_water_samples else None
         if active_worker.poll() is None:
             shutdown = _stop_owned_worker(active_worker)
             metrics["final_worker_shutdown"] = shutdown

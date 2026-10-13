@@ -162,7 +162,7 @@ def test_vpn_udp_native_stream_comparison_fails_closed_on_late_mismatch_and_malf
                 "type": "AND",
                 "payload": f"((Network,udp) && (Domain,{domain}))",
                 "proxy": "REJECT",
-                "index": len(native_rules),
+                "index": len(native_rules) + 1,
             },
         ])
     rules.append("MATCH,DIRECT")

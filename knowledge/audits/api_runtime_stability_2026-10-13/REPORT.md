@@ -38,3 +38,7 @@ This profile explicitly disables host recovery/apply and has no reconciled nativ
 | Production restart/deployment/live acceptance | NOT RUN / BLOCKED |
 
 Updated evidence, metrics, commits and final PR acceptance are appended after hosted execution. CI milestone remains CLOSED; this is corrective production stabilization, not Operational Performance Fixes or another planned stage.
+
+## First PR qualification — 38404505906
+
+[Actual PR run](https://github.com/Coxf0rd/fwrouter/actions/runs/38404505906) failed routine qualification. Hosted profiles are NOT RUN, not PASS. Failures grouped into invalid duplicate native test indexes, outdated no-keyword shutdown mock, prewarm test admission-fixture misuse, and catalog partition/required-native lists not expanded for the new scenario. The fixes preserve assertions and add the scale scenario to shared required-native dependencies. Process-lifetime VmHWM is now collected alongside periodic post-readiness RSS to include preceding startup high-water memory. No production action.
