@@ -104,7 +104,11 @@ jobs:
                                  for row in selected_rows)
           needs_packet = any(row.get("execution_profile") == "hosted-kernel-packet"
                              for row in selected_rows)
+          needs_recovery = {"installer/tests/test_safe_recovery.py",
+                            "backend/tests/test_network_contract.py", "backend/tests/test_dnsmasq.py",
+                            "tests/application_acceptance/test_packet_dataplane.py"} <= selected
           with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write(f"needs_recovery={'true' if needs_recovery else 'false'}\n")
               output.write(f"plan_digest={plan['plan_digest']}\n")
               output.write(f"needs_hosted={'true' if needs_functional else 'false'}\n")
               output.write(f"needs_packet={'true' if needs_packet else 'false'}\n")
@@ -251,6 +255,11 @@ jobs:
             fi
           fi
           python tests/gates/aggregate_hosted.py "${args[@]}"
+      - name: Qualify selected safe backend recovery artifact
+        if: success() && steps.plan.outputs.needs_recovery == 'true' && steps.plan.outputs.needs_packet == 'true'
+        run: |
+          python installer/qualify_recovery.py --aggregate "$RUNNER_TEMP/fwrouter-aggregate.json" \
+            --output "$RUNNER_TEMP/fwrouter-safe-recovery"
       - name: Record runner use and Docker cleanup state
         if: always()
         run: |
@@ -280,6 +289,7 @@ jobs:
             ${{ runner.temp }}/fwrouter-qcp-*-artifacts/**
             ${{ runner.temp }}/fwrouter-xray-native-*-artifacts/**
             ${{ runner.temp }}/fwrouter-resources/**
+            ${{ runner.temp }}/fwrouter-safe-recovery/**
           if-no-files-found: warn
           retention-days: 30
           compression-level: 3
