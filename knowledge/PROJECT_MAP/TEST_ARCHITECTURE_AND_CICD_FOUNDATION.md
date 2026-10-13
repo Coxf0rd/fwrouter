@@ -1,5 +1,13 @@
 # Test Architecture and CI/CD Foundation
 
+## Roadmap consolidation — 2026-10-13
+
+Authoritative execution plan: [engineering mirror](../ROADMAP.md), synchronized with `/решения/roadmap/fwrouter/ROADMAP.md`. PhaseA/B completed; PhaseC complete in agreed scope; PhaseD ACCEPTED; PhaseE/overall BLOCKED on final GitHub promotion. Existing reports/evidence remain unchanged. No new execution/CI or deployment is authorized by this documentation update.
+
+Real PR event and authorized required-check/squash configuration are pre-merge gates. Actual main-event verification follows operator-approved Squash and Merge; it cannot be required before the event exists. Milestone acceptance remains open until that sequence is confirmed. Future configuration/security matrix, DNS optimization, rescue0 audit, public documentation, server-wide cleanup and Debian host/production-live release gates belong to their owning roadmap stages, not new artificial blockers of accepted PhaseD. Do not duplicate their detailed backlog here.
+
+Git policy: one task/milestone branch and PR → required CI PASS → separate operator review/authorization → one single-parent squash commit in main; completed merged head deletion is targeted, unfinished branches untouched. Main merge/rebase methods must be disabled and stable required affected status enforced only after settings authorization. Auto-delete is already enabled per PhaseE read-only evidence. CI/merge ≠ deploy; CD DEFERRED, manual exact-release deployment and Production Live Acceptance separately approved.
+
 
 ## Current acceptance pointer — 2026-10-13
 

@@ -1,6 +1,10 @@
 # FWRouter engineering roadmap mirror
 
 
+## Documentation consolidation — 2026-10-13
+
+Documentation-only baseline `5decb99`; no new test/runtime result. Former summary requirements now belong to CI/Git, Stage5 matrix, Stage6 storage, late SDK, hardening DNS/Rescue, Production Documentation and Stage9/10. [Exact pre-edit mirror](history/ROADMAP_PRE_2026-10-13_PRODUCTION_READINESS.md) preserves all earlier wording. Main-event verification follows authorized merge and is not a pre-merge prerequisite.
+
 ## Current acceptance pointer — 2026-10-13
 
 **Phase D: ACCEPTED (hosted implementation/mandatory gates). Entire Test Architecture & CI Stabilization milestone: OPEN; Phase E technical audit/corrections complete; BLOCKED on real PR/main event and settings gates.** Source `a10dd9c`, [run38305978196](https://github.com/Coxf0rd/fwrouter/actions/runs/38305978196): affected1429 PASS/0 FAIL/0 SKIP; qualified26+1 and minimal application/native1 PASS; ordinary26/Provider-kernel11/packet1 PASS twice with exact source/plan/native/capture/cleanup receipts. Historical exact-seven7/7 PASS, no baseline allowlist. Targeted cache/prewarm/state300 nodes PASS five times (38305595288). See Phase D REPORT and `FULL_BUNDLE_CHECKPOINT_38305978196.json` for scope/resource limits.
@@ -8,7 +12,11 @@
 L0–L4 primary proofs plus L5 affected-regression anchors; no L6/L7 execution. GHCR digest-pinned Debian12 base and fresh-source consumers confirmed; Compose is not Debian host/reboot acceptance. Actual PR/main event execution and protected required-check promotion remain for authorized final CI acceptance. No production changes/deploy or CD. Operational Performance Fixes remains PAUSED/BLOCKED in its preserved branch. Phase E is authorized and in progress; do not start another milestone automatically. Earlier checkpoint/status sections below preserve history and are superseded only within the exact scope above.
 
 
-## Current full hosted checkpoint — 2026-10-13
+## Historical CI checkpoint ledger — reference only
+
+All intermediate BLOCKED/OPEN/NOT RUN wording in this ledger records the dated run, not current status. The acceptance pointer and active execution order supersede it only within their proven scopes. Reports and raw evidence are preserved.
+
+## Historical hosted checkpoint — 2026-10-13 (superseded by acceptance pointer)
 
 Run [38291414020](https://github.com/Coxf0rd/fwrouter/actions/runs/38291414020), source `dfa583f`: ordinary26, Provider/kernel11 and packet1 all PASS twice with distinct owned receipts, no FAIL/SKIP and clean cleanup. Qualified Mihomo/child26, native Xray1 and minimal application/native1 PASS. The current affected unit leg is1419 PASS/2 FAIL/0 SKIP; all historical exact-seven are included and PASS. Overall run remains FAIL: selective IP-only candidate assertion and installer dependency dry-run root requirement remain under targeted attribution. Unit CLI correctly returned1, but the workflow wrapper omitted propagating that exit and unnecessarily ran the hosted bundle; strict final aggregation still rejected the failed unit row. No false aggregate acceptance is claimed. Reviewed bounded evidence: `FULL_BUNDLE_CHECKPOINT_38291414020.json`; raw evidence remains untracked. Next gate is narrow fixes/verification, then complete source-matched aggregation. Phase D BLOCKED; production/Phase E/CD/L6/L7 untouched. Earlier checkpoint notes are historical scoped evidence.
 
@@ -122,15 +130,15 @@ Source: `001c6e9`, `95f54c1`, `5728d85`, `a139e66`. Tests: historical raw run 1,
 
 Current source stores provider bindings, credentials, observations and applied state per `source_ref`; it is not a singleton `.env` provider setting. Eight protocol profiles and mixed per-entry dispatch are implemented, tested and deployed. Current-account live evidence covers the observed Hysteria2 path; seven other provider handshakes remain unverified. Emergency Direct/provider API evidence correction is implemented and deployed; real fault/re-entry acceptance remains a Stage 9 gate. See the [current provider contract](PROJECT_MAP/PROVIDER_MANAGED_SUBSCRIPTIONS_AND_ADAPTERS.md); previous singleton/env wording is preserved in [dated history](PROJECT_MAP/history/PROVIDER_SPEC_PRE_2026-10-04_RECOVERY_RESEQUENCE.md).
 
-### Test Architecture & CI/CD
+### Test Architecture & CI/CD — historical foundation, current acceptance boundary
 
-Source/Tests/Commit are complete at `178b471`: 149 test files classified; L0–L7 taxonomy, versioned domain manifest, deterministic affected selection, exact-node classifier, fixture contracts, isolated smoke and GitHub Actions are present. Bounded local infrastructure acceptance passed; L6 was not run. Deploy is not applicable; no production deploy/restart occurred; Live was not run. Remote CI execution, locked-environment acceptance, native runtime provisioning, deploy-authorization/protected-deployment integration and disposable L7 acceptance remain open. Eleven baseline IDs retain a last-failed observation; no exceptions are approved, and there was no complete post-fix 52-ID run. See the [implementation report](audits/test_architecture_cicd_2026-10-04/REPORT.md), [baseline status](audits/test_architecture_cicd_2026-10-04/BASELINE_STATUS.json) and [technical contract](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md). Roadmap reconciliation is complete; the later dated Stage 4/4B completion supersedes this earlier next-stage statement. Do not run L6 after every fix. Use affected L0–L5 per policy; L7 is staging/release only. `/tmp` artifacts are provenance, not durable evidence.
+Foundation `178b471` classified149 files and delivered taxonomy/manifest/fixtures/selection/smoke/workflow sources. Its old eleven-last-failed and remote-provisioning-open wording is preserved in the [exact pre-consolidation mirror](history/ROADMAP_PRE_2026-10-13_PRODUCTION_READINESS.md), not a current failure count. PhaseD38305978196 now confirms1429/0/0 and historical exact-seven7/7, native/application/browser/kernel/packet proof. PhaseE technical checks passed in their report scope; actual PR/main/settings gates remain BLOCKED. L6/L7/full Debian host release acceptance are NOT RUN; protected deployment integration is DEFERRED CD, not a CI implementation prerequisite. Keep original [foundation report](audits/test_architecture_cicd_2026-10-04/REPORT.md)/[baseline record](audits/test_architecture_cicd_2026-10-04/BASELINE_STATUS.json); no blanket exceptions. Follow affected L0–L5, separate L6 policy and authorized L7 gates; durable evidence belongs in knowledge/audits, not only /tmp.
 
 ## Active execution order
 
 Only this sequence is active. Dated entries below record evidence at the time and do not define today’s plan. Prior wording is preserved in [history](history/README.md), including the [exact canonical snapshot before this resequencing](history/CANONICAL_ROADMAP_PRE_2026-10-08_CI_STABILIZATION.md) and [the former English mirror](history/ROADMAP_PRE_2026-10-08_CI_STABILIZATION.md).
 
-1. **Test Architecture & CI Stabilization — active milestone.** Phase A delivered; Phase B accepted in bounded source/local-test scope; Phase C source complete. Phase D implementation is separately authorized and implemented on `stage/test-architecture-ci-stabilization`. Run 37934872853 completed BLOCKED: affected L0–L3 1,112 PASS / 129 FAIL with L4/L5 absent/incomplete; functional 37-case cohort 23 PASS / 14 FAIL. Qualified Mihomo 26/26, isolated Xray 1/1, and minimum application Xray readback 1/1 pass but do not satisfy the failed mandatory gates. Phase E remains OPEN. No production deploy/restart or CD.
+1. **Test Architecture & CI Stabilization — BLOCKED on final GitHub gates.** PhaseA/B complete; PhaseC complete in agreed scope; PhaseD ACCEPTED at `a10dd9c`/38305978196 (1429/0/0, native/application/kernel/packet evidence, historical seven7/7). PhaseE technical review/corrections completed at documentation checkpoint `5decb99`; real PR, required checks/squash settings and post-merge main event remain pending authorization. No production/CD or Operational branch changes. Earlier failed runs remain historical evidence, not the current verdict.
 2. **Operational Performance Fixes — PAUSED/BLOCKED.** Preserve local branch `stage/operational-performance-fixes` at `6004400`; do not transfer its commits into the CI milestone branch. Packages 1–2 contain implemented changes and bounded deployment evidence; Package 3 is unimplemented and conditional. No PR/merge until full application staging acceptance. After the CI milestone is accepted through the repository review process, return to the operational branch, integrate the resulting current `main`, run mandatory full staging CRUD/crash/restart/recovery acceptance, then verify correctness and comparable performance. Close the milestone and authorize a separate PR/manual merge only after PASS. On failure, retain BLOCKED and enumerate the exact gates.
 3. **Stage 5 — configuration and persistence contracts.** Start after Operational Performance Fixes is accepted. Define env/SQLite intent/generated artifacts, installer, clean install, backup/restore/rollback and supported upgrade/release contracts.
 4. **Database Architecture & Integrity Audit.** Tables/relations, canonical/derived/cache data, constraints, indexes/scans, stale/orphan rows, transactions/WAL/CAS, writes/growth/contention, migrations and trigger candidates.
@@ -139,19 +147,135 @@ Only this sequence is active. Dated entries below record evidence at the time an
 7. **Stage 6A — measured internal execution cleanup.** Reuse Stage 4 evidence; do not create an independent performance backlog.
 8. **Stage 8 — Core ↔ Modules contracts** for ownership, API/events/config/lifecycle/Health.
 9. **Stage 7 — physical module extraction** only after Stage 8.
-10. **Post-extraction functional/architecture audit.**
+10. **Post-extraction functional/architecture audit**, followed by planned External Integration Framework & SDK after DB/Core/Modules stabilization.
 11. **Hardening and final runtime/config/deployment stabilization.**
 12. **External Telemetry Ingestion / Metrics and Traffic Accounting — a late, separate milestone** after extraction and DB/architecture stabilization. FWRouter exports domain evidence only; host/container metrics belong to a separate observability project. Do not prepare future-version schema or analytics in advance.
 13. **Final UI redesign.**
 14. **Production Documentation**, including full technical documentation for the accepted test/CI system.
-15. **Stage 9 — disposable staging failure/recovery validation.**
-16. **Stage 10 — final release audit.**
+15. **Stage 9 — disposable staging failure/recovery, Configuration Matrix and separate Debian host acceptance.**
+16. **Stage 10 — final release audit and mandatory Production Live Acceptance after separately authorized deployment.**
 
 **CD is outside this execution order and deferred until a separate decision.** Until then, production deployment remains manual through the existing installer: `/srv/fwrouter/installer/install.sh --deploy --component backend --component ui` (add `--component docs` for documentation changes). Deploy mode copies selected components and does not restart services. When backend changes require applying, restart the API separately with `systemctl restart fwrouter-api.service`; docs-only deployment needs no restart. Future CD is a separate project requiring a protected environment/approval, exact-commit promotion, readiness/Health/native parity/smoke and proven rollback; GitHub Actions must not automatically deploy production now.
+
+## Test Architecture & CI Stabilization — Phase E final promotion
+
+Status: **BLOCKED — final GitHub gates**, not a test or production failure. Phase A/B are complete, Phase C is complete in its agreed scope, and Phase D is ACCEPTED. [Phase E report](/srv/fwrouter/knowledge/audits/test_architecture_phase_e_2026-10-13/REPORT.md), source `5decb99`, records technical audit/corrections: affected selection, L0–L7, reproducibility, real application/native/browser proof, packet-level testbed, isolation/cleanup/failure handling, historical regressions, false-PASS/SKIP rejection, GHCR publisher/consumer and fresh-source verification. The wrong PyPI `backend` wheel was replaced by verified local `fwrouter-api` with all247 Python source files matching checkout. No new execution is claimed by this documentation update.
+
+| Event | Required purpose |
+|---|---|
+| Feature push | Fast affected L0–L1 |
+| PR → main | Affected L0–L5; native/browser where selected by dependencies |
+| Main push | Applicable affected checks, integration/native smoke and build identity |
+| Nightly/manual | Separate L6 full regression policy |
+| Manual/release authorization | Separate qualified L7 failure/recovery gate |
+| Dependency input changes | Trusted GHCR publisher; read-only digest-pinned consumers |
+| CI diagnostic branch | Explicit targeted diagnostics; no unmarked duplicate expensive jobs |
+
+**Pre-merge acceptance:** separately authorized real PR event, stable mandatory status context `Affected L0-L5 with hosted profiles`, authorized required-check/branch-protection and squash policy configuration; required jobs present and fail closed on missing proof, infrastructure errors or unjustified SKIP. Isolation is production-independent; independent repeats and exact native/packet/application receipts remain required. GHCR consumes current checked code, not stale application layers. Audit workflow/job duplication and measured wall/CPU/RAM/disk/I/O/image costs; retain unmeasured dimensions explicitly, optimize only proven waste.
+
+**Post-merge verification:** after separately approved operator Squash and Merge, verify the actual main event and its required checks. Main-event proof is not a prerequisite to the merge that produces it. Until that authorized sequence completes, Phase E/overall milestone remain BLOCKED. Branch-equivalent/manual checks do not prove PR/main events. New default-branch/manual publisher events retain their own unverified boundary. Residual L6/L7/release/host gates are documented separately; future configuration/DNS work does not reopen accepted Phase D or become an artificial Phase E blocker.
+
+## Development workflow — Git and release policy
+
+One independent task/milestone → one feature/fix branch → one reviewed PR → **one squash commit in main**. Source/tests/docs/roadmap travel together; intermediate commits are allowed. Start the next independent branch only from updated main after confirmed merge. Required CI PASS precedes operator-approved PR merge; agent PR creation and merge need separate authorization. Direct main push is restricted; emergency-hotfix exceptions need a separately defined policy. Squash creates a single-parent commit, not a two-parent merge commit. Preserve engineering decisions/evidence in durable docs or the PR before deleting completed merged branches; unfinished branches are untouched.
+
+| Repository setting | Target / last recorded state |
+|---|---|
+| Allow squash merging | ON / already ON |
+| Allow merge commits | OFF / currently ON; authorization needed |
+| Allow rebase merging | OFF / currently ON; authorization needed |
+| Automatically delete head branches | ON / already ON |
+| Main protection/ruleset | PR + required stable CI checks; existing rule has no required CI check |
+| Direct push to main | Restricted; no ordinary bypass |
+
+These are planned settings, not changes performed here. Historical retain-branch wording is superseded. `/AGENTS.md` is unchanged; any later developer-instruction synchronization is a separate task.
+
+CI → authorized PR review/required checks → operator Squash and Merge → post-merge main verification → Release Candidate → applicable release acceptance → independently approved manual deployment → Production Live Acceptance. CD **DEFERRED**; merge/CI PASS/PR approval never authorizes deployment.
 
 ## Test policy for every subsequent implementation milestone
 
 Reports list the test levels actually run and why. Default to affected L0, affected L1/L2 and required L3/L4; use L5 when shared/domain contracts change. L6 is not the default; run it only at a scheduled/manual/milestone/release/policy gate. L7 is separate staging/release acceptance after compatibility of the isolated environment has been confirmed. A plan, dry-run or partial selection is not a passing gate.
+
+## Stage 5 — Configuration and Persistence Contracts
+
+After accepted Operational Performance Fixes: define env/SQLite intent/settings, generated/last-good artifacts, installer/defaults, supported clean-install/upgrade, confidentiality/backup/restore/rollback. Generated output is not user intent.
+
+### Configuration Matrix & Security Acceptance — PLANNED
+
+Priority: high release correctness; Stage5 defines supported contracts, Stage9 executes acceptance after relevant Core/config/module interfaces stabilize. This expands future coverage, not accepted Phase D scope. Use parameterized boundary cases and risk-based pairwise/combinatorial coverage; do not enumerate every cross-product. Record expected outcome, environment, exact case IDs and required proof in the future matrix before implementation.
+
+| Scenario class | Expected contract / method | Level and conditions | Acceptance / evidence |
+|---|---|---|---|
+| Custom LAN IP/subnet/mask, gateway, DHCP/DNS, interface names and ports | Valid supported values persist/generate correctly; invalid/overlapping/incomplete input rejected before unsafe apply | L1/L2 boundaries; L3/L4 isolated Compose/kernel where supported | API/config/DB intent and native readback, isolated DHCP/DNS packet observations |
+| Custom domains, `.test`/`.invalid`, local records, DNS capture/nft sets | Correct answers and routing; no forbidden DNS leak/loop | L2 contracts, L3 kernel packet tests, L5 affected regression | Captures/counters, endpoint observations and exact set/state proof |
+| Selective DIRECT/VPN, mandatory VPN, empty pool, unavailable/incompatible endpoints | Explicit/protected DIRECT remains valid; mandatory VPN rejects safely without implicit DIRECT; unknown capability/evidence is not remote DOWN | L1/L2; L3 native packet; L5 shared contracts; L7 authorized recovery only | Desired/generated/applied/native parity; forbidden-egress observations; no false success |
+| IPv4/IPv6 within supported functionality | Supported modes route/isolate correctly; unsupported combinations explicitly rejected/documented | L2/L3 qualified network environment | Native routes/packet proof, supported-platform matrix; no unsupported IPv6 claim |
+| RU/EN, locale change, missing translations | Correct locale state and documented fallback; no raw secrets or false operation success | L1/L2 locale registry; L3 real browser; L4 smoke | Browser UI→API→state and error assertions, actual locale/fallback evidence |
+| Restart/update/recovery persistence; malformed/incomplete configuration | User intent preserved; failed apply retains last-good or truthful failed/unconfirmed state | L2/L3 isolated data, L5 fences/migrations; L7 authorized crash gate | Migration/recovery receipts, revision/incarnation/CAS, rollback/idempotency proof |
+| Reboot persistence | Supported host boot restores verified intent/runtime without unsafe access loss | L7 separately qualified Debian host; never production fault injection | Console/recovery plan, boot/systemd/routes/native proof; NOT covered by Compose |
+| Secrets and component isolation | Test-only canary secrets absent from API/UI/logs/traceback/exports/artifacts; components lack unauthorized access | L0 static, L1/L2 negative contracts, L3 isolated API/browser; L7 only if qualified | Bounded redacted canary scans and access-denial evidence; never production credentials |
+
+Entry: supported config inventory, deterministic owned fixtures, isolation admission and reviewed expected outcomes. PASS requires all mandatory selected cases to execute with truthful failures/skips, configuration persistence and no secret/routing violations; archive source/version/plan, JUnit, native/packet/browser receipts and cleanup. Missing host environment remains an explicit release gap, not fabricated PASS.
+
+## Stage 6 / 6A — cleanup and measured execution
+
+Preserve Stage6 dead/obsolete compatibility/security cleanup and Stage6A measured internal execution cleanup; use Stage4 evidence rather than a second performance backlog. The server-wide maintenance item below is separate from application-code cleanup.
+
+### Server-Wide Cleanup & Storage Audit — PLANNED
+
+Scope: the entire Debian12 server named `minis` in this request (earlier evidence calls it `minisk`; verify identity before any future operation), not only FWRouter. Priority: pre-release maintenance after component stabilization, final action near release; read-only inventory may accompany Stage6. Inspect disk allocation, backups/snapshots, duplicate configs, Docker images/containers/volumes/build cache, systemd journal, app/debug logs, temp files/dumps, dev/test artifacts, staging/deployment copies, generated files and diagnostic retention.
+
+Classify each object **keep / archive / delete after confirmation** with owner, purpose, dependencies, restore method and retention requirement. Protect production DB/active volumes/current backups, Rescue, certificates/keys/credentials, Home Assistant/Vaultwarden, historical audit reports/raw investigation evidence and current CI/release artifacts. No blanket `docker system prune -a --volumes` or deletion without separate reviewed authorization.
+
+Entry: stable release candidate and storage/backup ownership map. Acceptance: approved deletion candidates, independent rollback/restore, measured space before/after, service/data integrity proof and justified log/backup retention. Evidence: inventory/classification, approvals, backup/restore receipt and bounded before/after measurements. No cleanup is authorized by this plan.
+
+## Stage 8 → Stage 7 → Post-Extraction Audit
+
+Keep Core↔Modules ownership/API/events/config/lifecycle/Health contracts before physical extraction. Post-extraction audit must verify those contracts, app/native parity, migrations, failure ownership and resource behavior. Do not introduce distributed infrastructure without evidence.
+
+### External Integration Framework & SDK — PLANNED, late
+
+Entry: DB/Core/Modules contracts and physical extraction/post-extraction audit stabilized. Define versioned integration API/events/config/lifecycle/authorization, ownership and supported SDK contracts without duplicating Core authority. Acceptance: compatibility/negative/isolation contracts, documented example against real supported APIs and evidence-backed versioning. Public SDK documentation belongs to Production Documentation after implementation. This remains separate from late Metrics Ingestion/Traffic Accounting and future-version UI/analytics/schema work.
+
+## Hardening — Network/DNS Reliability & Security
+
+Entry: configuration/persistence and relevant Core/Modules interfaces stabilized, before final production release. Existing Stage9 validates failure behavior. Neither DNS optimization nor expanded security matrix is an additional current PhaseE blocker without a demonstrated dependency.
+
+### DNS Performance & Reliability — PLANNED
+
+Priority: measured network reliability before release. Recorded infrastructure includes dnsmasq DHCP/DNS/local records/domain rules, FWRouter-generated dnsmasq config, installed BIND9, Mihomo/Xray and nftables routing. These are planning inputs, not a new live inspection; reverify actual configuration/ownership on entry.
+
+Audit full DNS request chain and generated-config ownership; cache behavior, cold/warm p50/p95 latency, hits/misses/upstream traffic, CPU/RAM/disk I/O/background requests, upstream/VPN failures, DNS capture/nft sets and DIRECT/VPN/fail-closed priorities. Compare dnsmasq-only, dnsmasq+BIND9 and justified alternatives; assess cache size, TTL, prefetch, serve-stale/fallback and loop/leak risks. Existing BIND9 is not mandatory: retain/change role/remove only based on measured evidence and reviewed dependencies. Complexity is not performance, and reduced DNS latency alone does not prove faster websites.
+
+Acceptance: DHCP/DNS correctness, preserved routing/fail-closed, no new leaks/loops, comparable before/after performance/resources, demonstrated benefit or confirmed risk removal, justified complexity and ready rollback. Evidence: topology/ownership, bounded query/packet/counter measurements, failure scope and restore plan. No changes now.
+
+### Rescue `rescue0` Network Isolation — PLANNED, HIGH priority safety backlog
+
+Unconfirmed risk: `rescue0` may be classified as ordinary LAN. Do not call it a proven defect. Start with separately authorized safe read-only audit of interface classification, DHCP bindings/exposure, Rescue ownership, DNS/firewall isolation, LAN/Rescue boundaries and FWRouter generated configurations; assess effects on strongSwan/IKEv2/Rescue API and routing conflicts. This safety audit may run earlier than hardening if justified by risk, without reordering implementation milestones or altering management access.
+
+If confirmed, prepare a separate fix with dependencies, independent rollback, protected administrative/rescue access and appropriate isolated/host acceptance. PASS: classification/DHCP/DNS/firewall ownership established with evidence; no unintended LAN exposure or Rescue interference, or a tracked confirmed defect with verified remediation. No Rescue/VPN change authorized here.
+
+## Production Documentation & Open-Source Presentation — PLANNED
+
+Entry: mature UI/API/architecture and supported install/release contracts; before release. Keep `README.md` English and `README.ru.md` Russian with easy switching, concise purpose/features/architecture, verified screenshots and useful badges/diagrams/demos only. Put full navigable user/engineering documentation in `docs/`; keep internal handoffs/agent instructions/architecture working notes separate.
+
+Deliver Installation/Quick Start, Initial Configuration, User Guide, Network/VPN and DNS guides, API Reference, Developer/Contribution guides, Security Policy, Troubleshooting, Backup/Update/Recovery/Rollback, supported platforms/limitations and full Test/CI technical documentation. Add implemented External Integration Framework/SDK docs when available; no unsupported feature claims.
+
+Acceptance: both READMEs usable, coherent navigation, actual UI images, installation/update/recovery instructions verified in supported isolated environments, links/examples working and content matching application behavior. Evidence: reviewed docs/source versions, screenshots and instruction-validation receipts; no production operation merely to validate docs.
+
+## Stage 9 — Recovery/Staging and Debian Host Acceptance
+
+Preserve separately authorized L7 failure/recovery/crash gates and Configuration Matrix validation. Distinguish **Application Acceptance**, **Kernel Dataplane Acceptance** in isolated Linux namespaces and **Debian Host Acceptance**. Docker Compose does not prove host systemd, boot/reboot, physical interfaces, production-kernel compatibility or system-failure recovery.
+
+Host gate: dedicated safe environment with independent console/access/rollback; inspect systemd lifecycle, boot/reboot restore, real interfaces, host routes/nftables/kernel compatibility and recovery. Destructive injection requires disposable qualified host/VM and authorization. If unavailable, record exact NOT RUN scenarios, impact and release disposition; never substitute mock/Compose PASS. Required evidence: environment qualification, boot logs, native route/state/packet proof and cleanup/recovery receipts.
+
+## Stage 10 — Release / Production Live Acceptance
+
+Entry: reviewed RC, applicable CI and separately authorized L6/L7/manual/host release gates; no automatic deploy. Prepare a safe production baseline, independent tested rollback and confirmed Rescue VPN/SSH/admin access. User approves exact deployment separately. Use the existing documented installer; deployment and needed managed restarts are explicit operations, not a consequence of PR approval/merge.
+
+After deployment require Core desired/applied/native parity; Xray/Mihomo and bindings; DIRECT/VPN/DNS/DHCP; API/UI/local services; routes/resources/errors and bounded stability/no-oscillation observation. Capture exact deployed source/schema/config hashes, health/readiness/native/packet evidence, provider counters and access checks; rollback if critical invariants fail. Protect newer intent/data; no blind old-DB restore or provider mutation. No production destructive failure injection.
+
+**CI Acceptance ≠ Production Live Acceptance.** Release acceptance uses safe isolated fault tests; live acceptance verifies the installed server after separately approved deployment. PASS requires healthy verified convergence, unchanged protected access and explicit treatment of residual host/manual gates. CI PASS, PR approval and merge never grant deployment authority; CD remains DEFERRED.
 
 ## Performance and observability boundary
 
@@ -160,7 +284,7 @@ Stage 4 is a read-only baseline of the current release: CPU/RAM; API latency; SQ
 ## Preserved open work
 
 - Xray changed-input live acceptance and the next natural scheduled refresh remain open; a prior systemd refresh unit failure is historical and was not reset or retried to obtain a green status.
-- External Connections CRUD/lifecycle still needs isolated verification; remaining Rules/External Connections typed audit coverage needs scoped confirmation.
+- Hosted Xray external-client application CRUD/native acceptance is confirmed in agreed PhaseD scope, not every External Connections registry/integration path. Remaining registry/Rules typed-audit coverage needs exact scoped confirmation.
 - Confirm Settings inventory race only if reproduced; measure LAN activity TTL without extending it to Xray/external/service clients.
 - Confirm direct manual removal of the current effective vpn-auto member and subsequent fixed-target transition.
 - Decide Tailscale peer admission/inventory/per-subject policy from routed evidence or managed intent.
@@ -354,24 +478,3 @@ Target environment: GitHub-hosted Ubuntu host, existing isolated Compose, Debian
 
 ### Phase D factual checkpoint — 2026-10-12
 Provider cohort run38208049662:11/0/0, both reentry fencing cases confirmed. GHCR ordinary application consumer run38210552876:1/0/0 native application plus historical exact seven7/0/0; fresh-source overlay build9.307s and anonymous pull28.411s with actual DockerRoot boundary measurements. Kernel/packet/recovery retain pinned legacy build. New selective packet extension currently fails native mode/default apply verification (run38210175218); target-switch packet proof not reached. Full functional/affected/reproducibility gates remain OPEN; PhaseD BLOCKED. No production changes/PhaseE/CD/L7. Detailed scope and evidence: PhaseD REPORT.
-
-
-## Phase E planned release/development boundaries — 2026-10-13
-
-Status: **PLANNED/TODO**, not implemented or accepted by this CI audit. Existing Stage5–10 ordering and dependencies are unchanged.
-
-| Future requirement | Placement and acceptance boundary |
-|---|---|
-| Configuration Matrix & Security Acceptance | Stage5 contracts, validated under Stage9: supported environment/config modes, LAN/subnet/protocol/provider combinations, persistence/migrations, permissions, authorization, secret-handling and negative outcomes. |
-| DNS Performance & Reliability | Hardening before Stage9: measured query latency, cache/reload/failure/recovery, DNS routing and leak prevention; optimize only with comparable evidence. Hosted DNS routing proof is not performance or physical-host acceptance. |
-| Rescue `rescue0` Network Isolation Audit | Separate host/rescue acceptance in Stage9/release preparation: independent management access, subnet/interface/firewall isolation and recovery. No rescue implementation/change is authorized here. |
-| Production Documentation | Existing documentation milestone: RU/EN README, screenshots, architecture, user/operator/developer/install/upgrade/recovery guides and complete test/CI documentation. |
-| Server-Wide Cleanup & Storage Audit | Stage6 inventory plus final hardening: read-only cross-project storage/permissions/unused-service evidence first; any deletion/cleanup needs separately reviewed scope. No volumes/data/container deletion or blanket prune. |
-| Production Live Acceptance | Mandatory after separately approved exact-release deployment: Health/readiness/native parity, Core/provider/Xray state, packet/internet semantics, management access and bounded observation; CI/merge never substitutes for live acceptance. |
-| External Integration Framework & SDK | Late, after Stage8 contracts, Stage7 extraction and DB/Core/Modules stabilization; versioned external API/events/auth ownership, separate from premature infrastructure or current CI implementation. |
-
-### Git/release target policy
-
-One logical milestone branch/PR → required CI PASS → operator PR review → **Squash and Merge (one resulting main commit)** → Release Candidate → Release Acceptance → separately approved manual Deployment → Production Live Acceptance. Squash/delete-merged-head policy is the current target; historical retain-branch wording is superseded by the explicit Phase E decision. Only completed/confirmed merged branches may be deleted; this unfinished branch and operational branch are untouched.
-
-Current repository inspection: squash/merge/rebase all permitted; auto-delete heads already enabled; Main requires PR but no required-status-check rule. Required affected-check enforcement and squash-only setting need explicit approval; no settings changed. Real PR/main events remain NOT RUN. CD is **DEFERRED**, no automatic production deployment. Merge alone does not authorize deployment. Network-impacting release acceptance needs working Rescue SSH/VPN and an independently usable rollback.
