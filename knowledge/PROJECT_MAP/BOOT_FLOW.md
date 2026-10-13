@@ -115,3 +115,8 @@ The adapter may retain one bounded safe YAML parse keyed by exact current config
 ## Controlled stabilization rollout — 2026-10-14
 
 Feature-source4ffd686 is installed backend/docs only after hosted full scope PASS. Live startup still fails120s readiness and20s shutdown; API/dependents held. Native generation checkpoint remainsxray_applied with8 UUID replacements among78, so final identity/native publication is not accepted. Native routing/DNS/Rescue observed preserved. Further activation/recovery requires diagnosis of nonempty profile convergence and checkpoint-owned safe restore; do not restore insecure archived generator. See the runtime stability LIVE_ACCEPTANCE report.
+
+
+### Nonempty profile planner and stale recovery qualification
+
+Read-only checkpoint forensics finds DB's original78 identities preserved but native candidate8 replacements/public snapshots uncommitted. Stale selection revision/Mihomo incarnation and missing inventory bindings prohibit blind resume or file restore. New checkpoints retain transition config digests and recovery requires them before native mutation. Nonempty hosted reproduction38478166408 reaches the redundant per-client effective-state/preflight loop; the prospective planner now resolves persisted identities and performs enrichment once with its shared snapshots, retaining final source/CAS/native proof. Qualification is pending; production API/workers/timers remain held, not repaired by a source commit.

@@ -2626,11 +2626,10 @@ def build_app(socket_path: Path):
             if not bootstrap_diagnostic_active:
                 return original(*args, **kwargs)
             with bootstrap_diagnostic_lock:
-                count = bootstrap_diagnostic_counts.get(name, 0)
-                record_phase = count < bootstrap_diagnostic_limit
-                if record_phase:
-                    count += 1
-                    bootstrap_diagnostic_counts[name] = count
+                count = min(bootstrap_diagnostic_counts.get(name, 0) + 1, 10_000)
+                bootstrap_diagnostic_counts[name] = count
+                bootstrap_observation["phase_call_counts"] = dict(bootstrap_diagnostic_counts)
+                record_phase = count <= bootstrap_diagnostic_limit
             if not record_phase:
                 return original(*args, **kwargs)
             started = time.monotonic()
@@ -2663,7 +2662,9 @@ def build_app(socket_path: Path):
             phase,
             observe_xray_generation_phase(phase, getattr(xray_subscription_service, phase)),
         )
+    from fwrouter_api.services import subject_policy
     for module, attribute, phase in (
+        (subject_policy, "_default_subject_runtime_enforcement", "subject_policy.default_enforcement"),
         (mihomo_config, "write_mihomo_candidate_config", "mihomo_config.write_candidate"),
         (mihomo_config, "validate_mihomo_candidate_config", "mihomo_config.validate_candidate"),
         (subscription_pipeline, "validate_mihomo_candidate_config", "subscription_pipeline.validate_candidate"),

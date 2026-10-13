@@ -1612,7 +1612,6 @@ def _start_xray(profile: dict[str, Any]) -> _XrayRuntime:
         raise FixtureError("endpoint Xray binary does not match its parent profile pin")
     global _XRAY_CONFIG_CREATED
     xray_config = OWNED_ROOT / "xray-endpoint.json"
-    _create_tls_decoy_material()
     config = _expected_xray_config()
     _assert_xray_config(config)
     data = (json.dumps(config, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
@@ -1691,6 +1690,9 @@ def _endpoint_status(control_server: Any, runtime: _XrayRuntime | None) -> dict[
 
 def _serve(role: str, profile: dict[str, Any]) -> None:
     if role == "endpoint":
+        # The decoy belongs to the endpoint role, not the restartable Xray
+        # process. Availability fault/restart must preserve its owned material.
+        _create_tls_decoy_material()
         runtime = _start_xray(profile)
         servers: list[Any] = []
         serving: list[Any] = []

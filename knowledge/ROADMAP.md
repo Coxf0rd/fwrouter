@@ -1,5 +1,10 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 read-only recovery diagnosis — 2026-10-14
+
+Production API/dependents remain held on installed4ffd686; no further runtime mutation. Identity forensics attributes7 subscription UUID replacements to one persisted inventory-server change plus1 internal vpn-auto identity; original78 are preserved in DB/checkpoint preimage but public/native publication is inconsistent. Revision/incarnation mismatch and8 invalid inventory bindings block blind recovery. Hosted38478166408 reproduces the nonempty-profile startup deadline in redundant per-client native preflight; source fix and exact L1 regressions are under qualification. Its1439 routine/26+1 qualified/26 ordinary/11 Provider PASS do not qualify the2 failed packet/scale scenarios or the newly registered component cases. Full Production Live Acceptance and PR8 merge readiness remain BLOCKED. External Rescue remains user-confirmed PASS; no unsafe generator rollback. See runtime stability REPORT.md for immutable checkpoints and recovery plan. CI milestone CLOSED/CD DEFERRED; no next milestone.
+
+
 ### Runtime stabilization qualification — 2026-10-14
 
 PR8 remains BLOCKED after a user-authorized controlled feature-source backend/docs rollout. Hosted38472054455 fully PASS (1439 routine, qualified26+1, ordinary26, Provider11, packet/scale2); scale startup30.0161s/loadmax2.3812s/shutdown0.2137s/APIHWM892128KiB. Exact4ffd686 is installed, host guard preserved; live API failed120s readiness/20s stop, RSSpeak751428KiB. Native count78 but8 UUID replacements and generation checkpointxray_applied require investigation/safe recovery; no further activation or native changes after this critical uncertainty. API/dependent units held; observed native DIRECT/VPN/DNS and Rescue preserved. Hosted empty-profile scale does not qualify nonempty live subscription-profile convergence. Full Live Acceptance remains BLOCKED; unsafe implicit-DIRECT rollback prohibited. See api_runtime_stability report/LIVE_ACCEPTANCE. CI CLOSED/CDDEFERRED; no next milestone.

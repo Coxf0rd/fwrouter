@@ -440,7 +440,10 @@ def _prospective_profile_bindings(
         email = str(node.get("client_email") or "").strip()
         if not client_uuid or not email:
             continue
-        current = _xray_subject_for_client(client_uuid)
+        # This planner already owns routing/enforcement/bypass snapshots.
+        # Resolving a fully enriched subject here repeats native preflight per
+        # client, then discards it below; retain only persisted identity intent.
+        current = _xray_subject_for_client(client_uuid, include_effective_state=False)
         if isinstance(current, dict):
             subject_id = str(current.get("subject_id") or f"xray:{client_uuid}")
             subject = get_subject(subject_id) or current
