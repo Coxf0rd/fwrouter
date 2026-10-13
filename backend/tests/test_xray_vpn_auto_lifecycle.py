@@ -181,6 +181,12 @@ def test_profile_binding_plan_reuses_owned_enforcement_without_per_client_native
     _patch_runtime(monkeypatch)
     _seed_server("profile-plan-server")
     _seed_routing_state(desired_mode="vpn")
+    # This component has no native DNS/network namespace. Keep DNS explicitly
+    # unavailable rather than discovering the runner host or faking proof.
+    monkeypatch.setattr(
+        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        lambda: {"ok": False, "reason": "component_dns_namespace_unavailable"},
+    )
     nodes = []
     with db_session() as connection:
         for index in range(client_count):
