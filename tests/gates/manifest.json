@@ -5196,7 +5196,11 @@
       "risk_notes": "content/provenance/admission and real staged installer; native runtime qualification is a separate hosted packet/application gate",
       "runtime_dependencies": [
         "Python 3.11",
-        "pytest"
+        "pytest",
+        "Git",
+        "POSIX shell",
+        "coreutils",
+        "tar"
       ],
       "slow": false,
       "timeout_seconds": 180

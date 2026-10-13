@@ -109,3 +109,25 @@ Run38378296221 stopped before native execution:11 recovery cases passed and the 
 Final consumer review adds reserved-role checking to `_resolve_lan_ingress_interfaces` as well as fresh discovery: an old cached/supplied preflight projection must not reintroduce Rescue into native LAN ingress rules (including IPv6 LAN blocking). The consumer uses the same central role predicate, preserves other existing names and protected management networks, and has a regression for stale mixed/Rescue-only projections. This does not claim raw old native snapshots are safe restore points.
 
 Run [38379311911](https://github.com/Coxf0rd/fwrouter/actions/runs/38379311911),1686c12:1395 routine +27 qualified native +26 ordinary +11 Provider +1 packet PASS,0 FAIL/0 SKIP. All12 recovery tests and actual full-source artifact staging PASS. Chromium launch failure did not recur; its historical root cause remains unknown, not claimed fixed. The later stale-ingress consumer regression requires the final PR HEAD check; this earlier run does not claim to execute that added case.
+
+## Final source acceptance
+
+[38381629814](https://github.com/Coxf0rd/fwrouter/actions/runs/38381629814), exact source8f9c50c: **1396 routine +26 qualified Mihomo/child +1 qualified Xray +26 ordinary application/browser +11 Provider/kernel +1 packet =1461 PASS /0 FAIL /0 SKIP**. All seven historical failures PASS. Strict source/plan/digest aggregate eligible; no blocked reasons or missing levels. Full-source immutable recovery artifact and real isolated installer stage PASS; stage explicitly reports runtime qualification not established. Final stale/native-ingress regression is executed. The two previous full-source PASS receipts and repeated packet/Provider outcomes are retained; no skipped job or historical browser crash is turned into PASS.
+
+Added15 test functions (12 recovery/admission/staging, two network-role contracts, one DNS reconciliation contract), and strengthened existing discovery and packet acceptance. Physical, custom bridge/VLAN/tunnel names and Rescue-only absence are covered at component depth; native dummy role/discovery/config/DNS/counters/captures/cleanup are verified. DHCP lease exposure, full IPv6 forwarding and Debian host/systemd/reboot remain NOT RUN.
+
+| Area | Status |
+|---|---|
+| CI milestone | CLOSED |
+| External Rescue | PASS — user-confirmed manual external verification |
+| Rescue source + stale ingress | PASS |
+| Regression/native packet scope | PASS |
+| DHCP/DNS safety | PARTIAL: generation/native DNS/capture PASS; DHCP lease exposure NOT RUN |
+| Recovery design / admitted artifact / isolated installer | PASS in documented scope |
+| Full host rollback activation | BLOCKED / NOT QUALIFIED |
+| Production rollback readiness | BLOCKED pending host activation/quiescence qualification and new main target |
+| Safety PR | Source ready; final documentation-only HEAD still requires actual required check |
+| Production deployment / acceptance | NOT RUN / BLOCKED |
+| CD | DEFERRED |
+
+This final documentation/metadata checkpoint changes no application, test or harness code from8f9c50c. The actual required check at [PR6](https://github.com/Coxf0rd/fwrouter/pull/6) remains authoritative for its latest SHA. Its final result is also recorded in the PR description without claiming that a report can pre-certify a future run. GitHub policies are unchanged; no merge or deployment is performed.

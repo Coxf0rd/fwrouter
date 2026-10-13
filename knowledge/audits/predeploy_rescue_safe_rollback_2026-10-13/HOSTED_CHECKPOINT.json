@@ -93,5 +93,62 @@
       "installed_backend_files_verified": 434,
       "retained_extra_files": []
     }
+  },
+  "final_source_checkpoint": {
+    "run_id": "38381629814",
+    "source_sha": "8f9c50c7f6b9ae999504159a3be4fe847e31eb4d",
+    "routine_counts": {
+      "passed": 1396
+    },
+    "aggregate_eligible": true,
+    "blocked_reasons": [],
+    "missing_levels": [],
+    "native_suites": {
+      "functional-ordinary": {
+        "tests": 26,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cleanup": "owned_resources_removed"
+      },
+      "packet-diagnostic": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cleanup": "owned_resources_removed"
+      },
+      "provider-cohort": {
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "cleanup": "owned_resources_removed"
+      }
+    },
+    "recovery_stage": {
+      "status": "isolated_stage_complete",
+      "runtime_qualification": "not_established",
+      "scope": "isolated_backend_file_copy",
+      "source_sha": "8f9c50c7f6b9ae999504159a3be4fe847e31eb4d",
+      "installer_returncode": 0,
+      "installed_backend_files_verified": 434,
+      "retained_extra_files": []
+    },
+    "qualified_native": {
+      "mihomo_pass": 26,
+      "xray_pass": 1,
+      "failures": 0,
+      "skips": 0
+    },
+    "historical_exact_seven": {
+      "backend/tests/test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only": "passed",
+      "backend/tests/test_state_routes.py::test_state_endpoints_are_get_only_and_read_only": "passed",
+      "backend/tests/test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state": "passed",
+      "backend/tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged": "passed",
+      "backend/tests/test_xray.py::test_legacy_subscription_get_is_read_only": "passed",
+      "backend/tests/test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation": "passed",
+      "backend/tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity": "passed"
+    }
   }
 }
