@@ -414,7 +414,7 @@ def test_mihomo_health_reuses_only_parse_and_rereads_native_policy_each_call(
 def test_policy_parse_cache_rejects_changed_unsafe_content_and_loader_changes(monkeypatch, tmp_path: Path) -> None:
     sentinel = tmp_path / "unsafe-cache-constructor-ran"
     adapter = MihomoHttpAdapter(config_path=tmp_path / "unused.yaml")
-    safe_text = "rules: [MATCH,DIRECT]\n"
+    safe_text = 'rules: ["MATCH,DIRECT"]\n'
     unsafe_text = f"!!python/object/apply:os.system ['touch {sentinel}']"
 
     safe = adapter._parsed_vpn_udp_policy_config(safe_text)
@@ -433,7 +433,7 @@ def test_policy_parse_cache_rejects_changed_unsafe_content_and_loader_changes(mo
 def test_policy_parse_cache_does_not_retain_oversized_config(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(mihomo_module, "MAX_CACHED_POLICY_CONFIG_BYTES", 4)
     adapter = MihomoHttpAdapter(config_path=tmp_path / "unused.yaml")
-    text = "rules: [MATCH,DIRECT]\n"
+    text = 'rules: ["MATCH,DIRECT"]\n'
 
     first = adapter._parsed_vpn_udp_policy_config(text)
     assert adapter._policy_config_cache is None
@@ -445,7 +445,7 @@ def test_policy_parse_cache_does_not_retain_oversized_config(monkeypatch, tmp_pa
 
 def test_policy_parse_cache_serializes_concurrent_same_content_parse(monkeypatch, tmp_path: Path) -> None:
     adapter = MihomoHttpAdapter(config_path=tmp_path / "unused.yaml")
-    text = "rules: [MATCH,DIRECT]\n"
+    text = 'rules: ["MATCH,DIRECT"]\n'
     parse_entered = threading.Event()
     second_call_entered = threading.Event()
     release_parse = threading.Event()
