@@ -69,3 +69,11 @@ Current targeta4a7a33 is installed; Overall Production Acceptance **BLOCKED**. C
 ## Evidence and publication
 
 Raw configs, credentials, identities, logs/captures, backup and benchmark snapshots remain root-only under the protected recovery directory, never Git/GitHub artifacts. Historical reports/pending documentation patch preserved. This redacted engineering report and current roadmap pointer are published through the same fix PR; a PR report is not evidence that the fix was deployed or merged. Local-source branch changes do not alter installeda4a7a33.
+
+## Final safety containment — supersedes operating-state paragraph above
+
+API RSS continued increasing to6,056,568KiB (~5.78GiB); current mutation jobs were0 and Core remainedclean. To protect memory/network/Rescue, all previously managed API-dependent workers/timers and the API were **temporarily stopped** using their existing systemd units. Native Xray/Mihomo, dnsmasq/BIND, strongSwan, Rescue SSH/frontend and Tailscale remainactive. Subsequent actual DIRECT/VPN HTTPS again HTTP200 (0.390/0.258s), Xray78/78, database integrity/FK PASS. The API hit its existing20s stop deadline and remainsfailed/stopped with `Result=timeout`, MainPID0; no reset-failed/fakehealthy result or manual fault injection was used. No unsafe code/config/DB rollback was attempted. Installed backend remainsa4a7a33; the fix is not deployed.
+
+**Current API/control plane unavailable by safety containment**, UI shell only. Background convergence/failover/accounting are paused, not accepted operationally; native routing continues at the preserved observed state. Exact prior active/enabled unit states are in the protected deployment control receipt. Restore them only after user merge, source-verified focused rollout, readiness/native proof and stable resource validation. This containment is not a completed production rollback or Live Acceptance PASS.
+
+The proposed parser acceleration is one measured contributor fix; whole startup/readback/concurrency and graceful shutdown must be remeasured after activation. Do not assume all timeout/RAM symptoms are solved by the parser benchmark. Last source-equivalent hosted receipt38397418169 onb543713 passed; the final containment documentation HEAD requires its actual protected checks before user merge. Overall Production Acceptance remainsBLOCKED.

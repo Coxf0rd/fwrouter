@@ -22,5 +22,12 @@
   "qualified_native_pass": 26,
   "fix_deployment": "NOT RUN",
   "host_rollback": "NOT QUALIFIED_USER_RISK_ACCEPTED",
-  "cd": "DEFERRED"
+  "cd": "DEFERRED",
+  "control_plane": "TEMPORARILY_STOPPED_FOR_RESOURCE_SAFETY",
+  "api_systemd_result": "timeout",
+  "api_main_pid": 0,
+  "api_dependent_workers_timers": "TEMPORARILY_HELD_ORIGINAL_STATES_SAVED",
+  "native_dns_rescue": "ACTIVE",
+  "final_xray_identities": 78,
+  "last_api_rss_kib": 6056568
 }
