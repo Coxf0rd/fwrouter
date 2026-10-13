@@ -63,7 +63,6 @@ def _safe_relative(value: str) -> PurePosixPath:
 
 def _tracked_source_files(repo_root: Path) -> list[tuple[str, Path, int]]:
     files: list[tuple[str, Path, int]] = []
-    installer_paths = (repo_root / "installer/install.sh", repo_root / "installer/obsolete-backend-paths.txt")
     try:
         tracked = subprocess.run(
             ["git", "-C", str(repo_root), "ls-files", "--stage", "-z", "--", "backend",
@@ -232,6 +231,7 @@ def prepare(repo_root: Path, artifact_dir: Path, receipt_path: Path) -> dict[str
             "files": entries,
         }
         _write_all(artifact_dir / MANIFEST_NAME, _canonical_json(manifest) + b"\n", 0o444)
+        verify(artifact_dir, receipt_path)
         archive_path.chmod(0o444)
         artifact_dir.chmod(0o555)
     except BaseException:
@@ -427,7 +427,7 @@ def stage(artifact_dir: Path, receipt_path: Path, target: Path) -> dict[str, Any
         raise RecoveryError("isolated stage retained unqualified executable/code files: "
                             + ", ".join(sorted(unsafe_extras)[:20]))
     return {"status": "isolated_stage_complete", "runtime_qualification": "not_established",
-            "source_sha": manifest["source_sha"], "target": str(target),
+            "scope": "isolated_backend_file_copy", "source_sha": manifest["source_sha"], "target": str(target),
             "installer_returncode": 0, "installed_backend_files_verified": len(expected),
             "retained_extra_files": sorted(set(preserved))}
 

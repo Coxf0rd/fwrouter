@@ -65,6 +65,8 @@ def _receipt(repo: Path, *, status: str = "passed", source_sha: str | None = Non
         "source_manifest_sha256": digest or recovery._entries_digest(entries),
         "hosted_run_id": "123456789",
         "hosted_run_url": "https://github.com/example/fwrouter/actions/runs/123456789",
+        "qualification_scope": "component_only_fixture",
+        "fixture_note": "synthetic test input; it is not hosted or runtime evidence",
         "gates": {name: "passed" for name in recovery.REQUIRED_GATES},
     }
     path = repo.parent / "hosted-qualification.json"
@@ -106,11 +108,13 @@ def test_prepare_verify_and_repeat_isolated_stage_preserve_state_and_host_sentin
         host_guard.parent.mkdir(parents=True)
         host_guard.write_bytes(b"LIVE_READINESS_GUARD_SENTINEL\n")
 
-        recovery.stage(artifact, receipt, target)
+        stage_receipt = recovery.stage(artifact, receipt, target)
         assert (target / "opt/fwrouter-api/fwrouter_api/__init__.py").read_text() == "SAFE_RECOVERY_FIXTURE = True\n"
         assert database.read_bytes() == b"current-db-intent\0"
         assert env.read_bytes() == b"PRIVATE_SENTINEL=preserved\n"
         assert host_guard.read_bytes() == b"LIVE_READINESS_GUARD_SENTINEL\n"
+        assert stage_receipt["runtime_qualification"] == "not_established"
+        assert ".env" in stage_receipt["retained_extra_files"]
 
         recovery.stage(artifact, receipt, target)
         assert database.read_bytes() == b"current-db-intent\0"
@@ -204,8 +208,25 @@ def test_interrupted_stage_retains_partial_target_and_can_be_repeated(tmp_path: 
                 recovery.stage(artifact, receipt, target)
         assert (target / "opt/fwrouter-api/partial-stage-marker").read_text() == "inspect or restage\n"
         with patch.object(recovery.subprocess, "run", wraps=original_run):
-            recovery.stage(artifact, receipt, target)
+            stage_receipt = recovery.stage(artifact, receipt, target)
         assert (target / "opt/fwrouter-api/partial-stage-marker").read_text() == "inspect or restage\n"
+        assert (target / "opt/fwrouter-api/fwrouter_api/__init__.py").is_file()
+        assert "partial-stage-marker" in stage_receipt["retained_extra_files"]
+    finally:
+        private_root.chmod(0o700)
+        shutil.rmtree(private_root)
+
+
+def test_stage_refuses_to_report_complete_with_stale_executable_module(tmp_path: Path) -> None:
+    _, artifact, receipt = _artifact(tmp_path)
+    private_root, target = _private_target("stale-module")
+    stale = target / "opt/fwrouter-api/removed_module.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("OLD_EXECUTABLE_MODULE = True\n")
+    try:
+        with pytest.raises(recovery.RecoveryError, match="unqualified executable/code files"):
+            recovery.stage(artifact, receipt, target)
+        assert stale.exists()
         assert (target / "opt/fwrouter-api/fwrouter_api/__init__.py").is_file()
     finally:
         private_root.chmod(0o700)
@@ -227,3 +248,23 @@ def test_stage_rejects_symlink_target_and_target_outside_private_temp_root(tmp_p
     finally:
         private_root.chmod(0o700)
         shutil.rmtree(private_root)
+
+
+def test_archived_generator_is_not_a_safe_mandatory_vpn_rollback_target() -> None:
+    # Execute the exact historical pure generator and the actual current one.
+    # This is component evidence, not native packet or live rollback evidence.
+    from fwrouter_api.services.dataplane_nft_chains import _build_classify_chain_lines
+    fixture = TOOL.parent / "tests/fixtures/unsafe_archived_classify.py"
+    namespace = {}
+    exec(compile(fixture.read_text(), str(fixture), "exec"), namespace)
+    options = dict(mode="selective", selective_default="vpn",
+                   selective_vpn_policy_ready=False, selective_degraded=True,
+                   scoped_steering_rules=[])
+    old = namespace["_build_classify_chain_lines"](**options)
+    new = _build_classify_chain_lines(**options)
+    assert old[-2] == '        goto fwrouter_direct comment "selective degraded default direct"'
+    assert new[-2] == '        drop comment "selective default vpn"'
+    assert '        goto fwrouter_direct comment "selective degraded default direct"' not in new
+    assert any('protected IPv4 always direct' in line for line in new)
+    direct = _build_classify_chain_lines(**{**options, "selective_default": "direct"})
+    assert direct[-2] == old[-2]
