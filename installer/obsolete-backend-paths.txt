@@ -1,2 +1,3 @@
 fwrouter_api/services/tailscale.py
 fwrouter_api/services/tailscale_live.py
+fwrouter_api/services/startup_trace.py

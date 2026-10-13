@@ -107,12 +107,16 @@ def test_prepare_verify_and_repeat_isolated_stage_preserve_state_and_host_sentin
         host_guard = target / "usr/local/libexec/fwrouter/traffic-collect-api.sh"
         host_guard.parent.mkdir(parents=True)
         host_guard.write_bytes(b"LIVE_READINESS_GUARD_SENTINEL\n")
+        obsolete_trace = target / "opt/fwrouter-api/fwrouter_api/services/startup_trace.py"
+        obsolete_trace.parent.mkdir(parents=True)
+        obsolete_trace.write_text("ARCHIVED_TRACE_HELPER = True\n")
 
         stage_receipt = recovery.stage(artifact, receipt, target)
         assert (target / "opt/fwrouter-api/fwrouter_api/__init__.py").read_text() == "SAFE_RECOVERY_FIXTURE = True\n"
         assert database.read_bytes() == b"current-db-intent\0"
         assert env.read_bytes() == b"PRIVATE_SENTINEL=preserved\n"
         assert host_guard.read_bytes() == b"LIVE_READINESS_GUARD_SENTINEL\n"
+        assert not obsolete_trace.exists()
         assert stage_receipt["runtime_qualification"] == "not_established"
         assert ".env" in stage_receipt["retained_extra_files"]
 
@@ -270,3 +274,37 @@ def test_archived_generator_is_not_a_safe_mandatory_vpn_rollback_target() -> Non
     assert any('protected IPv4 always direct' in line for line in new)
     direct = _build_classify_chain_lines(**{**options, "selective_default": "direct"})
     assert direct[-2] == old[-2]
+
+
+def test_real_installer_failure_after_copy_reports_failure_and_allows_safe_restage(tmp_path: Path) -> None:
+    # A real child installer copies code and then fails its owned bootstrap.
+    # This exercises file-restore failure, not native or production activation.
+    repo = _source_repo(tmp_path)
+    bootstrap = repo / 'backend/scripts/bootstrap-state.sh'
+    bootstrap.write_text('#!/bin/sh\nexit 42\n')
+    _git(repo, 'add', 'backend/scripts/bootstrap-state.sh')
+    _git(repo, 'commit', '--quiet', '-m', 'owned failing bootstrap')
+    bad_receipt = _receipt(repo)
+    bad_artifact = tmp_path / 'failing-artifact'
+    recovery.prepare(repo, bad_artifact, bad_receipt)
+    private, target = _private_target('real-failure')
+    try:
+        env = target / 'opt/fwrouter-api/.env'
+        env.parent.mkdir(parents=True)
+        env.write_bytes(b'TEST_ONLY_CANARY=keep\n')
+        with pytest.raises(recovery.RecoveryError, match='failed with status 42'):
+            recovery.stage(bad_artifact, bad_receipt, target)
+        assert (target / 'opt/fwrouter-api/fwrouter_api/__init__.py').is_file()
+        assert env.read_bytes() == b'TEST_ONLY_CANARY=keep\n'
+        bootstrap.write_text('#!/bin/sh\nset -eu\nmkdir -p "$1" "$2" "$3"\n')
+        _git(repo, 'add', 'backend/scripts/bootstrap-state.sh')
+        _git(repo, 'commit', '--quiet', '-m', 'owned recovered bootstrap')
+        good_receipt = _receipt(repo)
+        good_artifact = tmp_path / 'restage-artifact'
+        recovery.prepare(repo, good_artifact, good_receipt)
+        staged = recovery.stage(good_artifact, good_receipt, target)
+        assert staged['installer_returncode'] == 0
+        assert staged['runtime_qualification'] == 'not_established'
+        assert env.read_bytes() == b'TEST_ONLY_CANARY=keep\n'
+    finally:
+        shutil.rmtree(private)

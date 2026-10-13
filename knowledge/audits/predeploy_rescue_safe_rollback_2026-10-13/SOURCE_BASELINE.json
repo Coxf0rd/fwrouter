@@ -1,0 +1,9 @@
+{
+  "source_guard_sha256": "23334bfc2ff1fcdc3c32597709e8df57cc0c81580dc5431b4601c8582674a78f",
+  "live_guard_sha256": "4f29c3e925ebc57045e44566ca0b2ab051e6af78843b864f650521f29a55b0a3",
+  "captured_at": "2026-10-13T09:09:00.897109+00:00",
+  "method": "read-only installed source content hashes; no runtime imports",
+  "installed_backend_snapshot": "3d285c3 / c1e00b5 identical code",
+  "snapshot_python_paths_matched": 248,
+  "common_target_paths_preflight": 247
+}

@@ -1,0 +1,73 @@
+{
+  "run_id": "38373770914",
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38373770914",
+  "source_sha": "14994946f8dd3ceaa1879b1ea7153a636a29e686",
+  "routine_counts": {
+    "passed": 1392
+  },
+  "native_suites": {
+    "functional-ordinary": {
+      "tests": 26,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "elapsed_seconds": 246.656,
+      "cleanup": "owned_resources_removed",
+      "image_metrics": {
+        "base_image_pull_seconds": 30.287,
+        "compose_build_seconds": 11.201,
+        "built_image_bytes": 2627113692
+      }
+    },
+    "packet-diagnostic": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "elapsed_seconds": 78.724,
+      "cleanup": "owned_resources_removed",
+      "image_metrics": {
+        "base_image_pull_seconds": 0.0,
+        "compose_build_seconds": 3.84,
+        "built_image_bytes": 2627113692
+      }
+    },
+    "provider-cohort": {
+      "tests": 11,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "elapsed_seconds": 160.803,
+      "cleanup": "owned_resources_removed",
+      "image_metrics": {
+        "base_image_pull_seconds": 0.0,
+        "compose_build_seconds": 3.871,
+        "built_image_bytes": 2627113692
+      }
+    }
+  },
+  "historical_exact_seven": {
+    "backend/tests/test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only": "passed",
+    "backend/tests/test_state_routes.py::test_state_endpoints_are_get_only_and_read_only": "passed",
+    "backend/tests/test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state": "passed",
+    "backend/tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged": "passed",
+    "backend/tests/test_xray.py::test_legacy_subscription_get_is_read_only": "passed",
+    "backend/tests/test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation": "passed",
+    "backend/tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity": "passed"
+  },
+  "qualified_native": {
+    "mihomo": 26,
+    "xray": 1,
+    "failures": 0,
+    "skipped": 0
+  },
+  "recovery_stage": {
+    "status": "isolated_stage_complete",
+    "runtime_qualification": "not_established",
+    "scope": "isolated_backend_file_copy",
+    "source_sha": "14994946f8dd3ceaa1879b1ea7153a636a29e686",
+    "installer_returncode": 0,
+    "installed_backend_files_verified": 434,
+    "retained_extra_files": []
+  }
+}

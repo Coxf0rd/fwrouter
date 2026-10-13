@@ -2,7 +2,7 @@
 
 ## Current checkpoint
 
-Source implementation is in progress on `fix/predeploy-rescue-isolation-safe-rollback`, based on accepted main `ef46147`. CI milestone remains CLOSED. Production deployment and live acceptance are NOT RUN. Hosted evidence and PR readiness will be recorded after actual execution.
+Source implementation is complete on `fix/predeploy-rescue-isolation-safe-rollback`, based on accepted main `ef46147`. CI milestone remains CLOSED. Production deployment and live acceptance are NOT RUN. Hosted baseline qualification is recorded below. Final HEAD readiness is determined by the actual required check on PR #6; this report never substitutes for that check.
 
 External Rescue: **PASS — user-confirmed manual external verification**. The user reports the Mac Rescue VPN fully works. This supersedes the earlier missing external proof; no Codex-observed handshake, commands or timestamps are claimed. Rescue configuration is unchanged.
 
@@ -29,9 +29,10 @@ Recovery therefore uses an immutable, content-verified backend artifact from a s
 | Archived installed 3d285c3/c1e00b5 | REJECT: mandatory VPN may become DIRECT |
 | ef46147 | Existing native fail-closed acceptance; Rescue classification still unsafe |
 | New safety checkout with matching hosted proof | Candidate for backend recovery; production activation NOT RUN |
-| Different source/schema, missing proof, tampered archive | REJECT |
+| Different source, missing proof, tampered archive | Tool rejects |
+| Incompatible database/schema | Operational admission rejects; no generic downgrade support |
 
-Current schema 24 has no migration delta in this scope. Preserve current DB intent, current identities and native configurations. A historical DB backup must not overwrite newer state merely because code restoration is requested.
+Database/schema compatibility is a separate admission requirement, not inferred from an archive hash. Current schema 24 has no migration delta in this scope. Preserve current DB intent, current identities and native configurations. A historical DB backup must not overwrite newer state merely because code restoration is requested.
 
 ## Host readiness protection and activation procedure
 
@@ -49,8 +50,48 @@ The staging tool deliberately cannot operate on `/` or control services. It does
 - Recovery component tests: tracked content, incompatible/unqualified proof, tampering/traversal/symlinks, real isolated installer, DB/.env/host sentinel preservation and interrupted/repeated staging.
 - Existing mandatory-VPN/empty-pool/UDP/protected DIRECT/Emergency Direct and application rollback/fencing gates remain mandatory where selected.
 
-Hosted runs: **pending**. L6/L7 and Debian host/reboot qualification are NOT RUN. DHCP lease exposure experiments and production routing experiments are NOT RUN.
+Hosted baseline [38373770914](https://github.com/Coxf0rd/fwrouter/actions/runs/38373770914) on `1499494`: **1392 routine PASS, 26+1 qualified native PASS, ordinary26 / Provider11 / packet1 PASS; 0 FAIL / 0 SKIP**. All seven historical regressions PASS. Strict aggregate eligible with no blocked reasons/missing levels, owned cleanup and actual full-source recovery artifact staging PASS. See HOSTED_CHECKPOINT.json. The additional real installer-exit42/restage scenario and obsolete-helper cleanup are later source additions requiring the final PR check; their execution is not inferred from this older run. L6/L7 and Debian host/reboot qualification are NOT RUN. DHCP lease exposure experiments and production routing experiments are NOT RUN.
 
 ## Fresh GO/NO-GO
 
 Production remains **BLOCKED / NOT RUN** until the user merges the safety PR, the resulting main SHA passes actual CI, recovery evidence is admitted for that exact content and a separate deployment GO is issued. A source/PR PASS does not fix the installed production. The next deployment target is the new merged SHA, not automatically ef46147. A product regression requiring a different rollback version needs a separately safety-qualified target; recovery-to-same-safe-build does not promise to undo every application defect.
+
+## End-to-end ownership review
+
+| Path | Owner / result |
+|---|---|
+| Interface admission / role | Shared network contract; exact Rescue role wins over LAN configuration |
+| LAN VIP / hostname | dnsmasq discovery and `_build_local_hosts_dnsmasq_text`; no first-interface fallback when no LAN |
+| DHCP DNS | `reconcile_dnsmasq_rules`; generated forced DNS list uses filtered LAN discovery |
+| DHCP binding / DNS listening | Existing host dnsmasq configuration, not a separate FWRouter discovery writer; observed DHCP binding enp2s0; no production listener changes |
+| DNS capture / native ingress | Filtered bindings feed capture and nft LAN ingress resolution |
+| Network API / persistence | Existing environment-owned filter settings and network contract manifest; no new role DB/API writer |
+| Protected management / firewall | Protected network discovery unchanged; Rescue DIRECT safeguards preserved |
+| Reconcile / restart | Every discovery repeats the same reserved-role rule; owned packet dummy must be removed on teardown |
+| Installed backend provenance | Fresh read-only comparison matches 248 Python paths in archived snapshot, including startup_trace; prior 247 count is common target paths excluding that removed helper |
+| Installed host provenance | Mixed host content: readiness helper differs from source; no exact whole-host commit label is claimed |
+
+`startup_trace.py` is now an explicit obsolete installer path because the new source removed it and has no remaining imports. Unknown stale executable modules are rejected by recovery staging, rather than silently certified. Host helper content hashes are recorded in SOURCE_BASELINE.json without secret contents.
+
+## Evidence depth / remaining qualification
+
+| Scenario | Concrete coverage | Boundary |
+|---|---|---|
+| Restore / repeat restore | `test_prepare_verify_and_repeat_isolated_stage_preserve_state_and_host_sentinels` | Real installer, files/state preservation; no live restart |
+| Reject incompatible proof / tampering | recovery admission tests | Before any installer apply |
+| Partial file copy and retry | `test_real_installer_failure_after_copy_reports_failure_and_allows_safe_restage` | Real child exits 42; no native crash |
+| Interrupted staging | `test_interrupted_stage_retains_partial_target_and_can_be_repeated` | Injected timeout boundary; no host crash claim |
+| Native reload rollback | `test_xray_forced_reload_failure_restores_last_good_native_and_active_config` | Real hosted application/native path; not deployment rollback |
+| Native readiness/readback failure | application candidate rejection/readback transport failure cases | Must not publish false success |
+| Mandatory VPN / empty pool / protected DIRECT / Emergency Direct | Existing real packet acceptance with added Rescue fixture | Kernel dataplane in owned namespaces |
+| Crash during host rollback / system reboot / atomic service activation | NOT RUN | Separate safe host/release qualification required |
+
+The artifact is admitted only after eligible strict aggregate and selected ordinary, Provider/kernel, packet and recovery suites. It is then staged from the actual checked-out source, not only synthetic miniature fixtures. The resulting receipt expressly keeps live activation NOT RUN.
+
+## Fix review and merge handoff
+
+[PR #6](https://github.com/Coxf0rd/fwrouter/pull/6) is the single safety PR. Merge and deployment remain user-owned. Proposed squash title: `fix(network): isolate Rescue LAN and qualify safe backend recovery`. Body: reserve Rescue admission, prove LAN DNS/DHCP/capture boundaries, reject unsafe archived generators, bind content-verified recovery to hosted native/packet evidence, preserve state and host readiness, and cover staged installer failures.
+
+Run38373145947 stopped on four new recovery test defects: three directory link-count false rejections and one old-generator keyword mismatch. Causes were fixed, not allowlisted. First-branch push38372281476 exposed zero-before-SHA selection failure; subsequent push checks pass after immutable merge-base handling. Superseded PR runs cancelled by concurrency are not test PASS. Final required check must be successful on the current PR SHA before user merge.
+
+After user squash: verify actual main event and its admitted artifact, refresh protected backups/current state and host guard proof, finish applicable activation/recovery qualification, then present a separate production GO. No direct-main push, merge, deployment, service restart, DHCP experiment or L6/L7 was performed. Raw evidence and pending post-CI documentation patch remain outside Git.
