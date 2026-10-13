@@ -93,6 +93,171 @@ def _write_scale_config(path: Path) -> dict[str, Any]:
     }
 
 
+def _seed_scale_rules_source(state: Path) -> dict[str, Any]:
+    """Seed the normal rules artifact/state so startup apply can regenerate scale."""
+    from fwrouter_api.services import rules as rules_service
+    from fwrouter_api.services.rules_state_files import write_active_rules_state
+    from fwrouter_api.services.rules_state_store import (
+        _default_rules_paths,
+        _upsert_rules_state_record,
+        get_rules_state,
+    )
+
+    paths = _default_rules_paths()
+    expected_artifact = state / "generated" / "rules" / "effective-rules.json"
+    if paths["effective_json_path"].resolve(strict=False) != expected_artifact.resolve(strict=False):
+        raise AssertionError("scale rules artifact path escaped the owned test state")
+
+    vpn_lines = [f"scale-{index:06d}.test" for index in range(99_627)]
+    big_vpn_text = "\n".join(vpn_lines) + "\n"
+    manual_text = "DIRECT protected.test\n"
+    manual_validation = rules_service.validate_manual_rules(manual_text)
+    big_vpn_validation = rules_service.validate_value_list(
+        big_vpn_text,
+        action="VPN",
+        source=rules_service.RULESET_BIG_VPN,
+    )
+    if not manual_validation.get("valid") or not big_vpn_validation.get("valid"):
+        raise AssertionError({
+            "manual_errors": manual_validation.get("errors"),
+            "big_vpn_errors": big_vpn_validation.get("errors"),
+        })
+    if len(big_vpn_validation.get("rules") or []) != 99_627:
+        raise AssertionError("scale source did not retain all unique VPN domain rules")
+
+    effective_artifact = rules_service.build_effective_rules_artifact(
+        manual_validation=manual_validation,
+        selective_default="direct",
+        big_vpn_validation=big_vpn_validation,
+    )
+    rules_state = get_rules_state()
+    for key, path in paths.items():
+        if key in rules_state and key.endswith("_path"):
+            rules_state[key] = str(path)
+    rules_state.update({
+        "selective_default": "direct",
+        "status": "success",
+        "last_success_at": rules_service._utc_now_iso(),
+        "error_code": None,
+        "error_message": None,
+    })
+    _upsert_rules_state_record(rules_state)
+    metadata = rules_service._build_metadata_file(
+        job_id="acceptance-runtime-scale",
+        status="success",
+        selective_default="direct",
+        source_counts=dict(effective_artifact["source_counts"]),
+        effective_counts=dict(effective_artifact["effective_counts"]),
+    )
+    write_active_rules_state(
+        manual_active_text=manual_text,
+        big_direct_text="",
+        big_vpn_text=big_vpn_text,
+        effective_artifact=effective_artifact,
+        metadata=metadata,
+    )
+
+    return {
+        "effective_rules_count": len(effective_artifact["rules"]),
+        "vpn_domain_suffix_count": sum(
+            1 for item in effective_artifact["rules"]
+            if item.get("action") == "VPN" and item.get("kind") == "domain_suffix"
+        ),
+        "protected_direct_present": any(
+            item.get("action") == "DIRECT" and item.get("protected") is True
+            for item in effective_artifact["rules"]
+        ),
+        "artifact_path": str(expected_artifact),
+        "artifact_bytes": expected_artifact.stat().st_size,
+    }
+
+
+def _seed_scale_xray_subjects(state: Path, xray_config: dict[str, Any]) -> dict[str, Any]:
+    """Persist the synthetic native VLESS identities through the inventory row contract."""
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.core.config import get_settings
+    from fwrouter_api.services.subject_inventory import SubjectInventoryRecord, _upsert_subject
+
+    if get_settings().paths.state_dir.resolve(strict=False) != state.resolve(strict=False):
+        raise AssertionError("scale Xray projection DB escaped the owned test state")
+
+    inbound = next(row for row in xray_config["inbounds"] if row.get("tag") == "vless-ws")
+    clients = inbound["settings"]["clients"]
+    for client in clients:
+        client_id = str(client["id"])
+        email = str(client["email"])
+        subject_id = "xray:" + "".join(
+            character.lower() if character.isalnum() else "-" for character in client_id
+        ).strip("-")
+        _upsert_subject(SubjectInventoryRecord(
+            subject_id=subject_id,
+            subject_type="explicit_external_client",
+            stable_key=subject_id,
+            display_name=email,
+            desired_mode="enabled",
+            runtime_state="active",
+            is_active=True,
+            alias=email,
+            metadata={"source": "xray_adapter", "provider": "xray"},
+            detail={
+                "client_id": client_id,
+                "client_uuid": client_id,
+                "email": email,
+                "subscription_path": f"/api/v2/xray/clients/{client_id}/subscription",
+                "enabled": True,
+                "source": {"id": client_id, "email": email, "level": 0},
+            },
+            implementation_kind="xray",
+        ))
+
+    with db_session() as connection:
+        rows = connection.execute(
+            """SELECT count(*) AS count FROM subjects
+               WHERE implementation_kind = 'xray'
+                 AND subject_type = 'explicit_external_client'
+                 AND subject_role = 'vless_client'
+                 AND is_active = 1 AND is_deleted = 0"""
+        ).fetchone()
+    count = int(rows["count"] if rows is not None else 0)
+    if count != len(clients):
+        raise AssertionError(f"expected {len(clients)} persisted active Xray clients, found {count}")
+    return {"persisted_external_xray_clients": count}
+
+
+def _inspect_generated_scale_config(path: Path) -> dict[str, Any]:
+    """Inspect the generated YAML with bounded memory after real startup apply."""
+    top_level = False
+    top_level_rule_count = 0
+    vpn_suffix_count = 0
+    udp_guard_count = 0
+    protected_direct_present = False
+    with path.open("r", encoding="ascii") as stream:
+        for line in stream:
+            if line == "rules:\n":
+                top_level = True
+                continue
+            if top_level and line.startswith("sub-rules:"):
+                top_level = False
+                continue
+            if not top_level or not line.startswith("- "):
+                continue
+            rule = line[2:].rstrip("\r\n")
+            top_level_rule_count += 1
+            if rule.startswith("DOMAIN-SUFFIX,scale-") and rule.endswith(",vpn-global"):
+                vpn_suffix_count += 1
+            if rule.startswith("AND,((NETWORK,udp),(DOMAIN-SUFFIX,scale-") and rule.endswith(")),REJECT"):
+                udp_guard_count += 1
+            if rule == "DOMAIN,protected.test,DIRECT":
+                protected_direct_present = True
+    return {
+        "config_bytes": path.stat().st_size,
+        "top_level_rule_count": top_level_rule_count,
+        "vpn_domain_suffix_count": vpn_suffix_count,
+        "udp_guard_count": udp_guard_count,
+        "protected_direct_present": protected_direct_present,
+    }
+
+
 def _read_rss_kib(pid: int, *, field: str = "VmRSS") -> int | None:
     try:
         for line in Path(f"/proc/{pid}/status").read_text(encoding="ascii").splitlines():
@@ -224,10 +389,10 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         "scope": "owned-native-mihomo-and-api-worker",
         "status": "started",
         "limitations": [
-            "no host systemd or host dataplane claim",
+            "isolated kernel dataplane only; no host systemd/reboot claim",
             "periodic RSS begins at owned process spawn; Linux VmHWM retains prior process peaks",
             "native /rules request counters are unavailable in the current worker harness",
-            "fixture has no reconciled Mihomo receipt; policy_installed is expected false",
+            "78 external identities are retained; empty subscription-profile reconcile does not rebuild them",
         ],
         "native_rules_request_count": None,
         "rss_scope": "owned API VmRSS plus process-lifetime Linux VmHWM; not aggregate/native memory",
@@ -243,6 +408,9 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
 
         metrics["config"] = _write_scale_config(config_path)
         assert metrics["config"]["config_bytes"] >= MIN_CONFIG_BYTES
+        metrics["rules_source"] = _seed_scale_rules_source(Path(stack["state"]))
+        assert metrics["rules_source"]["vpn_domain_suffix_count"] == 99_627
+        assert metrics["rules_source"]["protected_direct_present"] is True
         xray_path = Path(stack["state"]) / "xray" / "config.json"
         xray_config = json.loads(xray_path.read_text())
         inbound = next(row for row in xray_config["inbounds"] if row.get("tag") == "vless-ws")
@@ -252,6 +420,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             for index in range(78)
         ]
         xray_path.write_text(json.dumps(xray_config))
+        metrics["xray_source"] = _seed_scale_xray_subjects(Path(stack["state"]), xray_config)
         native.restart_xray_child()
         from .xray_support import loaded_identities
         native_identities_before = loaded_identities(native)
@@ -267,11 +436,67 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
 
         start = time.monotonic()
         try:
-            active_worker, api = stack["start_worker"](startup_tasks=True, on_spawn=observe_spawn)
+            active_worker, api = stack["start_worker"](
+                startup_tasks=True,
+                startup_recovery=True,
+                on_spawn=observe_spawn,
+            )
         finally:
             metrics["startup_wall_seconds"] = round(time.monotonic() - start, 4)
         stack["worker"] = active_worker
         stack["api"] = api
+
+        bootstrap_code, bootstrap_payload = http_json(api + "/__acceptance/bootstrap/report")
+        observation = (
+            bootstrap_payload.get("observation")
+            if isinstance(bootstrap_payload.get("observation"), dict)
+            else bootstrap_payload.get("data")
+            if isinstance(bootstrap_payload.get("data"), dict)
+            else bootstrap_payload
+        )
+        metrics["bootstrap_observation"] = observation
+        assert bootstrap_code == 200, bootstrap_payload
+        assert observation.get("schema") == "fwrouter-runtime-bootstrap-observation/v1", observation
+        assert observation.get("worker_pid") == active_worker.pid, observation
+        assert observation.get("recovery_enabled") is True, observation
+        assert observation.get("foundation_ok") is True, observation
+        live_recovery = observation.get("live_recovery")
+        assert isinstance(live_recovery, dict), observation
+        live_routing = live_recovery.get("live_routing")
+        selector_recovery = live_recovery.get("selector")
+        assert isinstance(live_routing, dict) and live_routing.get("recovery_required") is True, live_routing
+        assert live_routing.get("recovered") is True, live_routing
+        apply_result = live_routing.get("recovery")
+        assert isinstance(apply_result, dict) and apply_result.get("ok") is True, live_routing
+        assert isinstance(selector_recovery, dict) and selector_recovery.get("restored") is True, selector_recovery
+        apply_reconcile = observation.get("apply_reconcile")
+        assert isinstance(apply_reconcile, dict), observation
+        for phase_name in (
+            "intended_routing", "scoped_subject_routing", "xray_subscription_profiles", "dnsmasq_reconcile",
+        ):
+            phase = apply_reconcile.get(phase_name)
+            assert isinstance(phase, dict), {"phase": phase_name, "observation": apply_reconcile}
+        intended_routing = apply_reconcile["intended_routing"]
+        assert intended_routing.get("mode_matches") is True, intended_routing
+        assert intended_routing.get("reapply_required") is False, intended_routing
+        scoped_routing = apply_reconcile["scoped_subject_routing"]
+        assert scoped_routing.get("classify_probe_ok") is True, scoped_routing
+        assert scoped_routing.get("persisted_scoped_subjects_count") == 0, scoped_routing
+        assert scoped_routing.get("missing_scoped_subjects_count") == 0, scoped_routing
+        assert scoped_routing.get("reapply_required") is False, scoped_routing
+        xray_reconcile = apply_reconcile["xray_subscription_profiles"]
+        assert xray_reconcile.get("ok") is True, xray_reconcile
+        assert xray_reconcile.get("status") == "success", xray_reconcile
+        dnsmasq_reconcile = apply_reconcile["dnsmasq_reconcile"]
+        assert dnsmasq_reconcile.get("ok") is True, dnsmasq_reconcile
+
+        generated_config = _inspect_generated_scale_config(config_path)
+        metrics["generated_config_after_recovery"] = generated_config
+        assert generated_config["config_bytes"] >= MIN_CONFIG_BYTES, generated_config
+        assert generated_config["top_level_rule_count"] >= TOP_LEVEL_RULE_COUNT, generated_config
+        assert generated_config["vpn_domain_suffix_count"] == 99_627, generated_config
+        assert generated_config["udp_guard_count"] == 99_627, generated_config
+        assert generated_config["protected_direct_present"] is True, generated_config
 
         assert sampler is not None
         metrics["rss_hwm_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmHWM")
@@ -294,8 +519,8 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
                     assert proof.get("native_top_level_rules_match") is True, proof
                     assert proof.get("guarded_rules_match") is True, proof
                     assert proof.get("wiring_proven") is True, proof
-                    assert proof.get("reconcile_receipt_matches") is False, proof
-                    assert proof.get("policy_installed") is False, proof
+                    assert proof.get("reconcile_receipt_matches") is True, proof
+                    assert proof.get("policy_installed") is True, proof
                 elif route == "/selector/vpn-auto/state":
                     state = result.get("selector_state") or {}
                     assert state.get("active_auto_server_id") is None, state

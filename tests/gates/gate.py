@@ -40,6 +40,7 @@ PACKET_EXECUTION_PROFILE = "hosted-kernel-packet"
 KERNEL_DATAPLANE_EXECUTION_PROFILE = "hosted-kernel-dataplane"
 PROVIDER_COHORT_SUITE = "provider-cohort"
 PROVIDER_COHORT_NODEIDS = {
+    "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
     "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
@@ -216,7 +217,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError("node execution profiles are reserved for exact hosted provider-cohort nodes")
         node_profile_ids.add(nodeid)
     if node_profile_ids != PROVIDER_COHORT_NODEIDS:
-        raise GateError("manifest must bind the exact 11 provider-cohort nodes to hosted-kernel-dataplane")
+        raise GateError("manifest must bind the exact 12 provider-cohort nodes to hosted-kernel-dataplane")
     overrides = manifest.get("node_overrides", [])
     if not isinstance(overrides, list):
         raise GateError("node_overrides must be a list")

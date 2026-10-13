@@ -138,7 +138,9 @@ def acceptance_stack(request):
         worker_path = ("/opt/fwrouter-test/bin:/usr/sbin:/sbin:/usr/bin:/bin" if kernel_profile
                        else "/opt/fwrouter-test/bin:/usr/bin:/bin")
 
-        def start_worker(*, startup_tasks: bool = False, on_spawn=None) -> tuple[subprocess.Popen[bytes], str]:
+        def start_worker(*, startup_tasks: bool = False, startup_recovery: bool = False, on_spawn=None) -> tuple[subprocess.Popen[bytes], str]:
+            if startup_recovery and (not startup_tasks or profile.get("profile") != "hosted-kernel-dataplane"):
+                pytest.fail("startup recovery requires the qualified kernel-dataplane worker")
             port = _free_loopback_port()
             logs = (suite_root / f"uvicorn-{port}.log").open("ab")
             env = {
@@ -146,7 +148,7 @@ def acceptance_stack(request):
                 "PYTHONPATH": "/workspace/backend:/workspace/tests:/workspace", "PYTHONDONTWRITEBYTECODE": "1",
                 "FWROUTER_STATE_DIR": str(state), "FWROUTER_ENVIRONMENT": "test",
                 "FWROUTER_STARTUP_TASKS_ENABLED": "1" if startup_tasks else "0",
-                "FWROUTER_STARTUP_RECOVERY_ENABLED": "0",
+                "FWROUTER_STARTUP_RECOVERY_ENABLED": "1" if startup_recovery else "0",
                 "FWROUTER_ACCEPTANCE_RPC_SOCKET": str(rpc_socket),
                 "FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
                 "FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL": provider_bridge.base_url,

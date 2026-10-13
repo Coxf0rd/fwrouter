@@ -5361,6 +5361,11 @@
       "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
       "execution_profile": "hosted-kernel-dataplane",
       "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
     }
   ]
 }

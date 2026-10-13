@@ -35,7 +35,7 @@ def _clean_environment() -> None:
     os.environ.update(clean)
     os.environ["FWROUTER_ENVIRONMENT"] = "test"
     os.environ.setdefault("FWROUTER_STARTUP_TASKS_ENABLED", "0")
-    os.environ["FWROUTER_STARTUP_RECOVERY_ENABLED"] = "0"
+    os.environ.setdefault("FWROUTER_STARTUP_RECOVERY_ENABLED", "0")
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 
@@ -2557,6 +2557,13 @@ def build_app(socket_path: Path):
         acceptance_profile, _ = load_profile(Path(os.environ.get("FWROUTER_ACCEPTANCE_PROFILE", "")))
     except (OSError, ProfileError) as exc:
         raise RuntimeError("acceptance worker profile qualification failed") from exc
+    if os.environ.get("FWROUTER_STARTUP_RECOVERY_ENABLED") not in {"0", "1"}:
+        raise RuntimeError("invalid acceptance startup recovery flag")
+    if os.environ.get("FWROUTER_STARTUP_RECOVERY_ENABLED") == "1" and (
+        acceptance_profile.get("profile") != "hosted-kernel-dataplane"
+        or os.environ.get("FWROUTER_STARTUP_TASKS_ENABLED") != "1"
+    ):
+        raise RuntimeError("startup recovery is not authorized outside qualified kernel worker")
 
     # Import settings before any facade module, and prevent BaseSettings from
     # consulting the deployed absolute dotenv path in a worker process.
@@ -2595,7 +2602,54 @@ def build_app(socket_path: Path):
     register_extended_handlers(get_default_job_manager())
 
     from fwrouter_api.main import create_app
+    from fwrouter_api import main as application_main
+    bootstrap_observation: dict[str, Any] = {
+        "schema": "fwrouter-runtime-bootstrap-observation/v1", "worker_pid": os.getpid(),
+        "recovery_enabled": False, "foundation_ok": False, "completed": False,
+    }
+    original_bootstrap = application_main.bootstrap_backend
+
+    def phase_summary(value: Any) -> dict[str, Any]:
+        value = value if isinstance(value, dict) else {}
+        summary = {key: value[key] for key in (
+            "ok", "restored", "changed", "skipped", "recovered", "recovery_required", "recovery_skipped",
+            "mode_matches", "reapply_required", "reapplied", "runtime_state_repaired", "classify_probe_ok",
+        ) if type(value.get(key)) is bool}
+        for key in ("persisted_scoped_subjects_count", "missing_scoped_subjects_count"):
+            if type(value.get(key)) is int and value[key] >= 0:
+                summary[key] = value[key]
+        status = value.get("status")
+        if status in {"success", "failed", "skipped", "noop", "unchanged", "disabled", "not_applicable", "blocked"}:
+            summary["status"] = status
+        error_code = value.get("error_code")
+        if isinstance(error_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", error_code):
+            summary["error_code"] = error_code
+        for key in ("recovery", "apply_result"):
+            nested = value.get(key)
+            if isinstance(nested, dict):
+                summary[key] = {field: nested[field] for field in ("ok", "error_code")
+                                if type(nested.get(field)) is bool or (
+                                    field == "error_code" and isinstance(nested.get(field), str)
+                                    and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", nested[field]))}
+        return summary
+
+    def observed_bootstrap() -> dict[str, Any]:
+        result = original_bootstrap()
+        bootstrap_observation.update({
+            "completed": True,
+            "recovery_enabled": result.get("startup_recovery_enabled") is True,
+            "foundation_ok": (result.get("database_schema") or {}).get("ok") is True,
+            "live_recovery": {key: phase_summary(value) for key, value in
+                              (result.get("startup_live_recovery") or {}).items() if key in {"live_routing", "selector"}},
+            "apply_reconcile": {key: phase_summary(value) for key, value in
+                                (result.get("startup_apply_reconcile") or {}).items() if key in {
+                                    "intended_routing", "scoped_subject_routing", "xray_subscription_profiles", "dnsmasq_reconcile"}},
+        })
+        return result
+
+    application_main.bootstrap_backend = observed_bootstrap
     app = create_app(enable_startup_tasks=os.environ.get("FWROUTER_STARTUP_TASKS_ENABLED") == "1")
+    app.add_api_route("/api/v2/__acceptance/bootstrap/report", lambda: dict(bootstrap_observation), methods=["GET"])
     _bind_xray_checkpoint_barrier(socket_path, state)
     mihomo_adapter = _bind_acceptance_mihomo(socket_path, state)
     _install_acceptance_mihomo_fence_observer()

@@ -266,7 +266,7 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((27, 11, 1), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((26, 12, 1), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
@@ -4610,8 +4610,9 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertFalse(launcher.valid_image_measurements(malformed))
         self.assertNotIn("peak", " ".join(measurements["docker_root_samples"]))
 
-    def test_provider_cohort_is_the_fixed_prior_member_delay_failures(self):
+    def test_kernel_cohort_contains_provider_failures_and_full_startup_scale(self):
         expected = {
+            "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
             "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
             "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
             "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
@@ -4624,7 +4625,7 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
             "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
         }
-        self.assertEqual(11, len(expected))
+        self.assertEqual(12, len(expected))
         self.assertEqual(expected, set(launcher._PROVIDER_COHORT_NODEIDS))
         self.assertEqual(expected, launcher.expected_acceptance_nodeids("provider-cohort"))
         self.assertIn("provider-cohort", launcher._KERNEL_DATAPLANE_SUITES)
