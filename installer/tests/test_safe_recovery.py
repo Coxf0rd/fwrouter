@@ -308,3 +308,31 @@ def test_real_installer_failure_after_copy_reports_failure_and_allows_safe_resta
         assert env.read_bytes() == b'TEST_ONLY_CANARY=keep\n'
     finally:
         shutil.rmtree(private)
+
+
+def test_stage_rejects_caller_temp_override_outside_canonical_tmp(tmp_path: Path) -> None:
+    _, artifact, receipt = _artifact(tmp_path)
+    private, target = _private_target("temp-override")
+    try:
+        with patch.object(recovery.tempfile, "gettempdir", return_value="/opt"):
+            with pytest.raises(recovery.RecoveryError, match="canonical /tmp"):
+                recovery.stage(artifact, receipt, target)
+        assert not (target / "opt/fwrouter-api").exists()
+    finally:
+        shutil.rmtree(private)
+
+
+def test_verify_rejects_compressed_tar_even_with_matching_archive_hash(tmp_path: Path) -> None:
+    import gzip
+    _, artifact, receipt = _artifact(tmp_path)
+    artifact.chmod(0o700)
+    archive = artifact / recovery.ARCHIVE_NAME
+    archive.chmod(0o600)
+    archive.write_bytes(gzip.compress(archive.read_bytes()))
+    manifest_path = artifact / recovery.MANIFEST_NAME
+    manifest_path.chmod(0o600)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["archive_sha256"] = recovery._sha256(archive.read_bytes())
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(recovery.RecoveryError, match="archive is unreadable"):
+        recovery.verify(artifact, receipt)

@@ -250,9 +250,15 @@ def prepare(repo_root: Path, artifact_dir: Path, receipt_path: Path) -> dict[str
 
 
 def _safe_archive_entries(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
-    members = archive.getmembers()
+    members: list[tarfile.TarInfo] = []
     seen: set[str] = set()
-    for member in members:
+    total_bytes = 0
+    for member in archive:
+        if len(members) >= MAX_SOURCE_FILES or member.size < 0 or member.size > MAX_FILE_BYTES:
+            raise RecoveryError("artifact archive exceeds member size/count limit")
+        total_bytes += member.size
+        if total_bytes > MAX_SOURCE_BYTES:
+            raise RecoveryError("artifact archive exceeds total source-size limit")
         relative = _safe_relative(member.name)
         normalized = relative.as_posix()
         if normalized in seen or not member.isfile() or member.issym() or member.islnk():
@@ -260,6 +266,7 @@ def _safe_archive_entries(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
         if not (normalized.startswith("installer/") or normalized.startswith("backend/")):
             raise RecoveryError("artifact archive contains an out-of-scope path")
         seen.add(normalized)
+        members.append(member)
     return members
 
 
@@ -327,6 +334,10 @@ def verify(artifact_dir: Path, receipt_path: Path) -> tuple[dict[str, Any], list
 
 def _check_isolated_target(target: Path) -> Path:
     temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+    # TMPDIR is caller-controlled. It must not turn staging into a write to
+    # /opt, /etc, /var/lib or another live filesystem tree.
+    if not temp_root.is_relative_to(Path("/tmp")):
+        raise RecoveryError("stage temporary root must stay inside canonical /tmp")
     if not target.is_absolute():
         raise RecoveryError("stage target must be an absolute path")
     if target.is_symlink() or target.parent.is_symlink() or not target.exists() or not target.is_dir():

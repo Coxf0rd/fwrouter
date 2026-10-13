@@ -2,7 +2,7 @@
 
 ## 2026-10-13 — pre-deployment safety follow-up
 
-CI milestone is CLOSED (merged ef46147; actual main run 38363962787 PASS). External Rescue is PASS by user-confirmed manual external verification; the earlier inability to test it is superseded, without invented automated evidence. A separate `fix/predeploy-rescue-isolation-safe-rollback` safety branch addresses reserved Rescue LAN discovery and qualified recovery targets. Source and hosted qualification are in progress; production rollout and live acceptance remain NOT RUN / BLOCKED. Archived 3d285c3/c1e00b5 is not a safe mandatory-VPN rollback target. Host/readiness guard remains outside deployment scope. See the safety report at `/srv/fwrouter/knowledge/audits/predeploy_rescue_safe_rollback_2026-10-13/REPORT.md`. No Operational Performance Fixes, Stage 5 or CD work is started.
+CI milestone is CLOSED (merged ef46147; actual main run 38363962787 PASS). External Rescue is PASS by user-confirmed manual external verification; the earlier inability to test it is superseded, without invented automated evidence. A separate `fix/predeploy-rescue-isolation-safe-rollback` safety branch addresses reserved Rescue LAN discovery and qualified recovery targets. Source is implemented and initial hosted qualification passed (38373770914); final PR #6 required checks determine merge readiness; production rollout and live acceptance remain NOT RUN / BLOCKED. Archived 3d285c3/c1e00b5 is not a safe mandatory-VPN rollback target. Host/readiness guard remains outside deployment scope. See the safety report at `/srv/fwrouter/knowledge/audits/predeploy_rescue_safe_rollback_2026-10-13/REPORT.md`. No Operational Performance Fixes, Stage 5 or CD work is started.
 
 
 
