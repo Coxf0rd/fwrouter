@@ -5381,5 +5381,48 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertNotIn("fwrouter_api", launcher.sys.modules)
         self.assertNotIn("fastapi", launcher.sys.modules)
 
+
+    def test_worker_lifespan_releases_native_fixtures_before_completion_marker(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        source = (launcher.ROOT / "tests/application_acceptance/worker.py").read_text()
+        tree = ast.parse(source)
+        observed = next(node for node in ast.walk(tree)
+                        if isinstance(node, ast.AsyncFunctionDef) and node.name == "observed_lifespan")
+        for fail in (False, True):
+            events = []
+
+            @asynccontextmanager
+            async def original(_application):
+                try:
+                    yield "actual-lifespan-state"
+                finally:
+                    events.append("application_cleanup")
+
+            namespace = {
+                "asynccontextmanager": asynccontextmanager, "original_lifespan": original,
+                "threading": SimpleNamespace(enumerate=lambda: []),
+                "cleanup_native_fixtures": lambda: events.append("native_cleanup"),
+                "print": lambda message, **_kwargs: events.append(message),
+            }
+            exec(compile(ast.Module(body=[observed], type_ignores=[]), "worker-lifespan-contract", "exec"), namespace)
+
+            async def exercise():
+                async with namespace["observed_lifespan"](object()) as state:
+                    self.assertEqual("actual-lifespan-state", state)
+                    if fail:
+                        raise ValueError("intentional application exception")
+
+            if fail:
+                with self.assertRaisesRegex(ValueError, "intentional application exception"):
+                    asyncio.run(exercise())
+                self.assertEqual(["application_cleanup", "native_cleanup"], events)
+            else:
+                asyncio.run(exercise())
+                self.assertEqual(["application_cleanup", "native_cleanup",
+                                  "FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE"], events)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -3410,6 +3410,12 @@ def main() -> None:
         _install_packet_handoff_loopback_alias(profile)
         if profile.get("profile") == "hosted-kernel-packet" else None
     )
+    def cleanup_native_fixtures() -> None:
+        if profile.get("profile") == "hosted-kernel-packet" and _PACKET_DNSMASQ_STATE:
+            _packet_dnsmasq_fixture(Path(os.environ["FWROUTER_STATE_DIR"]), profile, stop=True)
+        if remove_handoff_alias is not None:
+            remove_handoff_alias()
+
     try:
         app = build_app(socket_path)
         from contextlib import asynccontextmanager
@@ -3417,11 +3423,15 @@ def main() -> None:
 
         @asynccontextmanager
         async def observed_lifespan(application):
-            async with original_lifespan(application) as lifespan_state:
-                yield lifespan_state
-            if any(thread.is_alive() and thread.name.startswith("fwrouter-")
-                   for thread in threading.enumerate()):
-                raise RuntimeError("owned application worker survived lifespan cleanup")
+            try:
+                async with original_lifespan(application) as lifespan_state:
+                    yield lifespan_state
+                if any(thread.is_alive() and thread.name.startswith("fwrouter-")
+                       for thread in threading.enumerate()):
+                    raise RuntimeError("owned application worker survived lifespan cleanup")
+            finally:
+                # Uvicorn can terminate itself before the outer Python finally.
+                cleanup_native_fixtures()
             # Uvicorn 0.34 re-raises the captured SIGTERM after clean shutdown.
             # This marker is emitted only after actual application cleanup.
             print("FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE", flush=True)
@@ -3430,14 +3440,7 @@ def main() -> None:
         import uvicorn
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
     finally:
-        if profile.get("profile") == "hosted-kernel-packet" and _PACKET_DNSMASQ_STATE:
-            try:
-                _packet_dnsmasq_fixture(Path(os.environ["FWROUTER_STATE_DIR"]), profile, stop=True)
-            except Exception:
-                sys.stderr.write("FWROUTER_ACCEPTANCE_DNS53_CLEANUP_FAILED\n")
-                sys.stderr.flush()
-        if remove_handoff_alias is not None:
-            remove_handoff_alias()
+        cleanup_native_fixtures()
 
 
 if __name__ == "__main__":

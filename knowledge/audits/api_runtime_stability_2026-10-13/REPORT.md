@@ -92,3 +92,9 @@ Qualification now moves the scale node to the existing packet testbed, which sup
 ## Partition contract correction — 38452205932
 
 Routine gate caught one stale expected provider-node set left from the earlier kernel registration. Corrected it to the exact11 Provider nodes; scale remains mandatory in the two-node packet suite. Seven targeted source-only selection/manifest contracts executed locally PASS; they import no application and execute no native services. Full hosted runtime qualification remains pending. No product assertion or scenario was removed.
+
+## Sequential packet-worker ownership — 38453251674
+
+Ordinary26 PASS, Provider11 PASS, packet core1 PASS and scale setup1 ERROR; no scale metrics were produced. Setup stderr was not retained because pytest setup status is reported only after fixture unwinding. The collector now uses its own setup-complete flag so failed setup always retains bounded redacted logs.
+
+Source review confirms packet-worker native fixture cleanup was in an outer finally after uvicorn.run. Uvicorn0.34 re-raises captured SIGTERM, which can terminate the process before that finally, leaving the owned loopback handoff alias for the next worker. Cleanup now executes within application lifespan before the verified completion marker, including exceptional lifespan exit; outer cleanup remains an idempotent fallback. The actual previous setup stderr is unavailable, so this source-proven ownership defect is not represented as a captured error message. A source-only behavioral context-manager regression PASS verifies application cleanup, native cleanup and marker ordering, plus exception cleanup without false completion. Hosted sequential-worker/native qualification pending. Production unchanged.

@@ -123,6 +123,7 @@ def acceptance_stack(request):
     worker: subprocess.Popen[bytes] | None = None
     owned_workers: list[subprocess.Popen[bytes]] = []
     provider_bridge: ProviderHttpTestBridge | None = None
+    setup_complete = False
     try:
         native.start()
         packet_endpoint = profile.get("profile") == "hosted-kernel-packet"
@@ -202,6 +203,7 @@ def acceptance_stack(request):
             "start_worker": start_worker, "receipt_tests": [], "provider_bridge": provider_bridge,
             "mihomo_probe_url": provider_bridge.mihomo_probe_url,
         }
+        setup_complete = True
         yield stack
     finally:
         cleanup_errors = []
@@ -245,7 +247,7 @@ def acceptance_stack(request):
             if len(state_summary) >= 256:
                 break
         phases = request.config._fwrouter_acceptance_reports.get(request.node.nodeid, {})
-        failed = any(value == "failed" for value in phases.values())
+        failed = not setup_complete or any(value == "failed" for value in phases.values()) or bool(cleanup_errors)
         if failed or not request.config._fwrouter_diagnostic_records:
             request.config._fwrouter_diagnostic_records.append({
                 "nodeid": request.node.nodeid, "status": "failed" if failed else "passed",
