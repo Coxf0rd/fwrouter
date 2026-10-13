@@ -2639,9 +2639,13 @@ def build_app(socket_path: Path):
             try:
                 return original(*args, **kwargs)
             finally:
+                elapsed = round(time.monotonic() - started, 4)
+                with bootstrap_diagnostic_lock:
+                    timings = bootstrap_observation.setdefault("phase_timings", {})
+                    timings.setdefault(name, []).append(elapsed)
                 print(prefix + json.dumps({
                     "phase": name, "event": "exit", "call": count,
-                    "seconds": round(time.monotonic() - started, 4),
+                    "seconds": elapsed,
                 }), flush=True)
         return observed
 
@@ -2673,8 +2677,11 @@ def build_app(socket_path: Path):
             try:
                 return original(*args, **kwargs)
             finally:
+                elapsed = round(time.monotonic() - started, 4)
+                with bootstrap_diagnostic_lock:
+                    bootstrap_observation.setdefault("phase_timings", {})[name] = [elapsed]
                 print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
-                    "phase": name, "event": "exit", "seconds": round(time.monotonic() - started, 4),
+                    "phase": name, "event": "exit", "seconds": elapsed,
                 }), flush=True)
         return observed
 
@@ -2692,6 +2699,8 @@ def build_app(socket_path: Path):
         for key in ("persisted_scoped_subjects_count", "missing_scoped_subjects_count"):
             if type(value.get(key)) is int and value[key] >= 0:
                 summary[key] = value[key]
+        if value.get("inventory_authority") == "persisted_success":
+            summary["inventory_authority"] = "persisted_success"
         status = value.get("status")
         if status in {"success", "failed", "skipped", "noop", "unchanged", "disabled", "not_applicable", "blocked"}:
             summary["status"] = status

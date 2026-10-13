@@ -2,7 +2,7 @@
 
 ## Status and boundary
 
-Source work in `fix/api-runtime-health-scale-stability` is under qualification. Production deployment is NOT RUN; installed backend remains a4a7a33 and API/dependent workers and timers remain stopped. Native routing, DNS, Rescue and Xray are outside this change's live scope. No host guard update, firewall apply, service restart or unsafe old rollback is authorized or performed.
+Source work in `fix/api-runtime-health-scale-stability` remains under qualification in draft PR8. Installed backend is the user-authorized controlled candidate4ffd686; its120s readiness failed and API/dependent workers/timers remain held. Current authorization is read-only production diagnosis only. No further deployment, unit start, native configuration apply, identity restoration or unsafe old rollback is performed. Historical source/NOT RUN checkpoints below are retained in order.
 
 PR7 is merged as `1b302e91b3cd652cd4aab4f45bbdd88c088e5786`, parent a4a7a33, tree equal to accepted acfbd8a. Actual main push [38400414256](https://github.com/Coxf0rd/fwrouter/actions/runs/38400414256) succeeded:217 routine cases,26 qualified child cases, native main smoke, aggregate eligible with no missing levels or blocked reasons. Source wheel audit has no errors. This scoped CI is not production stability acceptance.
 
@@ -152,3 +152,33 @@ Observed process exited-SIGTERM after2.4189s but lacked verified application cle
 Actual4ffd686 run SUCCESS:1439 routine, qualified26+1, ordinary26, Provider11, packet/scale2 PASS; aggregate/source/cleanup eligible. Scale full bootstrap30.0161s,24 concurrent successful requests(max2.3812s), API VmHWM892128KiB, verified shutdown0.2137s. Prior failed results remain historical; one passing hosted receipt is not Debian host qualification.
 
 User-authorized exact-feature backend/docs deployment4ffd686 completed and content verified436 files, protected guard/.env/native copy state preserved. Live API failed120s readiness and20s stop; maximumRSS751428KiB. Dependent units never resumed. Xray native count78, but8 UUID replacements and checkpointxray_applied establish unfinished generation, so further production changes stopped. Root cause/actual client impact not yet established. Native DIRECT/VPN probe/DNS and Rescue preservation observed after containment. See [controlled live report](LIVE_ACCEPTANCE.md). Production is now feature-source4ffd686 installed/APIheld, not unchangeda4; overall acceptanceBLOCKED.
+
+
+## Read-only identity and checkpoint forensics — 2026-10-14
+
+Protected before/after DB, configuration, checkpoint and native-user receipts establish the exact8-identity delta without exposing tokens, UUIDs or endpoints:
+
+- Seven enabled public profiles retain their tokens. One inventory server is already marked missing in the pre-activation DB; one replacement is active. Seven subscription UUID changes are exactly deterministic uuid5 over the unchanged token and changed server ID. Seventy other native identities remain identical. One additional internal vpn-auto client is newly allocated for that replacement server; existing internal clients are retained.
+- All seven committed public snapshots still contain their previous10-node sets (70 total), including the retired-server credentials. Native currently matches the checkpoint's candidate78 identities. This is an inventory-convergence candidate applied before public snapshot publication, not evidence of arbitrary rotation of all accounts. Stored old credentials no longer appear in the loaded native identity set; actual client disconnections or authentication attempts were not observed.
+- Checkpoint phase is xray_applied. Active Mihomo bytes match the final candidate, although the durable phase has not advanced. Recorded selection revision164 versus current166, and changed Mihomo incarnation, prohibit automatic adoption/restore under the existing CAS contract. Xray incarnation matches when computed using the actual adapter formula. Native count and clean Core state do not establish generation consistency.
+- A source defect is confirmed: transition digest was omitted from the durable checkpoint, while recovery attempted to read a validation record never persisted there. New checkpoints retain transition path/digest; recovery refuses missing/malformed transition proof and changed active config before native writes. Two component regressions assert unchanged full DB/files/checkpoint and no native mutation. A separate seven-profile regression records stable retained-server credentials, deterministic replacement credentials and unchanged verified snapshots before publication. Hosted execution pending.
+
+### Readiness and shutdown attribution
+
+Production evidence proves synchronous bootstrap did not finish before120s, checkpoint/native writes continued around the requested stop, and systemd reached its20s stop deadline. No live Python stack exists, so the dominant production function remains unproved. Do not equate the previous YAML/cache fixes with resolution of the entire regression.
+
+Latest unchanged-source hosted repeat [38475000753](https://github.com/Coxf0rd/fwrouter/actions/runs/38475000753) is FAIL: original packet PASS; scale startup exceeds45s. Phase receipts show live recovery13.50s, selector3.59s, Xray reconciliation28.29s and DNS1.87s; peak sampled RSS785140KiB. This disproves repeatable startup acceptance despite earlier PASS38472054455. The test then issued a second SIGTERM while the first bounded shutdown was underway and replaced the primary startup failure with a shutdown assertion. Harness now sends at most one requested SIGTERM and retains both primary failure and independent shutdown metrics. Timing/memory assertions are unchanged.
+
+The scale case is replaced with a realistic nonempty inventory:7 enabled profiles,9 owned native servers,70 public nodes,9 internal auto clients and2 fixed clients (81 identities),199k rules and99,627 UDP guards. It requires persisted-success inventory recovery, native bindings and verified snapshots, exact identity preservation,24 concurrent reads and real cleanup. Fixed test-only VLESS/Reality runs in the existing endpoint container with a loopback TLS1.3 decoy; no external handshake/DNS/egress or new stack. The known RFC7748 test vector is synthetic public fixture material; ephemeral TLS keys stay in the owned container. Native validation/performance of the expanded fixture remains NOT RUN until the new PR run.
+
+Source-only validation:41 network-fixture contracts PASS,114 acceptance-tooling contracts PASS,50 statically inventoried acceptance nodes PASS, AST/diff/surface PASS. These checks do not run application/native services on the production host.
+
+### Recovery plan — NOT EXECUTED
+
+1. Keep API/workers/timers stopped; preserve protected preimage, DB and checkpoint. Repeat read-only identity/config/fence comparison immediately before any separately authorized recovery.
+2. Do not restart into blind reconciliation or edit revision/incarnation/digest to make a stale checkpoint admissible. Do not restore the unsafe pre-fail-closed generator.
+3. Qualify an isolated, fresh owned recovery transaction against current Core state using the checkpoint preimage's original78 identities and preserved subject/binding intent. Restore credentials exactly, not uuid4 regeneration. Verify whether the retired endpoint has a valid supported replacement mapping; absence of such proof is a blocker for declaring restored end-to-end client service.
+4. Require native validation, mounted/generated/native identity parity, durable binding/snapshot publication, fresh CAS/owner proof, fail-closed and protected DIRECT preservation. Recovery of identity/config consistency and remote service reachability are separate gates.
+5. Only after hosted nonempty startup/shutdown stability and user-authorized live recovery may API be activated in a bounded observation window; dependent units remain held until live readiness/health/identities/parity pass. Full live acceptance remains BLOCKED.
+
+No restoration or production configuration change is authorized by this source checkpoint. PR8 remains DRAFT / BLOCKED pending hosted execution and demonstrated nonempty-profile performance. Existing protected raw evidence is retained outside Git.

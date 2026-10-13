@@ -2432,6 +2432,50 @@ def test_stale_generation_checkpoint_declines_before_artifact_write_or_reload(mo
     assert reloads == []
 
 
+
+@pytest.mark.parametrize("recorded_digest", [True, False], ids=["changed-active-config", "missing-transition-proof"])
+def test_transition_recovery_requires_recorded_config_digest_before_native_mutation(
+    monkeypatch, tmp_path: Path, recorded_digest: bool,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    xray_path, _ = _xray_paths()
+    _write_xray_config(xray_path, [])
+    from fwrouter_api.services import mihomo_config, mihomo_runtime
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    mihomo_path.parent.mkdir(parents=True, exist_ok=True)
+    mihomo_path.write_text("owned-transition", encoding="utf-8")
+    transition_hash = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+    validation = {"xray": {"expected_client_identities": []}}
+    if recorded_digest:
+        validation["transition"] = {"candidate_sha256": transition_hash}
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda: "owned-incarnation")
+    checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=adapter, generation_id="transition-proof-fixture", tokens=set(), phase="xray_applied",
+        source_fingerprint=xray_subscription_service._generation_source_fingerprint(),
+        staged_generation={"native_validation": validation}, managed_email_prefixes=["sub-"],
+    )
+    stored = json.loads(checkpoint.read_text())
+    assert stored["staged_generation"]["mihomo_transition_sha256"] == (transition_hash if recorded_digest else None)
+    if recorded_digest:
+        mihomo_path.write_text("foreign-config-same-incarnation", encoding="utf-8")
+    before = (xray_path.read_bytes(), mihomo_path.read_bytes(), checkpoint.read_bytes())
+    revisions_before = _database_snapshot()
+    def unexpected_native_read_or_write(*_args, **_kwargs):
+        raise AssertionError("unproven transition must be refused before native mutation")
+    monkeypatch.setattr(adapter, "reload", unexpected_native_read_or_write)
+    monkeypatch.setattr(adapter, "test_config", unexpected_native_read_or_write)
+    result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
+    assert result == {"ok": False, "recovered": "stale_checkpoint_declined", "reason": (
+        "active_mihomo_generation_changed" if recorded_digest else "mihomo_transition_digest_unavailable"
+    )}
+    assert (xray_path.read_bytes(), mihomo_path.read_bytes(), checkpoint.read_bytes()) == before
+    assert _database_snapshot() == revisions_before
+
 def test_owned_restore_revision_change_during_native_validation_prevents_active_mutations(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -5031,3 +5075,35 @@ def test_new_explicit_xray_mode_writes_allow_vpn_disabled_and_enabled_alias_only
     assert _validate_subject_admin_mode(subject, "enabled") is None
     assert _validate_subject_admin_mode(subject, "direct")["code"] == "SUBJECT_MODE_UNSUPPORTED"
     assert _validate_subject_admin_mode(subject, "selective")["code"] == "SUBJECT_MODE_UNSUPPORTED"
+
+
+def test_inventory_replacement_changes_only_its_derived_profile_identity_before_publication(monkeypatch, tmp_path: Path) -> None:
+    """Inventory identity convergence must not silently publish unverified nodes."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    tokens = [f"inventory-delta-{index}" for index in range(7)]
+    for token in tokens:
+        _seed_subscription_identity(slug=token, token=token)
+    _seed_server("server-retained")
+    _seed_server("server-retiring")
+    original = {token: list_desired_subscription_xray_clients(token) for token in tokens}
+    for nodes in original.values():
+        promote_runtime_verified_subscription_nodes(nodes)
+    from uuid import NAMESPACE_DNS, uuid5
+    snapshots_before = _database_snapshot()["subscription_profile_snapshots"]
+    _seed_server("server-replacement")
+    with db_session() as connection:
+        connection.execute("UPDATE servers SET inventory_state = 'missing' WHERE server_id = 'server-retiring'")
+    for token in tokens:
+        old = {node["server_id"]: node for node in original[token]}
+        new = {node["server_id"]: node for node in list_desired_subscription_xray_clients(token)}
+        assert "server-retiring" not in new and "server-replacement" in new
+        assert new["server-retained"]["client_uuid"] == old["server-retained"]["client_uuid"]
+        assert new["server-retained"]["client_email"] == old["server-retained"]["client_email"]
+        assert new["server-replacement"]["client_uuid"] == str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{token}:server-replacement"))
+        assert new["server-replacement"]["client_uuid"] != old["server-retiring"]["client_uuid"]
+        published = next(row for row in snapshots_before if row["token"] == token)
+        published_ids = {node["client_uuid"] for node in json.loads(published["nodes_json"])}
+        assert old["server-retiring"]["client_uuid"] in published_ids
+        assert new["server-replacement"]["client_uuid"] not in published_ids
+    assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before

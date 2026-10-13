@@ -189,6 +189,7 @@ def acceptance_stack(request):
             # The worker registered a traceback-only handler; no locals/config are dumped.
             os.kill(proc.pid, signal.SIGUSR1)
             threading.Event().wait(0.2)
+            proc._acceptance_stop_requested = True
             proc.terminate()
             try:
                 proc.wait(timeout=3)
@@ -211,7 +212,9 @@ def acceptance_stack(request):
         for owned_worker in owned_workers:
             if owned_worker.poll() is None:
                 try:
-                    owned_worker.terminate()
+                    if not getattr(owned_worker, "_acceptance_stop_requested", False):
+                        owned_worker._acceptance_stop_requested = True
+                        owned_worker.terminate()
                     owned_worker.wait(timeout=16)
                 except subprocess.TimeoutExpired:
                     cleanup_errors.append("application worker exceeded bounded graceful teardown")

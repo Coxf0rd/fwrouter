@@ -1840,7 +1840,7 @@ try:
     ready=json.loads(raw.decode("ascii"))
     if not isinstance(ready,dict) or ready.get("status")!="ready":
         raise RuntimeError("worker_startup_failed:"+str(ready.get("stage","unknown"))[:64])
-    expected_flows={"tcp":{"snaplen":54,"filter":"(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302)) or (tcp and dst host 1.1.1.1 and dst port 53)"},
+    expected_flows={"tcp":{"snaplen":54,"filter":"(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302 or dst port 5303)) or (tcp and dst host 1.1.1.1 and dst port 53)"},
                     "udp":{"snaplen":42,"filter":"(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 198.51.100.77 and dst port 9081) or (udp and dst host 10.250.240.2 and dst port 9081) or (udp and dst host 1.1.1.1 and dst port 53)"}}
     api_version=ready.get("libpcap_api_version","")
     api_prefix="libpcap version 1.10.3"
@@ -1973,7 +1973,7 @@ if (final.get("status")!="stopped" or final.get("exit_code")!=0 or final.get("pi
 files={}
 for name,snaplen in (("tcp",54),("udp",42)):
     row=final["flows"][name]; path=root/(name+".pcap"); info=path.lstat()
-    expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302)) or (tcp and dst host 1.1.1.1 and dst port 53)"
+    expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302 or dst port 5303)) or (tcp and dst host 1.1.1.1 and dst port 53)"
                 if name=="tcp" else "(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 198.51.100.77 and dst port 9081) or (udp and dst host 10.250.240.2 and dst port 9081) or (udp and dst host 1.1.1.1 and dst port 53)")
     if (type(row.get("count")) is not int or not 0<=row["count"]<=512 or row.get("snaplen")!=snaplen
         or row.get("filter")!=expected_filter or row.get("header",{}).get("major")!=2
@@ -2150,7 +2150,7 @@ def packet_role_readiness_code() -> str:
     """Poll only the fixed role-control endpoints from the router namespace."""
     return r'''import json, time, urllib.error, urllib.request
 targets = {"client":("http://10.240.0.2:8081/ready", lambda x: x.get("role")=="client" and x.get("ready") is True),
-           "endpoint":("http://198.18.240.2:8082/ready", lambda x: x.get("role")=="endpoint" and x.get("ready") is True and isinstance(x.get("sockets"),dict) and all(x["sockets"].get(k) is True for k in ("xray_tcp_5301","xray_tcp_5302","http_tcp_9080","udp_echo_9081","dns_udp_5353","dns_upstream_udp_53","dns_upstream_tcp_53")))}
+           "endpoint":("http://198.18.240.2:8082/ready", lambda x: x.get("role")=="endpoint" and x.get("ready") is True and isinstance(x.get("sockets"),dict) and all(x["sockets"].get(k) is True for k in ("xray_tcp_5301","xray_tcp_5302","xray_tcp_5303","tls_decoy_tcp_9443","http_tcp_9080","udp_echo_9081","dns_udp_5353","dns_upstream_udp_53","dns_upstream_tcp_53")))}
 deadline=time.monotonic()+10.0; ready={}; observations={role:{"attempts":0,"last_error":"not_attempted"} for role in targets}
 while time.monotonic()<deadline and len(ready)<2:
     for role,(url,valid) in targets.items():
@@ -2276,6 +2276,7 @@ rules=[
  'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 8082 accept comment "fwrouter packet guard endpoint control allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 5301 accept comment "fwrouter packet guard vless allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 5302 accept comment "fwrouter packet guard selector vless allow v1"',
+ 'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 5303 accept comment "fwrouter packet guard reality allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 1.1.1.1 tcp dport 53 counter name router_dns_tcp_output accept comment "fwrouter packet guard owned dns tcp upstream allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 1.1.1.1 udp dport 53 counter name router_dns_udp_output accept comment "fwrouter packet guard owned dns udp upstream allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 198.51.100.77 tcp dport 9080 counter name router_dns_vpn_direct_output accept comment "fwrouter packet guard dns-selected vpn direct-route observation v1"',
@@ -3983,7 +3984,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 ("tcp", 6, 54, {("10.240.0.2", "203.0.113.53", 6): {9080},
                                 ("10.240.0.2", "198.51.100.77", 6): {9080},
                                 ("198.18.240.1", "198.51.100.77", 6): {9080},
-                                ("198.18.240.1", "198.18.240.2", 6): {5301, 5302},
+                                ("198.18.240.1", "198.18.240.2", 6): {5301, 5302, 5303},
                                 ("10.240.0.2", "10.250.240.2", 6): {9080},
                                 ("198.18.240.1", "1.1.1.1", 6): {53}}),
                 ("udp", 17, 42, {("10.240.0.2", "203.0.113.53", 17): {9081, 5353},

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import signal
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
@@ -19,6 +20,21 @@ from .http_support import http_json
 TOP_LEVEL_RULE_COUNT = 199_257
 MIN_CONFIG_BYTES = 20_000_000
 RSS_LIMIT_KIB = 1_572_864
+SCALE_PROFILE_COUNT = 7
+SCALE_SERVERS_PER_PROFILE = 9
+SCALE_INTERNAL_AUTO_CLIENTS = 9
+SCALE_FIXED_EXTERNAL_CLIENTS = 2
+SCALE_NATIVE_CLIENT_COUNT = (
+    SCALE_PROFILE_COUNT * (SCALE_SERVERS_PER_PROFILE + 1)
+    + SCALE_INTERNAL_AUTO_CLIENTS
+    + SCALE_FIXED_EXTERNAL_CLIENTS
+)
+SCALE_SERVER_ADDRESS = "198.18.240.2"
+SCALE_SERVER_PORT = 5303
+SCALE_SERVER_UUID = "bcb65ef9-8d8c-4ba8-8f7f-1b57a6af9470"
+SCALE_SERVER_PUBLIC_KEY = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+SCALE_SERVER_SHORT_ID = "0123456789abcdef"
+SCALE_SERVER_NAME = "reality.test"
 API_WAVE = (
     "/health",
     "/selector/vpn-auto/state",
@@ -229,7 +245,151 @@ def _seed_scale_xray_subjects(state: Path, xray_config: dict[str, Any]) -> dict[
     count = int(rows["count"] if rows is not None else 0)
     if count != len(clients):
         raise AssertionError(f"expected {len(clients)} persisted active Xray clients, found {count}")
-    return {"persisted_external_xray_clients": count}
+    return {"persisted_active_xray_clients": count}
+
+
+def _seed_scale_subscription_profiles(state: Path) -> dict[str, Any]:
+    """Seed owned profiles and supported native servers through source state."""
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.core.config import get_settings
+    from fwrouter_api.services.server_global_selection import VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
+    from fwrouter_api.services.subscription_profiles import (
+        ensure_subscription_identity,
+        list_desired_subscription_xray_clients,
+    )
+    from fwrouter_api.services.xray_subscription_service import _vpn_auto_xray_client_email
+
+    if get_settings().paths.state_dir.resolve(strict=False) != state.resolve(strict=False):
+        raise AssertionError("scale profile DB escaped the owned test state")
+
+    servers = [
+        {
+            "server_id": f"acceptance-scale-vless-{index:02d}",
+            "runtime_name": f"acceptance-scale-vless-{index:02d}",
+        }
+        for index in range(1, SCALE_SERVERS_PER_PROFILE + 1)
+    ]
+    server_raw: dict[str, dict[str, Any]] = {}
+    for server in servers:
+        name = server["runtime_name"]
+        server_raw[server["server_id"]] = {
+            "name": name,
+            "_fwrouter_runtime_name": name,
+            "type": "vless",
+            "server": SCALE_SERVER_ADDRESS,
+            "port": SCALE_SERVER_PORT,
+            "uuid": SCALE_SERVER_UUID,
+            "network": "tcp",
+            "udp": True,
+            "tls": True,
+            "servername": SCALE_SERVER_NAME,
+            "client-fingerprint": "chrome",
+            "reality-opts": {
+                "public-key": SCALE_SERVER_PUBLIC_KEY,
+                "short-id": SCALE_SERVER_SHORT_ID,
+            },
+        }
+
+    with db_session() as connection:
+        connection.execute(
+            """UPDATE modules SET desired_state='enabled', lifecycle_mode='managed',
+                   runtime_state='running', apply_state='clean',
+                   status_text='Owned native Mihomo acceptance child'
+               WHERE module_name='vpn'"""
+        )
+        for server in servers:
+            server_id = server["server_id"]
+            connection.execute(
+                """INSERT INTO servers (
+                       server_id, server_name, provider_name, raw_json, inventory_state,
+                       first_seen_at, last_seen_at, updated_at
+                   ) VALUES (?, ?, 'acceptance-scale', ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                   ON CONFLICT(server_id) DO UPDATE SET
+                       server_name=excluded.server_name, provider_name=excluded.provider_name,
+                       raw_json=excluded.raw_json, inventory_state='active', missing_since=NULL,
+                       last_seen_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP""",
+                (server_id, server["runtime_name"], json.dumps(server_raw[server_id], sort_keys=True)),
+            )
+            connection.execute(
+                """INSERT INTO server_preferences (server_id, vpn_auto, vpn_auto_priority, vpn_auto_priority_origin)
+                   VALUES (?, 1, 0, 'manual')
+                   ON CONFLICT(server_id) DO UPDATE SET vpn_auto=1, vpn_auto_priority=0,
+                       vpn_auto_priority_origin='manual', manually_deleted_at=NULL,
+                       updated_at=CURRENT_TIMESTAMP""",
+                (server_id,),
+            )
+            connection.execute("INSERT OR IGNORE INTO server_ping_state (server_id) VALUES (?)", (server_id,))
+        connection.execute(
+            """INSERT INTO routing_global_state (id, active_auto_server_id, server_mode)
+               VALUES (1, ?, 'auto')
+               ON CONFLICT(id) DO UPDATE SET active_auto_server_id=excluded.active_auto_server_id,
+                   server_mode='auto', updated_at=CURRENT_TIMESTAMP""",
+            (servers[0]["server_id"],),
+        )
+        connection.execute(
+            """INSERT INTO subscription_state (
+                   id, url, status, last_refresh_at, last_success_at,
+                   server_inventory_updated_at, metadata_json, updated_at
+               ) VALUES (1, 'https://acceptance.invalid/runtime-scale', 'success', CURRENT_TIMESTAMP,
+                         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{}', CURRENT_TIMESTAMP)
+               ON CONFLICT(id) DO UPDATE SET url=excluded.url, status='success',
+                   last_refresh_at=CURRENT_TIMESTAMP, last_success_at=CURRENT_TIMESTAMP,
+                   server_inventory_updated_at=CURRENT_TIMESTAMP, error_code=NULL,
+                   error_message=NULL, metadata_json='{}', updated_at=CURRENT_TIMESTAMP"""
+        )
+
+    profile_tokens: list[str] = []
+    for index in range(1, SCALE_PROFILE_COUNT + 1):
+        token = f"acceptance-scale-profile-{index:02d}"
+        ensure_subscription_identity(token, display_name=f"Acceptance scale profile {index:02d}")
+        profile_tokens.append(token)
+
+    profile_nodes = list_desired_subscription_xray_clients()
+    expected_profile_nodes = SCALE_PROFILE_COUNT * (SCALE_SERVERS_PER_PROFILE + 1)
+    if len(profile_nodes) != expected_profile_nodes:
+        raise AssertionError(f"expected {expected_profile_nodes} desired profile nodes, found {len(profile_nodes)}")
+    if {str(node.get("server_id") or "") for node in profile_nodes} != {
+        VIRTUAL_XRAY_VPN_AUTO_SERVER_ID, *(server["server_id"] for server in servers)
+    }:
+        raise AssertionError("desired profile nodes do not match the owned virtual and native server set")
+
+    profile_clients = [
+        {"id": str(node["client_uuid"]), "email": str(node["client_email"]), "level": 0}
+        for node in profile_nodes
+    ]
+    internal_auto_clients = []
+    for index, server in enumerate(servers, start=1):
+        server_id = server["server_id"]
+        internal_auto_clients.append({
+            "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"acceptance-scale-vpn-auto:{server_id}")),
+            "email": _vpn_auto_xray_client_email(server_id),
+            "level": 0,
+        })
+    fixed_external_clients = [
+        {
+            "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"acceptance-scale-fixed-external:{index}")),
+            "email": f"acceptance-scale-fixed-{index:02d}@acceptance.invalid",
+            "level": 0,
+        }
+        for index in range(1, SCALE_FIXED_EXTERNAL_CLIENTS + 1)
+    ]
+    clients = [*profile_clients, *internal_auto_clients, *fixed_external_clients]
+    if len(clients) != SCALE_NATIVE_CLIENT_COUNT:
+        raise AssertionError("owned scale identity count does not match fixture contract")
+
+    return {
+        "clients": clients,
+        "profile_nodes": profile_nodes,
+        "profile_tokens": profile_tokens,
+        "servers": servers,
+        "expected_counts": {
+            "profile_accounts": SCALE_PROFILE_COUNT,
+            "profile_nodes": len(profile_nodes),
+            "internal_vpn_auto_clients": len(internal_auto_clients),
+            "fixed_external_clients": len(fixed_external_clients),
+            "native_clients": len(clients),
+        },
+    }
 
 
 def _inspect_generated_scale_config(path: Path) -> dict[str, Any]:
@@ -315,7 +475,8 @@ class _RssSampler:
 
 def _stop_owned_worker(worker, *, timeout_seconds: float = 8.0) -> dict[str, Any]:
     started = time.monotonic()
-    if worker.poll() is None:
+    if worker.poll() is None and not getattr(worker, "_acceptance_stop_requested", False):
+        worker._acceptance_stop_requested = True
         worker.terminate()
     try:
         return_code = worker.wait(timeout=timeout_seconds)
@@ -401,7 +562,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             "isolated kernel dataplane only; no host systemd/reboot claim",
             "periodic RSS begins at owned process spawn; Linux VmHWM retains prior process peaks",
             "native /rules request counters are unavailable in the current worker harness",
-            "78 external identities are retained; empty subscription-profile reconcile does not rebuild them",
+            "native UDP policy proof confirms applied config, not remote VPN egress availability",
         ],
         "native_rules_request_count": None,
         "rss_scope": "owned API VmRSS plus process-lifetime Linux VmHWM; not aggregate/native memory",
@@ -420,21 +581,31 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         metrics["rules_source"] = _seed_scale_rules_source(Path(stack["state"]))
         assert metrics["rules_source"]["vpn_domain_suffix_count"] == 99_627
         assert metrics["rules_source"]["protected_direct_present"] is True
+        profile_state = _seed_scale_subscription_profiles(Path(stack["state"]))
+        metrics["subscription_source"] = profile_state["expected_counts"]
+        assert profile_state["expected_counts"] == {
+            "profile_accounts": 7,
+            "profile_nodes": 70,
+            "internal_vpn_auto_clients": 9,
+            "fixed_external_clients": 2,
+            "native_clients": 81,
+        }
         xray_path = Path(stack["state"]) / "xray" / "config.json"
         xray_config = json.loads(xray_path.read_text())
         inbound = next(row for row in xray_config["inbounds"] if row.get("tag") == "vless-ws")
-        inbound["settings"]["clients"] = [
-            {"id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"scale-{index}.test")),
-             "email": f"scale-{index}@acceptance.test", "level": 0}
-            for index in range(78)
-        ]
+        inbound["settings"]["clients"] = profile_state["clients"]
         xray_path.write_text(json.dumps(xray_config))
         metrics["xray_source"] = _seed_scale_xray_subjects(Path(stack["state"]), xray_config)
         native.restart_xray_child()
         from .xray_support import loaded_identities
         native_identities_before = loaded_identities(native)
-        assert len(native_identities_before) == 78
-        metrics["synthetic_xray_loaded_clients"] = 78
+        assert len(native_identities_before) == SCALE_NATIVE_CLIENT_COUNT
+        assert len(set(native_identities_before)) == SCALE_NATIVE_CLIENT_COUNT
+        metrics["synthetic_xray_loaded_clients"] = SCALE_NATIVE_CLIENT_COUNT
+        metrics["subscription_profile_accounts"] = SCALE_PROFILE_COUNT
+        metrics["subscription_profile_nodes"] = SCALE_PROFILE_COUNT * (SCALE_SERVERS_PER_PROFILE + 1)
+        metrics["internal_vpn_auto_clients"] = SCALE_INTERNAL_AUTO_CLIENTS
+        metrics["fixed_external_clients"] = SCALE_FIXED_EXTERNAL_CLIENTS
         native.restart_mihomo_child()
 
         def observe_spawn(worker) -> None:
@@ -496,6 +667,42 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         xray_reconcile = apply_reconcile["xray_subscription_profiles"]
         assert xray_reconcile.get("ok") is True, xray_reconcile
         assert xray_reconcile.get("status") == "success", xray_reconcile
+        assert xray_reconcile.get("inventory_authority") == "persisted_success", xray_reconcile
+        from .xray_support import assert_applied_bindings, read_subscription_rows
+
+        expected_binding_pairs = {
+            (str(client["id"]), str(client["email"]))
+            for client in profile_state["clients"]
+        }
+        binding_state = assert_applied_bindings(Path(stack["state"]), expected_binding_pairs)
+        assert binding_state.get("applied_count") == len(expected_binding_pairs), {
+            "applied_count": binding_state.get("applied_count"),
+            "expected_binding_count": len(expected_binding_pairs),
+        }
+        metrics["applied_profile_bindings"] = len(expected_binding_pairs)
+
+        nodes_by_token: dict[str, set[tuple[str, str]]] = {token: set() for token in profile_state["profile_tokens"]}
+        for node in profile_state["profile_nodes"]:
+            nodes_by_token[str(node["subscription_token"])].add(
+                (str(node["client_uuid"]), str(node["client_email"]))
+            )
+        for token, expected_nodes in nodes_by_token.items():
+            persisted = read_subscription_rows(Path(stack["state"]), token)
+            assert len(persisted["accounts"]) == 1 and persisted["accounts"][0]["enabled"] == 1
+            assert len(persisted["clients"]) == 1 and persisted["clients"][0]["enabled"] == 1
+            assert len(persisted["snapshots"]) == 1, {"snapshot_count": len(persisted["snapshots"])}
+            snapshot = persisted["snapshots"][0]
+            assert snapshot.get("runtime_verified_at"), {"runtime_verified": False}
+            snapshot_nodes = json.loads(snapshot["nodes_json"])
+            actual_nodes = {
+                (str(node.get("client_uuid") or ""), str(node.get("client_email") or ""))
+                for node in snapshot_nodes
+            }
+            assert actual_nodes == expected_nodes, {
+                "snapshot_node_count": len(actual_nodes),
+                "expected_node_count": len(expected_nodes),
+            }
+        metrics["runtime_verified_profile_snapshots"] = len(nodes_by_token)
         dnsmasq_reconcile = apply_reconcile["dnsmasq_reconcile"]
         assert dnsmasq_reconcile.get("ok") is True, dnsmasq_reconcile
         dns_fixture = observation.get("dns_fixture")
@@ -536,9 +743,16 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
                     assert proof.get("policy_installed") is True, proof
                 elif route == "/selector/vpn-auto/state":
                     state = result.get("selector_state") or {}
-                    assert state.get("active_auto_server_id") is None, state
-                    assert state.get("enabled_candidates_count") == 0, state
-                    assert state.get("runtime_vpn_auto_targets") == ["REJECT"], state
+                    expected_ids = {server["server_id"] for server in profile_state["servers"]}
+                    expected_targets = {server["runtime_name"] for server in profile_state["servers"]}
+                    assert state.get("active_auto_server_id") in expected_ids, state
+                    assert state.get("enabled_candidates_count") == SCALE_SERVERS_PER_PROFILE, state
+                    assert expected_targets.issubset(set(state.get("runtime_vpn_auto_targets") or [])), state
+                    selected_name = next(
+                        server["runtime_name"] for server in profile_state["servers"]
+                        if server["server_id"] == state.get("active_auto_server_id")
+                    )
+                    assert selected_name in set(state.get("runtime_vpn_auto_targets") or []), state
 
         metrics["waves"] = waves
         metrics["rss_peak_kib_sampled_process_lifetime"] = sampler.peak_kib
@@ -553,13 +767,24 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         from .http_support import http_json as _http_json
 
         auto_code, auto_state = _http_json("http://127.0.0.1:5200/proxies/vpn-auto", timeout=3.0)
-        assert auto_code == 200 and auto_state.get("now") == "REJECT", {
-            "status_code": auto_code, "selected_reject": auto_state.get("now") == "REJECT",
+        expected_selected = profile_state["servers"][0]["runtime_name"]
+        expected_targets = {server["runtime_name"] for server in profile_state["servers"]}
+        assert auto_code == 200 and auto_state.get("now") in expected_targets, {
+            "status_code": auto_code,
+            "selected_member": auto_state.get("now") in expected_targets,
         }
-        assert auto_state.get("all") == ["REJECT"], {"auto_targets": auto_state.get("all")}
+        assert expected_targets.issubset(set(auto_state.get("all") or [])), {
+            "expected_target_count": len(expected_targets),
+            "actual_target_count": len(auto_state.get("all") or []),
+        }
+        assert auto_state.get("now") == expected_selected, {"selected_member_matches_persisted": False}
         assert loaded_identities(native) == native_identities_before
-        metrics["synthetic_xray_identities_preserved"] = True
-        metrics["native_empty_selector"] = {"status_code": auto_code, "selected_reject": True, "targets": ["REJECT"]}
+        metrics["synthetic_xray_identities_preserved"] = SCALE_NATIVE_CLIENT_COUNT
+        metrics["native_selector"] = {
+            "status_code": auto_code,
+            "selected_owned_member": True,
+            "owned_member_count": len(expected_targets),
+        }
         metrics["status"] = "passed"
     except BaseException as exc:
         metrics["status"] = "failed"
@@ -576,5 +801,8 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             if not shutdown.get("graceful"):
                 metrics["status"] = "failed"
                 _write_metrics(metrics)
-                raise AssertionError(f"restarted API worker failed graceful SIGTERM: {shutdown}")
+                if sys.exc_info()[0] is None:
+                    raise AssertionError(f"restarted API worker failed graceful SIGTERM: {shutdown}")
+                # Preserve the original startup/assertion error; metrics retain
+                # the independent shutdown failure for the same execution.
         _write_metrics(metrics)

@@ -796,6 +796,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             FakeServer((fixture.DNS_UPSTREAM_IP, 53), tcp=True),
             FakeServer((fixture.DNS_VPN_SERVICE_VIP, fixture.HTTP_PORT), tcp=True),
             FakeServer((fixture.DNS_VPN_SERVICE_VIP, fixture.UDP_ECHO_PORT), tcp=False),
+            FakeServer(("127.0.0.1", fixture.ENDPOINT_TLS_DECOY_PORT), tcp=True),
         )
         control = servers[1]
         control.role_servers = servers
@@ -922,7 +923,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "tcp": {"snaplen": 54, "filter": "(tcp and dst host 203.0.113.53 and dst port 9080) or "
                                                   "(tcp and dst host 198.51.100.77 and dst port 9080) or "
                                                   "(tcp and dst host 10.250.240.2 and dst port 9080) or "
-                                                  "(tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302)) or "
+                                                  "(tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302 or dst port 5303)) or "
                                                   "(tcp and dst host 1.1.1.1 and dst port 53)"},
             "udp": {"snaplen": 42, "filter": "(udp and dst host 203.0.113.53 and "
                                                   "(dst port 9081 or dst port 5353)) or "
@@ -1240,7 +1241,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "DNS_VPN_SERVICE_VIP": "198.51.100.77",
             "DNS_BYPASS_NEGATIVE_IP": "8.8.8.8",
             "SERVICE_VIP": "203.0.113.53", "PROTECTED_VIP": "10.250.240.2",
-            "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
+            "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302, "ENDPOINT_XRAY_REALITY_PORT": 5303,
             "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
             "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_CONTROL_PORT": 8082,
             "DNS_NAME": "probe.fwrouter.test", "DNS_NEGATIVE_NAME": "missing.fwrouter.test",
@@ -1540,7 +1541,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "DNS_BYPASS_NEGATIVE_IP": "8.8.8.8", "LEAK_DNS_TARGET": "127.0.0.11",
             "LEAK_RESERVED_TARGET": "192.0.2.1", "LEAK_RESERVED_PORT": 9,
             "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_XRAY_PORT": 5301,
-            "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
+            "ENDPOINT_XRAY_SELECTOR_PORT": 5302, "ENDPOINT_XRAY_REALITY_PORT": 5303,
             "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
             "PROTECTED_UDP_PORT": 9081,
             "_redact": lambda value: str(value),
@@ -1567,10 +1568,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn(
             "add rule inet fwrouter_packet_fixture input ip saddr { 10.240.0.2, 198.18.240.1, "
             "198.18.240.2, 203.0.113.53, 198.51.100.77, 10.250.240.2 } ip daddr 198.18.240.2 "
-            "tcp dport { 5301, 5302, 8082 } accept", endpoint_rules)
+            "tcp dport { 5301, 5302, 5303, 8082 } accept", endpoint_rules)
         self.assertIn(
             "add rule inet fwrouter_packet_fixture output ip daddr 198.18.240.2 "
-            "tcp dport { 5301, 5302, 8082 } accept", endpoint_rules)
+            "tcp dport { 5301, 5302, 5303, 8082 } accept", endpoint_rules)
 
     def test_dns53_flow_failure_receipt_is_fixed_and_projects_before_502(self):
         fixture_tree = _tree()
@@ -1891,17 +1892,19 @@ class NetworkFixtureContractTests(unittest.TestCase):
         config_node = next(node for node in tree.body
                            if isinstance(node, ast.FunctionDef) and node.name == "_expected_xray_config")
         namespace = {"Any": object, "ENDPOINT_WAN_IP": "198.18.240.2",
-                     "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
+                     "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302, "ENDPOINT_XRAY_REALITY_PORT": 5303,
                      "XRAY_ID": "88c7ce2a-465e-4e72-9c56-2a9e2fc84a51",
                      "XRAY_SELECTOR_ID": "e27bc911-23fb-4d12-8d51-bb1b9cb2cd08",
                      "SERVICE_VIP": "203.0.113.53", "DNS_VPN_SERVICE_VIP": "198.51.100.77"}
+        fixture = _fixture_module()
+        namespace.update({key: getattr(fixture, key) for key in ("ENDPOINT_TLS_DECOY_PORT", "XRAY_REALITY_ID", "XRAY_REALITY_PRIVATE_KEY", "XRAY_REALITY_SHORT_ID", "XRAY_REALITY_SERVER_NAME")})
         exec(compile(ast.Module(body=[config_node], type_ignores=[]), str(FIXTURE), "exec"), namespace)
         observed = namespace["_expected_xray_config"]()
-        self.assertEqual([row["port"] for row in observed["inbounds"]], [5301, 5302])
+        self.assertEqual([row["port"] for row in observed["inbounds"]], [5301, 5302, 5303])
         self.assertEqual([row["tag"] for row in observed["inbounds"]],
-                         ["fixture-vless-a", "fixture-vless-b"])
+                         ["fixture-vless-a", "fixture-vless-b", "fixture-vless-reality"])
         self.assertEqual([row["settings"]["clients"][0]["id"] for row in observed["inbounds"]],
-                         [namespace["XRAY_ID"], namespace["XRAY_SELECTOR_ID"]])
+                         [namespace["XRAY_ID"], namespace["XRAY_SELECTOR_ID"], namespace["XRAY_REALITY_ID"]])
         self.assertEqual([row["tag"] for row in observed["outbounds"]],
                          ["fixture-egress-a", "fixture-egress-b"])
         self.assertEqual([row["sendThrough"] for row in observed["outbounds"]],
@@ -1910,6 +1913,17 @@ class NetworkFixtureContractTests(unittest.TestCase):
             {"type": "field", "inboundTag": ["fixture-vless-a"], "outboundTag": "fixture-egress-a"},
             {"type": "field", "inboundTag": ["fixture-vless-b"], "outboundTag": "fixture-egress-b"},
         ])
+        reality = observed["inbounds"][2]["streamSettings"]
+        self.assertEqual(reality["security"], "reality")
+        self.assertEqual(reality["realitySettings"]["dest"], "127.0.0.1:9443")
+        self.assertEqual(reality["realitySettings"]["serverNames"], ["reality.test"])
+        self.assertEqual(reality["realitySettings"]["privateKey"], fixture.XRAY_REALITY_PRIVATE_KEY)
+        self.assertEqual(reality["realitySettings"]["shortIds"], [fixture.XRAY_REALITY_SHORT_ID])
+        tls_source = _function_source("_create_tls_decoy_material")
+        self.assertIn('"/usr/bin/openssl"', tls_source)
+        self.assertIn('timeout=10.0', tls_source)
+        self.assertIn('os.chmod(key_path, 0o600', tls_source)
+        self.assertIn('os.getuid()', tls_source)
         self.assertIn("_assert_xray_config(config)", start)
         self.assertIn("os.O_EXCL | os.O_NOFOLLOW", start)
         self.assertIn('"run", "-test", "-config"', start)

@@ -877,6 +877,8 @@ def _write_xray_generation_checkpoint(
         "staged_generation": {
             "xray_candidate_path": staged_generation.get("xray_candidate_path"),
             "xray_candidate_sha256": staged_generation.get("xray_candidate_sha256"),
+            "mihomo_transition_path": (staged_generation.get("mihomo_candidates") or {}).get("transition"),
+            "mihomo_transition_sha256": ((staged_generation.get("native_validation") or {}).get("transition") or {}).get("candidate_sha256"),
             "mihomo_final_path": (staged_generation.get("mihomo_candidates") or {}).get("final"),
             "mihomo_final_sha256": ((staged_generation.get("native_validation") or {}).get("final") or {}).get("candidate_sha256"),
         },
@@ -1818,10 +1820,17 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
         staged.get("mihomo_final_sha256") if phase in {"runtime_applied", "inventory_synced", "bindings_written", "projections_cleaned", "selection_verified"}
         else None
     )
-    if not mihomo_expected_hash and phase in {"transition_applied", "xray_applied"}:
-        validation = staged_generation_validation = data.get("staged_generation") or {}
-        # The transition digest is recorded in the native validation metadata.
-        mihomo_expected_hash = ((validation.get("native_validation") or {}).get("transition") or {}).get("candidate_sha256")
+    if phase in {"transition_applied", "xray_applied"}:
+        # New checkpoints retain the validated transition digest explicitly.
+        # Older evidence may contain the full validation record, but a missing
+        # digest cannot authorize adoption of arbitrary current native config.
+        mihomo_expected_hash = staged.get("mihomo_transition_sha256") or (
+            (staged.get("native_validation") or {}).get("transition") or {}
+        ).get("candidate_sha256")
+        if not isinstance(mihomo_expected_hash, str) or len(mihomo_expected_hash) != 64 or any(
+            char not in "0123456789abcdef" for char in mihomo_expected_hash
+        ):
+            return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "mihomo_transition_digest_unavailable"}
     if mihomo_expected_hash:
         active_path = Path(mihomo_config._resolved_base_config_path())
         actual_hash = hashlib.sha256(active_path.read_bytes()).hexdigest() if active_path.is_file() else None
