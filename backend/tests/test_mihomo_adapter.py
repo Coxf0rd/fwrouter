@@ -147,6 +147,67 @@ def test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types() -> None:
     )["selector_membership_matches"] is False
 
 
+
+def test_vpn_udp_safe_yaml_readers_preserve_large_native_proof_and_reject_stale_readback(monkeypatch) -> None:
+    from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
+
+    rules = []
+    native_rules = []
+    for index in range(512):
+        domain = f"node-{index}.example.test"
+        rule = f"DOMAIN,{domain},vpn-global"
+        rules.extend([rule, _mandatory_vpn_udp_guard(rule)])
+        native_rules.extend([
+            {"type": "Domain", "payload": domain, "proxy": "vpn-global"},
+            {"type": "AND", "payload": f"((Network,udp) && (Domain,{domain}))", "proxy": "REJECT"},
+        ])
+    rules.append("MATCH,DIRECT")
+    native_rules.append({"type": "Match", "payload": "", "proxy": "DIRECT"})
+    config = {
+        "rules": rules,
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]},
+        ],
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,DIRECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
+    }
+    proxies = {
+        "vpn-auto": {"all": ["REJECT"], "now": "REJECT"},
+        "vpn-global": {"all": ["vpn-auto", "REJECT"], "now": "vpn-auto"},
+    }
+    text = yaml.safe_dump(config, sort_keys=False)
+    accelerated = MihomoHttpAdapter._vpn_udp_policy_readback(text, proxies, native_rules)
+    assert accelerated["policy_installed"] is True
+    assert accelerated["native_top_level_rules_match"] is True
+    monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
+    fallback = MihomoHttpAdapter._vpn_udp_policy_readback(text, proxies, native_rules)
+    assert fallback == accelerated
+    stale_native = [dict(rule) for rule in native_rules]
+    stale_native[1]["proxy"] = "DIRECT"
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(text, proxies, stale_native)["native_top_level_rules_match"] is False
+    config["rules"][1] = "MATCH,DIRECT"
+    assert MihomoHttpAdapter._vpn_udp_policy_readback(
+        yaml.safe_dump(config, sort_keys=False), proxies, native_rules,
+    )["policy_installed"] is False
+
+
+def test_vpn_udp_yaml_parse_errors_and_unsafe_constructors_fail_closed(monkeypatch, tmp_path) -> None:
+    sentinel = tmp_path / "unsafe-constructor-executed"
+    documents = ["rules: [unterminated", f"!!python/object/apply:os.system ['touch {sentinel}']", "- not-a-policy"]
+    for document in documents:
+        proof = MihomoHttpAdapter._vpn_udp_policy_readback(document, {})
+        assert proof["policy_installed"] is False
+        assert proof["selector_membership_matches"] is False
+    assert not sentinel.exists()
+    monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
+    for document in documents:
+        assert MihomoHttpAdapter._vpn_udp_policy_readback(document, {})["policy_installed"] is False
+    assert not sentinel.exists()
+
+
 def test_vpn_udp_active_server_does_not_fall_through_when_owned_selector_rejects() -> None:
     adapter = MihomoHttpAdapter()
     assert adapter._active_server_id_from_proxies({

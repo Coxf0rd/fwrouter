@@ -806,7 +806,11 @@ class MihomoHttpAdapter(MihomoAdapter):
     ) -> dict[str, Any]:
         """Prove the active config and controller selectors are fail-closed for VPN UDP."""
         try:
-            config = yaml.safe_load(config_text) or {}
+            # Read the complete current configuration on every proof. libyaml's
+            # safe constructor avoids Python scanner overhead for large rulesets;
+            # do not cache this security-sensitive result across runtime changes.
+            loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+            config = yaml.load(config_text, Loader=loader) or {}
         except yaml.YAMLError:
             config = {}
         if not isinstance(config, dict):
