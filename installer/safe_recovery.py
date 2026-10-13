@@ -318,7 +318,7 @@ def verify(artifact_dir: Path, receipt_path: Path) -> tuple[dict[str, Any], list
     if _sha256(archive_bytes) != manifest.get("archive_sha256"):
         raise RecoveryError("artifact archive hash mismatch")
     try:
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r") as archive:
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:") as archive:
             members = _safe_archive_entries(archive)
             if [member.name for member in members] != names:
                 raise RecoveryError("artifact archive and manifest paths differ")
@@ -374,7 +374,7 @@ def stage(artifact_dir: Path, receipt_path: Path, target: Path) -> dict[str, Any
         archive_bytes = archive_path.read_bytes()
         if _sha256(archive_bytes) != manifest["archive_sha256"]:
             raise RecoveryError("artifact changed after verification")
-        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r") as archive:
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:") as archive:
             members = _safe_archive_entries(archive)
             for member in members:
                 relative = _safe_relative(member.name)
