@@ -1,5 +1,10 @@
 # FWRouter engineering roadmap mirror
 
+## 2026-10-13 — pre-deployment safety follow-up
+
+CI milestone is CLOSED (merged ef46147; actual main run 38363962787 PASS). External Rescue is PASS by user-confirmed manual external verification; the earlier inability to test it is superseded, without invented automated evidence. A separate `fix/predeploy-rescue-isolation-safe-rollback` safety branch addresses reserved Rescue LAN discovery and qualified recovery targets. Source and scoped hosted qualification passed (38381629814:1461/0/0); PR #6 required checks determine final merge readiness; full host rollback activation is NOT QUALIFIED; production rollout and live acceptance remain NOT RUN / BLOCKED. Archived 3d285c3/c1e00b5 is not a safe mandatory-VPN rollback target. Host/readiness guard remains outside deployment scope. See the safety report at `/srv/fwrouter/knowledge/audits/predeploy_rescue_safe_rollback_2026-10-13/REPORT.md`. No Operational Performance Fixes, Stage 5 or CD work is started.
+
+
 
 ## Documentation consolidation — 2026-10-13
 

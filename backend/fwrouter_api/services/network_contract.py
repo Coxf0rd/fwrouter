@@ -17,6 +17,11 @@ from fwrouter_api.core.network_defaults import (
 )
 
 
+# Interfaces with an explicit non-LAN role stay excluded even when an operator
+# places them in the configurable LAN allowlist.
+RESERVED_INTERFACE_ROLES = {"rescue0": "rescue"}
+
+
 def _normalize_network_strings(
     values: list[str] | tuple[str, ...] | None,
     fallback: tuple[str, ...],
@@ -140,10 +145,19 @@ def lan_interface_deny_prefixes() -> tuple[str, ...]:
     )
 
 
+def reserved_interface_role(ifname: str) -> str | None:
+    name = str(ifname or "").strip()
+    return RESERVED_INTERFACE_ROLES.get(name)
+
+
 def lan_interface_allowed(ifname: str) -> bool:
     name = str(ifname or "").strip()
     if not name:
         return False
+    if reserved_interface_role(name) is not None:
+        return False
+    # Unknown names retain the historical allowlist/prefix behavior; the
+    # contract assigns roles only to interfaces listed above.
     allowlist = lan_interface_allowlist()
     if allowlist and name not in allowlist:
         return False
@@ -178,5 +192,6 @@ def network_contract_manifest() -> dict[str, Any]:
         "trusted_client_ipv6_networks": list(trusted_client_ipv6_networks()),
         "lan_interface_allowlist": list(lan_interface_allowlist()),
         "lan_interface_deny_prefixes": list(lan_interface_deny_prefixes()),
+        "reserved_interface_roles": dict(sorted(RESERVED_INTERFACE_ROLES.items())),
         "local_lan_hosts": local_lan_hosts(),
     }
