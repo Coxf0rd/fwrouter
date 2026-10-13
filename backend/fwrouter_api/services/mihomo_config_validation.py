@@ -89,16 +89,22 @@ def _validate_candidate_structure(
     routing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     from fwrouter_api.services.mihomo_config import (
+        _build_mihomo_config_with_source,
         _build_fallback_rule,
         _build_transparent_fallback_rule,
         _runtime_proxy_inventory_count,
     )
+    from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
+    from fwrouter_api.services.mihomo_config_proxies import _ensure_selector_groups
 
     rules = candidate_config.get("rules") if isinstance(candidate_config.get("rules"), list) else []
     proxies = candidate_config.get("proxies") if isinstance(candidate_config.get("proxies"), list) else []
     groups = candidate_config.get("proxy-groups") if isinstance(candidate_config.get("proxy-groups"), list) else []
     listeners = candidate_config.get("listeners") if isinstance(candidate_config.get("listeners"), list) else []
     sub_rules = candidate_config.get("sub-rules") if isinstance(candidate_config.get("sub-rules"), dict) else {}
+    _expected_base_rules, expected_policy = _build_mihomo_config_with_source(routing)
+    expected_transparent_subrules = expected_policy.get("transparent_rules") or []
+    expected_full_vpn_subrules = expected_policy.get("full_vpn_rules") or []
 
     final_match_rule = str(rules[-1]) if rules else ""
     expected_final_match_rule = _build_fallback_rule(routing)
@@ -127,6 +133,36 @@ def _validate_candidate_structure(
     group_names = _candidate_group_names(candidate_config)
     vpn_auto_present = "vpn-auto" in group_names
     vpn_global_present = "vpn-global" in group_names
+    group_by_name = {
+        str(group.get("name") or ""): group
+        for group in groups
+        if isinstance(group, dict) and str(group.get("name") or "").strip()
+    }
+    expected_groups = _ensure_selector_groups(candidate_config)
+    expected_owned_groups = {
+        str(group.get("name") or ""): group
+        for group in expected_groups
+        if isinstance(group, dict)
+        and (str(group.get("name") or "") in {"vpn-auto", "vpn-global"}
+             or str(group.get("name") or "").startswith("fwrouter-subject-"))
+    }
+    selector_groups_ok = all(
+        isinstance(group_by_name.get(name), dict)
+        and group_by_name[name].get("proxies") == expected.get("proxies")
+        for name, expected in expected_owned_groups.items()
+    )
+    vpn_auto_targets = group_by_name.get("vpn-auto", {}).get("proxies", [])
+    vpn_global_targets = group_by_name.get("vpn-global", {}).get("proxies", [])
+    selector_groups_ok = selector_groups_ok and (
+        isinstance(vpn_auto_targets, list)
+        and bool(vpn_auto_targets)
+        and vpn_auto_targets[-1] == "REJECT"
+        and "DIRECT" not in vpn_auto_targets
+        and isinstance(vpn_global_targets, list)
+        and bool(vpn_global_targets)
+        and vpn_global_targets[-1] == "REJECT"
+        and "DIRECT" not in vpn_global_targets
+    )
 
     vpn_global_has_vpn_auto = False
     for group in groups:
@@ -202,13 +238,29 @@ def _validate_candidate_structure(
         transparent_listener_bind = top_level_bind_address
     transparent_listener_bind_valid = _transparent_bind_address_valid(transparent_listener_bind)
     transparent_subrules = sub_rules.get(transparent_rule_name) if transparent_rule_name else None
-    transparent_subrules_ok = isinstance(transparent_subrules, list) and bool(transparent_subrules)
+    transparent_subrules_ok = isinstance(transparent_subrules, list) and transparent_subrules == expected_transparent_subrules
+    full_vpn_subrules = sub_rules.get("fwrouter-full-vpn")
+    full_vpn_subrules_ok = isinstance(full_vpn_subrules, list) and full_vpn_subrules == expected_full_vpn_subrules
+    expected_transparent_final_match_rule = _build_transparent_fallback_rule(routing)
     transparent_final_match_rule = (
         str(transparent_subrules[-1])
         if isinstance(transparent_subrules, list) and transparent_subrules
         else ""
     )
-    expected_transparent_final_match_rule = _build_transparent_fallback_rule(routing)
+    # A mandatory VPN fallback is immediately followed by a UDP REJECT rule:
+    # Mihomo can skip the proxy fallback for UDP, so the guard is intentionally
+    # terminal. Compare policy against the fallback before that exact guard.
+    expected_transparent_udp_guard = _mandatory_vpn_udp_guard(
+        expected_transparent_final_match_rule
+    )
+    if (
+        expected_transparent_udp_guard
+        and isinstance(transparent_subrules, list)
+        and len(transparent_subrules) >= 2
+        and transparent_subrules[-1] == expected_transparent_udp_guard
+        and transparent_subrules[-2] == expected_transparent_final_match_rule
+    ):
+        transparent_final_match_rule = str(transparent_subrules[-2])
     transparent_direct_proxy_ok = (
         isinstance(transparent_redir_listener, dict)
         and isinstance(transparent_tproxy_listener, dict)
@@ -263,6 +315,7 @@ def _validate_candidate_structure(
         "vpn_auto_present": vpn_auto_present,
         "vpn_global_present": vpn_global_present,
         "vpn_global_has_vpn_auto": vpn_global_has_vpn_auto,
+        "selector_groups_ok": selector_groups_ok,
         "mixed_listener_count": len(mixed_listeners),
         "mixed_listener_bind": mixed_listener_bind,
         "mixed_listener_port": mixed_listener_port,
@@ -282,6 +335,9 @@ def _validate_candidate_structure(
         "transparent_inbound_rules": [],
         "transparent_inbound_rule_ok": transparent_inbound_rule_ok,
         "transparent_subrules_ok": transparent_subrules_ok,
+        "expected_transparent_subrules": expected_transparent_subrules,
+        "full_vpn_subrules_ok": full_vpn_subrules_ok,
+        "expected_full_vpn_subrules": expected_full_vpn_subrules,
         "transparent_final_match_rule": transparent_final_match_rule,
         "expected_transparent_final_match_rule": expected_transparent_final_match_rule,
         "transparent_state_consistency_ok": transparent_state_consistency_ok,

@@ -1,0 +1,33 @@
+{
+  "counts": {
+    "failed": 0,
+    "passed": 6,
+    "skipped": 0
+  },
+  "exact_node_coverage": true,
+  "expected_nodeids": [
+    "backend/tests/test_apply_pipeline.py::test_render_owned_table_candidate_keeps_direct_and_vpn_terminal_chains_separate",
+    "backend/tests/test_apply_pipeline.py::test_render_owned_table_candidate_uses_port_only_tproxy_target",
+    "backend/tests/test_network_contract.py::test_network_contract_drives_nft_trusted_client_guards",
+    "backend/tests/test_network_contract.py::test_network_contract_drives_protected_dataplane_and_rules",
+    "backend/tests/test_runtime_summary.py::test_runtime_summary_checks_applied_dataplane_artifacts",
+    "backend/tests/test_runtime_summary.py::test_runtime_summary_contains_layout_and_modules"
+  ],
+  "junit_present": true,
+  "observed_node_status": {
+    "backend/tests/test_apply_pipeline.py::test_render_owned_table_candidate_keeps_direct_and_vpn_terminal_chains_separate": "passed",
+    "backend/tests/test_apply_pipeline.py::test_render_owned_table_candidate_uses_port_only_tproxy_target": "passed",
+    "backend/tests/test_network_contract.py::test_network_contract_drives_nft_trusted_client_guards": "passed",
+    "backend/tests/test_network_contract.py::test_network_contract_drives_protected_dataplane_and_rules": "passed",
+    "backend/tests/test_runtime_summary.py::test_runtime_summary_checks_applied_dataplane_artifacts": "passed",
+    "backend/tests/test_runtime_summary.py::test_runtime_summary_contains_layout_and_modules": "passed"
+  },
+  "output_truncated": false,
+  "owned_temp_cleanup": true,
+  "pytest_exit_code": 0,
+  "schema_version": 1,
+  "scope": "exact-node-isolated-pytest",
+  "run_id": 37965069661,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37965069661",
+  "source_revision": "e27ee8e09041f0dfe8983f28ed67dd0cc480b842"
+}

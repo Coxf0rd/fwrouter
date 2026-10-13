@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir_without_schedulers as _configure_env
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import get_db_path, initialize_database
 
@@ -56,12 +57,6 @@ from fwrouter_api.services.subscription_profiles import (
 from fwrouter_api.services.subjects import list_subjects
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("FWROUTER_MAINTENANCE_SCHEDULER_ENABLED", "false")
-    monkeypatch.setenv("FWROUTER_WATCHDOG_SCHEDULER_ENABLED", "false")
-    monkeypatch.setenv("FWROUTER_RUNTIME_CONVERGENCE_SCHEDULER_ENABLED", "false")
-    get_settings.cache_clear()
 
 
 class _FakeSubscriptionAdapter:

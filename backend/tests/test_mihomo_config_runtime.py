@@ -10,15 +10,23 @@ from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services import mihomo_config_inbounds as mihomo_inbounds_service
 from fwrouter_api.services import mihomo_config_proxies as mihomo_proxies_service
+from fwrouter_api.services import mihomo_reconcile as mihomo_reconcile_service
 from fwrouter_api.services import subscription_profiles as subscription_profiles_service
 from fwrouter_api.services import xray as xray_service
 from fwrouter_api.services import xray_subscription_service
 from fwrouter_api.services import xray_runtime_state as xray_runtime_state_service
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.live_probe_cache import (
+    clear_live_probe_cache,
+    get_live_probe_cache,
+    peek_live_probe_cache,
+)
 from fwrouter_api.services.mihomo_reconcile_fingerprint import (
     current_mihomo_input_fingerprint,
     write_mihomo_reconcile_fingerprint_state,
 )
+from fwrouter_api.services import mihomo_reconcile_fingerprint as mihomo_reconcile_fingerprint_service
+from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+from fwrouter_api.adapters.xray_common import xray_writer_guard
 
 
 def _configure_env(monkeypatch, tmp_path: Path) -> None:
@@ -103,8 +111,8 @@ def _base_candidate() -> dict:
         "rules": ["MATCH,DIRECT"],
         "proxies": [{"name": "Test VPN", "type": "socks5", "server": "1.1.1.1", "port": 1080}],
         "proxy-groups": [
-            {"name": "vpn-auto", "type": "select", "proxies": ["Test VPN", "DIRECT"]},
-            {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "Test VPN", "DIRECT"]},
+            {"name": "vpn-auto", "type": "select", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "REJECT"]},
         ],
         "listeners": [
             {
@@ -130,7 +138,10 @@ def _base_candidate() -> dict:
                 "udp": True,
             },
         ],
-        "sub-rules": {"fwrouter-transparent": ["MATCH,vpn-global"]},
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
     }
 
 
@@ -326,15 +337,25 @@ def test_build_mihomo_config_scopes_subject_server_override_to_vpn_rules_only(
     selector_name = mihomo_config_service.subject_selector_name("lan:desktop")
     assert transparent_rules[:2] == [
         f"AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,instagram.com)),{selector_name}",
+        f"AND,((NETWORK,udp),(AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,instagram.com)))),REJECT",
+    ]
+    assert transparent_rules[2:4] == [
         f"AND,((SRC-IP-CIDR,192.168.0.51/32),(IP-CIDR,203.0.113.0/24)),{selector_name}",
+        f"AND,((NETWORK,udp),(AND,((SRC-IP-CIDR,192.168.0.51/32),(IP-CIDR,203.0.113.0/24)))),REJECT",
     ]
     assert f"AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,ru)),{selector_name}" not in transparent_rules
     assert not any(rule.startswith("SRC-IP-CIDR,192.168.0.51/32,") for rule in transparent_rules)
     assert transparent_rules[-1] == "MATCH,DIRECT"
-    assert config["sub-rules"]["fwrouter-full-vpn"] == [
+    actual_full_vpn_rules = config["sub-rules"]["fwrouter-full-vpn"]
+    expected_full_vpn_rules = [
         f"SRC-IP-CIDR,192.168.0.51/32,{selector_name}",
+        f"AND,((NETWORK,udp),(SRC-IP-CIDR,192.168.0.51/32)),REJECT",
         "MATCH,vpn-global",
+        "NETWORK,udp,REJECT",
     ]
+    assert actual_full_vpn_rules == expected_full_vpn_rules, (
+        f"unexpected full-vpn sub-rules: {actual_full_vpn_rules!r}"
+    )
     selector_group = next(group for group in config["proxy-groups"] if group["name"] == selector_name)
     assert "Armenia" in selector_group["proxies"]
     assert "vpn-global" in selector_group["proxies"]
@@ -429,10 +450,38 @@ def test_build_mihomo_config_uses_vpn_fallback_when_requested(monkeypatch, tmp_p
 
     _assert_managed_contour(config)
     assert config["rules"][-1] == "MATCH,DIRECT"
-    assert config["sub-rules"]["fwrouter-transparent"][-1] == "MATCH,vpn-global"
+    assert config["sub-rules"]["fwrouter-transparent"][-2:] == [
+        "MATCH,vpn-global",
+        "NETWORK,udp,REJECT",
+    ]
     assert config["fwrouter"]["resolved_selective_default"] == "vpn"
     assert config["fwrouter"]["final_match_rule"] == "MATCH,DIRECT"
     assert config["fwrouter"]["transparent_final_match_rule"] == "MATCH,vpn-global"
+
+
+def test_transparent_fallback_validation_accounts_for_terminal_vpn_udp_guard(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
+    from fwrouter_api.services.mihomo_config_validation import _validate_candidate_structure
+
+    routing = {"desired_mode": "vpn"}
+    config = mihomo_config_service.build_mihomo_config(routing)
+    structural = _validate_candidate_structure(config, routing=routing)
+
+    assert config["sub-rules"]["fwrouter-transparent"][-2:] == [
+        "MATCH,vpn-global",
+        "NETWORK,udp,REJECT",
+    ]
+    assert structural["transparent_final_match_rule"] == "MATCH,vpn-global"
+    assert structural["transparent_state_consistency_ok"] is True
+
+    config["sub-rules"]["fwrouter-transparent"][-2] = "MATCH,DIRECT"
+    mismatched = _validate_candidate_structure(config, routing=routing)
+    assert mismatched["transparent_state_consistency_ok"] is False
 
 
 def test_build_mihomo_config_forces_ipv4_transparent_listener_mode_over_legacy_ipv6_true(
@@ -675,13 +724,17 @@ def test_build_mihomo_config_renders_effective_domain_and_cidr_rules(monkeypatch
 
     assert config["rules"] == [
         "DOMAIN-SUFFIX,instagram.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
         "DOMAIN,graph.facebook.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN,graph.facebook.com)),REJECT",
         "IP-CIDR,192.168.0.0/16,DIRECT",
         "MATCH,DIRECT",
     ]
     assert config["sub-rules"]["fwrouter-transparent"] == [
         "DOMAIN-SUFFIX,instagram.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
         "DOMAIN,graph.facebook.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN,graph.facebook.com)),REJECT",
         "IP-CIDR,192.168.0.0/16,DIRECT",
         "MATCH,DIRECT",
     ]
@@ -719,10 +772,12 @@ def test_build_mihomo_config_updates_fwrouter_transparent_subrules(
 
     assert config["rules"] == [
         "DOMAIN-SUFFIX,instagram.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
         "MATCH,DIRECT",
     ]
     assert config["sub-rules"]["fwrouter-transparent"] == [
         "DOMAIN-SUFFIX,instagram.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
         "MATCH,DIRECT",
     ]
 
@@ -762,11 +817,13 @@ def test_build_mihomo_config_rebuilds_rules_without_represerving_old_effective_e
 
     assert config["rules"] == [
         "DOMAIN-SUFFIX,instagram.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
         "MATCH,DIRECT",
     ]
     assert "DOMAIN-SUFFIX,legacy.example,vpn-global" not in config["rules"]
     assert config["sub-rules"]["fwrouter-transparent"] == [
         "DOMAIN-SUFFIX,instagram.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
         "MATCH,DIRECT",
     ]
 
@@ -794,10 +851,12 @@ def test_build_mihomo_config_skips_oversized_base_config(monkeypatch, tmp_path: 
 
     assert config["rules"] == [
         "DOMAIN-SUFFIX,instagram.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
         "MATCH,DIRECT",
     ]
     assert config["sub-rules"]["fwrouter-transparent"] == [
         "DOMAIN-SUFFIX,instagram.com,vpn-global",
+        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
         "MATCH,DIRECT",
     ]
     assert "DOMAIN-SUFFIX,legacy.example,vpn-global" not in config["rules"]
@@ -823,9 +882,18 @@ def test_build_mihomo_config_uses_direct_transparent_subrule_fallback_when_selec
 def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._mihomo_incarnation", lambda: "pytest-runtime")
+    monkeypatch.setattr(mihomo_reconcile_fingerprint_service, "_current_runtime_incarnation", lambda: "pytest-runtime")
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._native_udp_policy_proof", lambda: {
+        "ok": True, "native_top_level_rules_match": True,
+        "selector_membership_matches": True, "guarded_rules_match": True,
+    })
     monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
 
     candidate_config = mihomo_config_service.build_mihomo_config({"selective_default": "direct"})
+    base_path = Path(mihomo_config_service._resolved_base_config_path())
+    candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
+    _write_yaml(base_path, candidate_config)
     restart_calls: list[str] = []
 
     def _fake_restart_mihomo_container(*, action: str = "restart", heartbeat=None):
@@ -836,8 +904,8 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch
     monkeypatch.setattr(mihomo_config_service, "get_mihomo_config_status", lambda **kwargs: {
         "base_config": candidate_config,
         "candidate_config": candidate_config,
-        "base_path": mihomo_config_service.BASE_CONFIG_PATH,
-        "candidate_path": mihomo_config_service.MIHOMO_CANDIDATE_CONFIG_PATH,
+        "base_path": str(base_path),
+        "candidate_path": str(candidate_path),
         "base_exists": True,
         "candidate_exists": True,
         "base_updated_at": "2026-06-08T00:00:00+00:00",
@@ -845,15 +913,23 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch
         "base_rules_count": len(candidate_config.get("rules") or []),
         "candidate_rules_count": len(candidate_config.get("rules") or []),
     })
-    monkeypatch.setattr(mihomo_config_service, "write_mihomo_candidate_config", lambda routing=None: {
-        "candidate_path": mihomo_config_service.MIHOMO_CANDIDATE_CONFIG_PATH,
-        "rules": candidate_config["rules"],
-        "handoff_assignments": [],
-        "resolved_selective_default": "direct",
-        "final_match_rule": "MATCH,DIRECT",
-        "transparent_final_match_rule": "MATCH,DIRECT",
-        "config": candidate_config,
-    })
+    def _fake_write_mihomo_candidate_config(routing=None):
+        _write_yaml(candidate_path, candidate_config)
+        return {
+            "candidate_path": str(candidate_path),
+            "rules": candidate_config["rules"],
+            "handoff_assignments": [],
+            "resolved_selective_default": "direct",
+            "final_match_rule": "MATCH,DIRECT",
+            "transparent_final_match_rule": "MATCH,DIRECT",
+            "config": candidate_config,
+        }
+
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "write_mihomo_candidate_config",
+        _fake_write_mihomo_candidate_config,
+    )
     monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", lambda routing=None: {
         "ok": True,
         "resolved_selective_default": "direct",
@@ -883,6 +959,12 @@ def test_reconcile_mihomo_runtime_skips_candidate_generation_when_inputs_unchang
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._mihomo_incarnation", lambda: "pytest-runtime")
+    monkeypatch.setattr(mihomo_reconcile_fingerprint_service, "_current_runtime_incarnation", lambda: "pytest-runtime")
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._native_udp_policy_proof", lambda: {
+        "ok": True, "native_top_level_rules_match": True,
+        "selector_membership_matches": True, "guarded_rules_match": True,
+    })
     settings = get_settings()
     base_path = settings.paths.generated_dir / "mihomo" / "config.yaml"
     base_path.parent.mkdir(parents=True, exist_ok=True)
@@ -892,6 +974,13 @@ def test_reconcile_mihomo_runtime_skips_candidate_generation_when_inputs_unchang
     write_mihomo_reconcile_fingerprint_state(
         fingerprint=fingerprint,
         result={"reconcile_action": "none", "reconcile_reason": "unchanged_config"},
+        native_proof={
+            "native_top_level_rules_match": True,
+            "selector_membership_matches": True,
+            "guarded_rules_match": True,
+        },
+        expected_active_hash=mihomo_reconcile_fingerprint_service.active_config_hash(),
+        expected_runtime_incarnation="pytest-runtime",
     )
 
     monkeypatch.setattr(
@@ -1107,7 +1196,7 @@ def test_validate_mihomo_candidate_config_accepts_split_redir_tproxy_contract(
     assert result["transparent_inbound_rule_ok"] is True
 
 
-def test_reconcile_mihomo_selective_default_fast_patches_only_fallback(
+def test_reconcile_mihomo_selective_default_fast_requires_full_compile_when_udp_guard_sequence_changes(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -1135,10 +1224,15 @@ def test_reconcile_mihomo_selective_default_fast_patches_only_fallback(
         ),
         encoding="utf-8",
     )
+    candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
+    base_before = base_path.read_bytes()
+    candidate_before = candidate_path.read_bytes() if candidate_path.exists() else None
+    with db_session() as connection:
+        revision_before = read_selection_revision(connection)
     monkeypatch.setattr(
         mihomo_config_service,
         "restart_mihomo_container",
-        lambda **kwargs: {"ok": True, "action": kwargs.get("action"), "reason": "pytest"},
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("deferred fast path must not restart")),
     )
 
     result = mihomo_config_service.reconcile_mihomo_selective_default_fast(
@@ -1146,13 +1240,114 @@ def test_reconcile_mihomo_selective_default_fast_patches_only_fallback(
         job_id="pytest-fast-fallback",
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is False
     assert result["fast_path"] is True
-    assert result["reconcile_reason"] == "selective_default_fallback_only_patch"
-    text = base_path.read_text(encoding="utf-8")
-    assert "  - MATCH,vpn-global\n  fwrouter-full-vpn:" in text
-    assert "  resolved_selective_default: vpn\n" in text
-    assert "  transparent_final_match_rule: MATCH,vpn-global\n" in text
+    assert result["fallback_required"] is True
+    assert result["reconcile_action"] == "none"
+    assert result["reconcile_reason"] == "verified_publication_requires_full_reconcile"
+    assert base_path.read_bytes() == base_before
+    assert (candidate_path.read_bytes() if candidate_path.exists() else None) == candidate_before
+    with db_session() as connection:
+        assert read_selection_revision(connection) == revision_before
+
+
+def test_reconcile_rollback_classifies_actual_direct_and_mandatory_vpn_configs(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.services.mihomo_reconcile import (
+        _capture_mihomo_reconcile_checkpoint,
+        _checkpoint_rollback_policy_allowed,
+    )
+
+    monkeypatch.setattr(
+        mihomo_config_service, "_resolved_last_good_mihomo_dir", lambda: tmp_path / "last-good",
+    )
+    base = tmp_path / "config.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    candidate.write_text("rules: []\n", encoding="utf-8")
+    # Direct mode does not use the dormant full-VPN listener fallback.
+    base.write_text(yaml.safe_dump({
+        "rules": ["MATCH,DIRECT"],
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["DIRECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "DIRECT"]},
+        ],
+        "sub-rules": {"fwrouter-transparent": ["MATCH,DIRECT"], "fwrouter-full-vpn": ["MATCH,vpn-global"]},
+    }), encoding="utf-8")
+    direct = _capture_mihomo_reconcile_checkpoint(str(base), str(candidate), routing={"applied_mode": "direct"})
+    assert direct["before_mandatory_vpn_policy_required"] is False
+    assert _checkpoint_rollback_policy_allowed(direct) is True
+
+    # A live mandatory VPN rule makes the same legacy selector/rule contract unsafe to restore.
+    base.write_text(yaml.safe_dump({
+        "rules": ["DOMAIN,example.test,vpn-global", "MATCH,DIRECT"],
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["server-a", "DIRECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "DIRECT"]},
+        ],
+        "sub-rules": {"fwrouter-transparent": ["MATCH,DIRECT"], "fwrouter-full-vpn": ["MATCH,vpn-global"]},
+    }), encoding="utf-8")
+    mandatory = _capture_mihomo_reconcile_checkpoint(str(base), str(candidate), routing={"applied_mode": "direct"})
+    assert mandatory["before_mandatory_vpn_policy_required"] is True
+    assert mandatory["before_udp_policy_safe"] is False
+    assert _checkpoint_rollback_policy_allowed(mandatory) is False
+
+    base.write_text(yaml.safe_dump({
+        "rules": ["DOMAIN,example.test,vpn-global", "AND,((NETWORK,udp),(DOMAIN,example.test)),REJECT", "MATCH,DIRECT"],
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["server-a", "REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]},
+        ],
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,DIRECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
+    }), encoding="utf-8")
+    safe = _capture_mihomo_reconcile_checkpoint(str(base), str(candidate), routing={"applied_mode": "vpn"})
+    assert safe["before_mandatory_vpn_policy_required"] is True
+    assert safe["before_udp_policy_safe"] is True
+    assert _checkpoint_rollback_policy_allowed(safe) is True
+
+
+def test_mihomo_udp_policy_receipt_is_bound_to_config_hash_runtime_and_native_proof(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint_service
+
+    get_live_probe_cache(
+        "dataplane_global.mihomo_health",
+        ttl_seconds=60,
+        loader=lambda: {"policy_installed": False},
+    )
+    get_live_probe_cache(
+        "dataplane_status.runtime_enforcement",
+        ttl_seconds=60,
+        loader=lambda: {"enforcement_level": "global_direct_only"},
+    )
+    receipt_path = tmp_path / "reconcile-state.json"
+    monkeypatch.setattr(fingerprint_service, "_state_path", lambda: receipt_path)
+    monkeypatch.setattr(fingerprint_service, "active_config_hash", lambda: "active-hash-a")
+    monkeypatch.setattr(fingerprint_service, "_current_runtime_incarnation", lambda: "container-a|started-a")
+    written = fingerprint_service.write_mihomo_reconcile_fingerprint_state(
+        fingerprint={"hash": "inputs-a"},
+        result={"reconcile_reason": "test"},
+        native_proof={
+            "native_top_level_rules_match": True,
+            "selector_membership_matches": True,
+            "guarded_rules_match": True,
+        },
+        expected_active_hash="active-hash-a",
+        expected_runtime_incarnation="container-a|started-a",
+    )
+    assert written is True
+    assert peek_live_probe_cache("dataplane_global.mihomo_health") is None
+    assert peek_live_probe_cache("dataplane_status.runtime_enforcement") is None
+    assert fingerprint_service.mihomo_udp_policy_receipt_matches() is True
+    monkeypatch.setattr(fingerprint_service, "active_config_hash", lambda: "active-hash-b")
+    assert fingerprint_service.mihomo_udp_policy_receipt_matches() is False
+    monkeypatch.setattr(fingerprint_service, "active_config_hash", lambda: "active-hash-a")
+    monkeypatch.setattr(fingerprint_service, "_current_runtime_incarnation", lambda: "container-b|started-b")
+    assert fingerprint_service.mihomo_udp_policy_receipt_matches() is False
 
 
 def test_xray_handoff_candidate_retains_last_applied_listener(monkeypatch, tmp_path: Path) -> None:
@@ -1295,6 +1490,7 @@ def test_xray_handoff_candidate_restores_required_missing_server_proxy(monkeypat
         "port": 443,
         "uuid": "old-uuid",
     }
+    expected_proxy = {**old_proxy, "udp": True}
     with db_session() as connection:
         connection.execute(
             """
@@ -1310,4 +1506,178 @@ def test_xray_handoff_candidate_restores_required_missing_server_proxy(monkeypat
         required_last_good_server_ids={"server-old"},
     )
 
-    assert proxies == [old_proxy]
+    assert proxies == [expected_proxy]
+
+
+def _seed_fingerprint_servers() -> None:
+    with db_session() as connection:
+        for server_id in ("auto-a", "auto-b", "fixed-a"):
+            connection.execute(
+                "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) "
+                "VALUES (?, ?, 'pytest', '{}', 'active')",
+                (server_id, server_id),
+            )
+            connection.execute(
+                "INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES (?, 0, 1)",
+                (server_id,),
+            )
+        connection.execute(
+            """INSERT OR IGNORE INTO routing_global_state
+               (id, desired_mode, applied_mode, selective_default, server_mode)
+               VALUES (1, 'direct', 'direct', 'direct', 'auto')"""
+        )
+        updated = connection.execute(
+            "UPDATE routing_global_state SET active_auto_server_id='auto-a' WHERE id=1"
+        )
+        assert updated.rowcount == 1
+        seeded = connection.execute(
+            "SELECT active_auto_server_id FROM routing_global_state WHERE id=1"
+        ).fetchone()
+        assert seeded is not None and seeded["active_auto_server_id"] == "auto-a"
+        connection.execute("DELETE FROM settings WHERE key='vpn_auto_exclusive_source_ref'")
+
+
+def test_mihomo_fingerprint_ignores_derived_auto_selection_but_tracks_generation_inputs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_fingerprint_servers()
+    source_fingerprint = {"mihomo_config.py": "source-before"}
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint_service,
+        "_source_fingerprint",
+        lambda: dict(source_fingerprint),
+    )
+    routing = {
+        "desired_mode": "vpn",
+        "applied_mode": "vpn",
+        "selective_default": "vpn",
+        "server_mode": "auto",
+        "desired_fixed_server_id": None,
+        "applied_fixed_server_id": None,
+        "active_auto_server_id": "auto-a",
+    }
+    original_routing = dict(routing)
+    baseline = current_mihomo_input_fingerprint(routing)
+    assert routing == original_routing
+    assert baseline["payload"]["routing"] == {
+        "desired_mode": "vpn",
+        "applied_mode": "vpn",
+        "selective_default": "vpn",
+        "server_mode": "auto",
+        "desired_fixed_server_id": None,
+        "applied_fixed_server_id": None,
+    }
+    assert "active_auto_server_id" not in baseline["payload"]["tables"]["routing_global_state"][0]
+    changed_optional_intent = current_mihomo_input_fingerprint(
+        {**routing, "selective_default": "direct"}
+    )
+    assert changed_optional_intent["hash"] != baseline["hash"]
+
+    with db_session() as connection:
+        updated = connection.execute(
+            "UPDATE routing_global_state SET active_auto_server_id='auto-b' WHERE id=1"
+        )
+        selected = connection.execute(
+            "SELECT active_auto_server_id FROM routing_global_state WHERE id=1"
+        ).fetchone()
+    assert updated.rowcount == 1
+    assert selected is not None and selected["active_auto_server_id"] == "auto-b"
+    selection_only_routing = {**routing, "active_auto_server_id": "auto-b"}
+    assert current_mihomo_input_fingerprint(selection_only_routing)["hash"] == baseline["hash"]
+    assert selection_only_routing["active_auto_server_id"] == "auto-b"
+
+    before_fixed_intent = current_mihomo_input_fingerprint(selection_only_routing)["hash"]
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET server_mode='fixed', desired_fixed_server_id='fixed-a' WHERE id=1"
+        )
+    assert current_mihomo_input_fingerprint(selection_only_routing)["hash"] != before_fixed_intent
+
+    before_exclusive_membership = current_mihomo_input_fingerprint(selection_only_routing)["hash"]
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO settings (key, value_json) VALUES ('vpn_auto_exclusive_source_ref', ?)",
+            (json.dumps({"source_ref": "src:" + "a" * 64}),),
+        )
+    assert current_mihomo_input_fingerprint(selection_only_routing)["hash"] != before_exclusive_membership
+
+    before_vpn_auto_membership = current_mihomo_input_fingerprint(selection_only_routing)["hash"]
+    with db_session() as connection:
+        connection.execute("UPDATE server_preferences SET vpn_auto=1 WHERE server_id='auto-b'")
+    assert current_mihomo_input_fingerprint(selection_only_routing)["hash"] != before_vpn_auto_membership
+
+    before_server_source = current_mihomo_input_fingerprint(selection_only_routing)["hash"]
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE servers SET raw_json=? WHERE server_id='auto-b'",
+            (json.dumps({"changed": True}),),
+        )
+    assert current_mihomo_input_fingerprint(selection_only_routing)["hash"] != before_server_source
+
+    before_source_change = current_mihomo_input_fingerprint(selection_only_routing)["hash"]
+    source_fingerprint["mihomo_config.py"] = "source-after"
+    assert current_mihomo_input_fingerprint(selection_only_routing)["hash"] != before_source_change
+
+
+def test_mihomo_publication_fence_rejects_newer_selection_with_stable_derived_input_hash(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_fingerprint_servers()
+    before = current_mihomo_input_fingerprint({"active_auto_server_id": "auto-a"})
+    with db_session() as connection:
+        initial_revision = read_selection_revision(connection)
+        updated = connection.execute(
+            "UPDATE routing_global_state SET active_auto_server_id='auto-b' WHERE id=1"
+        )
+        next_revision = advance_selection_revision(connection, expected_revision=initial_revision)
+        selected = connection.execute(
+            "SELECT active_auto_server_id FROM routing_global_state WHERE id=1"
+        ).fetchone()
+    assert updated.rowcount == 1
+    assert selected is not None and selected["active_auto_server_id"] == "auto-b"
+    assert next_revision == initial_revision + 1
+    after = current_mihomo_input_fingerprint({"active_auto_server_id": "auto-b"})
+    assert after["hash"] == before["hash"]
+    monkeypatch.setattr(mihomo_reconcile_service, "_mihomo_incarnation", lambda: "fixed-runtime-incarnation")
+    monkeypatch.setattr(mihomo_reconcile_service, "_file_hash", lambda _path: "fixed-active-config")
+
+    with xray_writer_guard(timeout_seconds=1.0):
+        assert mihomo_reconcile_service._selection_publication_still_owned(
+            operation_id="expected-operation",
+            expected_revision=next_revision,
+            expected_incarnation="fixed-runtime-incarnation",
+            expected_input_hash=after["hash"],
+            expected_active_hash="fixed-active-config",
+            routing={"active_auto_server_id": "auto-b"},
+            verification={
+                "operation_id": "expected-operation",
+                "selection_revision": next_revision,
+            },
+        ) is True
+        assert mihomo_reconcile_service._selection_publication_still_owned(
+            operation_id="expected-operation",
+            expected_revision=initial_revision,
+            expected_incarnation="fixed-runtime-incarnation",
+            expected_input_hash=before["hash"],
+            expected_active_hash="fixed-active-config",
+            routing={"active_auto_server_id": "auto-a"},
+            verification=None,
+        ) is False
+        assert mihomo_reconcile_service._selection_publication_still_owned(
+            operation_id="expected-operation",
+            expected_revision=next_revision,
+            expected_incarnation="fixed-runtime-incarnation",
+            expected_input_hash=after["hash"],
+            expected_active_hash="fixed-active-config",
+            routing={"active_auto_server_id": "auto-b"},
+            verification={
+                "operation_id": "different-operation",
+                "selection_revision": next_revision,
+            },
+        ) is False

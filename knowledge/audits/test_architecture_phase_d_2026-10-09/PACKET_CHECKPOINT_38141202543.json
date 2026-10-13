@@ -1,0 +1,116 @@
+{
+  "cleanup": "owned_resources_removed",
+  "counts": {
+    "failed": 0,
+    "passed": 1,
+    "skipped": 0
+  },
+  "host_post_cleanup": {
+    "checked_subnets": {
+      "lan": "10.240.0.0/29",
+      "protected": "10.250.240.2/32",
+      "service": "203.0.113.53/32",
+      "wan": "198.18.240.0/29"
+    },
+    "firewall_object_count": 56,
+    "firewall_snapshot_sha256": "d0cd000eaa3981b071e0b411a6a6f1c100a016124241cb385d5af1cfc15f9c35",
+    "host_netns_inode_sha256": "21363b3d235e0777249f1c28bb6db5899d54f0b76da9ed74d11231133af20848",
+    "overlap_check": "passed",
+    "route_count": 13,
+    "route_snapshot_sha256": "fcab2f3a3b5d791c40defb5b7907d4237a5c9885c3adee33c636422bbc8ff47a",
+    "schema": "fwrouter-packet-host-preflight/v1"
+  },
+  "image_measurements": {
+    "base_image_inspect_seconds": 0.013,
+    "base_image_present_before_build": false,
+    "base_image_pull_count": 1,
+    "base_image_pull_seconds": 22.827,
+    "built_image_bytes": 1996840192,
+    "compose_build_seconds": 29.441
+  },
+  "junit_seconds": 46.575,
+  "protected_direct": {
+    "capture_flow_delta": {
+      "tcp_9080": 6,
+      "udp_9081": 1
+    },
+    "core_vpn_delta": {
+      "vpn_tcp_classified": 0,
+      "vpn_udp_classified": 0
+    },
+    "endpoint_counts_delta": {
+      "tcp": 1,
+      "udp": 1
+    },
+    "endpoint_peers": {
+      "tcp": [
+        "10.240.0.2"
+      ],
+      "udp": [
+        "10.240.0.2"
+      ]
+    },
+    "native_protected_rule": {
+      "classifier_bypass_installed": true,
+      "protected_vip_in_active_set": true
+    },
+    "native_protected_rule_stable": true,
+    "native_target_stable": true,
+    "native_vpn_active": true,
+    "phase": "protected-direct-under-global-vpn",
+    "router_guard_delta": {
+      "router_egress_drop": {
+        "bytes": 0,
+        "packets": 0
+      },
+      "router_forward_drop": {
+        "bytes": 0,
+        "packets": 0
+      },
+      "router_protected_tcp_forward": {
+        "bytes": 60,
+        "packets": 1
+      },
+      "router_protected_tcp_output": {
+        "bytes": 0,
+        "packets": 0
+      },
+      "router_protected_udp_forward": {
+        "bytes": 54,
+        "packets": 1
+      },
+      "router_protected_udp_output": {
+        "bytes": 0,
+        "packets": 0
+      },
+      "router_stub_drop": {
+        "bytes": 0,
+        "packets": 0
+      }
+    },
+    "selection_revision_stable": true,
+    "selection_stable": true,
+    "tcp_peer": "10.240.0.2",
+    "udp_peer": "10.250.240.2"
+  },
+  "remaining_gates": [
+    "DNS port 53",
+    "actual selector-change packet path",
+    "provider cohort",
+    "full functional/affected",
+    "GHCR publisher/consumer",
+    "reproducibility"
+  ],
+  "resources": {
+    "cpu_system_seconds": 2.319,
+    "cpu_user_seconds": 19.427,
+    "max_rss_kib": 123444,
+    "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+    "owned_temp_bytes_before_cleanup": 1820633,
+    "wall_seconds": 46.586
+  },
+  "run_id": 38141202543,
+  "scope": "hosted isolated kernel packet; not Debian host acceptance",
+  "source_revision": "cf62b37f2007cabc2abb486af5b5311e75efc8f6",
+  "status": "passed"
+}

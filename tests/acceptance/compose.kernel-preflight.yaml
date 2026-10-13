@@ -1,0 +1,6 @@
+services:
+  application:
+    build:
+      args: {}
+    user: "0:0"
+    cap_add: [NET_ADMIN]

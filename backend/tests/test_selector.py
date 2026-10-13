@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 
 import json
 from pathlib import Path
@@ -6,7 +7,6 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.main import create_app
@@ -41,9 +41,6 @@ from fwrouter_api.services.servers import (
 )
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def _seed_server(
@@ -469,17 +466,25 @@ def test_server_preference_revalidates_exclusive_scope_inside_writer_transaction
 
     from fwrouter_api.adapters import xray_common
     from fwrouter_api.services import server_preferences
+    from fwrouter_api.services.subscription import _source_id
     from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
 
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
-    source_a = "src:" + "a" * 64
-    source_b = "src:" + "b" * 64
+    source_a = _source_id("https://one.example/sub")
+    source_b = _source_id("https://two.example/sub")
     _seed_server("srv-exclusive-race", vpn_auto=False)
     with db_session() as connection:
         connection.execute(
             "INSERT INTO subscription_server_memberships (source_id, server_id, source_url, entry_identity_hash, is_active) VALUES (?, ?, ?, ?, 1)",
             (source_a, "srv-exclusive-race", "https://one.example/sub", "entry"),
+        )
+        connection.execute(
+            """INSERT INTO provider_bindings(
+                   source_ref, provider_id, resource_id, logical_server_id,
+                   protocol, enabled, updated_at
+               ) VALUES (?, 'pytest', 'resource', 'srv-exclusive-race', 'vless', 1, 0)""",
+            (source_a,),
         )
         connection.execute(
             "INSERT INTO settings (key, value_json) VALUES ('vpn_auto_exclusive_source_ref', ?)",
@@ -1826,24 +1831,58 @@ def test_priority_eligibility_boundary_reconciles_xray_but_zero_to_one_does_not(
         lambda **_: {"ok": True, "triggered": False},
     )
     from fwrouter_api.services.server_preferences import update_server_preferences as update_preferences
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    from fwrouter_api.services.xray_vpn_auto_pending import get_xray_vpn_auto_pending_state
 
-    assert update_preferences(
+    def _fences() -> tuple[int, int]:
+        with db_session() as connection:
+            selection_revision = read_selection_revision(connection)
+        pending_revision = int(get_xray_vpn_auto_pending_state()["revision"])
+        return selection_revision, pending_revision
+
+    selection_revision_0, pending_revision_0 = _fences()
+
+    enters_pool = update_preferences(
         "srv-eligibility", vpn_auto_priority=0, reconcile_after_preferences=reconcile,
-    )["ok"] is True
-    assert update_preferences(
+    )
+    assert enters_pool["ok"] is True
+    selection_revision_1, pending_revision_1 = _fences()
+    assert selection_revision_1 == selection_revision_0 + 1
+    assert pending_revision_1 == pending_revision_0 + 1
+    assert enters_pool["xray_vpn_auto_reconcile"]["revision"] == pending_revision_1
+
+    remains_in_pool = update_preferences(
         "srv-eligibility", vpn_auto_priority=1, reconcile_after_preferences=reconcile,
-    )["ok"] is True
-    assert update_preferences(
+    )
+    assert remains_in_pool["ok"] is True
+    selection_revision_2, pending_revision_2 = _fences()
+    assert selection_revision_2 == selection_revision_1 + 1
+    assert pending_revision_2 == pending_revision_1
+    assert remains_in_pool["xray_vpn_auto_reconcile"] is None
+
+    leaves_pool = update_preferences(
         "srv-eligibility", vpn_auto_priority=-1, reconcile_after_preferences=reconcile,
-    )["ok"] is True
+    )
+    assert leaves_pool["ok"] is True
+    selection_revision_3, pending_revision_3 = _fences()
+    assert selection_revision_3 == selection_revision_2 + 1
+    assert pending_revision_3 == pending_revision_2 + 1
+    assert leaves_pool["xray_vpn_auto_reconcile"]["revision"] == pending_revision_3
+
     _seed_server("srv-not-member", vpn_auto=False, vpn_auto_priority=-1, vpn_auto_priority_origin="manual")
-    assert update_preferences(
+    excluded = update_preferences(
         "srv-not-member", vpn_auto_priority=0, reconcile_after_preferences=reconcile,
-    )["ok"] is True
-    assert update_preferences(
+    )
+    assert excluded["ok"] is True
+    selection_revision_4, pending_revision_4 = _fences()
+    assert selection_revision_4 == selection_revision_3
+    assert pending_revision_4 == pending_revision_3
+    assert excluded["xray_vpn_auto_reconcile"] is None
+    unchanged = update_preferences(
         "srv-not-member", vpn_auto_priority=0, reconcile_after_preferences=reconcile,
-    )["changed"] is False
-    assert calls == [True, False, True, False]
+    )
+    assert unchanged["changed"] is False
+    assert calls == [True, True, True]
 
 
 def test_admin_fixed_server_precheck_failure_is_structured_job_error(monkeypatch, tmp_path: Path) -> None:

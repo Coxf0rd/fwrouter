@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -12,12 +13,12 @@ import uuid
 
 import pytest
 
-from fwrouter_api.adapters.xray_common import XrayApplyResult
+from fwrouter_api.adapters.xray_common import XrayAdapterError, XrayApplyResult
 from fwrouter_api.adapters import xray_real
 from fwrouter_api.adapters.xray_real import RealXrayAdapter
 
 
-def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> None:
+def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch, tmp_path) -> None:
     image = os.environ.get("FWROUTER_XRAY_TEST_IMAGE")
     if not image:
         pytest.skip("set FWROUTER_XRAY_TEST_IMAGE to an already-present pinned Xray 26.2.6 image")
@@ -33,8 +34,11 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> Non
     assert "Xray 26.2.6" in version
 
     expected = ("11111111-1111-4111-8111-111111111111", "fixture@example.test")
-    container = f"native-xray-readback-test-{uuid.uuid4().hex[:12]}"
-    with tempfile.TemporaryDirectory(prefix="fwrouter-xray-readback-") as temp_dir:
+    run_id = os.environ.get("FWROUTER_XRAY_TEST_RUN_ID")
+    if run_id and not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        pytest.fail("FWROUTER_XRAY_TEST_RUN_ID must be a lowercase 128-bit nonce")
+    container = f"native-xray-readback-test-{run_id[:12]}" if run_id else f"native-xray-readback-test-{uuid.uuid4().hex[:12]}"
+    with tempfile.TemporaryDirectory(prefix="fwrouter-xray-readback-", dir=tmp_path) as temp_dir:
         root = pathlib.Path(temp_dir)
         root.chmod(0o755)
         monkeypatch.setattr(xray_real, "DOCKER_CLI_STATE_DIR", root / "docker-cli")
@@ -68,10 +72,12 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> Non
             "22222222-2222-4222-8222-222222222222", "replacement@example.test",
         )
 
+        ownership_labels = (["--label", "io.fwrouter.acceptance.owner=fwrouter-test-harness-v1",
+                             "--label", f"io.fwrouter.acceptance.run={run_id}"] if run_id else [])
         started = subprocess.run(
             ["docker", "run", "--pull=never", "--detach", "--rm", "--network", "none",
              "--cpus=0.5", "--memory=128m", "--pids-limit=64", "--cap-drop=ALL",
-             "--security-opt=no-new-privileges", "--user", "65534:65534",
+             "--security-opt=no-new-privileges", "--user", "65534:65534", *ownership_labels,
              "--name", container, "-v", f"{config_path}:/etc/xray/config.json:ro", image,
              "run", "-config", "/etc/xray/config.json"],
             check=True, capture_output=True, text=True, timeout=10,
@@ -134,6 +140,34 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch) -> Non
             assert hashlib.sha256(copied.read_bytes()).hexdigest() == expected_host_sha
             assert adapter.get_runtime_config_sha256() == expected_host_sha
             assert identities == [replacement_identity]
+
+            empty_config = json.loads(config_path.read_text(encoding="utf-8"))
+            empty_config["inbounds"][1]["settings"]["clients"] = []
+            empty_path = root / "config.empty.json"
+            empty_path.write_text(json.dumps(empty_config), encoding="utf-8")
+            empty_path.chmod(0o644)
+            os.replace(empty_path, config_path)
+            empty_sha = hashlib.sha256(config_path.read_bytes()).hexdigest()
+            restarted = subprocess.run(
+                ["docker", "restart", container], check=True, capture_output=True,
+                text=True, timeout=10,
+            )
+            assert restarted.stdout.strip() == container
+            deadline = time.monotonic() + 10
+            last_error = None
+            while time.monotonic() < deadline:
+                try:
+                    identities = adapter.list_loaded_client_identities()
+                    if identities == []:
+                        break
+                except XrayAdapterError as exc:
+                    if exc.code not in {"XRAY_API_READBACK_FAILED", "XRAY_API_READBACK_TIMEOUT"}:
+                        raise
+                    last_error = exc.code
+                time.sleep(0.2)
+            else:
+                pytest.fail(f"restarted isolated Xray did not return an empty HandlerService user list ({last_error})")
+            assert adapter.get_runtime_config_sha256() == empty_sha
         finally:
             subprocess.run(["docker", "stop", container], check=False, capture_output=True, timeout=8)
 
@@ -167,6 +201,8 @@ def _isolated_runner(
     return XrayApplyResult(
         ok=completed.returncode == 0,
         message="isolated native API readback",
-        error_code=None if completed.returncode == 0 else f"ISOLATED_DOCKER_EXIT_{completed.returncode}",
+        error_code=(None if completed.returncode == 0 else
+                    "XRAY_API_READBACK_FAILED" if action == "api_inbound_users" else
+                    f"ISOLATED_DOCKER_EXIT_{completed.returncode}"),
         details={"stdout": completed.stdout},
     )

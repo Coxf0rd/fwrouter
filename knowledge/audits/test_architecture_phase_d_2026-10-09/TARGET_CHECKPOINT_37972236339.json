@@ -1,0 +1,65 @@
+{
+  "run_id": 37972236339,
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37972236339",
+  "source_revision": "b51fab913abb9e03ad41c508850501e7d59553af",
+  "scope": "targets",
+  "readmodel_fixtures": {
+    "expected": 18,
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "owned_temp_cleanup": true,
+    "artifacts": "evidence/run_37972236339/phase-d-target-readmodel-fixtures-b51fab913abb9e03ad41c508850501e7d59553af/readmodels.{json,xml,log}"
+  },
+  "native_diagnostic": {
+    "expected": 3,
+    "passed": 1,
+    "failed": 2,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "owned_resources_removed": true,
+    "cleanup_errors": 0,
+    "results": {
+      "provider_unavailable": {
+        "status": "passed",
+        "observation": "The typed provider HTTP 503 case completed as unknown; it did not classify a member as down."
+      },
+      "browser_client_editor": {
+        "status": "failed",
+        "failure": "The UI inventory lookup expected one client match by the test client identity but observed zero matches. The test failed before the aggregate subscription-group alias edit."
+      },
+      "core_cas_miss_reconcile": {
+        "status": "failed",
+        "failure": "The runtime selection succeeded and the worker recorded a CAS miss followed by a successful reconcile. The test then compared active_after_runtime_target with selected_runtime_target, which was absent (None) in the selector response."
+      }
+    },
+    "recovery_fence_events_by_test": {
+      "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry": [
+        {"schema": "fwrouter-acceptance-selection-fence/v1", "event": "commit", "cas_committed": true, "active_matches_selected": null},
+        {"schema": "fwrouter-acceptance-provider-verification-exception/v1", "event": "refresh_result"},
+        {"schema": "fwrouter-acceptance-selection-fence/v1", "event": "commit", "cas_committed": false, "active_matches_selected": true},
+        {"schema": "fwrouter-acceptance-selection-fence/v1", "event": "commit", "cas_committed": true, "active_matches_selected": true},
+        {"schema": "fwrouter-acceptance-selection-fence/v1", "event": "reconcile", "error_code": null}
+      ]
+    },
+    "artifacts": "evidence/run_37972236339/phase-d-xray-diagnostic-b51fab913abb9e03ad41c508850501e7d59553af/fwrouter-acceptance-d44db1cc2c28444bac84287cd2cc3ce3-artifacts/{application-acceptance-receipt.json,application-acceptance.xml,pytest-output.txt,worker-service-logs.json}"
+  },
+  "image_resources": {
+    "base_image_present_before_build": false,
+    "built_image_bytes": 1961524491,
+    "compose_build_seconds": 41.477,
+    "application_process_resources": {
+      "cpu_system_seconds": 1.817,
+      "cpu_user_seconds": 12.607,
+      "max_rss_kib": 110892,
+      "owned_temp_bytes_before_cleanup": 1910478,
+      "wall_seconds": 24.93
+    }
+  },
+  "pending": [
+    "The browser client-editor case has not yet passed its inventory lookup; aggregate alias behavior is not established by this run.",
+    "The CAS test assertion needs to use the observed selector result contract without weakening the native-readback or reconciliation assertions."
+  ],
+  "phase_d_status": "blocked; the target-only results do not replace the broader functional or affected-unit gates"
+}

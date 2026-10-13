@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 
 import json
 from pathlib import Path
@@ -6,15 +7,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from fwrouter_api.adapters.mihomo import MihomoDelayResult
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.main import create_app
 from fwrouter_api.services import server_ping
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def _seed_server(

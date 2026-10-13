@@ -347,6 +347,9 @@ def validate_mihomo_candidate_config(
     elif not structural["vpn_global_has_vpn_auto"]:
         error_code = "MIHOMO_VPN_GLOBAL_MISWIRED"
         stderr_tail = "vpn-global selector does not include vpn-auto."
+    elif not structural["selector_groups_ok"]:
+        error_code = "MIHOMO_SELECTOR_FAIL_CLOSED_MISMATCH"
+        stderr_tail = "FWRouter-owned VPN selectors must exclude DIRECT and terminate in REJECT."
     elif structural["transparent_required"] and structural["transparent_listener_count"] != 2:
         error_code = "MIHOMO_TRANSPARENT_LISTENER_CONFLICT"
         stderr_tail = "FWRouter transparent ingress must expose exactly one REDIR port and one TPROXY port."
@@ -369,6 +372,9 @@ def validate_mihomo_candidate_config(
     ):
         error_code = "MIHOMO_TRANSPARENT_TARGET_MISSING"
         stderr_tail = "Transparent REDIR/TPROXY ingress must route to vpn-global directly or reference valid fwrouter sub-rules."
+    elif not structural["full_vpn_subrules_ok"]:
+        error_code = "MIHOMO_FULL_VPN_UDP_GUARD_MISMATCH"
+        stderr_tail = "Full-VPN sub-rules are missing an exact UDP fail-closed guard sequence."
     elif not structural["state_consistency_ok"]:
         error_code = "MIHOMO_SELECTIVE_DEFAULT_MISMATCH"
         stderr_tail = "Resolved selective_default does not match candidate fallback rule."
@@ -400,6 +406,7 @@ def validate_mihomo_candidate_config(
         "vpn_auto_present": structural["vpn_auto_present"],
         "vpn_global_present": structural["vpn_global_present"],
         "vpn_global_has_vpn_auto": structural["vpn_global_has_vpn_auto"],
+        "selector_groups_ok": structural["selector_groups_ok"],
         "mixed_listener_count": structural["mixed_listener_count"],
         "mixed_listener_bind": structural["mixed_listener_bind"],
         "mixed_listener_port": structural["mixed_listener_port"],
@@ -418,6 +425,8 @@ def validate_mihomo_candidate_config(
         "transparent_inbound_rules": structural["transparent_inbound_rules"],
         "transparent_inbound_rule_ok": structural["transparent_inbound_rule_ok"],
         "transparent_subrules_ok": structural["transparent_subrules_ok"],
+        "full_vpn_subrules_ok": structural["full_vpn_subrules_ok"],
+        "expected_full_vpn_subrules": structural["expected_full_vpn_subrules"],
         "transparent_final_match_rule": structural["transparent_final_match_rule"],
         "expected_transparent_final_match_rule": structural["expected_transparent_final_match_rule"],
         "transparent_state_consistency_ok": structural["transparent_state_consistency_ok"],

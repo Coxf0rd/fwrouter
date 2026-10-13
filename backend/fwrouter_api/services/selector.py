@@ -39,6 +39,7 @@ DEFAULT_ON_DEMAND_LIMIT = 10
 DEFAULT_ON_DEMAND_TIMEOUT_MS = 10000
 MIN_VPN_AUTO_PRIORITY = -1
 MAX_VPN_AUTO_PRIORITY = 5
+NON_SERVER_SELECTOR_TARGETS = frozenset({"DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE"})
 TRAFFIC_COLLECT_TIMER_PATH = Path("/etc/systemd/system/fwrouter-traffic-collect.timer")
 TRAFFIC_COLLECT_SERVICE_PATH = Path("/etc/systemd/system/fwrouter-traffic-collect.service")
 TRAFFIC_COLLECT_SCRIPT_PATH = Path("/usr/local/libexec/fwrouter/traffic-collect-api.sh")
@@ -640,7 +641,7 @@ def get_vpn_auto_state(*, read_only: bool = False) -> dict[str, Any]:
         if str(target or "").strip()
     ]
     runtime_vpn_auto_server_targets = [
-        target for target in runtime_vpn_auto_targets if target != "DIRECT"
+        target for target in runtime_vpn_auto_targets if target not in NON_SERVER_SELECTOR_TARGETS
     ]
     fallback_active_server_id = str(getattr(health, "active_server_id", "") or "").strip() if health is not None else ""
     if not runtime_vpn_auto_server_targets and not runtime_vpn_auto_targets and fallback_active_server_id:
@@ -1555,7 +1556,7 @@ def select_vpn_auto_server(
     runtime_selector_targets = {
         str(target)
         for target in (health_selectors.get("vpn_auto_targets") or [])
-        if str(target or "").strip() and str(target) != "DIRECT"
+        if str(target or "").strip() and str(target) not in NON_SERVER_SELECTOR_TARGETS
     }
     runtime_inventory_targets = runtime_server_ids | runtime_selector_targets
 

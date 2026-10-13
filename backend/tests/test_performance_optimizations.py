@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 
 import json
 from pathlib import Path
@@ -13,9 +14,6 @@ from fwrouter_api.services import subscription_pipeline
 from fwrouter_api.services import xray_subscription_service
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def _seed_topology(server_id: str, name: str, members: list[str]) -> None:
@@ -42,6 +40,11 @@ class _BatchRuntime:
         self.snapshots = snapshots
         self.batch_calls: list[list[str]] = []
         self.single_calls: list[str] = []
+        self.inventory_calls = 0
+
+    def list_servers(self) -> list[dict[str, str]]:
+        self.inventory_calls += 1
+        return [{"server_name": "Single"}]
 
     def get_logical_groups_state(self, targets: list[str]) -> list[dict]:
         self.batch_calls.append(list(targets))
@@ -58,13 +61,18 @@ def _register_runtime(monkeypatch, runtime: _BatchRuntime, *, batch: bool = True
         RUNTIME_CAPABILITY_HEALTH,
         RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE,
         RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY,
+        RUNTIME_CAPABILITY_LIST_SERVERS,
         RUNTIME_ROLE_VPN_DATAPLANE,
         RuntimeAdapterRegistration,
         register_runtime_adapter,
     )
 
     monkeypatch.setattr(runtime_adapters, "_RUNTIME_ADAPTER_REGISTRY", [])
-    capabilities = {RUNTIME_CAPABILITY_HEALTH, RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE}
+    capabilities = {
+        RUNTIME_CAPABILITY_HEALTH,
+        RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE,
+        RUNTIME_CAPABILITY_LIST_SERVERS,
+    }
     if batch:
         capabilities.add(RUNTIME_CAPABILITY_LOGICAL_GROUP_STATE_MANY)
     register_runtime_adapter(
@@ -85,7 +93,6 @@ def test_runtime_topology_batch_matches_single_and_uses_one_observation(monkeypa
     initialize_database()
     _seed_topology("single", "Single", ["one"])
     _seed_topology("multi", "Multi", ["one", "two"])
-    _seed_topology("unavailable", "Unavailable", ["one", "two"])
     runtime = _BatchRuntime(
         {
             "Multi": {
@@ -95,22 +102,28 @@ def test_runtime_topology_batch_matches_single_and_uses_one_observation(monkeypa
                 "evidence_source": "runtime_native",
                 "members": [],
             },
-            "Unavailable": {
-                "ok": False,
-                "logical_runtime_target": "Unavailable",
-                "effective_member_runtime_identity": None,
+            "Batch available": {
+                "ok": True,
+                "logical_runtime_target": "Batch available",
+                "effective_member_runtime_identity": "Batch available :: one",
                 "evidence_source": "runtime_native",
                 "members": [],
             },
         }
     )
     _register_runtime(monkeypatch, runtime)
-    ids = ["single", "multi", "unavailable", "multi"]
+    _seed_topology("batch-available", "Batch available", ["one", "two"])
+    ids = ["single", "multi", "batch-available", "multi"]
 
     batched = logical_topology.get_runtime_logical_topologies(ids)
-    assert runtime.batch_calls == [["Multi", "Unavailable"]]
-    assert runtime.single_calls == []
-    for server_id in ("single", "multi", "unavailable"):
+    assert len(runtime.batch_calls) == 1, f"expected one batch read, got {runtime.batch_calls!r}"
+    assert len(runtime.batch_calls[0]) == 2, f"expected two unique batch targets, got {runtime.batch_calls[0]!r}"
+    assert set(runtime.batch_calls[0]) == {"Multi", "Batch available"}, (
+        f"unexpected batch targets: {runtime.batch_calls[0]!r}"
+    )
+    assert runtime.inventory_calls == 1, f"expected one inventory observation, got {runtime.inventory_calls}"
+    assert runtime.single_calls == [], f"unexpected single-read fallback: {runtime.single_calls!r}"
+    for server_id in ("single", "multi", "batch-available"):
         assert batched[server_id] == logical_topology.get_runtime_logical_topology(server_id)
 
 
@@ -140,6 +153,34 @@ def test_runtime_topology_batch_falls_back_when_batch_operation_unsupported(monk
     assert result["multi"]["active_member_id"] == "one"
     assert runtime.batch_calls == [["Multi"]]
     assert runtime.single_calls == ["Multi"]
+
+
+def test_runtime_topology_batch_failure_uses_explicit_single_read_fallback(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_topology("multi", "Multi", ["one", "two"])
+
+    class FailedBatch(_BatchRuntime):
+        def get_logical_groups_state(self, targets: list[str]) -> list[dict]:
+            self.batch_calls.append(list(targets))
+            raise RuntimeError("batch transport unavailable")
+
+    runtime = FailedBatch({
+        "Multi": {
+            "ok": True,
+            "logical_runtime_target": "Multi",
+            "effective_member_runtime_identity": "Multi :: two",
+            "evidence_source": "runtime_native",
+            "members": [],
+        }
+    })
+    _register_runtime(monkeypatch, runtime)
+
+    result = logical_topology.get_runtime_logical_topologies(["multi"])
+
+    assert runtime.batch_calls == [["Multi"]]
+    assert runtime.single_calls == ["Multi"]
+    assert result["multi"]["active_member_id"] == "two"
 
 
 def test_mihomo_fingerprint_ignores_timestamps_but_tracks_semantics(monkeypatch, tmp_path: Path) -> None:

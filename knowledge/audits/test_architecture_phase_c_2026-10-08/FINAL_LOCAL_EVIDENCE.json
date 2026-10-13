@@ -1,0 +1,31 @@
+{
+  "scope": "L0 AST/JSON/TOML/traceability/scope; L1/L2 pure contracts only",
+  "ast_file_count": 19,
+  "registered_hosted_cases": 48,
+  "returncode": 0,
+  "wall_seconds": 3.24,
+  "cpu_user_seconds": 1.003,
+  "cpu_system_seconds": 0.292,
+  "single_child_high_water_rss_kib": 37012,
+  "stdout": "",
+  "stderr": "----------------------------------------------------------------------\nRan 60 tests in 3.107s\n\nOK\n",
+  "native_browser_crash_status": "NOT RUN \u2014 pending Phase D",
+  "production_and_operational_branch": "unchanged",
+  "final_source_static_review": "AST and global-symbol references PASS after final fixture persistence correction",
+  "acceptance_source_sha256": {
+    "tests/application_acceptance/__init__.py": "58935398df80af9a25990697be597c1e24cb4d108e943b6b9185e409ab6e1dad",
+    "tests/application_acceptance/conftest.py": "b8f062c26ebf5e75a64110fc7eccf8c7bf6ad20cb09067ebe9e31de91dbcc5f8",
+    "tests/application_acceptance/http_support.py": "3ec4495d1af3d0c534ddf85ab1c82df1e81ae7a5cdf46a04a25fd0328340465c",
+    "tests/application_acceptance/joined_support.py": "d292d87bc02c6b165efc32049103ad30c723c581967b838b112009e9aba5f3e5",
+    "tests/application_acceptance/native_runner.py": "77ffce858a85af8eed754699357e84be0a3665b8d412a8e583825490402f225c",
+    "tests/application_acceptance/profile.py": "36e28f6ee7a186b079a8a9076a331ed0f3bbf159d3513f7d78f749482b76123a",
+    "tests/application_acceptance/test_browser_locale.py": "c523efc2ac4db0d7d1af7952b5ae058988657459db9e19b575855da4eb49ed68",
+    "tests/application_acceptance/test_core_provider_mihomo.py": "0548b524243727043898fcb2d209921c4cd92c8ace37145893883160966c6b85",
+    "tests/application_acceptance/test_database_application.py": "37ffd463ceadb5ddc6e10cf7c2f0cf56915eba27611e16990e2c520f177d4a4b",
+    "tests/application_acceptance/test_xray_api.py": "591c52b76d15e56ead812b100396a1cf53aa00a9761065f5bce91c290073cce0",
+    "tests/application_acceptance/test_xray_generation.py": "67e2b7df942d0d14c1f43f424ecac53e04fdf38084ead435f7e434e2d1ee8252",
+    "tests/application_acceptance/test_xray_worker_crash_l7.py": "1cc96a5ae3e2f04c849481d8ce02e29ebe74b2cdb185d4208125b263a5c8e489",
+    "tests/application_acceptance/worker.py": "9e247251ef42035af9025f4d9294dfb2cefaabb747f2ca236558e4054e44b423",
+    "tests/application_acceptance/xray_support.py": "9a830f2015d2d3af0b6aecf5351884813075e97a022a0455018e30db46af872d"
+  }
+}

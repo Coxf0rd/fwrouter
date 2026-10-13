@@ -1,0 +1,22 @@
+{
+  "run_id": 38312819928,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38312819928",
+  "source_commit": "2ec589dcfb6a765b57ac00a91acf987cf0aaa1b1",
+  "strict_main_smoke_validator": {
+    "errors": [],
+    "plan_digest": "3af9d9ee484486deff868c374bb6b867516912a4d1210fffecaa8981cfaeb45f",
+    "receipt_count": 1,
+    "schema": "fwrouter-phase-d-main-smoke-validation/v1",
+    "source_commit": "2ec589dcfb6a765b57ac00a91acf987cf0aaa1b1",
+    "status": "passed"
+  },
+  "native_tests": {
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0
+  },
+  "cleanup": "owned_resources_removed",
+  "fast_run_id": 38312819923,
+  "fast_status": "PASS",
+  "scope": "branch-hosted real diagnostic receipt validation; NOT actual main event"
+}

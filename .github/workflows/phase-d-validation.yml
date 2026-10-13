@@ -1,0 +1,912 @@
+name: Phase D branch validation (temporary)
+
+on:
+  push:
+    branches: [stage/test-architecture-ci-stabilization]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fwrouter-phase-d-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  select-stage:
+    name: Require an explicit Phase D validation marker
+    if: >-
+      contains(github.event.head_commit.message, 'ci:validate-') &&
+      !contains(github.event.head_commit.message, 'ci:validate-dependencies')
+    runs-on: ubuntu-24.04
+    outputs:
+      stage: ${{ steps.stage.outputs.stage }}
+    steps:
+      - id: stage
+        env:
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+
+          markers = {
+              "ci:validate-minimal": "minimal",
+              "ci:validate-provider": "provider",
+              "ci:validate-browser": "browser",
+              "ci:validate-cohort": "provider-cohort",
+              "ci:validate-fences": "fence-diagnostic",
+              "ci:validate-recovery": "recovery-diagnostic",
+              "ci:validate-reentry": "reentry-diagnostic",
+              "ci:validate-targets": "targets",
+              "ci:validate-host-fixtures": "host-fixtures",
+              "ci:validate-zero": "zero",
+              "ci:validate-qualified": "qualified",
+              "ci:validate-functional-bundle": "functional-bundle",
+              "ci:validate-metadata": "metadata",
+              "ci:validate-kernel": "kernel-preflight",
+              "ci:validate-dataplane": "kernel-recovery-diagnostic",
+              "ci:validate-packet": "packet-diagnostic",
+              "ci:validate-udp-unit": "udp-unit",
+              "ci:validate-unit-fixtures": "unit-fixtures",
+              "ci:validate-unit-residual": "unit-residual",
+              "ci:validate-unit-acceptance-tail": "unit-acceptance-tail",
+          }
+          message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
+          selected = [stage for marker, stage in markers.items() if marker in message]
+          if len(selected) > 1:
+              print("Commit message may contain only one ci:validate-* marker", file=sys.stderr)
+              raise SystemExit(2)
+          stage = selected[0] if selected else "preflight"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"stage={stage}\n")
+          print(f"Selected controlled validation stage: {stage}")
+          PY
+
+  unit-fixtures:
+    name: Fixed isolated unit fixture cohort
+    needs: [select-stage]
+    if: needs.select-stage.outputs.stage == 'unit-fixtures' || needs.select-stage.outputs.stage == 'unit-residual' || needs.select-stage.outputs.stage == 'unit-acceptance-tail'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.2
+      - name: Install hashed test dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Run exact fixed unit fixture cohort
+        env:
+          UNIT_FIXTURE_COHORT: ${{ needs.select-stage.outputs.stage == 'unit-residual' && 'residual' || (needs.select-stage.outputs.stage == 'unit-acceptance-tail' && 'acceptance-tail' || 'default') }}
+        run: |
+          set -euo pipefail
+          artifact_root="$RUNNER_TEMP/phase-d-unit-fixtures"
+          mkdir -p "$artifact_root"
+          max_attempts=1
+          if [ "$UNIT_FIXTURE_COHORT" = acceptance-tail ]; then max_attempts=5; fi
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            attempt_dir="$artifact_root/attempt-$attempt"
+            mkdir -p "$attempt_dir"
+            result=0
+            python tests/gates/gate.py validate-unit-fixtures \
+              --cohort "$UNIT_FIXTURE_COHORT" \
+              --output "$attempt_dir/unit-fixtures-report.json" \
+              --artifact-dir "$attempt_dir" || result=$?
+            printf 'cohort=%s\nattempt=%s\nexit_code=%s\n' \
+              "$UNIT_FIXTURE_COHORT" "$attempt" "$result" > "$attempt_dir/attempt-result.txt"
+            if [ "$result" -ne 0 ]; then
+              printf 'acceptance-tail attempt %s failed; stopping repetitions\n' "$attempt"
+              exit "$result"
+            fi
+            attempt=$((attempt + 1))
+          done
+      - name: Retain per-file JUnit, redacted logs, and cohort report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-unit-fixtures-${{ needs.select-stage.outputs.stage }}-${{ github.sha }}
+          path: ${{ runner.temp }}/phase-d-unit-fixtures/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
+
+  bootstrap-and-fast:
+    name: Static checks, bootstrap, focused infra L1
+    needs: [select-stage]
+    if: needs.select-stage.outputs.stage != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Lint all workflow files with pinned actionlint
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl --fail --location --silent --show-error --retry 2 --max-time 30 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive"
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  '"$archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
+      - name: Check full Phase D delta syntax and whitespace from fixed checkpoint
+        env:
+          PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
+          git diff --check "$PHASE_D_BASE_SHA...HEAD"
+          python3 - "$PHASE_D_BASE_SHA" <<'PY'
+          import ast
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          base = sys.argv[1]
+          files = subprocess.run(
+              ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD"],
+              check=True, capture_output=True, text=True,
+          ).stdout.splitlines()
+          for name in files:
+              path = Path(name)
+              if not path.is_file():
+                  continue
+              if path.suffix == ".py":
+                  ast.parse(path.read_text(encoding="utf-8"), filename=name)
+              elif path.suffix == ".json":
+                  json.loads(path.read_text(encoding="utf-8"))
+          print(f"Parsed Python/JSON syntax for {len(files)} changed paths")
+          PY
+          python tests/gates/gate.py lint-changed --base "$PHASE_D_BASE_SHA"
+      - name: Validate manifest and isolation boundary
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/gate.py validate \
+            > "$RUNNER_TEMP/phase-d-preflight/manifest-validation.log" 2>&1
+          python tests/gates/isolation_smoke.py \
+            > "$RUNNER_TEMP/phase-d-preflight/isolation-smoke.json" 2>&1
+      - name: Run focused test-infrastructure L1 contract suites
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/test_gate_contract.py \
+            > "$RUNNER_TEMP/phase-d-preflight/gate-contract.log" 2>&1
+          python tests/gates/test_acceptance_contract.py \
+            > "$RUNNER_TEMP/phase-d-preflight/acceptance-contract.log" 2>&1
+          python tests/gates/test_network_fixture_contract.py \
+            > "$RUNNER_TEMP/phase-d-preflight/network-fixture-contract.log" 2>&1
+          python tests/gates/test_smoke_contract.py \
+            > "$RUNNER_TEMP/phase-d-preflight/smoke-contract.log" 2>&1
+      - name: Run qualified source-manifest regression before native profiles
+        if: >-
+          needs.select-stage.outputs.stage == 'qualified' ||
+          needs.select-stage.outputs.stage == 'functional-bundle'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/qualified-source-manifest-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/qualified-source-manifest-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/qualified-source-manifest-nodeids.log" \
+            tests/test_isolation_bootstrap.py::test_qualified_source_digest_uses_shared_complete_allowlisted_inventory
+      - name: Run exact selective live-mode and preflight regressions
+        if: >-
+          needs.select-stage.outputs.stage == 'reentry-diagnostic' ||
+          needs.select-stage.outputs.stage == 'packet-diagnostic'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/selective-live-mode-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/selective-live-mode-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/selective-live-mode-nodeids.log" \
+            tests/test_dataplane_live.py::test_live_global_mode_classifies_normal_and_degraded_selective_defaults \
+            tests/test_dataplane_live.py::test_live_global_mode_keeps_conflicting_selective_defaults_ambiguous \
+            tests/test_dataplane_live.py::test_live_global_mode_does_not_infer_default_from_selective_marker_alone \
+            tests/test_dataplane_global.py::test_global_vpn_preflight_allows_prepare_with_empty_reject_selector_without_egress \
+            tests/test_dataplane_global.py::test_selective_vpn_policy_prepare_is_separate_from_egress_verification \
+            tests/test_apply_pipeline.py::test_render_owned_table_candidate_fail_closes_selective_vpn_default_until_policy_ready \
+            tests/test_apply_pipeline.py::test_apply_pipeline_selective_degraded_blocks_vpn_sets_and_fails_closed_for_vpn_default \
+            tests/test_mihomo_config_runtime.py::test_reconcile_mihomo_selective_default_fast_requires_full_compile_when_udp_guard_sequence_changes \
+            tests/test_mihomo_config_runtime.py::test_mihomo_fingerprint_ignores_derived_auto_selection_but_tracks_generation_inputs \
+            tests/test_mihomo_config_runtime.py::test_mihomo_publication_fence_rejects_newer_selection_with_stable_derived_input_hash \
+            tests/test_routing_drift_reapply.py::test_set_selective_default_reapplies_when_live_dataplane_drift_is_detected \
+            tests/test_routing_drift_reapply.py::test_set_selective_default_does_not_retry_unmarked_fast_failure
+      - name: Run exact manual-rules actor and apply-audit regressions
+        if: needs.select-stage.outputs.stage == 'packet-diagnostic'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/manual-rules-actor-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/manual-rules-actor-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/manual-rules-actor-nodeids.log" \
+            tests/test_rules.py::test_manual_rules_api_forwards_request_actor_to_draft_service \
+            tests/test_apply_orchestrator.py::test_manual_rules_apply_audit_counts_prior_rules \
+            tests/test_apply_orchestrator.py::test_mark_rules_job_success_forwards_audit_change_without_mutating_it
+      - name: Run exact DNS effective-artifact freshness regressions
+        if: needs.select-stage.outputs.stage == 'packet-diagnostic'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/dns-artifact-freshness-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/dns-artifact-freshness-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/dns-artifact-freshness-nodeids.log" \
+            tests/test_dataplane_global.py::test_read_effective_rules_artifact_fresh_bypasses_stale_cache_and_inflight \
+            tests/test_dataplane_global.py::test_read_effective_rules_artifact_falls_back_to_last_good \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_fails_when_dns_capture_enforcement_fails \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_reports_dns_capture_success \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_force_restarts_without_config_change \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_forces_android_connectivity_domains_direct \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_restarts_when_nftset_probe_is_unhealthy \
+            tests/test_dnsmasq.py::test_reconcile_dnsmasq_rules_waits_for_nftset_probe_after_restart
+      - name: Run the fixed metadata-override exact-node set
+        if: needs.select-stage.outputs.stage == 'metadata'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/metadata-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/metadata-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/metadata-nodeids.log" \
+            tests/test_provider_configuration.py::test_automatic_member_switch_policy_is_local_persistent_and_revision_neutral \
+            tests/test_provider_configuration.py::test_new_provider_binding_defaults_automatic_member_switch_to_disabled \
+            tests/test_provider_configuration.py::test_schema_23_provider_policy_migration_preserves_identity_credentials_and_is_idempotent \
+            tests/test_provider_recovery.py::test_disabled_automatic_member_switch_gates_phase_two_before_provider_io \
+            tests/test_provider_recovery.py::test_policy_disabled_phase_two_advances_to_existing_emergency_direct_phase \
+            tests/test_provider_managed_integration.py::test_disabled_automatic_member_switch_removes_provider_from_auto_candidates \
+            tests/test_provider_managed_integration.py::test_automatic_switch_operation_with_policy_off_makes_zero_adapter_calls \
+            tests/test_vpn_auto_exclusive.py::test_inventory_keeps_outside_auto_intent_editable_without_effective_pool_churn \
+            tests/test_provider_configuration.py::test_unknown_source_discovery_returns_not_found_without_provider_io
+      - name: Run the fixed host-runtime fixture exact-node set
+        if: needs.select-stage.outputs.stage == 'host-fixtures'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/host-fixtures-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/host-fixtures-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/host-fixtures-nodeids.log" \
+            tests/test_apply_pipeline.py::test_render_owned_table_candidate_uses_port_only_tproxy_target \
+            tests/test_apply_pipeline.py::test_render_owned_table_candidate_keeps_direct_and_vpn_terminal_chains_separate \
+            tests/test_runtime_summary.py::test_runtime_summary_contains_layout_and_modules \
+            tests/test_runtime_summary.py::test_runtime_summary_checks_applied_dataplane_artifacts \
+            tests/test_network_contract.py::test_network_contract_drives_protected_dataplane_and_rules \
+            tests/test_network_contract.py::test_network_contract_drives_nft_trusted_client_guards
+      - name: Run fixed Mihomo zero-delay contract nodes
+        if: needs.select-stage.outputs.stage == 'zero'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/zero-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/zero-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/zero-nodeids.log" \
+            tests/test_mihomo_adapter.py::test_mihomo_zero_history_is_healthy_only_when_native_alive_and_well_formed \
+            tests/test_mihomo_adapter.py::test_mihomo_group_probe_accepts_zero_and_preserves_last_good_for_invalid_samples \
+            tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_requires_fresh_exact_url_state_readback \
+            tests/test_mihomo_adapter.py::test_mihomo_member_zero_503_without_exact_fresh_proof_stays_failed \
+            tests/test_mihomo_adapter.py::test_mihomo_delay_zero_fallback_does_not_probe_on_other_errors
+      - name: Run exact UDP capability and Mihomo policy regression nodes
+        if: needs.select-stage.outputs.stage == 'udp-unit'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-preflight/udp-unit-nodeids.xml" \
+            --report "$RUNNER_TEMP/phase-d-preflight/udp-unit-nodeids.json" \
+            --log "$RUNNER_TEMP/phase-d-preflight/udp-unit-nodeids.log" \
+            tests/test_protocol_adapters.py::test_vless_udp_capability_is_tri_state_and_native_attempt_is_idempotent \
+            tests/test_protocol_adapters.py::test_vless_udp_capability_rejects_invalid_and_duplicate_uri_values \
+            tests/test_mihomo_config_runtime.py::test_build_mihomo_config_scopes_subject_server_override_to_vpn_rules_only \
+            tests/test_mihomo_config_runtime.py::test_build_mihomo_config_renders_effective_domain_and_cidr_rules \
+            tests/test_mihomo_config_runtime.py::test_build_mihomo_config_uses_vpn_fallback_when_requested \
+            tests/test_mihomo_config_runtime.py::test_transparent_fallback_validation_accounts_for_terminal_vpn_udp_guard \
+            tests/test_mihomo_adapter.py::test_vpn_udp_native_readback_requires_reject_groups_and_paired_guards \
+            tests/test_mihomo_adapter.py::test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types \
+            tests/test_mihomo_adapter.py::test_vpn_udp_active_server_does_not_fall_through_when_owned_selector_rejects \
+            tests/test_runtime_summary.py::test_runtime_enforcement_reports_confirmed_fail_closed_vpn_policy_without_egress \
+            tests/test_dataplane_global.py::test_global_vpn_preflight_allows_prepare_with_empty_reject_selector_without_egress \
+            tests/test_mihomo_config_runtime.py::test_reconcile_rollback_classifies_actual_direct_and_mandatory_vpn_configs \
+            tests/test_mihomo_config_runtime.py::test_mihomo_udp_policy_receipt_is_bound_to_config_hash_runtime_and_native_proof \
+            tests/test_vpn_auto_exclusive.py::test_exact_auto_targets_requires_reject_terminal_and_rejects_direct \
+            tests/test_logical_topology.py::test_provider_generation_probe_keeps_automatic_health_and_refresh_admission \
+            tests/test_xray.py::test_staged_generation_finalizer_returns_success_and_closes_checkpoint_last \
+            tests/test_xray.py::test_staged_generation_finalizer_keeps_checkpoint_on_publication_failure \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[success]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[success_no_callback]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[revision]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[source]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[incarnation]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[active_hash]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[fingerprint_after_proof]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[checkpoint_after_proof]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[native_proof]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[native_selector]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[native_guards]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[callback_false]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[receipt_write]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[unheld]" \
+            "tests/test_xray.py::test_staged_generation_udp_receipt_requires_fresh_owned_native_proof[wrong_token]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[success]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[revision]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[source]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[incarnation]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[active_hash]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[fingerprint_after_proof]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[checkpoint_after_proof]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[native_proof]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[native_selector]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[native_guards]" \
+            "tests/test_xray.py::test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof[receipt_write]" \
+            "tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[success]" \
+            "tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[receipt_failure]" \
+            "tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[readback_failure]" \
+            tests/test_xray.py::test_staged_generation_finalizer_requires_udp_receipt_before_publication \
+            tests/test_xray.py::test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publication
+      - name: Record focused preflight outcome
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/phase-d-preflight"
+          {
+            date -u +%FT%TZ
+            nproc
+            free -h
+            df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+            docker version
+            docker compose version
+          } > "$RUNNER_TEMP/phase-d-preflight/resources.txt" 2>&1
+          printf '%s\n' '${{ needs.select-stage.outputs.stage }}' > "$RUNNER_TEMP/phase-d-preflight/stage.txt"
+      - name: Retain static/bootstrap/infra gate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-preflight-${{ github.sha }}
+          path: ${{ runner.temp }}/phase-d-preflight/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
+
+  historical-seven:
+    name: Historical seven exact IDs, independent red evidence
+    needs: [select-stage]
+    if: needs.select-stage.outputs.stage == 'minimal'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - name: Install hashed test dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Execute the seven historical exact nodes without suppression
+        run: |
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-b-seven.xml" \
+            --report "$RUNNER_TEMP/phase-b-seven.json" \
+            --log "$RUNNER_TEMP/phase-b-seven.log" \
+            tests/test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only \
+            tests/test_state_routes.py::test_state_endpoints_are_get_only_and_read_only \
+            tests/test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state \
+            tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged \
+            tests/test_xray.py::test_legacy_subscription_get_is_read_only \
+            tests/test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation \
+            tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity
+      - name: Retain historical exact-node results and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-historical-seven-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phase-b-seven.xml
+            ${{ runner.temp }}/phase-b-seven.json
+            ${{ runner.temp }}/phase-b-seven.log
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
+
+  minimal-xray-diagnostic:
+    name: One isolated application/native diagnostic
+    needs: [select-stage, bootstrap-and-fast]
+    if: >-
+      needs.bootstrap-and-fast.result == 'success' &&
+      (needs.select-stage.outputs.stage == 'minimal' ||
+       needs.select-stage.outputs.stage == 'qualified' ||
+       needs.select-stage.outputs.stage == 'functional-bundle' ||
+       needs.select-stage.outputs.stage == 'provider' ||
+       needs.select-stage.outputs.stage == 'browser' ||
+       needs.select-stage.outputs.stage == 'provider-cohort' ||
+       needs.select-stage.outputs.stage == 'fence-diagnostic' ||
+       needs.select-stage.outputs.stage == 'recovery-diagnostic' ||
+       needs.select-stage.outputs.stage == 'reentry-diagnostic' ||
+       needs.select-stage.outputs.stage == 'kernel-preflight' ||
+       needs.select-stage.outputs.stage == 'kernel-recovery-diagnostic' ||
+       needs.select-stage.outputs.stage == 'packet-diagnostic' ||
+       needs.select-stage.outputs.stage == 'targets')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - name: Install hashed test dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Bind diagnostic to fixed source and complete Phase D plan
+        env:
+          PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
+          plan="$RUNNER_TEMP/phase-d-diagnostic-plan.json"
+          python tests/gates/gate.py plan --base "$PHASE_D_BASE_SHA" --include-native --output "$plan"
+          digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8"))["plan_digest"])' "$plan")
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          printf 'FWROUTER_ACCEPTANCE_PLAN_DIGEST=%s\n' "$digest" >> "$GITHUB_ENV"
+          cp "$plan" "$RUNNER_TEMP/phase-d-diagnostic-plan-copy.json"
+      - name: Provision exact hosted Xray/Mihomo/browser inputs
+        run: |
+          set -euo pipefail
+          /usr/bin/time -v python tests/acceptance/provision.py \
+            --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV" \
+            > "$RUNNER_TEMP/phase-diagnostic-provision.log" 2>&1
+          cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" \
+            "$RUNNER_TEMP/phase-diagnostic-runtime-inputs.json"
+      - name: Run the fixed application/native diagnostic or kernel preflight
+        env:
+          VALIDATION_STAGE: ${{ needs.select-stage.outputs.stage }}
+        run: |
+          set -euo pipefail
+          suite=xray-diagnostic
+          if [[ "$VALIDATION_STAGE" == provider ]]; then suite=provider-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == browser ]]; then suite=browser-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == provider-cohort ]]; then suite=provider-cohort; fi
+          if [[ "$VALIDATION_STAGE" == fence-diagnostic ]]; then suite=fence-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == recovery-diagnostic ]]; then suite=recovery-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == reentry-diagnostic ]]; then suite=reentry-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == targets ]]; then suite=target-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == kernel-preflight ]]; then suite=kernel-preflight; fi
+          if [[ "$VALIDATION_STAGE" == kernel-recovery-diagnostic ]]; then suite=kernel-recovery-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == packet-diagnostic ]]; then suite=packet-diagnostic; fi
+          log="$RUNNER_TEMP/phase-diagnostic-xray.log"
+          set +e
+          /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
+            > "$log" 2>&1
+          launcher_status=$?
+          set -e
+          python3 - "$log" <<'PY'
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, "tests/acceptance")
+          from launcher import _redact_public
+
+          output = _redact_public(Path(sys.argv[1]).read_bytes(), limit=64 * 1024)
+          sys.stdout.write(output)
+          PY
+          printf 'Acceptance launcher exit status: %s\n' "$launcher_status"
+          exit "$launcher_status"
+      - name: Validate the strict application/native smoke receipt
+        if: success() && needs.select-stage.outputs.stage == 'minimal'
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "tests/gates")
+          import aggregate_hosted
+          import gate
+
+          root = Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          plan_path = root / "phase-d-diagnostic-plan-copy.json"
+          inputs_path = root / "phase-diagnostic-runtime-inputs.json"
+          report_path = root / "phase-d-main-smoke-validation.json"
+          problems = []
+          source_commit = ""
+          plan_digest = ""
+          receipt_count = 0
+          try:
+              plan = aggregate_hosted.read_json(plan_path)
+              source_commit = str(plan.get("source_commit", ""))
+              plan_digest = str(plan.get("plan_digest", ""))
+              if source_commit != os.environ.get("EXPECTED_SOURCE_SHA"):
+                  problems.append("diagnostic plan source does not match this workflow SHA")
+              gate.ensure_plan(plan, gate.load_manifest())
+              runtime_inputs = aggregate_hosted.read_json(inputs_path)
+              aggregate_hosted.validate_runtime_inputs(runtime_inputs)
+              receipts = []
+              for candidate in root.rglob("hosted-acceptance-report.json"):
+                  try:
+                      value = aggregate_hosted.read_json(candidate)
+                  except (gate.GateError, OSError, ValueError, json.JSONDecodeError) as exc:
+                      problems.append(f"invalid hosted receipt {candidate.name}: {type(exc).__name__}")
+                      continue
+                  if value.get("suite") == "xray-diagnostic":
+                      receipts.append(candidate)
+              receipt_count = len(receipts)
+              if receipt_count != 1:
+                  problems.append(f"expected exactly one xray-diagnostic hosted receipt; found {receipt_count}")
+              else:
+                  problems.extend(aggregate_hosted.validate_main_smoke_receipt(
+                      receipts[0], plan, runtime_inputs,
+                      hosted_paths=[], required_partitions=[]))
+          except Exception as exc:
+              problems.append(f"validation failed: {type(exc).__name__}: {exc}")
+
+          errors = [gate.redact_failure_output(item)[:512] for item in problems[:8]]
+          result = {
+              "schema": "fwrouter-phase-d-main-smoke-validation/v1",
+              "status": "failed" if errors else "passed",
+              "source_commit": source_commit[:64],
+              "plan_digest": plan_digest[:64],
+              "receipt_count": receipt_count,
+              "errors": errors,
+          }
+          temporary = report_path.with_suffix(".tmp")
+          temporary.write_text(json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          temporary.replace(report_path)
+          print(json.dumps(result, sort_keys=True))
+          if errors:
+              raise SystemExit(1)
+          PY
+      - name: Retain bounded Xray diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-xray-diagnostic-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phase-d-diagnostic-plan-copy.json
+            ${{ runner.temp }}/phase-diagnostic-*.log
+            ${{ runner.temp }}/phase-diagnostic-runtime-inputs.json
+            ${{ runner.temp }}/phase-d-main-smoke-validation.json
+            ${{ runner.temp }}/fwrouter-acceptance-*-artifacts/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
+  target-readmodel-fixtures:
+    name: Fixed 18 host-independent read-model fixture nodes
+    needs: [select-stage]
+    if: needs.select-stage.outputs.stage == 'targets'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - name: Install hashed test dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Run exact 18 read-model fixture nodes
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-target-fixtures"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-target-fixtures/readmodels.xml" \
+            --report "$RUNNER_TEMP/phase-d-target-fixtures/readmodels.json" \
+            --log "$RUNNER_TEMP/phase-d-target-fixtures/readmodels.log" \
+            tests/test_ui_state.py::test_ui_readmodels_share_subject_health_from_projection \
+            tests/test_ui_state.py::test_list_ui_clients_includes_traffic_and_filters_internal_xray \
+            tests/test_ui_state.py::test_system_visibility_filters_ui_clients_and_inventory \
+            tests/test_ui_state.py::test_ui_settings_inventory_is_loaded_separately \
+            tests/test_ui_state.py::test_ui_settings_inventory_external_client_exposes_subscription_url \
+            tests/test_ui_state.py::test_xray_subscription_profiles_are_grouped_by_client \
+            tests/test_ui_state.py::test_disabled_xray_subscription_profile_remains_visible_with_separate_runtime_state \
+            tests/test_ui_state.py::test_opaque_xray_subscription_profile_nodes_are_hidden \
+            tests/test_ui_state.py::test_subscription_display_name_different_from_token_stays_in_inventory \
+            tests/test_ui_state.py::test_list_ui_clients_reuses_cached_traffic_and_effective_state \
+            tests/test_runtime_summary.py::test_runtime_summary_does_not_probe_external_ingress_without_connection \
+            tests/test_runtime_summary.py::test_runtime_summary_exposes_dataplane_capability \
+            tests/test_runtime_summary.py::test_runtime_summary_includes_scoped_egress_diagnostics \
+            tests/test_runtime_summary.py::test_system_summary_reports_runtime_status_instead_of_skeleton \
+            tests/test_runtime_summary.py::test_system_summary_uses_external_ingress_taxonomy_names \
+            tests/test_runtime_summary.py::test_runtime_summary_uses_persisted_subscription_state \
+            tests/test_runtime_summary.py::test_runtime_summary_exposes_automation_flags \
+            tests/test_isolation_bootstrap.py::test_isolated_host_observations_keep_external_source_probe_unavailable
+      - name: Run exact subscription group alias regressions
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-target-fixtures"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$RUNNER_TEMP/phase-d-target-fixtures/group-alias.xml" \
+            --report "$RUNNER_TEMP/phase-d-target-fixtures/group-alias.json" \
+            --log "$RUNNER_TEMP/phase-d-target-fixtures/group-alias.log" \
+            tests/test_subscription_group_alias.py::test_subscription_group_alias_updates_canonical_label_and_settings_projection \
+            tests/test_subscription_group_alias.py::test_subscription_group_alias_rejects_unknown_ambiguous_and_multiclient_groups \
+            tests/test_subscription_group_alias.py::test_subscription_group_alias_audit_failure_rolls_back_and_preserves_cache \
+            tests/test_subscription_group_alias.py::test_ordinary_subject_alias_still_updates_subject_alias_only
+      - name: Retain read-model fixture receipt and bounded logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-target-readmodel-fixtures-${{ github.sha }}
+          path: ${{ runner.temp }}/phase-d-target-fixtures/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
+
+  target-validation-result:
+    name: Require both target diagnostic checks
+    needs: [select-stage, minimal-xray-diagnostic, target-readmodel-fixtures]
+    if: always() && needs.select-stage.outputs.stage == 'targets'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require native diagnostic and read-model fixture job success
+        env:
+          NATIVE_RESULT: ${{ needs.minimal-xray-diagnostic.result }}
+          FIXTURE_RESULT: ${{ needs.target-readmodel-fixtures.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$NATIVE_RESULT" != success || "$FIXTURE_RESULT" != success ]]; then
+            echo "Target validation incomplete: native=$NATIVE_RESULT readmodels=$FIXTURE_RESULT" >&2
+            exit 1
+          fi
+          echo "Both fixed target diagnostic jobs passed."
+
+  qualified-native:
+    name: Qualified Mihomo child and isolated Docker Xray lanes
+    needs: [select-stage, minimal-xray-diagnostic]
+    if: >-
+      needs.minimal-xray-diagnostic.result == 'success' &&
+      (needs.select-stage.outputs.stage == 'qualified' ||
+       needs.select-stage.outputs.stage == 'functional-bundle')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - name: Install hashed test dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Bind native receipts to fixed source plan and provision exact inputs
+        env:
+          PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345
+        run: |
+          set -euo pipefail
+          git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
+          plan="$RUNNER_TEMP/phase-d-qualified-plan.json"
+          python tests/gates/gate.py plan --base "$PHASE_D_BASE_SHA" --include-native --output "$plan"
+          digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8"))["plan_digest"])' "$plan")
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          printf 'FWROUTER_ACCEPTANCE_PLAN_DIGEST=%s\n' "$digest" >> "$GITHUB_ENV"
+          python tests/acceptance/provision.py --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV" \
+            > "$RUNNER_TEMP/phase-d-qualified-provision.log" 2>&1
+          cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" "$RUNNER_TEMP/phase-d-qualified-inputs.json"
+      - name: Run both real qualified native profiles and retain both outcomes
+        run: |
+          set -euo pipefail
+          failures=0
+          for helper in qualified_child.py qualified_xray_docker.py; do
+            if [ "$helper" = qualified_child.py ]; then label=qcp; else label=xray-docker; fi
+            set +e
+            /usr/bin/time -v python "tests/acceptance/$helper" --run \
+              > "$RUNNER_TEMP/phase-d-qualified-$label.log" 2>&1
+            result=$?
+            set -e
+            cat "$RUNNER_TEMP/phase-d-qualified-$label.log"
+            if [ "$result" -ne 0 ]; then failures=1; fi
+          done
+          test "$failures" -eq 0
+      - name: Retain native profile receipts, logs, and runner resources
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-qualified-native-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phase-d-qualified-*
+            ${{ runner.temp }}/fwrouter-qcp-*-artifacts/**
+            ${{ runner.temp }}/fwrouter-xray-native-*-artifacts/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
+
+  full-affected-functional:
+    name: Full affected L0-L5 and functional 37 + packet 1 bundle
+    needs: [select-stage, qualified-native]
+    if: >-
+      needs.qualified-native.result == 'success' &&
+      needs.select-stage.outputs.stage == 'functional-bundle'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+          cache: pip
+          cache-dependency-path: tests/gates/requirements-ci.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Download the exact native plan and receipts from this source run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: phase-d-qualified-native-${{ github.sha }}
+          path: ${{ runner.temp }}/phase-d-qualified-evidence
+      - name: Plan and execute the complete fixed-checkpoint affected L0-L5 routine suite
+        id: affected
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/phase-d-full"
+          plan="$RUNNER_TEMP/phase-d-qualified-evidence/phase-d-qualified-plan.json"
+          report="$RUNNER_TEMP/phase-d-full/unit.json"
+          log="$RUNNER_TEMP/phase-d-full/unit.log"
+          cp "$plan" "$RUNNER_TEMP/phase-d-full/plan.json"
+          plan="$RUNNER_TEMP/phase-d-full/plan.json"
+          python3 - "$plan" "$RUNNER_TEMP/phase-d-full/functional-suites.txt" <<'PY'
+          import json,sys
+          plan=json.load(open(sys.argv[1],encoding="utf-8"))
+          manifest=json.load(open("tests/gates/manifest.json",encoding="utf-8"))
+          selected=set(plan["selected_files"])
+          profiles={row.get("execution_profile") for row in manifest["test_files"] if row["path"] in selected}
+          suites=[]
+          if "hosted-isolated-compose" in profiles:
+              suites.extend(["functional-ordinary","provider-cohort"])
+          if "hosted-kernel-packet" in profiles:
+              suites.append("packet-diagnostic")
+          if not suites:
+              raise SystemExit("fixed Phase D plan selected no hosted functional partitions")
+          open(sys.argv[2],"w",encoding="utf-8").write("".join(s+"\n" for s in suites))
+          PY
+          set +e
+          python tests/gates/gate.py run --plan "$plan" --include-native --defer-hosted \
+            --output "$report" > "$log" 2>&1
+          result=$?
+          set -e
+          tail -c 65536 "$log" || true
+          printf 'unit_exit=%s\n' "$result" > "$RUNNER_TEMP/phase-d-full/unit-exit.txt"
+          python3 - "$plan" "$GITHUB_ENV" <<'PY'
+          import json,sys
+          plan=json.load(open(sys.argv[1],encoding="utf-8"))
+          with open(sys.argv[2],"a",encoding="utf-8") as out:
+              out.write("FWROUTER_ACCEPTANCE_PLAN_DIGEST="+plan["plan_digest"]+"\n")
+          PY
+          exit "$result"
+      - name: Provision exact runtime inputs
+        id: provision
+        run: |
+          set -euo pipefail
+          python tests/acceptance/provision.py --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV" \
+            > "$RUNNER_TEMP/phase-d-full/provision.log" 2>&1
+          cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" "$RUNNER_TEMP/phase-d-full/runtime-inputs.json"
+      - name: Run exact hosted functional profile bundle and repeat only a green bundle
+        id: functional
+        run: |
+          set -euo pipefail
+          run_bundle() {
+            attempt="$1"
+            failed=0
+            while IFS= read -r suite; do
+              [ -n "$suite" ] || continue
+              log="$RUNNER_TEMP/phase-d-full/${suite}-${attempt}.log"
+              set +e
+              /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" > "$log" 2>&1
+              result=$?
+              set -e
+              cat "$log"
+              printf '%s_exit=%s\n' "$suite" "$result" >> "$RUNNER_TEMP/phase-d-full/functional-exits.txt"
+              if [ "$result" -ne 0 ]; then failed=1; fi
+            done < "$RUNNER_TEMP/phase-d-full/functional-suites.txt"
+            return "$failed"
+          }
+          : > "$RUNNER_TEMP/phase-d-full/functional-exits.txt"
+          first=0
+          run_bundle 1 || first=$?
+          if [ "$first" -ne 0 ]; then
+            echo 'second_bundle=NOT_RUN_first_bundle_failed' >> "$RUNNER_TEMP/phase-d-full/functional-exits.txt"
+            exit "$first"
+          fi
+          second=0
+          run_bundle 2 || second=$?
+          test "$second" -eq 0
+      - name: Aggregate exact full-phase source, L0-L5, native, application, and browser evidence
+        if: always()
+        env:
+          AFFECTED_OUTCOME: ${{ steps.affected.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ "$AFFECTED_OUTCOME" != success ]]; then
+            unit_exit=1
+            if [ -s "$RUNNER_TEMP/phase-d-full/unit-exit.txt" ]; then
+              unit_exit="$(sed -n 's/^unit_exit=//p' "$RUNNER_TEMP/phase-d-full/unit-exit.txt" | tail -n 1)"
+            fi
+            case "$unit_exit" in
+              ''|*[!0-9]*|0) unit_exit=1 ;;
+            esac
+            if [ "$unit_exit" -gt 255 ]; then unit_exit=1; fi
+            python tests/gates/aggregate_hosted.py \
+              --plan "$RUNNER_TEMP/phase-d-full/plan.json" \
+              --unit-report "$RUNNER_TEMP/phase-d-full/unit.json" \
+              --unit-failure-report --unit-exit-code "$unit_exit" \
+              --output "$RUNNER_TEMP/phase-d-full/aggregate.json"
+          fi
+          args=(--plan "$RUNNER_TEMP/phase-d-full/plan.json" \
+            --unit-report "$RUNNER_TEMP/phase-d-full/unit.json" \
+            --runtime-inputs "$RUNNER_TEMP/phase-d-full/runtime-inputs.json" \
+            --minimum-repeats 2 --output "$RUNNER_TEMP/phase-d-full/aggregate.json")
+          while IFS= read -r path; do args+=(--qcp-report "$path"); done \
+            < <(find "$RUNNER_TEMP/phase-d-qualified-evidence" -type f -name qualified-child-receipt.json -print | sort)
+          while IFS= read -r path; do args+=(--xray-docker-report "$path"); done \
+            < <(find "$RUNNER_TEMP/phase-d-qualified-evidence" -type f -name qualified-xray-docker-receipt.json -print | sort)
+          while IFS= read -r path; do args+=(--hosted-report "$path"); done \
+            < <(find "$RUNNER_TEMP" -type f -name hosted-acceptance-report.json -print | sort)
+          python tests/gates/aggregate_hosted.py "${args[@]}"
+      - name: Record final runner resource envelope
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/phase-d-full"
+          {
+            date -u +%FT%TZ
+            free -h
+            df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
+            docker ps --all --size
+            docker network ls
+            docker system df
+          } > "$RUNNER_TEMP/phase-d-full/resources-after.txt" 2>&1
+      - name: Retain full affected and functional evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-full-affected-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phase-d-full/**
+            ${{ runner.temp }}/fwrouter-acceptance-*-artifacts/**
+            ${{ runner.temp }}/phase-d-qualified-evidence/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3

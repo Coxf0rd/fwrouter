@@ -1,0 +1,151 @@
+{
+  "run_id": 38291414020,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38291414020",
+  "source_commit": "dfa583f4715136f270101f6af7d27e14a14b3821",
+  "overall_status": "FAIL",
+  "unit_counts": {
+    "passed": 1419,
+    "failed": 2
+  },
+  "blocked_reasons": [
+    "backend/tests/test_apply_pipeline.py: command or test result failed/was incomplete",
+    "installer/test-install.sh: command or test result failed/was incomplete"
+  ],
+  "historical_exact_seven": {
+    "test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only": {
+      "backend/tests/test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only": "passed"
+    },
+    "test_state_routes.py::test_state_endpoints_are_get_only_and_read_only": {
+      "backend/tests/test_state_routes.py::test_state_endpoints_are_get_only_and_read_only": "passed"
+    },
+    "test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state": {
+      "backend/tests/test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state": "passed"
+    },
+    "test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged": {
+      "backend/tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged": "passed"
+    },
+    "test_xray.py::test_legacy_subscription_get_is_read_only": {
+      "backend/tests/test_xray.py::test_legacy_subscription_get_is_read_only": "passed"
+    },
+    "test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation": {
+      "backend/tests/test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation": "passed"
+    },
+    "test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity": {
+      "backend/tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity": "passed"
+    }
+  },
+  "hosted_receipts": [
+    {
+      "source_revision": "dfa583f4715136f270101f6af7d27e14a14b3821",
+      "status": "passed",
+      "suite_nonce": "34e08efb634a449fb5baa23d72caad9d",
+      "scope": "hosted-kernel-dataplane",
+      "resources": {
+        "cpu_system_seconds": 13.608,
+        "cpu_user_seconds": 76.407,
+        "max_rss_kib": 191840,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 8969729,
+        "wall_seconds": 151.66
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 11
+      }
+    },
+    {
+      "source_revision": "dfa583f4715136f270101f6af7d27e14a14b3821",
+      "status": "passed",
+      "suite_nonce": "583009816da244d79c1744d3869b9614",
+      "scope": "hosted-kernel-packet",
+      "resources": {
+        "cpu_system_seconds": 6.949,
+        "cpu_user_seconds": 36.398,
+        "max_rss_kib": 138696,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 2992719,
+        "wall_seconds": 72.894
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 1
+      }
+    },
+    {
+      "source_revision": "dfa583f4715136f270101f6af7d27e14a14b3821",
+      "status": "passed",
+      "suite_nonce": "94ae075f8d6c49bf9d14a2b7da74685a",
+      "scope": "hosted-kernel-packet",
+      "resources": {
+        "cpu_system_seconds": 6.702,
+        "cpu_user_seconds": 35.437,
+        "max_rss_kib": 139836,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 2992721,
+        "wall_seconds": 72.246
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 1
+      }
+    },
+    {
+      "source_revision": "dfa583f4715136f270101f6af7d27e14a14b3821",
+      "status": "passed",
+      "suite_nonce": "a8a1f0c5b8bc420aa2d3ce9ff23c4aa2",
+      "scope": "hosted-native-process",
+      "resources": {
+        "cpu_system_seconds": 20.945,
+        "cpu_user_seconds": 110.981,
+        "max_rss_kib": 191528,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 15763057,
+        "wall_seconds": 236.893
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 26
+      }
+    },
+    {
+      "source_revision": "dfa583f4715136f270101f6af7d27e14a14b3821",
+      "status": "passed",
+      "suite_nonce": "d9673b816a784524985bec8ffe0e4158",
+      "scope": "hosted-kernel-dataplane",
+      "resources": {
+        "cpu_system_seconds": 13.627,
+        "cpu_user_seconds": 77.373,
+        "max_rss_kib": 190384,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 8969454,
+        "wall_seconds": 152.295
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 11
+      }
+    },
+    {
+      "source_revision": "dfa583f4715136f270101f6af7d27e14a14b3821",
+      "status": "passed",
+      "suite_nonce": "e3a489c00b224cbb8977bc507eba1c98",
+      "scope": "hosted-native-process",
+      "resources": {
+        "cpu_system_seconds": 20.483,
+        "cpu_user_seconds": 111.443,
+        "max_rss_kib": 192608,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 15762863,
+        "wall_seconds": 237.692
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 26
+      }
+    }
+  ],
+  "aggregate_status": "NOT PRODUCED: strict aggregator rejects failed unit row",
+  "production_changed": false,
+  "L6_run": false,
+  "L7_run": false
+}

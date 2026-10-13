@@ -33,11 +33,6 @@ done
 
 [ -n "$COMPONENTS" ] || COMPONENTS="all"
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "install-host-dependencies.sh: must run as root" >&2
-  exit 1
-fi
-
 if ! command -v apt-get >/dev/null 2>&1; then
   echo "install-host-dependencies.sh: apt-get not found; install dependencies manually for this distro" >&2
   exit 1
@@ -150,6 +145,13 @@ fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
+fi
+
+# Package-list inspection is safe for an unprivileged caller. Keep the root
+# boundary immediately before the first host mutation.
+if [ "$(id -u)" -ne 0 ]; then
+  echo "install-host-dependencies.sh: must run as root" >&2
+  exit 1
 fi
 
 apt-get update

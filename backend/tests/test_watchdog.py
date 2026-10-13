@@ -60,6 +60,13 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     )
 
 
+def _enable_watchdog_runtime_projection(monkeypatch) -> None:
+    # These cases exercise watchdog decisions and their module readback, not
+    # the configured-disabled scheduler projection.
+    monkeypatch.setenv("FWROUTER_WATCHDOG_SCHEDULER_ENABLED", "true")
+    get_settings.cache_clear()
+
+
 def _mock_successful_full_health_refresh(monkeypatch) -> None:
     monkeypatch.setattr(
         "fwrouter_api.services.vpn_runtime_control.MihomoVpnRuntimeController.full_health_refresh",
@@ -731,8 +738,11 @@ def test_detect_recent_vpn_traffic_attempts_treats_global_vpn_mark_as_outbound(
     assert signal["traffic_stalled"] is True
 
 
-def test_watchdog_auto_check_pauses_when_global_mode_is_not_vpn(monkeypatch, tmp_path: Path) -> None:
+def test_watchdog_auto_check_pauses_when_global_mode_is_not_vpn(
+    monkeypatch, tmp_path: Path, isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
+    _enable_watchdog_runtime_projection(monkeypatch)
     initialize_database()
 
     set_module_desired_state("watchdog", "enabled", run_now=False)
@@ -748,6 +758,7 @@ def test_watchdog_auto_check_pauses_when_global_mode_is_not_vpn(monkeypatch, tmp
 
 def test_watchdog_auto_check_marks_module_running_on_healthy_path(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
+    _enable_watchdog_runtime_projection(monkeypatch)
     initialize_database()
     _seed_subject("lan-vpn")
     _set_global_vpn_auto("srv-healthy")
@@ -849,6 +860,7 @@ def test_watchdog_auto_check_suppresses_failover_when_healthy_traffic_has_degrad
     tmp_path: Path,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
+    _enable_watchdog_runtime_projection(monkeypatch)
     monkeypatch.setenv("FWROUTER_WATCHDOG_ACTIVE_QUALITY_MAX_LATENCY_MS", "3000")
     get_settings.cache_clear()
     initialize_database()
@@ -1230,6 +1242,7 @@ def test_watchdog_auto_check_soft_degraded_quality_recovers_after_good_checks(
 
 def test_watchdog_auto_check_marks_module_degraded_on_fail_open(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
+    _enable_watchdog_runtime_projection(monkeypatch)
     initialize_database()
     _seed_subject("lan-fail")
     _set_global_vpn_auto("srv-fail")
@@ -1352,6 +1365,7 @@ def test_watchdog_external_vpn_adapter_skips_mihomo_selector(monkeypatch, tmp_pa
 
 def test_watchdog_external_vpn_adapter_reports_missing_failover_adapter(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
+    _enable_watchdog_runtime_projection(monkeypatch)
     initialize_database()
     _set_global_vpn_auto("srv-external")
     set_module_desired_state("watchdog", "enabled", run_now=False)
@@ -2396,6 +2410,7 @@ def test_watchdog_traffic_failure_confirmation_persists_candidate_across_restart
 
 def test_watchdog_auto_check_suppresses_switching_without_fresh_signal(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
+    _enable_watchdog_runtime_projection(monkeypatch)
     initialize_database()
     _set_global_vpn_auto("srv-stale")
     set_module_desired_state("watchdog", "enabled", run_now=False)
@@ -3698,6 +3713,7 @@ def test_watchdog_marks_module_degraded_when_runtime_convergence_is_unhealthy(
     tmp_path: Path,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
+    _enable_watchdog_runtime_projection(monkeypatch)
     initialize_database()
     _set_global_vpn_auto("srv-converge-fail")
     set_module_desired_state("watchdog", "enabled", run_now=False)

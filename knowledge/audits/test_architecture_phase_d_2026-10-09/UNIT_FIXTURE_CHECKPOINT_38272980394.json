@@ -1,0 +1,17 @@
+{
+  "run_id": 38272980394,
+  "source": "f8c7f14124fc7def892f7a341f337476d34c2aa7",
+  "cohort": "residual6",
+  "counts": {
+    "passed": 146,
+    "failed": 3,
+    "skipped": 0
+  },
+  "remaining": [
+    "backend/tests/test_routing_global_wave1.py::test_global_mode_success_commit_contract",
+    "backend/tests/test_routing_global_wave1.py::test_repair_global_direct_runtime_clears_stale_routing_error",
+    "backend/tests/test_runtime_logs.py::test_mihomo_reconcile_skip_writes_only_technical_log"
+  ],
+  "status": "BLOCKED",
+  "production": "unchanged"
+}

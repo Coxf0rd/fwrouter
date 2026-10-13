@@ -1,0 +1,430 @@
+{
+  "schema": "fwrouter-provider-diagnostic-checkpoints/v1",
+  "scope": "selected singleton provider diagnostic runs; no full-suite acceptance claim",
+  "common_infra_evidence": {
+    "hosted_runtime_preflight": "passed",
+    "container_confinement": "passed",
+    "cleanup": "owned_resources_removed",
+    "suite": "provider-diagnostic",
+    "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
+    "static_preflight_artifacts_retained": {
+      "37929892962": null,
+      "37930502888": null,
+      "37930988561": null,
+      "37931693745": null,
+      "37932841326": "passed",
+      "37933351633": "passed"
+    }
+  },
+  "runs": [
+    {
+      "run_id": 37929892962,
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37929892962",
+      "head_sha": "3c433905acb28618c578d40ecd12351331630a59",
+      "status": "completed_failure",
+      "tests": {
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "errors": 0
+      },
+      "chain": {
+        "source_validation": "passed",
+        "provider_operation_error": "PROVIDER_LOCAL_VERIFICATION_FAILED",
+        "generation_callback": {
+          "outcome": "provider_target_unconfirmed",
+          "ok": false,
+          "raised_exception": false
+        },
+        "core_selection": "not_applied",
+        "on_demand_check": {
+          "checked": 1,
+          "failed": 1
+        },
+        "bridge_requests": null,
+        "bridge_responses": null,
+        "upstream_summary_present": null,
+        "client_identity_present": null,
+        "root_cause": "unknown",
+        "bridge_observations_note": "not asserted in the retained per-run summary; null avoids inferring values from later runs"
+      },
+      "resources": {
+        "wall_seconds": 6.521,
+        "cpu_user_seconds": 3.808,
+        "cpu_system_seconds": 0.596,
+        "max_process_rss_kib": 103056,
+        "rss_scope": "maximum process high-water mark; not aggregate memory",
+        "owned_temp_bytes_before_cleanup": 619836
+      }
+    },
+    {
+      "run_id": 37930502888,
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37930502888",
+      "head_sha": "7f9c7be28c46ed4eaab46da775fd1870e40b4ed4",
+      "status": "completed_failure",
+      "tests": {
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "errors": 0
+      },
+      "chain": {
+        "source_validation": "passed",
+        "provider_operation_error": "PROVIDER_LOCAL_VERIFICATION_FAILED",
+        "generation_callback": {
+          "outcome": "provider_target_unconfirmed",
+          "ok": false,
+          "raised_exception": false
+        },
+        "core_selection": "not_applied",
+        "on_demand_check": {
+          "checked": 1,
+          "failed": 1
+        },
+        "bridge_requests": null,
+        "bridge_responses": null,
+        "upstream_summary_present": null,
+        "client_identity_present": null,
+        "root_cause": "unknown",
+        "bridge_observations_note": "not asserted in the retained per-run summary; null avoids inferring values from later runs"
+      },
+      "resources": {
+        "wall_seconds": 6.512,
+        "cpu_user_seconds": 3.792,
+        "cpu_system_seconds": 0.582,
+        "max_process_rss_kib": 103112,
+        "rss_scope": "maximum process high-water mark; not aggregate memory",
+        "owned_temp_bytes_before_cleanup": 620225
+      }
+    },
+    {
+      "run_id": 37930988561,
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37930988561",
+      "head_sha": "0c93d64933c8d7f8883e80bfc149bb4587a9c309",
+      "status": "completed_failure",
+      "tests": {
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "errors": 0
+      },
+      "chain": {
+        "source_validation": "passed",
+        "provider_operation_error": "PROVIDER_LOCAL_VERIFICATION_FAILED",
+        "generation_callback": {
+          "outcome": "provider_target_unconfirmed",
+          "ok": false,
+          "raised_exception": false
+        },
+        "core_selection": "not_applied",
+        "on_demand_check": {
+          "checked": 1,
+          "failed": 1
+        },
+        "bridge_requests": null,
+        "bridge_responses": null,
+        "upstream_summary_present": null,
+        "client_identity_present": null,
+        "root_cause": "unknown",
+        "bridge_observations_note": "not asserted in the retained per-run summary; null avoids inferring values from later runs"
+      },
+      "resources": {
+        "wall_seconds": 6.049,
+        "cpu_user_seconds": 3.307,
+        "cpu_system_seconds": 0.453,
+        "max_process_rss_kib": 105716,
+        "rss_scope": "maximum process high-water mark; not aggregate memory",
+        "owned_temp_bytes_before_cleanup": 620530
+      }
+    },
+    {
+      "run_id": 37931693745,
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37931693745",
+      "head_sha": "048286eb4d4cb589bbd8559e3ab16e0465c357cf",
+      "status": "completed_failure",
+      "tests": {
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "errors": 0
+      },
+      "chain": {
+        "source_validation": "passed",
+        "provider_operation_error": "PROVIDER_LOCAL_VERIFICATION_FAILED",
+        "generation_callback": {
+          "outcome": "provider_target_unconfirmed",
+          "ok": false,
+          "raised_exception": false
+        },
+        "core_selection": "not_applied",
+        "on_demand_check": {
+          "checked": 1,
+          "failed": 1
+        },
+        "native_group_delay_http_status": 504,
+        "bridge_requests": null,
+        "bridge_responses": null,
+        "upstream_summary_present": null,
+        "client_identity_present": null,
+        "root_cause": "unknown",
+        "bridge_observations_note": "not asserted in the retained per-run summary; null avoids inferring values from later runs"
+      },
+      "resources": {
+        "wall_seconds": 6.532,
+        "cpu_user_seconds": 3.872,
+        "cpu_system_seconds": 0.628,
+        "max_process_rss_kib": 102896,
+        "rss_scope": "maximum process high-water mark; not aggregate memory",
+        "owned_temp_bytes_before_cleanup": 620889
+      }
+    },
+    {
+      "run_id": 37932841326,
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37932841326",
+      "head_sha": "f79e78c910835d946f0bc47b3b144b3f387cce74",
+      "status": "completed_failure",
+      "tests": {
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "errors": 0
+      },
+      "common_preflight": {
+        "smoke_contract": "passed",
+        "manifest_validation": "passed",
+        "acceptance_contract": "passed",
+        "gate_contract": "passed",
+        "isolation": "passed"
+      },
+      "chain": {
+        "source_validation": "passed",
+        "provider_operation_error": "PROVIDER_LOCAL_VERIFICATION_FAILED",
+        "generation_callback": {
+          "outcome": "provider_target_unconfirmed",
+          "ok": false,
+          "raised_exception": false
+        },
+        "core_selection": "not_applied",
+        "on_demand_check": {
+          "checked": 1,
+          "failed": 1
+        },
+        "group_delay_result": "all proxies timeout",
+        "native_individual_http_status": 503,
+        "native_individual_body": "An error occurred in the delay test",
+        "native_individual_body_is_generic": true,
+        "bridge_requests": 0,
+        "bridge_responses": 0,
+        "upstream_summary_present": true,
+        "client_identity_present": true,
+        "root_cause": "unknown",
+        "observer_capture_gap": "BufferedReader.read(8192) did not reliably expose live output before EOF or a full block"
+      },
+      "resources": {
+        "wall_seconds": 5.773,
+        "cpu_user_seconds": 2.96,
+        "cpu_system_seconds": 0.492,
+        "max_process_rss_kib": 102924,
+        "rss_scope": "maximum process high-water mark; not aggregate memory",
+        "owned_temp_bytes_before_cleanup": 621461
+      }
+    },
+    {
+      "run_id": 37933351633,
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37933351633",
+      "head_sha": "758ed84c9b70728f9c39741839e839269eaa0d66",
+      "status": "completed_failure",
+      "tests": {
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "errors": 0
+      },
+      "common_preflight": {
+        "smoke_contract": "passed",
+        "manifest_validation": "passed",
+        "acceptance_contract": "passed",
+        "gate_contract": "passed",
+        "isolation": "passed"
+      },
+      "chain": {
+        "source_validation": "passed",
+        "provider_operation_error": "PROVIDER_LOCAL_VERIFICATION_FAILED",
+        "generation_callback": {
+          "outcome": "provider_target_unconfirmed",
+          "ok": false,
+          "raised_exception": false
+        },
+        "core_selection": "not_applied",
+        "on_demand_check": {
+          "checked": 1,
+          "failed": 1
+        },
+        "pre_generation_native_upstream": ">> direct",
+        "post_generation_native_upstream": ">> fwrouter-api",
+        "bridge_requests": 0,
+        "bridge_responses": 0,
+        "fixture_has_explicit_routing_rule_before_generation": false,
+        "routing_explanation": "plausible_fixture_condition_only; not proof of a catch-all or runtime routing cause",
+        "native_warnings": [
+          "unsupported tproxy",
+          "nonlocal handoff bind 172.18.0.1"
+        ],
+        "warnings_prove_group_delay_dependency": false,
+        "root_cause": "unknown"
+      },
+      "resources": {
+        "wall_seconds": 6.572,
+        "cpu_user_seconds": 3.874,
+        "cpu_system_seconds": 0.585,
+        "max_process_rss_kib": 102988,
+        "rss_scope": "maximum process high-water mark; not aggregate memory",
+        "owned_temp_bytes_before_cleanup": 621462
+      }
+    },
+    {
+      "run_id": 37933861681,
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37933861681",
+      "head_sha": "45717dc607c60aed338869d922ebd238192b55b2",
+      "status": "completed_failure",
+      "tests": {
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "errors": 0
+      },
+      "common_preflight": {
+        "hosted_runtime_preflight": "passed",
+        "container_confinement": "passed",
+        "smoke_contract": "passed",
+        "manifest_validation": "passed",
+        "acceptance_contract": "passed",
+        "gate_contract": "passed",
+        "isolation": "passed",
+        "cleanup": "owned_resources_removed"
+      },
+      "chain": {
+        "native_xray_generated_provider_upstream": "direct",
+        "fixture_route_correction_present": true,
+        "bridge_requests": 0,
+        "bridge_responses": 0,
+        "provider_operation_error": "RUNTIME_MEMBER_UNAVAILABLE",
+        "native_group_delay_result": null,
+        "native_group_delay_result_note": "no exact delay result was recorded",
+        "pinned_mihomo_urltest_method": "HEAD",
+        "fixture_handler_method": "do_GET",
+        "unsupported_head_default_status": 501,
+        "fixture_request_counter": 0,
+        "head_fixture_explanation": "consistent_with_probe_method_not_being_served; not proven as cause of member-unavailable",
+        "root_cause": "unknown"
+      },
+      "resources": {
+        "wall_seconds": 5.239,
+        "cpu_user_seconds": 2.396,
+        "cpu_system_seconds": 0.426,
+        "max_process_rss_kib": 105112,
+        "rss_scope": "maximum process high-water mark; not aggregate memory",
+        "owned_temp_bytes_before_cleanup": 621124
+      }
+    },
+    {
+      "run_id": 37934437529,
+      "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37934437529",
+      "head_sha": "88060bf25c77f2d231b27ed661cfbc7188c6a4b7",
+      "status": "completed_success",
+      "tests": {
+        "total": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0
+      },
+      "common_preflight": {
+        "hosted_runtime_preflight": "passed",
+        "container_confinement": "passed",
+        "isolation": "passed",
+        "cleanup": "owned_resources_removed",
+        "cleanup_errors": []
+      },
+      "chain": {
+        "fixture_direct_rule_present": true,
+        "fixture_head_method_supported": true,
+        "provider_bridge_http_status": 204,
+        "provider_enable": "passed",
+        "core_selection": "exclusive_and_passed",
+        "native_mihomo_path": "passed",
+        "selection_fence": "preserved",
+        "test_fixture_findings_confirmed": [
+          "test upstream lacked explicit DIRECT routing rule",
+          "URLTest used HEAD while fixture previously implemented only do_GET"
+        ],
+        "fix_head": "HEAD follows same 204/503 behavior contract",
+        "root_cause_scope": "fixture defects for this diagnostic path; no historical WAN/general host-routing cause established",
+        "unsupported_tproxy_and_host_handoff": "remain separately gated; full-host parity not claimed"
+      },
+      "resources": {
+        "wall_seconds": 8.233,
+        "cpu_user_seconds": 5.294,
+        "cpu_system_seconds": 0.714,
+        "max_process_rss_kib": 106376,
+        "rss_scope": "maximum process high-water mark; not aggregate memory",
+        "owned_temp_bytes_before_cleanup": 702434,
+        "cleanup_errors": []
+      }
+    }
+  ],
+  "source_corrections": {
+    "unknown_source_discovery": {
+      "commit": "7bde084",
+      "remote_verification": "included_in_head_7bde084; new_unit_execution_not_claimed",
+      "deployed": false
+    },
+    "explicit_fixture_upstream_direct_route": {
+      "commit": "45717dc",
+      "remote_verification_run": 37933351633,
+      "remote_verification": "passed_in_run_37934437529_real_HTTP_204",
+      "assertion": "real HTTP 204"
+    },
+    "mihomo_head_fixture": {
+      "commit": "88060bf",
+      "behavior": "HEAD follows same 204/503 contract as GET",
+      "pure_contract": "added",
+      "remote_verification": "passed_in_run_37934437529"
+    }
+  },
+  "latest_run": {
+    "run_id": 37934437529,
+    "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37934437529",
+    "status": "completed_success",
+    "head_sha": "88060bf25c77f2d231b27ed661cfbc7188c6a4b7",
+    "tests": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    },
+    "note": "Singleton real provider/Core/native Mihomo scenario passed; full 37-case cohort remains pending."
+  },
+  "limitations": [
+    "Selected singleton diagnostics are not full-suite acceptance.",
+    "Process RSS is a per-process high-water mark, not aggregate container memory.",
+    "Native warnings about tproxy and nonlocal bind do not prove those host capabilities are needed by the group-delay path.",
+    "The direct-route fixture condition is plausible and testable but not established as the cause.",
+    "No credentials, UUIDs, email addresses, provider URLs, or raw runtime config are included.",
+    "Singleton provider diagnostic PASS does not establish full 37-case acceptance or Phase D completion.",
+    "Unsupported TPROXY and host-only handoff restrictions remain separately gated; no full-host parity is claimed."
+  ],
+  "next_gate": {
+    "name": "full 37-case functional cohort",
+    "status": "pending",
+    "trigger": "documentation commit using ci:validate-functional",
+    "full_host_parity_claimed": false
+  }
+}

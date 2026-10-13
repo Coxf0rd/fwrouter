@@ -1,32 +1,12 @@
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from _test_support import database_table_diff, database_table_snapshot
 
 from fwrouter_api import cli
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.main import create_app
 from fwrouter_api.services.reconcile import ReconcileResponse, ReconcileResult, _summarize
-
-
-def _table_counts() -> dict[str, int]:
-    with db_session() as connection:
-        rows = connection.execute(
-            """
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name NOT LIKE 'sqlite_%'
-            ORDER BY name
-            """
-        ).fetchall()
-        return {
-            str(row["name"]): int(
-                connection.execute(
-                    f"SELECT COUNT(*) AS count FROM {row['name']}"
-                ).fetchone()["count"]
-            )
-            for row in rows
-        }
 
 
 def test_reconcile_summary_counts_public_states() -> None:
@@ -42,6 +22,7 @@ def test_reconcile_summary_counts_public_states() -> None:
 
 
 def test_reconcile_endpoint_returns_contract_and_is_read_only(monkeypatch) -> None:
+    monkeypatch.setattr("fwrouter_api.services.dnsmasq._discover_router_dns_bindings", lambda: [])
     monkeypatch.setattr(
         "fwrouter_api.services.reconcile.build_module_state_projection",
         lambda: {"items": []},
@@ -79,7 +60,7 @@ def test_reconcile_endpoint_returns_contract_and_is_read_only(monkeypatch) -> No
         "fwrouter_api.services.reconcile._safe_health",
         lambda _adapter: {"runtime_state": "not_configured"},
     )
-    before = _table_counts()
+    before = database_table_snapshot()
     client = TestClient(create_app(enable_startup_tasks=False))
 
     response = client.get("/api/v2/reconcile")
@@ -88,7 +69,8 @@ def test_reconcile_endpoint_returns_contract_and_is_read_only(monkeypatch) -> No
     payload = response.json()
     assert sorted(payload) == ["entities", "summary"]
     assert sorted(payload["summary"]) == ["drift", "failed", "healthy", "stale"]
-    assert _table_counts() == before
+    after = database_table_snapshot()
+    assert after == before, database_table_diff(before, after)
 
 
 def test_reconcile_cli_check_prints_read_only_summary(monkeypatch, capsys) -> None:

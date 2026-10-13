@@ -17,7 +17,6 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -166,71 +165,136 @@ def _http_check(adapter: Callable[..., Mapping[str, Any]] | None, url: str, time
             "contract": "health_schema_and_database" if kind == "health" else "critical_state_projection"}
 
 
-def _isolated_fastapi_checks(db_path: Path, env: Mapping[str, str]) -> list[dict[str, Any]]:
-    """Use real FastAPI routes with temp settings/DB and lifecycle disabled."""
+def _isolated_fastapi_checks(env: Mapping[str, str], *, runner: Callable[..., Any],
+                             timeout: int) -> list[dict[str, Any]]:
+    """Run real read-only routes in a fresh child after the isolation bootstrap."""
+    blocked = [
+        {"name": "health_api", "status": "blocked_not_verified",
+         "reason": "guarded_fastapi_child_unavailable"},
+        {"name": "critical_state_api", "status": "blocked_not_verified",
+         "reason": "guarded_fastapi_child_unavailable"},
+    ]
+    # Injected command runners exist for unit contracts; they are not evidence
+    # that an application child was launched or isolated.
+    if runner is not subprocess.run:
+        return blocked
+    child = r'''
+import importlib.util, json, os, sqlite3, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+bootstrap_path, backend_path, schema_path = map(Path, sys.argv[1:4])
+spec = importlib.util.spec_from_file_location("fwrouter_smoke_isolation", bootstrap_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+owned_root, state_root = module.configure_test_process()
+sys.path.insert(0, str(backend_path))
+checks = []
+try:
+    from fwrouter_api.core.config import Settings, get_settings
+    Settings.model_config["env_file"] = None
+    get_settings.cache_clear()
+    from fastapi.testclient import TestClient
+    from fwrouter_api.main import create_app
+    from fwrouter_api.routes import state as state_routes
+    from fwrouter_api.routes import system as system_routes
+    db_path = state_root / "fwrouter-smoke.sqlite"
+    connection = sqlite3.connect(db_path)
     try:
-        sys.path.insert(0, str(BACKEND))
-        with patch.dict(os.environ, dict(env), clear=True):
-            from fwrouter_api.core.config import Settings, get_settings
-            previous = Settings.model_config.get("env_file")
-            Settings.model_config["env_file"] = None
-            get_settings.cache_clear()
-            try:
-                from fastapi.testclient import TestClient
-                from fwrouter_api.main import create_app
-                from fwrouter_api.routes import state as state_routes
-                from fwrouter_api.routes import system as system_routes
-
-                def readonly_schema() -> dict[str, Any]:
-                    connection = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
-                    connection.row_factory = sqlite3.Row
-                    try:
-                        connection.execute("PRAGMA query_only=ON")
-                        from fwrouter_api.db.schema_state import inspect_database_schema
-                        return inspect_database_schema(connection)
-                    finally:
-                        connection.close()
-
-                # The system-state projection is a fixture boundary; the registered
-                # FastAPI route and health response/model remain the production code.
-                with patch.object(system_routes, "get_cached_schema_state", side_effect=readonly_schema), \
-                     patch.object(state_routes, "build_system_state_projection",
-                                  side_effect=lambda: {"schema": _readonly_db(db_path)}):
-                    with TestClient(create_app(enable_startup_tasks=False)) as client:
-                        health = client.get("/api/v2/health", follow_redirects=False)
-                        state = client.get("/api/v2/state/system", follow_redirects=False)
-                def result(response: Any, kind: str) -> dict[str, Any]:
-                    try:
-                        payload = response.json()
-                    except Exception:
-                        payload = {}
-                    data = payload.get("data", {}) if isinstance(payload, dict) else {}
-                    if kind == "health":
-                        db = data.get("database", {}) if isinstance(data, dict) else {}
-                        schema = db.get("schema", {}) if isinstance(db, dict) else {}
-                        fields = {"service": data.get("service"), "status": data.get("status"),
-                                  "database_status": db.get("status"), "schema_ok": schema.get("ok") is True}
-                    else:
-                        state_data = data.get("state") if isinstance(data, dict) else None
-                        fields = {"critical_state_present": isinstance(state_data, dict)}
-                    return {"status_code": response.status_code,
-                            "api_ok": isinstance(payload, dict) and payload.get("ok") is True,
-                            "fields": fields}
-                return [
-                    {"name": "health_api", **{**_http_check(lambda _u, _t: result(health, "health"), "local://health", 1, "health"), "evidence_mode": "fastapi_testclient"}},
-                    {"name": "critical_state_api", **{**_http_check(lambda _u, _t: result(state, "state"), "local://state", 1, "state"), "evidence_mode": "fastapi_testclient_fixture_projection"}},
-                ]
-            finally:
-                Settings.model_config["env_file"] = previous
-                get_settings.cache_clear()
-    except (ImportError, OSError, RuntimeError, sqlite3.Error):
-        return [{"name": "health_api", "status": "blocked_not_verified", "reason": "fastapi_testclient_dependencies_or_setup_unavailable"},
-                {"name": "critical_state_api", "status": "blocked_not_verified", "reason": "fastapi_testclient_dependencies_or_setup_unavailable"}]
+        connection.executescript(schema_path.read_text(encoding="utf-8"))
+        connection.commit()
     finally:
+        connection.close()
+
+    def readonly_schema():
+        connection = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
         try:
-            sys.path.remove(str(BACKEND))
-        except ValueError:
-            pass
+            connection.execute("PRAGMA query_only=ON")
+            from fwrouter_api.db.schema_state import inspect_database_schema
+            return inspect_database_schema(connection)
+        finally:
+            connection.close()
+
+    # This fixture projection intentionally remains partial L4 evidence.
+    from unittest.mock import patch
+    with patch.object(system_routes, "get_cached_schema_state", side_effect=readonly_schema), \
+         patch.object(state_routes, "build_system_state_projection",
+                      side_effect=lambda: {"schema": {"ok": True}}):
+        with TestClient(create_app(enable_startup_tasks=False)) as client:
+            health = client.get("/api/v2/health", follow_redirects=False)
+            state = client.get("/api/v2/state/system", follow_redirects=False)
+
+    def projection(response, kind):
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        data = payload.get("data", {}) if isinstance(payload, dict) else {}
+        if kind == "health":
+            db = data.get("database", {}) if isinstance(data, dict) else {}
+            schema = db.get("schema", {}) if isinstance(db, dict) else {}
+            fields = {"service": data.get("service"), "status": data.get("status"),
+                      "database_status": db.get("status"), "schema_ok": schema.get("ok") is True}
+        else:
+            value = data.get("state") if isinstance(data, dict) else None
+            fields = {"critical_state_present": isinstance(value, dict)}
+        return {"status_code": response.status_code,
+                "api_ok": isinstance(payload, dict) and payload.get("ok") is True,
+                "fields": fields}
+
+    checks = [
+        {"name": "health_api", "status": "pending", "evidence_mode": "guarded_fastapi_testclient"},
+        {"name": "critical_state_api", "status": "pending",
+         "evidence_mode": "guarded_fastapi_testclient_fixture_projection"},
+    ]
+    health_result = projection(health, "health")
+    health_fields = health_result["fields"]
+    checks[0]["status"] = "passed" if (
+        health_result["status_code"] == 200 and health_result["api_ok"] is True
+        and health_fields.get("service") == "fwrouter-api"
+        and health_fields.get("status") == "healthy"
+        and health_fields.get("database_status") == "healthy"
+        and health_fields.get("schema_ok") is True
+    ) else "failed"
+    state_result = projection(state, "state")
+    checks[1]["status"] = "passed" if (
+        state_result["status_code"] == 200 and state_result["api_ok"] is True
+        and state_result["fields"].get("critical_state_present") is True
+    ) else "failed"
+except ImportError:
+    checks = [{"name": name, "status": "blocked_not_verified",
+               "reason": "fastapi_testclient_dependencies_unavailable"}
+              for name in ("health_api", "critical_state_api")]
+except Exception as exc:
+    checks = [{"name": name, "status": "failed", "reason": type(exc).__name__}
+              for name in ("health_api", "critical_state_api")]
+finally:
+    module.cleanup_owned_root()
+    cleanup_ok = not owned_root.exists()
+print(json.dumps({"checks": checks, "cleanup_ok": cleanup_ok,
+                  "owned_root": str(owned_root)}, sort_keys=True))
+'''
+    env_clean = {key: value for key, value in env.items()
+                 if key in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "TZ"}}
+    command = [sys.executable, "-I", "-c", child, str(BACKEND / "tests/_isolation_bootstrap.py"),
+               str(BACKEND), str(SCHEMA)]
+    state, _code, output = _execute(command, timeout=timeout, env=env_clean,
+                                    cwd=ROOT, runner=runner)
+    if state != "passed" or len(output.encode("utf-8", "replace")) > MAX_OUTPUT:
+        return blocked
+    try:
+        payload = json.loads(output)
+        checks = payload["checks"]
+        if not isinstance(checks, list) or {row.get("name") for row in checks} != {"health_api", "critical_state_api"}:
+            return blocked
+        owned_root = payload.get("owned_root")
+        if (payload.get("cleanup_ok") is not True or not isinstance(owned_root, str)
+                or Path(owned_root).exists()):
+            return [{"name": row["name"], "status": "failed",
+                     "reason": "guarded_child_cleanup_failed"} for row in blocked]
+        return checks
+    except (KeyError, TypeError, json.JSONDecodeError):
+        return blocked
 
 
 def _native_checks(validators: Sequence[Mapping[str, str]] | None, runner: Callable[..., Any],
@@ -303,7 +367,7 @@ def run_smoke(profile: str, *, reason: str | None = None, opt_in: bool = False,
     if timeout_seconds < 1 or timeout_seconds > MAX_TIMEOUT:
         raise SmokeError("timeout_seconds must be between 1 and 30")
     if profile == "isolated":
-        with tempfile.TemporaryDirectory(prefix="fwrouter-smoke-") as temp:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-smoke-", dir="/tmp") as temp:
             owned = Path(temp).resolve()
             target, state = owned / "target", owned / "state"
             target.mkdir(mode=0o700); state.mkdir(mode=0o700)
@@ -320,8 +384,10 @@ def run_smoke(profile: str, *, reason: str | None = None, opt_in: bool = False,
             checks = [{"name": "installer_deploy_to_owned_temp_target", **install},
                       {"name": "temporary_schema_readonly", **_readonly_db(db)}]
             if http_get is None:
-                checks.extend(_isolated_fastapi_checks(db, env))
-                api_mode = "local_fastapi_testclient"
+                checks.extend(_isolated_fastapi_checks(env, runner=command_runner,
+                                                      timeout=timeout_seconds))
+                api_mode = ("guarded_child_fastapi_testclient" if command_runner is subprocess.run
+                            else "blocked_injected_process_runner")
             else:
                 checks.extend([{"name": "health_api", **_http_check(http_get, "http://127.0.0.1:5000/api/v2/health", timeout_seconds, "health"), "evidence_mode": "injected_test_adapter"},
                                {"name": "critical_state_api", **_http_check(http_get, "http://127.0.0.1:5000/api/v2/state/system", timeout_seconds, "state"), "evidence_mode": "injected_test_adapter"}])
@@ -353,7 +419,7 @@ def run_smoke(profile: str, *, reason: str | None = None, opt_in: bool = False,
     checks = [{"name": "sqlite_readonly_allowlisted_metadata", **_readonly_db(database)},
               {"name": "health_api", **_http_check(http_get, api_base_url.rstrip("/") + "/api/v2/health", timeout_seconds, "health")},
               {"name": "critical_state_api", **_http_check(http_get, api_base_url.rstrip("/") + "/api/v2/state/system", timeout_seconds, "state")}]
-    with tempfile.TemporaryDirectory(prefix="fwrouter-smoke-native-") as temp:
+    with tempfile.TemporaryDirectory(prefix="fwrouter-smoke-native-", dir="/tmp") as temp:
         scratch = Path(temp).resolve()
         env = {"PATH": os.defpath, "HOME": str(scratch), "TMPDIR": str(scratch), "LC_ALL": "C.UTF-8"}
         checks.extend(_native_checks(validators, command_runner, env, scratch, require_parity=True))

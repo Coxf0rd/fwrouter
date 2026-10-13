@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FWRouter isolated hosted packet role profile v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "profile", "suite_nonce", "profile_owner_uid", "network_testbed", "xray"],
+  "properties": {
+    "schema": {"const": "fwrouter-acceptance-profile/v2"},
+    "profile": {"const": "hosted-kernel-packet"},
+    "suite_nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "profile_owner_uid": {"type": "integer", "minimum": 0},
+    "network_testbed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "host_netns_inode_sha256"],
+      "properties": {
+        "role": {"enum": ["client", "endpoint"]},
+        "host_netns_inode_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "xray": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "version"],
+      "properties": {
+        "path": {"const": "/opt/fwrouter-test/bin/xray"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "version": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

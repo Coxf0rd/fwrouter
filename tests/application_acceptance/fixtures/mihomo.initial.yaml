@@ -1,0 +1,10 @@
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: warning
+external-controller: 127.0.0.1:5200
+mixed-port: 5201
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT

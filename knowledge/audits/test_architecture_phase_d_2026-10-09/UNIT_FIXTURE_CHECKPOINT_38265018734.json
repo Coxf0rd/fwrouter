@@ -1,0 +1,195 @@
+{
+  "run_id": 38265018734,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38265018734",
+  "source": "2384fd7fd663e4adaa42e46003abfedf55eda38b",
+  "scope": "hosted isolated fixed24 unit-files, not full functional/native acceptance",
+  "status": "BLOCKED",
+  "node_pass": 354,
+  "node_fail": 24,
+  "node_skip": 0,
+  "count_limitation": "354 reported passes include Node file-summary plus its sole actual testcase; distinct executed testcase passes353, failures24. Node receipt rejected count mismatch.",
+  "gate_contract": {
+    "passed": 54,
+    "failed": 0
+  },
+  "acceptance_contract": {
+    "passed": 106,
+    "failed": 1,
+    "errors": 1
+  },
+  "xray_debounce": {
+    "passed": 21,
+    "failed": 0,
+    "skipped": 0
+  },
+  "files": [
+    {
+      "path": "backend/tests/test_apply_pipeline.py",
+      "status": "failed",
+      "pass": 47,
+      "fail": 6,
+      "validation_error": "unit fixture JUnit report contains failed or skipped cases"
+    },
+    {
+      "path": "backend/tests/test_bootstrap.py",
+      "status": "passed",
+      "pass": 15,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_client_lifecycle.py",
+      "status": "passed",
+      "pass": 6,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_control_plane_transfer.py",
+      "status": "passed",
+      "pass": 6,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_core_bypass.py",
+      "status": "failed",
+      "pass": 0,
+      "fail": 4,
+      "validation_error": "unit fixture JUnit report contains failed or skipped cases"
+    },
+    {
+      "path": "backend/tests/test_custom_servers.py",
+      "status": "passed",
+      "pass": 9,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_database_admin.py",
+      "status": "passed",
+      "pass": 12,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_dataplane_global.py",
+      "status": "passed",
+      "pass": 23,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_mihomo_config_runtime.py",
+      "status": "failed",
+      "pass": 32,
+      "fail": 6,
+      "validation_error": "unit fixture JUnit report contains failed or skipped cases"
+    },
+    {
+      "path": "backend/tests/test_mihomo_staged_candidate.py",
+      "status": "failed",
+      "pass": 1,
+      "fail": 1,
+      "validation_error": "unit fixture JUnit report contains failed or skipped cases"
+    },
+    {
+      "path": "backend/tests/test_provider_recovery.py",
+      "status": "passed",
+      "pass": 82,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_rules.py",
+      "status": "passed",
+      "pass": 15,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_runtime_summary.py",
+      "status": "failed",
+      "pass": 23,
+      "fail": 1,
+      "validation_error": "unit fixture JUnit report contains failed or skipped cases"
+    },
+    {
+      "path": "backend/tests/test_scoped_egress.py",
+      "status": "failed",
+      "pass": 17,
+      "fail": 4,
+      "validation_error": "unit fixture JUnit report contains failed or skipped cases"
+    },
+    {
+      "path": "backend/tests/test_state_projection_subjects.py",
+      "status": "passed",
+      "pass": 13,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_state_projection_modules.py",
+      "status": "failed",
+      "pass": 1,
+      "fail": 1,
+      "validation_error": "unit fixture JUnit report contains failed or skipped cases"
+    },
+    {
+      "path": "backend/tests/test_state_projection_xray.py",
+      "status": "passed",
+      "pass": 2,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_state_routes.py",
+      "status": "passed",
+      "pass": 6,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_system_subjects.py",
+      "status": "passed",
+      "pass": 3,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_tailscale_module.py",
+      "status": "passed",
+      "pass": 5,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_xray_debounce.py",
+      "status": "passed",
+      "pass": 21,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "backend/tests/test_isolation_bootstrap.py",
+      "status": "failed",
+      "pass": 5,
+      "fail": 1,
+      "validation_error": "unit fixture JUnit report contains failed or skipped cases"
+    },
+    {
+      "path": "installer/tests/test_homeassistant_action.py",
+      "status": "passed",
+      "pass": 8,
+      "fail": 0,
+      "validation_error": null
+    },
+    {
+      "path": "ui/tests/settings-events.test.js",
+      "status": "failed",
+      "pass": 2,
+      "fail": 0,
+      "validation_error": "unit fixture JUnit case count does not match exact node status report"
+    }
+  ]
+}

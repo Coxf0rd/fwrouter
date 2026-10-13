@@ -1,0 +1,56 @@
+{
+  "run_id": 37996472774,
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37996472774",
+  "source_revision": "e64076b1237b56383bc4d2be476312f8c84d6fd1",
+  "scope": "targets",
+  "readmodel_fixtures": {
+    "expected": 18,
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "owned_temp_cleanup": true,
+    "artifacts": "evidence/run_37996472774/phase-d-target-readmodel-fixtures-e64076b1237b56383bc4d2be476312f8c84d6fd1/readmodels.{json,xml,log}"
+  },
+  "native_diagnostic": {
+    "expected": 3,
+    "passed": 2,
+    "failed": 1,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "owned_resources_removed": true,
+    "cleanup_errors": 0,
+    "results": {
+      "provider_unavailable": {
+        "status": "passed",
+        "observation": "The typed provider HTTP 503 case completed as unknown; it did not classify a member as down."
+      },
+      "core_cas_miss_reconcile": {
+        "status": "passed",
+        "observation": "The Core CAS-miss scenario completed with its required native readback and reconciliation assertions."
+      },
+      "browser_client_editor": {
+        "status": "failed",
+        "failure": "The alias PATCH for the synthetic subscription-group subject returned SUBJECT_NOT_FOUND. The UI workflow reached the aggregate alias save request; no runtime/client identity mutation is asserted by this failure."
+      }
+    },
+    "artifacts": "evidence/run_37996472774/phase-d-xray-diagnostic-e64076b1237b56383bc4d2be476312f8c84d6fd1/fwrouter-acceptance-4075bb920c224f02a397730650f6ac81-artifacts/{application-acceptance-receipt.json,application-acceptance.xml,pytest-output.txt,worker-service-logs.json}"
+  },
+  "image_resources": {
+    "base_image_present_before_build": false,
+    "built_image_bytes": 1961529415,
+    "compose_build_seconds": 38.472,
+    "application_process_resources": {
+      "cpu_system_seconds": 2.626,
+      "cpu_user_seconds": 17.093,
+      "max_rss_kib": 192032,
+      "owned_temp_bytes_before_cleanup": 2093016,
+      "wall_seconds": 33.859
+    }
+  },
+  "pending": [
+    "The synthetic subscription-group alias operation needs an explicit source-level contract and a separate hosted verification; this run confirms the current SUBJECT_NOT_FOUND behavior.",
+    "GHCR dependency-image publication and immutable-digest consumption remain unimplemented and unmeasured."
+  ],
+  "phase_d_status": "blocked; the target-only results do not replace the broader functional or affected-unit gates"
+}

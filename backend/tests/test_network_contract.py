@@ -16,7 +16,10 @@ from fwrouter_api.services.network_contract import (
 from fwrouter_api.services.rules_compile import build_effective_rules_artifact
 
 
-def test_network_contract_drives_protected_dataplane_and_rules(monkeypatch) -> None:
+def test_network_contract_drives_protected_dataplane_and_rules(
+    monkeypatch,
+    isolated_host_observations,
+) -> None:
     monkeypatch.setenv(
         "FWROUTER_PROTECTED_IPV4_NETWORKS",
         json.dumps(["127.0.0.0/8", "192.168.1.0/24"]),
@@ -47,7 +50,10 @@ def test_network_contract_drives_protected_dataplane_and_rules(monkeypatch) -> N
     assert "192.168.0.0/16" not in protected_values
 
 
-def test_network_contract_drives_nft_trusted_client_guards(monkeypatch) -> None:
+def test_network_contract_drives_nft_trusted_client_guards(
+    monkeypatch,
+    isolated_host_observations,
+) -> None:
     monkeypatch.setenv("FWROUTER_TRUSTED_CLIENT_IPV4_NETWORKS", json.dumps(["192.168.1.0/24"]))
     monkeypatch.setenv("FWROUTER_TRUSTED_CLIENT_IPV6_NETWORKS", json.dumps(["fd00:1::/64"]))
     get_settings.cache_clear()

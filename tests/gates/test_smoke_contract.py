@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sqlite3
 import tempfile
@@ -15,6 +16,16 @@ SPEC.loader.exec_module(smoke)
 
 
 class SmokeContractTests(unittest.TestCase):
+    def test_guarded_fastapi_child_source_parses_without_app_import(self):
+        source = ast.parse(PATH.read_text(encoding="utf-8"), filename=str(PATH))
+        function = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "_isolated_fastapi_checks")
+        child = next(node.value for node in function.body if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "child"
+                             for target in node.targets))
+        self.assertIsInstance(child, ast.Constant)
+        ast.parse(child.value, filename="guarded-fastapi-smoke-child.py")
+
     def test_isolated_uses_owned_target_sanitized_env_and_fake_readonly_api(self):
         commands = []
         def runner(argv, **kwargs):
@@ -110,16 +121,15 @@ class SmokeContractTests(unittest.TestCase):
             self.assertEqual("blocked_not_verified", checks[0]["status"])
             self.assertEqual([], invoked)
 
-    def test_isolated_real_fastapi_testclient_routes_use_temp_state_when_dependencies_exist(self):
+    def test_isolated_fastapi_smoke_requires_a_real_guarded_child_runner(self):
         def runner(argv, **kwargs):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         result = smoke.run_smoke("isolated", command_runner=runner)
         checks = {row["name"]: row for row in result["checks"]}
-        self.assertEqual("local_fastapi_testclient", result["api_evidence_mode"])
+        self.assertEqual("blocked_injected_process_runner", result["api_evidence_mode"])
         for name in ("health_api", "critical_state_api"):
-            self.assertIn(checks[name]["status"], {"passed", "blocked_not_verified"})
-            if checks[name]["status"] == "passed":
-                self.assertIn("fastapi_testclient", checks[name]["evidence_mode"])
+            self.assertEqual("blocked_not_verified", checks[name]["status"])
+            self.assertEqual("guarded_fastapi_child_unavailable", checks[name]["reason"])
         # Component L4 explicitly records native work as out of scope.
         self.assertEqual("not_requested", checks["native_validation"]["status"])
         self.assertEqual("blocked_not_verified", result["status"])  # fake installer is not evidence

@@ -18,6 +18,7 @@ from fwrouter_api.services.mihomo_config_paths import (
 )
 
 FINGERPRINT_VERSION = 2
+UDP_POLICY_RECEIPT_VERSION = 1
 STATE_FILE_NAME = "reconcile-state.json"
 
 
@@ -141,8 +142,7 @@ def _table_fingerprint() -> dict[str, Any]:
         "routing_global_state": _query_rows(
             """
             SELECT id, desired_mode, applied_mode, selective_default, server_mode,
-                   desired_fixed_server_id, applied_fixed_server_id,
-                   active_auto_server_id, fixed_server_until
+                   desired_fixed_server_id, applied_fixed_server_id, fixed_server_until
             FROM routing_global_state
             ORDER BY id
             """
@@ -195,9 +195,15 @@ def _source_fingerprint() -> dict[str, Any]:
 
 
 def current_mihomo_input_fingerprint(routing: dict[str, Any] | None = None) -> dict[str, Any]:
+    routing_projection = dict(routing) if isinstance(routing, dict) else None
+    if routing_projection is not None:
+        # Core's current vpn-auto selection is enforced by the independent
+        # selection revision fence. It does not alter Mihomo's generated
+        # structure; intent and fixed-server fields remain fingerprinted.
+        routing_projection.pop("active_auto_server_id", None)
     payload = {
         "version": FINGERPRINT_VERSION,
-        "routing": routing if isinstance(routing, dict) else None,
+        "routing": routing_projection,
         "tables": _table_fingerprint(),
         "files": _input_files_fingerprint(),
         "source": _source_fingerprint(),
@@ -222,24 +228,86 @@ def mihomo_input_unchanged(fingerprint: dict[str, Any]) -> bool:
     active_hash = active_config_hash()
     if not active_hash:
         return False
-    return state.get("active_config_hash") == active_hash
+    if state.get("active_config_hash") != active_hash:
+        return False
+    return _receipt_runtime_matches(state)
+
+
+def _current_runtime_incarnation() -> str | None:
+    try:
+        from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+
+        value = get_mihomo_runtime_incarnation()
+    except Exception:
+        return None
+    return str(value).strip() if value else None
+
+
+def _receipt_runtime_matches(state: dict[str, Any]) -> bool:
+    incarnation = _current_runtime_incarnation()
+    return bool(
+        incarnation
+        and state.get("runtime_incarnation") == incarnation
+        and state.get("udp_policy_version") == UDP_POLICY_RECEIPT_VERSION
+    )
+
+
+def mihomo_udp_policy_receipt_matches() -> bool:
+    """Confirm the active config hash and runtime are the reconciled instance."""
+    state = _load_state()
+    active_hash = active_config_hash()
+    return bool(
+        isinstance(state, dict)
+        and active_hash
+        and state.get("active_config_hash") == active_hash
+        and _receipt_runtime_matches(state)
+        and state.get("native_top_level_rules_match") is True
+        and state.get("native_selector_membership_match") is True
+        and state.get("subrule_config_guard_match") is True
+    )
 
 
 def write_mihomo_reconcile_fingerprint_state(
     *,
     fingerprint: dict[str, Any],
     result: dict[str, Any],
-) -> None:
+    native_proof: dict[str, Any] | None = None,
+    expected_active_hash: str | None = None,
+    expected_runtime_incarnation: str | None = None,
+) -> bool:
     active_hash = active_config_hash()
-    if not active_hash:
-        return
+    incarnation = _current_runtime_incarnation()
+    if (
+        not active_hash
+        or not incarnation
+        or active_hash != expected_active_hash
+        or incarnation != expected_runtime_incarnation
+        or not isinstance(native_proof, dict)
+        or native_proof.get("native_top_level_rules_match") is not True
+        or native_proof.get("selector_membership_matches") is not True
+        or native_proof.get("guarded_rules_match") is not True
+    ):
+        return False
     data = {
         "version": FINGERPRINT_VERSION,
         "fingerprint_hash": fingerprint.get("hash"),
         "active_config_hash": active_hash,
+        "runtime_incarnation": incarnation,
+        "udp_policy_version": UDP_POLICY_RECEIPT_VERSION,
+        "native_top_level_rules_match": True,
+        "native_selector_membership_match": True,
+        "subrule_config_guard_match": True,
         "candidate_config_hash": _file_hash(_resolved_candidate_config_path()),
         "updated_at": _utc_timestamp(),
         "reconcile_reason": result.get("reconcile_reason"),
         "reconcile_action": result.get("reconcile_action"),
     }
     atomic_write_json(_state_path(), data)
+    # A pre-publication health probe may have cached policy_installed=False
+    # before this native proof and receipt existed. Invalidate derived runtime
+    # summaries only after the receipt is durable so they cannot report that
+    # stale state as the result of a successfully verified generation.
+    from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+
+    clear_live_probe_cache()
+    return True

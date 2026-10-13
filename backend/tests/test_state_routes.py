@@ -3,28 +3,10 @@ from __future__ import annotations
 import sqlite3
 import pytest
 from fastapi.testclient import TestClient
+from _test_support import database_table_diff, database_table_snapshot
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.main import create_app
-
-
-def _table_counts() -> dict[str, int]:
-    with db_session() as connection:
-        rows = connection.execute(
-            """
-            SELECT name
-            FROM sqlite_master
-            WHERE type = 'table'
-              AND name NOT LIKE 'sqlite_%'
-            ORDER BY name
-            """
-        ).fetchall()
-        return {
-            str(row["name"]): int(
-                connection.execute(f"SELECT COUNT(*) AS count FROM {row['name']}").fetchone()["count"]
-            )
-            for row in rows
-        }
 
 
 def _table_rows(table: str) -> list[dict[str, object]]:
@@ -34,6 +16,7 @@ def _table_rows(table: str) -> list[dict[str, object]]:
 
 
 def test_state_endpoints_are_get_only_and_read_only(monkeypatch) -> None:
+    monkeypatch.setattr("fwrouter_api.services.dnsmasq._discover_router_dns_bindings", lambda: [])
     monkeypatch.setattr("fwrouter_api.services.state_projection.read_live_dataplane_payload", lambda: {"ok": True})
     monkeypatch.setattr("fwrouter_api.services.state_projection.read_applied_manifest", lambda: {"ok": True})
     monkeypatch.setattr(
@@ -48,7 +31,7 @@ def test_state_endpoints_are_get_only_and_read_only(monkeypatch) -> None:
         },
     )
     client = TestClient(create_app(enable_startup_tasks=False))
-    before = _table_counts()
+    before = database_table_snapshot()
 
     for path in (
         "/api/v2/state/system",
@@ -64,11 +47,12 @@ def test_state_endpoints_are_get_only_and_read_only(monkeypatch) -> None:
         assert response.status_code == 200
         assert response.json()["ok"] is True
 
-    after = _table_counts()
-    assert after == before
+    after = database_table_snapshot()
+    assert after == before, database_table_diff(before, after)
 
 
 def test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state(monkeypatch) -> None:
+    monkeypatch.setattr("fwrouter_api.services.dnsmasq._discover_router_dns_bindings", lambda: [])
     monkeypatch.setattr("fwrouter_api.services.dataplane_status._read_live_dataplane_payload", lambda: None)
     monkeypatch.setattr("fwrouter_api.services.dataplane_status.read_applied_manifest", lambda: None)
     monkeypatch.setattr("fwrouter_api.services.dataplane_status.probe_live_global_mode", lambda: {"ok": True, "mode": "direct"})
@@ -79,7 +63,7 @@ def test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state(monke
     monkeypatch.setattr("fwrouter_api.services.reconcile.read_live_dataplane_payload", lambda: None)
 
     client = TestClient(create_app(enable_startup_tasks=False))
-    before_counts = _table_counts()
+    before_snapshot = database_table_snapshot()
     before_subjects = _table_rows("subjects")
     before_routing = _table_rows("routing_global_state")
 
@@ -93,7 +77,8 @@ def test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state(monke
         response = client.get(path)
         assert response.status_code == 200
 
-    assert _table_counts() == before_counts
+    after_snapshot = database_table_snapshot()
+    assert after_snapshot == before_snapshot, database_table_diff(before_snapshot, after_snapshot)
     assert _table_rows("subjects") == before_subjects
     assert _table_rows("routing_global_state") == before_routing
 
@@ -119,30 +104,42 @@ def test_system_summary_get_does_not_initialize_empty_database(monkeypatch) -> N
     assert [row["name"] for row in after_tables] == [row["name"] for row in before_tables]
 
 
-def test_public_system_responses_do_not_expose_database_paths_or_exceptions(monkeypatch) -> None:
+def test_public_system_responses_do_not_expose_database_paths_or_exceptions(
+    monkeypatch,
+    isolated_host_observations,
+) -> None:
     from fwrouter_api.routes import system
 
     def failed_db_session():
         raise sqlite3.OperationalError("unable to open /srv/private/fwrouter.db")
 
-    monkeypatch.setattr(system, "db_session", failed_db_session)
-    monkeypatch.setattr(system, "get_cached_schema_state", failed_db_session)
-    client = TestClient(create_app(enable_startup_tasks=False))
+    with monkeypatch.context() as faultpatch:
+        faultpatch.setattr(system, "db_session", failed_db_session)
+        faultpatch.setattr(system, "get_cached_schema_state", failed_db_session)
+        client = TestClient(create_app(enable_startup_tasks=False))
 
-    for path in ("/api/v2/health", "/api/v2/system/summary"):
-        payload = client.get(path).json()
-        assert payload["ok"] is False
-        assert payload["error"]["code"] == "DATABASE_UNAVAILABLE"
-        assert payload["error"]["message"] == "The control-plane database is unavailable."
-        assert "/srv/private" not in str(payload)
-        assert "unable to open" not in str(payload)
+        for path in ("/api/v2/health", "/api/v2/system/summary"):
+            payload = client.get(path).json()
+            assert payload["ok"] is False
+            assert payload["error"]["code"] == "DATABASE_UNAVAILABLE"
+            assert payload["error"]["message"] == "The control-plane database is unavailable."
+            assert "/srv/private" not in str(payload)
+            assert "unable to open" not in str(payload)
 
-    monkeypatch.undo()
     response = TestClient(create_app(enable_startup_tasks=False)).get("/api/v2/system/summary")
-    assert "paths" not in response.json()["data"]
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert "paths" not in payload["data"]
+    from fwrouter_api.services import runtime_prewarm
+
+    assert runtime_prewarm._PREWARM_RUNNING is True
 
 
-def test_routing_global_get_does_not_expire_fixed_server_ttl(monkeypatch) -> None:
+def test_routing_global_get_does_not_expire_fixed_server_ttl(
+    monkeypatch,
+    isolated_host_observations,
+) -> None:
     with db_session() as connection:
         connection.execute(
             """

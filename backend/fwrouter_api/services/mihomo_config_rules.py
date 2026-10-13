@@ -92,13 +92,57 @@ def _format_source_ip_cidr_rule_value(value: str) -> str | None:
 
 def _split_mihomo_rule_target(rule: str) -> tuple[str, str] | None:
     parts = [part.strip() for part in str(rule or "").split(",")]
+    if len(parts) < 2:
+        return None
+    rule_type = parts[0].upper()
+    if rule_type == "MATCH":
+        if len(parts) != 2 or not parts[1]:
+            return None
+        return "MATCH", parts[1]
+    if rule_type == "AND":
+        # AND owns its complete nested payload and has no outer parameters.
+        if len(parts) < 3 or parts[-1].lower() in {"no-resolve", "src"}:
+            return None
+        condition = ",".join(parts[:-1])
+        target = parts[-1]
+        return (condition, target) if condition and target else None
     if len(parts) < 3:
         return None
-    condition = ",".join(parts[:-1])
-    target = parts[-1]
+    target = parts[2]
+    params = [value.lower() for value in parts[3:]]
+    if not target or any(value not in {"no-resolve", "src"} for value in params):
+        return None
+    if len(params) != len(set(params)):
+        return None
+    if "src" in params and parts[0].upper() not in {"IP-CIDR", "IP-CIDR6"}:
+        return None
+    condition = ",".join([*parts[:2], *(value for value in ("src", "no-resolve") if value in params)])
     if not condition or not target:
         return None
     return condition, target
+
+
+def _mandatory_vpn_udp_guard(rule: str) -> str | None:
+    """Build a same-match UDP reject after a VPN target can be skipped by Mihomo."""
+    parsed = _split_mihomo_rule_target(rule)
+    if parsed is None:
+        return None
+    condition, target = parsed
+    if target not in {"vpn-global"} and not target.startswith("fwrouter-subject-"):
+        return None
+    if condition == "MATCH":
+        return "NETWORK,udp,REJECT"
+    return f"AND,((NETWORK,udp),({condition})),REJECT"
+
+
+def _guard_mandatory_vpn_rules(rules: list[str]) -> list[str]:
+    guarded: list[str] = []
+    for rule in rules:
+        guarded.append(rule)
+        guard = _mandatory_vpn_udp_guard(rule)
+        if guard:
+            guarded.append(guard)
+    return guarded
 
 
 def _build_source_scoped_vpn_rule(rule: str, *, source_cidr: str, target: str) -> str | None:
@@ -170,19 +214,22 @@ def _build_mihomo_config_with_source(routing: dict[str, Any] | None = None) -> t
                 target=route["selector_name"],
             )
             if scoped_rule:
-                transparent_rules.append(scoped_rule)
+                transparent_rules.extend(_guard_mandatory_vpn_rules([scoped_rule]))
                 scoped_vpn_source_rules_count += 1
 
     final_match_rule = _build_fallback_rule(routing)
     transparent_final_match_rule = _build_transparent_fallback_rule(routing)
-    base_rules = [*effective_rules, final_match_rule]
-    transparent_rules.extend(effective_rules)
-    transparent_rules.append(transparent_final_match_rule)
-    full_vpn_rules = [
+    # The normal mixed listener consumes top-level `rules`; a VPN rule there
+    # is also mandatory and must not fall through when Mihomo skips a proxy
+    # that cannot carry UDP. Ordinary DIRECT rules and fallback stay intact.
+    base_rules = [*_guard_mandatory_vpn_rules(effective_rules), final_match_rule]
+    transparent_rules.extend(_guard_mandatory_vpn_rules(effective_rules))
+    transparent_rules.extend(_guard_mandatory_vpn_rules([transparent_final_match_rule]))
+    full_vpn_rules = _guard_mandatory_vpn_rules([
         f"SRC-IP-CIDR,{route['source_cidr']},{route['selector_name']}"
         for route in subject_routes
-    ]
-    full_vpn_rules.append("MATCH,vpn-global")
+    ])
+    full_vpn_rules.extend(_guard_mandatory_vpn_rules(["MATCH,vpn-global"]))
     return base_rules, {
         "rules": base_rules,
         "transparent_rules": transparent_rules,
@@ -191,6 +238,9 @@ def _build_mihomo_config_with_source(routing: dict[str, Any] | None = None) -> t
         "resolved_selective_default": _resolved_selective_default(routing),
         "final_match_rule": final_match_rule,
         "transparent_final_match_rule": transparent_final_match_rule,
+        "transparent_required_udp_guard": _mandatory_vpn_udp_guard(transparent_final_match_rule),
+        "full_vpn_final_match_rule": "MATCH,vpn-global",
+        "full_vpn_required_udp_guard": _mandatory_vpn_udp_guard("MATCH,vpn-global"),
         "rendered_rules_count": int(effective_metadata.get("rendered_rules_count") or 0),
         "path_kind": str(effective_metadata.get("path_kind") or "core_routed"),
         "transparent_rule_name": TRANSPARENT_TPROXY_RULE_NAME,

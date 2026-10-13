@@ -1,0 +1,34 @@
+{
+  "run_id": 38035140899,
+  "source_revision": "045eac05e4ebd7693d6e6e7fe3b1baf00fb908d7",
+  "scope": "hosted-kernel-preflight",
+  "status": "passed",
+  "application_tests": {
+    "tests": 0,
+    "status": "NOT_RUN"
+  },
+  "container": {
+    "cap_add": ["CAP_NET_ADMIN"],
+    "cap_drop": ["ALL"],
+    "user": "0:0",
+    "privileged": false,
+    "readonly_rootfs": true,
+    "namespace_distinct_from_host": true
+  },
+  "kernel_preflight": {
+    "nftables": "1.0.6-2+deb12u2",
+    "iproute2": "6.1.0-3",
+    "nft_check_apply_readback": true,
+    "policy_route_readback": true,
+    "baseline_nft_objects_preserved": true,
+    "four_dataplane_scripts_source_and_installed_hashes_match": true,
+    "cleanup_verified": true
+  },
+  "image_measurements": {
+    "compose_build_seconds": 46.531,
+    "built_image_bytes": 1970138708,
+    "base_image_present_before_build": false
+  },
+  "cleanup": "owned_resources_removed",
+  "artifact_path": "evidence/run_38035140899/phase-d-xray-diagnostic-045eac05e4ebd7693d6e6e7fe3b1baf00fb908d7/fwrouter-acceptance-aa09b51fb05640febea73b27f4ee66bb-artifacts/hosted-acceptance-report.json"
+}

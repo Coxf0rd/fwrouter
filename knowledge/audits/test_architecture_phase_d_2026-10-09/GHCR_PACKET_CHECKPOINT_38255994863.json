@@ -1,0 +1,72 @@
+{
+  "cleanup": "owned_resources_removed",
+  "image_measurements": {
+    "base_image_inspect_seconds": 0.012,
+    "base_image_present_before_build": false,
+    "base_image_pull_count": 1,
+    "base_image_pull_seconds": 39.857,
+    "built_image_bytes": 2627018305,
+    "compose_build_seconds": 7.957,
+    "docker_root_budget_bytes": 5368709120,
+    "docker_root_samples": {
+      "after_build": {
+        "available_bytes": 86251962368,
+        "device_major": 259,
+        "device_minor": 1,
+        "path_sha256": "ce73cd33df8e80d10c856e91fd63274e8be73dd50b32e44ad5f30705c5b79704",
+        "total_bytes": 154894188544,
+        "used_bytes": 68625448960
+      },
+      "after_cleanup": {
+        "available_bytes": 86251339776,
+        "device_major": 259,
+        "device_minor": 1,
+        "path_sha256": "ce73cd33df8e80d10c856e91fd63274e8be73dd50b32e44ad5f30705c5b79704",
+        "total_bytes": 154894188544,
+        "used_bytes": 68626071552
+      },
+      "after_pull": {
+        "available_bytes": 86281363456,
+        "device_major": 259,
+        "device_minor": 1,
+        "path_sha256": "ce73cd33df8e80d10c856e91fd63274e8be73dd50b32e44ad5f30705c5b79704",
+        "total_bytes": 154894188544,
+        "used_bytes": 68596047872
+      },
+      "after_tests": {
+        "available_bytes": 86251188224,
+        "device_major": 259,
+        "device_minor": 1,
+        "path_sha256": "ce73cd33df8e80d10c856e91fd63274e8be73dd50b32e44ad5f30705c5b79704",
+        "total_bytes": 154894188544,
+        "used_bytes": 68626223104
+      },
+      "before_pull": {
+        "available_bytes": 88992661504,
+        "device_major": 259,
+        "device_minor": 1,
+        "path_sha256": "ce73cd33df8e80d10c856e91fd63274e8be73dd50b32e44ad5f30705c5b79704",
+        "total_bytes": 154894188544,
+        "used_bytes": 65884749824
+      }
+    }
+  },
+  "junit_suite_seconds": 60.431,
+  "resources": {
+    "cpu_system_seconds": 4.537,
+    "cpu_user_seconds": 23.784,
+    "max_rss_kib": 139648,
+    "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+    "owned_temp_bytes_before_cleanup": 2995311,
+    "wall_seconds": 60.441
+  },
+  "run_id": 38255994863,
+  "scope": "isolated kernel native and expanded packet acceptance; not Debian host/reboot parity",
+  "source_commit": "dcf3e79",
+  "status": "passed",
+  "suite_counts": {
+    "fail": 0,
+    "pass": 1,
+    "skip": 0
+  }
+}

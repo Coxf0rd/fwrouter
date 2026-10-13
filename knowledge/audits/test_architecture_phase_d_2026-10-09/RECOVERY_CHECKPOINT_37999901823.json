@@ -1,0 +1,69 @@
+{
+  "run_id": 37999901823,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37999901823",
+  "source_revision": "999c898026053a1bc5555480b8442073e3fbd598",
+  "stage": "recovery-diagnostic",
+  "scope": "fixed two-node hosted recovery diagnostic; no broader gate",
+  "verdict": "BLOCKED",
+  "counts": {
+    "expected": 2,
+    "passed": 0,
+    "failed": 2,
+    "skipped": 0,
+    "errors": 0,
+    "exact_node_coverage": true,
+    "setup_and_teardown_passed": true
+  },
+  "infrastructure_preflight": {
+    "status": "passed",
+    "gate_contract_tests": {"passed": 38, "failed": 0},
+    "acceptance_contract_tests": {"passed": 54, "failed": 0},
+    "isolation_smoke_checks": {"passed": 18, "failed": 0},
+    "manifest_validation": "passed",
+    "workflow_lint_and_source_diff_checks": "passed"
+  },
+  "cases": [
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+      "status": "failed",
+      "observed": "The injected Mihomo probe returned HTTP 504 Timeout. Recovery entered emergency_direct operation 1; _run_pipeline_for_state returned ok=false; the override returned ok=false/outcome=failed and emergency_direct returned action=none/outcome=failed. The test stopped because the API reported provider_recovery_pending instead of emergency_direct.",
+      "attribution": "Emergency Direct reached a real Core apply attempt, which returned failure. The observer recorded only the outer ok flag; this run does not identify the Core apply stage or error code. A separate refresh_result preflight record is not correlated to this recovery operation and is not attributed as its cause.",
+      "evidence": "evidence/run_37999901823/downloaded/fwrouter-acceptance-ce6c76d483704755b88357aae97c59b7-artifacts/{pytest-output.txt,worker-service-logs.json,state-snapshot.json,native-process-diagnostics.json}"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe_race",
+      "status": "failed",
+      "observed": "The competing public selector call returned ok=false/applied=false. The operation-correlated worker record gives error_code=provider_operation_busy and selected_member_present=true. No Core selection commit was recorded, so the intended selector-wins race and stale-handoff fence assertion did not occur.",
+      "attribution": "The selector's provider operation was deferred by the existing provider-operation reservation while the test held the provider probe in the in-flight handoff. This run proves the selector did not win; it does not test the later fence. No reservation bypass or source behavior change is justified by this result.",
+      "evidence": "evidence/run_37999901823/downloaded/fwrouter-acceptance-ce6c76d483704755b88357aae97c59b7-artifacts/{pytest-output.txt,worker-service-logs.json}"
+    }
+  ],
+  "resources": {
+    "container_confinement": "passed",
+    "application_wall_seconds": 10.954,
+    "application_cpu_user_seconds": 5.56,
+    "application_cpu_system_seconds": 0.911,
+    "application_max_rss_kib": 111728,
+    "max_rss_scope": "maximum process high-water mark, not aggregate memory",
+    "owned_temporary_bytes_before_cleanup": 1366226,
+    "image_bytes": 1961556609,
+    "compose_build_seconds": 49.947
+  },
+  "cleanup": {
+    "cleanup_errors": [],
+    "owned_resources": "removed",
+    "temporary_artifacts_removed": true
+  },
+  "not_run": [
+    "provider cohort",
+    "browser/Xray target cohort",
+    "qualified child suites",
+    "full functional suite",
+    "affected L0-L5 gates"
+  ],
+  "limitations": [
+    "process-backed Xray transport is not stock Docker runtime parity",
+    "no host dataplane or provider traffic is claimed",
+    "the Core apply error detail was not captured by this revision's bounded worker observer"
+  ]
+}

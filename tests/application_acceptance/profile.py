@@ -1,0 +1,443 @@
+"""Fail-closed validation of the orchestrator's read-only acceptance profile."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import ctypes
+import ctypes.util
+from pathlib import Path
+from typing import Any
+from importlib import metadata
+import socket
+
+
+PROFILE_PATH = Path("/run/fwrouter-acceptance/profile.json")
+PROFILE_SCHEMA = "fwrouter-acceptance-profile/v2"
+KERNEL_DATAPLANE_PROFILE = "hosted-kernel-dataplane"
+KERNEL_PACKET_PROFILE = "hosted-kernel-packet"
+MIHOMO_HANDOFF = {"address": "172.18.0.1", "subnet": "172.18.0.0/24", "gateway": "172.18.0.254"}
+PACKET_DNSMASQ_BASE_VERSION = "2.90-4~deb12u2"
+PACKET_BIND9_DNSUTILS_VERSION = "1:9.18.49-1~deb12u1"
+PACKET_IPTABLES_VERSION = "1.8.9-2"
+KERNEL_PACKET_TOOL_PACKAGE_VERSIONS = {
+    "nftables": "1.0.6-2+deb12u2", "iproute2": "6.1.0-3", "tcpdump": "4.99.3-1",
+    "libpcap0.8": "1.10.3-1", "dnsmasq-base": "2.90-4~deb12u2",
+    "iptables": "1.8.9-2", "bind9-dnsutils": "1:9.18.49-1~deb12u1",
+}
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+REVISION = re.compile(r"^[0-9a-f]{40}$")
+NONCE = re.compile(r"^[0-9a-f]{32}$")
+EXPECTED_BINARIES = {
+    "xray": Path("/opt/fwrouter-test/bin/xray"),
+    "mihomo": Path("/opt/fwrouter-test/bin/mihomo"),
+    "chromium": Path("/opt/fwrouter-test/bin/chromium"),
+}
+EXPECTED_BINARIES["chromium"] = Path("/opt/fwrouter-test/chromium/chrome-linux64/chrome")
+VERSION_COMMANDS = {
+    "xray": ["version"],
+    "mihomo": ["-v"],
+    "chromium": ["--version"],
+}
+KERNEL_DATAPLANE_SCRIPTS = {
+    "host/libexec/fwrouter/dataplane-common.sh": Path("/usr/local/libexec/fwrouter/dataplane-common.sh"),
+    "host/libexec/fwrouter/dataplane-check.sh": Path("/usr/local/libexec/fwrouter/dataplane-check.sh"),
+    "host/libexec/fwrouter/dataplane-apply.sh": Path("/usr/local/libexec/fwrouter/dataplane-apply.sh"),
+    "host/libexec/fwrouter/dataplane-rollback.sh": Path("/usr/local/libexec/fwrouter/dataplane-rollback.sh"),
+}
+
+
+class ProfileError(RuntimeError):
+    pass
+
+
+def _qualification_error(facts: dict[str, Any]) -> str | None:
+    """Pure fail-closed environment predicate, testable without host effects."""
+    if facts.get("uid") != 10001 or facts.get("gid") != 10001:
+        return "acceptance requires the fixed non-root uid/gid 10001:10001"
+    if str(facts.get("hostname", "")).strip().lower() == "minisk":
+        return "acceptance refuses the production hostname"
+    for key, message in (
+        ("docker_marker_regular", "container marker is missing or invalid"),
+        ("production_api_absent", "production API installation is present"),
+        ("readonly_root", "container root filesystem is not read-only"),
+        ("readonly_profile_mount", "acceptance profile mount is not read-only"),
+        ("fixed_workspace", "acceptance workspace is not the fixed /workspace tree"),
+    ):
+        if facts.get(key) is not True:
+            return message
+    return None
+
+
+def _kernel_qualification_error(facts: dict[str, Any], *, expected_cap_eff: int = 1 << 12) -> str | None:
+    if facts.get("uid") != 0 or facts.get("gid") != 0:
+        return "kernel dataplane profile requires uid/gid 0 inside its isolated container"
+    if facts.get("cap_eff") != expected_cap_eff:
+        return "kernel dataplane profile effective capability set differs from its fixed profile"
+    if facts.get("netns_matches_pid1") is not True:
+        return "kernel dataplane process does not share its container PID 1 network namespace"
+    if facts.get("netns_differs_from_host") is not True:
+        return "kernel dataplane network namespace is not distinct from the hosted runner"
+    if str(facts.get("hostname", "")).strip().lower() == "minisk":
+        return "acceptance refuses the production hostname"
+    for key, message in (
+        ("docker_marker_regular", "container marker is missing or invalid"),
+        ("production_api_absent", "production API installation is present"),
+        ("readonly_root", "container root filesystem is not read-only"),
+        ("readonly_profile_mount", "acceptance profile mount is not read-only"),
+        ("fixed_workspace", "acceptance workspace is not the fixed /workspace tree"),
+    ):
+        if facts.get(key) is not True:
+            return message
+    return None
+
+
+def _require_host_qualification(profile_path: Path) -> dict[str, Any]:
+    if profile_path != PROFILE_PATH:
+        raise ProfileError("acceptance profile must use the fixed container mount path")
+    try:
+        docker_info = Path("/.dockerenv").lstat()
+        docker_regular = stat.S_ISREG(docker_info.st_mode) and not Path("/.dockerenv").is_symlink()
+        root_readonly = bool(os.statvfs("/").f_flag & getattr(os, "ST_RDONLY", 1))
+        # Docker's single-file bind mount is read-only at the file mountpoint;
+        # checking its parent would inspect /run's unrelated mount flags.
+        profile_readonly = bool(os.statvfs(str(profile_path)).f_flag & getattr(os, "ST_RDONLY", 1))
+        workspace = Path("/workspace")
+        fixed_workspace = workspace.is_dir() and workspace.resolve(strict=True) == workspace
+        facts = {
+            "uid": os.getuid(), "gid": os.getgid(), "hostname": socket.gethostname(),
+            "docker_marker_regular": docker_regular,
+            "production_api_absent": not Path("/opt/fwrouter-api").exists() and not Path("/opt/fwrouter-api").is_symlink(),
+            "readonly_root": root_readonly, "readonly_profile_mount": profile_readonly,
+            "fixed_workspace": fixed_workspace,
+        }
+    except OSError as exc:
+        raise ProfileError("could not establish hosted-container qualification") from exc
+    if str(facts.get("hostname", "")).strip().lower() == "minisk":
+        raise ProfileError("acceptance refuses the production hostname")
+    for key, message in (
+        ("docker_marker_regular", "container marker is missing or invalid"),
+        ("production_api_absent", "production API installation is present"),
+        ("readonly_root", "container root filesystem is not read-only"),
+        ("readonly_profile_mount", "acceptance profile mount is not read-only"),
+        ("fixed_workspace", "acceptance workspace is not the fixed /workspace tree"),
+    ):
+        if facts.get(key) is not True:
+            raise ProfileError(message)
+    return facts
+
+
+def _verify_kernel_dataplane_profile(profile: dict[str, Any], facts: dict[str, Any], *,
+                                     expected_cap_eff: int = 1 << 12) -> None:
+    kernel = profile.get("kernel_dataplane")
+    if not isinstance(kernel, dict) or set(kernel) != {
+            "host_netns_inode_sha256", "dataplane_scripts", "tool_package_versions"}:
+        raise ProfileError("kernel dataplane profile metadata is invalid")
+    host_hash = kernel.get("host_netns_inode_sha256")
+    scripts = kernel.get("dataplane_scripts")
+    package_versions = kernel.get("tool_package_versions")
+    if (not SHA256.fullmatch(str(host_hash)) or not isinstance(scripts, dict)
+            or set(scripts) != set(KERNEL_DATAPLANE_SCRIPTS)
+            or package_versions != KERNEL_PACKET_TOOL_PACKAGE_VERSIONS):
+        raise ProfileError("kernel dataplane namespace or script manifest is invalid")
+    for package_name, expected_version in package_versions.items():
+        try:
+            result = subprocess.run(["/usr/bin/dpkg-query", "-W", "-f=${Version}", package_name],
+                                    check=False, capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+                                    env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
+            version = result.stdout.decode("ascii", "strict").strip()
+        except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
+            raise ProfileError("pinned kernel package readback failed") from exc
+        if result.returncode != 0 or len(result.stdout) > 256 or len(result.stderr) > 1024 or version != expected_version:
+            raise ProfileError("installed kernel package version differs from the fixed acceptance lock")
+    for source, target in KERNEL_DATAPLANE_SCRIPTS.items():
+        expected = scripts.get(source)
+        source_path = Path("/workspace") / source
+        if not SHA256.fullmatch(str(expected)):
+            raise ProfileError("kernel dataplane script digest is invalid")
+        for path in (source_path, target):
+            try:
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+                    raise ProfileError("kernel dataplane script is not a regular file")
+                observed = hashlib.sha256(path.read_bytes()).hexdigest()
+                if observed != expected:
+                    raise ProfileError("kernel dataplane script digest does not match the profile")
+                if path == target and stat.S_IMODE(info.st_mode) != 0o755:
+                    raise ProfileError("installed kernel dataplane script mode is not 0755")
+            except OSError as exc:
+                raise ProfileError("kernel dataplane script is unavailable") from exc
+    try:
+        status = Path("/proc/self/status").read_text(encoding="ascii")
+        cap_line = next(line for line in status.splitlines() if line.startswith("CapEff:"))
+        facts["cap_eff"] = int(cap_line.split()[1], 16)
+        own_netns = os.stat("/proc/self/ns/net").st_ino
+        pid1_netns = os.stat("/proc/1/ns/net").st_ino
+        own_hash = hashlib.sha256(str(own_netns).encode("ascii")).hexdigest()
+        facts["netns_matches_pid1"] = own_netns == pid1_netns
+        facts["netns_differs_from_host"] = own_hash != host_hash
+    except (OSError, StopIteration, ValueError) as exc:
+        raise ProfileError("kernel dataplane capability or namespace facts are unavailable") from exc
+    reason = _kernel_qualification_error(facts, expected_cap_eff=expected_cap_eff)
+    if reason:
+        raise ProfileError(reason)
+
+
+def _verify_packet_router_profile(profile: dict[str, Any], facts: dict[str, Any]) -> None:
+    _verify_kernel_dataplane_profile(profile, facts, expected_cap_eff=(1 << 12) | (1 << 13))
+    network = profile.get("network_testbed")
+    if (not isinstance(network, dict) or set(network) != {"role", "host_netns_inode_sha256"}
+            or network.get("role") != "router"
+            or network.get("host_netns_inode_sha256") != profile["kernel_dataplane"].get("host_netns_inode_sha256")):
+        raise ProfileError("packet router role does not match the fixed hosted network profile")
+    capture = profile.get("packet_capture")
+    if not isinstance(capture, dict) or set(capture) != {
+            "libpcap_package_version", "libpcap_api_version_prefix", "capture_worker_sha256"}:
+        raise ProfileError("packet capture profile metadata is invalid")
+    if (capture["libpcap_package_version"] != "1.10.3-1"
+            or capture["libpcap_api_version_prefix"] != "libpcap version 1.10.3"
+            or not SHA256.fullmatch(str(capture["capture_worker_sha256"]))):
+        raise ProfileError("packet capture package, API version, or worker digest differs from its fixed profile")
+    dns = profile.get("dns_runtime")
+    if (not isinstance(dns, dict) or set(dns) != {
+            "dnsmasq_base_package_version", "bind9_dnsutils_package_version",
+            "iptables_package_version", "dnsmasq_version_prefix", "dnsmasq_nftset_required"}
+            or dns.get("dnsmasq_base_package_version") != PACKET_DNSMASQ_BASE_VERSION
+            or dns.get("bind9_dnsutils_package_version") != PACKET_BIND9_DNSUTILS_VERSION
+            or dns.get("iptables_package_version") != PACKET_IPTABLES_VERSION
+            or dns.get("dnsmasq_version_prefix") != "Dnsmasq version 2.90"
+            or dns.get("dnsmasq_nftset_required") is not True):
+        raise ProfileError("DNS native package/runtime pin differs from the fixed packet profile")
+    worker = Path("/workspace/tests/acceptance/packet_capture_worker.py")
+    try:
+        worker_info = worker.lstat()
+        if not stat.S_ISREG(worker_info.st_mode) or worker.is_symlink() or worker_info.st_size > 65536:
+            raise ProfileError("packet capture worker source is not a bounded regular file")
+        worker_digest = hashlib.sha256(worker.read_bytes()).hexdigest()
+        package = subprocess.run(["/usr/bin/dpkg-query", "-W", "-f=${Version}", "libpcap0.8"],
+                                 check=False, capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+                                  env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
+        package_version = package.stdout.decode("ascii", "strict").strip()
+        dns_packages = {}
+        for package_name in ("dnsmasq-base", "bind9-dnsutils", "iptables"):
+            result = subprocess.run(["/usr/bin/dpkg-query", "-W", "-f=${Version}", package_name],
+                                    check=False, capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+                                    env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
+            if result.returncode != 0 or len(result.stdout) > 256 or len(result.stderr) > 1024:
+                raise ProfileError("pinned DNS package readback failed")
+            dns_packages[package_name] = result.stdout.decode("ascii", "strict").strip()
+        dnsmasq = subprocess.run(["/usr/sbin/dnsmasq", "--version"], check=False,
+                                 capture_output=True, timeout=5, stdin=subprocess.DEVNULL,
+                                 env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
+        dig = subprocess.run(["/usr/bin/dig", "-v"], check=False, capture_output=True,
+                             timeout=5, stdin=subprocess.DEVNULL,
+                             env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "TZ": "UTC"})
+        soname = ctypes.util.find_library("pcap")
+        if not isinstance(soname, str) or not soname or "/" in soname:
+            raise ProfileError("pinned libpcap shared library is unavailable")
+        library = ctypes.CDLL(soname)
+        library.pcap_lib_version.argtypes = []
+        library.pcap_lib_version.restype = ctypes.c_char_p
+        api_version = library.pcap_lib_version().decode("ascii", "strict")
+    except (OSError, UnicodeError, subprocess.SubprocessError, AttributeError) as exc:
+        raise ProfileError("pinned libpcap package or API is unavailable") from exc
+    prefix = capture["libpcap_api_version_prefix"]
+    if (worker_digest != capture["capture_worker_sha256"] or package.returncode != 0
+            or package_version != capture["libpcap_package_version"]
+            or not api_version.startswith(prefix)
+            or (len(api_version) > len(prefix) and not api_version[len(prefix)].isspace())):
+        raise ProfileError("libpcap package, API, or source digest does not match the packet profile")
+    dnsmasq_text = dnsmasq.stdout.decode("ascii", "strict")
+    if (dns_packages != {"dnsmasq-base": PACKET_DNSMASQ_BASE_VERSION,
+                         "bind9-dnsutils": PACKET_BIND9_DNSUTILS_VERSION,
+                         "iptables": PACKET_IPTABLES_VERSION}
+            or dnsmasq.returncode != 0 or not dnsmasq_text.startswith(dns["dnsmasq_version_prefix"])
+            or len(dnsmasq_text.splitlines()) < 2 or "nftset" not in dnsmasq_text.splitlines()[1].split()
+            or not _dig_version_matches(dig.returncode, dig.stdout, dig.stderr)):
+        raise ProfileError("pinned real dnsmasq/dig native runtime is unavailable or lacks nftset support")
+
+
+def _dig_version_matches(returncode: int, stdout: bytes, stderr: bytes) -> bool:
+    """Check the pinned dig version across its documented output channel."""
+    try:
+        output = (stdout + stderr).decode("ascii", "strict").strip()
+    except UnicodeError:
+        return False
+    return returncode == 0 and output.startswith("DiG 9.18.49")
+
+
+def _sha(path: Path) -> str:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or path.is_symlink() or not os.access(path, os.X_OK):
+        raise ProfileError(f"profile binary is not a regular executable: {path.name}")
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _observed_version(path: Path, args: list[str], expected: str) -> str:
+    try:
+        completed = subprocess.run(
+            [str(path), *args], check=False, capture_output=True, text=True, timeout=8,
+            stdin=subprocess.DEVNULL,
+            env={"PATH": "/usr/bin:/bin", "HOME": "/tmp", "TMPDIR": "/tmp", "LANG": "C.UTF-8", "TZ": "UTC"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProfileError(f"could not read pinned {path.name} version") from exc
+    output = f"{completed.stdout}\n{completed.stderr}".strip()[:4096]
+    if completed.returncode != 0 or expected not in output:
+        raise ProfileError(f"observed {path.name} version does not match the profile")
+    return output
+
+
+def _ui_digest(root: Path) -> str:
+    digest = hashlib.sha256()
+    ui_root = root.resolve(strict=True)
+    files = sorted(path for path in ui_root.rglob("*") if path.is_file() or path.is_symlink())
+    for path in files:
+        if path.is_symlink() or not path.is_file():
+            raise ProfileError("UI tree contains a symlink or non-regular file")
+        relative = "ui/" + path.relative_to(ui_root).as_posix()
+        digest.update(relative.encode("utf-8") + b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _source_manifest_digest(workspace: Path) -> str:
+    digest = hashlib.sha256()
+    roots = [workspace / "backend/fwrouter_api", workspace / "backend/tests", workspace / "ui",
+             workspace / "tests/application_acceptance", workspace / "tests/acceptance",
+             workspace / "backend/pyproject.toml", workspace / "tests/gates/requirements-ci.txt",
+             workspace / "host/libexec/fwrouter/traffic-collect.sh",
+             workspace / "host/libexec/fwrouter/dataplane-common.sh",
+             workspace / "host/libexec/fwrouter/dataplane-check.sh",
+             workspace / "host/libexec/fwrouter/dataplane-apply.sh",
+             workspace / "host/libexec/fwrouter/dataplane-rollback.sh"]
+    files: list[Path] = []
+    for root in roots:
+        if root.is_file():
+            files.append(root)
+            continue
+        if not root.is_dir():
+            continue
+        files.extend(path for path in root.rglob("*") if path.is_file() or path.is_symlink())
+    for path in sorted(set(files), key=lambda value: value.relative_to(workspace).as_posix()):
+        if path.is_symlink() or not path.is_file():
+            raise ProfileError("acceptance source context contains a symlink or non-regular file")
+        relative = path.relative_to(workspace).as_posix()
+        if relative.startswith("native/") or "/__pycache__/" in f"/{relative}/":
+            continue
+        digest.update(relative.encode("utf-8") + b"\0")
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def load_profile(path: Path = PROFILE_PATH) -> tuple[dict[str, Any], str]:
+    # Generic container/read-only qualification precedes parsing. The exact
+    # profile mode then selects one strict identity contract before binaries
+    # or application tests are imported.
+    host_facts = _require_host_qualification(path)
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+        raise ProfileError("acceptance profile must be a regular, non-symlink file")
+    raw = path.read_bytes()
+    if len(raw) > 64 * 1024:
+        raise ProfileError("acceptance profile exceeds size limit")
+    try:
+        profile = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ProfileError("acceptance profile is invalid JSON") from exc
+    common_top = {"schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
+                  "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce"}
+    if not isinstance(profile, dict):
+        raise ProfileError("acceptance profile fields do not match v2")
+    profile_mode = profile.get("profile")
+    expected_top = (common_top if profile_mode == "hosted-native-process" else
+                    common_top | {"kernel_dataplane", "network_testbed", "packet_capture",
+                                 "profile_owner_uid", "dns_runtime"}
+                    if profile_mode == KERNEL_PACKET_PROFILE else common_top | {"kernel_dataplane"})
+    if profile_mode != KERNEL_PACKET_PROFILE:
+        expected_top = expected_top | {"mihomo_handoff"}
+    if set(profile) != expected_top:
+        raise ProfileError("acceptance profile fields do not match v2")
+    if profile["schema"] != PROFILE_SCHEMA or profile_mode not in {
+            "hosted-native-process", KERNEL_DATAPLANE_PROFILE, KERNEL_PACKET_PROFILE}:
+        raise ProfileError("unsupported acceptance profile")
+    if profile_mode == "hosted-native-process":
+        reason = _qualification_error(host_facts)
+        if reason:
+            raise ProfileError(reason)
+    elif profile_mode == KERNEL_PACKET_PROFILE:
+        owner_uid = profile.get("profile_owner_uid")
+        if type(owner_uid) is not int or owner_uid < 0 or owner_uid != info.st_uid:
+            raise ProfileError("packet profile owner does not match the read-only bind file")
+        _verify_packet_router_profile(profile, host_facts)
+    else:
+        _verify_kernel_dataplane_profile(profile, host_facts)
+    if profile_mode != KERNEL_PACKET_PROFILE:
+        handoff = profile.get("mihomo_handoff")
+        if handoff != MIHOMO_HANDOFF:
+            raise ProfileError("Mihomo handoff network differs from its fixed isolated profile")
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind((MIHOMO_HANDOFF["address"], 0))
+        except OSError as exc:
+            raise ProfileError("fixed Mihomo handoff address is not locally assigned in the container") from exc
+    if not REVISION.fullmatch(str(profile["source_revision"])):
+        raise ProfileError("source revision is not a full commit id")
+    if not SHA256.fullmatch(str(profile["plan_digest"])):
+        raise ProfileError("affected gate plan digest is invalid")
+    if not NONCE.fullmatch(str(profile["suite_nonce"])):
+        raise ProfileError("suite nonce is invalid")
+    for key in ("baseline_xray_config_sha256", "ui_tree_sha256"):
+        if not SHA256.fullmatch(str(profile[key])):
+            raise ProfileError(f"{key} is invalid")
+    for name, expected_path in EXPECTED_BINARIES.items():
+        item = profile[name]
+        required = {"path", "sha256", "version", "bundle_sha256"} if name == "chromium" else {"path", "sha256", "version"}
+        if not isinstance(item, dict) or set(item) != required:
+            raise ProfileError(f"{name} binary record is invalid")
+        path_value = Path(str(item["path"]))
+        env_name = "FWROUTER_BROWSER_EXECUTABLE" if name == "chromium" else f"FWROUTER_{name.upper()}_BINARY"
+        if path_value != expected_path or os.environ.get(env_name) != str(expected_path):
+            raise ProfileError(f"{name} binary path does not match the pinned container path")
+        if not SHA256.fullmatch(str(item["sha256"])) or _sha(path_value) != item["sha256"]:
+            raise ProfileError(f"{name} binary digest does not match the profile")
+        if not str(item["version"]).strip():
+            raise ProfileError(f"{name} binary version is missing")
+        if name == "chromium" and not SHA256.fullmatch(str(item["bundle_sha256"])):
+            raise ProfileError("Chromium bundle digest is invalid")
+        _observed_version(path_value, VERSION_COMMANDS[name], str(item["version"]))
+    try:
+        observed_playwright = metadata.version("playwright")
+    except metadata.PackageNotFoundError as exc:
+        raise ProfileError("pinned Playwright Python package is not installed") from exc
+    if observed_playwright != str(profile["playwright_python"]):
+        raise ProfileError("Playwright Python version does not match the profile")
+    fixture = Path(__file__).with_name("fixtures") / "xray.initial.json"
+    if hashlib.sha256(fixture.read_bytes()).hexdigest() != profile["baseline_xray_config_sha256"]:
+        raise ProfileError("baseline Xray fixture digest does not match the profile")
+    ui_root = Path("/workspace/ui") if Path("/workspace/ui").is_dir() else Path(__file__).resolve().parents[2] / "ui"
+    if _ui_digest(ui_root) != profile["ui_tree_sha256"]:
+        raise ProfileError("observed UI tree digest does not match the profile")
+    revision_file = Path("/workspace/.fwrouter-acceptance-revision")
+    if not revision_file.is_file() or revision_file.is_symlink():
+        raise ProfileError("acceptance build revision metadata is missing")
+    try:
+        revision = json.loads(revision_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ProfileError("acceptance build revision metadata is invalid") from exc
+    if not isinstance(revision, dict) or set(revision) != {"source_revision", "ui_tree_sha256", "source_manifest_sha256"}:
+        raise ProfileError("acceptance build revision metadata has unexpected fields")
+    if revision.get("source_revision") != profile["source_revision"] or revision.get("ui_tree_sha256") != profile["ui_tree_sha256"]:
+        raise ProfileError("acceptance build revision metadata does not match the profile")
+    manifest_digest = revision.get("source_manifest_sha256")
+    workspace = Path("/workspace")
+    if not SHA256.fullmatch(str(manifest_digest)) or _source_manifest_digest(workspace) != manifest_digest:
+        raise ProfileError("observed source manifest does not match the immutable build metadata")
+    return profile, hashlib.sha256(raw).hexdigest()

@@ -306,6 +306,12 @@ def update_server_preferences(
                 "mihomo_reconcile": None,
             }
         pool_before = selection_pool_signature(connection)
+        xray_identity_input_changed = wants_auto_change or wants_priority_change
+        xray_eligible_ids_before = (
+            _eligible_vpn_auto_server_ids(connection)
+            if xray_identity_input_changed
+            else None
+        )
         persisted = connection.execute(
             """
             SELECT vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list
@@ -362,9 +368,13 @@ def update_server_preferences(
             )
 
         effective_pool_changed = selection_pool_signature(connection) != pool_before
+        xray_eligible_ids_changed = (
+            xray_eligible_ids_before is not None
+            and _eligible_vpn_auto_server_ids(connection) != xray_eligible_ids_before
+        )
         if effective_pool_changed:
             advance_selection_revision(connection)
-        if effective_pool_changed:
+        if effective_pool_changed and xray_eligible_ids_changed:
             from fwrouter_api.services.xray_vpn_auto_pending import mark_xray_vpn_auto_pending
 
             mark_xray_vpn_auto_pending(connection, trigger="server_preferences")
@@ -384,7 +394,11 @@ def update_server_preferences(
             reason="vpn_auto_membership_changed",
         )
     from fwrouter_api.services.xray_vpn_auto_pending import get_xray_vpn_auto_pending_state
-    xray_pending = get_xray_vpn_auto_pending_state() if eligibility_changed else None
+    xray_pending = (
+        get_xray_vpn_auto_pending_state()
+        if xray_eligible_ids_changed and eligibility_changed
+        else None
+    )
 
     if mihomo_reconcile is not None and not mihomo_reconcile.get("ok", False):
         return {
@@ -416,19 +430,22 @@ def update_server_preferences(
     }
 
 
+def _eligible_vpn_auto_server_ids(connection: Any) -> list[str]:
+    rows = connection.execute(
+        f"""
+        SELECT p.server_id
+        FROM server_preferences p
+        JOIN servers s ON s.server_id = p.server_id
+        WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p")}
+        ORDER BY p.server_id
+        """
+    ).fetchall()
+    return [str(row["server_id"]) for row in rows]
+
+
 def _current_vpn_auto_server_ids() -> list[str]:
     with db_session() as connection:
-        rows = connection.execute(
-            f"""
-            SELECT p.server_id
-            FROM server_preferences p
-            JOIN servers s ON s.server_id = p.server_id
-            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p")}
-            ORDER BY p.server_id
-            """
-        ).fetchall()
-
-    return [str(row["server_id"]) for row in rows]
+        return _eligible_vpn_auto_server_ids(connection)
 
 
 def _maybe_reselect_vpn_auto_after_membership_change(

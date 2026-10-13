@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT, XrayClient
-from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guarded
+from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guard_is_held, xray_writer_guarded
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.jobs.manager import get_default_job_manager
@@ -1452,6 +1452,201 @@ def _record_xray_generation_snapshot_postimage(checkpoint_path: Path) -> None:
     _fsync_directory(checkpoint_path.parent)
 
 
+def _publish_mihomo_udp_receipt_with_owner(
+    *, expected_mihomo_runtime: str, expected_mihomo_sha: str,
+    reconcile_reason: str, operation_id: str, owner_matches: Any,
+) -> bool:
+    """Share native proof and durable receipt persistence across fenced owners."""
+    from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+        current_mihomo_input_fingerprint,
+        write_mihomo_reconcile_fingerprint_state,
+    )
+
+    try:
+        if not xray_writer_guard_is_held() or not callable(owner_matches):
+            return False
+        fingerprint = current_mihomo_input_fingerprint()
+        fingerprint_hash = str(fingerprint.get("hash") or "")
+        if not fingerprint_hash or not owner_matches(fingerprint_hash):
+            return False
+        native_proof = _native_udp_policy_proof()
+        if not native_proof.get("ok") or not owner_matches(fingerprint_hash):
+            return False
+        if not (
+            native_proof.get("native_top_level_rules_match") is True
+            and native_proof.get("selector_membership_matches") is True
+            and native_proof.get("guarded_rules_match") is True
+        ):
+            return False
+        return bool(write_mihomo_reconcile_fingerprint_state(
+            fingerprint=fingerprint,
+            result={"ok": True, "reconcile_reason": reconcile_reason, "operation_id": operation_id},
+            native_proof=native_proof,
+            expected_active_hash=expected_mihomo_sha,
+            expected_runtime_incarnation=expected_mihomo_runtime,
+        ))
+    except Exception:
+        return False
+
+
+def _publish_xray_generation_mihomo_udp_receipt(
+    *, checkpoint_path: Path, verification: dict[str, Any], expected_source: str,
+    expected_revision: int, expected_mihomo_runtime: str, expected_mihomo_sha: str,
+) -> bool:
+    """Publish a Mihomo receipt only while this staged generation still owns runtime state."""
+    from fwrouter_api.services import mihomo_config
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    try:
+        if not xray_writer_guard_is_held():
+            return False
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        verification_required = checkpoint.get("selection_verification_required") is True
+        if verification_required and verification.get("ok") is not True:
+            return False
+        if not verification_required and "ok" in verification and verification.get("ok") is not True:
+            return False
+        generation_id = str(checkpoint.get("generation_id") or "")
+        if (
+            not generation_id
+            or not expected_source
+            or not expected_mihomo_runtime
+            or not expected_mihomo_sha
+            or checkpoint.get("selection_revision") != expected_revision
+            or checkpoint.get("mihomo_runtime_incarnation") != expected_mihomo_runtime
+            or checkpoint.get("derived_source_fingerprint") != expected_source
+            or (checkpoint.get("staged_generation") or {}).get("mihomo_final_sha256") != expected_mihomo_sha
+        ):
+            return False
+        verification_operation_id = verification.get("operation_id")
+        if checkpoint.get("selection_verification_required") is True:
+            if verification_operation_id != generation_id or verification.get("selection_revision") != expected_revision:
+                return False
+        elif verification_operation_id is not None and verification_operation_id != generation_id:
+            return False
+        elif verification.get("selection_revision") is not None and verification.get("selection_revision") != expected_revision:
+            return False
+
+        def owned(fingerprint_hash: str) -> bool:
+            try:
+                current_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                with db_session() as connection:
+                    fence = read_selection_fence(connection)
+                active_hash = hashlib.sha256(
+                    Path(mihomo_config._resolved_base_config_path()).read_bytes()
+                ).hexdigest()
+                current_fingerprint = current_mihomo_input_fingerprint()
+                return bool(
+                    current_checkpoint.get("generation_id") == generation_id
+                    and current_checkpoint.get("selection_revision") == expected_revision
+                    and current_checkpoint.get("mihomo_runtime_incarnation") == expected_mihomo_runtime
+                    and current_checkpoint.get("derived_source_fingerprint") == expected_source
+                    and (current_checkpoint.get("staged_generation") or {}).get("mihomo_final_sha256") == expected_mihomo_sha
+                    and fence.get("revision") == expected_revision
+                    and _generation_source_fingerprint() == expected_source
+                    and get_mihomo_runtime_incarnation() == expected_mihomo_runtime
+                    and active_hash == expected_mihomo_sha
+                    and current_fingerprint.get("hash") == fingerprint_hash
+                )
+            except (OSError, ValueError, TypeError):
+                return False
+
+        return _publish_mihomo_udp_receipt_with_owner(
+            expected_mihomo_runtime=expected_mihomo_runtime,
+            expected_mihomo_sha=expected_mihomo_sha,
+            reconcile_reason="xray_staged_generation",
+            operation_id=generation_id,
+            owner_matches=owned,
+        )
+    except Exception:
+        return False
+
+
+def _publish_xray_generation_rollback_mihomo_udp_receipt(
+    *, checkpoint_path: Path, expected_source: str, expected_revision: int,
+    expected_mihomo_runtime: str, expected_mihomo_sha: str,
+) -> bool:
+    """Re-prove the restored last-good Mihomo instance before accepting rollback."""
+    from fwrouter_api.services import mihomo_config
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    try:
+        if not xray_writer_guard_is_held() or not all((expected_source, expected_mihomo_runtime, expected_mihomo_sha)):
+            return False
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        generation_id = str(checkpoint.get("generation_id") or "")
+        def checkpoint_preimage_matches(value: dict[str, Any]) -> bool:
+            try:
+                artifacts = value.get("artifacts") if isinstance(value.get("artifacts"), dict) else {}
+                mihomo_artifact = artifacts.get("mihomo_config") if isinstance(artifacts.get("mihomo_config"), dict) else {}
+                encoded = mihomo_artifact.get("text")
+                return bool(
+                    isinstance(encoded, str)
+                    and hashlib.sha256(base64.b64decode(encoded, validate=True)).hexdigest() == expected_mihomo_sha
+                )
+            except (ValueError, TypeError):
+                return False
+
+        if (
+            not generation_id
+            or type(expected_revision) is not int
+            or checkpoint.get("phase") != "restore_started"
+            or checkpoint.get("source_fingerprint") != expected_source
+            or not checkpoint_preimage_matches(checkpoint)
+        ):
+            return False
+
+        def owned(fingerprint_hash: str) -> bool:
+            try:
+                current_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                with db_session() as connection:
+                    fence = read_selection_fence(connection)
+                active_hash = hashlib.sha256(
+                    Path(mihomo_config._resolved_base_config_path()).read_bytes()
+                ).hexdigest()
+                current_fingerprint = current_mihomo_input_fingerprint()
+                return bool(
+                    current_checkpoint.get("generation_id") == generation_id
+                    and current_checkpoint.get("phase") == "restore_started"
+                    and current_checkpoint.get("source_fingerprint") == expected_source
+                    and checkpoint_preimage_matches(current_checkpoint)
+                    and fence.get("revision") == expected_revision
+                    and _generation_source_fingerprint() == expected_source
+                    and get_mihomo_runtime_incarnation() == expected_mihomo_runtime
+                    and active_hash == expected_mihomo_sha
+                    and current_fingerprint.get("hash") == fingerprint_hash
+                )
+            except (OSError, ValueError, TypeError):
+                return False
+
+        return _publish_mihomo_udp_receipt_with_owner(
+            expected_mihomo_runtime=expected_mihomo_runtime,
+            expected_mihomo_sha=expected_mihomo_sha,
+            reconcile_reason="xray_generation_rollback",
+            operation_id=f"{generation_id}:rollback",
+            owner_matches=owned,
+        )
+    except Exception:
+        return False
+
+
+def _finish_xray_generation_rollback(
+    checkpoint_path: Path, *, restored: bool,
+) -> bool:
+    """Close only a fully re-proved rollback; retain and mark all incomplete recovery."""
+    if restored:
+        checkpoint_path.unlink(missing_ok=True)
+        _fsync_directory(checkpoint_path.parent)
+        return True
+    _update_xray_generation_checkpoint(checkpoint_path, phase="restore_failed")
+    return False
+
+
 def _finalize_xray_profile_publication(pending: dict[str, Any], verification: dict[str, Any]) -> dict[str, Any]:
     """Publish only after the caller's out-of-guard Core verification succeeded."""
     values = pending.get("result_values") or {}
@@ -1516,6 +1711,16 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
     if not exact_readback:
         return {"ok": False, "status": "pending", "stage": "xray_runtime_readback",
                 "error_code": "XRAY_GENERATION_RUNTIME_READBACK_FAILED", "last_good_retained": True}
+    if type(expected_revision) is not int or not _publish_xray_generation_mihomo_udp_receipt(
+        checkpoint_path=checkpoint_path,
+        verification=verification,
+        expected_source=expected_source,
+        expected_revision=expected_revision,
+        expected_mihomo_runtime=expected_mihomo_runtime,
+        expected_mihomo_sha=expected_mihomo_sha,
+    ):
+        return {"ok": False, "status": "pending", "stage": "mihomo_udp_policy_receipt",
+                "error_code": "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED", "last_good_retained": True}
     promoted_profile = (
         promote_runtime_verified_subscription_nodes(
             pending["subscription_nodes"],
@@ -1964,6 +2169,8 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     owned_selection_revision = selection_restore_result.get("selection_revision")
     xray_runtime_readback: dict[str, Any] = {"ok": False, "reason": "not_checked"}
     mihomo_runtime_readback: dict[str, Any] = {"ok": False, "reason": "not_checked"}
+    restored_mihomo_hash: str | None = None
+    restored_mihomo_incarnation: str | None = None
     if bool(xray_restore.ok) and bool(mihomo_restore.get("ok")) and derived_restore_ok:
         try:
             from fwrouter_api.services.xray_materialize import (
@@ -1991,6 +2198,8 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
                                     if isinstance(restored_mihomo_text, str) else None)
             active_mihomo_hash = hashlib.sha256(Path(mihomo_config._resolved_base_config_path()).read_bytes()).hexdigest()
             mihomo_after_incarnation = get_mihomo_runtime_incarnation()
+            restored_mihomo_hash = active_mihomo_hash
+            restored_mihomo_incarnation = mihomo_after_incarnation
             from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
             listeners_ready = all(
                 DEFAULT_MIHOMO_ADAPTER.check_port(int(item.get("port") or 0), host="172.18.0.1", timeout=1.0)
@@ -2015,12 +2224,22 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
             and terminal_fence.get("revision") == owned_selection_revision
             and _generation_source_fingerprint() == str(data.get("source_fingerprint") or "")
         )
+    receipt_error_code = None
     if ok:
-        checkpoint_path.unlink(missing_ok=True)
-        _fsync_directory(checkpoint_path.parent)
-    else:
-        _update_xray_generation_checkpoint(checkpoint_path, phase="restore_failed")
-    return {"ok": ok, "recovered": "restored_last_good", "xray_reload": xray_restore.ok,
+        receipt_ok = _publish_xray_generation_rollback_mihomo_udp_receipt(
+            checkpoint_path=checkpoint_path,
+            expected_source=str(data.get("source_fingerprint") or ""),
+            expected_revision=int(owned_selection_revision),
+            expected_mihomo_runtime=str(restored_mihomo_incarnation or ""),
+            expected_mihomo_sha=str(restored_mihomo_hash or ""),
+        )
+        if not receipt_ok:
+            ok = False
+            receipt_error_code = "MIHOMO_UDP_POLICY_ROLLBACK_RECEIPT_UNCONFIRMED"
+    ok = _finish_xray_generation_rollback(checkpoint_path, restored=ok)
+    return {"ok": ok, "recovered": "restored_last_good" if ok else "restore_failed",
+            **({"error_code": receipt_error_code} if receipt_error_code else {}),
+            "xray_reload": xray_restore.ok,
             "mihomo_restart": bool(mihomo_restore.get("ok")), "derived_rows_restored": derived_restore_ok,
             "selection_readback": selection_readback, "xray_runtime_readback": xray_runtime_readback,
             "mihomo_runtime_readback": mihomo_runtime_readback,

@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "run": 38313177638,
+  "source": "c14512ecddd4659b7b0cabe7d630c359e0bce862",
+  "scope": "branch-main-equivalent, NOT actual main/PR",
+  "aggregate": {
+    "eligible": true,
+    "blocked_reasons": [],
+    "plan_digest": "a765efb3f5d3fa7f73a3cf36f1615d3f03065e1aca0cebd2abd07812724196cd",
+    "main_smoke_required": true,
+    "main_smoke_status": "passed"
+  },
+  "receipts": [
+    {
+      "suite": "provider-cohort",
+      "source_revision": "c14512ecddd4659b7b0cabe7d630c359e0bce862",
+      "scope": "hosted-kernel-dataplane",
+      "status": "passed",
+      "pytest_elapsed_seconds": 158.566,
+      "cleanup": "owned_resources_removed",
+      "tests": {
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "suite": "functional-ordinary",
+      "source_revision": "c14512ecddd4659b7b0cabe7d630c359e0bce862",
+      "scope": "hosted-native-process",
+      "status": "passed",
+      "pytest_elapsed_seconds": 244.382,
+      "cleanup": "owned_resources_removed",
+      "tests": {
+        "tests": 26,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "wheel_build_in_this_run": "FAIL: wrong PyPI backend package; corrected targeted38314460619",
+  "wheel_targeted": {
+    "run": 38314460619,
+    "name": "fwrouter-api",
+    "version": "0.1.0",
+    "matched_source_python_files": 247,
+    "status": "PASS"
+  },
+  "ghcr_consumer": {
+    "run": 38313177705,
+    "cold_pull_seconds": 35.462,
+    "warm_pull_seconds": 0.154,
+    "image_bytes": 2616513753,
+    "packages": 486,
+    "status": "PASS"
+  },
+  "production_changed": false,
+  "l6_l7": "NOT RUN"
+}

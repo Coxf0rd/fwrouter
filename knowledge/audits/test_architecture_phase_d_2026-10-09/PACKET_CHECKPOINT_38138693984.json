@@ -1,0 +1,193 @@
+{
+  "captures": {
+    "tcp": {
+      "bytes": 23824,
+      "flows": {
+        "10.240.0.2>203.0.113.53:9080": 12,
+        "198.18.240.1>198.18.240.2:5301": 328
+      },
+      "header_only": true,
+      "protocol": "tcp",
+      "records": 340,
+      "sha256": "80ce1057ceea03b149a698b11cbafaf47304a90a907e5333e7e8d8d412056116",
+      "snaplen": 54
+    },
+    "udp": {
+      "bytes": 372,
+      "flows": {
+        "10.240.0.2>203.0.113.53:5353": 4,
+        "10.240.0.2>203.0.113.53:9081": 2
+      },
+      "header_only": true,
+      "protocol": "udp",
+      "records": 6,
+      "sha256": "256861dace9edf1950025ce2118d0d4b15166aa3569c32d82b780769776be863",
+      "snaplen": 42
+    }
+  },
+  "cleanup": "owned_resources_removed",
+  "host_state_unchanged": true,
+  "image_measurements": {
+    "base_image_inspect_seconds": 0.018,
+    "base_image_present_before_build": false,
+    "base_image_pull_count": 1,
+    "base_image_pull_seconds": 16.733,
+    "built_image_bytes": 1996813637,
+    "compose_build_seconds": 28.959
+  },
+  "open_gates": [
+    "DNS/53 policy",
+    "protected DIRECT packet path",
+    "packet path after actual selector change",
+    "fresh targeted native/browser/provider cohort",
+    "GHCR publisher/digest consumer",
+    "full functional/affected/historical/reproducibility"
+  ],
+  "phase_d": "BLOCKED",
+  "production_changes": false,
+  "reentry": {
+    "action": "verified_vpn_reentry",
+    "additional_provider_calls": 0,
+    "effective_override": null,
+    "ok": true,
+    "provider_calls_after": 1,
+    "provider_calls_before": 1,
+    "routing": {
+      "active_mode_matches_intent": true,
+      "api_ok": true,
+      "applied_mode": "vpn",
+      "desired_mode": "vpn",
+      "enforcement_level": "global_vpn_enforced",
+      "http_status": 200,
+      "live_global_mode": "vpn",
+      "traffic_enforcement_guaranteed": true,
+      "vpn_egress_ready": true
+    }
+  },
+  "resources": {
+    "cpu_system_seconds": 3.74,
+    "cpu_user_seconds": 27.197,
+    "max_rss_kib": 123144,
+    "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+    "owned_temp_bytes_before_cleanup": 1820630,
+    "wall_seconds": 55.414
+  },
+  "results": {
+    "failed": 0,
+    "passed": 1,
+    "skipped": 0
+  },
+  "run_id": 38138693984,
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38138693984",
+  "schema": "fwrouter-phase-d-packet-checkpoint/v1",
+  "scope": "L3 isolated kernel packet scenario; not full Phase D acceptance",
+  "source_revision": "8689e23877e97ad2cf1afdba8024c4fa12575eec",
+  "udp_phases": {
+    "packet_phase_vpn_after_reentry": {
+      "core_counter_delta": {
+        "direct_lan_forward": 108,
+        "vpn_lan_input": 9,
+        "vpn_tcp_classified": 6,
+        "vpn_udp_classified": 3,
+        "vpn_udp_handoff_packets": 3
+      },
+      "endpoint_observation_delta": {
+        "dns": {
+          "count": 1,
+          "last_peer": "203.0.113.53"
+        },
+        "http": {
+          "count": 1,
+          "last_peer": "203.0.113.53"
+        },
+        "udp": {
+          "count": 1,
+          "last_peer": "203.0.113.53"
+        }
+      },
+      "phase": "vpn-after-reentry",
+      "selection_stable": true
+    },
+    "packet_phase_vpn_empty_pool": {
+      "attempt": {
+        "control_status": 502,
+        "failure_class": "TimeoutError"
+      },
+      "core_counter_delta": {
+        "direct_lan_forward": 24,
+        "vpn_lan_input": 1,
+        "vpn_tcp_classified": 0,
+        "vpn_udp_classified": 1,
+        "vpn_udp_handoff_packets": 1
+      },
+      "direct_udp_capture_delta": {
+        "client_source_to_service": 0,
+        "mihomo_direct_to_service": 0
+      },
+      "endpoint_udp_observation_delta": 0,
+      "phase": "vpn-empty-pool",
+      "selection_stable": true
+    },
+    "packet_phase_vpn_endpoint_unavailable": {
+      "attempt": {
+        "control_status": 502,
+        "failure_class": "TimeoutError"
+      },
+      "core_counter_delta": {
+        "direct_lan_forward": 46,
+        "vpn_lan_input": 1,
+        "vpn_tcp_classified": 0,
+        "vpn_udp_classified": 1,
+        "vpn_udp_handoff_packets": 1
+      },
+      "direct_udp_capture_delta": {
+        "client_source_to_service": 0,
+        "mihomo_direct_to_service": 0
+      },
+      "endpoint_udp_observation_delta": 0,
+      "phase": "vpn-endpoint-unavailable",
+      "selection_stable": true
+    },
+    "packet_phase_vpn_unknown_udp": {
+      "attempt": {
+        "ok": true,
+        "peer": "203.0.113.53",
+        "service": "udp"
+      },
+      "core_counter_delta": {
+        "direct_lan_forward": 28,
+        "vpn_lan_input": 1,
+        "vpn_tcp_classified": 0,
+        "vpn_udp_classified": 1,
+        "vpn_udp_handoff_packets": 1
+      },
+      "direct_udp_capture_delta": {
+        "client_source_to_service": 0,
+        "mihomo_direct_to_service": 0
+      },
+      "endpoint_udp_observation_delta": 1,
+      "phase": "vpn-unknown-udp",
+      "selection_stable": true
+    },
+    "packet_phase_vpn_unsupported_udp": {
+      "attempt": {
+        "control_status": 502,
+        "failure_class": "TimeoutError"
+      },
+      "core_counter_delta": {
+        "direct_lan_forward": 24,
+        "vpn_lan_input": 1,
+        "vpn_tcp_classified": 0,
+        "vpn_udp_classified": 1,
+        "vpn_udp_handoff_packets": 1
+      },
+      "direct_udp_capture_delta": {
+        "client_source_to_service": 0,
+        "mihomo_direct_to_service": 0
+      },
+      "endpoint_udp_observation_delta": 0,
+      "phase": "vpn-unsupported-udp",
+      "selection_stable": true
+    }
+  }
+}

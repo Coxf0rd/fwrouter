@@ -62,7 +62,10 @@ def _seed_xray_subject() -> None:
         )
 
 
-def test_xray_projection_reports_runtime_and_binding_summary(monkeypatch) -> None:
+def test_xray_projection_reports_runtime_and_binding_summary(
+    monkeypatch,
+    isolated_host_observations,
+) -> None:
     monkeypatch.setattr("fwrouter_api.services.state_projection.xray_adapter_module.DEFAULT_XRAY_ADAPTER", _XrayAdapter())
     atomic_write_json(
         get_settings().paths.state_dir / "xray" / "fwrouter-bindings.json",

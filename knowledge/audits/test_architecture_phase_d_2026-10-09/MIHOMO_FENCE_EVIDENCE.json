@@ -1,0 +1,78 @@
+{
+  "checks": {
+    "active_config_hash_matches": true,
+    "input_fingerprint_matches": false,
+    "runtime_incarnation_matches": true,
+    "selection_revision_matches": true,
+    "verification_matches": true,
+    "writer_guard_held": true
+  },
+  "expected": {
+    "active_config_sha256": "22a61aed65c1648cc575575898e54797d752442755f04ac3cf0593ee58c6918e",
+    "input_fingerprint_sha256": "aea936baa2b17db3d7bcfeb35ee48a7f71dc24aa9d68b496c56e66789d254ae4",
+    "runtime_incarnation_sha256": "e68b7b8eb990e37d0a9c61fe0fc0b0bdc9b6c1ae9a85136fe7f36c9d25ee0bba",
+    "selection_revision": 1
+  },
+  "fingerprint_changed_leaves": [
+    {
+      "expected_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "observed_sha256": null,
+      "path": "tables.routing_global_state"
+    },
+    {
+      "expected_sha256": null,
+      "observed_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "path": "tables.routing_global_state[0].active_auto_server_id"
+    },
+    {
+      "expected_sha256": null,
+      "observed_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "path": "tables.routing_global_state[0].applied_fixed_server_id"
+    },
+    {
+      "expected_sha256": null,
+      "observed_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "path": "tables.routing_global_state[0].applied_mode"
+    },
+    {
+      "expected_sha256": null,
+      "observed_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "path": "tables.routing_global_state[0].desired_fixed_server_id"
+    },
+    {
+      "expected_sha256": null,
+      "observed_sha256": "e095a134d1ac99d543b61895fe3aa0281367b29099ec19c390697397830b729a",
+      "path": "tables.routing_global_state[0].desired_mode"
+    },
+    {
+      "expected_sha256": null,
+      "observed_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+      "path": "tables.routing_global_state[0].fixed_server_until"
+    },
+    {
+      "expected_sha256": null,
+      "observed_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "path": "tables.routing_global_state[0].id"
+    },
+    {
+      "expected_sha256": null,
+      "observed_sha256": "e095a134d1ac99d543b61895fe3aa0281367b29099ec19c390697397830b729a",
+      "path": "tables.routing_global_state[0].selective_default"
+    },
+    {
+      "expected_sha256": null,
+      "observed_sha256": "634635a2166efa2ae765abd31d4ae807082287e329a8a7fff42b1fb30f65087e",
+      "path": "tables.routing_global_state[0].server_mode"
+    }
+  ],
+  "fingerprint_changed_leaves_truncated": false,
+  "observed": {
+    "active_config_sha256": "22a61aed65c1648cc575575898e54797d752442755f04ac3cf0593ee58c6918e",
+    "input_fingerprint_sha256": "998f51407c72eba8a6143ce3ebf773e1b694a0112a2b3821c79124dae488959a",
+    "runtime_incarnation_sha256": "e68b7b8eb990e37d0a9c61fe0fc0b0bdc9b6c1ae9a85136fe7f36c9d25ee0bba",
+    "selection_revision": 1
+  },
+  "result": "refused",
+  "schema": "fwrouter-acceptance-mihomo-publication-fence/v1",
+  "github_run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37904598829"
+}

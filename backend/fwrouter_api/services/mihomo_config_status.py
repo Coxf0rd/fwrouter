@@ -6,6 +6,8 @@ from typing import Any
 
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.services.mihomo_config_paths import (
+    FULL_VPN_RULE_NAME,
+    TRANSPARENT_TPROXY_RULE_NAME,
     _count_top_level_yaml_sequence,
     _iso8601_mtime,
     _resolved_base_config_path,
@@ -14,10 +16,12 @@ from fwrouter_api.services.mihomo_config_paths import (
     _scan_fwrouter_config_metadata,
 )
 from fwrouter_api.services.mihomo_config_rules import (
+    _build_mihomo_config_with_source,
     _build_fallback_rule,
     _build_transparent_fallback_rule,
     _resolved_selective_default,
 )
+from fwrouter_api.services.mihomo_config_proxies import _ensure_selector_groups
 
 
 def _config_structural_fingerprint(config: dict[str, Any]) -> dict[str, Any]:
@@ -112,11 +116,25 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
     expected_final_match_rule = _build_fallback_rule(routing_dict)
     expected_transparent_final_match_rule = _build_transparent_fallback_rule(routing_dict)
     expected_selective_default = _resolved_selective_default(routing_dict)
+    active_config = _safe_load_yaml(base_path)
+    active_subrules = active_config.get("sub-rules") if isinstance(active_config, dict) else None
+    active_subrules = active_subrules if isinstance(active_subrules, dict) else {}
+    _expected_rules, expected_policy = _build_mihomo_config_with_source(routing_dict)
+    transparent_udp_policy_ok = (
+        active_subrules.get(TRANSPARENT_TPROXY_RULE_NAME)
+        == expected_policy.get("transparent_rules")
+    )
+    full_vpn_udp_policy_ok = (
+        active_subrules.get(FULL_VPN_RULE_NAME)
+        == expected_policy.get("full_vpn_rules")
+    )
 
     metadata_ok = (
         metadata.get("resolved_selective_default") == expected_selective_default
         and metadata.get("final_match_rule") == expected_final_match_rule
         and metadata.get("transparent_final_match_rule") == expected_transparent_final_match_rule
+        and transparent_udp_policy_ok
+        and full_vpn_udp_policy_ok
     )
     if not metadata_ok:
         return {
@@ -127,7 +145,30 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
                 "resolved_selective_default": expected_selective_default,
                 "final_match_rule": expected_final_match_rule,
                 "transparent_final_match_rule": expected_transparent_final_match_rule,
+                "transparent_udp_policy_ok": transparent_udp_policy_ok,
+                "full_vpn_udp_policy_ok": full_vpn_udp_policy_ok,
             },
+        }
+
+    expected_groups = {
+        str(group.get("name") or ""): group.get("proxies")
+        for group in _ensure_selector_groups(active_config if isinstance(active_config, dict) else {})
+        if isinstance(group, dict)
+        and (str(group.get("name") or "") in {"vpn-auto", "vpn-global"}
+             or str(group.get("name") or "").startswith("fwrouter-subject-"))
+    }
+    actual_groups = {
+        str(group.get("name") or ""): group.get("proxies")
+        for group in (active_config.get("proxy-groups") or [])
+        if isinstance(group, dict)
+    } if isinstance(active_config, dict) else {}
+    selector_config_ok = all(actual_groups.get(name) == targets for name, targets in expected_groups.items())
+    if not selector_config_ok:
+        return {
+            "ok": False,
+            "reason": "vpn_selector_config_mismatch",
+            "expected_groups": expected_groups,
+            "actual_groups": {name: actual_groups.get(name) for name in expected_groups},
         }
 
     try:
@@ -148,11 +189,46 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
         selectors.get("vpn_global_exists")
         and selectors.get("vpn_global_has_vpn_auto")
         and str(selectors.get("vpn_global_now") or "").strip() == "vpn-auto"
+        and "REJECT" in set(selectors.get("vpn_auto_targets") or [])
+        and "DIRECT" not in set(selectors.get("vpn_auto_targets") or [])
+        and "REJECT" in set(selectors.get("vpn_global_targets") or [])
+        and "DIRECT" not in set(selectors.get("vpn_global_targets") or [])
     )
-    if server_mode == "auto" and expected_auto_server:
+    expected_native_members = {name: set(targets or []) for name, targets in expected_groups.items()}
+    runtime_native_members = {
+        "vpn-auto": set(selectors.get("vpn_auto_targets") or []),
+        "vpn-global": set(selectors.get("vpn_global_targets") or []),
+    }
+    runtime_native_members.update({
+        str(name): set(targets or [])
+        for name, targets in (selectors.get("subject_selector_targets") or {}).items()
+    })
+    selector_native_membership_ok = runtime_native_members == expected_native_members
+    if server_mode == "auto" and expected_native_members.get("vpn-auto") == {"REJECT"}:
+        # Persisted automatic-selection intent/provenance can outlive an empty
+        # eligible pool. The exact terminal native selection proves a valid
+        # fail-closed policy without erasing that intent or claiming egress.
+        selector_ok = selector_ok and (
+            str(selectors.get("vpn_auto_now") or "").strip() == "REJECT"
+            or str(selectors.get("vpn_auto_selected_target") or "").strip() == "REJECT"
+        )
+    elif server_mode == "auto" and expected_auto_server:
         selector_ok = selector_ok and str(selectors.get("vpn_auto_now") or "").strip() == expected_auto_server
+    elif server_mode == "auto":
+        # An empty owned pool is a valid installed fail-closed policy only
+        # when the selector explicitly resolves to its terminal REJECT target.
+        selector_ok = selector_ok and (
+            str(selectors.get("vpn_auto_now") or "").strip() == "REJECT"
+            or str(selectors.get("vpn_auto_selected_target") or "").strip() == "REJECT"
+        )
     else:
         selector_ok = False
+    vpn_egress_ready = bool(
+        selector_ok
+        and health.active_server_id
+        and str(selectors.get("vpn_auto_selected_target") or selectors.get("vpn_auto_now") or "")
+        not in {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE"}
+    )
 
     transparent_ok = bool(
         transparent_vpn.get("transparent_tcp_ready")
@@ -160,15 +236,19 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
         and transparent_vpn.get("transparent_tcp_listener_socket_present")
         and transparent_vpn.get("transparent_udp_listener_socket_present")
     )
-    ok = runtime_state == "running" and selector_ok and transparent_ok
+    ok = runtime_state == "running" and selector_ok and selector_native_membership_ok and transparent_ok
     return {
         "ok": ok,
         "reason": "active_mihomo_runtime_matches_routing" if ok else "active_mihomo_runtime_mismatch",
         "runtime_state": runtime_state,
         "selector_ok": selector_ok,
+        "selector_native_membership_ok": selector_native_membership_ok,
         "transparent_ok": transparent_ok,
         "metadata_ok": metadata_ok,
         "active_server_id": health.active_server_id,
         "vpn_auto_now": selectors.get("vpn_auto_now"),
         "vpn_global_now": selectors.get("vpn_global_now"),
+        "vpn_auto_selected_target": selectors.get("vpn_auto_selected_target"),
+        "vpn_global_selected_target": selectors.get("vpn_global_selected_target"),
+        "vpn_egress_ready": vpn_egress_ready,
     }

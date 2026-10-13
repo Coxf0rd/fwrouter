@@ -224,6 +224,14 @@ def update_subject_alias(
     requested_by: str = "api",
 ) -> dict[str, Any] | None:
     normalized_alias = str(alias or "").strip() or None
+    if str(subject_id or "").strip().lower().startswith("xray-subscription:"):
+        from fwrouter_api.services.subscription_profiles import set_xray_subscription_group_alias
+
+        return set_xray_subscription_group_alias(
+            subject_id,
+            normalized_alias,
+            requested_by=requested_by,
+        )
 
     with db_session() as connection:
         row = connection.execute(

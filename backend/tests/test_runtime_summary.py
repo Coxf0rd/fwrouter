@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir_and_clear_live_probe_cache as _configure_env
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 
@@ -8,17 +9,16 @@ from pathlib import Path
 
 from fwrouter_api.services.runtime import get_runtime_summary, get_scoped_egress_runtime_summary
 from fwrouter_api.services.artifacts import atomic_write_json, atomic_write_text
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.system_summary import build_system_summary
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
-    clear_live_probe_cache()
 
 
-def test_runtime_summary_contains_layout_and_modules(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_contains_layout_and_modules(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -37,6 +37,7 @@ def test_runtime_summary_contains_layout_and_modules(monkeypatch, tmp_path: Path
 def test_runtime_summary_does_not_probe_external_ingress_without_connection(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -54,7 +55,11 @@ def test_runtime_summary_does_not_probe_external_ingress_without_connection(
     assert calls == []
 
 
-def test_runtime_summary_exposes_dataplane_capability(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_exposes_dataplane_capability(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -69,7 +74,11 @@ def test_runtime_summary_exposes_dataplane_capability(monkeypatch, tmp_path: Pat
     assert summary["dataplane"]["drift"]["code"] == "ACTIVE_DATAPLANE_MODE_MISMATCH"
 
 
-def test_runtime_summary_includes_scoped_egress_diagnostics(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_includes_scoped_egress_diagnostics(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -81,7 +90,11 @@ def test_runtime_summary_includes_scoped_egress_diagnostics(monkeypatch, tmp_pat
     assert summary["dataplane"]["scoped_egress_readiness"]["state"] in {"ready", "blocked"}
 
 
-def test_system_summary_reports_runtime_status_instead_of_skeleton(monkeypatch, tmp_path: Path) -> None:
+def test_system_summary_reports_runtime_status_instead_of_skeleton(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     summary = build_system_summary()
@@ -90,7 +103,11 @@ def test_system_summary_reports_runtime_status_instead_of_skeleton(monkeypatch, 
     assert "runtime" in summary["backend"]["message"].lower()
 
 
-def test_system_summary_uses_external_ingress_taxonomy_names(monkeypatch, tmp_path: Path) -> None:
+def test_system_summary_uses_external_ingress_taxonomy_names(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -102,7 +119,11 @@ def test_system_summary_uses_external_ingress_taxonomy_names(monkeypatch, tmp_pa
     assert "managed_external_ingress_providers" not in taxonomy
 
 
-def test_runtime_summary_uses_persisted_subscription_state(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_uses_persisted_subscription_state(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -119,7 +140,11 @@ def test_runtime_summary_uses_persisted_subscription_state(monkeypatch, tmp_path
     assert summary["subscription"]["error_code"] is None
 
 
-def test_runtime_summary_exposes_automation_flags(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_exposes_automation_flags(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     monkeypatch.setenv("FWROUTER_STARTUP_RECOVERY_ENABLED", "false")
     monkeypatch.setenv("FWROUTER_MAINTENANCE_SCHEDULER_ENABLED", "false")
@@ -140,8 +165,14 @@ def test_runtime_summary_exposes_automation_flags(monkeypatch, tmp_path: Path) -
     assert summary["automation"]["watchdog_scheduler"]["status"] == "disabled_by_config"
 
 
-def test_runtime_summary_marks_temporary_direct_safe_bootstrap_when_not_enforced(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_marks_temporary_direct_safe_bootstrap_when_not_enforced(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_STARTUP_RECOVERY_ENABLED", "true")
+    get_settings.cache_clear()
     initialize_database()
 
     summary = get_runtime_summary()
@@ -181,7 +212,11 @@ def test_runtime_summary_exposes_routing_drift(monkeypatch, tmp_path: Path) -> N
     assert summary["dataplane"]["drift"]["code"] == "ACTIVE_DATAPLANE_MODE_MISMATCH"
 
 
-def test_system_summary_warns_on_active_dataplane_mode_mismatch(monkeypatch, tmp_path: Path) -> None:
+def test_system_summary_warns_on_active_dataplane_mode_mismatch(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -300,6 +335,9 @@ def test_runtime_enforcement_projection_preserves_applied_mode_contracts(monkeyp
             "can_enforce_global_direct": True,
             "can_enforce_global_selective": True,
             "can_enforce_global_vpn": True,
+            "can_prepare_global_vpn": True,
+            "vpn_policy_installed": True,
+            "vpn_egress_ready": True,
             "selective_degraded": False,
             "selective_vpn_ready": True,
             "profile": {"profile": "global_v1"},
@@ -327,7 +365,38 @@ def test_runtime_enforcement_projection_preserves_applied_mode_contracts(monkeyp
         assert _runtime_enforcement_from_summary(runtime_snapshot) == enforcement
 
 
-def test_system_summary_reuses_runtime_enforcement_projection(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_enforcement_reports_confirmed_fail_closed_vpn_policy_without_egress(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services.dataplane_global import build_applied_runtime_enforcement
+
+    result = build_applied_runtime_enforcement(
+        routing={"desired_mode": "vpn", "applied_mode": "vpn"},
+        preflight={
+            "can_enforce_global_direct": True,
+            "can_enforce_global_selective": True,
+            "can_enforce_global_vpn": True,
+            "can_prepare_global_vpn": True,
+            "vpn_policy_installed": True,
+            "vpn_egress_ready": False,
+            "vpn_egress_missing": ["mihomo_global_egress_missing"],
+            "profile": {"profile": "global_v1"},
+            "missing": [],
+        },
+        live_mode_probe={"ok": True, "mode": "vpn"},
+    )
+    assert result["enforcement_level"] == "global_vpn_fail_closed"
+    assert result["traffic_enforcement_guaranteed"] is True
+    assert result["vpn_egress_ready"] is False
+
+
+def test_system_summary_reuses_runtime_enforcement_projection(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     import fwrouter_api.services.runtime as runtime_service
@@ -347,7 +416,11 @@ def test_system_summary_reuses_runtime_enforcement_projection(monkeypatch, tmp_p
     assert summary["backend"]["runtime_enforcement"] == runtime_service._runtime_enforcement_from_summary(get_runtime_summary())
 
 
-def test_system_summary_falls_back_when_runtime_enforcement_projection_is_malformed(monkeypatch, tmp_path: Path) -> None:
+def test_system_summary_falls_back_when_runtime_enforcement_projection_is_malformed(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     fallback = {
@@ -428,7 +501,12 @@ def test_system_summary_reuses_short_ttl_cache(monkeypatch, tmp_path: Path) -> N
     assert len(calls) == 1
 
 
-def test_runtime_summary_checks_applied_dataplane_artifacts(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_checks_applied_dataplane_artifacts(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+    unavailable_live_mode_observation,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 

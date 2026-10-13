@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from typing import Any
+from _test_support import database_table_diff, database_table_snapshot as _database_snapshot
 
 import pytest
 from fastapi.testclient import TestClient
@@ -516,6 +518,7 @@ def _finalizer_pending(monkeypatch, tmp_path: Path, *, loaded=None):
         selection_revision = read_selection_fence(connection)["revision"]
     checkpoint = tmp_path / "generation-checkpoint.json"
     checkpoint.write_text(json.dumps({
+        "generation_id": "generation-test",
         "subscription_snapshots": {"generation-test": None},
         "phase": "selection_verified", "xray_runtime_incarnation_after": "xray-finalized-running",
         "mihomo_runtime_incarnation": "mihomo-finalized-running",
@@ -547,12 +550,25 @@ def test_staged_generation_finalizer_returns_success_and_closes_checkpoint_last(
     initialize_database()
     _seed_subscription_identity(slug="generation-test", token="generation-test")
     pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
+    publication_order = []
+    promote = xray_subscription_service.promote_runtime_verified_subscription_nodes
+    monkeypatch.setattr(
+        xray_subscription_service, "_publish_xray_generation_mihomo_udp_receipt",
+        lambda **_kwargs: publication_order.append("receipt") or True,
+    )
+    monkeypatch.setattr(
+        xray_subscription_service, "promote_runtime_verified_subscription_nodes",
+        lambda *args, **kwargs: (
+            publication_order.append("public_profile") or promote(*args, **kwargs)
+        ),
+    )
     result = xray_subscription_service._finalize_xray_profile_publication(
         pending, {"ok": True, "operation_id": "generation-test",
                   "selection_revision": json.loads(checkpoint.read_text())["selection_revision"]},
     )
 
     assert result["ok"] is True
+    assert publication_order == ["receipt", "public_profile"]
     assert result["generation_apply"]["public_snapshots_changed"] is True
     assert not checkpoint.exists()
     with db_session() as connection:
@@ -568,6 +584,10 @@ def test_staged_generation_finalizer_keeps_checkpoint_on_publication_failure(mon
     _seed_subscription_identity(slug="generation-test", token="generation-test")
     pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
     monkeypatch.setattr(
+        xray_subscription_service, "_publish_xray_generation_mihomo_udp_receipt",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
         xray_subscription_service, "_xray_generation_snapshots_changed",
         lambda _path: (_ for _ in ()).throw(RuntimeError("injected publication readback failure")),
     )
@@ -580,6 +600,244 @@ def test_staged_generation_finalizer_keeps_checkpoint_on_publication_failure(mon
         raise AssertionError("expected injected publication readback failure")
 
     assert checkpoint.exists()
+
+
+def test_staged_generation_finalizer_requires_udp_receipt_before_publication(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="generation-test", token="generation-test")
+    pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
+    promoted = []
+    monkeypatch.setattr(
+        xray_subscription_service, "_publish_xray_generation_mihomo_udp_receipt",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        xray_subscription_service, "promote_runtime_verified_subscription_nodes",
+        lambda *_args, **_kwargs: promoted.append(True) or {"profiles_count": 1, "nodes_count": 0},
+    )
+
+    result = xray_subscription_service._finalize_xray_profile_publication(
+        pending, {"ok": True, "operation_id": "generation-test",
+                 "selection_revision": json.loads(checkpoint.read_text())["selection_revision"]},
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED"
+    assert checkpoint.exists()
+    assert promoted == []
+    with db_session() as connection:
+        snapshot = connection.execute(
+            "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),
+        ).fetchone()
+    assert snapshot is None
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["success", "success_no_callback", "revision", "source", "incarnation", "active_hash",
+     "fingerprint_after_proof", "checkpoint_after_proof", "native_proof", "native_selector",
+     "native_guards", "callback_false", "receipt_write", "unheld", "wrong_token"],
+)
+def test_staged_generation_udp_receipt_requires_fresh_owned_native_proof(
+    monkeypatch, tmp_path: Path, failure: str,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import mihomo_config as mihomo_config_module
+    from fwrouter_api.services import mihomo_reconcile as mihomo_reconcile_module
+    from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint_module
+    from fwrouter_api.services import mihomo_runtime as mihomo_runtime_module
+    from fwrouter_api.services import vpn_auto_selection_state as selection_state_module
+
+    mihomo_path = tmp_path / "mihomo-final.yaml"
+    mihomo_path.write_text("final-generation-config", encoding="utf-8")
+    active_hash = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+    source_fingerprint = xray_subscription_service._generation_source_fingerprint()
+    with db_session() as connection:
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+        revision = read_selection_fence(connection)["revision"]
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    checkpoint.write_text(json.dumps({
+        "generation_id": "owned-generation",
+        "selection_revision": revision,
+        "mihomo_runtime_incarnation": "mihomo-incarnation",
+        "derived_source_fingerprint": source_fingerprint,
+        "staged_generation": {"mihomo_final_sha256": active_hash},
+        "selection_verification_required": failure != "success_no_callback",
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        xray_subscription_service, "xray_writer_guard_is_held",
+        lambda: failure != "unheld",
+    )
+    monkeypatch.setattr(mihomo_config_module, "_resolved_base_config_path", lambda: mihomo_path)
+    monkeypatch.setattr(
+        mihomo_runtime_module, "get_mihomo_runtime_incarnation",
+        lambda: "stale-incarnation" if failure == "incarnation" else "mihomo-incarnation",
+    )
+    monkeypatch.setattr(
+        xray_subscription_service, "_generation_source_fingerprint",
+        lambda: "changed-source" if failure == "source" else source_fingerprint,
+    )
+    real_read_selection_fence = selection_state_module.read_selection_fence
+    monkeypatch.setattr(
+        selection_state_module, "read_selection_fence",
+        lambda connection: ({"revision": revision + 1} if failure == "revision"
+                            else real_read_selection_fence(connection)),
+    )
+    fingerprint_calls = {"count": 0}
+    def current_fingerprint():
+        fingerprint_calls["count"] += 1
+        value = "changed-fingerprint" if (
+            failure == "fingerprint_after_proof" and fingerprint_calls["count"] >= 3
+        ) else "stable-fingerprint"
+        return {"hash": value}
+    monkeypatch.setattr(fingerprint_module, "current_mihomo_input_fingerprint", current_fingerprint)
+    proof_order = []
+    def native_proof():
+        proof_order.append("proof")
+        if failure == "checkpoint_after_proof":
+            changed_checkpoint = json.loads(checkpoint.read_text(encoding="utf-8"))
+            changed_checkpoint["selection_revision"] = revision + 1
+            checkpoint.write_text(json.dumps(changed_checkpoint), encoding="utf-8")
+        return {
+            "ok": failure != "native_proof",
+            "native_top_level_rules_match": True,
+            "selector_membership_matches": failure != "native_selector",
+            "guarded_rules_match": failure != "native_guards",
+        }
+    monkeypatch.setattr(mihomo_reconcile_module, "_native_udp_policy_proof", native_proof)
+    writes = []
+    def write_receipt(**kwargs):
+        writes.append(kwargs)
+        proof_order.append("receipt")
+        return failure != "receipt_write"
+    monkeypatch.setattr(fingerprint_module, "write_mihomo_reconcile_fingerprint_state", write_receipt)
+
+    result = xray_subscription_service._publish_xray_generation_mihomo_udp_receipt(
+        checkpoint_path=checkpoint,
+        verification=(
+            {} if failure == "success_no_callback" else
+            {"ok": False, "operation_id": "owned-generation", "selection_revision": revision}
+            if failure == "callback_false" else
+            {"ok": True,
+             "operation_id": "wrong-generation" if failure == "wrong_token" else "owned-generation",
+             "selection_revision": revision}
+        ),
+        expected_source=source_fingerprint,
+        expected_revision=revision,
+        expected_mihomo_runtime="mihomo-incarnation",
+        expected_mihomo_sha=("wrong-hash" if failure == "active_hash" else active_hash),
+    )
+
+    assert result is (failure in {"success", "success_no_callback"})
+    assert checkpoint.exists()
+    if failure in {"revision", "source", "incarnation", "active_hash", "unheld", "wrong_token", "callback_false"}:
+        assert proof_order == []
+        assert writes == []
+    elif failure in {"native_proof", "native_selector", "native_guards", "checkpoint_after_proof", "fingerprint_after_proof"}:
+        assert proof_order == ["proof"]
+        assert writes == []
+    else:
+        assert proof_order == ["proof", "receipt"]
+        assert len(writes) == 1
+        assert writes[0]["fingerprint"]["hash"] == "stable-fingerprint"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["success", "revision", "source", "incarnation", "active_hash", "fingerprint_after_proof",
+     "checkpoint_after_proof", "native_proof", "native_selector", "native_guards", "receipt_write"],
+)
+def test_xray_generation_rollback_udp_receipt_requires_restored_owner_proof(
+    monkeypatch, tmp_path: Path, failure: str,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import mihomo_config as mihomo_config_module
+    from fwrouter_api.services import mihomo_reconcile as mihomo_reconcile_module
+    from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint_module
+    from fwrouter_api.services import mihomo_runtime as mihomo_runtime_module
+    from fwrouter_api.services import vpn_auto_selection_state as selection_state_module
+
+    mihomo_path = tmp_path / "mihomo-restored.yaml"
+    mihomo_path.write_text("restored-last-good-config", encoding="utf-8")
+    active_hash = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+    source_fingerprint = xray_subscription_service._generation_source_fingerprint()
+    with db_session() as connection:
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+        revision = read_selection_fence(connection)["revision"]
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    checkpoint.write_text(json.dumps({
+        "generation_id": "rollback-generation",
+        "phase": "restore_started",
+        "source_fingerprint": source_fingerprint,
+        "artifacts": {"mihomo_config": {"text": base64.b64encode(mihomo_path.read_bytes()).decode("ascii")}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(xray_subscription_service, "xray_writer_guard_is_held", lambda: True)
+    monkeypatch.setattr(mihomo_config_module, "_resolved_base_config_path", lambda: mihomo_path)
+    monkeypatch.setattr(
+        mihomo_runtime_module, "get_mihomo_runtime_incarnation",
+        lambda: "stale-incarnation" if failure == "incarnation" else "restored-incarnation",
+    )
+    monkeypatch.setattr(
+        xray_subscription_service, "_generation_source_fingerprint",
+        lambda: "changed-source" if failure == "source" else source_fingerprint,
+    )
+    real_read_selection_fence = selection_state_module.read_selection_fence
+    monkeypatch.setattr(
+        selection_state_module, "read_selection_fence",
+        lambda connection: ({"revision": revision + 1} if failure == "revision"
+                            else real_read_selection_fence(connection)),
+    )
+    fingerprint_calls = {"count": 0}
+    def current_fingerprint():
+        fingerprint_calls["count"] += 1
+        value = "changed-fingerprint" if (
+            failure == "fingerprint_after_proof" and fingerprint_calls["count"] >= 3
+        ) else "stable-fingerprint"
+        return {"hash": value}
+    monkeypatch.setattr(fingerprint_module, "current_mihomo_input_fingerprint", current_fingerprint)
+    proof_order = []
+    def native_proof():
+        proof_order.append("proof")
+        if failure == "checkpoint_after_proof":
+            changed_checkpoint = json.loads(checkpoint.read_text(encoding="utf-8"))
+            changed_checkpoint["phase"] = "superseded"
+            checkpoint.write_text(json.dumps(changed_checkpoint), encoding="utf-8")
+        return {
+            "ok": failure != "native_proof",
+            "native_top_level_rules_match": True,
+            "selector_membership_matches": failure != "native_selector",
+            "guarded_rules_match": failure != "native_guards",
+        }
+    monkeypatch.setattr(mihomo_reconcile_module, "_native_udp_policy_proof", native_proof)
+    writes = []
+    def write_receipt(**kwargs):
+        writes.append(kwargs)
+        proof_order.append("receipt")
+        return failure != "receipt_write"
+    monkeypatch.setattr(fingerprint_module, "write_mihomo_reconcile_fingerprint_state", write_receipt)
+
+    result = xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt(
+        checkpoint_path=checkpoint,
+        expected_source=source_fingerprint,
+        expected_revision=revision,
+        expected_mihomo_runtime="restored-incarnation",
+        expected_mihomo_sha=("wrong-hash" if failure == "active_hash" else active_hash),
+    )
+
+    assert result is (failure == "success")
+    if failure in {"revision", "source", "incarnation", "active_hash"}:
+        assert proof_order == []
+        assert writes == []
+    elif failure in {"native_proof", "native_selector", "native_guards", "checkpoint_after_proof", "fingerprint_after_proof"}:
+        assert proof_order == ["proof"]
+        assert writes == []
+    else:
+        assert proof_order == ["proof", "receipt"]
+        assert len(writes) == 1
+        assert writes[0]["result"]["reconcile_reason"] == "xray_generation_rollback"
 
 
 def test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publication(monkeypatch, tmp_path: Path) -> None:
@@ -1157,6 +1415,11 @@ def _patch_runtime(monkeypatch) -> None:
     monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", lambda **_kwargs: {"ok": True})
     import fwrouter_api.services.subscription_pipeline as subscription_pipeline_service
     import fwrouter_api.services.mihomo_runtime as mihomo_runtime_service
+    import fwrouter_api.services.mihomo_reconcile as mihomo_reconcile_service
+    monkeypatch.setattr(mihomo_reconcile_service, "_native_udp_policy_proof", lambda: {
+        "ok": True, "native_top_level_rules_match": True,
+        "selector_membership_matches": True, "guarded_rules_match": True,
+    })
     mihomo_incarnation = {"value": 1}
     monkeypatch.setattr(
         mihomo_runtime_service, "get_mihomo_runtime_incarnation",
@@ -1302,30 +1565,6 @@ def _enable_xray_module() -> None:
                 error_message = NULL
             """
         )
-
-
-def _database_snapshot() -> dict[str, list[dict[str, object]]]:
-    with db_session() as connection:
-        tables = [
-            str(row["name"])
-            for row in connection.execute(
-                """
-                SELECT name
-                FROM sqlite_master
-                WHERE type = 'table'
-                  AND name NOT LIKE 'sqlite_%'
-                ORDER BY name
-                """
-            ).fetchall()
-        ]
-        snapshot: dict[str, list[dict[str, object]]] = {}
-        for table in tables:
-            rows = [dict(row) for row in connection.execute(f'SELECT * FROM "{table}"').fetchall()]
-            snapshot[table] = sorted(
-                rows,
-                key=lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True, default=str),
-            )
-    return snapshot
 
 
 def test_noop_xray_health_contract() -> None:
@@ -1971,7 +2210,10 @@ def test_subscription_profile_reconcile_is_idempotent(monkeypatch, tmp_path: Pat
     assert len(rules) == len(set(rules))
 
 
-def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("rollback_failure", ["success", "receipt_failure", "readback_failure"])
+def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
+    monkeypatch, tmp_path: Path, rollback_failure: str, isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -2005,9 +2247,27 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(mo
         ).fetchall()]
 
     _seed_subscription_identity(slug="new-generation", token="new-generation")
+    publish_rollback_receipt = xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt
+    receipt_attempts = []
+    def rollback_receipt(**kwargs):
+        receipt_attempts.append(True)
+        if rollback_failure == "receipt_failure":
+            return False
+        return publish_rollback_receipt(**kwargs)
+    monkeypatch.setattr(
+        xray_subscription_service, "_publish_xray_generation_rollback_mihomo_udp_receipt",
+        rollback_receipt,
+    )
     apply_candidate = xray_subscription_service._apply_staged_mihomo_candidate
     def fail_final_candidate(candidate_path: str, expected_sha256: str):
         if "final" in Path(candidate_path).name:
+            if rollback_failure == "readback_failure":
+                from fwrouter_api.adapters import mihomo as mihomo_adapter_module
+                monkeypatch.setattr(
+                    mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER,
+                    "check_port",
+                    lambda *_args, **_kwargs: False,
+                )
             return {"ok": False, "stage": "test_failure", "error_code": "INJECTED_FINAL_APPLY_FAILURE"}
         return apply_candidate(candidate_path, expected_sha256)
     monkeypatch.setattr(xray_subscription_service, "_apply_staged_mihomo_candidate", fail_final_candidate)
@@ -2023,7 +2283,24 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(mo
             "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots ORDER BY token"
         ).fetchall()]
     assert restored_snapshots == good_snapshots
-    assert not xray_subscription_service._xray_generation_checkpoint_path(adapter).exists(), json.dumps(failed, indent=2)
+    checkpoint = xray_subscription_service._xray_generation_checkpoint_path(adapter)
+    recovery_ok = rollback_failure == "success"
+    assert checkpoint.exists() is (not recovery_ok), json.dumps(failed, indent=2)
+    assert failed["generation_recovery"]["ok"] is recovery_ok
+    assert failed["generation_recovery"]["recovered"] == (
+        "restored_last_good" if recovery_ok else "restore_failed"
+    )
+    if rollback_failure == "success":
+        assert len(receipt_attempts) == 1
+    elif rollback_failure == "receipt_failure":
+        assert len(receipt_attempts) == 1
+        assert failed["generation_recovery"]["error_code"] == "MIHOMO_UDP_POLICY_ROLLBACK_RECEIPT_UNCONFIRMED"
+        assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "restore_failed"
+    else:
+        assert receipt_attempts == []
+        assert "error_code" not in failed["generation_recovery"]
+        assert failed["generation_recovery"]["mihomo_runtime_readback"]["ok"] is False
+        assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "restore_failed"
 
 
 def test_failed_generation_after_inventory_sync_restores_scoped_derived_rows(monkeypatch, tmp_path: Path) -> None:
@@ -2358,6 +2635,10 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "fwrouter_api.services.dnsmasq._discover_router_dns_bindings",
+        lambda: [],
+    )
     _enable_xray_module()
     config_path, _ = _xray_paths()
     _write_xray_config(config_path, [{"id": "old-runtime", "email": "vpn-auto-old@fwrouter.local"}])
@@ -2379,7 +2660,8 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
     clients = staged_inputs["desired_clients"]
     assert any(str(client["email"]).startswith("vpn-auto-") for client in clients)
     assert before_config == config_path.read_bytes()
-    assert before_db == _database_snapshot()
+    after_db = _database_snapshot()
+    assert before_db == after_db, database_table_diff(before_db, after_db)
 
 
 def test_public_subscription_profile_is_read_only_and_exportable_only(monkeypatch, tmp_path: Path) -> None:
@@ -2581,6 +2863,34 @@ def test_loaded_xray_users_are_normalized_from_handler_service(monkeypatch, tmp_
         ("11111111-1111-4111-8111-111111111111", "fixture@example.test"),
     ]
     assert runner.calls == [("api_inbound_users", {"tag": "vless-ws"})]
+
+
+@pytest.mark.parametrize("stdout", ["{}", '{"users": []}'])
+def test_loaded_xray_users_accept_empty_handler_service_response(monkeypatch, tmp_path: Path, stdout: str) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    runner = _FakeRunner()
+    runner.loaded_users_stdout = stdout
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    assert adapter.list_loaded_client_identities() == []
+    assert runner.calls == [("api_inbound_users", {"tag": "vless-ws"})]
+
+
+@pytest.mark.parametrize("stdout", [
+    "[]", '{"error": "unexpected"}', '{"users": null}', '{"users": {}}',
+])
+def test_loaded_xray_users_reject_malformed_response_shapes(monkeypatch, tmp_path: Path, stdout: str) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    runner = _FakeRunner()
+    runner.loaded_users_stdout = stdout
+    adapter = _build_adapter(tmp_path, runner=runner)
+
+    with pytest.raises(XrayAdapterError) as captured:
+        adapter.list_loaded_client_identities()
+
+    assert captured.value.code == "XRAY_API_READBACK_INVALID_SHAPE"
 
 
 def test_loaded_xray_users_readback_errors_do_not_return_native_output(monkeypatch, tmp_path: Path) -> None:
@@ -3782,7 +4092,8 @@ def test_legacy_subscription_get_is_read_only(monkeypatch, tmp_path: Path) -> No
 
     assert response.status_code == 200
     assert response.json()["data"]["subscription"]["status"] == "not_configured"
-    assert _database_snapshot() == before
+    after = _database_snapshot()
+    assert after == before, database_table_diff(before, after)
 
 
 def test_public_subscription_route_happ_base64_multinode(monkeypatch, tmp_path: Path) -> None:

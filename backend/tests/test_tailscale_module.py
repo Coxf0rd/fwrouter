@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fwrouter_api.core.config import get_settings
+from _test_support import configure_test_state_dir_and_clear_live_probe_cache as _configure_env
 from fwrouter_api.db.connection import initialize_database
 
 
@@ -9,7 +9,6 @@ from pathlib import Path
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.modules import (
     ModuleStateError,
     get_module_state,
@@ -20,10 +19,6 @@ from fwrouter_api.services.runtime import get_runtime_summary
 from fwrouter_api.services.system_summary import build_system_summary
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
-    clear_live_probe_cache()
 
 
 class _FakeScriptResult:
@@ -107,7 +102,11 @@ def test_enable_tailscale_module_syncs_inventory_and_marks_running(monkeypatch, 
     assert "external_network_client subjects were synced" in str(module["status_text"])
 
 
-def test_enable_tailscale_module_marks_degraded_on_probe_failure(monkeypatch, tmp_path: Path) -> None:
+def test_enable_tailscale_module_marks_degraded_on_probe_failure(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _register_tailscale_connection()
@@ -157,7 +156,11 @@ def test_disable_tailscale_module_marks_control_plane_paused(monkeypatch, tmp_pa
     assert result["module"]["apply_state"] == "clean"
 
 
-def test_runtime_summary_exposes_tailscale_probe(monkeypatch, tmp_path: Path) -> None:
+def test_runtime_summary_exposes_tailscale_probe(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _register_tailscale_connection()

@@ -393,6 +393,37 @@ def test_exclusive_selector_readback_failure_does_not_restore_now_ineligible_ser
     assert get_vpn_auto_exclusive_source_ref() == source
 
 
+def test_exact_auto_targets_requires_reject_terminal_and_rejects_direct(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config_proxies._load_vpn_auto_proxy_names",
+        lambda: ["provider-runtime"],
+    )
+    observed = {"targets": ["provider-runtime", "REJECT"]}
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector.get_vpn_auto_state",
+        lambda *, read_only: {"runtime_vpn_auto_targets": list(observed["targets"])},
+    )
+
+    from fwrouter_api.services.subscription_vpn_auto_exclusive_job import _exact_auto_targets
+
+    matches, details = _exact_auto_targets()
+    assert matches is True
+    assert details == {
+        "expected_target_count": 2,
+        "observed_target_count": 2,
+        "target_set_matches": True,
+    }
+
+    observed["targets"] = ["provider-runtime", "DIRECT"]
+    matches, details = _exact_auto_targets()
+    assert matches is False
+    assert details == {
+        "expected_target_count": 2,
+        "observed_target_count": 2,
+        "target_set_matches": False,
+    }
+
+
 def test_selector_exception_after_mutation_does_not_restore_now_ineligible_server(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     source = _source_id("https://selected.example/sub")

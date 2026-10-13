@@ -29,6 +29,7 @@ from fwrouter_api.services.rules import (
     mark_rules_job_running,
     prepare_manual_rules_candidate,
     sync_active_selective_default,
+    validate_manual_rules,
 )
 from fwrouter_api.services.servers import (
     clear_subject_server_override,

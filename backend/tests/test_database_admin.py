@@ -1,4 +1,5 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir as _configure_env
 
 import json
 import sqlite3
@@ -18,9 +19,6 @@ from fwrouter_api.services.database_admin import (
 )
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def test_clean_database_does_not_seed_provider_specific_instances(monkeypatch, tmp_path: Path) -> None:
@@ -534,7 +532,11 @@ def test_initialize_database_repairs_legacy_subjects_table(monkeypatch, tmp_path
     assert schema_state["tables"]["subjects"]["ok"] is True
 
 
-def test_rebuild_control_plane_database_restores_snapshot(monkeypatch, tmp_path: Path) -> None:
+def test_rebuild_control_plane_database_restores_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 

@@ -1,0 +1,39 @@
+{
+  "application_use": "NOT RUN",
+  "branch": "stage/test-architecture-ci-stabilization",
+  "build_seconds": 66.595,
+  "checked_in_consumer_reference": "../../../tests/acceptance/dependency-image-consumer.lock.json",
+  "consumer_contracts": {
+    "failed": 0,
+    "passed": 7,
+    "seconds": 0.01,
+    "skipped": 0,
+    "status": "PASS"
+  },
+  "consumer_evidence_limit": "anonymous pull used the publisher job Docker daemon after build/push; it is not an independent cold-runner consumer test",
+  "context_bytes": 719214311,
+  "image_bytes": 2598192591,
+  "image_ref": "ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:a740f6dfb93434004417fb886570d08a2e8f429c2331df0af6b2dd67bd7d31f2",
+  "independent_consumer_job": "NOT RUN",
+  "lock_sha256": "a516426543e80fe598dbb4a19c45957a0f1a39fe0e66f134a7706310803e92d2",
+  "phase_d": "BLOCKED",
+  "platform": "linux/amd64",
+  "production": "unchanged",
+  "publication_action": "built_and_pushed",
+  "publisher_contracts": {
+    "failed": 0,
+    "passed": 8,
+    "seconds": 0.05,
+    "skipped": 0,
+    "status": "PASS"
+  },
+  "publisher_job_anonymous_pull_seconds": 0.708,
+  "publisher_job_anonymous_pull_status": "PASS",
+  "publisher_status": "PASS",
+  "push_seconds": 36.01,
+  "raw_receipt": "evidence/run_38142661954/acceptance-dependency-publisher-38142661954/fwrouter-dependency-publish.json",
+  "run_id": 38142661954,
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38142661954",
+  "schema": "fwrouter-acceptance-dependency-image-checkpoint/v1",
+  "source_commit": "92cce73d62b6dcf1bdac7cc83a0e777c3fde9857"
+}

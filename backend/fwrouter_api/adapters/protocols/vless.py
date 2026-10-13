@@ -29,6 +29,11 @@ def _project(proxy: dict[str, Any]) -> ProtocolHookResult:
     if security not in {"", "none", "tls", "reality"}:
         return ProtocolHookResult(True, issues=(ProtocolValidationIssue("unsupported_security", "security"),))
     projected = dict(proxy)
+    capability, attempt_udp = normalize_vless_udp_capability(projected)
+    if capability == "invalid":
+        return ProtocolHookResult(True, issues=(ProtocolValidationIssue("invalid_field", "udp-capability"),))
+    projected["_fwrouter_udp_capability"] = capability
+    projected["udp"] = attempt_udp
     if security in {"tls", "reality"}:
         projected["tls"] = True
     elif security == "none":
@@ -38,6 +43,11 @@ def _project(proxy: dict[str, Any]) -> ProtocolHookResult:
 
 def _validate(proxy: dict[str, Any]) -> tuple[ProtocolValidationIssue, ...]:
     issues: list[ProtocolValidationIssue] = []
+    marker = proxy.get("_fwrouter_udp_capability")
+    if marker is not None and (not isinstance(marker, str) or marker not in {"supported", "unsupported", "unknown"}):
+        issues.append(ProtocolValidationIssue("invalid_field", "udp-capability"))
+    if "udp" in proxy and not isinstance(proxy.get("udp"), bool):
+        issues.append(ProtocolValidationIssue("invalid_field", "udp"))
     network = str(proxy.get("network") or "tcp").lower()
     if network not in {"tcp", "ws", "http", "h2", "grpc", "xhttp"}:
         issues.append(ProtocolValidationIssue("unsupported_transport", "network"))
@@ -63,6 +73,47 @@ def _validate(proxy: dict[str, Any]) -> tuple[ProtocolValidationIssue, ...]:
         if security and security != "reality":
             issues.append(ProtocolValidationIssue("unsupported_security", "reality-opts"))
     return tuple(issues)
+
+
+def _udp_capability(value: Any) -> str | None:
+    """Normalize an explicit provider declaration without inferring remote health."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "supported" if value else "unsupported"
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "supported"}:
+        return "supported"
+    if normalized in {"false", "0", "unsupported"}:
+        return "unsupported"
+    if normalized == "unknown":
+        return "unknown"
+    return "invalid"
+
+
+_VLESS_UDP_TRANSPORTS = frozenset({"tcp", "ws", "http", "h2", "grpc", "xhttp"})
+
+
+def normalize_vless_udp_capability(proxy: dict[str, Any]) -> tuple[str, bool]:
+    """Return (declared capability, native attempt flag).
+
+    A canonical marker wins over the runtime ``udp`` field because unknown
+    entries get ``udp: true`` as an attempt projection. Old stored configs
+    without a marker retain their explicit boolean ``udp`` declaration.
+    """
+    marker = proxy.get("_fwrouter_udp_capability")
+    if isinstance(marker, str) and marker in {"supported", "unsupported", "unknown"}:
+        declared = marker
+    elif marker is not None:
+        return "invalid", False
+    elif "udp" in proxy and not isinstance(proxy.get("udp"), bool):
+        return "invalid", False
+    elif isinstance(proxy.get("udp"), bool):
+        declared = "supported" if proxy["udp"] else "unsupported"
+    else:
+        declared = "unknown"
+    network = str(proxy.get("network") or "tcp").strip().lower()
+    return declared, declared != "unsupported" and network in _VLESS_UDP_TRANSPORTS
 
 
 def _parse_uri(uri: str) -> ProtocolHookResult:
@@ -91,6 +142,17 @@ def _parse_uri(uri: str) -> ProtocolHookResult:
         "type": "vless", "server": parsed.hostname, "port": port,
         "uuid": unquote(parsed.username or ""), "network": network,
     }
+    declared_udp = _udp_capability(query.get("udp")) if "udp" in query else None
+    if declared_udp == "invalid":
+        return ProtocolHookResult(True, issues=(ProtocolValidationIssue("invalid_field", "udp"),))
+    if declared_udp:
+        proxy["_fwrouter_udp_capability"] = declared_udp
+        proxy["udp"] = declared_udp == "supported"
+    else:
+        proxy["_fwrouter_udp_capability"] = "unknown"
+        # Mihomo's flag enables packet attempts. It says nothing about the
+        # remote endpoint's actual UDP availability.
+        proxy["udp"] = True
     if security:
         proxy["security"] = security
     if security == "reality" or query.get("pbk") or query.get("sid"):
@@ -150,6 +212,9 @@ def _parse_xray(outbound: dict[str, Any]) -> ProtocolHookResult:
         "client-fingerprint": reality.get("fingerprint"),
         "_fwrouter_json_tag": outbound.get("tag"),
     }
+    # Xray's VLESS outbound schema has no declared UDP capability; native
+    # Mihomo support permits an attempt but says nothing about the remote.
+    proxy["_fwrouter_udp_capability"] = "unknown"
     if reality:
         proxy["reality-opts"] = {key: value for key, value in {
             "public-key": reality.get("publicKey"), "short-id": reality.get("shortId")

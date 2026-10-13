@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "workflow_run": {
+    "id": 37963072861,
+    "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37963072861",
+    "stage": "metadata",
+    "source_commit": "587e5972573ffb6efaf429fe89cac73aec6ea327"
+  },
+  "metadata_gate": {
+    "scope": "exact-node-isolated-pytest",
+    "expected_node_count": 9,
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "junit_present": true,
+    "pytest_exit_code": 0,
+    "owned_temp_cleanup": true,
+    "evidence_directory": "evidence/run_37963072861/phase-d-preflight-587e5972573ffb6efaf429fe89cac73aec6ea327",
+    "node_ids": [
+      "backend/tests/test_provider_configuration.py::test_automatic_member_switch_policy_is_local_persistent_and_revision_neutral",
+      "backend/tests/test_provider_configuration.py::test_new_provider_binding_defaults_automatic_member_switch_to_disabled",
+      "backend/tests/test_provider_configuration.py::test_schema_23_provider_policy_migration_preserves_identity_credentials_and_is_idempotent",
+      "backend/tests/test_provider_configuration.py::test_unknown_source_discovery_returns_not_found_without_provider_io",
+      "backend/tests/test_provider_managed_integration.py::test_automatic_switch_operation_with_policy_off_makes_zero_adapter_calls",
+      "backend/tests/test_provider_managed_integration.py::test_disabled_automatic_member_switch_removes_provider_from_auto_candidates",
+      "backend/tests/test_provider_recovery.py::test_disabled_automatic_member_switch_gates_phase_two_before_provider_io",
+      "backend/tests/test_provider_recovery.py::test_policy_disabled_phase_two_advances_to_existing_emergency_direct_phase",
+      "backend/tests/test_vpn_auto_exclusive.py::test_inventory_keeps_outside_auto_intent_editable_without_effective_pool_churn"
+    ]
+  },
+  "focused_contracts": {
+    "gate_contract": {
+      "passed": 38,
+      "failed": 0,
+      "evidence": "evidence/run_37963072861/phase-d-preflight-587e5972573ffb6efaf429fe89cac73aec6ea327/gate-contract.log"
+    },
+    "acceptance_contract": {
+      "passed": 41,
+      "failed": 0,
+      "evidence": "evidence/run_37963072861/phase-d-preflight-587e5972573ffb6efaf429fe89cac73aec6ea327/acceptance-contract.log"
+    }
+  },
+  "overall_phase_d": "BLOCKED",
+  "full_functional_gate": "BLOCKED; last full cohort 23 passed / 14 failed; this metadata run does not resolve those failures",
+  "scope_boundary": "This checkpoint records only the metadata stage and focused contracts. It is not an application, native, qualified-child, full affected, deploy, or Phase D acceptance result."
+}

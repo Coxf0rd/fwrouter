@@ -752,7 +752,11 @@ class RealXrayAdapter(XrayAdapter):
                 "Loaded Xray inbound user response was not valid JSON.",
                 details={"stage": "loaded_user_readback"},
             ) from exc
-        users = payload.get("users") if isinstance(payload, dict) else None
+        if payload == {}:
+            # Protobuf JSON omits the repeated field when HandlerService has no users.
+            users = []
+        else:
+            users = payload.get("users") if isinstance(payload, dict) else None
         if not isinstance(users, list):
             raise XrayAdapterError(
                 "XRAY_API_READBACK_INVALID_SHAPE",

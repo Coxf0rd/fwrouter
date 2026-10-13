@@ -9,6 +9,8 @@ from urllib.parse import quote
 
 from concurrent.futures import ThreadPoolExecutor
 import ipaddress
+import json
+import re
 import socket
 import httpx
 import yaml
@@ -26,10 +28,12 @@ BUILTIN_PROXY_NAMES = {
     "DIRECT",
     "GLOBAL",
     "PASS",
+    "PASS-RULE",
     "REJECT",
     "REJECT-DROP",
     "vpn-auto",
 }
+NON_SERVER_PROXY_TARGETS = frozenset({"DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE"})
 GROUP_PROXY_TYPES = {
     "Selector",
     "URLTest",
@@ -177,6 +181,84 @@ class MihomoAdapter:
             return {"value": data}
 
         return data
+
+    def _delay_json_with_zero_readback(
+        self,
+        server_id: str,
+        *,
+        test_url: str,
+        timeout_ms: int,
+    ) -> dict[str, Any]:
+        """Confirm Mihomo's ambiguous generic 503 only from a fresh same-URL zero sample."""
+        probe_started_at = datetime.now(timezone.utc)
+        try:
+            return self._delay_json(server_id, test_url=test_url, timeout_ms=timeout_ms)
+        except httpx.HTTPStatusError as exc:
+            if not self._is_generic_zero_delay_error(exc):
+                raise
+
+            try:
+                state = self._get_json(
+                    f"/proxies/{quote(server_id, safe='')}",
+                    timeout_seconds=1.5,
+                )
+            except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError):
+                raise exc
+            observed_end = datetime.now(timezone.utc)
+            if not self._has_fresh_zero_delay_for_url(
+                state,
+                test_url=test_url,
+                probe_started_at=probe_started_at,
+                observed_end=observed_end,
+            ):
+                raise exc
+            return {
+                "delay": 0,
+                "native_zero_readback": {
+                    "evidence_source": "runtime_native_url_history",
+                    "controller_http_status": 503,
+                    "confirmed_at": observed_end.isoformat(),
+                },
+            }
+
+    @staticmethod
+    def _is_generic_zero_delay_error(exc: httpx.HTTPStatusError) -> bool:
+        response = exc.response
+        if response.status_code != 503:
+            return False
+        try:
+            body = response.json()
+        except (ValueError, json.JSONDecodeError):
+            return False
+        return isinstance(body, dict) and body.get("message") == "An error occurred in the delay test"
+
+    @staticmethod
+    def _has_fresh_zero_delay_for_url(
+        proxy: dict[str, Any],
+        *,
+        test_url: str,
+        probe_started_at: datetime,
+        observed_end: datetime,
+    ) -> bool:
+        extra = proxy.get("extra")
+        sample = extra.get(test_url) if isinstance(extra, dict) else None
+        if not isinstance(sample, dict) or sample.get("alive") is not True:
+            return False
+        history = sample.get("history")
+        latest = history[-1] if isinstance(history, list) and history else None
+        if not isinstance(latest, dict) or type(latest.get("delay")) is not int or latest["delay"] != 0:
+            return False
+        raw_time = latest.get("time")
+        if not isinstance(raw_time, str) or not raw_time.strip():
+            return False
+        try:
+            checked_at = datetime.fromisoformat(raw_time.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if checked_at.tzinfo is None or checked_at.utcoffset() is None:
+            return False
+        checked_at = checked_at.astimezone(timezone.utc)
+        return probe_started_at <= checked_at <= observed_end
 
     def health(self) -> MihomoHealth:
         raise NotImplementedError
@@ -716,6 +798,232 @@ class MihomoHttpAdapter(MihomoAdapter):
             "fwrouter_contours": transparent_contours,
         }
 
+    @staticmethod
+    def _vpn_udp_policy_readback(
+        config_text: str,
+        proxies: dict[str, Any],
+        native_rules: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Prove the active config and controller selectors are fail-closed for VPN UDP."""
+        try:
+            config = yaml.safe_load(config_text) or {}
+        except yaml.YAMLError:
+            config = {}
+        if not isinstance(config, dict):
+            config = {}
+        configured_groups = [
+            item for item in (config.get("proxy-groups") or [])
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+        groups = {
+            str(item.get("name") or ""): item
+            for item in configured_groups
+        }
+        owned_names = {
+            name for name in groups
+            if name in {"vpn-auto", "vpn-global"} or name.startswith("fwrouter-subject-")
+        }
+        group_readback_ok = bool({"vpn-auto", "vpn-global"} <= owned_names)
+        owned_name_counts: dict[str, int] = {}
+        for item in configured_groups:
+            name = str(item.get("name") or "")
+            if name in {"vpn-auto", "vpn-global"} or name.startswith("fwrouter-subject-"):
+                owned_name_counts[name] = owned_name_counts.get(name, 0) + 1
+        if any(count != 1 for count in owned_name_counts.values()):
+            group_readback_ok = False
+        group_names_match: dict[str, bool] = {}
+        for name in sorted(owned_names):
+            configured = groups[name].get("proxies")
+            configured = [str(value) for value in configured] if isinstance(configured, list) else []
+            actual = proxies.get(name) if isinstance(proxies.get(name), dict) else {}
+            native = actual.get("all") if isinstance(actual.get("all"), list) else []
+            selected = str(actual.get("now") or "").strip()
+            group_ok = bool(configured and configured[-1] == "REJECT" and "DIRECT" not in configured
+                            and set(configured) == {str(value) for value in native}
+                            and selected in configured
+                            and selected not in {"DIRECT", "PASS", "PASS-RULE", "COMPATIBLE"})
+            group_names_match[name] = group_ok
+            group_readback_ok = group_readback_ok and group_ok
+
+        from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
+
+        guarded_sequences: dict[str, bool] = {}
+        sub_rules = config.get("sub-rules") if isinstance(config.get("sub-rules"), dict) else {}
+        sequences = {
+            "rules": config.get("rules"),
+            "fwrouter-transparent": sub_rules.get("fwrouter-transparent"),
+            "fwrouter-full-vpn": sub_rules.get("fwrouter-full-vpn"),
+        }
+        for name, rules in sequences.items():
+            valid = isinstance(rules, list) and bool(rules)
+            if valid:
+                for index, raw_rule in enumerate(rules):
+                    rule = str(raw_rule)
+                    guard = _mandatory_vpn_udp_guard(rule)
+                    if guard and (index + 1 >= len(rules) or str(rules[index + 1]) != guard):
+                        valid = False
+                        break
+            if name == "fwrouter-full-vpn":
+                valid = bool(valid and len(rules) >= 2 and str(rules[-2]) == "MATCH,vpn-global"
+                             and str(rules[-1]) == "NETWORK,udp,REJECT")
+            guarded_sequences[name] = bool(valid)
+        rules_readback_ok = all(guarded_sequences.values())
+        native_top_level_rules_ok: bool | None = None
+        if native_rules is not None:
+            # Pinned to Mihomo v1.19.31 API rule.Type.String values and
+            # AND.String payloads from rules/logic/logic.go and constant/rule.go.
+            native_type_to_config = {
+                "Domain": "DOMAIN", "DomainSuffix": "DOMAIN-SUFFIX", "DomainKeyword": "DOMAIN-KEYWORD",
+                "GeoIP": "GEOIP", "IPCIDR": "IP-CIDR", "IPCIDR6": "IP-CIDR6",
+                "SrcIPCIDR": "SRC-IP-CIDR", "SrcPort": "SRC-PORT", "DstPort": "DST-PORT",
+                "ProcessName": "PROCESS-NAME", "Network": "NETWORK", "AND": "AND", "Match": "MATCH",
+            }
+            config_type_to_native = {
+                "DOMAIN": "Domain", "DOMAIN-SUFFIX": "DomainSuffix", "DOMAIN-KEYWORD": "DomainKeyword",
+                "GEOIP": "GeoIP", "IP-CIDR": "IPCIDR", "IP-CIDR6": "IPCIDR",
+                "SRC-IP-CIDR": "SrcIPCIDR", "SRC-PORT": "SrcPort", "DST-PORT": "DstPort",
+                "PROCESS-NAME": "ProcessName", "NETWORK": "Network", "AND": "AND", "MATCH": "Match",
+            }
+            native_condition_type_to_config = {**native_type_to_config, "SrcPort": "SRC-PORT", "DstPort": "DST-PORT"}
+
+            def canonicalize_nested_cidrs(payload: str) -> str | None:
+                def replace(match: re.Match[str]) -> str:
+                    rule_type, value, raw_params = match.groups()
+                    params = [item for item in raw_params.split(",") if item]
+                    if len(params) != len(set(params)) or any(
+                        item not in {"no-resolve", "src"} for item in params
+                    ):
+                        raise ValueError("invalid CIDR rule parameter")
+                    try:
+                        network = ipaddress.ip_network(value, strict=False)
+                    except ValueError:
+                        raise ValueError("invalid CIDR in native compound rule")
+                    if "src" in params:
+                        rule_type = "SRC-IP-CIDR"
+                    elif rule_type == "IP-CIDR" and network.version == 6:
+                        rule_type = "IP-CIDR6"
+                    elif rule_type == "IP-CIDR6" and network.version != 6:
+                        raise ValueError("IPv6 CIDR condition contains an IPv4 network")
+                    return f"{rule_type},{network}"
+
+                try:
+                    return re.sub(
+                        r"(?<=[(,])((?:IP-CIDR6|IP-CIDR|SRC-IP-CIDR)),([^,()]+)((?:,(?:no-resolve|src))*)(?=[),])",
+                        replace,
+                        payload,
+                    )
+                except ValueError:
+                    return None
+
+            def normalize_native_rule_type(rule_type: str, payload: str) -> tuple[str, str] | None:
+                config_type = native_type_to_config.get(rule_type)
+                if config_type is None:
+                    return None
+                if config_type == "IP-CIDR":
+                    try:
+                        if ipaddress.ip_network(payload, strict=False).version == 6:
+                            config_type = "IP-CIDR6"
+                    except ValueError:
+                        return None
+                if config_type == "AND":
+                    payload = payload.replace(" && ", ",")
+                    payload = re.sub(
+                        r"(?<=\(|,)([A-Za-z][A-Za-z0-9]*)(?=,)",
+                        lambda match: native_condition_type_to_config.get(match.group(1), match.group(1)),
+                        payload,
+                    )
+                    canonical_nested = canonicalize_nested_cidrs(payload)
+                    if canonical_nested is None:
+                        return None
+                    payload = canonical_nested
+                if config_type in {"IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR"}:
+                    try:
+                        payload = str(ipaddress.ip_network(payload, strict=False))
+                    except ValueError:
+                        return None
+                return config_type, payload
+
+            def normalize_config_rule(rule: str) -> tuple[str, str, str] | None:
+                parts = [part.strip() for part in rule.split(",")]
+                if len(parts) < 2:
+                    return None
+                rule_type = parts[0].upper()
+                if rule_type == "MATCH":
+                    if len(parts) != 2 or not parts[1]:
+                        return None
+                    target = parts[1]
+                    payload = ""
+                elif rule_type == "AND":
+                    if len(parts) < 3 or parts[-1].lower() in {"no-resolve", "src"}:
+                        return None
+                    target = parts[-1]
+                    payload = ",".join(parts[1:-1])
+                else:
+                    params = [value.lower() for value in parts[3:]]
+                    if (
+                        len(parts) < 3
+                        or any(value not in {"no-resolve", "src"} for value in params)
+                        or len(params) != len(set(params))
+                        or ("src" in params and rule_type not in {"IP-CIDR", "IP-CIDR6"})
+                    ):
+                        return None
+                    target = parts[2]
+                    payload = parts[1]
+                    if "src" in params:
+                        rule_type = "SRC-IP-CIDR"
+                native_type = config_type_to_native.get(rule_type)
+                if native_type is None:
+                    return None
+                canonical = normalize_native_rule_type(native_type, payload)
+                return (*canonical, target) if canonical is not None else None
+
+            normalized_native_rules: list[tuple[str, str, str]] = []
+            has_native_indexes = any(isinstance(item, dict) and "index" in item for item in native_rules)
+            for position, item in enumerate(native_rules):
+                if not isinstance(item, dict):
+                    normalized_native_rules = []
+                    break
+                native_rule_type = str(item.get("type") or "").strip()
+                payload = str(item.get("payload") or "").strip()
+                target = str(item.get("proxy") or "").strip()
+                extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
+                if native_rule_type not in native_type_to_config or not target:
+                    normalized_native_rules = []
+                    break
+                if "disabled" in extra and type(extra.get("disabled")) is not bool:
+                    normalized_native_rules = []
+                    break
+                if extra.get("disabled") is True:
+                    normalized_native_rules = []
+                    break
+                if has_native_indexes:
+                    index = item.get("index")
+                    if type(index) is not int or index != position:
+                        normalized_native_rules = []
+                        break
+                canonical = normalize_native_rule_type(native_rule_type, payload)
+                if canonical is None:
+                    normalized_native_rules = []
+                    break
+                normalized_native_rules.append((*canonical, target))
+            configured_rules = sequences["rules"]
+            native_top_level_rules_ok = bool(
+                isinstance(configured_rules, list)
+                and normalized_native_rules == [
+                    normalized for value in configured_rules
+                    if (normalized := normalize_config_rule(str(value))) is not None
+                ]
+                and len(normalized_native_rules) == len(configured_rules)
+            )
+        return {
+            "policy_installed": bool(group_readback_ok and rules_readback_ok),
+            "selector_membership_matches": group_readback_ok,
+            "guarded_rules_match": rules_readback_ok,
+            "native_top_level_rules_match": native_top_level_rules_ok,
+            "selector_groups": group_names_match,
+            "guarded_sequences": guarded_sequences,
+        }
+
     def _get_json(self, path: str, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         timeout = self.timeout_seconds if timeout_seconds is None else max(0.1, float(timeout_seconds))
         with httpx.Client(timeout=timeout, trust_env=False) as client:
@@ -762,6 +1070,25 @@ class MihomoHttpAdapter(MihomoAdapter):
         try:
             version = self._get_json("/version")
             proxies = self._proxies()
+            try:
+                native_rules_response = self._get_json("/rules")
+                native_rules_value = native_rules_response.get("rules")
+                native_rules = native_rules_value if isinstance(native_rules_value, list) else None
+            except (httpx.HTTPError, OSError, ValueError):
+                native_rules = None
+            udp_policy = self._vpn_udp_policy_readback(self._config_text(), proxies, native_rules)
+            udp_policy["wiring_proven"] = udp_policy["policy_installed"]
+            try:
+                from fwrouter_api.services.mihomo_reconcile_fingerprint import mihomo_udp_policy_receipt_matches
+
+                udp_policy["reconcile_receipt_matches"] = mihomo_udp_policy_receipt_matches()
+            except Exception:
+                udp_policy["reconcile_receipt_matches"] = False
+            udp_policy["policy_installed"] = bool(
+                udp_policy["wiring_proven"]
+                and udp_policy["native_top_level_rules_match"] is True
+                and udp_policy["reconcile_receipt_matches"]
+            )
             active_server_id = self._active_server_id_from_proxies(proxies)
             try:
                 connection_details = self._transparent_session_observation(self._get_json("/connections"))
@@ -831,17 +1158,30 @@ class MihomoHttpAdapter(MihomoAdapter):
                 "base_url": self.base_url,
                 "version": version,
                 "config": config_details,
+                "vpn_udp_policy": udp_policy,
                 "transparent_runtime": connection_details,
                 "selectors": {
                     "vpn_auto_exists": "vpn-auto" in proxies,
                     "vpn_auto_targets_count": len(self._selector_targets("vpn-auto", proxies=proxies)),
                     "vpn_auto_targets": sorted(self._selector_targets("vpn-auto", proxies=proxies)),
                     "vpn_auto_now": self._selected_proxy_id("vpn-auto", proxies=proxies),
+                    "vpn_auto_selected_target": self._selected_target("vpn-auto", proxies=proxies),
                     "vpn_global_exists": "vpn-global" in proxies,
                     "vpn_global_targets_count": len(self._selector_targets("vpn-global", proxies=proxies)),
                     "vpn_global_targets": sorted(self._selector_targets("vpn-global", proxies=proxies)),
                     "vpn_global_has_vpn_auto": "vpn-auto" in self._selector_targets("vpn-global", proxies=proxies),
                     "vpn_global_now": self._selected_proxy_id("vpn-global", proxies=proxies),
+                    "vpn_global_selected_target": self._selected_target("vpn-global", proxies=proxies),
+                    "subject_selector_targets": {
+                        name: sorted(self._selector_targets(name, proxies=proxies))
+                        for name in sorted(proxies)
+                        if str(name).startswith("fwrouter-subject-")
+                    },
+                    "subject_selector_selected_targets": {
+                        name: self._selected_target(name, proxies=proxies)
+                        for name in sorted(proxies)
+                        if str(name).startswith("fwrouter-subject-")
+                    },
                 },
             },
         )
@@ -867,9 +1207,19 @@ class MihomoHttpAdapter(MihomoAdapter):
         history = proxy.get("history") if isinstance(proxy.get("history"), list) else []
         latest = history[-1] if history and isinstance(history[-1], dict) else {}
         delay = latest.get("delay")
-        latency_ms = delay if isinstance(delay, int) and delay > 0 else None
-        checked_at = str(latest.get("time") or "").strip() or None
-        return latency_ms, checked_at
+        raw_checked_at = latest.get("time")
+        if type(delay) is not int or not 0 <= delay <= 65535 or not isinstance(raw_checked_at, str):
+            return None, None
+        checked_at = raw_checked_at.strip()
+        if not checked_at:
+            return None, None
+        try:
+            parsed = datetime.fromisoformat(checked_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None, None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None, None
+        return delay, checked_at
 
     def _logical_group_state_from_proxies(
         self,
@@ -898,14 +1248,12 @@ class MihomoHttpAdapter(MihomoAdapter):
                 continue
             latency_ms, checked_at = self._history_observation(member)
             alive = member.get("alive")
-            if checked_at is None:
+            if checked_at is None or latency_ms is None or type(alive) is not bool:
                 status = "unknown"
-            elif alive is False or latency_ms is None:
+            elif alive is False:
                 status = "failed"
-            elif alive is True:
-                status = "healthy"
             else:
-                status = "unknown"
+                status = "healthy"
             members.append(
                 {
                     "runtime_identity": runtime_identity,
@@ -997,9 +1345,9 @@ class MihomoHttpAdapter(MihomoAdapter):
         for member in snapshot.get("members") or []:
             item = dict(member)
             delay = delays.get(str(item.get("runtime_identity") or ""))
-            if isinstance(delay, int):
-                status = "healthy" if delay > 0 else "failed"
-                latency_ms = delay if delay > 0 else None
+            if type(delay) is int and 0 <= delay <= 65535:
+                status = "healthy"
+                latency_ms = delay
                 runtime_timestamp_matches = bool(
                     item.get("checked_at")
                     and item.get("status") == status
@@ -1009,7 +1357,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 item["latency_ms"] = latency_ms
                 if not runtime_timestamp_matches:
                     item["checked_at"] = checked_at
-                item["error_code"] = None if delay > 0 else "RUNTIME_MEMBER_UNAVAILABLE"
+                item["error_code"] = None
                 item["error_message"] = None
             members.append(item)
         updated["members"] = members
@@ -1062,7 +1410,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         timeout_ms: int = 5000,
     ) -> dict[str, Any]:
         try:
-            response = self._delay_json(
+            response = self._delay_json_with_zero_readback(
                 member_runtime_identity,
                 test_url=test_url,
                 timeout_ms=timeout_ms,
@@ -1074,6 +1422,10 @@ class MihomoHttpAdapter(MihomoAdapter):
                 snapshot,
                 {member_runtime_identity: delay},
                 checked_at=checked_at,
+            ) | (
+                {"probe_evidence": response["native_zero_readback"]}
+                if isinstance(response.get("native_zero_readback"), dict)
+                else {}
             )
         except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError) as exc:
             return {
@@ -1094,7 +1446,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         test_url: str = "https://www.gstatic.com/generate_204",
         timeout_ms: int = 5000,
     ) -> list[dict[str, Any]]:
-        def probe_one(target: str) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
+        def probe_one(target: str) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
             try:
                 encoded = quote(target, safe="")
                 request_timeout = max(self.timeout_seconds, timeout_ms / 1000 + 2)
@@ -1105,16 +1457,17 @@ class MihomoHttpAdapter(MihomoAdapter):
                         params={"timeout": timeout_ms, "url": test_url},
                     )
                     if response.status_code == 404:
-                        member_delay = self._delay_json(
+                        member_delay = self._delay_json_with_zero_readback(
                             target,
                             test_url=test_url,
                             timeout_ms=timeout_ms,
                         )
-                        return target, {target: member_delay.get("delay")}, None
+                        evidence = member_delay.get("native_zero_readback")
+                        return target, {target: member_delay.get("delay")}, None, evidence if isinstance(evidence, dict) else None
                     else:
                         response.raise_for_status()
                         payload = response.json()
-                        return target, payload if isinstance(payload, dict) else {}, None
+                        return target, payload if isinstance(payload, dict) else {}, None, None
             except (httpx.HTTPError, OSError, ValueError, yaml.YAMLError) as exc:
                 return target, None, {
                     "ok": False,
@@ -1125,33 +1478,43 @@ class MihomoHttpAdapter(MihomoAdapter):
                     "members": [],
                     "error_code": "RUNTIME_LOGICAL_GROUP_PROBE_FAILED",
                     "error_message": str(exc),
-                }
+                }, None
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="mihomo-group-probe") as executor:
             probe_results = list(executor.map(probe_one, logical_runtime_targets))
         delays_by_target = {
             target: delays
-            for target, delays, _failure in probe_results
+            for target, delays, _failure, _evidence in probe_results
             if delays is not None
         }
         failures = {
             target: failure
-            for target, _delays, failure in probe_results
+            for target, _delays, failure, _evidence in probe_results
             if failure is not None
+        }
+        evidence_by_target = {
+            target: evidence
+            for target, _delays, failure, evidence in probe_results
+            if failure is None and evidence is not None
         }
         checked_at = datetime.now(timezone.utc).isoformat()
         snapshots = {
             str(item.get("logical_runtime_target") or ""): item
             for item in self.get_logical_groups_state(logical_runtime_targets)
         }
-        return [
-            failures.get(target)
-            or self._apply_probe_delays(
+        results: list[dict[str, Any]] = []
+        for target in logical_runtime_targets:
+            if target in failures:
+                results.append(failures[target])
+                continue
+            result = self._apply_probe_delays(
                 snapshots.get(target) or {},
                 delays_by_target.get(target) or {},
                 checked_at=checked_at,
             )
-            for target in logical_runtime_targets
-        ]
+            if target in evidence_by_target:
+                result["probe_evidence"] = evidence_by_target[target]
+            results.append(result)
+        return results
 
     def list_servers(self) -> list[MihomoServer]:
         servers: list[MihomoServer] = []
@@ -1189,38 +1552,34 @@ class MihomoHttpAdapter(MihomoAdapter):
             return None
 
         selected = selector.get("now")
-        if not selected or selected == "DIRECT":
+        if not selected or str(selected) in NON_SERVER_PROXY_TARGETS:
             return None
 
         return str(selected)
 
+    @staticmethod
+    def _selected_target(selector_name: str, *, proxies: dict[str, Any]) -> str | None:
+        selector = proxies.get(selector_name)
+        if not isinstance(selector, dict):
+            return None
+        selected = str(selector.get("now") or "").strip()
+        return selected or None
+
     def get_active_server_id(self) -> str | None:
-        vpn_global_selected = self._selected_proxy_id("vpn-global")
-        if vpn_global_selected:
-            if vpn_global_selected == "vpn-auto":
-                vpn_auto_selected = self._selected_proxy_id("vpn-auto")
-                if vpn_auto_selected:
-                    return vpn_auto_selected
-            else:
-                return vpn_global_selected
-
-        vpn_auto_selected = self._selected_proxy_id("vpn-auto")
-        if vpn_auto_selected:
-            return vpn_auto_selected
-
-        global_selected = self._selected_proxy_id("GLOBAL")
-        if global_selected:
-            return global_selected
-
-        return None
+        return self._active_server_id_from_proxies(self._proxies())
 
     def _active_server_id_from_proxies(self, proxies: dict[str, Any]) -> str | None:
-        vpn_global_selected = self._selected_proxy_id("vpn-global", proxies=proxies)
-        if vpn_global_selected == "vpn-auto":
+        if "vpn-global" in proxies:
+            global_selected = self._selected_proxy_id("vpn-global", proxies=proxies)
+            if global_selected == "vpn-auto":
+                return self._selected_proxy_id("vpn-auto", proxies=proxies)
+            # An owned selector pointed at a built-in reject/direct target or
+            # with no selection is not proof of VPN egress. Never mask it with
+            # an unrelated GLOBAL selector.
+            return global_selected
+        if "vpn-auto" in proxies:
             return self._selected_proxy_id("vpn-auto", proxies=proxies)
-        if vpn_global_selected:
-            return vpn_global_selected
-        return self._selected_proxy_id("vpn-auto", proxies=proxies) or self._selected_proxy_id("GLOBAL", proxies=proxies)
+        return self._selected_proxy_id("GLOBAL", proxies=proxies)
 
     def apply_server(self, server_id: str) -> MihomoApplyResult:
         return self.apply_server_to_selector("vpn-auto", server_id)
@@ -1267,6 +1626,16 @@ class MihomoHttpAdapter(MihomoAdapter):
                         "requested_server_id": server_id,
                         "selector_targets_count": len(selector_targets),
                     },
+                )
+
+            if str(server_id) in NON_SERVER_PROXY_TARGETS:
+                return MihomoApplyResult(
+                    ok=False,
+                    message="A built-in DIRECT/REJECT target is not a VPN server selection.",
+                    active_server_id=active_before,
+                    error_code="MIHOMO_TARGET_NOT_FOUND",
+                    error_message=f"Mihomo target is not an eligible VPN server in {selector_name}: {server_id}",
+                    details={"adapter": "http", "selector": selector_name, "requested_server_id": server_id},
                 )
 
             response_body = self._put_json(selector_endpoint, {"name": server_id})
@@ -1364,14 +1733,14 @@ class MihomoHttpAdapter(MihomoAdapter):
                     },
                 )
 
-            response_body = self._delay_json(
+            response_body = self._delay_json_with_zero_readback(
                 server_id,
                 test_url=test_url,
                 timeout_ms=timeout_ms,
             )
             delay = response_body.get("delay")
 
-            if isinstance(delay, int):
+            if type(delay) is int and 0 <= delay <= 65535:
                 return MihomoDelayResult(
                     ok=True,
                     server_id=server_id,

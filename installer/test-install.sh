@@ -4,6 +4,11 @@ set -eu
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/install.sh"
 DEPS_SH="$SCRIPT_DIR/install-host-dependencies.sh"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fwrouter-install-suite.XXXXXX")"
+trap 'rm -rf "$TEST_ROOT"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() {
   echo "test-install.sh: $*" >&2
@@ -35,7 +40,7 @@ assert_not_contains() {
 }
 
 make_target() {
-  mktemp -d "${TMPDIR:-/tmp}/fwrouter-install-test.XXXXXX"
+  mktemp -d "$TEST_ROOT/target.XXXXXX"
 }
 
 run_install() {
@@ -111,26 +116,49 @@ run_install "$all_with_ha_target" --all --component homeassistant
 assert_exists "$all_with_ha_target/app/config/homeassistant/packages/fwrouter_control.yaml"
 assert_exists "$all_with_ha_target/app/config/homeassistant/scripts/fwrouter_action.py"
 
-backend_deps="$(mktemp "${TMPDIR:-/tmp}/fwrouter-backend-deps.XXXXXX")"
+backend_deps="$(mktemp "$TEST_ROOT/backend-deps.XXXXXX")"
 "$DEPS_SH" --dry-run --component backend >"$backend_deps"
 assert_contains "$backend_deps" 'python3-venv'
 assert_contains "$backend_deps" 'sqlite3'
 assert_not_contains "$backend_deps" 'docker.io'
 assert_not_contains "$backend_deps" 'nftables'
 
-host_deps="$(mktemp "${TMPDIR:-/tmp}/fwrouter-host-deps.XXXXXX")"
+host_deps="$(mktemp "$TEST_ROOT/host-deps.XXXXXX")"
 "$DEPS_SH" --dry-run --component host >"$host_deps"
 assert_contains "$host_deps" 'nftables'
 assert_contains "$host_deps" 'iproute2'
 assert_contains "$host_deps" 'dnsmasq'
 assert_not_contains "$host_deps" 'python3-venv'
 
-runtime_deps="$(mktemp "${TMPDIR:-/tmp}/fwrouter-runtime-deps.XXXXXX")"
+runtime_deps="$(mktemp "$TEST_ROOT/runtime-deps.XXXXXX")"
 "$DEPS_SH" --dry-run --component xray >"$runtime_deps"
 assert_contains "$runtime_deps" 'kmod'
 if ! command -v docker >/dev/null 2>&1; then
   assert_contains "$runtime_deps" 'docker'
 fi
+
+# Force the non-root predicate in a test-owned PATH so this refusal is checked
+# consistently even when a developer runs the smoke as root. The refusal runs
+# before apt-get and cannot mutate host dependencies.
+fake_nonroot_bin="$TEST_ROOT/nonroot-bin"
+mkdir -p "$fake_nonroot_bin"
+cat >"$fake_nonroot_bin/id" <<'EOF'
+#!/bin/sh
+echo 1000
+EOF
+chmod 0755 "$fake_nonroot_bin/id"
+cat >"$fake_nonroot_bin/apt-get" <<'EOF'
+#!/bin/sh
+echo "test fixture blocked apt-get" >&2
+exit 99
+EOF
+chmod 0755 "$fake_nonroot_bin/apt-get"
+root_guard="$(mktemp "$TEST_ROOT/root-guard.XXXXXX")"
+if PATH="$fake_nonroot_bin:$PATH" "$DEPS_SH" --component backend >"$root_guard" 2>&1; then
+  fail "host dependency installation unexpectedly succeeded without root"
+fi
+assert_contains "$root_guard" 'install-host-dependencies.sh: must run as root'
+assert_not_contains "$root_guard" 'test fixture blocked apt-get'
 
 deploy_target="$(make_target)"
 deploy_repo="$(make_target)"

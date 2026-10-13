@@ -1,0 +1,90 @@
+{
+  "run_id": 37970549010,
+  "run_url": "https://github.com/Coxf0rd/fwrouter/actions/runs/37970549010",
+  "source_revision": "2dc656b5bfe7e305b7dbe5e5a0f0e7b2d187258b",
+  "scope": "targets",
+  "readmodel_fixtures": {
+    "expected": 17,
+    "passed": 12,
+    "failed": 5,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "owned_temp_cleanup": true,
+    "failure_cause": "Five read-model nodes reached the external-source host script runner; the isolation audit denied subprocess.Popen because the explicit fixture did not represent unavailable external-source observations.",
+    "fixture_correction": "Source-only correction returns the existing EXTERNAL_SOURCE_PROBE_UNAVAILABLE result with empty observations. It does not fabricate healthy or missing peers.",
+    "artifacts": "evidence/run_37970549010/phase-d-target-readmodel-fixtures-2dc656b5bfe7e305b7dbe5e5a0f0e7b2d187258b/readmodels.{json,xml,log}"
+  },
+  "native_diagnostic": {
+    "expected": 3,
+    "passed": 0,
+    "failed": 3,
+    "skipped": 0,
+    "exact_node_coverage": true,
+    "owned_resources_removed": true,
+    "cleanup_errors": 0,
+    "failure_observations": [
+      "The browser native-readback case failed; this checkpoint does not attribute its cause.",
+      "The typed provider-unavailable case returned provider_recovery_fence_unavailable before its expected provider-error classification; two capture events recorded AttributeError, no context, and the catch return line.",
+      "The Core CAS reconciliation case produced a commit event with cas_committed=false and no reconcile event; the callback result was applied=false with VPN_AUTO_SELECTION_PERSISTENCE_CAS_FAILED, so the expected CAS-miss reconciliation was not entered."
+    ],
+    "recovery_fence_events_by_test": {
+      "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]": [
+        {
+          "schema": "fwrouter-acceptance-selection-fence/v1",
+          "event": "commit",
+          "cas_committed": true,
+          "active_matches_selected": null
+        },
+        {
+          "schema": "fwrouter-acceptance-selection-fence/v1",
+          "event": "capture",
+          "exception_type": "AttributeError",
+          "return_line": 117,
+          "context_present": false
+        },
+        {
+          "schema": "fwrouter-acceptance-selection-fence/v1",
+          "event": "capture",
+          "exception_type": "AttributeError",
+          "return_line": 117,
+          "context_present": false
+        }
+      ],
+      "tests/application_acceptance/test_xray_generation.py::test_real_core_selection_cas_miss_reconciles_after_native_readback_without_provider_retry": [
+        {
+          "schema": "fwrouter-acceptance-selection-fence/v1",
+          "event": "commit",
+          "cas_committed": false,
+          "active_matches_selected": null
+        }
+      ]
+    },
+    "recovery_controller_root_cause": {
+      "status": "confirmed fixture misbinding",
+      "source": "The worker route passes the returned MihomoHttpAdapter to Core as its recovery controller; the adapter has no get_state method. _capture_recovery_context calls get_state before the active-target comparison and returns None from its exception handler.",
+      "runtime_confirmation": "Both captured events report AttributeError, context_present=false, and return_line=117."
+    },
+    "artifacts": "evidence/run_37970549010/phase-d-xray-diagnostic-2dc656b5bfe7e305b7dbe5e5a0f0e7b2d187258b/phase-diagnostic-xray.log"
+  },
+  "image_resources": {
+    "base_image_present_before_build": false,
+    "built_image_bytes": 1961517169,
+    "compose_build_seconds": 45.328,
+    "asset_archive_bytes": {
+      "chromium": 182166967,
+      "mihomo": 22821828,
+      "xray": 20744877
+    },
+    "asset_executable_bytes": {
+      "chromium": 459860328,
+      "mihomo": 61886590,
+      "xray": 35688596
+    }
+  },
+  "pending": [
+    "Run the fixed 18-node read-model fixture cohort after the explicit unavailable-source fixture lands.",
+    "Confirm the recovery controller get_state interface mismatch with the next retained fence-observer event before changing the worker binding.",
+    "Keep browser and provider local-verification failures unresolved until their own captured evidence identifies the branch."
+  ],
+  "phase_d_status": "blocked; this narrow run does not pass the broader functional or affected-unit gates"
+}

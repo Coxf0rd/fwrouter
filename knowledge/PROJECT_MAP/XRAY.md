@@ -57,6 +57,21 @@ the profile records available for retry and are reported as failed/pending,
 not as applied Disabled/VPN. Existing member target-override rows, including
 auto and expired selectors, remain intact during aggregate mode changes.
 
+### Aggregate group label — Phase D source correction
+
+The existing subject-alias API also accepts an exact token-hash subscription
+group. The subscription-profile service resolves its single persisted account
+and client inside one short SQLite writer transaction, persists only their
+display names and an atomic sanitized audit event, and invalidates the existing
+subscription-client projection cache after commit. Unknown, ambiguous and
+multi-client groups fail closed. Clearing the label restores the existing
+slug-derived default. Settings, client and presence projections use the subscription-client
+label while keeping the group ID stable. No native identity, routing intent,
+Core selection, generated config, apply or reload is changed by this metadata
+operation. Hosted target run 37997903110 passes four metadata regressions and the real
+browser failure/retry/edit/delete scenario with native readback. Broader
+acceptance remains open; production is unchanged.
+
 All Xray config/client/profile writers share a reentrant thread and process
 writer guard rooted in the configured runtime directory. It serializes
 intent-to-runtime profile changes, adapter mutations and config materialization
@@ -196,6 +211,18 @@ the same existing reconciliation immediately. `GET /api/v2/xray` includes a
 read-only `vpn_auto_reconcile` status object. Completion applies only to the
 claimed revision after final runtime and public-profile verification; a newer
 revision remains pending.
+
+Staged Xray subscription generations publish Mihomo's UDP policy receipt at
+terminal publication, after exact runtime readback and before public snapshot
+promotion. Receipt publication revalidates the generation checkpoint,
+selection revision, source fingerprint, active config hash and runtime
+incarnation around fresh native rule/selector/guard proof. Failed generation
+rollback separately republishes a receipt for the restored last-good config
+after exact Xray/Mihomo/selection readback and before checkpoint removal; it
+uses the restored source fingerprint, fence, config hash and new runtime
+incarnation. Any failed proof retains a `restore_failed` checkpoint and does
+not report recovery success. These source contracts remain pending hosted
+verification; packet/Core re-entry acceptance remains incomplete.
 
 ## Boot Relevance
 

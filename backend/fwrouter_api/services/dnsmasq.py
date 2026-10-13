@@ -380,7 +380,7 @@ def _nft_set_contains_ipv4(set_name: str, address: str) -> bool:
 
 
 def _probe_dnsmasq_nftset_materialization() -> dict[str, Any]:
-    artifact = read_effective_rules_artifact()
+    artifact = read_effective_rules_artifact(fresh=True)
     rules = artifact.get("rules", []) if isinstance(artifact, dict) else []
     targets = _iter_dnsmasq_probe_targets(rules if isinstance(rules, list) else [])
     if not targets:
@@ -516,7 +516,7 @@ def _wait_for_dnsmasq_selective_status_after_restart() -> dict[str, Any]:
 def reconcile_dnsmasq_rules(*, force_restart_reason: str | None = None) -> dict[str, Any]:
     """Generate dnsmasq rules from effective rules and restart dnsmasq."""
 
-    artifact = read_effective_rules_artifact()
+    artifact = read_effective_rules_artifact(fresh=True)
     if artifact is None:
         return {"ok": True, "message": "No effective rules artifact found; skipping dnsmasq reconcile."}
 

@@ -1,0 +1,38 @@
+{
+  "run_id": 38296321623,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38296321623",
+  "source_commit": "c10ae7aa50ecff04ad2ff56d7763b02fd2938945",
+  "status": "passed",
+  "suites": [
+    {
+      "path": "backend/tests/test_apply_pipeline.py",
+      "status": "passed",
+      "counts": {
+        "passed": 54
+      }
+    },
+    {
+      "path": "installer/test-install.sh",
+      "status": "passed",
+      "counts": {
+        "passed": 1
+      }
+    },
+    {
+      "path": "tests/gates/test_gate_contract.py",
+      "status": "passed",
+      "counts": {
+        "passed": 58
+      }
+    },
+    {
+      "path": "tests/gates/test_acceptance_contract.py",
+      "status": "passed",
+      "counts": {
+        "passed": 110
+      }
+    }
+  ],
+  "scope": "isolated unit/component/installer/CI contracts; not native application acceptance",
+  "production_changed": false
+}

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fwrouter_api.core.config import get_settings
+from _test_support import configure_test_state_dir as _configure_env
 from fwrouter_api.db.connection import initialize_database
 
 
@@ -24,9 +24,6 @@ from fwrouter_api.services.subscription import (
 )
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
 
 
 def _client() -> TestClient:
@@ -185,6 +182,7 @@ def test_control_plane_export_redacts_subscription_url_by_default(
 def test_control_plane_plan_and_import_from_file(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -268,6 +266,7 @@ def test_control_plane_snapshot_file_path_must_stay_in_transfer_dir(
 def test_control_plane_import_restores_snapshot_with_runtime_normalization(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -391,7 +390,11 @@ def test_control_plane_import_restores_snapshot_with_runtime_normalization(
     assert rules_texts["draft_text"] == "DIRECT import.example\n"
 
 
-def test_control_plane_import_normalizes_fwrouter_subject_and_override(monkeypatch, tmp_path: Path) -> None:
+def test_control_plane_import_normalizes_fwrouter_subject_and_override(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -490,6 +493,7 @@ def test_control_plane_import_normalizes_fwrouter_subject_and_override(monkeypat
 def test_control_plane_import_legacy_subscription_state_creates_backend_registry(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

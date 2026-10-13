@@ -109,7 +109,7 @@ def _patch_failing_dataplane(monkeypatch):
     monkeypatch.setattr("fwrouter_api.services.apply.DEFAULT_DATAPLANE_ADAPTER", adapter)
     return adapter
 
-def test_global_mode_success_commit_contract(monkeypatch, tmp_path: Path) -> None:
+def test_global_mode_success_commit_contract(monkeypatch, tmp_path: Path, isolated_host_observations) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _seed_subject("lan-follow")
@@ -149,12 +149,18 @@ def test_global_mode_success_commit_contract(monkeypatch, tmp_path: Path) -> Non
     )
     
     result = set_global_mode("direct", requested_by="pytest")
-    assert result["ok"] is True
+    assert result["ok"] is True, {
+        "stage": result.get("stage"),
+        "code": result.get("code"),
+        "message": str(result.get("message") or "")[:200],
+    }
     assert result["stage"] == "commit"
     assert "lan-follow" in result.get("affected_subject_ids", [])
 
 
-def test_repair_global_direct_runtime_clears_stale_routing_error(monkeypatch, tmp_path: Path) -> None:
+def test_repair_global_direct_runtime_clears_stale_routing_error(
+    monkeypatch, tmp_path: Path, isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     ensure_routing_global_state()
@@ -185,7 +191,11 @@ def test_repair_global_direct_runtime_clears_stale_routing_error(monkeypatch, tm
 
     result = repair_global_direct_runtime_sync(requested_by="pytest")
 
-    assert result["status"] == "success"
+    assert result["status"] == "success", {
+        "status": result.get("status"),
+        "error_code": result.get("error_code"),
+        "error_message": str(result.get("error_message") or "")[:200],
+    }
     routing = get_routing_global_state()
     assert routing is not None
     assert routing["apply_state"] == "clean"

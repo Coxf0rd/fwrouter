@@ -1,8 +1,10 @@
 from __future__ import annotations
+from _test_support import configure_test_state_dir_and_clear_live_probe_cache as _configure_env
 
 import json
 from pathlib import Path
 import subprocess
+from threading import Event
 from types import SimpleNamespace
 
 from fwrouter_api.adapters.mihomo import MihomoHealth, MihomoRuntimeState
@@ -11,22 +13,22 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import dataplane_status
 from fwrouter_api.services.dataplane_global import (
+    MISSING_ACTIVE_DATAPLANE_MODE_MISMATCH,
     MISSING_DNSMASQ_DOMAIN_SELECTIVE,
     MISSING_MIHOMO_TPROXY,
     MISSING_MIHOMO_TRANSPARENT_CONTOUR,
     MISSING_VPN_TPROXY_HANDOFF,
+    build_applied_runtime_enforcement,
     build_global_preflight,
     build_nft_rule_sets,
     read_effective_rules_artifact,
+    validate_global_mode_request,
 )
 from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.live_probe_cache import _CACHE, _CACHE_LOCK, _INFLIGHT, clear_live_probe_cache
+from fwrouter_api.services import live_probe_cache
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    get_settings.cache_clear()
-    clear_live_probe_cache()
 
 
 def test_runtime_check_paths_uses_manifest_without_revalidating_applied_file(
@@ -151,7 +153,11 @@ def test_runtime_status_script_failure_remains_unavailable(
     assert dataplane_status._read_live_dataplane_payload() is None
 
 
-def test_build_nft_rule_sets_protects_custom_proxy_ip(monkeypatch, tmp_path: Path) -> None:
+def test_build_nft_rule_sets_protects_custom_proxy_ip(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -229,7 +235,71 @@ def test_read_effective_rules_artifact_falls_back_to_last_good(
     assert artifact["rules"][0]["value"] == "instagram.com"
 
 
-def test_external_vpn_module_can_supply_vpn_contour(monkeypatch, tmp_path: Path) -> None:
+def test_read_effective_rules_artifact_fresh_bypasses_stale_cache_and_inflight(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    clear_live_probe_cache()
+    monkeypatch.setattr(live_probe_cache, "monotonic", lambda: 1234.0)
+    paths = get_settings().paths
+    generated_rules = paths.generated_dir / "rules"
+    generated_rules.mkdir(parents=True)
+    effective_path = generated_rules / "effective-rules.json"
+    key = "dataplane_global.effective_rules_artifact"
+    latest = {"selective_default": "direct", "rules": [{"kind": "domain", "action": "VPN", "value": "fresh.example"}]}
+    older = {"selective_default": "direct", "rules": [{"kind": "domain", "action": "VPN", "value": "older.example"}]}
+
+    assert read_effective_rules_artifact() is None
+    with _CACHE_LOCK:
+        cached_none = _CACHE[key]
+    effective_path.write_text(json.dumps(latest), encoding="utf-8")
+    assert read_effective_rules_artifact() is None
+    assert read_effective_rules_artifact(fresh=True) == latest
+    with _CACHE_LOCK:
+        assert _CACHE[key] is cached_none
+
+    clear_live_probe_cache()
+    assert read_effective_rules_artifact() == latest
+    with _CACHE_LOCK:
+        cached_old_artifact = _CACHE[key]
+    effective_path.write_text(json.dumps(older), encoding="utf-8")
+    assert read_effective_rules_artifact() == latest
+    class NeverWaitEvent(Event):
+        def wait(self, timeout=None):
+            raise AssertionError("fresh artifact read waited for a stale in-flight cache loader")
+
+    with _CACHE_LOCK:
+        monkeypatch.setitem(_INFLIGHT, key, (NeverWaitEvent(), {"value": latest}))
+        inflight_entry = _INFLIGHT[key]
+    assert read_effective_rules_artifact(fresh=True) == older
+    with _CACHE_LOCK:
+        assert _CACHE[key] is cached_old_artifact
+        assert _INFLIGHT[key] is inflight_entry
+
+    with _CACHE_LOCK:
+        monkeypatch.delitem(_CACHE, key)
+    assert read_effective_rules_artifact(fresh=True) == older
+    with _CACHE_LOCK:
+        assert key not in _CACHE
+        assert _INFLIGHT[key] is inflight_entry
+    with _CACHE_LOCK:
+        monkeypatch.delitem(_INFLIGHT, key)
+
+    effective_path.unlink()
+    last_good_path = paths.state_dir / "last-good" / "rules" / "effective-rules.json"
+    last_good_path.parent.mkdir(parents=True, exist_ok=True)
+    last_good_path.write_text(json.dumps(latest), encoding="utf-8")
+    assert read_effective_rules_artifact(fresh=True) == latest
+    last_good_path.unlink()
+    assert read_effective_rules_artifact(fresh=True) is None
+
+
+def test_external_vpn_module_can_supply_vpn_contour(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     monkeypatch.setattr(
@@ -271,7 +341,145 @@ def test_external_vpn_module_can_supply_vpn_contour(monkeypatch, tmp_path: Path)
     assert preflight["vpn_contour"]["full_vpn_tproxy_port"] == 16083
 
 
-def test_external_vpn_module_without_ready_runtime_is_ignored(monkeypatch, tmp_path: Path) -> None:
+def test_global_vpn_preflight_allows_prepare_with_empty_reject_selector_without_egress(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_global._module_state",
+        lambda _name: {"desired_state": "enabled"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        lambda: {"ok": True, "missing": []},
+    )
+    preflight = build_global_preflight(
+        routing={"desired_mode": "vpn", "applied_mode": "vpn", "server_mode": "auto"},
+        mihomo_health=MihomoHealth(
+            runtime_state=MihomoRuntimeState.RUNNING,
+            active_server_id=None,
+            message="empty eligible pool",
+            details={
+                "vpn_udp_policy": {"policy_installed": True},
+                "config": {
+                    "redir_port": 5202, "tproxy_port": 5203, "tun_enabled": True,
+                    "fwrouter_contours": {
+                        "explicit_proxy": {"preserved": True},
+                        "transparent_vpn": {
+                            "ready": True, "isolated_from_explicit_proxy": True,
+                            "redir_port": 5202, "tproxy_port": 5203,
+                            "transparent_tcp_listener_present": True,
+                            "transparent_udp_listener_present": True,
+                            "transparent_tcp_ready": True, "transparent_udp_ready": True,
+                        },
+                        "domain_selective": {"ready": True},
+                    },
+                },
+                "selectors": {
+                    "vpn_global_exists": True, "vpn_global_now": "vpn-auto",
+                    "vpn_auto_now": None, "vpn_auto_selected_target": "REJECT",
+                    "vpn_global_targets": ["vpn-auto", "REJECT"],
+                    "vpn_auto_targets": ["REJECT"],
+                },
+            },
+        ),
+        check_details={"vpn_external_path_verified": False},
+        effective_rules_artifact={"rules": []},
+    )
+    assert preflight["can_prepare_global_vpn"] is True
+    assert preflight["can_enforce_global_vpn"] is True
+    assert preflight["vpn_policy_installed"] is True
+    assert preflight["vpn_egress_ready"] is False
+    assert preflight["vpn_egress_target_present"] is False
+    assert validate_global_mode_request("vpn", preflight=preflight)["ok"] is True
+    enforcement = build_applied_runtime_enforcement(
+        routing={"desired_mode": "vpn", "applied_mode": "vpn"},
+        preflight=preflight,
+        live_mode_probe={"ok": True, "mode": "vpn"},
+    )
+    assert enforcement["enforcement_level"] == "global_vpn_fail_closed"
+    assert enforcement["traffic_enforcement_guaranteed"] is True
+    assert enforcement["vpn_egress_ready"] is False
+
+
+def test_selective_vpn_policy_prepare_is_separate_from_egress_verification(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_global._module_state",
+        lambda _name: {"desired_state": "enabled"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.dnsmasq.inspect_dnsmasq_selective_status",
+        lambda: {"ok": True, "missing": []},
+    )
+    health = MihomoHealth(
+        runtime_state=MihomoRuntimeState.RUNNING,
+        active_server_id=None,
+        message="empty eligible pool",
+        details={
+            "vpn_udp_policy": {"policy_installed": True},
+            "config": {
+                "redir_port": 5202, "tproxy_port": 5203, "tun_enabled": True,
+                "fwrouter_contours": {
+                    "explicit_proxy": {"preserved": True},
+                    "transparent_vpn": {
+                        "ready": True, "isolated_from_explicit_proxy": True,
+                        "redir_port": 5202, "tproxy_port": 5203,
+                        "transparent_tcp_listener_present": True,
+                        "transparent_udp_listener_present": True,
+                        "transparent_tcp_ready": True, "transparent_udp_ready": True,
+                    },
+                    "domain_selective": {"ready": True},
+                },
+            },
+            "selectors": {
+                "vpn_global_exists": True, "vpn_global_now": "vpn-auto",
+                "vpn_auto_now": None, "vpn_auto_selected_target": "REJECT",
+                "vpn_global_targets": ["vpn-auto", "REJECT"],
+                "vpn_auto_targets": ["REJECT"],
+            },
+        },
+    )
+
+    for check_details in (None, {"vpn_external_path_verified": False}):
+        preflight = build_global_preflight(
+            routing={"desired_mode": "selective", "applied_mode": "selective",
+                     "selective_default": "vpn", "server_mode": "auto"},
+            mihomo_health=health,
+            check_details=check_details,
+            effective_rules_artifact={"selective_default": "vpn", "rules": []},
+        )
+        assert preflight["can_prepare_global_vpn"] is True
+        assert preflight["vpn_policy_installed"] is True
+        assert preflight["vpn_egress_ready"] is False
+        assert preflight["vpn_egress_target_present"] is False
+        assert preflight["selective_vpn_ready"] is False
+        assert preflight["selective_vpn_policy_ready"] is True
+        assert preflight["selective_degraded"] is True
+
+        direct_readback = build_applied_runtime_enforcement(
+            routing={"desired_mode": "selective", "applied_mode": "selective",
+                     "selective_default": "vpn"},
+            preflight=preflight,
+            live_mode_probe={"ok": True, "mode": "selective", "selective_default": "direct"},
+        )
+        assert direct_readback["active_mode_matches_intent"] is False
+        assert direct_readback["traffic_enforcement_guaranteed"] is False
+        assert direct_readback["missing_runtime_requirements"] == [
+            MISSING_ACTIVE_DATAPLANE_MODE_MISMATCH
+        ]
+        assert direct_readback.get("vpn_egress_ready") is not True
+
+
+def test_external_vpn_module_without_ready_runtime_is_ignored(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     monkeypatch.setattr(
@@ -320,6 +528,7 @@ def test_build_nft_rule_sets_includes_local_interface_networks(monkeypatch, tmp_
 def test_build_nft_rule_sets_keeps_big_vpn_ip_aggregates(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -341,6 +550,7 @@ def test_build_nft_rule_sets_keeps_big_vpn_ip_aggregates(
 def test_build_nft_rule_sets_forces_android_connectivity_domains_direct(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

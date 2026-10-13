@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fwrouter_api.db.connection import db_session
+from _test_support import configure_test_state_dir as _configure_env
+from fwrouter_api.core.config import get_settings
+from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.services.modules import fetch_modules
+from fwrouter_api.services.watchdog_runtime_state import update_watchdog_runtime_state
 from fwrouter_api.services.state_projection import build_module_state_projection
 
 
@@ -32,10 +36,20 @@ def test_module_projection_separates_legacy_disabled_from_live_projection(monkey
     assert core["projection"]["state"] == "disabled"
 
 
-def test_module_projection_reports_enabled_running_as_healthy(monkeypatch) -> None:
+def test_module_projection_reports_enabled_running_as_healthy(monkeypatch, tmp_path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FWROUTER_WATCHDOG_SCHEDULER_ENABLED", "true")
+    get_settings.cache_clear()
+    initialize_database()
+    watchdog_runtime = update_watchdog_runtime_state(path_key="pytest-watchdog")
+    assert watchdog_runtime["path_key"] == "pytest-watchdog"
     monkeypatch.setattr(
-        "fwrouter_api.services.state_projection._module_runtime_context",
-        lambda: {},
+        "fwrouter_api.services.state_projection.build_runtime_enforcement_state",
+        lambda: {"traffic_enforcement_guaranteed": False, "enforcement_level": "owned_table_missing"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.state_projection._safe_health",
+        lambda _adapter: {"runtime_state": "stopped", "checked_at": None},
     )
     with db_session() as connection:
         connection.execute(
@@ -48,6 +62,12 @@ def test_module_projection_reports_enabled_running_as_healthy(monkeypatch) -> No
             WHERE module_name = 'watchdog'
             """
         )
+    watchdog_module = next(
+        module for module in fetch_modules() if module["module_name"] == "watchdog"
+    )
+    assert watchdog_module["desired_state"] == "enabled"
+    assert watchdog_module["runtime_state"] == "running"
+    assert watchdog_module["error_code"] is None
 
     modules = {
         item["entity"]["id"]: item

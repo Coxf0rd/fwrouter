@@ -1,0 +1,60 @@
+{
+  "run_id": 38269368338,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38269368338",
+  "source": "f88a3b12c624895a5c939ab1459cd9078fc458e1",
+  "status": "BLOCKED",
+  "scope": "fixed24 hosted isolated unit files; no native/application bundle execution",
+  "counts": {
+    "passed": 362,
+    "failed": 15,
+    "skipped": 0
+  },
+  "previous_distinct_testcases": {
+    "passed": 353,
+    "failed": 24,
+    "skipped": 0
+  },
+  "newly_passing": 9,
+  "remaining": [
+    {
+      "path": "backend/tests/test_apply_pipeline.py",
+      "nodeids": [
+        "backend/tests/test_apply_pipeline.py::test_apply_pipeline_apply_mode_records_selective_domain_aware_success",
+        "backend/tests/test_apply_pipeline.py::test_apply_pipeline_apply_mode_records_selective_ip_only_success",
+        "backend/tests/test_apply_pipeline.py::test_apply_pipeline_detects_live_mode_mismatch_and_rolls_back",
+        "backend/tests/test_apply_pipeline.py::test_apply_pipeline_vpn_verify_failure_rolls_back_and_keeps_state_unchanged"
+      ]
+    },
+    {
+      "path": "backend/tests/test_core_bypass.py",
+      "nodeids": [
+        "backend/tests/test_core_bypass.py::test_core_bypass_api_contract",
+        "backend/tests/test_core_bypass.py::test_core_bypass_enable_and_disable_roundtrip",
+        "backend/tests/test_core_bypass.py::test_core_bypass_failed_disable_keeps_bypass_enabled",
+        "backend/tests/test_core_bypass.py::test_watchdog_auto_check_pauses_when_core_bypass_is_active"
+      ]
+    },
+    {
+      "path": "backend/tests/test_mihomo_config_runtime.py",
+      "nodeids": [
+        "backend/tests/test_mihomo_config_runtime.py::test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config",
+        "backend/tests/test_mihomo_config_runtime.py::test_xray_handoff_candidate_restores_required_missing_server_proxy"
+      ]
+    },
+    {
+      "path": "backend/tests/test_mihomo_staged_candidate.py",
+      "nodeids": [
+        "backend/tests/test_mihomo_staged_candidate.py::test_candidate_validator_reads_explicit_candidate_path"
+      ]
+    },
+    {
+      "path": "backend/tests/test_scoped_egress.py",
+      "nodeids": [
+        "backend/tests/test_scoped_egress.py::test_apply_pipeline_renders_scoped_vpn_rules",
+        "backend/tests/test_scoped_egress.py::test_docker_subject_server_override_is_counted_as_scoped_when_matcher_resolves",
+        "backend/tests/test_scoped_egress.py::test_subject_effective_state_exposes_scoped_runtime",
+        "backend/tests/test_scoped_egress.py::test_subject_server_override_endpoint_switches_selector_without_apply"
+      ]
+    }
+  ]
+}

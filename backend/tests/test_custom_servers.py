@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fwrouter_api.core.config import get_settings
+from _test_support import configure_test_state_dir_without_schedulers as _configure_env
 from fwrouter_api.db.connection import initialize_database
 
 
@@ -20,12 +20,6 @@ from fwrouter_api.services.mihomo_config import build_mihomo_config
 from fwrouter_api.services.subscription import _source_id, refresh_subscription_inventory
 
 
-def _configure_env(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("FWROUTER_MAINTENANCE_SCHEDULER_ENABLED", "false")
-    monkeypatch.setenv("FWROUTER_WATCHDOG_SCHEDULER_ENABLED", "false")
-    monkeypatch.setenv("FWROUTER_RUNTIME_CONVERGENCE_SCHEDULER_ENABLED", "false")
-    get_settings.cache_clear()
 
 
 def _client() -> TestClient:
@@ -146,7 +140,11 @@ def test_custom_https_proxy_update_keeps_vpn_auto_manual_only_priority(
     assert updated["preferences"]["global_list"] is True
 
 
-def test_custom_https_proxy_server_runtime_raw_includes_credentials(monkeypatch, tmp_path: Path) -> None:
+def test_custom_https_proxy_server_runtime_raw_includes_credentials(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -229,7 +227,11 @@ def test_custom_socks5_proxy_server_runtime_raw_uses_socks5(monkeypatch, tmp_pat
     assert "tls" not in custom_row["raw"]
 
 
-def test_mihomo_config_renders_simple_rules(monkeypatch, tmp_path: Path) -> None:
+def test_mihomo_config_renders_simple_rules(
+    monkeypatch,
+    tmp_path: Path,
+    isolated_host_observations,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -449,6 +451,7 @@ def test_subscription_refresh_identity_churn_preserves_custom_server_state(
 def test_custom_server_transfer_redacts_credentials_by_default_and_imports_with_secrets(
     monkeypatch,
     tmp_path: Path,
+    isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

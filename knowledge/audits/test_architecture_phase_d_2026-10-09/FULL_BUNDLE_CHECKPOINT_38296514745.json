@@ -1,0 +1,158 @@
+{
+  "run_id": 38296514745,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38296514745",
+  "source_commit": "91438ff9bdbeab40fba13e32fc90e8f39eebc755",
+  "overall_status": "PASS",
+  "unit_counts": {
+    "passed": 1421
+  },
+  "aggregate": {
+    "eligible": true,
+    "blocked_reasons": [],
+    "plan_digest": "8735aaefa22e00029440070639be76fccefbb2b37cf2b2f594dc2c2ec8fb792d",
+    "completed_levels": [
+      "L0",
+      "L1",
+      "L2",
+      "L3",
+      "L4"
+    ],
+    "hosted_receipt_count": 6,
+    "hosted_required_partitions": [
+      "functional-ordinary",
+      "packet-diagnostic",
+      "provider-cohort"
+    ],
+    "hosted_repeats_required": 2
+  },
+  "historical_exact_seven": {
+    "test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only": {
+      "backend/tests/test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only": "passed"
+    },
+    "test_state_routes.py::test_state_endpoints_are_get_only_and_read_only": {
+      "backend/tests/test_state_routes.py::test_state_endpoints_are_get_only_and_read_only": "passed"
+    },
+    "test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state": {
+      "backend/tests/test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state": "passed"
+    },
+    "test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged": {
+      "backend/tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged": "passed"
+    },
+    "test_xray.py::test_legacy_subscription_get_is_read_only": {
+      "backend/tests/test_xray.py::test_legacy_subscription_get_is_read_only": "passed"
+    },
+    "test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation": {
+      "backend/tests/test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation": "passed"
+    },
+    "test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity": {
+      "backend/tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity": "passed"
+    }
+  },
+  "hosted_receipts": [
+    {
+      "scope": "hosted-native-process",
+      "status": "passed",
+      "suite_nonce": "ee66438d11ae41b58c14620a4f0b4619",
+      "resources": {
+        "cpu_system_seconds": 18.848,
+        "cpu_user_seconds": 115.22,
+        "max_rss_kib": 192396,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 15762674,
+        "wall_seconds": 240.005
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 26
+      }
+    },
+    {
+      "scope": "hosted-kernel-dataplane",
+      "status": "passed",
+      "suite_nonce": "cdc644daa29c4e2090885dadd389e99b",
+      "resources": {
+        "cpu_system_seconds": 12.742,
+        "cpu_user_seconds": 81.639,
+        "max_rss_kib": 191268,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 8963800,
+        "wall_seconds": 155.257
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 11
+      }
+    },
+    {
+      "scope": "hosted-kernel-packet",
+      "status": "passed",
+      "suite_nonce": "4e8bd3b9de2a4115a2ca99f140842637",
+      "resources": {
+        "cpu_system_seconds": 6.66,
+        "cpu_user_seconds": 39.364,
+        "max_rss_kib": 139216,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 2992708,
+        "wall_seconds": 75.304
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 1
+      }
+    },
+    {
+      "scope": "hosted-kernel-packet",
+      "status": "passed",
+      "suite_nonce": "e716561049874b54b4f1b9aff7082add",
+      "resources": {
+        "cpu_system_seconds": 6.504,
+        "cpu_user_seconds": 39.017,
+        "max_rss_kib": 139120,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 2992712,
+        "wall_seconds": 75.411
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 1
+      }
+    },
+    {
+      "scope": "hosted-kernel-dataplane",
+      "status": "passed",
+      "suite_nonce": "1babca7eccd242888b4c181fd924fa12",
+      "resources": {
+        "cpu_system_seconds": 12.69,
+        "cpu_user_seconds": 81.529,
+        "max_rss_kib": 190332,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 8969739,
+        "wall_seconds": 154.694
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 11
+      }
+    },
+    {
+      "scope": "hosted-native-process",
+      "status": "passed",
+      "suite_nonce": "6eb837788be24291bf19910dd49456fa",
+      "resources": {
+        "cpu_system_seconds": 18.958,
+        "cpu_user_seconds": 115.409,
+        "max_rss_kib": 192508,
+        "max_rss_scope": "maximum_process_high_water_mark_not_aggregate_memory",
+        "owned_temp_bytes_before_cleanup": 15762671,
+        "wall_seconds": 239.63
+      },
+      "cleanup_errors": [],
+      "counts": {
+        "passed": 26
+      }
+    }
+  ],
+  "production_changed": false,
+  "L6_run": false,
+  "L7_run": false
+}

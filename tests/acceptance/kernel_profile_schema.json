@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FWRouter isolated kernel-preflight profile v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "profile", "source_revision", "plan_digest", "xray", "mihomo", "chromium",
+    "playwright_python", "baseline_xray_config_sha256", "ui_tree_sha256", "suite_nonce", "kernel_preflight", "mihomo_handoff"
+  ],
+  "properties": {
+    "schema": {"const": "fwrouter-acceptance-profile/v2"},
+    "profile": {"const": "hosted-kernel-preflight"},
+    "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "plan_digest": {"$ref": "#/definitions/sha256"},
+    "xray": {"$ref": "#/definitions/binary"},
+    "mihomo": {"$ref": "#/definitions/binary"},
+    "chromium": {"$ref": "#/definitions/browser"},
+    "playwright_python": {"type": "string", "minLength": 1},
+    "baseline_xray_config_sha256": {"$ref": "#/definitions/sha256"},
+    "ui_tree_sha256": {"$ref": "#/definitions/sha256"},
+    "suite_nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "mihomo_handoff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["address", "subnet", "gateway"],
+      "properties": {
+        "address": {"const": "172.18.0.1"},
+        "subnet": {"const": "172.18.0.0/24"},
+        "gateway": {"const": "172.18.0.254"}
+      }
+    },
+    "kernel_preflight": {
+      "type": "object", "additionalProperties": false,
+      "required": ["host_netns_inode_sha256", "dataplane_scripts", "tool_package_versions"],
+      "properties": {
+        "host_netns_inode_sha256": {"$ref": "#/definitions/sha256"},
+        "tool_package_versions": {
+          "type": "object", "additionalProperties": false,
+          "required": ["nftables", "iproute2", "tcpdump", "libpcap0.8", "dnsmasq-base", "iptables", "bind9-dnsutils"],
+          "properties": {
+            "nftables": {"const": "1.0.6-2+deb12u2"}, "iproute2": {"const": "6.1.0-3"},
+            "tcpdump": {"const": "4.99.3-1"}, "libpcap0.8": {"const": "1.10.3-1"},
+            "dnsmasq-base": {"const": "2.90-4~deb12u2"}, "iptables": {"const": "1.8.9-2"},
+            "bind9-dnsutils": {"const": "1:9.18.49-1~deb12u1"}
+          }
+        },
+        "dataplane_scripts": {
+          "type": "object", "additionalProperties": false,
+          "required": [
+            "host/libexec/fwrouter/dataplane-common.sh", "host/libexec/fwrouter/dataplane-check.sh",
+            "host/libexec/fwrouter/dataplane-apply.sh", "host/libexec/fwrouter/dataplane-rollback.sh"
+          ],
+          "properties": {
+            "host/libexec/fwrouter/dataplane-common.sh": {"$ref": "#/definitions/sha256"},
+            "host/libexec/fwrouter/dataplane-check.sh": {"$ref": "#/definitions/sha256"},
+            "host/libexec/fwrouter/dataplane-apply.sh": {"$ref": "#/definitions/sha256"},
+            "host/libexec/fwrouter/dataplane-rollback.sh": {"$ref": "#/definitions/sha256"}
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "binary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "version"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/definitions/sha256"},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "browser": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "version", "bundle_sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/definitions/sha256"},
+        "version": {"type": "string", "minLength": 1},
+        "bundle_sha256": {"$ref": "#/definitions/sha256"}
+      }
+    }
+  }
+}
