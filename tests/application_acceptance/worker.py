@@ -2612,6 +2612,59 @@ def build_app(socket_path: Path):
     import signal
     faulthandler.register(signal.SIGUSR1, all_threads=True)
     from fwrouter_api.services import bootstrap as bootstrap_service
+    from fwrouter_api.services import mihomo_config, subscription_pipeline
+    from fwrouter_api.services import xray_subscription_service
+
+    bootstrap_diagnostic_lock = threading.Lock()
+    bootstrap_diagnostic_active = False
+    bootstrap_diagnostic_counts: dict[str, int] = {}
+    bootstrap_diagnostic_limit = 8
+
+    def observe_xray_generation_phase(name: str, original: Any) -> Any:
+        def observed(*args: Any, **kwargs: Any) -> Any:
+            nonlocal bootstrap_diagnostic_active
+            if not bootstrap_diagnostic_active:
+                return original(*args, **kwargs)
+            with bootstrap_diagnostic_lock:
+                count = bootstrap_diagnostic_counts.get(name, 0)
+                record_phase = count < bootstrap_diagnostic_limit
+                if record_phase:
+                    count += 1
+                    bootstrap_diagnostic_counts[name] = count
+            if not record_phase:
+                return original(*args, **kwargs)
+            started = time.monotonic()
+            prefix = "FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
+            print(prefix + json.dumps({"phase": name, "event": "enter", "call": count}), flush=True)
+            try:
+                return original(*args, **kwargs)
+            finally:
+                print(prefix + json.dumps({
+                    "phase": name, "event": "exit", "call": count,
+                    "seconds": round(time.monotonic() - started, 4),
+                }), flush=True)
+        return observed
+
+    for phase in (
+        "_prospective_profile_bindings",
+        "_stage_profile_native_candidates",
+        "_apply_staged_mihomo_candidate",
+        "_write_xray_generation_checkpoint",
+        "_restore_xray_generation_checkpoint",
+        "_finalize_xray_profile_publication",
+        "_publish_mihomo_udp_receipt_with_owner",
+    ):
+        setattr(
+            xray_subscription_service,
+            phase,
+            observe_xray_generation_phase(phase, getattr(xray_subscription_service, phase)),
+        )
+    for module, attribute, phase in (
+        (mihomo_config, "write_mihomo_candidate_config", "mihomo_config.write_candidate"),
+        (mihomo_config, "validate_mihomo_candidate_config", "mihomo_config.validate_candidate"),
+        (subscription_pipeline, "validate_mihomo_candidate_config", "subscription_pipeline.validate_candidate"),
+    ):
+        setattr(module, attribute, observe_xray_generation_phase(phase, getattr(module, attribute)))
 
     def observe_phase(name, original):
         def observed(*args, **kwargs):
@@ -2655,7 +2708,12 @@ def build_app(socket_path: Path):
         return summary
 
     def observed_bootstrap() -> dict[str, Any]:
-        result = original_bootstrap()
+        nonlocal bootstrap_diagnostic_active
+        bootstrap_diagnostic_active = True
+        try:
+            result = original_bootstrap()
+        finally:
+            bootstrap_diagnostic_active = False
         bootstrap_observation.update({
             "completed": True,
             "recovery_enabled": result.get("startup_recovery_enabled") is True,

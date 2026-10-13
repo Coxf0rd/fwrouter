@@ -138,3 +138,10 @@ Ordinary26/Provider11/original packet1 PASS; scale refuses fixture before startu
 ## Preserve nonredundant scale rules — 38467607741
 
 Ordinary26/Provider11/original packet1 PASS; scale1 FAIL before startup because the source validator correctly removes child suffixes already covered by parent vpn.test. This invalidated the intended99627-rule workload. Fixture uses99627 independent scale-*.vpn.test siblings without the parent suffix, still within the owned endpoint namespace. Exact count and DNS target assertions remain, preventing reduced-load false acceptance. Native startup/DNS/load for this fixture remains pending. No production change.
+
+
+## Real sibling workload startup attribution — 38469657444
+
+Source692373c: ordinary26/Provider11/original packet1 PASS; scale1 FAIL with99627 actual VPN suffixes and78 loaded synthetic identities. Startup45s deadline exceeded; API VmHWM793932KiB. Live recovery13.1988s, selector3.5603s, Xray profile reconciliation28.7028s, DNS phase1.8853s. Deadline stack is final Xray publication -> current Mihomo input fingerprint -> streaming file hashing; this single sample does not prove hashing dominates the28.7s phase. No guessed hash cache or fencing shortcut is introduced.
+
+Observed process exited-SIGTERM after2.4189s but lacked verified application cleanup marker, so teardown remains FAIL; cancellation during synchronous unfinished bootstrap is not steady-state graceful shutdown acceptance. Detailed generation-stage timing diagnostics are prepared next. Full workload/native DNS success, API waves and live deployment remain unconfirmed. The earlier34.1s result is retained as partial observation with a DNS failure, not generalized to this corrected fixture.
