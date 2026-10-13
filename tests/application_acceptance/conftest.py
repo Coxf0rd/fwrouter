@@ -222,6 +222,8 @@ def acceptance_stack(request):
         for log_path in sorted(suite_root.glob("uvicorn-*.log")):
             try:
                 raw = log_path.read_bytes()[-16 * 1024:]
+                if b"owned application worker survived lifespan cleanup" in raw:
+                    cleanup_errors.append("application lifespan left an owned background worker alive")
                 from .native_runner import _redact_diagnostic
                 worker_logs.append({"name": log_path.name, "tail": _redact_diagnostic(raw, limit=16 * 1024)})
             except OSError:

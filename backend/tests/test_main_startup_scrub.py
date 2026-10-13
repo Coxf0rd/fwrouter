@@ -70,7 +70,8 @@ def test_v21_startup_scrubs_configured_jsonl_before_schedulers(
         "register_extended_handlers",
         lambda _manager: sequence.append("register_handlers"),
     )
-    monkeypatch.setattr(main, "get_default_job_manager", lambda: object())
+    monkeypatch.setattr(main, "get_default_job_manager",
+                        lambda: SimpleNamespace(wait_for_idle=lambda **_kwargs: True))
     monkeypatch.setattr(main, "resume_runtime_read_models_prewarm", lambda: True)
     monkeypatch.setattr(main, "stop_runtime_read_models_prewarm", lambda **_kwargs: True)
 

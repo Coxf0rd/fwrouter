@@ -294,6 +294,9 @@ def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_can
                                       and response.request.method == "POST", timeout=12000) as action:
                 toggle.check()
             assert action.value.status == 200
+            operation = action.value.json()
+            completed = await_core_job(api, operation)
+            assert completed.get("status") == "success", {"exclusive_job_status": completed.get("status")}
             page.wait_for_function("document.querySelector('[data-vpn-auto-exclusive]')?.checked === true", timeout=10000)
 
             code, subscription = http_json(f"{api}/subscription")

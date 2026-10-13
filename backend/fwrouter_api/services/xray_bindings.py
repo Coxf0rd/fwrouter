@@ -121,10 +121,29 @@ def collect_xray_client_mode_directives() -> list[dict[str, Any]]:
             ORDER BY subject_id
             """
         ).fetchall()
+    if not rows:
+        return []
+
+    routing = subject_policy_service.get_routing_snapshot()
+    bypass_state = subject_policy_service.get_core_bypass_state()
+    runtime_enforcement = subject_policy_service._default_subject_runtime_enforcement(
+        routing=routing,
+        bypass_state=bypass_state,
+    )
     directives = []
     for row in rows:
         mode = str(row["desired_mode"] or "enabled").strip().lower()
-        projected = subject_policy_service.get_subject_with_effective_state(str(row["subject_id"]))
+        subject = get_subject(str(row["subject_id"]))
+        projected = (
+            subject_policy_service.enrich_subject_with_effective_state(
+                subject,
+                routing=routing,
+                runtime_enforcement=runtime_enforcement,
+                bypass_state=bypass_state,
+            )
+            if isinstance(subject, dict)
+            else None
+        )
         effective_mode = str(((projected or {}).get("effective_state") or {}).get("effective_mode") or mode)
         if effective_mode == "direct":
             mode = "direct"

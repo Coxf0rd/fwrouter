@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+### Runtime stabilization qualification — 2026-10-14
+
+PR8 remains under qualification; production API/dependent workers stay stopped and no new deployment has occurred. Hosted38444740666 confirms ordinary26 PASS, Provider/kernel11 PASS plus one full-startup FAIL, and complete packet1 PASS including stale Rescue LAN marker repair with independent NAT preservation. Startup stack proves repeated common rules/preflight processing per Xray client; operation-local projection reuse and always-owned prewarm/JobManager cleanup are prepared, pending hosted validation. Source/test PASS is not live acceptance. Controlled local-source deployment before final PR readiness is user-authorized only after applicable qualification and backup/safe-recovery checks; unsafe implicit-DIRECT rollback remains prohibited. See the API runtime stability report.
+
 ## 2026-10-13 — API scale stabilization after PR7 merge
 
 PR7 is merged as main1b302e9; actual main38400414256 PASS (217 routine +26 qualified native child, mandatory native smoke and eligible source/plan aggregate). Production still runsa4a7a33 with API/dependent workers/timers held. Parser-only correction does not qualify full startup/memory/shutdown. Branch `fix/api-runtime-health-scale-stability` addresses duplicated readonly health, temporary rule allocations, scheduler/prewarm ownership and stale owned Rescue LAN markers; realistic hosted scale acceptance is pending. No deploy/restart/firewall change. Live Acceptance remains BLOCKED; next stages remain paused. See `knowledge/audits/api_runtime_stability_2026-10-13/REPORT.md`.

@@ -20,7 +20,12 @@ def test_lifespan_signals_all_components_before_shared_join_budget(monkeypatch) 
         "register_extended_handlers",
         lambda _manager: startup_calls.append("register_handlers"),
     )
-    monkeypatch.setattr(main, "get_default_job_manager", lambda: object())
+    manager = SimpleNamespace(
+        wait_for_idle=lambda *, timeout_seconds: stop_calls.append(
+            ("job_manager", 1, timeout_seconds)
+        )
+    )
+    monkeypatch.setattr(main, "get_default_job_manager", lambda: manager)
 
     start_names = (
         "start_maintenance_scheduler",
@@ -90,7 +95,76 @@ def test_lifespan_signals_all_components_before_shared_join_budget(monkeypatch) 
     ]
     assert [name for name, _call, _timeout in stop_calls[: len(stop_names)]] == list(stop_names)
     assert all(timeout == 0.0 for _name, _call, timeout in stop_calls[: len(stop_names)])
-    assert [name for name, _call, _timeout in stop_calls[len(stop_names) :]] == list(stop_names)
-    join_timeouts = [timeout for _name, _call, timeout in stop_calls[len(stop_names) :]]
-    assert join_timeouts == [13.75, 13.5, 13.25, 13.0, 12.75, 12.5, 12.25, 12.0]
+    joins = stop_calls[len(stop_names) :]
+    assert [name for name, _call, _timeout in joins] == [
+        *stop_names[:-1], "stop_runtime_read_models_prewarm", "job_manager",
+    ]
+    join_timeouts = [timeout for _name, _call, timeout in joins]
+    assert join_timeouts == [13.75, 13.5, 13.25, 13.0, 12.75, 12.5, 12.25, 12.0, 11.75]
     assert all(0.0 <= timeout <= 14.0 for timeout in join_timeouts)
+
+
+def test_disabled_startup_tasks_still_drain_prewarm_and_started_jobs(monkeypatch) -> None:
+    from threading import Event, Thread
+
+    from fwrouter_api.jobs.manager import JobManager
+
+    settings = SimpleNamespace(app_name="test", app_version="test", debug=False, paths=SimpleNamespace())
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    manager = JobManager()
+    release_job = Event()
+    job_thread = Thread(target=release_job.wait, name="fwrouter-job-lifecycle-test", daemon=True)
+    manager._workers["lifecycle-test"] = job_thread
+    job_thread.start()
+    prewarm_signaled = Event()
+    wait_for_idle = manager.wait_for_idle
+
+    def observe_job_drain(*, timeout_seconds: float) -> bool:
+        assert prewarm_signaled.is_set()
+        assert job_thread.is_alive()
+        release_job.set()
+        return wait_for_idle(timeout_seconds=timeout_seconds)
+
+    manager.wait_for_idle = observe_job_drain
+    prewarm_timeouts: list[float] = []
+
+    def signal_prewarm(*, timeout_seconds: float) -> bool:
+        prewarm_timeouts.append(timeout_seconds)
+        if len(prewarm_timeouts) == 1:
+            assert timeout_seconds == 0.0
+            prewarm_signaled.set()
+        else:
+            assert prewarm_signaled.is_set()
+            assert 0.0 <= timeout_seconds <= 14.0
+        return False
+
+    monkeypatch.setattr(main, "stop_runtime_read_models_prewarm", signal_prewarm)
+    monkeypatch.setattr(main, "get_default_job_manager", lambda: manager)
+    for name in (
+        "stop_maintenance_scheduler", "stop_member_probe_scheduler",
+        "stop_active_observation_scheduler", "stop_subject_inventory_scheduler",
+        "stop_external_collector_scheduler", "stop_runtime_convergence_scheduler",
+        "stop_watchdog_scheduler",
+    ):
+        monkeypatch.setattr(
+            main,
+            name,
+            lambda _name=name, **_kwargs: (_ for _ in ()).throw(AssertionError(_name)),
+        )
+
+    app = main.create_app(enable_startup_tasks=False)
+
+    async def exercise_lifespan() -> None:
+        async with app.router.lifespan_context(app):
+            pass
+
+    try:
+        asyncio.run(exercise_lifespan())
+        assert prewarm_signaled.is_set()
+        assert len(prewarm_timeouts) == 2
+        assert prewarm_timeouts[0] == 0.0
+        assert 0.0 <= prewarm_timeouts[1] <= 14.0
+        assert not job_thread.is_alive()
+    finally:
+        release_job.set()
+        job_thread.join(timeout=1.0)

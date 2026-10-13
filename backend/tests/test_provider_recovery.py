@@ -444,61 +444,95 @@ def test_emergency_xray_mode_directives_follow_projected_policy_without_unblocki
     monkeypatch,
 ):
     _install_pending_state(monkeypatch, {"provider_managed": True, "emergency_direct": True})
-    connection = sqlite3.connect(":memory:")
-    connection.row_factory = sqlite3.Row
-    connection.execute(
-        "CREATE TABLE subjects (subject_id TEXT, desired_mode TEXT, implementation_kind TEXT, subject_type TEXT, subject_role TEXT, is_active INTEGER, is_deleted INTEGER, metadata_json TEXT)"
-    )
-    connection.executemany(
-        "INSERT INTO subjects VALUES (?, ?, 'xray', 'explicit_external_client', 'vless_client', 1, 0, ?) ",
-        [
-            ("explicit:enabled", "enabled", json.dumps({"detail": {"client_id": "enabled-id", "client_uuid": "enabled-uuid", "email": "enabled@example.test", "enabled": True}})),
-            ("explicit:disabled", "disabled", json.dumps({"detail": {"client_id": "disabled-id", "client_uuid": "disabled-uuid", "email": "disabled@example.test", "enabled": True}})),
-        ],
-    )
-    connection.commit()
-
-    @contextmanager
-    def session():
-        yield connection
-
-    monkeypatch.setattr("fwrouter_api.services.xray_bindings.db_session", session)
-    monkeypatch.setattr("fwrouter_api.services.scoped_egress._load_explicit_client_runtime_bindings", lambda *_args, **_kwargs: {})
     from fwrouter_api.services import subject_policy, xray_bindings
+    from fwrouter_api.services.subject_inventory import SubjectInventoryRecord, _upsert_subject
 
-    def projected(subject_id):
-        desired = "disabled" if subject_id.endswith("disabled") else "enabled"
-        return subject_policy.enrich_subject_with_effective_state(
-            {
-                "subject_id": subject_id,
-                "subject_type": "explicit_external_client",
-                "implementation_kind": "xray",
-                "subject_role": "vless_client",
-                "desired_mode": desired,
-                "is_active": True,
-                "display_name": subject_id,
-                "user_override": None,
-                "server_override": None,
+    for subject_id, desired_mode in (
+        ("explicit:enabled", "enabled"),
+        ("explicit:disabled", "disabled"),
+        ("explicit:direct", "direct"),
+        ("explicit:selective", "selective"),
+    ):
+        _upsert_subject(SubjectInventoryRecord(
+            subject_id=subject_id,
+            subject_type="explicit_external_client",
+            stable_key=subject_id,
+            display_name=subject_id,
+            desired_mode=desired_mode,
+            runtime_state="active",
+            is_active=True,
+            alias=None,
+            metadata={"source": "xray_adapter", "provider": "xray"},
+            detail={
+                "client_id": f"{subject_id}-id",
+                "client_uuid": f"{subject_id}-uuid",
+                "email": f"{subject_id}@example.test",
+                "enabled": True,
             },
-            routing={"desired_mode": "vpn", "applied_mode": "vpn", "server_mode": "auto", "active_auto_server_id": "logical-provider", "applied_fixed_server_id": None, "desired_fixed_server_id": None},
-            user_override=None,
-            server_override=None,
-            runtime_enforcement={"supported_modes": {"vpn": True}},
-            bypass_state={"enabled": False},
-        )
+            implementation_kind="xray",
+        ))
 
-    monkeypatch.setattr(subject_policy, "get_subject_with_effective_state", projected)
-    try:
-        directives = xray_bindings.collect_xray_client_mode_directives()
-    finally:
-        connection.close()
+    snapshots = {
+        "routing": {"desired_mode": "vpn", "applied_mode": "vpn", "server_mode": "auto",
+                    "active_auto_server_id": "logical-provider", "applied_fixed_server_id": None,
+                    "desired_fixed_server_id": None},
+        "bypass": {"enabled": False},
+    }
+    reads = {"routing": 0, "bypass": 0}
+    default_calls = []
+    preflight_calls = []
+    actual_default = subject_policy._default_subject_runtime_enforcement
+    actual_preflight = subject_policy.build_global_preflight
 
-    by_id = {item["subject_id"]: item for item in directives}
+    def read_routing():
+        reads["routing"] += 1
+        return dict(snapshots["routing"])
+
+    def read_bypass():
+        reads["bypass"] += 1
+        return dict(snapshots["bypass"])
+
+    def observe_preflight(**kwargs):
+        preflight_calls.append(dict(kwargs))
+        return actual_preflight(**kwargs)
+
+    def observe_default(**kwargs):
+        result = actual_default(**kwargs)
+        default_calls.append((dict(kwargs), result))
+        return result
+
+    monkeypatch.setattr(subject_policy, "get_routing_snapshot", read_routing)
+    monkeypatch.setattr(subject_policy, "get_core_bypass_state", read_bypass)
+    monkeypatch.setattr(subject_policy, "build_global_preflight", observe_preflight)
+    monkeypatch.setattr(subject_policy, "_default_subject_runtime_enforcement", observe_default)
+
+    first = xray_bindings.collect_xray_client_mode_directives()
+    by_id = {item["subject_id"]: item for item in first}
     assert by_id["explicit:enabled"]["desired_mode"] == "enabled"
     assert by_id["explicit:enabled"]["effective_mode"] == "direct"
     assert by_id["explicit:enabled"]["mode_support_state"] == "legacy_supported_direct"
     assert by_id["explicit:disabled"]["effective_mode"] == "disabled"
     assert by_id["explicit:disabled"]["mode_support_state"] == "supported"
+    assert by_id["explicit:direct"]["effective_mode"] == "direct"
+    assert by_id["explicit:selective"]["effective_mode"] == "direct"
+    assert reads == {"routing": 1, "bypass": 1}
+    assert len(default_calls) == len(preflight_calls) == 1
+    assert default_calls[0][1]["bypass_active"] is False
+
+    snapshots["routing"] = {
+        **snapshots["routing"], "desired_mode": "direct", "applied_mode": "direct",
+        "active_auto_server_id": None,
+    }
+    snapshots["bypass"] = {"enabled": True}
+    second = xray_bindings.collect_xray_client_mode_directives()
+    assert {item["subject_id"]: item["effective_mode"] for item in second} == {
+        subject_id: item["effective_mode"] for subject_id, item in by_id.items()
+    }
+    assert reads == {"routing": 2, "bypass": 2}
+    assert len(default_calls) == len(preflight_calls) == 2
+    assert preflight_calls[0]["routing"]["desired_mode"] == "vpn"
+    assert preflight_calls[1]["routing"]["desired_mode"] == "direct"
+    assert default_calls[1][1]["bypass_active"] is True
 
 
 def test_failed_emergency_apply_retains_unconfirmed_override_and_does_not_claim_direct(monkeypatch):

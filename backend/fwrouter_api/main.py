@@ -113,19 +113,29 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
                     prime_runtime_read_models_async(include_global_profiles=False)
             yield
         finally:
+            # Signal every application-owned background worker first. Runtime
+            # mutations can start prewarm and job workers even when startup
+            # schedulers are disabled.
             if startup_tasks_enabled:
-                # Signal every owner first, then share one bounded join budget.
-                stops = (
+                scheduler_stops = (
                     stop_maintenance_scheduler, stop_member_probe_scheduler,
                     stop_active_observation_scheduler, stop_subject_inventory_scheduler,
                     stop_external_collector_scheduler, stop_runtime_convergence_scheduler,
-                    stop_watchdog_scheduler, stop_runtime_read_models_prewarm,
+                    stop_watchdog_scheduler,
                 )
-                for stop in stops:
+                for stop in scheduler_stops:
                     stop(timeout_seconds=0.0)
-                deadline = monotonic() + 14.0
-                for stop in stops:
-                    stop(timeout_seconds=max(0.0, deadline - monotonic()))
+            else:
+                scheduler_stops = ()
+            stop_runtime_read_models_prewarm(timeout_seconds=0.0)
+
+            deadline = monotonic() + 14.0
+            for stop in scheduler_stops:
+                stop(timeout_seconds=max(0.0, deadline - monotonic()))
+            stop_runtime_read_models_prewarm(timeout_seconds=max(0.0, deadline - monotonic()))
+            get_default_job_manager().wait_for_idle(
+                timeout_seconds=max(0.0, deadline - monotonic()),
+            )
 
     app = FastAPI(
         title=settings.app_name,
