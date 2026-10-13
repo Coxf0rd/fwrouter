@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tarfile
+import tempfile
+from unittest.mock import patch
+
+import pytest
+
+
+TOOL = Path(__file__).parents[1] / "safe_recovery.py"
+SPEC = importlib.util.spec_from_file_location("fwrouter_safe_recovery", TOOL)
+assert SPEC and SPEC.loader
+recovery = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(recovery)
+REPO = TOOL.parents[1]
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(["git", "-C", str(repo), *args], check=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return result.stdout.strip()
+
+
+def _source_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "source"
+    (repo / "backend/scripts").mkdir(parents=True)
+    (repo / "installer").mkdir()
+    shutil.copyfile(REPO / "installer/install.sh", repo / "installer/install.sh")
+    shutil.copyfile(REPO / "installer/obsolete-backend-paths.txt",
+                    repo / "installer/obsolete-backend-paths.txt")
+    (repo / "backend/fwrouter_api").mkdir()
+    (repo / "backend/fwrouter_api/__init__.py").write_text("SAFE_RECOVERY_FIXTURE = True\n")
+    (repo / "backend/.gitignore").write_text("secret.env\n__pycache__/\n*.bak\n")
+    bootstrap = """#!/bin/sh
+set -eu
+mkdir -p "$1" "$2" "$3"
+"""
+    (repo / "backend/scripts/bootstrap-state.sh").write_text(bootstrap)
+    (repo / "backend/scripts/bootstrap-state.sh").chmod(0o755)
+    _git(repo, "init", "--quiet")
+    (repo / "installer/install.sh").chmod(0o755)
+    _git(repo, "config", "user.email", "safe-recovery@example.invalid")
+    _git(repo, "config", "user.name", "Safe Recovery Test")
+    _git(repo, "add", "backend", "installer/install.sh", "installer/obsolete-backend-paths.txt")
+    _git(repo, "commit", "--quiet", "-m", "fixture")
+    return repo
+
+
+def _receipt(repo: Path, *, status: str = "passed", source_sha: str | None = None,
+             digest: str | None = None) -> Path:
+    sha = recovery._git_source_identity(repo)
+    entries = recovery._entries(recovery._tracked_source_files(repo))
+    payload = {
+        "schema": recovery.RECEIPT_SCHEMA,
+        "receipt_id": "hosted-run-fixture-1",
+        "status": status,
+        "source_sha": source_sha or sha,
+        "source_manifest_sha256": digest or recovery._entries_digest(entries),
+        "hosted_run_id": "123456789",
+        "hosted_run_url": "https://github.com/example/fwrouter/actions/runs/123456789",
+        "gates": {name: "passed" for name in recovery.REQUIRED_GATES},
+    }
+    path = repo.parent / "hosted-qualification.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _artifact(tmp_path: Path, *, receipt_status: str = "passed") -> tuple[Path, Path, Path]:
+    repo = _source_repo(tmp_path)
+    receipt = _receipt(repo, status=receipt_status)
+    artifact = tmp_path / "recovery-artifact"
+    recovery.prepare(repo, artifact, receipt)
+    return repo, artifact, receipt
+
+
+def _private_target(label: str) -> tuple[Path, Path]:
+    private_root = Path(tempfile.mkdtemp(prefix=f"fwrouter-safe-recovery-{label}-",
+                                          dir=tempfile.gettempdir()))
+    private_root.chmod(0o700)
+    target = private_root / "target"
+    target.mkdir(mode=0o700)
+    return private_root, target
+
+
+def test_prepare_verify_and_repeat_isolated_stage_preserve_state_and_host_sentinels(tmp_path: Path) -> None:
+    _, artifact, receipt = _artifact(tmp_path)
+    manifest, _ = recovery.verify(artifact, receipt)
+    private_root, target = _private_target("repeat")
+    try:
+        database = target / "var/lib/fwrouter-v2/fwrouter.db"
+        database.parent.mkdir(parents=True)
+        database.write_bytes(b"current-db-intent\0")
+        database.chmod(0o600)
+        env = target / "opt/fwrouter-api/.env"
+        env.parent.mkdir(parents=True)
+        env.write_bytes(b"PRIVATE_SENTINEL=preserved\n")
+        env.chmod(0o600)
+        host_guard = target / "usr/local/libexec/fwrouter/traffic-collect-api.sh"
+        host_guard.parent.mkdir(parents=True)
+        host_guard.write_bytes(b"LIVE_READINESS_GUARD_SENTINEL\n")
+
+        recovery.stage(artifact, receipt, target)
+        assert (target / "opt/fwrouter-api/fwrouter_api/__init__.py").read_text() == "SAFE_RECOVERY_FIXTURE = True\n"
+        assert database.read_bytes() == b"current-db-intent\0"
+        assert env.read_bytes() == b"PRIVATE_SENTINEL=preserved\n"
+        assert host_guard.read_bytes() == b"LIVE_READINESS_GUARD_SENTINEL\n"
+
+        recovery.stage(artifact, receipt, target)
+        assert database.read_bytes() == b"current-db-intent\0"
+        assert env.read_bytes() == b"PRIVATE_SENTINEL=preserved\n"
+        assert host_guard.read_bytes() == b"LIVE_READINESS_GUARD_SENTINEL\n"
+        assert manifest["source_sha"] == json.loads(receipt.read_text())["source_sha"]
+    finally:
+        private_root.chmod(0o700)
+        shutil.rmtree(private_root)
+
+
+def test_prepare_rejects_unqualified_or_incompatible_hosted_receipt(tmp_path: Path) -> None:
+    repo = _source_repo(tmp_path)
+    artifact = tmp_path / "must-not-exist"
+    unqualified = _receipt(repo, status="failed")
+    with pytest.raises(recovery.RecoveryError, match="unqualified"):
+        recovery.prepare(repo, artifact, unqualified)
+    assert not artifact.exists()
+
+    wrong_sha = _receipt(repo, source_sha="0" * 40)
+    with pytest.raises(recovery.RecoveryError, match="another source"):
+        recovery.prepare(repo, artifact, wrong_sha)
+    assert not artifact.exists()
+
+    wrong_digest = _receipt(repo, digest="f" * 64)
+    with pytest.raises(recovery.RecoveryError, match="another source"):
+        recovery.prepare(repo, artifact, wrong_digest)
+    assert not artifact.exists()
+
+
+def test_verify_rejects_tampered_archive(tmp_path: Path) -> None:
+    _, artifact, receipt = _artifact(tmp_path)
+    artifact.chmod(0o700)
+    archive = artifact / recovery.ARCHIVE_NAME
+    archive.chmod(0o600)
+    archive.write_bytes(archive.read_bytes() + b"tamper")
+    with pytest.raises(recovery.RecoveryError, match="archive hash mismatch"):
+        recovery.verify(artifact, receipt)
+
+
+def test_prepare_excludes_ignored_environment_cache_and_backup_files(tmp_path: Path) -> None:
+    repo = _source_repo(tmp_path)
+    (repo / "backend/secret.env").write_text("IGNORED_SECRET=do-not-archive\n")
+    cache = repo / "backend/fwrouter_api/__pycache__"
+    cache.mkdir()
+    (cache / "module.pyc").write_bytes(b"ignored bytecode")
+    (repo / "backend/local.bak").write_bytes(b"ignored backup")
+    receipt = _receipt(repo)
+    artifact = tmp_path / "recovery-artifact"
+    recovery.prepare(repo, artifact, receipt)
+    manifest, entries = recovery.verify(artifact, receipt)
+    names = {entry["path"] for entry in entries}
+    assert not any("secret.env" in name or "__pycache__" in name or name.endswith(".bak") for name in names)
+    assert manifest["source_sha"] == json.loads(receipt.read_text())["source_sha"]
+
+
+def test_verify_rejects_traversal_member_even_when_archive_hash_is_rewritten(tmp_path: Path) -> None:
+    _, artifact, receipt = _artifact(tmp_path)
+    artifact.chmod(0o700)
+    archive_path = artifact / recovery.ARCHIVE_NAME
+    archive_path.chmod(0o600)
+    malicious = tmp_path / "malicious.tar"
+    with tarfile.open(malicious, "w") as archive:
+        info = tarfile.TarInfo("../outside")
+        info.size = 1
+        archive.addfile(info, io.BytesIO(b"x"))
+    archive_path.write_bytes(malicious.read_bytes())
+    manifest_path = artifact / recovery.MANIFEST_NAME
+    manifest_path.chmod(0o600)
+    manifest = json.loads(manifest_path.read_text())
+    manifest["archive_sha256"] = recovery._sha256(archive_path.read_bytes())
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n")
+    with pytest.raises(recovery.RecoveryError, match="unsafe artifact path"):
+        recovery.verify(artifact, receipt)
+
+
+def test_interrupted_stage_retains_partial_target_and_can_be_repeated(tmp_path: Path) -> None:
+    _, artifact, receipt = _artifact(tmp_path)
+    private_root, target = _private_target("interrupt")
+    original_run = subprocess.run
+
+    def interrupt(*args, **kwargs):
+        partial = target / "opt/fwrouter-api/partial-stage-marker"
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_text("inspect or restage\n")
+        raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout"))
+
+    try:
+        with patch.object(recovery.subprocess, "run", side_effect=interrupt):
+            with pytest.raises(recovery.RecoveryError, match="partial target retained"):
+                recovery.stage(artifact, receipt, target)
+        assert (target / "opt/fwrouter-api/partial-stage-marker").read_text() == "inspect or restage\n"
+        with patch.object(recovery.subprocess, "run", wraps=original_run):
+            recovery.stage(artifact, receipt, target)
+        assert (target / "opt/fwrouter-api/partial-stage-marker").read_text() == "inspect or restage\n"
+        assert (target / "opt/fwrouter-api/fwrouter_api/__init__.py").is_file()
+    finally:
+        private_root.chmod(0o700)
+        shutil.rmtree(private_root)
+
+
+def test_stage_rejects_symlink_target_and_target_outside_private_temp_root(tmp_path: Path) -> None:
+    _, artifact, receipt = _artifact(tmp_path)
+    private_root, target = _private_target("path")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = private_root / "link"
+    link.symlink_to(target, target_is_directory=True)
+    try:
+        with pytest.raises(recovery.RecoveryError, match="non-symlink"):
+            recovery.stage(artifact, receipt, link)
+        with pytest.raises(recovery.RecoveryError, match="private temporary directory"):
+            recovery.stage(artifact, receipt, outside)
+    finally:
+        private_root.chmod(0o700)
+        shutil.rmtree(private_root)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
+from fwrouter_api.core.config import get_settings
 from fwrouter_api.services import dnsmasq as dnsmasq_service
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 
@@ -572,3 +574,116 @@ def test_reconcile_dnsmasq_rules_waits_for_nftset_probe_after_restart(
     assert result["ok"] is True
     assert result["restart_reason"] == "config_changed"
     assert result["selective_status"]["ok"] is True
+
+
+def test_reconcile_uses_real_discovery_for_lan_dhcp_hosts_and_capture_candidates(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    clear_live_probe_cache()
+    monkeypatch.setenv(
+        "FWROUTER_LAN_INTERFACE_ALLOWLIST",
+        json.dumps(["bridge0", "lan0", "rescue0", "tun-custom", "vlan100"]),
+    )
+    get_settings.cache_clear()
+
+    paths = {
+        "DNSMASQ_RULES_CONF_PATH": tmp_path / "fwrouter-rules.conf",
+        "DNSMASQ_DHCP_DNS_CONF_PATH": tmp_path / "fwrouter-dhcp-dns.conf",
+        "DNSMASQ_IPV6_LAN_CONF_PATH": tmp_path / "fwrouter-ipv6-lan.conf",
+        "DNSMASQ_LOCAL_HOSTS_CONF_PATH": tmp_path / "fwrouter-local-hosts.conf",
+    }
+    for name, path in paths.items():
+        monkeypatch.setattr(dnsmasq_service, name, path)
+
+    discovered_links = [
+        {"ifname": "rescue0", "addr_info": [{"family": "inet", "local": "10.254.254.1"}]},
+        {"ifname": "lan0", "addr_info": [
+            {"family": "inet", "local": "192.168.1.2"},
+            {"family": "inet", "local": "192.168.1.1"},
+        ]},
+        {"ifname": "bridge0", "addr_info": [{"family": "inet", "local": "192.168.0.1"}]},
+        {"ifname": "vlan100", "addr_info": [{"family": "inet", "local": "192.168.2.1"}]},
+        {"ifname": "tun-custom", "addr_info": [{"family": "inet", "local": "192.168.3.1"}]},
+        {"ifname": "tailscale0", "addr_info": [{"family": "inet", "local": "100.64.0.1"}]},
+        {"ifname": "br-custom", "addr_info": [{"family": "inet", "local": "192.168.4.1"}]},
+    ]
+    command_log: list[list[str]] = []
+
+    def fake_run(argv: list[str], check: bool, capture_output: bool, text: bool = False):
+        command_log.append(argv)
+        if argv == ["ip", "-json", "address", "show"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(discovered_links), "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(dnsmasq_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        dnsmasq_service,
+        "read_effective_rules_artifact",
+        lambda *, fresh=False: {"rules": []},
+    )
+    monkeypatch.setattr(
+        dnsmasq_service,
+        "inspect_dnsmasq_selective_status",
+        lambda: {
+            "ok": True,
+            "missing": [],
+            "router_dns_ipv4": [
+                "192.168.0.1",
+                "192.168.1.1",
+                "192.168.1.2",
+                "192.168.2.1",
+                "192.168.3.1",
+            ],
+            "router_dns_interfaces": ["bridge0", "lan0", "tun-custom", "vlan100"],
+            "nftset_probe_status": {"ok": True, "missing": [], "restart_recommended": False},
+        },
+    )
+
+    result = dnsmasq_service.reconcile_dnsmasq_rules()
+
+    expected_bindings = [
+        {"ifname": "bridge0", "address": "192.168.0.1"},
+        {"ifname": "lan0", "address": "192.168.1.1"},
+        {"ifname": "lan0", "address": "192.168.1.2"},
+        {"ifname": "tun-custom", "address": "192.168.3.1"},
+        {"ifname": "vlan100", "address": "192.168.2.1"},
+    ]
+    expected_addresses = sorted({binding["address"] for binding in expected_bindings})
+    assert result["ok"] is True
+    assert result["router_dns_ipv4"] == expected_addresses
+    assert result["dns_capture"]["bindings"] == expected_bindings
+    assert result["dns_capture"]["interfaces"] == ["bridge0", "lan0", "tun-custom", "vlan100"]
+    assert paths["DNSMASQ_DHCP_DNS_CONF_PATH"].read_text(encoding="utf-8").splitlines()[-1] == (
+        "dhcp-option-force=option:dns-server," + ",".join(expected_addresses)
+    )
+    assert paths["DNSMASQ_LOCAL_HOSTS_CONF_PATH"].read_text(encoding="utf-8").splitlines()[-2:] == [
+        "address=/fwrouter.lan/192.168.0.1",
+        "address=/homes.lan/192.168.0.1",
+    ]
+    capture_commands = [argv for argv in command_log if argv and argv[0] == "iptables"]
+    assert capture_commands
+    assert {argv[argv.index("-i") + 1] for argv in capture_commands} == {
+        "bridge0",
+        "lan0",
+        "tun-custom",
+        "vlan100",
+    }
+
+    # With only the reserved interface allowlisted, discovery returns no LAN
+    # DNS address and reconciliation must omit forced client DNS and host VIPs.
+    monkeypatch.setenv("FWROUTER_LAN_INTERFACE_ALLOWLIST", json.dumps(["rescue0"]))
+    get_settings.cache_clear()
+    discovered_links[:] = [
+        {"ifname": "rescue0", "addr_info": [{"family": "inet", "local": "10.254.254.1"}]},
+    ]
+    clear_live_probe_cache()
+    rescue_only = dnsmasq_service.reconcile_dnsmasq_rules()
+
+    assert rescue_only["ok"] is False
+    assert rescue_only["error_code"] == "DNSMASQ_DNS_CAPTURE_FAILED"
+    assert rescue_only["router_dns_ipv4"] == []
+    assert "dhcp-option-force=option:dns-server" not in paths["DNSMASQ_DHCP_DNS_CONF_PATH"].read_text(
+        encoding="utf-8"
+    )
+    assert "address=/" not in paths["DNSMASQ_LOCAL_HOSTS_CONF_PATH"].read_text(encoding="utf-8")

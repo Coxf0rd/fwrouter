@@ -1100,6 +1100,12 @@ def _dns53_phase_junit_projection(proof: dict[str, Any]) -> dict[str, Any]:
              "vpn_alias_tcp_client_direct", "vpn_alias_udp_client_direct"),
         ),
         "native_dnsmasq_reference": "dns53-native-daemon",
+        "rescue0_allowlisted": native_dns.get("rescue0_allowlisted") is True,
+        "rescue0_role_excluded_from_discovery": native_dns.get("rescue0_role_excluded_from_discovery") is True,
+        "dhcp_excludes_rescue_vip": native_dns.get("dhcp_excludes_rescue_vip") is True,
+        "local_hosts_exclude_rescue_vip": native_dns.get("local_hosts_exclude_rescue_vip") is True,
+        "dns_capture_excludes_rescue0": native_dns.get("dns_capture_excludes_rescue0") is True,
+        "router_lan_hostname_query_ok": native_dns.get("router_lan_hostname_query_ok") is True,
         "selective_direct_priority_peer_classes": selective_peer_classes,
         "native_nftset_probe_targets": targets,
         "capture_router_to_owned_upstream": counts(
@@ -1120,7 +1126,8 @@ def _dns53_phase_junit_projection(proof: dict[str, Any]) -> dict[str, Any]:
         "selection_stable": proof.get("selection_stable") is True,
         "api_status_ok": proof.get("api_status") == 200,
         "cleanup_ok": cleanup.get("http_status") == 200 and cleanup.get("process_reaped") is True
-        and cleanup.get("owned_paths_cleaned") is True,
+        and cleanup.get("owned_paths_cleaned") is True
+        and cleanup.get("rescue_interface_cleaned") is True,
     }
 
 
@@ -1338,6 +1345,19 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "dns_capture_rule_count_capped": setup_dns.get("dns_capture_rule_count_capped")
         if setup_dns.get("dns_capture_rule_count_capped") in {0, 1, 2} else None,
         "dns_capture_rules_present": capture_rule_status,
+        "rescue0_allowlisted": setup_dns.get("rescue0_allowlisted") is True,
+        "rescue0_role_excluded_from_discovery": setup_dns.get("rescue0_role_excluded_from_discovery") is True,
+        "router_dns_interfaces": setup_dns.get("router_dns_interfaces")
+        if isinstance(setup_dns.get("router_dns_interfaces"), list) else [],
+        "router_dns_ipv4": setup_dns.get("router_dns_ipv4")
+        if isinstance(setup_dns.get("router_dns_ipv4"), list) else [],
+        "dhcp_excludes_rescue_vip": setup_dns.get("dhcp_excludes_rescue_vip") is True,
+        "dhcp_forces_router_dns": setup_dns.get("dhcp_forces_router_dns") is True,
+        "local_hosts_exclude_rescue_vip": setup_dns.get("local_hosts_exclude_rescue_vip") is True,
+        "dns_capture_interfaces": setup_dns.get("dns_capture_interfaces")
+        if isinstance(setup_dns.get("dns_capture_interfaces"), list) else [],
+        "dns_capture_excludes_rescue0": setup_dns.get("dns_capture_excludes_rescue0") is True,
+        "router_lan_hostname_query_ok": setup_dns.get("router_lan_hostname_query_ok") is True,
         "nftset_probe_status": setup_dns.get("nftset_probe_status")
         if setup_dns.get("nftset_probe_status") in {"ok", "unhealthy", "not_applicable", "unknown"} else "unknown",
         "nftset_probe_target_count_capped": setup_dns.get("nftset_probe_target_count_capped")
@@ -1355,6 +1375,17 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
     assert setup_dns.get("upstream_domains") == ["vpn.test"]
     assert setup_dns.get("unexpected_upstream_rule_count") == 0
     assert setup_dns.get("dns_capture_ok") is True and setup_dns.get("nftset_probe_ok") is True
+    assert setup_dns.get("rescue0_allowlisted") is True
+    assert setup_dns.get("rescue0_role_excluded_from_discovery") is True
+    assert setup_dns.get("router_dns_ipv4") == ["10.240.0.1"]
+    assert isinstance(setup_dns.get("router_dns_interfaces"), list)
+    assert len(setup_dns["router_dns_interfaces"]) == 1
+    assert setup_dns.get("dhcp_excludes_rescue_vip") is True
+    assert setup_dns.get("dhcp_forces_router_dns") is True
+    assert setup_dns.get("local_hosts_exclude_rescue_vip") is True
+    assert setup_dns.get("dns_capture_excludes_rescue0") is True
+    assert setup_dns.get("dns_capture_interfaces") == setup_dns.get("router_dns_interfaces")
+    assert setup_dns.get("router_lan_hostname_query_ok") is True
 
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     native_before = _packet_vpn_runtime_selection(stack)
@@ -1660,7 +1691,8 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "selective_direct_priority": selective_priority_proof,
         "api_status": status_code,
         "cleanup": {"http_status": cleanup_code, "process_reaped": cleanup.get("process_reaped") is True,
-                    "owned_paths_cleaned": cleanup.get("owned_paths_cleaned") is True},
+                    "owned_paths_cleaned": cleanup.get("owned_paths_cleaned") is True,
+                    "rescue_interface_cleaned": cleanup.get("rescue_interface_cleaned") is True},
     }
     _record_phase_diagnostic(record_property, _dns53_phase_junit_projection(proof))
     assert client.get("answers") == {
@@ -1727,7 +1759,7 @@ def _probe_dns53_policy_phase(stack: dict[str, Any], source_ref: str, record_pro
         "router_dns_udp_input", "router_dns_tcp_input", "router_dns_udp_output")), proof
     assert proof["native_vpn_stable"] is True and proof["selection_stable"] is True, proof
     assert cleanup_code == 200 and cleanup.get("stopped") is True and cleanup.get("process_reaped") is True
-    assert cleanup.get("owned_paths_cleaned") is True, proof
+    assert cleanup.get("owned_paths_cleaned") is True and cleanup.get("rescue_interface_cleaned") is True, proof
     return proof
 
 

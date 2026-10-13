@@ -219,6 +219,39 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
             settings = current.get("settings")
             if settings is not None:
                 settings.lan_interface_allowlist = current.get("lan_allowlist", [])
+            rescue_interface_cleaned = False
+            if current.get("rescue0_owned") is True:
+                import subprocess
+
+                env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
+
+                def read_links() -> list[dict[str, Any]]:
+                    inspected = subprocess.run(
+                        ["/usr/sbin/ip", "-j", "link", "show"], check=False,
+                        capture_output=True, timeout=3, stdin=subprocess.DEVNULL, env=env,
+                    )
+                    if (inspected.returncode != 0 or len(inspected.stdout) > 8192
+                            or len(inspected.stderr) > 1024):
+                        raise RuntimeError("bounded rescue0 teardown inspection failed")
+                    try:
+                        value = json.loads(inspected.stdout)
+                    except (UnicodeError, json.JSONDecodeError) as exc:
+                        raise RuntimeError("rescue0 teardown inspection was not valid JSON") from exc
+                    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+                        raise RuntimeError("rescue0 teardown inspection returned an invalid link list")
+                    return value
+
+                if any(item.get("ifname") == "rescue0" for item in read_links()):
+                    deleted = subprocess.run(
+                        ["/usr/sbin/ip", "link", "del", "dev", "rescue0"], check=False,
+                        capture_output=True, timeout=3, stdin=subprocess.DEVNULL, env=env,
+                    )
+                    if (deleted.returncode != 0 or len(deleted.stdout) > 1024
+                            or len(deleted.stderr) > 1024):
+                        raise RuntimeError("bounded owned rescue0 teardown failed")
+                if any(item.get("ifname") == "rescue0" for item in read_links()):
+                    raise RuntimeError("owned rescue0 remained after teardown")
+                rescue_interface_cleaned = True
             root = current.get("root")
             cleaned = False
             if isinstance(root, Path) and root == Path(current.get("state")) / "dns53-owned" and not root.is_symlink():
@@ -262,7 +295,8 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
                 reader.join(timeout=1)
             return {"stopped": True, "process_was_owned": process is not None,
                     "process_reaped": process is None or process.poll() is not None,
-                    "owned_paths_cleaned": cleaned}
+                    "owned_paths_cleaned": cleaned,
+                    "rescue_interface_cleaned": rescue_interface_cleaned}
 
         if current:
             runtime = current.get("runtime")
@@ -293,6 +327,66 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
                         "configured": False})
         config_dir = root / "dnsmasq.d"
         config_dir.mkdir(mode=0o700)
+
+        fixed_ip_env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C", "LC_ALL": "C"}
+
+        def inspect_links() -> list[dict[str, Any]]:
+            inspected = subprocess.run(
+                ["/usr/sbin/ip", "-j", "link", "show"], check=False,
+                capture_output=True, timeout=3, stdin=subprocess.DEVNULL, env=fixed_ip_env,
+            )
+            if (inspected.returncode != 0 or len(inspected.stdout) > 8192
+                    or len(inspected.stderr) > 1024):
+                raise RuntimeError("bounded packet rescue0 link inspection failed")
+            try:
+                value = json.loads(inspected.stdout)
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError("packet rescue0 link inspection was not valid JSON") from exc
+            if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+                raise RuntimeError("packet rescue0 link inspection returned an invalid link list")
+            return value
+
+        if any(item.get("ifname") == "rescue0" for item in inspect_links()):
+            raise RuntimeError("packet rescue0 already exists; refusing to adopt an unowned interface")
+        # The qualified packet namespace is exclusively owned by this fixture.
+        # Register teardown ownership before either bounded create command can fail.
+        current["rescue0_owned"] = True
+        rescue_link = subprocess.run(
+            ["/usr/sbin/ip", "link", "add", "rescue0", "type", "dummy"],
+            check=False, capture_output=True, timeout=3, stdin=subprocess.DEVNULL, env=fixed_ip_env,
+        )
+        if (rescue_link.returncode != 0 or len(rescue_link.stdout) > 1024
+                or len(rescue_link.stderr) > 1024):
+            raise RuntimeError("bounded packet rescue0 dummy creation failed")
+        rescue_address = subprocess.run(
+            ["/usr/sbin/ip", "address", "add", "10.254.254.1/32", "dev", "rescue0"],
+            check=False, capture_output=True, timeout=3, stdin=subprocess.DEVNULL, env=fixed_ip_env,
+        )
+        if (rescue_address.returncode != 0 or len(rescue_address.stdout) > 1024
+                or len(rescue_address.stderr) > 1024):
+            raise RuntimeError("bounded packet rescue0 address creation failed")
+        rescue_readback = subprocess.run(
+            ["/usr/sbin/ip", "-j", "-4", "address", "show", "dev", "rescue0"],
+            check=False, capture_output=True, timeout=3, stdin=subprocess.DEVNULL, env=fixed_ip_env,
+        )
+        if (rescue_readback.returncode != 0 or len(rescue_readback.stdout) > 4096
+                or len(rescue_readback.stderr) > 1024):
+            raise RuntimeError("bounded packet rescue0 address readback failed")
+        try:
+            rescue_rows = json.loads(rescue_readback.stdout)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("packet rescue0 address readback was not valid JSON") from exc
+        rescue_bindings = []
+        for interface in rescue_rows if isinstance(rescue_rows, list) else []:
+            if not isinstance(interface, dict):
+                continue
+            for item in interface.get("addr_info") or []:
+                if isinstance(item, dict):
+                    rescue_bindings.append(
+                        (interface.get("ifname"), item.get("local"), item.get("prefixlen"))
+                    )
+        if rescue_bindings != [("rescue0", "10.254.254.1", 32)]:
+            raise RuntimeError("packet rescue0 address readback did not match its owned /32")
 
         ip_result = subprocess.run(["/usr/sbin/ip", "-j", "-4", "address", "show"],
                                    check=False, capture_output=True, timeout=3, stdin=subprocess.DEVNULL,
@@ -397,7 +491,15 @@ def _packet_dnsmasq_fixture(state: Path, profile: dict[str, Any], *, stop: bool 
                         "settings": settings, "lan_allowlist": old_allowlist, "paths": old_paths})
         dnsmasq.read_effective_rules_artifact = observed_read_effective_rules_artifact
         dnsmasq.reconcile_dnsmasq_rules = observed_reconcile_dnsmasq_rules
-        settings.lan_interface_allowlist = [lan_rows[0][0]]
+        settings.lan_interface_allowlist = [lan_rows[0][0], "rescue0"]
+        discovered_lan_bindings = dnsmasq._discover_router_dns_bindings()
+        if discovered_lan_bindings != [{"ifname": lan_rows[0][0], "address": "10.240.0.1"}]:
+            raise RuntimeError("packet DNS discovery did not exclude the allowlisted rescue0 role")
+        current["rescue_discovery_receipt"] = {
+            "rescue0_allowlisted": "rescue0" in settings.lan_interface_allowlist,
+            "rescue0_role_excluded": all(item.get("ifname") != "rescue0" for item in discovered_lan_bindings),
+            "router_dns_interfaces": sorted({item["ifname"] for item in discovered_lan_bindings}),
+        }
         for name, value in new_paths.items():
             setattr(dnsmasq, name, value)
 
@@ -2711,6 +2813,7 @@ def build_app(socket_path: Path):
             }
 
         def packet_dns53_status() -> dict[str, Any]:
+            import subprocess
             from fwrouter_api.services import dnsmasq
             current = _PACKET_DNSMASQ_STATE
             runtime = current.get("runtime") or {}
@@ -2789,6 +2892,37 @@ def build_app(socket_path: Path):
                     if isinstance(item, dict):
                         capture_rule_status.append({"udp": item.get("udp") is True,
                                                     "tcp": item.get("tcp") is True})
+            rescue_receipt = current.get("rescue_discovery_receipt")
+            rescue_receipt = rescue_receipt if isinstance(rescue_receipt, dict) else {}
+
+            def bounded_config_text(path: Path) -> str:
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    return ""
+                return text if len(text.encode("utf-8")) <= 8192 else ""
+
+            dhcp_text = bounded_config_text(Path(dnsmasq.DNSMASQ_DHCP_DNS_CONF_PATH))
+            hosts_text = bounded_config_text(Path(dnsmasq.DNSMASQ_LOCAL_HOSTS_CONF_PATH))
+            discovered_interfaces = status.get("router_dns_interfaces")
+            discovered_addresses = status.get("router_dns_ipv4")
+            capture_interfaces = capture_status.get("interfaces")
+
+            # Query the existing native listener through its LAN address. The
+            # separate packet client remains the proof for external LAN DNS.
+            try:
+                hostname_query = subprocess.run(
+                    ["/usr/bin/dig", "-b", "10.240.0.1", "@10.240.0.1", "fwrouter.lan", "A",
+                     "+short", "+time=1", "+tries=1"],
+                    check=False, capture_output=True, timeout=2, stdin=subprocess.DEVNULL,
+                    env={"PATH": "/usr/bin:/bin", "LANG": "C", "TZ": "UTC"},
+                )
+            except subprocess.TimeoutExpired:
+                hostname_query = None
+            hostname_output = hostname_query.stdout if hostname_query is not None else b""
+            hostname_error = hostname_query.stderr if hostname_query is not None else b""
+            hostname_answer = (hostname_output.decode("ascii", "ignore").strip()
+                               if len(hostname_output) <= 1024 else "")
             return {
                 "configured": bool(current.get("configured")),
                 "daemon_running": process is not None and process.poll() is None,
@@ -2802,6 +2936,23 @@ def build_app(socket_path: Path):
                 "dns_capture_missing_truncated": capture_missing_truncated,
                 "dns_capture_rule_count_capped": capture_rule_count,
                 "dns_capture_rules_present": capture_rule_status,
+                "rescue0_allowlisted": rescue_receipt.get("rescue0_allowlisted") is True,
+                "rescue0_role_excluded_from_discovery": rescue_receipt.get("rescue0_role_excluded") is True,
+                "router_dns_interfaces": discovered_interfaces[:8]
+                if isinstance(discovered_interfaces, list) and all(isinstance(item, str) for item in discovered_interfaces[:8]) else [],
+                "router_dns_ipv4": discovered_addresses[:8]
+                if isinstance(discovered_addresses, list) and all(isinstance(item, str) for item in discovered_addresses[:8]) else [],
+                "dhcp_excludes_rescue_vip": "10.254.254.1" not in dhcp_text,
+                "dhcp_forces_router_dns": "dhcp-option-force=option:dns-server,10.240.0.1" in dhcp_text,
+                "local_hosts_exclude_rescue_vip": "10.254.254.1" not in hosts_text,
+                "dns_capture_interfaces": capture_interfaces[:8]
+                if isinstance(capture_interfaces, list) and all(isinstance(item, str) for item in capture_interfaces[:8]) else [],
+                "dns_capture_excludes_rescue0": isinstance(capture_interfaces, list)
+                and "rescue0" not in capture_interfaces,
+                "router_lan_hostname_query_ok": hostname_query is not None
+                and hostname_query.returncode == 0 and len(hostname_output) <= 1024 and len(hostname_error) <= 1024
+                and hostname_answer == "10.240.0.1",
+                "router_lan_hostname_query_answer_matches": hostname_answer == "10.240.0.1",
                 "nftset_probe_status": nft_probe_status,
                 "nftset_probe_target_count_capped": nft_probe_count,
                 "nftset_probe_targets_truncated": isinstance(nft_probe, list) and len(nft_probe) > 4,

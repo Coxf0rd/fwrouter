@@ -70,3 +70,17 @@ Local, protected, management, and control-plane dependency traffic must stay dir
 - Broad fallback-to-VPN in selective mode breaks the intended model.
 - Host output tied to `fwrouter:global` can cut off SSH/control-plane recovery.
 - Live kernel state disappears after reboot and must be restored from persistent intent.
+
+## Reserved Rescue role and pre-deployment recovery
+
+`network_contract.RESERVED_INTERFACE_ROLES` reserves exact `rescue0` as Rescue,
+not LAN. This role wins over the configurable LAN allowlist. DNS discovery,
+local LAN hostname generation, DHCP DNS advertisement and DNS capture must omit
+it. Protected management networks remain protected DIRECT; interface exclusion
+must not remove administrative-access safeguards. Unknown names retain the
+existing configurable filters rather than a guessed tunnel classification.
+
+The pre-deployment safety work and recovery-target restrictions are tracked in
+[the safety report](../audits/predeploy_rescue_safe_rollback_2026-10-13/REPORT.md).
+An archived backend that can regenerate implicit mandatory-VPN DIRECT is not a
+qualified rollback target. Production activation remains separately authorized.

@@ -5174,6 +5174,32 @@
       "slow": true,
       "timeout_seconds": 900,
       "execution_profile": "hosted-kernel-packet"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "installer",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "trusted synthetic receipts are component fixtures, not native qualification",
+      "fixture_owner": "isolated synthetic Git checkouts and private installer target roots",
+      "id": "test_safe_recovery",
+      "isolation": "private temporary targets only; no live restore",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "installer/tests/test_safe_recovery.py",
+      "primary_level": "L4",
+      "risk_notes": "content/provenance/admission and real staged installer; native runtime qualification is a separate hosted packet/application gate",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest"
+      ],
+      "slow": false,
+      "timeout_seconds": 180
     }
   ],
   "version": "2026.10.12.1",

@@ -12,6 +12,7 @@ from fwrouter_api.services.network_contract import (
     lan_interface_allowed,
     local_lan_hosts,
     network_contract_manifest,
+    reserved_interface_role,
 )
 from fwrouter_api.services.rules_compile import build_effective_rules_artifact
 
@@ -88,7 +89,7 @@ def test_network_contract_drives_nft_trusted_client_guards(
 
 
 def test_network_contract_drives_lan_interfaces_and_dnsmasq_hosts(monkeypatch) -> None:
-    monkeypatch.setenv("FWROUTER_LAN_INTERFACE_ALLOWLIST", json.dumps(["lan0"]))
+    monkeypatch.setenv("FWROUTER_LAN_INTERFACE_ALLOWLIST", json.dumps(["lan0", "rescue0"]))
     monkeypatch.setenv("FWROUTER_LOCAL_LAN_HOSTS", json.dumps({"router.test": "test UI"}))
     get_settings.cache_clear()
 
@@ -97,6 +98,7 @@ def test_network_contract_drives_lan_interfaces_and_dnsmasq_hosts(monkeypatch) -
         payload = [
             {"ifname": "enp2s0", "addr_info": [{"family": "inet", "local": "192.168.0.1"}]},
             {"ifname": "lan0", "addr_info": [{"family": "inet", "local": "192.168.1.1"}]},
+            {"ifname": "rescue0", "addr_info": [{"family": "inet", "local": "10.254.254.1"}]},
             {"ifname": "tailscale0", "addr_info": [{"family": "inet", "local": "100.64.0.1"}]},
         ]
         return subprocess.CompletedProcess(argv, 0, json.dumps(payload), "")
@@ -105,6 +107,8 @@ def test_network_contract_drives_lan_interfaces_and_dnsmasq_hosts(monkeypatch) -
 
     assert lan_interface_allowed("lan0") is True
     assert lan_interface_allowed("enp2s0") is False
+    assert lan_interface_allowed("rescue0") is False
+    assert reserved_interface_role("rescue0") == "rescue"
     assert dnsmasq_service._discover_router_dns_bindings() == [
         {"ifname": "lan0", "address": "192.168.1.1"}
     ]
@@ -115,4 +119,30 @@ def test_network_contract_drives_lan_interfaces_and_dnsmasq_hosts(monkeypatch) -
         "address=/router.test/192.168.1.1",
     ]
     assert local_lan_hosts() == {"router.test": "test UI"}
-    assert network_contract_manifest()["lan_interface_allowlist"] == ["lan0"]
+    assert network_contract_manifest()["lan_interface_allowlist"] == ["lan0", "rescue0"]
+    assert network_contract_manifest()["reserved_interface_roles"] == {"rescue0": "rescue"}
+
+
+def test_reserved_rescue_role_precedes_empty_or_explicit_lan_allowlist(monkeypatch) -> None:
+    monkeypatch.delenv("FWROUTER_LAN_INTERFACE_ALLOWLIST", raising=False)
+    get_settings.cache_clear()
+
+    assert lan_interface_allowed("rescue0") is False
+    assert lan_interface_allowed("lan0") is True
+    assert lan_interface_allowed("bridge0") is True
+    assert lan_interface_allowed("vlan100") is True
+    assert lan_interface_allowed("tun-custom") is True
+    assert lan_interface_allowed("br-custom") is False
+
+    monkeypatch.setenv(
+        "FWROUTER_LAN_INTERFACE_ALLOWLIST",
+        json.dumps(["rescue0", "bridge0", "vlan100", "tun-custom", "br-custom"]),
+    )
+    get_settings.cache_clear()
+
+    assert lan_interface_allowed("rescue0") is False
+    assert lan_interface_allowed("bridge0") is True
+    assert lan_interface_allowed("vlan100") is True
+    assert lan_interface_allowed("tun-custom") is True
+    assert lan_interface_allowed("br-custom") is False
+    assert network_contract_manifest()["reserved_interface_roles"] == {"rescue0": "rescue"}
