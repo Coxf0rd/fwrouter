@@ -210,8 +210,9 @@ def acceptance_stack(request):
             if owned_worker.poll() is None:
                 try:
                     owned_worker.terminate()
-                    owned_worker.wait(timeout=4)
+                    owned_worker.wait(timeout=16)
                 except subprocess.TimeoutExpired:
+                    cleanup_errors.append("application worker exceeded bounded graceful teardown")
                     owned_worker.kill()
                     try:
                         owned_worker.wait(timeout=2)

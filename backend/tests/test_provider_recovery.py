@@ -441,7 +441,7 @@ def test_emergency_direct_manifest_and_nft_candidate_preserve_intent_and_block_d
 
 
 def test_emergency_xray_mode_directives_follow_projected_policy_without_unblocking_disabled(
-    monkeypatch,
+    monkeypatch, isolated_host_observations,
 ):
     _install_pending_state(monkeypatch, {"provider_managed": True, "emergency_direct": True})
     from fwrouter_api.services import subject_policy, xray_bindings

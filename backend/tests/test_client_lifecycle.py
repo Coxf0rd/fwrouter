@@ -216,11 +216,14 @@ def test_xray_create_route_returns_running_job_when_runtime_is_slow(monkeypatch,
     _patch_xray(monkeypatch, tmp_path, _FakeRunner(release=release))
 
     app = create_app(enable_startup_tasks=False)
-    started = time.monotonic()
     with TestClient(app) as client:
-        response = client.post("/api/v2/xray/clients", json={"alias": "Slow", "email": "slow", "requested_by": "pytest"})
-    elapsed = time.monotonic() - started
-    release.set()
+        started = time.monotonic()
+        try:
+            response = client.post("/api/v2/xray/clients", json={"alias": "Slow", "email": "slow", "requested_by": "pytest"})
+            elapsed = time.monotonic() - started
+        finally:
+            # Release the native-operation barrier before lifespan drains jobs.
+            release.set()
 
     assert elapsed < 2.5
     assert response.status_code == 200
