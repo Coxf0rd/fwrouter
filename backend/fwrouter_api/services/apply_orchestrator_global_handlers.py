@@ -120,12 +120,14 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         apply_result = orchestrator._run_pipeline_for_manifest(
             job_id=str(job["job_id"]),
             reason=orchestrator.INTENT_SET_GLOBAL_MODE,
-            input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode},
+            input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode,
+                        "repair_owned_table": bool((drift.get("live_artifact_consistency") or {}).get("detected"))},
             manifest=orchestrator.materialize_precompiled_manifest(
                 precompiled_profile,
                 plan_id="unused",
                 reason=orchestrator.INTENT_SET_GLOBAL_MODE,
-                input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode},
+                input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode,
+                        "repair_owned_table": bool((drift.get("live_artifact_consistency") or {}).get("detected"))},
             ),
         )
     else:
@@ -148,7 +150,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         apply_result = orchestrator._run_pipeline_for_state(
             job_id=str(job["job_id"]),
             reason=orchestrator.INTENT_SET_GLOBAL_MODE,
-            input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode},
+            input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode,
+                        "repair_owned_table": bool((drift.get("live_artifact_consistency") or {}).get("detected"))},
             routing=future_routing,
             subjects=subjects,
             extra={"affected_subject_ids": affected_subjects},

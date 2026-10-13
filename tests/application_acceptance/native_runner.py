@@ -72,7 +72,8 @@ def _valid_mihomo_probe_timing(evidence: dict[str, Any]) -> bool:
 class _BoundedPipe:
     """Continuously drain a child pipe while retaining only its bounded tail."""
 
-    def __init__(self, stream) -> None:
+    def __init__(self, stream, *, limit: int = DIAGNOSTIC_STREAM_LIMIT) -> None:
+        self._limit = limit
         self._stream = stream
         self._tail = bytearray()
         self._lock = threading.Lock()
@@ -86,8 +87,8 @@ class _BoundedPipe:
                 return
             with self._lock:
                 self._tail.extend(block)
-                if len(self._tail) > DIAGNOSTIC_STREAM_LIMIT:
-                    del self._tail[:-DIAGNOSTIC_STREAM_LIMIT]
+                if len(self._tail) > self._limit:
+                    del self._tail[:-self._limit]
 
     def snapshot(self) -> bytes:
         with self._lock:
@@ -105,11 +106,11 @@ class _BoundedPipe:
 
 
 def _bounded_child(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float,
-                   stdin=subprocess.DEVNULL) -> subprocess.CompletedProcess[bytes]:
+                   stdin=subprocess.DEVNULL, stdout_limit: int = DIAGNOSTIC_STREAM_LIMIT) -> subprocess.CompletedProcess[bytes]:
     child = subprocess.Popen(argv, cwd=cwd, env=env, stdin=stdin, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, close_fds=True, start_new_session=True)
     assert child.stdout is not None and child.stderr is not None
-    stdout, stderr = _BoundedPipe(child.stdout), _BoundedPipe(child.stderr)
+    stdout, stderr = _BoundedPipe(child.stdout, limit=stdout_limit), _BoundedPipe(child.stderr)
     try:
         code = child.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -320,8 +321,9 @@ class NativeXrayProcess:
     def _native_cli(self, name: str, binary: Path, args: list[str], *, timeout: float,
                     env: dict[str, str]) -> subprocess.CompletedProcess[bytes]:
         argv = [str(binary), *args]
+        stdout_limit = 256 * 1024 if name == "xray" and args[:2] == ["api", "inbounduser"] else DIAGNOSTIC_STREAM_LIMIT
         proc = _bounded_child(argv, cwd=self.root,
-            env=env, timeout=timeout)
+            env=env, timeout=timeout, stdout_limit=stdout_limit)
         safe_args = [item.split("=", 1)[0] for item in args if item.startswith("-")][:16]
         event = {"service": name, "executable": binary.name, "argument_flags": safe_args,
                  "exit_code": proc.returncode,
@@ -770,7 +772,7 @@ class NativeXrayProcess:
         if action == "api_inbound_users":
             if payload != {"tag": "vless-ws"}:
                 raise ValueError("unsupported inbound query")
-            return self._completed(self._xray_cli(["api", "inbounduser", "--server=127.0.0.1:10085", "-timeout=3", "-tag=vless-ws"], timeout=8))
+            return self._completed(self._xray_cli(["api", "inbounduser", "--server=127.0.0.1:10085", "-timeout=3", "-tag=vless-ws"], timeout=8), stdout_limit=256 * 1024)
         if action == "mihomo_probe_result":
             return {"ok": True, "message": "actual Mihomo probe result observed", "details": {"barrier": True}}
         if action == "selection_commit_barrier":
@@ -860,9 +862,9 @@ class NativeXrayProcess:
         raise ValueError("unreachable RPC action")
 
     @staticmethod
-    def _completed(proc: subprocess.CompletedProcess[bytes]) -> dict[str, Any]:
+    def _completed(proc: subprocess.CompletedProcess[bytes], *, stdout_limit: int = DIAGNOSTIC_STREAM_LIMIT) -> dict[str, Any]:
         return {"ok": proc.returncode == 0, "message": "native command completed", "error_code": None if proc.returncode == 0 else f"XRAY_NATIVE_EXIT_{proc.returncode}",
-                "details": {"stdout": proc.stdout[:DIAGNOSTIC_STREAM_LIMIT].decode("utf-8", "replace"),
+                "details": {"stdout": proc.stdout[:stdout_limit].decode("utf-8", "replace"),
                             "stderr": proc.stderr[:4096].decode("utf-8", "replace")}}
 
 

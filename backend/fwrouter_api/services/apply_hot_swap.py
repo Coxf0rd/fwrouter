@@ -191,6 +191,9 @@ def _global_mode_hot_swap_context(
 ) -> dict[str, Any] | None:
     if not isinstance(input_data, dict):
         return None
+    # Classify-only replacement cannot repair drift in other owned chains.
+    if input_data.get("repair_owned_table") is True:
+        return None
     if str(input_data.get("intent") or "").strip() not in _GLOBAL_MODE_HOT_SWAP_INTENTS:
         return None
     if _manifest_requests_core_bypass(manifest):

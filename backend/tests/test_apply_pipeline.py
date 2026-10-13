@@ -3817,3 +3817,17 @@ def test_apply_pipeline_result_exposes_owned_table_enforcement(
     assert result["enforcement_level"] == "owned_table_ready"
     assert result["dataplane_capability"] == "nft_owned_table"
     assert result["traffic_enforcement_guaranteed"] is False
+
+
+def test_global_mode_hot_swap_rejects_owned_table_repair_before_chain_optimization(tmp_path):
+    from fwrouter_api.services.apply_hot_swap import _global_mode_hot_swap_context
+
+    candidate = tmp_path / "candidate.nft"
+    candidate.write_text('chain fwrouter_classify {\nreturn comment "global direct v1"\n}\n')
+    arguments = dict(manifest={"routing_global_state": {"desired_mode": "direct"}},
+                     check_details={"table_exists": True, "required_chains": {"fwrouter_classify": True}},
+                     preflight={"can_enforce_global_direct": True}, candidate_path=str(candidate))
+    assert _global_mode_hot_swap_context(input_data={"intent": "set_global_mode"}, **arguments) is not None
+    assert _global_mode_hot_swap_context(
+        input_data={"intent": "set_global_mode", "repair_owned_table": True}, **arguments,
+    ) is None
