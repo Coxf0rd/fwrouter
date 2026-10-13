@@ -1,0 +1,72 @@
+{
+  "repository": "Coxf0rd/fwrouter",
+  "ruleset_id": 24678746,
+  "before_rules": [
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "require_extra_approval_for_unattributed_changes": false,
+        "allowed_merge_methods": [
+          "merge",
+          "squash",
+          "rebase"
+        ]
+      }
+    }
+  ],
+  "after_rules": [
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "require_extra_approval_for_unattributed_changes": false,
+        "allowed_merge_methods": [
+          "squash"
+        ]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "required_status_checks": [
+          {
+            "context": "Affected L0-L5 with hosted profiles",
+            "integration_id": 15368
+          }
+        ],
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false
+      }
+    }
+  ],
+  "bypass_actors": [],
+  "repository_policy": {
+    "allow_squash_merge": true,
+    "allow_merge_commit": false,
+    "allow_rebase_merge": false,
+    "delete_branch_on_merge": true
+  },
+  "required_context": "Affected L0-L5 with hosted profiles",
+  "actions_integration_id": 15368,
+  "observed_actual_pr": 5,
+  "actual_pr_run": 38347054113,
+  "required_check_status_at_recording": "PASS on f416738",
+  "deployment_configured": false
+}

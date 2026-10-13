@@ -1,10 +1,22 @@
 # Phase E — CI Final Audit, Optimization & Acceptance
 
-Status: BLOCKED on real event/promotion gates; technical audit/corrections completed.
+Status: **PRE-MERGE ACCEPTED at actual PR5/f416738; READY FOR USER MERGE once latest protected HEAD checks pass.** Post-merge main validation remains OPEN and requires user Squash and Merge.
 Initial source: `3e12141`; branch: `stage/test-architecture-ci-stabilization`.
 Accepted Phase D source: `a10dd9c`, run38305978196. Production and the Operational Performance branch remain untouched.
 
-## Executive summary
+## Final branch / GitHub integration review — 2026-10-13
+
+Actual [PR5](https://github.com/Coxf0rd/fwrouter/pull/5) created with the complete milestone. [pull_request38347054113](https://github.com/Coxf0rd/fwrouter/actions/runs/38347054113) on checked sourcef416738 PASS:1429/0/0 routine nodes, qualified native26+1, ordinary26, Provider/kernel11, packet1, historical seven7/7; exact source/plan/native/profile/capture/cleanup aggregate eligible with no blockers or missing levels. GitHub shows CLEAN/MERGEABLE after this check. Main event remains NOT RUN until the user's merge, not an impossible pre-merge condition.
+
+Read-only whole-branch production/CI review found no critical remaining source, isolation or false-green defect. Changes include35 backend paths and two installer scripts; no DB schema/migration files. [Production inventory](PRODUCTION_SOURCE_INVENTORY.csv) and [final handoff](FINAL_HANDOFF.md) record contracts, coverage, compatibility/deploy risks and squash/post-merge procedure. Raw evidence stays untracked; no local/native tests or production operation.
+
+Authorized repository settings now enforce squash only, auto-delete and strict required Actions15368 context `Affected L0-L5 with hosted profiles` in existing active Main ruleset24678746. Existing PR/non-fast-forward/thread-resolution controls preserved; no bypass/access additions. Actual PR context observed and passed. [Policy checkpoint](GITHUB_POLICY_CHECKPOINT.json) and [actual PR checkpoint](PR_CHECKPOINT_38347054113.json) record exact proof. No agent merge/deploy.
+
+Final review removed temporary stage-marker package-write authority (f416738): only trusted main dependency input changes or explicit same-repo reviewed manual acknowledgment/exact SHA publish; read-only stage consumer remains. Also corrected a misleading aggregate field that labeled validated QCP selections NOT RUN. New `qualified_child_process_selected` retains the planned files; NOT RUN now reflects absent/invalid proof. Positive/negative regression verifies26 registered nodes cover those five files; eligibility/native proof unchanged.
+
+The final reporting correction and handoff are committed after this first real PR proof. Required CI must also pass on that latest head before user merge; inspect PR Checks as the authority. No prior successful run authorizes merging a red/pending new head. L6/L7/host/release/main event/deployment remain explicit separate gates. Overall status is **READY FOR USER MERGE subject to latest protected check**, with final milestone post-merge verification still open. See FINAL_HANDOFF.md for the complete phase/status table.
+
+## Historical technical audit executive summary
 
 Phase D evidence is reused within its exact source, profile and execution scope. This phase reviews regular-development event policy, required checks, security/isolation, test quality, image reuse and resource cost. It does not repeat native workloads without a changed infrastructure contract. Read-only audit found three small CI defects: unmarked diagnostic pushes duplicate routine preflight; main smoke runs a full unplanned bundle whose receipts are not included in the plan-bound aggregate; dependency publishing is temporary-marker-only rather than a trusted dependency-change event. These are under bounded correction.
 
@@ -27,7 +39,7 @@ The repository is public and uses `ubuntu-24.04`. [GitHub runner documentation](
 
 [Protected-branch documentation](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches) allows skipped/neutral check conclusions as well as success. Therefore a mandatory job must remain present and fail closed on missing required evidence; optional unselected profiles must not be confused with completed native checks. Ruleset enforcement of the stable affected-job context requires explicit settings authorization.
 
-## Current authorization gates
+## Historical authorization gates — superseded by PR5 policy checkpoint
 
 1. Real PR-to-main event: NOT RUN; creating a PR is forbidden without separate authorization.
 2. Required CI check and squash-only repository policy: NOT CONFIGURED; changing settings is forbidden without separate authorization. Auto-delete is already enabled.
@@ -78,7 +90,7 @@ Next permitted gate uses the normal affected job body through temporary `ci:main
 The wheel build step in the otherwise successful affected run exposed a confirmed false-green: `pip wheel backend` downloaded PyPI package `backend==0.2.4.1` and produced its6447-byte wheel. This did not build local `fwrouter-api`; therefore backend packaging acceptance is FAIL despite the successful job conclusion. Application/native receipts retain their independent validity. The fix uses explicit local path `./backend` and verifies wheel identity and packaged source; a targeted hosted build proof is required before closing this defect. Raw logs and receipts remain untracked under `evidence/run_38313177638`.
 
 
-## Final technical scope and release gates
+## Pre-PR technical scope and release gates — historical checkpoint
 
 | Phase | Status |
 |---|---|
@@ -110,7 +122,7 @@ Confirmed excess work removed: duplicate diagnostic preflight on unmarked pushes
 
 Backend packaging false-green is now corrected: [38314460619](https://github.com/Coxf0rd/fwrouter/actions/runs/38314460619) built local `fwrouter-api==0.1.0`, one wheel,247 packaged Python files matching checkout byte-for-byte, no metadata errors. Synthetic regression cases reject wrong PyPI identity, stale bytes, missing files and multiple wheels. Metadata is retained even on verification failure. This narrow proof did not repeat native/packet workloads.
 
-### Remaining mandatory authorization / acceptance
+### Previous mandatory authorization / acceptance — before current PR
 
 1. Permission to create the milestone PR, then prove the real PR event and stable affected status context. No PR has been created.
 2. Permission to configure required affected status-check enforcement and squash-only merge policy. Current Main ruleset requires a PR but no CI status; all three merge methods remain allowed. Auto-delete is already enabled; no settings changed.

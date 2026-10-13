@@ -1,5 +1,9 @@
 # Test Architecture & CI Stabilization
 
+## Current PR readiness — 2026-10-13
+
+PhaseE PRE-MERGE ACCEPTED at actual PR5/run38347054113:1429/0/0, qualified26+1, ordinary26/Provider11/packet1, strict receipts/cleanup and historical7/7. Squash-only/auto-delete and existing Main required stable Actions15368 check now configured with no bypass. Latest protected PR HEAD must pass before user Squash and Merge; post-merge main validation remains OPEN, CD DEFERRED and production UNCHANGED. Earlier dated BLOCKED/settings-pending pointers below preserve pre-PR history, superseded only by [final handoff](../audits/test_architecture_phase_e_2026-10-13/FINAL_HANDOFF.md). No agent merge or deploy.
+
 ## Roadmap consolidation — 2026-10-13
 
 Authoritative execution plan: [engineering mirror](../ROADMAP.md), synchronized with `/решения/roadmap/fwrouter/ROADMAP.md`. PhaseA/B completed; PhaseC complete in agreed scope; PhaseD ACCEPTED; PhaseE/overall BLOCKED on final GitHub promotion. Existing reports/evidence remain unchanged. No new execution/CI or deployment is authorized by this documentation update.

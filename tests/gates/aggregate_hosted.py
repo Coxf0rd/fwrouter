@@ -507,6 +507,7 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
         problems.append("unexpected hosted receipt supplied when no hosted profile is selected")
 
     qcp_statuses: dict[str, str] = {}
+    qcp_receipt_verified = False
     if qualified_child:
         if runtime_inputs_path is None:
             raise gate.GateError("hosted runtime input manifest is required for QCP receipts")
@@ -523,6 +524,8 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
             problems.extend(f"QCP {path.name}: {reason}" for reason in qcp_problems)
             if qcp_problems:
                 statuses = {}
+            else:
+                qcp_receipt_verified = True
             nonce = read_json(path).get("suite_nonce")
             if nonce in qcp_nonces:
                 problems.append("qualified-child receipts repeat the same run nonce")
@@ -634,7 +637,8 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
         "manifest_version": manifest["version"],
         "selected_files": sorted(selected),
         "deferred_profile_files": sorted(deferred),
-        "qualified_child_process_not_run": qualified_child,
+        "qualified_child_process_selected": qualified_child,
+        "qualified_child_process_not_run": [] if qcp_receipt_verified else qualified_child,
         "qualified_child_receipt_count": len(qcp_paths),
         "qualified_xray_docker_receipt_count": len(xray_docker_paths),
         "main_smoke_required": require_main_smoke,

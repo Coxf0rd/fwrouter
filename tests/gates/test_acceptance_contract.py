@@ -140,6 +140,110 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertTrue(any("required main native application smoke" in item
                             for item in result["blocked_reasons"]))
 
+    def test_aggregate_reports_qcp_selected_files_separately_from_unrun_files(self):
+        manifest = aggregate_hosted.gate.load_manifest()
+        selected = sorted(
+            row["path"] for row in manifest["test_files"]
+            if row.get("execution_profile") == "qualified-child-process"
+            and row["path"] != "backend/tests/test_xray_native_readback.py"
+        )
+        scenario_path = launcher.ROOT / "tests/acceptance/qualified-child-scenarios.json"
+        scenario = json.loads(scenario_path.read_text(encoding="utf-8"))
+        expected_ids = scenario["nodeids"]
+        registered_files = {nodeid.split("::", 1)[0] for nodeid in expected_ids}
+        self.assertEqual(set(selected), registered_files)
+
+        source, plan_digest = "a" * 40, "b" * 64
+        levels = sorted({"L0", *(row["primary_level"] for row in manifest["test_files"]
+                                  if row["path"] in selected)})
+        plan = {
+            "schema_version": 1, "source_commit": source, "plan_digest": plan_digest,
+            "selected_files": selected, "required_levels": levels, "full_suite_required": False,
+        }
+        unit = {
+            "schema_version": 1, "source_commit": source, "plan_digest": plan_digest,
+            "manifest_version": manifest["version"],
+            "manifest_digest": aggregate_hosted.gate.canonical_digest(manifest),
+            "deferred_remote_suites": selected,
+            "executions": [{"path": path, "status": "deferred_remote_hosted"} for path in selected],
+            "blocked_reasons": [], "completed_levels": ["L0"],
+            "l0": {"status": "passed"}, "node_status": {},
+        }
+        unit["report_digest"] = aggregate_hosted.gate.canonical_digest(unit)
+
+        runtime = {
+            "schema": "fwrouter-hosted-inputs/v1",
+            "base_image": provision.BASE_IMAGE,
+            "playwright": provision.PLAYWRIGHT_VERSION,
+            "native": {
+                name: {
+                    "version": provision.INPUTS[name]["version"],
+                    "source_archive_sha256": provision.INPUTS[name]["sha256"],
+                    "binary_sha256": provision.BINARY_SHA256[name],
+                }
+                for name in ("xray", "mihomo")
+            },
+            "chromium": {
+                "version": provision.CHROMIUM_VERSION,
+                "source_archive_sha256": provision.INPUTS["chromium"]["sha256"],
+                "bundle_sha256": provision.CHROMIUM_BUNDLE_SHA256,
+                "executable_sha256": provision.CHROMIUM_BINARY_SHA256,
+            },
+        }
+        nonce = "c" * 32
+        profile = {
+            "schema": "fwrouter-qualified-child-profile/v1",
+            "profile": "qualified-child-process",
+            "source_revision": source,
+            "plan_digest": plan_digest,
+            "suite_nonce": nonce,
+            "mihomo": {
+                "version": provision.INPUTS["mihomo"]["version"],
+                "sha256": provision.BINARY_SHA256["mihomo"],
+            },
+        }
+        profile_sha = hashlib.sha256(
+            (json.dumps(profile, sort_keys=True, indent=2) + "\n").encode("utf-8")
+        ).hexdigest()
+        qcp_receipt = {
+            "schema": "fwrouter-qualified-child-receipt/v1",
+            "scope": "qualified-child-process", "status": "passed",
+            "source_revision": source, "plan_digest": plan_digest, "suite_nonce": nonce,
+            "cleanup": "owned_resources_removed", "expected_ids": expected_ids,
+            "profile_sha256": profile_sha,
+            "tests": {
+                "node_status": {nodeid: "passed" for nodeid in expected_ids},
+                "tests": 26, "failed": 0, "skipped": 0, "contract_valid": True,
+            },
+        }
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-qcp-report-contract-") as temp:
+            root = Path(temp)
+            plan_path, unit_path = root / "plan.json", root / "unit.json"
+            runtime_path = root / "runtime.json"
+            qcp_path = root / "qcp-receipt.json"
+            (root / "profile.json").write_text(json.dumps(profile), encoding="utf-8")
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            unit_path.write_text(json.dumps(unit), encoding="utf-8")
+            runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+            qcp_path.write_text(json.dumps(qcp_receipt), encoding="utf-8")
+            with mock.patch.object(aggregate_hosted.gate, "ensure_plan"), \
+                 mock.patch.object(aggregate_hosted.gate, "classify", return_value={"eligible": True}), \
+                 mock.patch.object(aggregate_hosted.gate, "load_baseline", return_value={}):
+                completed = aggregate_hosted.aggregate(
+                    plan_path, unit_path, [], [qcp_path], [], minimum_repeats=1,
+                    runtime_inputs_path=runtime_path)
+                missing = aggregate_hosted.aggregate(
+                    plan_path, unit_path, [], [], [], minimum_repeats=1,
+                    runtime_inputs_path=runtime_path)
+
+        self.assertEqual(selected, completed["qualified_child_process_selected"])
+        self.assertEqual([], completed["qualified_child_process_not_run"])
+        self.assertTrue(completed["eligible"])
+        self.assertEqual(selected, missing["qualified_child_process_selected"])
+        self.assertEqual(selected, missing["qualified_child_process_not_run"])
+        self.assertFalse(missing["eligible"])
+
     def test_main_smoke_registry_rejects_non_object_root_and_non_object_rows(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-main-smoke-registry-contract-") as temp:
             root = Path(temp)

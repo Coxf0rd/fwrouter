@@ -1,0 +1,107 @@
+{
+  "run_id": 38347054113,
+  "url": "https://github.com/Coxf0rd/fwrouter/actions/runs/38347054113",
+  "event": "pull_request",
+  "pr": 5,
+  "source_commit": "f4167385e48e311a7d0cabb9a7c6e91ff40c8102",
+  "unit_counts": {
+    "passed": 1429,
+    "failed": 0,
+    "skipped": 0
+  },
+  "aggregate": {
+    "eligible": true,
+    "blocked_reasons": [],
+    "missing_levels": [],
+    "plan_digest": "22a7e402dfc6092470efb688fbf8c88ba104928fba28a3d7a6a5af54d2479af1",
+    "completed_levels": [
+      "L0",
+      "L1",
+      "L2",
+      "L3",
+      "L4"
+    ],
+    "main_smoke_required": false
+  },
+  "historical_exact_seven": {
+    "backend/tests/test_reconcile_core.py::test_reconcile_endpoint_returns_contract_and_is_read_only": "passed",
+    "backend/tests/test_state_routes.py::test_state_endpoints_are_get_only_and_read_only": "passed",
+    "backend/tests/test_state_routes.py::test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state": "passed",
+    "backend/tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged": "passed",
+    "backend/tests/test_xray.py::test_legacy_subscription_get_is_read_only": "passed",
+    "backend/tests/test_performance_optimizations.py::test_runtime_topology_batch_matches_single_and_uses_one_observation": "passed",
+    "backend/tests/test_xray_vpn_auto_lifecycle.py::test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_identity": "passed"
+  },
+  "receipts": [
+    {
+      "suite": "functional-ordinary",
+      "scope": "hosted-native-process",
+      "source_revision": "f4167385e48e311a7d0cabb9a7c6e91ff40c8102",
+      "status": "passed",
+      "cleanup": "owned_resources_removed",
+      "pytest_elapsed_seconds": 239.481,
+      "counts": {
+        "tests": 26,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "suite": "provider-cohort",
+      "scope": "hosted-kernel-dataplane",
+      "source_revision": "f4167385e48e311a7d0cabb9a7c6e91ff40c8102",
+      "status": "passed",
+      "cleanup": "owned_resources_removed",
+      "pytest_elapsed_seconds": 156.914,
+      "counts": {
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "suite": "packet-diagnostic",
+      "scope": "hosted-kernel-packet",
+      "source_revision": "f4167385e48e311a7d0cabb9a7c6e91ff40c8102",
+      "status": "passed",
+      "cleanup": "owned_resources_removed",
+      "pytest_elapsed_seconds": 76.483,
+      "counts": {
+        "tests": 1,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "suite": "qualified-xray-docker-receipt.json",
+      "source_revision": "f4167385e48e311a7d0cabb9a7c6e91ff40c8102",
+      "status": "passed",
+      "cleanup": "owned_resources_removed",
+      "counts": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "suite": "qualified-child-receipt.json",
+      "source_revision": "f4167385e48e311a7d0cabb9a7c6e91ff40c8102",
+      "status": "passed",
+      "cleanup": "owned_resources_removed",
+      "counts": {
+        "passed": 26,
+        "failed": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "required_check": "Affected L0-L5 with hosted profiles",
+  "merge_state_after_run": "CLEAN",
+  "main_event": "NOT RUN \u2014 post user merge",
+  "l6_l7": "NOT RUN",
+  "production": "UNCHANGED",
+  "known_report_label_defect": "qualified_child_process_not_run mislabeled selected fulfilled files; correction pending final HEAD gate"
+}
