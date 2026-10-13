@@ -718,6 +718,31 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         assert generated_config["udp_guard_count"] == 99_627, generated_config
         assert generated_config["protected_direct_present"] is True, generated_config
 
+        # The new transport fixture must carry a real request, not merely
+        # accept config validation and listen on a socket. Native delay uses
+        # the named VLESS proxy; the endpoint must observe Xray's owned source.
+        from urllib.parse import quote, urlencode
+        observation_url = "http://198.18.240.2:8082/observations"
+        before_code, before_endpoint = http_json(observation_url, timeout=3.0)
+        assert before_code == 200
+        target = profile_state["servers"][0]["runtime_name"]
+        delay_url = "http://127.0.0.1:5200/proxies/" + quote(target, safe="") + "/delay?" + urlencode({
+            "url": "http://203.0.113.53:9080/probe", "timeout": 5000,
+        })
+        delay_code, delay_payload = http_json(delay_url, timeout=8.0)
+        after_code, after_endpoint = http_json(observation_url, timeout=3.0)
+        delay_ms = delay_payload.get("delay")
+        endpoint_delta = ((after_endpoint.get("counts") or {}).get("http", 0)
+                          - (before_endpoint.get("counts") or {}).get("http", 0))
+        metrics["native_reality_tcp_probe"] = {
+            "status_code": delay_code, "delay_ms": delay_ms if type(delay_ms) is int else None,
+            "endpoint_http_delta": endpoint_delta,
+            "endpoint_vpn_source_matches": (after_endpoint.get("last_peers") or {}).get("http") == "203.0.113.53",
+        }
+        assert delay_code == 200 and type(delay_ms) is int and delay_ms >= 0, metrics["native_reality_tcp_probe"]
+        assert after_code == 200 and endpoint_delta == 1, metrics["native_reality_tcp_probe"]
+        assert metrics["native_reality_tcp_probe"]["endpoint_vpn_source_matches"] is True, metrics["native_reality_tcp_probe"]
+
         assert sampler is not None
         metrics["rss_hwm_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmHWM")
         waves: list[list[dict[str, Any]]] = []

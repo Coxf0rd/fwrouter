@@ -200,3 +200,14 @@ Fresh read-only DB/config comparison:78 committed active identities,78 native co
 ## Explicit component DNS isolation — 38480400724
 
 [Actual run](https://github.com/Coxf0rd/fwrouter/actions/runs/38480400724):1442 routine PASS/2 FAIL/0 SKIP; native profiles NOT RUN after the correctly failed routine gate. The two transition-proof cases and deterministic seven-profile inventory/snapshot case PASS under actual execution. The1/70 planner cases correctly refuse implicit `ip -json address show` through DNS status discovery. The component fixture now marks native DNS status explicitly unavailable, not mock-success, while actual subject/preflight/binding logic and all assertions remain. Native DNS proof remains required in the separate real packet/nonempty-profile scenario. Fast L0–L1 run38480395100 PASS does not execute these L3 cases. Production remains read-only/APIheld.
+
+
+## Complete component proof, residual immutable-config CPU cost — 38481089296
+
+[Actual run](https://github.com/Coxf0rd/fwrouter/actions/runs/38481089296), sourcee61802f:1444 routine PASS/0 FAIL/0 SKIP, all5 new L3 regressions individually PASS; qualified26+1, ordinary26, Provider11 and original real packet1 PASS. Nonempty scale1 FAIL at unchanged45s deadline, verified steady-state shutdown remains NOT RUN. API VmHWM741320KiB. All raw receipts retained privately.
+
+The planner now completes in6.14s instead of remaining in per-client preflight at the deadline. Full trace: live recovery13.83s, selector3.65s, profile phase37.25s, DNS1.86s. Staging10.27s, changed Mihomo apply/selector restore10.93s, identical final apply0.043s, final publication3.99s. At45s the stack is full native rule normalization in restart selector restore. Completion later in captured logs does not establish on-time readiness or completed lifespan. All required native proof stays enabled.
+
+Next narrow optimization extends the existing one-document config cache with configuration-only derived guard validation and normalized expected rules. Limits stay32MiB input plus250k expected rules; larger documents retain uncached streaming behavior. Loader/content/validator identity invalidate the entry. Native HTTP/rules/proxies/selectors, index/disabled/type/order comparisons, runtime incarnation and durable receipt proof remain freshly checked each call. The small additional retained expected-rule structure trades bounded memory for eliminating repeated immutable-config CPU work; RSS/startup benefit is NOT RUN until measured. Component coverage changes native rules under unchanged config, then config bytes, loader and validator, and checks uncached behavior over budget. Native TCP through the owned Reality endpoint is additionally required via actual request and endpoint source/count observation; listening/native validation alone is insufficient.
+
+PR8 and production acceptance remain BLOCKED. No production activation/recovery is performed.

@@ -347,7 +347,7 @@ def test_policy_parse_cache_never_caches_proof_or_native_rule_readback(tmp_path:
     assert changed_native["guarded_rules_match"] is True
 
 
-def test_mihomo_health_reuses_only_parse_and_rereads_native_policy_each_call(
+def test_mihomo_health_reuses_only_config_analysis_and_rereads_native_policy_each_call(
     monkeypatch, tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.yaml"
@@ -399,16 +399,60 @@ def test_mihomo_health_reuses_only_parse_and_rereads_native_policy_each_call(
         return original_parse(text)
 
     monkeypatch.setattr(adapter, "_parse_vpn_udp_policy_config", counted_parse)
+    from fwrouter_api.services import mihomo_config_rules as rule_module
+    guard_calls = []
+    original_guard = rule_module._mandatory_vpn_udp_guard
+    def counted_guard(rule: str):
+        guard_calls.append(True)
+        return original_guard(rule)
+    monkeypatch.setattr(rule_module, "_mandatory_vpn_udp_guard", counted_guard)
 
     first_health = adapter.health()
+    first_guard_count = len(guard_calls)
+    assert first_guard_count > 0
     current_native[0] = bad_native_rules
     second_health = adapter.health()
+    assert len(guard_calls) == first_guard_count
 
     assert parse_calls == 1
     assert endpoint_calls == {"/version": 2, "/proxies": 2, "/rules": 2, "/connections": 2}
     assert first_health.details["vpn_udp_policy"]["policy_installed"] is True
     assert second_health.details["vpn_udp_policy"]["native_top_level_rules_match"] is False
     assert second_health.details["vpn_udp_policy"]["policy_installed"] is False
+
+    # Exact-byte changes invalidate both parsed and derived configuration.
+    changed_config = yaml.safe_load(config_path.read_text())
+    changed_config["rules"] = ["MATCH,REJECT"]
+    _write_yaml(config_path, changed_config)
+    third_health = adapter.health()
+    assert parse_calls == 2 and len(guard_calls) > first_guard_count
+    assert third_health.details["vpn_udp_policy"]["native_top_level_rules_match"] is True
+    assert third_health.details["vpn_udp_policy"]["policy_installed"] is True
+    third_guard_count = len(guard_calls)
+    monkeypatch.setattr(yaml, "CSafeLoader", yaml.SafeLoader)
+    fourth_health = adapter.health()
+    assert parse_calls == 3 and len(guard_calls) > third_guard_count
+    assert fourth_health.details["vpn_udp_policy"]["native_top_level_rules_match"] is True
+
+    # A changed validator must not retain an earlier positive config verdict.
+    monkeypatch.setattr(rule_module, "_mandatory_vpn_udp_guard", lambda _rule: "NETWORK,udp,REJECT")
+    fifth_health = adapter.health()
+    assert fifth_health.details["vpn_udp_policy"]["guarded_rules_match"] is False
+    assert fifth_health.details["vpn_udp_policy"]["policy_installed"] is False
+    assert endpoint_calls == {"/version": 5, "/proxies": 5, "/rules": 5, "/connections": 5}
+
+
+def test_config_analysis_cache_preserves_streaming_fallback_above_rule_budget(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.adapters import mihomo as adapter_module
+    monkeypatch.setattr(adapter_module, "MAX_CACHED_POLICY_RULE_COUNT", 2)
+    adapter = MihomoHttpAdapter(config_path=tmp_path / "config.yaml")
+    text = yaml.safe_dump({"rules": ["DOMAIN,a.test,DIRECT", "DOMAIN,b.test,DIRECT", "MATCH,DIRECT"]})
+    parsed = adapter._parsed_vpn_udp_policy_config(text)
+    for _ in range(2):
+        result = adapter._readback_with_config_analysis(text, {}, [], parsed)
+        assert result["native_top_level_rules_match"] is False
+        assert result["policy_installed"] is False
+        assert adapter._policy_config_cache[3] == {}
 
 
 def test_policy_parse_cache_rejects_changed_unsafe_content_and_loader_changes(monkeypatch, tmp_path: Path) -> None:
