@@ -273,6 +273,9 @@ class StateSnapshot:
             "mihomo_health_model",
             (lambda: mihomo_health_model_snapshot(force_refresh=True))
             if self.force_refresh else mihomo_health_model_snapshot,
+            # The adapter snapshot already owns the cross-request TTL. Do not
+            # extend its age by retaining it in a second completed-value cache.
+            ttl_seconds=0.0,
         )
 
     def xray_health(self) -> dict[str, Any]:
