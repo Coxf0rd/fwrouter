@@ -128,3 +128,8 @@ Routine rejected one new test: the YAML flow sequence `rules: [MATCH,DIRECT]` me
 Source0d4ab44: ordinary26 PASS, Provider11 PASS, original packet1 PASS; scale1 FAIL, all cleanup owned. Full startup34.0951s and observed graceful shutdown2.6185s satisfy unchanged timing budgets; API VmHWM782460KiB is below1.5GiB. Actual Xray reconcile succeeds, but DNS selective contract fails, so concurrency/steady waves remain NOT RUN and no live rollout is authorized by these partial results alone.
 
 Source trace confirms synthetic manual DIRECT protected.test is the first non-reserved DIRECT domain selected by the real DNS nftset probe. The owned endpoint only answers direct.test/vpn.test; protected.test receives no address. The scale fixture now explicitly includes DIRECT direct.test before retained protected.test and asserts the actual production probe target selection is exactly the two owned endpoint names. This keeps the protected routing check and real DNS/nftset verification; no DNS production behavior or safety assertion is relaxed. Hosted verification pending.
+
+
+## Sorted DNS target fixture — 38465658033
+
+Ordinary26/Provider11/original packet1 PASS; scale refuses fixture before startup because its new target assertion exposes compiler ordering: lexical VPN scale-* domains precede vpn.test. Thus the previous DNS attribution was incomplete, not proof that adding DIRECT alone resolves it. The owned DNS fixture only answers vpn.test/direct.test and their subdomains. All synthetic scale VPN names now use scale-*.vpn.test (same99627 VPN domain count), and target assertion accepts only that owned VPN namespace and exact direct.test. No production DNS behavior changes; full DNS contract and workload remain pending.

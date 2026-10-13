@@ -110,7 +110,7 @@ def _seed_scale_rules_source(state: Path) -> dict[str, Any]:
     if paths["effective_json_path"].resolve(strict=False) != expected_artifact.resolve(strict=False):
         raise AssertionError("scale rules artifact path escaped the owned test state")
 
-    vpn_lines = ["vpn.test" if index == 0 else f"scale-{index:06d}.test" for index in range(99_627)]
+    vpn_lines = ["vpn.test" if index == 0 else f"scale-{index:06d}.vpn.test" for index in range(99_627)]
     big_vpn_text = "\n".join(vpn_lines) + "\n"
     manual_text = "DIRECT direct.test\nDIRECT protected.test\n"
     manual_validation = rules_service.validate_manual_rules(manual_text)
@@ -134,7 +134,9 @@ def _seed_scale_rules_source(state: Path) -> dict[str, Any]:
     )
     from fwrouter_api.services.dnsmasq import _iter_dnsmasq_probe_targets
     probe_targets = _iter_dnsmasq_probe_targets(effective_artifact["rules"])
-    if {row["action"]: row["domain"] for row in probe_targets} != {"DIRECT": "direct.test", "VPN": "vpn.test"}:
+    targets_by_action = {row["action"]: row["domain"] for row in probe_targets}
+    vpn_probe = targets_by_action.get("VPN", "")
+    if targets_by_action.get("DIRECT") != "direct.test" or not (vpn_probe == "vpn.test" or vpn_probe.endswith(".vpn.test")):
         raise AssertionError("scale DNS readiness targets are not served by the owned endpoints")
     rules_state = get_rules_state()
     for key, path in paths.items():
