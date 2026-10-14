@@ -1674,7 +1674,9 @@ def _validate_rollback_mihomo_preimage(
         descriptor, raw_path = tempfile.mkstemp(prefix=".rollback-mihomo-preflight-", suffix=".yaml", dir=parent)
         candidate_path = Path(raw_path)
         try:
-            os.fchmod(descriptor, 0o600)
+            descriptor_info = os.fstat(descriptor)
+            if not stat.S_ISREG(descriptor_info.st_mode) or stat.S_IMODE(descriptor_info.st_mode) != 0o600:
+                raise OSError("private Mihomo candidate descriptor is not a mode-0600 regular file")
             _write_all_fd(descriptor, config_bytes)
             os.fsync(descriptor)
         finally:

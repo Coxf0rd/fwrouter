@@ -2531,6 +2531,8 @@ def test_rollback_mihomo_preimage_requires_policy_and_native_validation(monkeypa
     from fwrouter_api.services import mihomo_config, subscription_pipeline
 
     routing = xray_subscription_service._capture_generation_auto_selection()["routing"]
+    candidate_parent = Path(mihomo_config._resolved_base_config_path()).parent
+    candidate_parent.mkdir(parents=True, exist_ok=True)
     safe_config = _rollback_mihomo_config(routing)
     proxy_names = [f"validated-proxy-{index}" for index in range(70)]
     safe_config["proxy-groups"][0]["proxies"] = [*proxy_names, "REJECT"]
@@ -2556,7 +2558,8 @@ def test_rollback_mihomo_preimage_requires_policy_and_native_validation(monkeypa
 
     monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config", validate_private_candidate)
     result = xray_subscription_service._validate_rollback_mihomo_preimage(encoded, routing_snapshot=routing)
-    assert result["ok"] is True and result["sha256"] == hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+    assert result["ok"] is True, f"safe preimage validation refused: {str(result.get('reason') or 'unknown')[:96]}"
+    assert result["sha256"] == hashlib.sha256(base64.b64decode(encoded)).hexdigest()
     assert observed and all(not path.exists() for path in observed), "private validation candidate is cleaned"
 
 
@@ -2653,7 +2656,9 @@ def test_owned_restore_revision_change_during_native_validation_prevents_active_
     result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
 
     assert result["ok"] is False
-    assert result["reason"] == "selection_fence_changed"
+    assert result.get("reason") == "selection_fence_changed", (
+        f"rollback stopped at unexpected bounded reason={str(result.get('reason') or 'missing')[:96]}"
+    )
     assert config_path.read_bytes() == active_before["xray"]
     assert mihomo_path.read_bytes() == active_before["mihomo"]
     assert bindings_path.read_bytes() == active_before["bindings"]
@@ -2714,7 +2719,12 @@ def test_owned_restore_revalidates_after_reload_before_database_restore(monkeypa
     result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
 
     assert result["ok"] is False
-    assert result["derived_rows_restored"] is False
+    assert result.get("reason") is None, (
+        f"rollback declined before post-reload ownership check: {str(result.get('reason') or 'missing')[:96]}"
+    )
+    assert result.get("xray_reload") is True
+    assert result.get("mihomo_restart") is True
+    assert result.get("derived_rows_restored") is False
     assert checkpoint.exists()
     with db_session() as connection:
         current_snapshot = connection.execute(
