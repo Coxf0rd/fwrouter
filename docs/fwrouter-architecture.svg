@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="945" viewBox="0 0 1440 945" role="img" aria-label="FWRouter architecture: web UI, API, SQLite, Linux networking core, LAN and external clients, Xray, Mihomo, Internet">
+<title>FWRouter — System Architecture</title>
+<defs>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1020"/><stop offset="0.55" stop-color="#0e1626"/><stop offset="1" stop-color="#0b1220"/></linearGradient>
+ <radialGradient id="glow" cx="75%" cy="5%" r="100%"><stop offset="0" stop-color="#265aa9" stop-opacity=".13"/><stop offset="1" stop-color="#265aa9" stop-opacity="0"/></radialGradient>
+ <linearGradient id="core" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#142f48"/><stop offset="1" stop-color="#102039"/></linearGradient>
+ <linearGradient id="purple" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#30224d"/><stop offset="1" stop-color="#211a39"/></linearGradient>
+ <filter id="shadow" x="-40%" y="-50%" width="180%" height="220%"><feDropShadow dx="0" dy="9" stdDeviation="14" flood-color="#000" flood-opacity=".27"/></filter>
+ <pattern id="dot" width="24" height="24" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r=".7" fill="#6b85a9" opacity=".19"/></pattern>
+ <marker id="a-blue" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#65a9f5" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></marker>
+ <marker id="a-muted" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#7489a8" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></marker>
+ <marker id="a-green" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#5cdaa8" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></marker>
+ <marker id="a-purple" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M1 1 L7 4 L1 7" fill="none" stroke="#c299fa" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="url(#bg)"/>
+<rect width="100%" height="100%" fill="url(#glow)"/>
+<rect width="100%" height="100%" fill="url(#dot)"/>
+<path d="M72 102 H1368" stroke="#253650" stroke-width="1"/>
+<circle cx="75" cy="56" r="11" fill="#1d63b8" opacity=".25"/><circle cx="75" cy="56" r="5" fill="#5bacff"/>
+<text x="101" y="65" fill="#eef5ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="32" font-weight="700" letter-spacing="2">FWROUTER</text>
+<text x="1368" y="61" text-anchor="end" fill="#8da7c9" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="600" letter-spacing="2.3">SYSTEM ARCHITECTURE</text>
+<text x="72" y="133" fill="#78aeea" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="700" letter-spacing="3">01   CONTROL PLANE</text>
+<text x="72" y="394" fill="#78aeea" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="700" letter-spacing="3">02   NETWORK &amp; TRAFFIC FLOW</text>
+
+<rect x="72" y="147" width="1296" height="211" rx="24" fill="#101c2c" stroke="#2b3c56" stroke-width="1.25"/>
+<rect x="97" y="177" width="251" height="74" rx="14" fill="#182b43" stroke="#315b82" stroke-width="1.25"/>
+<circle cx="119" cy="203" r="5" fill="#64abf6"/>
+<text x="136" y="207" text-anchor="start" fill="#ecf3ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" letter-spacing="0">WEB UI</text>
+<text x="119" y="233" text-anchor="start" fill="#a5bbd7" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="500" letter-spacing="0">User / Admin views</text>
+<rect x="97" y="267" width="251" height="66" rx="14" fill="#192538" stroke="#344359" stroke-width="1.25"/>
+<circle cx="119" cy="291" r="5" fill="#95a6bf"/>
+<text x="136" y="297" text-anchor="start" fill="#ecf3ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="650" letter-spacing="0">EXTERNAL API</text>
+<text x="119" y="317" text-anchor="start" fill="#a5bbd7" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="500" letter-spacing="0">Automation / integrations</text>
+<rect x="559" y="193" width="398" height="125" rx="18" fill="url(#core)" stroke="#428bc8" stroke-width="1.65" filter="url(#shadow)"/>
+<text x="581" y="224" text-anchor="start" fill="#ecf3ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22" font-weight="750" letter-spacing="0">FastAPI Control Plane</text>
+<text x="581" y="251" text-anchor="start" fill="#bad2eb" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="450" letter-spacing="0">REST API  /  JobManager  /  Reconcile</text>
+<path d="M581 265 H934" stroke="#315374" stroke-width="1"/>
+<text x="581" y="291" text-anchor="start" fill="#8dc9fa" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="550" letter-spacing="0">Selector  ·  Watchdog  ·  Diagnostics</text>
+<rect x="1092" y="214" width="251" height="82" rx="16" fill="#1b283a" stroke="#43546d" stroke-width="1.25"/>
+<ellipse cx="1121" cy="241" rx="11" ry="5" fill="#738aa8"/><path d="M1110 241 V258 Q1121 269 1132 258 V241" fill="#445b78" stroke="#7898be" stroke-width="1.2"/><ellipse cx="1121" cy="241" rx="11" ry="5" fill="#5f7999"/>
+<text x="1145" y="246" text-anchor="start" fill="#ecf3ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="19" font-weight="700" letter-spacing="0">SQLite</text>
+<text x="1110" y="276" text-anchor="start" fill="#acbed6" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="450" letter-spacing="0">Intent  /  State  /  Inventory</text>
+<path d="M348 214 H429 Q449 214 449 232 V246 Q449 256 461 256 H559" fill="none" stroke="#65a9f5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-blue)"/>
+<path d="M348 300 H431 Q450 300 450 277 Q450 277 462 277 H559" fill="none" stroke="#65a9f5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-blue)"/>
+<path d="M957 255 H1092" fill="none" stroke="#65a9f5" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-blue)"/>
+<path d="M759 318 V425 Q759 437 746 437 H668 V469" fill="none" stroke="#65a9f5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-blue)" stroke-dasharray="6 7"/>
+<rect x="771" y="376" width="180" height="27" rx="10" fill="#172a41" stroke="#314764" stroke-width="1.25"/>
+<text x="861" y="394" text-anchor="middle" fill="#8dc2ee" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" letter-spacing="1">POLICY &amp; CONFIG</text>
+<rect x="72" y="410" width="1296" height="442" rx="24" fill="#101b2b" stroke="#2b3d57" stroke-width="1.25"/>
+<rect x="95" y="451" width="251" height="66" rx="13" fill="#152137" stroke="#33445d" stroke-width="1.25"/>
+<rect x="96" y="462" width="3" height="44" rx="2" fill="#5cdaa8"/>
+<text x="113" y="478" text-anchor="start" fill="#ebf3ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="650" letter-spacing="0">LAN CLIENTS</text>
+<text x="113" y="500" text-anchor="start" fill="#94abc9" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="450" letter-spacing="0">Local network devices</text>
+<rect x="95" y="530" width="251" height="66" rx="13" fill="#152137" stroke="#33445d" stroke-width="1.25"/>
+<rect x="96" y="541" width="3" height="44" rx="2" fill="#69b8f5"/>
+<text x="113" y="557" text-anchor="start" fill="#ebf3ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="650" letter-spacing="0">EXTERNAL NETWORK</text>
+<text x="113" y="579" text-anchor="start" fill="#94abc9" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="450" letter-spacing="0">Tailscale / ingress providers</text>
+<rect x="95" y="609" width="251" height="66" rx="13" fill="#152137" stroke="#33445d" stroke-width="1.25"/>
+<rect x="96" y="620" width="3" height="44" rx="2" fill="#9eafca"/>
+<text x="113" y="636" text-anchor="start" fill="#ebf3ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="650" letter-spacing="0">HOST &amp; DOCKER</text>
+<text x="113" y="658" text-anchor="start" fill="#94abc9" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="450" letter-spacing="0">System / container traffic</text>
+<rect x="95" y="749" width="251" height="66" rx="13" fill="#152137" stroke="#33445d" stroke-width="1.25"/>
+<rect x="96" y="760" width="3" height="44" rx="2" fill="#c299fa"/>
+<text x="113" y="776" text-anchor="start" fill="#ebf3ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="650" letter-spacing="0">EXPLICIT CLIENTS</text>
+<text x="113" y="798" text-anchor="start" fill="#94abc9" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="450" letter-spacing="0">VLESS / subscription users</text>
+<rect x="478" y="467" width="399" height="216" rx="20" fill="#122638" stroke="#327b92" stroke-width="1.6" filter="url(#shadow)"/>
+<text x="499" y="498" text-anchor="start" fill="#ddf8fb" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="750" letter-spacing="0">LINUX ROUTING CORE</text>
+<text x="499" y="529" text-anchor="start" fill="#eaf4ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="19" font-weight="700" letter-spacing="0">nftables</text>
+<text x="660" y="529" text-anchor="start" fill="#9ab7cc" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="500" letter-spacing="0">Traffic classification</text>
+<path d="M499 544 H857" stroke="#24445b"/>
+<text x="499" y="565" text-anchor="start" fill="#eaf4ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="19" font-weight="700" letter-spacing="0">iproute2</text>
+<text x="660" y="565" text-anchor="start" fill="#9ab7cc" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="500" letter-spacing="0">Policy routing</text>
+<path d="M499 579 H857" stroke="#24445b"/>
+<text x="499" y="603" text-anchor="start" fill="#eaf4ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="19" font-weight="700" letter-spacing="0">dnsmasq</text>
+<text x="660" y="603" text-anchor="start" fill="#9ab7cc" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="500" letter-spacing="0">DNS / DHCP</text>
+<rect x="499" y="627" width="357" height="37" rx="10" fill="#0d3130" stroke="#2d796e" stroke-width="1.25"/>
+<text x="677.5" y="652" text-anchor="middle" fill="#83e0bc" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" letter-spacing="0.9">DIRECT     ·     SELECTIVE     ·     VPN</text>
+<rect x="478" y="735" width="399" height="83" rx="17" fill="url(#purple)" stroke="#815bb5" stroke-width="1.55" filter="url(#shadow)"/>
+<text x="500" y="770" text-anchor="start" fill="#f1e9ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" font-weight="750" letter-spacing="0">XRAY</text>
+<text x="500" y="794" text-anchor="start" fill="#b9a4dd" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="500" letter-spacing="0">VLESS ingress / explicit clients</text>
+<rect x="992" y="666" width="234" height="102" rx="18" fill="url(#purple)" stroke="#815bb5" stroke-width="1.65" filter="url(#shadow)"/>
+<text x="1013" y="706" text-anchor="start" fill="#f6edff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" font-weight="750" letter-spacing="0">MIHOMO</text>
+<text x="1013" y="734" text-anchor="start" fill="#c6b0e4" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="500" letter-spacing="0">VPN egress adapter</text>
+<text x="1013" y="752" text-anchor="start" fill="#ab91d2" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="500" letter-spacing="0">Optional runtime</text>
+<rect x="1260" y="666" width="114" height="102" rx="17" fill="#11352e" stroke="#3ca885" stroke-width="1.45" filter="url(#shadow)"/>
+<circle cx="1317" cy="695" r="11" fill="none" stroke="#65d7a9" stroke-width="1.5"/><path d="M1306 695 H1328 M1317 684 C1310 690 1310 700 1317 706 M1317 684 C1324 690 1324 700 1317 706" fill="none" stroke="#65d7a9" stroke-width="1.15"/>
+<text x="1317" y="733" text-anchor="middle" fill="#d3ffe9" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="750" letter-spacing="0.4">INTERNET</text>
+<path d="M346 484 H478" fill="none" stroke="#7489a8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-muted)"/>
+<path d="M346 563 H478" fill="none" stroke="#7489a8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-muted)"/>
+<path d="M346 642 H404 Q422 642 422 616 H478" fill="none" stroke="#7489a8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-muted)"/>
+<path d="M346 782 H478" fill="none" stroke="#c299fa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-purple)"/>
+<path d="M877 510 H1210 Q1257 510 1317 510 V660" fill="none" stroke="#5cdaa8" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-green)"/>
+<rect x="1041" y="495" width="126" height="24" rx="8" fill="#123c35" stroke="#2b7965" stroke-width="1.25"/>
+<text x="1104" y="511" text-anchor="middle" fill="#80eac0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="750" letter-spacing="1.2">DIRECT</text>
+<path d="M877 619 H946 Q966 619 966 684 H992" fill="none" stroke="#c299fa" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-purple)"/>
+<rect x="898" y="588" width="102" height="24" rx="8" fill="#302442" stroke="#69528d" stroke-width="1.25"/>
+<text x="949" y="604" text-anchor="middle" fill="#d4b3ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="750" letter-spacing="0.7">VPN PATH</text>
+<path d="M877 781 H943 Q969 781 969 739 H992" fill="none" stroke="#c299fa" stroke-width="2.65" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-purple)"/>
+<path d="M1226 716 H1260" fill="none" stroke="#c299fa" stroke-width="2.65" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-purple)"/>
+<path d="M73 888 H1367" stroke="#26374e"/>
+<text x="75" y="914" text-anchor="start" fill="#8298b7" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="550" letter-spacing="0">FWRouter  ·  Linux routing control plane</text>
+<line x1="950" y1="909" x2="983" y2="909" stroke="#5cdaa8" stroke-width="3"/>
+<text x="992" y="914" text-anchor="start" fill="#99b6cb" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="500" letter-spacing="0">Direct</text>
+<line x1="1082" y1="909" x2="1115" y2="909" stroke="#c299fa" stroke-width="3"/>
+<text x="1124" y="914" text-anchor="start" fill="#99b6cb" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="500" letter-spacing="0">VPN</text>
+<line x1="1191" y1="909" x2="1224" y2="909" stroke="#65a9f5" stroke-dasharray="6 5" stroke-width="3"/>
+<text x="1234" y="914" text-anchor="start" fill="#99b6cb" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="500" letter-spacing="0">Control</text>
+</svg>
