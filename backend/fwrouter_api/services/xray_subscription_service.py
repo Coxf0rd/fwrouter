@@ -325,7 +325,14 @@ def _discard_unapplied_profile_identity_intent(
             ):
                 return {"ok": False, "reason": "journal_rows_changed"}
 
-            for identity_id in identity_ids:
+            # Ownership checks that protect deleting an identity apply only
+            # when this invocation created the identity row itself. A newly
+            # added scope credential can legitimately attach to an existing
+            # logical identity that already owns credentials, aliases, or
+            # history; compensation removes only the exact journaled row and
+            # must leave those pre-existing rows untouched.
+            new_identity_ids = {str(row["identity_id"]) for row in identities}
+            for identity_id in new_identity_ids:
                 if connection.execute(
                     "SELECT 1 FROM subscription_node_identity_transitions WHERE identity_id=? LIMIT 1",
                     (identity_id,),

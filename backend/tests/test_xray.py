@@ -3090,14 +3090,20 @@ def test_vpn_auto_stage_exception_compensates_new_identity_intent(monkeypatch, t
     _patch_xray_adapters(monkeypatch, adapter)
     before_db = _database_snapshot()
     before_config = config_path.read_bytes()
+    stage_calls = 0
 
     def raise_during_stage(**_kwargs):
+        nonlocal stage_calls
+        stage_calls += 1
         raise RuntimeError("test-only candidate validation exception")
 
     monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", raise_during_stage)
     failed = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
 
     assert failed["ok"] is False
+    assert stage_calls == 1, {
+        key: failed.get(key) for key in ("stage", "error_code", "compensation_reason")
+    }
     assert failed["stage"] == "native_candidate_validation"
     assert failed["error_code"] == "XRAY_GENERATION_CANDIDATE_VALIDATION_FAILED"
     assert _database_snapshot() == before_db
@@ -3105,7 +3111,7 @@ def test_vpn_auto_stage_exception_compensates_new_identity_intent(monkeypatch, t
 
 
 def test_vpn_auto_source_fence_change_preserves_unverified_identity_intent(monkeypatch, tmp_path: Path) -> None:
-    """Component boundary test: a changed source fence must refuse compensation."""
+    """Component identity-compensation test with planner isolated at its boundary."""
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -3117,6 +3123,13 @@ def test_vpn_auto_source_fence_change_preserves_unverified_identity_intent(monke
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
     _patch_xray_adapters(monkeypatch, adapter)
     before_db = _database_snapshot()
+    # This test owns the compensation/source-fence contract. The real planner
+    # is covered separately; keeping it out prevents unrelated malformed
+    # synthetic server projections from stopping execution before injection.
+    monkeypatch.setattr(
+        xray_subscription_service, "_prospective_profile_bindings",
+        lambda *_args, **_kwargs: ([], [], []),
+    )
     stage_calls = 0
 
     def invalidate_source_fence(**_kwargs):
@@ -3154,7 +3167,7 @@ def test_vpn_auto_source_fence_change_preserves_unverified_identity_intent(monke
 
 
 def test_vpn_auto_external_reference_blocks_identity_compensation(monkeypatch, tmp_path: Path) -> None:
-    """Component boundary test: a snapshot reference makes identity rows non-owned."""
+    """Component identity-compensation test with planner isolated at its boundary."""
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -3165,6 +3178,12 @@ def test_vpn_auto_external_reference_blocks_identity_compensation(monkeypatch, t
     _write_xray_config(config_path, [])
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
     _patch_xray_adapters(monkeypatch, adapter)
+    # Exercise real credential preparation and compensation while leaving
+    # unrelated binding-planner semantics to their own component/native tests.
+    monkeypatch.setattr(
+        xray_subscription_service, "_prospective_profile_bindings",
+        lambda *_args, **_kwargs: ([], [], []),
+    )
     stage_calls = 0
 
     def publish_external_reference(**_kwargs):
