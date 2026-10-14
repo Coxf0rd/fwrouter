@@ -228,14 +228,26 @@ def test_profile_binding_plan_reuses_owned_enforcement_without_per_client_native
         xray_client_state._xray_subject_for_client(nodes[0]["client_uuid"])
 
 
-@pytest.mark.parametrize("case", ["identical", "different-handoffs", "changed-inputs"])
+@pytest.mark.parametrize("case", ["identical", "different-handoffs", "changed-inputs", "copy-corrupted"])
 def test_identical_candidate_copy_retains_both_validations_and_rejects_changed_context(monkeypatch, tmp_path: Path, case: str) -> None:
     old = [{"selected_server_id": "retiring-target", "port": 53124}] if case == "different-handoffs" else []
+    if case == "copy-corrupted":
+        from fwrouter_api.services import artifacts
+        original_copy = artifacts.atomic_copy_file
+        def corrupt_copy(source, target):
+            original_copy(source, target)
+            Path(target).write_text("foreign final candidate", encoding="utf-8")
+        monkeypatch.setattr(artifacts, "atomic_copy_file", corrupt_copy)
     result, local_calls, native_calls = _run_profile_candidate_validation_case(
         monkeypatch, tmp_path, old_assignments=old,
         assignments=[{"selected_server_id": "owned-target", "port": 53123}],
         image_id=None, input_context_changes=case == "changed-inputs",
     )
+    if case == "copy-corrupted":
+        assert result["ok"] is False
+        assert result["error_code"] == "MIHOMO_STAGE_CANDIDATE_COPY_MISMATCH"
+        assert len(local_calls) == 1 and len(native_calls) == 1
+        return
     assert result["ok"] is True
     assert len(local_calls) == 2 and len(native_calls) == 2
     transition = result["native_validation"]["transition"]

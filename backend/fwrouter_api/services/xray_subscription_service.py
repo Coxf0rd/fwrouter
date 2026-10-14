@@ -614,6 +614,8 @@ def _stage_profile_native_candidates(
             transition_context = context_before if context_before is not None and context_before == context_after else None
             transition_written = written
         candidate_hash = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
+        if write_reused and candidate_hash != expected_transition_hash:
+            return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_COPY_MISMATCH"}
         candidate_config = written.get("_candidate_config") if isinstance(written.get("_candidate_config"), dict) else {}
         local_validation = validate_local_mihomo(candidate_path=candidate_path, candidate_config=candidate_config)
         native_cache_key = (candidate_hash, native_validator_identity or "")
