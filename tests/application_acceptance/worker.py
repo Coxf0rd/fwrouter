@@ -2636,6 +2636,7 @@ def build_app(socket_path: Path):
             if not record_phase:
                 return original(*args, **kwargs)
             started = time.monotonic()
+            cpu_started = time.process_time()
             prefix = "FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
             print(prefix + json.dumps({"phase": name, "event": "enter", "call": count}), flush=True)
             try:
@@ -2663,12 +2664,15 @@ def build_app(socket_path: Path):
                 return result
             finally:
                 elapsed = round(time.monotonic() - started, 4)
+                cpu_elapsed = round(time.process_time() - cpu_started, 4)
                 with bootstrap_diagnostic_lock:
                     timings = bootstrap_observation.setdefault("phase_timings", {})
                     timings.setdefault(name, []).append(elapsed)
+                    cpu_timings = bootstrap_observation.setdefault("phase_cpu_timings", {})
+                    cpu_timings.setdefault(name, []).append(cpu_elapsed)
                 print(prefix + json.dumps({
                     "phase": name, "event": "exit", "call": count,
-                    "seconds": elapsed,
+                    "seconds": elapsed, "cpu_seconds": cpu_elapsed,
                 }), flush=True)
         return observed
 
@@ -2698,15 +2702,21 @@ def build_app(socket_path: Path):
     def observe_phase(name, original):
         def observed(*args, **kwargs):
             started = time.monotonic()
-            print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({"phase": name, "event": "enter"}), flush=True)
+            cpu_started = time.process_time()
+            print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
+                "phase": name, "event": "enter",
+            }), flush=True)
             try:
                 return original(*args, **kwargs)
             finally:
                 elapsed = round(time.monotonic() - started, 4)
+                cpu_elapsed = round(time.process_time() - cpu_started, 4)
                 with bootstrap_diagnostic_lock:
                     bootstrap_observation.setdefault("phase_timings", {})[name] = [elapsed]
+                    bootstrap_observation.setdefault("phase_cpu_timings", {})[name] = [cpu_elapsed]
                 print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
                     "phase": name, "event": "exit", "seconds": elapsed,
+                    "cpu_seconds": cpu_elapsed,
                 }), flush=True)
         return observed
 

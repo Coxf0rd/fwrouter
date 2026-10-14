@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 import signal
 import resource
@@ -66,6 +67,67 @@ def _free_loopback_port() -> int:
         return int(listener.getsockname()[1])
 
 
+def _startup_phase_diagnostics(log_path: Path) -> dict[str, object]:
+    """Extract only bounded timing fields from the owned worker's phase markers."""
+    prefix = b"FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
+    try:
+        with log_path.open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, size - 16 * 1024))
+            raw = stream.read(16 * 1024)
+    except OSError:
+        return {"status": "unavailable", "events": []}
+    events: list[dict[str, object]] = []
+    totals: dict[str, dict[str, float | int]] = {}
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+    for line in raw.splitlines():
+        if not line.startswith(prefix):
+            continue
+        try:
+            item = json.loads(line[len(prefix):].decode("ascii"))
+        except (UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(item, dict):
+            continue
+        name, event = item.get("phase"), item.get("event")
+        if (not isinstance(name, str) or not name or len(name) > 96
+                or any(character not in allowed for character in name)
+                or not isinstance(event, str) or event not in {"enter", "exit"}):
+            continue
+        row: dict[str, object] = {"phase": name, "event": event}
+        call = item.get("call")
+        if type(call) is int and 0 <= call <= 10_000:
+            row["call"] = call
+        if event == "exit":
+            for source, target in (("seconds", "wall_seconds"), ("cpu_seconds", "cpu_seconds")):
+                value = item.get(source)
+                if type(value) in {int, float}:
+                    try:
+                        number = float(value)
+                    except OverflowError:
+                        continue
+                    if math.isfinite(number) and 0 <= number <= 600:
+                        row[target] = round(number, 4)
+            aggregate = totals.setdefault(name, {"calls": 0, "wall_seconds": 0.0, "cpu_seconds": 0.0})
+            if "wall_seconds" in row:
+                aggregate["calls"] += 1
+                aggregate["wall_seconds"] = round(float(aggregate["wall_seconds"]) + float(row["wall_seconds"]), 4)
+            if "cpu_seconds" in row:
+                aggregate["cpu_seconds"] = round(float(aggregate["cpu_seconds"]) + float(row["cpu_seconds"]), 4)
+        events.append(row)
+    return {"status": "parsed", "events": events[-128:], "totals": totals, "tail_bytes": len(raw)}
+
+
+def _process_cpu_seconds(pid: int) -> float | None:
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        fields = raw[raw.rfind(")") + 2:].split()
+        ticks = int(fields[11]) + int(fields[12])  # utime + stime (fields 14 and 15)
+        return round(ticks / os.sysconf("SC_CLK_TCK"), 4)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     config.addinivalue_line("markers", "l7: actual API-worker SIGKILL/restart acceptance; release-only")
@@ -80,6 +142,7 @@ def pytest_configure(config):
     config._fwrouter_acceptance_started = time.monotonic()
     config._fwrouter_acceptance_reports = {}
     config._fwrouter_diagnostic_records = []
+    config._fwrouter_startup_failures = []
     config._fwrouter_acceptance_cleanup_errors = []
     config._fwrouter_acceptance_temp_bytes = 0
 
@@ -122,6 +185,8 @@ def acceptance_stack(request):
     )
     worker: subprocess.Popen[bytes] | None = None
     owned_workers: list[subprocess.Popen[bytes]] = []
+    startup_failures: list[dict[str, object]] = []
+    request.config._fwrouter_startup_failures = startup_failures
     provider_bridge: ProviderHttpTestBridge | None = None
     setup_complete = False
     try:
@@ -165,6 +230,7 @@ def acceptance_stack(request):
             if provider_bridge.mihomo_probe_url is not None:
                 env["FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL"] = provider_bridge.mihomo_probe_url
                 env["FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT"] = str(provider_bridge.mihomo_probe_port)
+            spawned_at = time.monotonic()
             proc = subprocess.Popen(
                 [sys.executable, "-m", "application_acceptance.worker", "--socket", str(rpc_socket), "--port", str(port)],
                 cwd="/workspace", env=env, stdin=subprocess.DEVNULL, stdout=logs, stderr=logs, close_fds=True,
@@ -176,10 +242,24 @@ def acceptance_stack(request):
             if on_spawn is not None:
                 on_spawn(proc)
             base = f"http://127.0.0.1:{port}/api/v2"
-            deadline = time.monotonic() + (45 if startup_tasks else 15)
+            readiness_limit = 45 if startup_tasks else 15
+            deadline = spawned_at + readiness_limit
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
-                    pytest.fail(f"owned API worker exited before readiness: {suite_root / f'uvicorn-{port}.log'}")
+                    startup_failures.append({
+                        "worker_pid": proc.pid,
+                        "readiness_deadline_seconds": 45 if startup_tasks else 15,
+                        "readiness_elapsed_seconds": round(time.monotonic() - spawned_at, 4),
+                        "ready": False,
+                        "failure": "worker_exited_before_readiness",
+                        "worker_exit_at_deadline": proc.returncode,
+                        "rss_kib_at_deadline": None,
+                        "rss_hwm_kib_at_deadline": None,
+                        "process_cpu_seconds_at_deadline": _process_cpu_seconds(proc.pid),
+                        "phase_diagnostics_at_deadline": _startup_phase_diagnostics(Path(proc._acceptance_log_path)),
+                        "termination": {"status": "already_exited", "return_code": proc.returncode},
+                    })
+                    pytest.fail("owned API worker exited before readiness")
                 try:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -189,15 +269,59 @@ def acceptance_stack(request):
                         return proc, base
                 except (OSError, ValueError, TimeoutError):
                     threading.Event().wait(0.1)
-            # The worker registered a traceback-only handler; no locals/config are dumped.
-            os.kill(proc.pid, signal.SIGUSR1)
-            threading.Event().wait(0.2)
-            proc._acceptance_stop_requested = True
-            proc.terminate()
+            # Record the actual readiness deadline before diagnostics and termination add time.
+            readiness_elapsed = time.monotonic() - spawned_at
+            failure: dict[str, object] = {
+                "worker_pid": proc.pid,
+                "readiness_deadline_seconds": readiness_limit,
+                "readiness_elapsed_seconds": round(readiness_elapsed, 4),
+                "ready": False,
+                "worker_exit_at_deadline": proc.poll(),
+                "rss_kib_at_deadline": None,
+                "rss_hwm_kib_at_deadline": None,
+                "process_cpu_seconds_at_deadline": _process_cpu_seconds(proc.pid),
+                "termination": {"status": "NOT_RUN"},
+            }
             try:
-                proc.wait(timeout=3)
+                for field, key in (("VmRSS", "rss_kib_at_deadline"), ("VmHWM", "rss_hwm_kib_at_deadline")):
+                    for status_line in Path(f"/proc/{proc.pid}/status").read_text(encoding="ascii").splitlines():
+                        if status_line.startswith(field + ":"):
+                            failure[key] = int(status_line.split()[1])
+                            break
+            except (OSError, ValueError, IndexError):
+                pass
+            log_path = Path(proc._acceptance_log_path)
+            failure["phase_diagnostics_at_deadline"] = _startup_phase_diagnostics(log_path)
+            # The worker registered a traceback-only handler; no locals/config are dumped.
+            diagnostic_started = time.monotonic()
+            diagnostic_status = "sent"
+            try:
+                if proc.poll() is None:
+                    os.kill(proc.pid, signal.SIGUSR1)
+                    threading.Event().wait(0.2)
+                else:
+                    diagnostic_status = "worker_exited_before_signal"
+            except ProcessLookupError:
+                diagnostic_status = "worker_exited_before_signal"
+            proc._acceptance_stop_requested = True
+            termination_started = time.monotonic()
+            if proc.poll() is None:
+                proc.terminate()
+            try:
+                return_code = proc.wait(timeout=3)
+                termination_status = "reaped"
             except subprocess.TimeoutExpired:
-                pass  # Final fixture cleanup owns termination; retain startup failure attribution.
+                return_code = None
+                termination_status = "pending_fixture_cleanup"
+            failure["diagnostic_status"] = diagnostic_status
+            failure["diagnostic_elapsed_seconds"] = round(termination_started - diagnostic_started, 4)
+            failure["termination"] = {
+                "status": termination_status,
+                "elapsed_seconds": round(time.monotonic() - termination_started, 4),
+                "return_code": return_code,
+            }
+            failure["phase_diagnostics_after_stop"] = _startup_phase_diagnostics(log_path)
+            startup_failures.append(failure)
             pytest.fail("owned API worker did not become ready within the qualified startup deadline")
 
         worker, api = start_worker()
@@ -205,6 +329,7 @@ def acceptance_stack(request):
             "root": suite_root, "state": state, "native": native, "profile": profile,
             "profile_sha256": profile_digest, "api": api, "worker": worker,
             "start_worker": start_worker, "receipt_tests": [], "provider_bridge": provider_bridge,
+            "startup_failures": startup_failures,
             "mihomo_probe_url": provider_bridge.mihomo_probe_url,
         }
         setup_complete = True
@@ -213,24 +338,55 @@ def acceptance_stack(request):
         cleanup_errors = []
         native.release_reload()
         for owned_worker in owned_workers:
-            if owned_worker.poll() is None:
+            cleanup_started = time.monotonic()
+            cleanup_action = "already_exited"
+            cleanup_exit_code = owned_worker.poll()
+            if cleanup_exit_code is None:
                 try:
                     if not getattr(owned_worker, "_acceptance_stop_requested", False):
                         owned_worker._acceptance_stop_requested = True
                         owned_worker.terminate()
+                        cleanup_action = "sigterm"
+                    else:
+                        cleanup_action = "wait_after_prior_sigterm"
                     owned_worker.wait(timeout=16)
                 except subprocess.TimeoutExpired:
                     cleanup_errors.append("application worker exceeded bounded graceful teardown")
                     owned_worker.kill()
+                    cleanup_action = "sigkill_after_grace_timeout"
                     try:
                         owned_worker.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         cleanup_errors.append("uvicorn worker could not be reaped")
+                cleanup_exit_code = owned_worker.poll()
+            cleanup_outcome = {
+                "status": "reaped" if cleanup_exit_code is not None else "not_reaped",
+                "action": cleanup_action,
+                "elapsed_seconds": round(time.monotonic() - cleanup_started, 4),
+                "return_code": cleanup_exit_code,
+            }
+            log_name = getattr(owned_worker, "_acceptance_log_path", None)
+            if log_name:
+                try:
+                    with Path(log_name).open("rb") as stream:
+                        size = stream.seek(0, os.SEEK_END)
+                        stream.seek(max(0, size - 4096))
+                        cleanup_outcome["application_cleanup_observed"] = (
+                            b"FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE" in stream.read(4096)
+                        )
+                except OSError:
+                    cleanup_outcome["application_cleanup_observed"] = False
+            for failure in startup_failures:
+                if failure.get("worker_pid") == owned_worker.pid:
+                    failure["fixture_cleanup"] = cleanup_outcome
         # Snapshot bounded diagnostics before the isolated per-test tree is removed.
         worker_logs = []
         for log_path in sorted(suite_root.glob("uvicorn-*.log")):
             try:
-                raw = log_path.read_bytes()[-16 * 1024:]
+                with log_path.open("rb") as stream:
+                    size = stream.seek(0, os.SEEK_END)
+                    stream.seek(max(0, size - 16 * 1024))
+                    raw = stream.read(16 * 1024)
                 if b"owned application worker survived lifespan cleanup" in raw:
                     cleanup_errors.append("application lifespan left an owned background worker alive")
                 from .native_runner import _redact_diagnostic
@@ -274,6 +430,7 @@ def acceptance_stack(request):
                 "nodeid": request.node.nodeid, "status": "failed" if failed else "passed",
                 "worker_logs": worker_logs[:8], "native": native_diagnostics,
                 "state": state_summary, "cleanup_errors": list(cleanup_errors),
+                "startup_failures": list(startup_failures[-4:]),
             })
         native.stop()
         if provider_bridge is not None:
@@ -334,7 +491,9 @@ def pytest_sessionfinish(session, exitstatus):
                                                          "native": row["native"]} for row in diagnostic_records]},
         "worker-service-logs.json": {"schema": "fwrouter-worker-service-logs/v1",
                                      "records": [{"nodeid": row["nodeid"], "status": row["status"],
-                                                  "logs": row["worker_logs"]} for row in diagnostic_records]},
+                                                  "logs": row["worker_logs"],
+                                                  "startup_failures": row.get("startup_failures", [])}
+                                                 for row in diagnostic_records]},
         "state-snapshot.json": {"schema": "fwrouter-acceptance-state-summary/v1",
                                  "records": [{"nodeid": row["nodeid"], "status": row["status"],
                                               "files": row["state"]} for row in diagnostic_records]},

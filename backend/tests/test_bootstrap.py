@@ -1,25 +1,24 @@
 from __future__ import annotations
-from _test_support import configure_test_state_dir as _configure_env
-from fwrouter_api.core.config import get_settings
 
-
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from _test_support import configure_test_state_dir as _configure_env
+
+from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.bootstrap import (
+    _has_completed_staged_xray_publication,
     bootstrap_backend,
-    recover_startup_xray_subscription_profiles,
-    recover_startup_mihomo_selector,
     recover_startup_live_routing_from_persisted_mode,
+    recover_startup_mihomo_selector,
     recover_startup_routing_to_direct,
     recover_startup_scoped_subject_routing,
+    recover_startup_xray_subscription_profiles,
 )
 from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.subjects import get_subject, list_subjects
-
-
 
 
 def _enable_isolated_intended_mode_recovery(monkeypatch) -> None:
@@ -778,3 +777,195 @@ def test_startup_vpn_auto_reconcile_promotes_profiles_after_final_mihomo(monkeyp
     assert result["deleted_count"] == 1
     assert result["public_profile_promote"] == {"profiles_count": 1, "nodes_count": 1}
     assert calls == ["vpn-auto", "final-mihomo", "desired-profiles", "promote"]
+
+
+@pytest.mark.parametrize("clear_result", [True, False], ids=["pending-cas-cleared", "pending-cas-refused"])
+def test_startup_consumes_completed_staged_publication_without_duplicate_mihomo_or_promotion(
+    monkeypatch, clear_result: bool,
+) -> None:
+    calls: list[str] = []
+    clears: list[int] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription.get_subscription_state",
+        lambda: {"status": "success", "last_success_at": "2026-09-27 12:00:00"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_runtime_state._module_state",
+        lambda _name: {"desired_state": "enabled", "lifecycle_mode": "managed"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.reconcile_xray_vpn_auto_subscription",
+        lambda **_kwargs: calls.append("vpn-auto") or {
+            "ok": True,
+            "status": "success",
+            "deleted_count": 1,
+            "generation_apply": {"final_mihomo": {"ok": True}, "public_snapshots_changed": True},
+            "public_profile_promote": {"profiles_count": 1, "nodes_count": 2},
+            "staged_publication_receipt": {
+                "schema": 1,
+                "staged_native_publication_complete": True,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config.reconcile_mihomo_runtime",
+        lambda **_kwargs: calls.append("duplicate-final-mihomo") or {"ok": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription_profiles.list_desired_subscription_xray_clients",
+        lambda: calls.append("duplicate-list") or [{"client_uuid": "profile-uuid"}],
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription_profiles.promote_runtime_verified_subscription_nodes",
+        lambda _nodes: calls.append("duplicate-promote") or {"profiles_count": 1, "nodes_count": 1},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_vpn_auto_pending.get_xray_vpn_auto_pending_state",
+        lambda: {"pending": True, "revision": 19},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_vpn_auto_pending.clear_pending_revision_after_success",
+        lambda revision: clears.append(revision) or clear_result,
+    )
+    monkeypatch.setattr("fwrouter_api.services.bootstrap.write_technical_log", lambda **_kwargs: None)
+
+    result = recover_startup_xray_subscription_profiles()
+
+    assert result["ok"] is True
+    assert result["deleted_count"] == 1
+    assert result["final_mihomo_reconcile"] == {
+        "ok": True,
+        "skipped": True,
+        "reason": "staged_publication_native_proof_complete",
+    }
+    assert result["public_profile_promote"] == {"profiles_count": 1, "nodes_count": 2}
+    assert result["pending_revision_cleared"] is clear_result
+    assert calls == ["vpn-auto"]
+    assert clears == [19]
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"ok": False},
+        {"status": "pending"},
+        {"staged_publication_receipt": {"schema": True, "staged_native_publication_complete": True}},
+        {"public_profile_promote": {"profiles_count": True, "nodes_count": 0}},
+    ],
+    ids=["not-ok", "not-success", "bool-schema", "bool-count"],
+)
+def test_startup_staged_completion_predicate_rejects_unproven_or_malformed_receipt(patch) -> None:
+    result = {
+        "ok": True,
+        "status": "success",
+        "generation_apply": {"final_mihomo": {"ok": True}, "public_snapshots_changed": False},
+        "public_profile_promote": {"profiles_count": 0, "nodes_count": 0},
+        "staged_publication_receipt": {
+            "schema": 1,
+            "staged_native_publication_complete": True,
+        },
+    }
+    result.update(patch)
+
+    assert _has_completed_staged_xray_publication(result) is False
+
+
+@pytest.mark.parametrize(
+    "receipt, generation_apply, promotion",
+    [
+        (None, {"final_mihomo": {"ok": True}, "public_snapshots_changed": True}, {"profiles_count": 1, "nodes_count": 1}),
+        ({"schema": 2, "staged_native_publication_complete": True}, {"final_mihomo": {"ok": True}, "public_snapshots_changed": True}, {"profiles_count": 1, "nodes_count": 1}),
+        ({"schema": 1, "staged_native_publication_complete": 1}, {"final_mihomo": {"ok": True}, "public_snapshots_changed": True}, {"profiles_count": 1, "nodes_count": 1}),
+        ({"schema": 1, "staged_native_publication_complete": True}, {}, {"profiles_count": 1, "nodes_count": 1}),
+        ({"schema": 1, "staged_native_publication_complete": True}, {"final_mihomo": {"ok": False}, "public_snapshots_changed": True}, {"profiles_count": 1, "nodes_count": 1}),
+        ({"schema": 1, "staged_native_publication_complete": True}, {"final_mihomo": {"ok": True}}, {"profiles_count": -1, "nodes_count": 1}),
+        ({"schema": 1, "staged_native_publication_complete": True}, {"final_mihomo": {"ok": True}}, {"profiles_count": 1, "nodes_count": 1}),
+    ],
+    ids=["legacy-no-receipt", "unsupported-schema", "nonliteral-complete", "missing-final-proof", "failed-final-proof", "invalid-promotion-count", "missing-snapshot-result"],
+)
+def test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback(
+    monkeypatch, receipt, generation_apply, promotion,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription.get_subscription_state",
+        lambda: {"status": "success", "last_success_at": "2026-09-27 12:00:00"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_runtime_state._module_state",
+        lambda _name: {"desired_state": "enabled", "lifecycle_mode": "managed"},
+    )
+    reconciled = {
+        "ok": True,
+        "status": "success",
+        "generation_apply": generation_apply,
+        "public_profile_promote": promotion,
+    }
+    if receipt is not None:
+        reconciled["staged_publication_receipt"] = receipt
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.reconcile_xray_vpn_auto_subscription",
+        lambda **_kwargs: calls.append("vpn-auto") or reconciled,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config.reconcile_mihomo_runtime",
+        lambda **_kwargs: calls.append("final-mihomo") or {"ok": True, "reconcile_action": "none"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription_profiles.list_desired_subscription_xray_clients",
+        lambda: calls.append("desired-profiles") or [{"client_uuid": "profile-uuid"}],
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription_profiles.promote_runtime_verified_subscription_nodes",
+        lambda nodes: calls.append("promote") or {"profiles_count": 1, "nodes_count": len(nodes)},
+    )
+    monkeypatch.setattr("fwrouter_api.services.bootstrap.write_technical_log", lambda **_kwargs: None)
+
+    result = recover_startup_xray_subscription_profiles()
+
+    assert result["ok"] is True
+    assert result["public_profile_promote"] == {"profiles_count": 1, "nodes_count": 1}
+    assert calls == ["vpn-auto", "final-mihomo", "desired-profiles", "promote"]
+
+
+def test_startup_native_staged_failure_does_not_skip_or_repeat_publication(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription.get_subscription_state",
+        lambda: {"status": "success", "last_success_at": "2026-09-27 12:00:00"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_runtime_state._module_state",
+        lambda _name: {"desired_state": "enabled", "lifecycle_mode": "managed"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.reconcile_xray_vpn_auto_subscription",
+        lambda **_kwargs: calls.append("vpn-auto") or {
+            "ok": False,
+            "status": "pending",
+            "stage": "native_proof",
+            "error_code": "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED",
+            "generation_apply": {"final_mihomo": {"ok": True}, "public_snapshots_changed": True},
+            "public_profile_promote": {"profiles_count": 1, "nodes_count": 2},
+            "staged_publication_receipt": {
+                "schema": 1,
+                "staged_native_publication_complete": True,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config.reconcile_mihomo_runtime",
+        lambda **_kwargs: calls.append("incorrect-fallback-after-failed-stage") or {"ok": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription_profiles.promote_runtime_verified_subscription_nodes",
+        lambda *_args, **_kwargs: calls.append("incorrect-promote-after-failed-stage") or {},
+    )
+    monkeypatch.setattr("fwrouter_api.services.bootstrap.write_technical_log", lambda **_kwargs: None)
+
+    result = recover_startup_xray_subscription_profiles()
+
+    assert result["ok"] is False
+    assert result["status"] == "pending"
+    assert result["error_code"] == "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED"
+    assert calls == ["vpn-auto"]

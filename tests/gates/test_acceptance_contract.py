@@ -6,6 +6,8 @@ import builtins
 import copy
 import hashlib
 import json
+import math
+import os
 import re
 import tarfile
 import tempfile
@@ -58,9 +60,63 @@ assert NATIVE_SPEC and NATIVE_SPEC.loader
 native_runner = importlib.util.module_from_spec(NATIVE_SPEC)
 NATIVE_SPEC.loader.exec_module(native_runner)
 WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+APPLICATION_ACCEPTANCE_CONFTEST = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
+
+
+def _extract_startup_phase_parser():
+    """Load the small parser without importing pytest fixtures or FWRouter modules."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_startup_phase_diagnostics"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {"Path": Path, "os": os, "json": json, "math": math}
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_CONFTEST), "exec"), namespace)
+    return namespace["_startup_phase_diagnostics"]
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_startup_phase_diagnostic_parser_reads_only_a_bounded_tail(self):
+        parser = _extract_startup_phase_parser()
+        prefix = b"FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
+        old_event = prefix + b'{"phase":"old_phase","event":"exit","seconds":9.0}\n'
+        recent_event = prefix + b'{"phase":"recover_xray","event":"exit","seconds":1.25,"cpu_seconds":0.5}\n'
+        with tempfile.TemporaryDirectory(prefix="fwrouter-startup-phase-parser-") as temp:
+            log = Path(temp) / "worker.log"
+            log.write_bytes(old_event + b"x" * (16 * 1024 - 1) + b"\n" + recent_event)
+            result = parser(log)
+        self.assertEqual("parsed", result["status"])
+        self.assertLessEqual(result["tail_bytes"], 16 * 1024)
+        self.assertEqual(["recover_xray"], [item["phase"] for item in result["events"]])
+        self.assertNotIn("old_phase", result["totals"])
+        self.assertEqual({"calls": 1, "wall_seconds": 1.25, "cpu_seconds": 0.5},
+                         result["totals"]["recover_xray"])
+
+    def test_startup_phase_diagnostic_parser_rejects_malformed_timings_and_drops_untrusted_fields(self):
+        parser = _extract_startup_phase_parser()
+        prefix = b"FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
+        lines = [
+            prefix + b"[]\n",
+            prefix + b'{"phase":"unsafe phase","event":"exit","seconds":1}\n',
+            prefix + b'{"phase":"bad_float","event":"exit","seconds":NaN,"cpu_seconds":Infinity,"token":"TOKEN_SENTINEL"}\n',
+            prefix + b'{"phase":"negative","event":"exit","seconds":-1,"cpu_seconds":-2}\n',
+            prefix + b'{"phase":"safe_phase","event":"exit","seconds":1.5,"cpu_seconds":0.25,"authorization":"TOKEN_SENTINEL"}\n',
+        ]
+        with tempfile.TemporaryDirectory(prefix="fwrouter-startup-phase-parser-invalid-") as temp:
+            log = Path(temp) / "worker.log"
+            log.write_bytes(b"".join(lines))
+            result = parser(log)
+        self.assertEqual(["bad_float", "negative", "safe_phase"],
+                         [item["phase"] for item in result["events"]])
+        self.assertEqual({"calls": 0, "wall_seconds": 0.0, "cpu_seconds": 0.0},
+                         result["totals"]["bad_float"])
+        self.assertEqual({"calls": 0, "wall_seconds": 0.0, "cpu_seconds": 0.0},
+                         result["totals"]["negative"])
+        self.assertEqual({"calls": 1, "wall_seconds": 1.5, "cpu_seconds": 0.25},
+                         result["totals"]["safe_phase"])
+        self.assertNotIn("TOKEN_SENTINEL", json.dumps(result))
+
     def test_routine_unit_failure_report_is_bound_bounded_and_never_eligible(self):
         path = "backend/tests/test_apply_pipeline.py"
         manifest = aggregate_hosted.gate.load_manifest()

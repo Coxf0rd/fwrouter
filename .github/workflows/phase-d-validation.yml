@@ -253,6 +253,34 @@ jobs:
             'tests/test_xray.py::test_owned_restore_revalidates_after_reload_before_database_restore[snapshot]' \
             'tests/test_xray.py::test_owned_restore_revalidates_after_reload_before_database_restore[fence]' || result=$?
           if [ "$result" -eq 0 ]; then
+            python tests/gates/run_exact_nodes.py \
+              --junit "$root/startup-publication.xml" \
+              --report "$root/startup-publication-report.json" \
+              --log "$root/startup-publication.log" \
+              tests/test_bootstrap.py::test_startup_vpn_auto_reconcile_promotes_profiles_after_final_mihomo \
+              'tests/test_bootstrap.py::test_startup_consumes_completed_staged_publication_without_duplicate_mihomo_or_promotion[pending-cas-cleared]' \
+              'tests/test_bootstrap.py::test_startup_consumes_completed_staged_publication_without_duplicate_mihomo_or_promotion[pending-cas-refused]' \
+              'tests/test_bootstrap.py::test_startup_staged_completion_predicate_rejects_unproven_or_malformed_receipt[not-ok]' \
+              'tests/test_bootstrap.py::test_startup_staged_completion_predicate_rejects_unproven_or_malformed_receipt[not-success]' \
+              'tests/test_bootstrap.py::test_startup_staged_completion_predicate_rejects_unproven_or_malformed_receipt[bool-schema]' \
+              'tests/test_bootstrap.py::test_startup_staged_completion_predicate_rejects_unproven_or_malformed_receipt[bool-count]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[legacy-no-receipt]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[unsupported-schema]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[nonliteral-complete]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[missing-final-proof]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[failed-final-proof]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[invalid-promotion-count]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[missing-snapshot-result]' \
+              tests/test_bootstrap.py::test_startup_native_staged_failure_does_not_skip_or_repeat_publication \
+              tests/test_xray.py::test_staged_generation_finalizer_returns_success_and_closes_checkpoint_last \
+              tests/test_xray.py::test_staged_generation_finalizer_emits_completion_only_after_durable_checkpoint_closure \
+              tests/test_xray.py::test_staged_generation_finalizer_keeps_checkpoint_on_publication_failure \
+              tests/test_xray.py::test_staged_generation_finalizer_requires_udp_receipt_before_publication \
+              'tests/test_xray.py::test_staged_generation_finalizer_does_not_return_completion_when_checkpoint_closure_fails[unlink]' \
+              'tests/test_xray.py::test_staged_generation_finalizer_does_not_return_completion_when_checkpoint_closure_fails[directory_fsync]' \
+              tests/test_xray.py::test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publication || result=$?
+          fi
+          if [ "$result" -eq 0 ]; then
             python tests/gates/gate.py subset-plan --domain xray --level L3 \
               --output "$root/xray-l3-plan.json" > "$root/xray-l3-plan.log"
             set +e
@@ -306,6 +334,9 @@ jobs:
             ${{ runner.temp }}/phase-d-identities/migration-l3.xml
             ${{ runner.temp }}/phase-d-identities/migration-l3-report.json
             ${{ runner.temp }}/phase-d-identities/migration-l3.log
+            ${{ runner.temp }}/phase-d-identities/startup-publication.xml
+            ${{ runner.temp }}/phase-d-identities/startup-publication-report.json
+            ${{ runner.temp }}/phase-d-identities/startup-publication.log
             ${{ runner.temp }}/phase-d-identities/xray-l3-plan.json
             ${{ runner.temp }}/phase-d-identities/xray-l3-plan.log
             ${{ runner.temp }}/phase-d-identities/xray-l3-report.json

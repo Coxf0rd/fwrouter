@@ -2627,6 +2627,14 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
     if checkpoint_path.exists():
         checkpoint_path.unlink(missing_ok=True)
         _fsync_directory(checkpoint_path.parent)
+        if not checkpoint_path.exists():
+            # Startup may use this receipt to avoid repeating the final Mihomo
+            # convergence and profile promotion. Emit it only after staged
+            # native proof, publication, and durable checkpoint closure.
+            result["staged_publication_receipt"] = {
+                "schema": 1,
+                "staged_native_publication_complete": True,
+            }
     return result
 
 

@@ -707,6 +707,31 @@ def _run_startup_apply_reconcile_steps(*, enabled: bool) -> dict[str, Any]:
     }
 
 
+def _has_completed_staged_xray_publication(result: dict[str, Any]) -> bool:
+    """Accept only the staged finalizer's receipt for already completed native work."""
+
+    if not result.get("ok") or str(result.get("status") or "") != "success":
+        return False
+    receipt = result.get("staged_publication_receipt")
+    generation_apply = result.get("generation_apply")
+    promotion = result.get("public_profile_promote")
+    if not isinstance(receipt, dict) or type(receipt.get("schema")) is not int or receipt.get("schema") != 1:
+        return False
+    if receipt.get("staged_native_publication_complete") is not True:
+        return False
+    if not isinstance(generation_apply, dict) or type(generation_apply.get("public_snapshots_changed")) is not bool:
+        return False
+    final_mihomo = generation_apply.get("final_mihomo")
+    if not isinstance(final_mihomo, dict) or final_mihomo.get("ok") is not True:
+        return False
+    if not isinstance(promotion, dict):
+        return False
+    return all(
+        type(promotion.get(key)) is int and promotion[key] >= 0
+        for key in ("profiles_count", "nodes_count")
+    )
+
+
 def _recover_startup_xray_subscription_profiles_under_guard() -> dict[str, Any]:
     """Converge persisted Xray clients after backend restart.
 
@@ -741,36 +766,43 @@ def _recover_startup_xray_subscription_profiles_under_guard() -> dict[str, Any]:
             )
             result["inventory_authority"] = "persisted_success"
             if result.get("ok") and str(result.get("status") or "") == "success":
-                from fwrouter_api.services.mihomo_config import reconcile_mihomo_runtime
-                from fwrouter_api.services.subscription_profiles import (
-                    list_desired_subscription_xray_clients,
-                    promote_runtime_verified_subscription_nodes,
-                )
-
-                final_mihomo = reconcile_mihomo_runtime() or {}
-                result["final_mihomo_reconcile"] = {
-                    "ok": bool(final_mihomo.get("ok")),
-                    "reconcile_action": final_mihomo.get("reconcile_action"),
-                    "reconcile_reason": final_mihomo.get("reconcile_reason"),
-                }
-                if not final_mihomo.get("ok"):
-                    result.update(
-                        {
-                            "ok": False,
-                            "status": "failed",
-                            "stage": "final_mihomo_reconcile",
-                            "error_code": "STARTUP_XRAY_VPN_AUTO_FINAL_MIHOMO_FAILED",
-                            "error_message": "Final Mihomo reconcile failed after Xray vpn-auto convergence.",
-                        }
-                    )
-                else:
-                    promoted = promote_runtime_verified_subscription_nodes(
-                        list_desired_subscription_xray_clients()
-                    )
-                    result["public_profile_promote"] = {
-                        "profiles_count": int(promoted.get("profiles_count") or 0),
-                        "nodes_count": int(promoted.get("nodes_count") or 0),
+                if _has_completed_staged_xray_publication(result):
+                    result["final_mihomo_reconcile"] = {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "staged_publication_native_proof_complete",
                     }
+                else:
+                    from fwrouter_api.services.mihomo_config import reconcile_mihomo_runtime
+                    from fwrouter_api.services.subscription_profiles import (
+                        list_desired_subscription_xray_clients,
+                        promote_runtime_verified_subscription_nodes,
+                    )
+
+                    final_mihomo = reconcile_mihomo_runtime() or {}
+                    result["final_mihomo_reconcile"] = {
+                        "ok": bool(final_mihomo.get("ok")),
+                        "reconcile_action": final_mihomo.get("reconcile_action"),
+                        "reconcile_reason": final_mihomo.get("reconcile_reason"),
+                    }
+                    if not final_mihomo.get("ok"):
+                        result.update(
+                            {
+                                "ok": False,
+                                "status": "failed",
+                                "stage": "final_mihomo_reconcile",
+                                "error_code": "STARTUP_XRAY_VPN_AUTO_FINAL_MIHOMO_FAILED",
+                                "error_message": "Final Mihomo reconcile failed after Xray vpn-auto convergence.",
+                            }
+                        )
+                    else:
+                        promoted = promote_runtime_verified_subscription_nodes(
+                            list_desired_subscription_xray_clients()
+                        )
+                        result["public_profile_promote"] = {
+                            "profiles_count": int(promoted.get("profiles_count") or 0),
+                            "nodes_count": int(promoted.get("nodes_count") or 0),
+                        }
         else:
             result = reconcile_xray_subscription_profile_nodes(
                 requested_by="startup-xray-profile-reconcile"

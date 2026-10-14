@@ -571,6 +571,10 @@ def test_staged_generation_finalizer_returns_success_and_closes_checkpoint_last(
     assert publication_order == ["receipt", "public_profile"]
     assert result["generation_apply"]["public_snapshots_changed"] is True
     assert not checkpoint.exists()
+    assert result["staged_publication_receipt"] == {
+        "schema": 1,
+        "staged_native_publication_complete": True,
+    }
     with db_session() as connection:
         snapshot = connection.execute(
             "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),
@@ -624,6 +628,7 @@ def test_staged_generation_finalizer_requires_udp_receipt_before_publication(mon
 
     assert result["ok"] is False
     assert result["error_code"] == "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED"
+    assert "staged_publication_receipt" not in result
     assert checkpoint.exists()
     assert promoted == []
     with db_session() as connection:
@@ -631,6 +636,80 @@ def test_staged_generation_finalizer_requires_udp_receipt_before_publication(mon
             "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),
         ).fetchone()
     assert snapshot is None
+
+
+def test_staged_generation_finalizer_emits_completion_only_after_durable_checkpoint_closure(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="generation-test", token="generation-test")
+    pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        xray_subscription_service,
+        "_publish_xray_generation_mihomo_udp_receipt",
+        lambda **_kwargs: True,
+    )
+    real_fsync_directory = xray_subscription_service._fsync_directory
+    observed_checkpoint_closed_at_fsync: list[bool] = []
+
+    def observe_checkpoint_closure(path: Path) -> None:
+        observed_checkpoint_closed_at_fsync.append(not checkpoint.exists())
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(xray_subscription_service, "_fsync_directory", observe_checkpoint_closure)
+    result = xray_subscription_service._finalize_xray_profile_publication(
+        pending,
+        {"ok": True, "operation_id": "generation-test",
+         "selection_revision": json.loads(checkpoint.read_text())["selection_revision"]},
+    )
+
+    assert observed_checkpoint_closed_at_fsync
+    assert observed_checkpoint_closed_at_fsync[-1] is True
+    assert not checkpoint.exists()
+    assert result["staged_publication_receipt"] == {
+        "schema": 1,
+        "staged_native_publication_complete": True,
+    }
+
+
+@pytest.mark.parametrize("failure", ["unlink", "directory_fsync"])
+def test_staged_generation_finalizer_does_not_return_completion_when_checkpoint_closure_fails(
+    monkeypatch, tmp_path: Path, failure: str,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="generation-test", token="generation-test")
+    pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        xray_subscription_service,
+        "_publish_xray_generation_mihomo_udp_receipt",
+        lambda **_kwargs: True,
+    )
+    if failure == "unlink":
+        original_unlink = Path.unlink
+
+        def fail_checkpoint_unlink(path: Path, *args, **kwargs) -> None:
+            if path == checkpoint:
+                raise OSError("injected checkpoint unlink failure")
+            original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_checkpoint_unlink)
+    else:
+        monkeypatch.setattr(
+            xray_subscription_service,
+            "_fsync_directory",
+            lambda _path: (_ for _ in ()).throw(OSError("injected checkpoint directory fsync failure")),
+        )
+
+    with pytest.raises(OSError, match="injected checkpoint"):
+        xray_subscription_service._finalize_xray_profile_publication(
+            pending,
+            {"ok": True, "operation_id": "generation-test",
+             "selection_revision": json.loads(checkpoint.read_text())["selection_revision"]},
+        )
+
+    assert checkpoint.exists() is (failure == "unlink")
 
 
 @pytest.mark.parametrize(
@@ -851,6 +930,7 @@ def test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publicati
     assert result["ok"] is False
     assert result["error_code"] == "XRAY_GENERATION_RUNTIME_READBACK_FAILED"
     assert checkpoint.exists()
+    assert "staged_publication_receipt" not in result
     with db_session() as connection:
         snapshot = connection.execute(
             "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),

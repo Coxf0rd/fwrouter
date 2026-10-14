@@ -20,6 +20,8 @@ from .http_support import http_json
 TOP_LEVEL_RULE_COUNT = 199_257
 MIN_CONFIG_BYTES = 20_000_000
 RSS_LIMIT_KIB = 1_572_864
+STARTUP_HARD_LIMIT_SECONDS = 45.0
+STARTUP_ENGINEERING_TARGET_SECONDS = 40.0
 SCALE_PROFILE_COUNT = 7
 SCALE_SERVERS_PER_PROFILE = 9
 SCALE_INTERNAL_AUTO_CLIENTS = SCALE_SERVERS_PER_PROFILE + 1
@@ -465,6 +467,17 @@ def _read_rss_kib(pid: int, *, field: str = "VmRSS") -> int | None:
     return None
 
 
+def _read_process_cpu_seconds(pid: int) -> float | None:
+    """Return cumulative user+system CPU time for the owned API process."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+        fields = raw[raw.rfind(")") + 2:].split()
+        ticks = int(fields[11]) + int(fields[12])
+        return round(ticks / os.sysconf("SC_CLK_TCK"), 4)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 class _RssSampler:
     def __init__(self, pid: int) -> None:
         self.pid = pid
@@ -472,6 +485,7 @@ class _RssSampler:
         self._thread = threading.Thread(target=self._sample, name="scale-rss-sampler", daemon=True)
         self.samples: list[int] = []
         self.high_water_samples: list[int] = []
+        self.cpu_seconds_samples: list[float] = []
 
     def _sample(self) -> None:
         while not self._stop.is_set():
@@ -489,6 +503,9 @@ class _RssSampler:
         high_water = _read_rss_kib(self.pid, field="VmHWM")
         if high_water is not None:
             self.high_water_samples.append(high_water)
+        cpu_seconds = _read_process_cpu_seconds(self.pid)
+        if cpu_seconds is not None:
+            self.cpu_seconds_samples.append(cpu_seconds)
 
     def stop(self) -> None:
         self._stop.set()
@@ -500,6 +517,10 @@ class _RssSampler:
     @property
     def peak_kib(self) -> int | None:
         return max(self.samples) if self.samples else None
+
+    @property
+    def process_cpu_seconds(self) -> float | None:
+        return max(self.cpu_seconds_samples) if self.cpu_seconds_samples else None
 
 
 def _stop_owned_worker(worker, *, timeout_seconds: float = 8.0) -> dict[str, Any]:
@@ -595,6 +616,11 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         ],
         "native_rules_request_count": None,
         "rss_scope": "owned API VmRSS plus process-lifetime Linux VmHWM; not aggregate/native memory",
+        "cpu_scope": "cumulative user+system CPU ticks read from /proc for the owned API worker; sampled while alive",
+        "startup_limits_seconds": {
+            "hard_deadline": STARTUP_HARD_LIMIT_SECONDS,
+            "engineering_target": STARTUP_ENGINEERING_TARGET_SECONDS,
+        },
     }
     sampler: _RssSampler | None = None
     active_worker = stack["worker"]
@@ -650,10 +676,39 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
                 startup_recovery=True,
                 on_spawn=observe_spawn,
             )
+            metrics["startup_ready"] = True
+            metrics["startup_deadline_seconds"] = STARTUP_HARD_LIMIT_SECONDS
+            metrics["rss_hwm_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmHWM")
+            metrics["rss_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmRSS")
+            metrics["api_process_cpu_seconds_at_readiness"] = _read_process_cpu_seconds(active_worker.pid)
+        except BaseException:
+            failures = stack.get("startup_failures") or []
+            if failures:
+                startup_failure = failures[-1]
+                metrics["startup_readiness_failure"] = startup_failure
+                metrics["startup_wall_seconds"] = startup_failure.get("readiness_elapsed_seconds")
+                metrics["startup_deadline_seconds"] = startup_failure.get("readiness_deadline_seconds")
+                metrics["startup_ready"] = False
+                metrics["rss_hwm_kib_at_readiness_deadline"] = startup_failure.get("rss_hwm_kib_at_deadline")
+                metrics["api_process_cpu_seconds_at_readiness_deadline"] = startup_failure.get(
+                    "process_cpu_seconds_at_deadline"
+                )
+                metrics["failure_shutdown_acceptance"] = "NOT RUN — worker never reached readiness or steady load"
+                metrics["final_worker_shutdown"] = {
+                    "status": "NOT RUN",
+                    "reason": "post-readiness bounded shutdown acceptance was not reached",
+                }
+            raise
         finally:
-            metrics["startup_wall_seconds"] = round(time.monotonic() - start, 4)
-        assert metrics["startup_wall_seconds"] < 45.0, {
-            "startup_wall_seconds": metrics["startup_wall_seconds"], "limit_seconds": 45.0,
+            if metrics.get("startup_wall_seconds") is None:
+                metrics["startup_wall_seconds"] = round(time.monotonic() - start, 4)
+        assert metrics["startup_wall_seconds"] < STARTUP_HARD_LIMIT_SECONDS, {
+            "startup_wall_seconds": metrics["startup_wall_seconds"],
+            "hard_limit_seconds": STARTUP_HARD_LIMIT_SECONDS,
+        }
+        assert metrics["startup_wall_seconds"] < STARTUP_ENGINEERING_TARGET_SECONDS, {
+            "startup_wall_seconds": metrics["startup_wall_seconds"],
+            "engineering_target_seconds": STARTUP_ENGINEERING_TARGET_SECONDS,
         }
         stack["worker"] = active_worker
         stack["api"] = api
@@ -700,6 +755,33 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         assert xray_reconcile.get("ok") is True, xray_reconcile
         assert xray_reconcile.get("status") == "success", xray_reconcile
         assert xray_reconcile.get("inventory_authority") == "persisted_success", xray_reconcile
+        staged_receipt = xray_reconcile.get("staged_publication_receipt")
+        generation_apply = xray_reconcile.get("generation_apply")
+        final_mihomo = generation_apply.get("final_mihomo") if isinstance(generation_apply, dict) else None
+        final_mihomo_reconcile = xray_reconcile.get("final_mihomo_reconcile")
+        promotion = xray_reconcile.get("public_profile_promote")
+        assert (isinstance(staged_receipt, dict)
+                and type(staged_receipt.get("schema")) is int
+                and staged_receipt.get("schema") == 1
+                and staged_receipt.get("staged_native_publication_complete") is True), xray_reconcile
+        assert isinstance(generation_apply, dict) and type(generation_apply.get("public_snapshots_changed")) is bool, xray_reconcile
+        assert isinstance(final_mihomo, dict) and final_mihomo.get("ok") is True, xray_reconcile
+        assert (isinstance(final_mihomo_reconcile, dict)
+                and final_mihomo_reconcile.get("ok") is True
+                and final_mihomo_reconcile.get("skipped") is True
+                and final_mihomo_reconcile.get("reason") == "staged_publication_native_proof_complete"), xray_reconcile
+        assert isinstance(promotion, dict) and all(
+            type(promotion.get(key)) is int and promotion[key] >= 0
+            for key in ("profiles_count", "nodes_count")
+        ), xray_reconcile
+        metrics["startup_staged_publication_proof"] = {
+            "native_publication_complete": True,
+            "final_mihomo_apply_ok": True,
+            "duplicate_mihomo_reconcile_skipped": True,
+            "public_snapshots_changed": generation_apply["public_snapshots_changed"],
+            "promoted_profiles_count": promotion["profiles_count"],
+            "promoted_nodes_count": promotion["nodes_count"],
+        }
         from .xray_support import assert_applied_bindings, read_subscription_rows
 
         expected_binding_pairs = {
@@ -811,7 +893,8 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         assert metrics["native_reality_tcp_probe"]["endpoint_vpn_source_matches"] is True, metrics["native_reality_tcp_probe"]
 
         assert sampler is not None
-        metrics["rss_hwm_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmHWM")
+        metrics["rss_hwm_kib_after_native_probe"] = _read_rss_kib(active_worker.pid, field="VmHWM")
+        metrics["api_process_cpu_seconds_after_native_probe"] = _read_process_cpu_seconds(active_worker.pid)
         waves: list[list[dict[str, Any]]] = []
         metrics["waves"] = waves
         for wave_number in range(4):
@@ -850,6 +933,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         metrics["rss_peak_kib_sampled_process_lifetime"] = sampler.peak_kib
         lifetime_peak = max(sampler.high_water_samples) if sampler.high_water_samples else None
         metrics["rss_hwm_kib_process_lifetime"] = lifetime_peak
+        metrics["api_process_cpu_seconds_sampled"] = sampler.process_cpu_seconds
         assert lifetime_peak is not None and lifetime_peak < RSS_LIMIT_KIB, {"rss_hwm_kib": lifetime_peak}
         assert sampler.peak_kib is not None and sampler.peak_kib < RSS_LIMIT_KIB, {
             "rss_peak_kib_sampled_process_lifetime": sampler.peak_kib,
@@ -887,6 +971,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             sampler.stop()
             metrics["rss_peak_kib_sampled_process_lifetime"] = sampler.peak_kib
             metrics["rss_hwm_kib_process_lifetime"] = max(sampler.high_water_samples) if sampler.high_water_samples else None
+            metrics["api_process_cpu_seconds_sampled"] = sampler.process_cpu_seconds
         if active_worker.poll() is None:
             shutdown = _stop_owned_worker(active_worker)
             metrics["final_worker_shutdown"] = shutdown
@@ -897,4 +982,10 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
                     raise AssertionError(f"restarted API worker failed graceful SIGTERM: {shutdown}")
                 # Preserve the original startup/assertion error; metrics retain
                 # the independent shutdown failure for the same execution.
+        elif metrics.get("failure_shutdown_acceptance") is None:
+            metrics["final_worker_shutdown"] = {
+                "status": "NOT RUN",
+                "reason": "owned API worker already exited before post-load shutdown gate",
+                "return_code": active_worker.poll(),
+            }
         _write_metrics(metrics)

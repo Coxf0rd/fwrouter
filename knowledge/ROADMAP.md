@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 startup bottleneck follow-up — 2026-10-15
+
+Sourcecd4584f run38605119405 confirms complete isolated native durable identity/migration/refresh/restart/rollback acceptance. Startup readiness still FAIL at45s;46.3387s includes timeout handling and is not successful startup. Second scale attempt/final full CI NOT RUN. Measured live routing12.8421s and Xray recovery27.1367s dominate; timeout enters a duplicate final Mihomo reconcile after staged native publication. A guarded completed-publication receipt removes only duplicate work; legacy/no-proof paths retain native checks. Hosted improvement and40s engineering margin remain unconfirmed. PR8 Draft/BLOCKED, production API/dependents held without changes, CI milestone CLOSED/CD DEFERRED. See runtime stability REPORT.md; historical checkpoints remain below.
+
 ## PR8 durable continuity hosted checkpoint — 2026-10-14
 
 Pushed f92f08a run38580161202 confirms subscriptionL1 13 PASS, exact migrationL3 8 PASS, adjacentXrayL3 54 PASS and MihomoL3 48 PASS. Real CLI intent-only mapping preserves78 preimages and8 affected bindings, but native fresh supersession remains FAIL at a dangling old Mihomo profile member; complete migration/publication and new startup measurements are not accepted. Bounded hashed graph diagnostics are being added before any speculative retention change. Source review also identified stale historical-mapping replay and unsafe preimage policy activation risks; current-identity CAS and pre-apply fail-closed/native rollback validation are under qualification. Startup44.8415s/45s margin remains unresolved. Full required CI is reserved for the final coherent checkpoint; PR8 Draft/BLOCKED, Production Live Acceptance BLOCKED, production units held with no mutations. CI milestone CLOSED/CD DEFERRED. Historical checkpoints remain below; current evidence: api_runtime_stability_2026-10-13/REPORT.md.

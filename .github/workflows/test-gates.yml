@@ -85,6 +85,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PUSH_BASE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
@@ -99,7 +100,20 @@ jobs:
           fi
           PLAN="$RUNNER_TEMP/fwrouter-affected-plan.json"
           REPORT="$RUNNER_TEMP/fwrouter-affected-unit.json"
-          python tests/gates/gate.py plan --base "$BASE" --include-native --output "$PLAN"
+          PLAN_ARGS=(--base "$BASE" --include-native --output "$PLAN")
+          mandatory_all=false
+          if [ "$EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            mandatory_all=true
+          elif [ "$EVENT_NAME" = pull_request ] \
+            && [ "$PR_HEAD_REPO" = "$GITHUB_REPOSITORY" ] \
+            && git log -1 --format=%B | grep -Fq -- 'ci:full-acceptance'; then
+            mandatory_all=true
+          fi
+          if [ "$mandatory_all" = true ]; then
+            PLAN_ARGS+=(--mandatory-all)
+          fi
+          printf 'mandatory_all=%s\n' "$mandatory_all" >> "$GITHUB_OUTPUT"
+          python tests/gates/gate.py plan "${PLAN_ARGS[@]}"
           python - "$PLAN" "$GITHUB_OUTPUT" <<'PY'
           import json, sys
           plan = json.load(open(sys.argv[1], encoding="utf-8"))

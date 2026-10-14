@@ -107,6 +107,124 @@ class GateContractTests(unittest.TestCase):
                                       text=True, capture_output=True, check=False)
             self.assertEqual(0, ordinary.returncode, ordinary.stderr)
 
+    def test_main_and_trusted_final_pr_use_mandatory_all_plan_policy(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        self.assertIn("name: Affected L0-L5 with hosted profiles", workflow)
+        self.assertIn("github.event_name == 'pull_request'", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}", workflow)
+        self.assertIn("&& [ \"$PR_HEAD_REPO\" = \"$GITHUB_REPOSITORY\" ]", workflow)
+        self.assertIn("grep -Fq -- 'ci:full-acceptance'", workflow)
+        self.assertIn("PLAN_ARGS+=(--mandatory-all)", workflow)
+        self.assertIn("python tests/gates/gate.py plan \"${PLAN_ARGS[@]}\"", workflow)
+        self.assertIn("PLAN_ARGS=(--base \"$BASE\" --include-native --output \"$PLAN\")", workflow)
+
+        start = workflow.index("          PLAN_ARGS=(--base")
+        end = workflow.index("          python tests/gates/gate.py plan ", start)
+        policy = workflow[start:end]
+        with tempfile.TemporaryDirectory(prefix="fwrouter-mandatory-event-policy-") as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Gate Contract"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "gate-contract@example.invalid"],
+                           cwd=repo, check=True)
+            (repo / "event.txt").write_text("event policy\n", encoding="utf-8")
+            subprocess.run(["git", "add", "event.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "--quiet", "-m", "ci:full-acceptance"], cwd=repo, check=True)
+
+            cases = (
+                ("push", "refs/heads/main", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "true"),
+                ("pull_request", "refs/pull/8/merge", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "true"),
+                ("pull_request", "refs/pull/8/merge", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", False, "false"),
+                ("pull_request", "refs/pull/8/merge", "fork/fwrouter", "Coxf0rd/fwrouter", True, "false"),
+                ("push", "refs/heads/feature", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "false"),
+            )
+            for event, ref, head_repo, repository, marker, expected in cases:
+                with self.subTest(event=event, ref=ref, head_repo=head_repo):
+                    subprocess.run(
+                        ["git", "commit", "--quiet", "--allow-empty", "-m",
+                         "ci:full-acceptance" if marker else "ordinary commit"],
+                        cwd=repo, check=True,
+                    )
+                    output_path = repo / "github-output.txt"
+                    env = {
+                        **os.environ,
+                        "EVENT_NAME": event,
+                        "BASE": "base-commit",
+                        "GITHUB_REF": ref,
+                        "PR_HEAD_REPO": head_repo,
+                        "GITHUB_REPOSITORY": repository,
+                        "PLAN": str(repo / "plan.json"),
+                        "GITHUB_OUTPUT": str(output_path),
+                    }
+                    output_path.write_text("", encoding="utf-8")
+                    completed = subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c", policy], cwd=repo,
+                        env=env, text=True, capture_output=True, check=False,
+                    )
+                    self.assertEqual(0, completed.returncode, completed.stderr)
+                    self.assertEqual(f"mandatory_all={expected}\n", output_path.read_text())
+
+    def test_mandatory_all_selects_every_safe_suite_and_rejects_omission(self) -> None:
+        changed = "backend/fwrouter_api/services/bootstrap.py"
+        safe = {
+            row["path"] for row in self.manifest["test_files"]
+            if row["primary_level"] in {"L1", "L2", "L3", "L4"} and not row.get("destructive")
+        }
+        l5_anchors = set(self.manifest["policies"]["L5"]["anchors"])
+        staging = {
+            row["path"] for row in self.manifest["test_files"]
+            if row["primary_level"] == "L7" or row.get("destructive")
+        }
+        with mock.patch.object(gate, "git", return_value="c" * 40), \
+             mock.patch.object(gate, "changed_paths", return_value=[changed]):
+            plan = gate.make_mandatory_suite_plan("b" * 40, self.manifest, [changed])
+            gate.ensure_plan(plan, self.manifest)
+
+            self.assertTrue(plan["mandatory_suite_required"])
+            self.assertFalse(plan["full_suite_required"])
+            self.assertTrue(plan["include_native"])
+            self.assertEqual(safe, set(plan["selected_files"]))
+            self.assertTrue(l5_anchors <= set(plan["selected_files"]))
+            self.assertEqual(staging, set(plan["optional_suites"]))
+            self.assertEqual(staging, set(plan["deferred_staging_suites"]))
+            self.assertNotIn("L7", plan["required_levels"])
+            self.assertEqual({"L0", "L1", "L2", "L3", "L4"}, set(plan["required_levels"]))
+
+            omitted = copy.deepcopy(plan)
+            omitted["selected_files"].pop()
+            omitted["plan_digest"] = gate.canonical_digest(
+                {key: value for key, value in omitted.items() if key != "plan_digest"})
+            with self.assertRaisesRegex(gate.GateError, "deterministic complete safe-suite selection"):
+                gate.ensure_plan(omitted, self.manifest)
+
+            wrong_paths = copy.deepcopy(plan)
+            wrong_paths["changed_paths"] = ["backend/fwrouter_api/services/other.py"]
+            wrong_paths["plan_digest"] = gate.canonical_digest(
+                {key: value for key, value in wrong_paths.items() if key != "plan_digest"})
+            with self.assertRaisesRegex(gate.GateError, "actual immutable base..HEAD diff"):
+                gate.ensure_plan(wrong_paths, self.manifest)
+
+            no_native = copy.deepcopy(plan)
+            no_native["include_native"] = False
+            no_native["plan_digest"] = gate.canonical_digest(
+                {key: value for key, value in no_native.items() if key != "plan_digest"})
+            with self.assertRaisesRegex(gate.GateError, "include-native L0-L5"):
+                gate.ensure_plan(no_native, self.manifest)
+
+    def test_ordinary_affected_plan_remains_affected_and_not_mandatory(self) -> None:
+        changed = "backend/fwrouter_api/services/bootstrap.py"
+        with mock.patch.object(gate, "git", return_value="c" * 40), \
+             mock.patch.object(gate, "changed_paths", return_value=[changed]):
+            plan = gate.make_plan("b" * 40, self.manifest, [changed], include_native=True)
+            gate.ensure_plan(plan, self.manifest)
+        self.assertFalse(plan["mandatory_suite_required"])
+        self.assertFalse(plan["full_suite_required"])
+        self.assertLess(len(plan["selected_files"]), len([
+            row for row in self.manifest["test_files"]
+            if row["primary_level"] in {"L1", "L2", "L3", "L4"} and not row.get("destructive")
+        ]))
+
     def test_identity_diagnostic_uses_available_main_base_without_rebasing_legacy_stages(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
         identity_base = (
