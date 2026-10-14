@@ -270,6 +270,28 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         finally:
             connection.close()
 
+    def profile_credentials(server_id: str):
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        connection.row_factory = sqlite3.Row
+        try:
+            alias = connection.execute(
+                "SELECT identity_id FROM subscription_node_aliases WHERE server_id=?", (server_id,),
+            ).fetchone()
+            if alias is None:
+                return None, set()
+            identity_id = str(alias["identity_id"])
+            rows = {
+                (str(row["scope"]), str(row["client_uuid"]), str(row["client_email"]), int(row["revoked"]))
+                for row in connection.execute(
+                    "SELECT scope, client_uuid, client_email, revoked "
+                    "FROM subscription_node_credentials WHERE identity_id=?",
+                    (identity_id,),
+                )
+            }
+            return identity_id, rows
+        finally:
+            connection.close()
+
     original_member_ids = profile_member_ids(old_id)
     assert len(original_member_ids) == 7
 
@@ -369,6 +391,22 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         "expected_sha256": identity_fingerprint(expected_baseline),
     }
     assert affected <= baseline_pairs
+    expected_migration_credentials = {
+        ("subscription:" + token,
+         str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{token}:{old_id}")),
+         f"sub-{digest(token, 10)}-{digest(old_id, 12)}@fwrouter.local", 0)
+        for token in tokens
+    }
+    expected_migration_credentials.add(("vpn-auto", internal_uuid, internal_email, 0))
+    old_identity_id, old_migration_credentials = profile_credentials(old_id)
+    assert (old_identity_id is not None and len(old_migration_credentials) == 8
+            and old_migration_credentials == expected_migration_credentials), {
+        "identity_present": old_identity_id is not None,
+        "credential_count": len(old_migration_credentials),
+        "expected_credential_count": len(expected_migration_credentials),
+        "credential_sha256": identity_fingerprint(old_migration_credentials),
+        "expected_sha256": identity_fingerprint(expected_migration_credentials),
+    }
     unaffected = baseline_pairs - affected
     assert len(unaffected) == 70
     assert unrelated_native_pairs <= baseline_pairs, {
@@ -513,13 +551,24 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         "exit_code": dry_code, "receipt": {key: dry.get(key) for key in
             ("ok", "error_code", "status", "mappings_count", "changed_count", "native_applied")},
     }
-    assert dry.get("mappings_count") == 1 and dry.get("preserved_identity_count") == 8
+    assert (dry.get("mappings_count") == 1 and dry.get("changed_count") == 1
+            and dry.get("preserved_identity_count") == len(baseline_pairs)
+            and dry.get("native_applied") is False
+            and dry.get("fresh_generation_required") is True), {
+        "mappings_count": dry.get("mappings_count"),
+        "changed_count": dry.get("changed_count"),
+        "preserved_identity_count": dry.get("preserved_identity_count"),
+        "expected_preimage_count": len(baseline_pairs),
+        "native_applied": dry.get("native_applied"),
+        "fresh_generation_required": dry.get("fresh_generation_required"),
+    }
     connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
     try:
         current_raw = json.loads(connection.execute(
             "SELECT raw_json FROM servers WHERE server_id=?", (new_id,),
         ).fetchone()[0])
         assert "_fwrouter_profile_provenance" not in current_raw
+        assert current_raw.get("_fwrouter_identity_migration_required") is True
     finally:
         connection.close()
     assert native.reload_calls == reloads_before_intent
@@ -532,14 +581,46 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
             ("ok", "error_code", "status", "changed_count", "native_applied", "public_snapshots_changed")},
     }
     assert applied.get("native_applied") is False and applied.get("public_snapshots_changed") is False
-    assert applied.get("mappings_count") == 1 and applied.get("preserved_identity_count") == 8
+    assert (applied.get("mappings_count") == 1 and applied.get("changed_count") == 1
+            and applied.get("preserved_identity_count") == len(baseline_pairs)
+            and applied.get("native_applied") is False
+            and applied.get("public_snapshots_changed") is False
+            and applied.get("fresh_generation_required") is True), {
+        "mappings_count": applied.get("mappings_count"),
+        "changed_count": applied.get("changed_count"),
+        "preserved_identity_count": applied.get("preserved_identity_count"),
+        "expected_preimage_count": len(baseline_pairs),
+        "native_applied": applied.get("native_applied"),
+        "public_snapshots_changed": applied.get("public_snapshots_changed"),
+        "fresh_generation_required": applied.get("fresh_generation_required"),
+    }
+    new_identity_id, migrated_credentials = profile_credentials(new_id)
+    assert (new_identity_id == old_identity_id and migrated_credentials == old_migration_credentials
+            and len(migrated_credentials) == 8), {
+        "same_logical_identity": new_identity_id == old_identity_id,
+        "credential_count": len(migrated_credentials),
+        "expected_credential_count": 8,
+        "credential_sha256": identity_fingerprint(migrated_credentials),
+        "expected_sha256": identity_fingerprint(old_migration_credentials),
+    }
     connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
     try:
         persisted_raw = json.loads(connection.execute(
             "SELECT raw_json FROM servers WHERE server_id=?", (new_id,),
         ).fetchone()[0])
         persisted_witness = persisted_raw.pop("_fwrouter_profile_provenance")
-        assert persisted_raw == legacy_raw
+        assert persisted_raw.pop("_fwrouter_identity_migration_required", None) is None
+        assert legacy_raw.pop("_fwrouter_identity_migration_required", None) is True
+        assert persisted_raw == legacy_raw, {
+            "migration_marker_cleared": True,
+            "profile_projection_preserved": persisted_raw == legacy_raw,
+            "persisted_projection_sha256": hashlib.sha256(
+                json.dumps(persisted_raw, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "expected_projection_sha256": hashlib.sha256(
+                json.dumps(legacy_raw, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        }
         assert persisted_witness.get("content") == new_id.removeprefix("sub:")
         assert persisted_witness.get("version") == 1
     finally:
