@@ -77,3 +77,10 @@ Recovery remains NOT RUN. Preserve the original78 credentials in a fresh owned t
 ca1cd8a source passes actual PR affected CI:1451 routine,26+1 qualified native,26 ordinary,11 Provider,2 packet/scale; no FAIL/SKIP. Real nonempty fixture includes82 pre-existing native identities and70 nodes for7 accounts. Startup44.8415s, process HWM908944KiB,24 HTTP200 concurrent reads (max2.2285s; health max0.0118s), observed cleanup0.2639s. Native identities exactly preserved;82 bindings/7 snapshots verified; real Reality HEAD count and VPN peer source observed. This is one strict PASS with only0.1585s startup margin, repeat pending. It is container/kernel evidence, not live production or host-systemd acceptance.
 
 Production still holds the failed4ffd686 activation and partially applied78-client generation; no identities restored, no API/dependents started. Current durable mapping proposal remains NOT IMPLEMENTED, Legacy checkpoint restore/resume is inadmissible. Full Live Acceptance remains BLOCKED and any later activation/recovery needs separate authorization.
+
+
+## Repeat hosted PASS; live state still blocked
+
+47d64e2 run38551736466 repeats the identical application/test/workflow source from ca1cd8a: all1451 routine/26+1 qualified/26 ordinary/11 Provider/2 packet-scale PASS, no FAIL/SKIP.82 unchanged native identities,82 bindings,7 verified snapshots and actual Reality HEAD VPN-source evidence. Startup28.1711s, peak947256KiB,24 HTTP200 reads/max1.5216s, cleanup0.2136s. Together with38548698209 this qualifies the isolated nonempty performance/native scenario twice, with28.17–44.84s variance.
+
+No production update or recovery follows from these receipts. Original78/native/public mismatch, stale checkpoint and the required durable identity-contract decision remain open; API/dependents remain held. Production Live Acceptance BLOCKED.

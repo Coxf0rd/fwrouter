@@ -1,5 +1,11 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 repeated hosted qualification / recovery decision gate — 2026-10-14
+
+47d64e2 run38551736466 SUCCESS, unchanged runtime/test/workflow code relative to successfulca1cd8a run38548698209. Each:1451 routine,26+1 qualified native,26 ordinary,11 Provider,2 packet/scale PASS,0 FAIL/SKIP. Nonempty82 identities retained exactly/82 bindings/7 verified snapshots/actual Reality TCP VPN-source observations/24 HTTP200 reads. Startup28.1711s and44.8415s, HWM947256/908944KiB, max API1.5216/2.2285s, health0.0041/0.0118s, observed shutdown0.2136/0.2639s. Two scoped PASS; variance/near45s margin remains a risk, no host-systemd/soak claim.
+
+Production4ffd686 API/dependents remain held and original78 recovery NOT RUN. Persistent credential continuity across changed canonical profile IDs requires an explicit durable mapping/compatibility decision; proposed scoped migration NOT IMPLEMENTED, frozen last-good versus qualified new-profile migration are distinct choices. No unsafe generator rollback, no fence bypass, no guessed alias. PR8 DRAFT/recovery decision gate, Live Acceptance BLOCKED. CI milestone CLOSED, CD DEFERRED; no new milestone. Current engineering report records historical FAIL and scoped PASS separately.
+
 ## PR8 first strict nonempty PASS — 2026-10-14
 
 Actualca1cd8a PR run38548698209 SUCCESS:1451 routine, qualified26+1, ordinary26, Provider11 and packet/scale2 PASS; no FAIL/SKIP. Real nonempty startup44.8415s, API HWM908944KiB,24 concurrent HTTP200 responses (max2.2285s; health max0.0118s), observed graceful shutdown0.2639s.82 native identities exactly preserved,82 matching bindings,7 verified snapshots; actual Reality HEAD counted at the endpoint with VPN source. Strict deadline rejects late readiness. Startup margin0.1585s is narrow; repeat qualification pending. Remote availability of all synthetic servers is not inferred from this performance case; canonical fixture selector health is unmeasured, separate Provider cohort PASS.
