@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 durable continuity hosted checkpoint — 2026-10-14
+
+Pushed f92f08a run38580161202 confirms subscriptionL1 13 PASS, exact migrationL3 8 PASS, adjacentXrayL3 54 PASS and MihomoL3 48 PASS. Real CLI intent-only mapping preserves78 preimages and8 affected bindings, but native fresh supersession remains FAIL at a dangling old Mihomo profile member; complete migration/publication and new startup measurements are not accepted. Bounded hashed graph diagnostics are being added before any speculative retention change. Source review also identified stale historical-mapping replay and unsafe preimage policy activation risks; current-identity CAS and pre-apply fail-closed/native rollback validation are under qualification. Startup44.8415s/45s margin remains unresolved. Full required CI is reserved for the final coherent checkpoint; PR8 Draft/BLOCKED, Production Live Acceptance BLOCKED, production units held with no mutations. CI milestone CLOSED/CD DEFERRED. Historical checkpoints remain below; current evidence: api_runtime_stability_2026-10-13/REPORT.md.
+
 ## PR8 durable continuity implementation — 2026-10-14
 
 User approved persistent logical-node credential mapping, including all78 original production identities and internal VPN-auto continuity. Source/test drafts are being integrated in PR8; migration, refresh, restart, recovery and rollback hosted qualification are NOT RUN. The protected operator migration must precede ordinary generation; stale legacy checkpoint resume is forbidden and fresh owned supersession requires preserved evidence, atomic checkpoint replacement and all current fences/native proof. Conflicts/deletion/explicit rotation must be qualified. PR8 remains Draft, Production Live Acceptance BLOCKED, production API/dependents held with no mutation in this phase.

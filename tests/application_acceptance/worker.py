@@ -3644,10 +3644,179 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
     mihomo_runtime._run_compose_command = process_command
     mihomo_runtime.get_mihomo_runtime_incarnation = process_incarnation
 
+    graph_diagnostic_state = {"records": 0}
+    graph_diagnostic_lock = threading.Lock()
+
+    def record_candidate_graph_failure(candidate: Path, *, stderr: str = "") -> None:
+        """Emit bounded name-hash-only context before a rejected candidate is discarded."""
+        with graph_diagnostic_lock:
+            if graph_diagnostic_state["records"] >= 1:
+                return
+            graph_diagnostic_state["records"] += 1
+
+        def digest(value: Any) -> str:
+            return hashlib.sha256(str(value or "").encode("utf-8", "replace")).hexdigest()[:16]
+
+        def summarize_config(path: Path) -> dict[str, Any]:
+            import yaml
+            root = Path(os.environ["FWROUTER_APPLICATION_ACCEPTANCE_ROOT"]).resolve()
+            try:
+                resolved = path.resolve(strict=True)
+                if not resolved.is_relative_to(root) or resolved.stat().st_size > 8 * 1024 * 1024:
+                    return {"available": False, "reason": "outside_or_oversized"}
+                value = yaml.load(resolved.read_text(encoding="utf-8"), Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+            except Exception:
+                return {"available": False, "reason": "unreadable_or_invalid"}
+            if not isinstance(value, dict):
+                return {"available": False, "reason": "not_mapping"}
+            proxies = value.get("proxies") if isinstance(value.get("proxies"), list) else []
+            groups = value.get("proxy-groups") if isinstance(value.get("proxy-groups"), list) else []
+            proxy_names = {str(item.get("name")) for item in proxies if isinstance(item, dict) and item.get("name")}
+            group_names = {str(item.get("name")) for item in groups if isinstance(item, dict) and item.get("name")}
+            graph = []
+            missing = []
+            for group in groups[:24]:
+                if not isinstance(group, dict) or not isinstance(group.get("name"), str):
+                    continue
+                members = group.get("proxies") if isinstance(group.get("proxies"), list) else []
+                member_names = [str(item) for item in members[:48]]
+                unresolved = [name for name in member_names if name not in proxy_names | group_names | {"DIRECT", "REJECT", "PASS", "COMPATIBLE"}]
+                missing.extend(unresolved)
+                graph.append({
+                    "group_name_sha256": digest(group["name"]),
+                    "group_type": str(group.get("type") or "")[:32],
+                    "shape_sha256": hashlib.sha256(json.dumps(group, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest(),
+                    "member_count": len(members),
+                    "member_name_sha256": [digest(name) for name in member_names],
+                    "missing_member_sha256": [digest(name) for name in unresolved],
+                })
+            return {
+                "available": True, "proxy_count": len(proxies), "group_count": len(groups),
+                "proxy_name_sha256": sorted(digest(item.get("name")) for item in proxies[:128] if isinstance(item, dict) and item.get("name")),
+                "groups": graph, "missing_member_sha256": sorted({digest(name) for name in missing}),
+                "groups_truncated": len(groups) > 24,
+                "group_members_truncated": any(len(group.get("member_name_sha256") or []) >= 48 for group in graph),
+                "proxies_truncated": len(proxies) > 128,
+            }
+
+        record: dict[str, Any] = {
+            "schema": "fwrouter-acceptance-mihomo-candidate-graph/v1",
+            "event": "native_candidate_validation_failed",
+            "native_error_present": bool(stderr),
+            "candidate": summarize_config(candidate),
+        }
+        try:
+            from fwrouter_api.services import mihomo_config
+            active = Path(mihomo_config._resolved_base_config_path())
+            record["active_base"] = summarize_config(active)
+        except Exception:
+            record["active_base"] = {"available": False, "reason": "source_unavailable"}
+        try:
+            from fwrouter_api.db.connection import db_session
+            from fwrouter_api.services.mihomo_config_proxies import _logical_profile_members, _generated_logical_profile_group
+            inactive_rows: list[dict[str, Any]] = []
+            inventory_counts = {"active": 0, "missing": 0, "deleted": 0, "other": 0}
+            with db_session() as connection:
+                rows = connection.execute(
+                    "SELECT server_id, server_name, raw_json, inventory_state FROM servers ORDER BY server_id LIMIT 1000"
+                ).fetchall()
+                for row in rows:
+                    state_name = str(row["inventory_state"] or "other")
+                    inventory_counts[state_name if state_name in inventory_counts else "other"] += 1
+                    if state_name == "active" or len(inactive_rows) >= 20:
+                        continue
+                    try:
+                        raw = json.loads(row["raw_json"] or "{}")
+                    except (TypeError, ValueError):
+                        continue
+                    topology = raw.get("_fwrouter_topology") if isinstance(raw, dict) else None
+                    if not isinstance(topology, dict) or topology.get("kind") != "logical_profile":
+                        continue
+                    runtime_name = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or row["server_name"] or "").strip()
+                    members = _logical_profile_members(raw, logical_runtime_name=runtime_name) if runtime_name else []
+                    expected_group = _generated_logical_profile_group(runtime_name, members) if members else None
+                    member_names = [str(item.get("name") or "") for item in members]
+                    inactive_rows.append({
+                        "server_id_sha256": digest(row["server_id"]),
+                        "runtime_group_name_sha256": digest(runtime_name),
+                        "inventory_state": state_name,
+                        "runtime_policy": str(topology.get("runtime_policy") or "fallback")[:32],
+                        "topology_member_count": len((topology.get("endpoints") or []) if isinstance(topology.get("endpoints"), list) else []),
+                        "relational_member_count": len(members),
+                        "member_name_sha256": sorted(digest(name) for name in member_names),
+                        "generated_shape_sha256": hashlib.sha256(json.dumps(expected_group, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest() if expected_group else None,
+                    })
+            record["persisted_profile_ownership"] = {
+                "inventory_counts": inventory_counts, "inactive_logical_profiles": inactive_rows,
+                "rows_truncated": len(rows) >= 1000 or len(inactive_rows) >= 20,
+            }
+        except Exception as exc:
+            record["persisted_profile_ownership"] = {"available": False, "exception_type": type(exc).__name__[:64]}
+        try:
+            from fwrouter_api.services.mihomo_config_inbounds import _collect_xray_handoff_assignments
+            assignments = _collect_xray_handoff_assignments()
+            record["required_handoff_targets"] = [{
+                "selected_server_id_sha256": digest(item.get("selected_server_id")),
+                "proxy_name_sha256": digest(item.get("proxy")),
+                "listener_name_sha256": digest(item.get("listener_name")),
+                "client_count": len(item.get("client_emails") or []),
+            } for item in assignments[:20] if isinstance(item, dict)]
+            record["required_handoff_targets_truncated"] = len(assignments) > 20
+        except Exception as exc:
+            record["required_handoff_targets"] = []
+            record["handoff_source_exception_type"] = type(exc).__name__[:64]
+        try:
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded.encode("utf-8")) > 12 * 1024:
+                compact = {
+                    "schema": record["schema"], "event": record["event"],
+                    "diagnostic_truncated": True,
+                    "candidate_graph_sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+                    "candidate": {key: record["candidate"].get(key) for key in ("available", "proxy_count", "group_count", "missing_member_sha256")},
+                    "active_base": {key: record["active_base"].get(key) for key in ("available", "proxy_count", "group_count", "missing_member_sha256")},
+                    "inventory_counts": record.get("persisted_profile_ownership", {}).get("inventory_counts"),
+                    "inactive_profile_count": len(record.get("persisted_profile_ownership", {}).get("inactive_logical_profiles", [])),
+                    "handoff_target_count": len(record.get("required_handoff_targets", [])),
+                }
+                record = compact
+                encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded.encode("utf-8")) <= 12 * 1024:
+                root = Path(os.environ["FWROUTER_APPLICATION_ACCEPTANCE_ROOT"]).resolve()
+                state_dir = Path(os.environ["FWROUTER_STATE_DIR"]).resolve()
+                if not state_dir.is_relative_to(root):
+                    raise RuntimeError("candidate graph receipt state path is outside acceptance root")
+                output = state_dir / "run" / "mihomo-candidate-graph.json"
+                output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(output, flags, 0o600)
+                try:
+                    os.fchmod(descriptor, 0o600)
+                    payload = (encoded + "\n").encode("utf-8")
+                    offset = 0
+                    while offset < len(payload):
+                        written = os.write(descriptor, payload[offset:])
+                        if written <= 0:
+                            raise OSError("short write while persisting candidate graph receipt")
+                        offset += written
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_CANDIDATE_GRAPH_WRITTEN\n")
+                sys.stderr.flush()
+        except Exception as exc:
+            try:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_CANDIDATE_GRAPH_WRITE_FAILED "
+                                 + type(exc).__name__[:64] + "\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+
     def validate_candidate(candidate_path: str | None = None, *, image_reference: str | None = None) -> dict[str, Any]:
         path = str(candidate_path or default_candidate)
         reply = _rpc_call(socket_path, "mihomo_test_config", {"path": path})
         details = reply.get("details") if isinstance(reply.get("details"), dict) else {}
+        if not reply.get("ok"):
+            record_candidate_graph_failure(Path(path), stderr=str(details.get("stderr") or ""))
         return {"ok": bool(reply.get("ok")), "returncode": 0 if reply.get("ok") else 1,
                 "stdout_tail": str(details.get("stdout") or "")[-1000:],
                 "stderr_tail": str(details.get("stderr") or "")[-1000:],

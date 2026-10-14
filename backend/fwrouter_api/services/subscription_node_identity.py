@@ -159,13 +159,38 @@ def migrate_profile_provenance(connection: Any, *, old_server_id: str, new_serve
     before_sha = canonical_digest(before)
     after_sha = canonical_digest(after)
     replay = connection.execute(
-        """SELECT identity_id FROM subscription_node_identity_transitions
+        """SELECT identity_id, to_revision, source_ownership_sha256
+           FROM subscription_node_identity_transitions
            WHERE from_server_id=? AND to_server_id=? AND from_revision=?
              AND before_provenance_sha256=? AND after_provenance_sha256=?""",
         (old_server_id, new_server_id, expected_revision, before_sha, after_sha),
     ).fetchone()
     if replay:
-        return str(replay["identity_id"])
+        # A recorded transition is idempotent only while it is still the
+        # identity's current state. Historical aliases and transition rows
+        # remain for provenance, but must not let a stale caller replay an
+        # older mapping after the identity has advanced again.
+        identity_id = str(replay["identity_id"])
+        current = connection.execute(
+            "SELECT current_server_id, revision, provenance_sha256 "
+            "FROM subscription_node_identities WHERE identity_id=?",
+            (identity_id,),
+        ).fetchone()
+        target = connection.execute(
+            "SELECT identity_id FROM subscription_node_aliases WHERE server_id=?",
+            (new_server_id,),
+        ).fetchone()
+        expected_proof = canonical_digest({
+            "before": before_sha,
+            "after": after_sha,
+            "source_ownership": str(replay["source_ownership_sha256"]),
+        })
+        if (current and current["current_server_id"] == new_server_id
+                and int(current["revision"]) == int(replay["to_revision"])
+                and current["provenance_sha256"] == expected_proof
+                and target and str(target["identity_id"]) == identity_id):
+            return identity_id
+        raise IdentityConflict("IDENTITY_MIGRATION_REVISION_STALE")
     source_sets = []
     for server_id in (old_server_id, new_server_id):
         row = connection.execute("SELECT inventory_state FROM servers WHERE server_id=?",

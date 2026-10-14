@@ -2440,6 +2440,173 @@ def test_stale_generation_checkpoint_declines_before_artifact_write_or_reload(mo
     assert reloads == []
 
 
+def _rollback_mihomo_config(routing: dict[str, object], *, unsafe_direct: bool = False) -> dict[str, object]:
+    import fwrouter_api.services.mihomo_config_rules as rules_service
+    from fwrouter_api.services.mihomo_config_paths import FULL_VPN_RULE_NAME, TRANSPARENT_TPROXY_RULE_NAME
+
+    rules, policy = rules_service._build_mihomo_config_with_source(routing)
+    auto_targets = ["test-proxy"] if unsafe_direct else ["test-proxy", "REJECT"]
+    global_targets = ["vpn-auto", "REJECT"]
+    if unsafe_direct:
+        auto_targets = ["DIRECT"]
+    return {
+        "rules": rules,
+        "sub-rules": {
+            FULL_VPN_RULE_NAME: policy["full_vpn_rules"],
+            TRANSPARENT_TPROXY_RULE_NAME: policy["transparent_rules"],
+        },
+        "proxy-groups": [
+            {"name": "vpn-auto", "type": "select", "proxies": auto_targets},
+            {"name": "vpn-global", "type": "select", "proxies": global_targets},
+        ],
+        "proxies": [{"name": "test-proxy", "type": "socks5", "server": "127.0.0.1", "port": 19080}],
+    }
+
+
+def test_generation_rollback_refuses_unsafe_mihomo_preimage_before_any_active_write(monkeypatch, tmp_path: Path) -> None:
+    """Identity parity does not authorize restoring a DIRECT fail-open checkpoint."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    from fwrouter_api.services import mihomo_config, subscription_pipeline
+    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
+
+    xray_path, _ = _xray_paths()
+    _write_xray_config(xray_path, [])
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    mihomo_path.parent.mkdir(parents=True, exist_ok=True)
+    mihomo_path.write_text("active-current-mihomo", encoding="utf-8")
+    bindings_path = _xray_bindings_path()
+    bindings_path.parent.mkdir(parents=True, exist_ok=True)
+    bindings_path.write_text(json.dumps({"bindings": [], "client_modes": [], "handoff_listeners": []}), encoding="utf-8")
+    checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=adapter, generation_id="unsafe-mihomo-preimage", tokens=set(), phase="prepared",
+        source_fingerprint=xray_subscription_service._generation_source_fingerprint(),
+        staged_generation={"native_validation": {"xray": {"expected_client_identities": []}}},
+        managed_email_prefixes=["sub-"],
+    )
+    data = json.loads(checkpoint.read_text(encoding="utf-8"))
+    data["supersession"] = {"rollback_preimage_projection_matches": True}
+    unsafe = _rollback_mihomo_config(data["auto_selection_before"]["routing"], unsafe_direct=True)
+    unsafe_text = __import__("yaml").safe_dump(unsafe, sort_keys=False)
+    data["artifacts"]["mihomo_config"]["text"] = base64.b64encode(unsafe_text.encode()).decode("ascii")
+    checkpoint.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+    checkpoint.chmod(0o600)
+
+    before = {
+        "xray": xray_path.read_bytes(), "mihomo": mihomo_path.read_bytes(),
+        "bindings": bindings_path.read_bytes(), "checkpoint": checkpoint.read_bytes(),
+    }
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    with db_session() as connection:
+        revision_before = read_selection_revision(connection)
+    validator_calls: list[str] = []
+    monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config",
+                        lambda **kwargs: validator_calls.append(str(kwargs.get("candidate_path"))) or {"ok": True})
+    reloads: list[bool] = []
+    monkeypatch.setattr(adapter, "reload", lambda: reloads.append(True))
+
+    result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result == {
+        "ok": False, "recovered": "stale_checkpoint_declined", "reason": "mihomo_preimage_policy_unproven",
+    }
+    assert validator_calls == [], "unsafe policy must be refused before native activation validation"
+    assert reloads == []
+    assert xray_path.read_bytes() == before["xray"]
+    assert mihomo_path.read_bytes() == before["mihomo"]
+    assert bindings_path.read_bytes() == before["bindings"]
+    assert checkpoint.read_bytes() == before["checkpoint"]
+    with db_session() as connection:
+        assert read_selection_revision(connection) == revision_before
+
+
+def test_rollback_mihomo_preimage_requires_policy_and_native_validation(monkeypatch, tmp_path: Path) -> None:
+    """Component contract only: the offline native validator transport is mocked explicitly."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import mihomo_config, subscription_pipeline
+
+    routing = xray_subscription_service._capture_generation_auto_selection()["routing"]
+    safe_config = _rollback_mihomo_config(routing)
+    proxy_names = [f"validated-proxy-{index}" for index in range(70)]
+    safe_config["proxy-groups"][0]["proxies"] = [*proxy_names, "REJECT"]
+    safe_config["proxies"] = [
+        {"name": name, "type": "socks5", "server": "127.0.0.1", "port": 19080 + index}
+        for index, name in enumerate(proxy_names)
+    ]
+    safe_config["proxy-groups"].append({"name": "custom-direct-exception", "type": "select", "proxies": ["DIRECT"]})
+    encoded = base64.b64encode(__import__("yaml").safe_dump(safe_config, sort_keys=False).encode()).decode("ascii")
+    observed: list[Path] = []
+
+    def validate_private_candidate(*, candidate_path: str, **_kwargs):
+        candidate_path = Path(candidate_path)
+        observed.append(candidate_path)
+        assert candidate_path.is_file()
+        assert candidate_path.stat().st_mode & 0o777 == 0o600
+        assert candidate_path.parent == Path(mihomo_config._resolved_base_config_path()).parent
+        parsed = __import__("yaml").safe_load(candidate_path.read_text(encoding="utf-8"))
+        assert len(parsed["proxy-groups"][0]["proxies"]) == 71
+        assert parsed["proxy-groups"][0]["proxies"][-1] == "REJECT"
+        assert "DIRECT" not in parsed["proxy-groups"][0]["proxies"]
+        return {"ok": True, "returncode": 0}
+
+    monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config", validate_private_candidate)
+    result = xray_subscription_service._validate_rollback_mihomo_preimage(encoded, routing_snapshot=routing)
+    assert result["ok"] is True and result["sha256"] == hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+    assert observed and all(not path.exists() for path in observed), "private validation candidate is cleaned"
+
+
+def test_rollback_mihomo_preimage_rejects_reachable_nested_direct(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import subscription_pipeline
+
+    routing = xray_subscription_service._capture_generation_auto_selection()["routing"]
+    unsafe = _rollback_mihomo_config(routing)
+    unsafe["proxy-groups"] = [
+        {"name": "vpn-auto", "type": "select", "proxies": ["nested-vpn", "REJECT"]},
+        {"name": "nested-vpn", "type": "select", "proxies": ["DIRECT", "REJECT"]},
+        {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "REJECT"]},
+    ]
+    encoded = base64.b64encode(__import__("yaml").safe_dump(unsafe, sort_keys=False).encode()).decode("ascii")
+    calls: list[str] = []
+    monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config",
+                        lambda **kwargs: calls.append(str(kwargs.get("candidate_path"))) or {"ok": True})
+
+    result = xray_subscription_service._validate_rollback_mihomo_preimage(encoded, routing_snapshot=routing)
+
+    assert result == {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+    assert calls == [], "reachable DIRECT is refused before native candidate activation"
+
+
+def test_rollback_mihomo_preimage_rejects_nested_group_cycle(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import subscription_pipeline
+
+    routing = xray_subscription_service._capture_generation_auto_selection()["routing"]
+    cyclic = _rollback_mihomo_config(routing)
+    cyclic["proxy-groups"] = [
+        {"name": "vpn-auto", "type": "select", "proxies": ["nested-a", "REJECT"]},
+        {"name": "nested-a", "type": "select", "proxies": ["nested-b"]},
+        {"name": "nested-b", "type": "select", "proxies": ["nested-a"]},
+        {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "REJECT"]},
+    ]
+    encoded = base64.b64encode(__import__("yaml").safe_dump(cyclic, sort_keys=False).encode()).decode("ascii")
+    calls: list[str] = []
+    monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config",
+                        lambda **kwargs: calls.append(str(kwargs.get("candidate_path"))) or {"ok": True})
+
+    result = xray_subscription_service._validate_rollback_mihomo_preimage(encoded, routing_snapshot=routing)
+
+    assert result == {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+    assert calls == [], "cyclic mandatory routing is refused before native candidate validation"
+
+
 
 
 def test_owned_restore_revision_change_during_native_validation_prevents_active_mutations(monkeypatch, tmp_path: Path) -> None:
@@ -2455,7 +2622,8 @@ def test_owned_restore_revision_change_during_native_validation_prevents_active_
     _write_xray_config(config_path, [])
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
     mihomo_path.parent.mkdir(parents=True, exist_ok=True)
-    mihomo_path.write_text("current-mihomo", encoding="utf-8")
+    safe_preimage = _rollback_mihomo_config(xray_subscription_service._capture_generation_auto_selection()["routing"])
+    mihomo_path.write_text(__import__("yaml").safe_dump(safe_preimage, sort_keys=False), encoding="utf-8")
     bindings_path = _xray_bindings_path()
     bindings_path.parent.mkdir(parents=True, exist_ok=True)
     bindings_path.write_text(json.dumps({"bindings": [], "client_modes": [], "handoff_listeners": []}), encoding="utf-8")
@@ -2508,7 +2676,8 @@ def test_owned_restore_revalidates_after_reload_before_database_restore(monkeypa
     _write_xray_config(config_path, [])
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
     mihomo_path.parent.mkdir(parents=True, exist_ok=True)
-    mihomo_path.write_text("current-mihomo", encoding="utf-8")
+    safe_preimage = _rollback_mihomo_config(xray_subscription_service._capture_generation_auto_selection()["routing"])
+    mihomo_path.write_text(__import__("yaml").safe_dump(safe_preimage, sort_keys=False), encoding="utf-8")
     bindings_path = _xray_bindings_path()
     bindings_path.parent.mkdir(parents=True, exist_ok=True)
     bindings_path.write_text(json.dumps({"bindings": [], "client_modes": [], "handoff_listeners": []}), encoding="utf-8")

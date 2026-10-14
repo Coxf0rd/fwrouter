@@ -238,6 +238,21 @@ def acceptance_stack(request):
             except OSError:
                 worker_logs.append({"name": log_path.name, "tail": "[unreadable]"})
         native_diagnostics = native.diagnostic_snapshot()
+        candidate_graph_path = state / "run" / "mihomo-candidate-graph.json"
+        if candidate_graph_path.is_file() and not candidate_graph_path.is_symlink():
+            try:
+                raw_graph = candidate_graph_path.read_bytes()
+                if len(raw_graph) <= 12 * 1024:
+                    graph_payload = json.loads(raw_graph.decode("utf-8"))
+                    if (isinstance(graph_payload, dict)
+                            and graph_payload.get("schema") == "fwrouter-acceptance-mihomo-candidate-graph/v1"
+                            and graph_payload.get("event") == "native_candidate_validation_failed"):
+                        native_diagnostics["candidate_graph_diagnostic"] = graph_payload
+            except (OSError, UnicodeDecodeError, ValueError):
+                native_diagnostics["candidate_graph_diagnostic_status"] = "invalid_or_unreadable"
+        elif any("FWROUTER_ACCEPTANCE_MIHOMO_CANDIDATE_GRAPH_WRITE_FAILED" in str(row.get("tail") or "")
+                 for row in worker_logs):
+            native_diagnostics["candidate_graph_diagnostic_status"] = "writer_failed"
         state_summary = []
         for item in sorted(state.rglob("*")):
             if item.is_symlink() or not item.is_file():

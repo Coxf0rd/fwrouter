@@ -1523,6 +1523,179 @@ def _capture_generation_auto_selection() -> dict[str, Any]:
     }
 
 
+def _validate_rollback_mihomo_preimage(
+    encoded_config: Any,
+    *,
+    routing_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Prove a checkpoint's Mihomo preimage is safe before restoring it.
+
+    Checkpoint identity parity says nothing about the routing policy in its
+    saved Mihomo file. Validate the exact preimage, while it is still private,
+    against the current FWRouter-owned routing contract and the real Mihomo
+    parser. This deliberately refuses old/unknown policy instead of activating
+    it and discovering the downgrade during post-apply readback.
+    """
+    if not isinstance(encoded_config, str):
+        return {"ok": False, "reason": "mihomo_preimage_unavailable"}
+    import yaml
+    try:
+        max_config_bytes = 64 * 1024 * 1024
+        max_encoded_chars = ((max_config_bytes + 2) // 3) * 4
+        if not encoded_config.isascii() or len(encoded_config) > max_encoded_chars:
+            return {"ok": False, "reason": "mihomo_preimage_invalid"}
+        config_bytes = base64.b64decode(encoded_config, validate=True)
+        # Generated configs can contain the accepted ruleset up to the API's
+        # existing 64 MiB policy-input ceiling (hosted evidence reached 20.7
+        # MB). The 4 MiB base-user-config limit is not applicable here.
+        if not config_bytes or len(config_bytes) > max_config_bytes:
+            return {"ok": False, "reason": "mihomo_preimage_invalid"}
+        config_text = config_bytes.decode("utf-8")
+        candidate = yaml.load(config_text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+    except (ValueError, UnicodeDecodeError, yaml.YAMLError):
+        return {"ok": False, "reason": "mihomo_preimage_invalid"}
+    if not isinstance(candidate, dict):
+        return {"ok": False, "reason": "mihomo_preimage_invalid"}
+
+    # The generated routing rules include explicit DIRECT exceptions and the
+    # mandatory VPN fail-closed rules. Exact comparison preserves those
+    # established semantics while refusing a checkpoint from an older policy
+    # generator. Do not compare proxies here: subscription topology may have
+    # changed, and native parsing below independently checks all references.
+    try:
+        if not isinstance(routing_snapshot, dict):
+            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+        from fwrouter_api.services.mihomo_config_rules import _build_mihomo_config_with_source
+        from fwrouter_api.services.mihomo_config_paths import (
+            FULL_VPN_RULE_NAME, TRANSPARENT_TPROXY_RULE_NAME,
+        )
+        expected_rules, expected_policy = _build_mihomo_config_with_source(routing_snapshot)
+        sub_rules = candidate.get("sub-rules")
+        if not isinstance(sub_rules, dict):
+            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+        if candidate.get("rules") != expected_rules:
+            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+        if sub_rules.get(FULL_VPN_RULE_NAME) != expected_policy.get("full_vpn_rules"):
+            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+        if sub_rules.get(TRANSPARENT_TPROXY_RULE_NAME) != expected_policy.get("transparent_rules"):
+            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+
+        groups = candidate.get("proxy-groups")
+        if not isinstance(groups, list):
+            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+        group_names = [
+            str(group.get("name") or "").strip()
+            for group in groups if isinstance(group, dict) and str(group.get("name") or "").strip()
+        ]
+        by_name = {
+            str(group.get("name") or "").strip(): group
+            for group in groups if isinstance(group, dict) and str(group.get("name") or "").strip()
+        }
+        if len(group_names) != len(by_name):
+            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+        for required_name in ("vpn-auto", "vpn-global"):
+            group = by_name.get(required_name)
+            targets = group.get("proxies") if isinstance(group, dict) else None
+            if not isinstance(targets, list) or not targets or targets[-1] != "REJECT" or "DIRECT" in targets:
+                return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+        if "vpn-auto" not in by_name["vpn-global"].get("proxies", []):
+            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+
+        mandatory_names = [
+            name for name in by_name
+            if name in {"vpn-auto", "vpn-global"} or name.startswith("fwrouter-subject-")
+        ]
+        group_edges = sum(
+            len(group.get("proxies"))
+            for group in by_name.values()
+            if isinstance(group.get("proxies"), list)
+        )
+        # Bound traversal by the actual graph size, not inventory size. A
+        # selector with many concrete proxy targets is valid and must not be
+        # rejected just because it has few groups.
+        policy_walk_budget = min(max(group_edges + len(by_name) + len(mandatory_names), 1), 100_000)
+        policy_walk_count = 0
+        completed_group_results: dict[str, bool] = {}
+
+        def mandatory_target_is_fail_closed(name: str, visiting: set[str]) -> bool:
+            nonlocal policy_walk_count
+            policy_walk_count += 1
+            if policy_walk_count > policy_walk_budget:
+                return False
+            if name == "DIRECT":
+                return False
+            if name == "REJECT":
+                return True
+            nested = by_name.get(name)
+            if nested is None:
+                # A concrete native proxy is an eligible egress target; native
+                # validation below rejects unknown names and malformed proxies.
+                return True
+            if name in visiting:
+                return False
+            if name in completed_group_results:
+                return completed_group_results[name]
+            nested_targets = nested.get("proxies")
+            if not isinstance(nested_targets, list) or not nested_targets:
+                return False
+            next_visiting = {*visiting, name}
+            result = all(
+                mandatory_target_is_fail_closed(str(target), next_visiting)
+                for target in nested_targets
+            )
+            completed_group_results[name] = result
+            return result
+
+        for name, group in by_name.items():
+            if name.startswith("fwrouter-subject-"):
+                targets = group.get("proxies")
+                if not isinstance(targets, list) or not targets or targets[-1] != "REJECT" or "DIRECT" in targets:
+                    return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+        if any(
+            not mandatory_target_is_fail_closed(name, set())
+            for name in mandatory_names
+        ):
+            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+    except Exception:
+        return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+
+    # Keep the candidate on the existing shared config mount so the Docker
+    # daemon can inspect it; never overwrite an active/apply path.
+    from fwrouter_api.services.mihomo_config import _resolved_base_config_path
+    import tempfile
+
+    candidate_path: Path | None = None
+    native_ok = False
+    cleanup_ok = True
+    try:
+        parent = Path(_resolved_base_config_path()).parent
+        if not parent.is_dir():
+            return {"ok": False, "reason": "mihomo_preimage_native_invalid"}
+        descriptor, raw_path = tempfile.mkstemp(prefix=".rollback-mihomo-preflight-", suffix=".yaml", dir=parent)
+        candidate_path = Path(raw_path)
+        try:
+            os.fchmod(descriptor, 0o600)
+            _write_all_fd(descriptor, config_bytes)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        from fwrouter_api.services.subscription_pipeline import validate_mihomo_candidate_config
+
+        native = validate_mihomo_candidate_config(candidate_path=str(candidate_path))
+        native_ok = bool(native.get("ok"))
+    except Exception:
+        native_ok = False
+    finally:
+        if candidate_path is not None:
+            try:
+                candidate_path.unlink(missing_ok=True)
+            except OSError:
+                cleanup_ok = False
+    if not native_ok or not cleanup_ok:
+        return {"ok": False, "reason": "mihomo_preimage_native_invalid"}
+    return {"ok": True, "sha256": hashlib.sha256(config_bytes).hexdigest()}
+
+
 def _restore_generation_auto_selection(*, before: dict[str, Any], after: dict[str, Any], operation_id: str | None = None) -> bool:
     from fwrouter_api.services.selector import restore_auto_selection_snapshot
 
@@ -2564,6 +2737,18 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
         current_mihomo_sha = hashlib.sha256(active_mihomo_path.read_bytes()).hexdigest()
     except OSError:
         return {"ok": False, "recovered": "stale_checkpoint_declined", "reason": "active_mihomo_unavailable"}
+    mihomo_artifact = artifacts.get("mihomo_config") if isinstance(artifacts.get("mihomo_config"), dict) else {}
+    rollback_selection = data.get("auto_selection_before")
+    rollback_routing = rollback_selection.get("routing") if isinstance(rollback_selection, dict) else None
+    mihomo_preimage_proof = _validate_rollback_mihomo_preimage(
+        mihomo_artifact.get("text"), routing_snapshot=rollback_routing,
+    )
+    if not mihomo_preimage_proof.get("ok"):
+        return {
+            "ok": False,
+            "recovered": "stale_checkpoint_declined",
+            "reason": str(mihomo_preimage_proof.get("reason") or "mihomo_preimage_policy_unproven"),
+        }
     xray_artifact = artifacts.get("xray_config") if isinstance(artifacts.get("xray_config"), dict) else {}
     xray_before_encoded = xray_artifact.get("text")
     if not isinstance(xray_before_encoded, str):
@@ -2950,6 +3135,12 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     ok = _finish_xray_generation_rollback(checkpoint_path, restored=ok)
     return {"ok": ok, "recovered": "restored_last_good" if ok else "restore_failed",
             **({"error_code": receipt_error_code} if receipt_error_code else {}),
+            "mihomo_preimage_proof": {
+                "ok": True,
+                "policy_verified": True,
+                "native_config_validated": True,
+                "sha256": mihomo_preimage_proof.get("sha256"),
+            },
             "xray_reload": xray_restore.ok,
             "mihomo_restart": bool(mihomo_restore.get("ok")), "derived_rows_restored": derived_restore_ok,
             "selection_readback": selection_readback, "xray_runtime_readback": xray_runtime_readback,

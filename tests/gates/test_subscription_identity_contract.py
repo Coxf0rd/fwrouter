@@ -271,11 +271,15 @@ class DurableIdentityContract(unittest.TestCase):
             self.connection, old_server_id=self.new_id, new_server_id=third_id,
             old_profile=self.new, new_profile=third, expected_revision=2,
         ))
-        # The first transition remains replayable after a later accepted one.
-        self.assertEqual(stable, identity.migrate_profile_identity(
-            self.connection, old_server_id=self.old_id, new_server_id=self.new_id,
-            old_profile=self.old, new_profile=self.new, expected_revision=1,
-        ))
+        # Historical transitions remain auditable but are not replayable once
+        # the identity has advanced beyond their recorded target revision.
+        before_stale_replay = self.identity_snapshot()
+        with self.assertRaisesRegex(identity.IdentityConflict, "IDENTITY_MIGRATION_REVISION_STALE"):
+            identity.migrate_profile_identity(
+                self.connection, old_server_id=self.old_id, new_server_id=self.new_id,
+                old_profile=self.old, new_profile=self.new, expected_revision=1,
+            )
+        self.assertEqual(before_stale_replay, self.identity_snapshot())
 
     def test_name_or_primary_endpoint_is_not_sufficient_provenance(self):
         changed = json.loads(json.dumps(self.old))
