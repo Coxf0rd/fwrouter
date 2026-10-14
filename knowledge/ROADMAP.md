@@ -1,5 +1,11 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 first strict nonempty PASS — 2026-10-14
+
+Actualca1cd8a PR run38548698209 SUCCESS:1451 routine, qualified26+1, ordinary26, Provider11 and packet/scale2 PASS; no FAIL/SKIP. Real nonempty startup44.8415s, API HWM908944KiB,24 concurrent HTTP200 responses (max2.2285s; health max0.0118s), observed graceful shutdown0.2639s.82 native identities exactly preserved,82 matching bindings,7 verified snapshots; actual Reality HEAD counted at the endpoint with VPN source. Strict deadline rejects late readiness. Startup margin0.1585s is narrow; repeat qualification pending. Remote availability of all synthetic servers is not inferred from this performance case; canonical fixture selector health is unmeasured, separate Provider cohort PASS.
+
+Production remains installed4ffd686 with API/dependents held; original78 restoration and durable profile continuity NOT IMPLEMENTED/NOT RUN. Legacy checkpoint fences still reject direct resume; current source does not retrofit transition proof. Proposed scoped identity migration must cover repeat refresh, Core/CAS/native publication and rollback compatibility before implementation. PR8 DRAFT/BLOCKED and Production Live Acceptance BLOCKED; no deployment/activation/config/UUID writes in this diagnostic phase. CI milestone CLOSED/CD DEFERRED. Historical checkpoints below remain evidence, not current acceptance.
+
 ## PR8 current hosted diagnostic checkpoint — 2026-10-14
 
 Source499d23f run38540649011: startup43.265s, HWM803828KiB, observed cleanup2.3185s, but scale FAIL at one newly generated internal vpn-auto identity. Early diagnostics establish the fixture omitted the virtual internal target that `_vpn_auto_servers_for_xray_subscription` always returns. Corrected fixture preloads82 identities (70 public,10 internal including virtual,2 fixed), requiring exact unchanged native/binding sets before/after; hosted verification pending. Previous92de4c9 run1451 routine PASS including full-JSON7→10-member identity regression, qualified26+1/ordinary26/Provider11/original packet1 PASS, but45.64s startup FAIL. Thus stability/Reality TCP/steady HTTP are not accepted.
