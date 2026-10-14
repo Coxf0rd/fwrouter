@@ -5,9 +5,29 @@ from collections.abc import Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "24"
+EXPECTED_SCHEMA_VERSION = "25"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
+    "subscription_node_identities": {
+        "columns": {"identity_id", "origin_server_id", "current_server_id", "revision", "provenance_sha256", "created_at"},
+        "sql_contains": ("origin_server_id text not null unique", "current_server_id text not null unique"),
+    },
+    "subscription_node_aliases": {
+        "columns": {"server_id", "identity_id"},
+        "sql_contains": ("server_id text primary key", "references subscription_node_identities(identity_id)"),
+    },
+    "subscription_node_credentials": {
+        "columns": {"scope", "identity_id", "client_uuid", "client_email", "epoch", "revoked"},
+        "sql_contains": ("primary key (scope, identity_id)", "client_uuid text not null unique", "client_email text not null unique"),
+    },
+    "subscription_node_identity_transitions": {
+        "columns": {"identity_id", "from_server_id", "to_server_id", "from_revision", "to_revision", "before_provenance_sha256", "after_provenance_sha256", "source_ownership_sha256", "operator_plan_sha256", "checkpoint_sha256", "created_at"},
+        "sql_contains": ("primary key (identity_id, from_revision)", "to_revision = from_revision + 1"),
+    },
+    "subscription_node_credential_history": {
+        "columns": {"client_uuid", "scope", "identity_id", "epoch", "operation_id_sha256", "retired_at"},
+        "sql_contains": ("client_uuid text primary key", "operation_id_sha256 text not null"),
+    },
     "provider_credentials": {"columns": {"source_ref", "api_key"}, "sql_contains": ("references provider_bindings(source_ref) on delete cascade",)},
     "provider_locations": {"columns": {"source_ref", "location_id", "label"}, "sql_contains": ("primary key (source_ref, location_id)",)},
     "provider_bindings": {

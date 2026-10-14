@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
+import sqlite3
 import stat
 import threading
 from queue import Queue
+from pathlib import Path
+from uuid import NAMESPACE_DNS, uuid5
 
 from .http_support import http_json
 from .xray_support import (
@@ -172,6 +176,361 @@ def test_email_generation_reload_failure_keeps_desired_candidate_and_last_good_l
     }
     assert loaded_identities(stack["native"]) == before_loaded, "failed generation changed actual HandlerService identities"
     assert (token_uuid(job), "reload-failure@acceptance.invalid") not in set(loaded_identities(stack["native"])), job
+
+
+def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery(acceptance_stack):
+    """Reviewed profile continuity reaches native Xray only through a fresh fenced generation."""
+    stack = acceptance_stack
+    state, native = stack["state"], stack["native"]
+    source_url = "https://identity.acceptance.invalid/subscription"
+    tokens = [f"identity-public-{index}@acceptance.invalid" for index in range(7)]
+    active_path = state / "xray" / "config.json"
+
+    # These 62 unmanaged identities are loaded by the actual native child before
+    # FWRouter generates managed credentials; they must remain untouched.
+    baseline_config = json.loads(active_path.read_text(encoding="utf-8"))
+    inbound = next(item for item in baseline_config["inbounds"] if item.get("tag") == "vless-ws")
+    unrelated_native = [
+        {"id": str(uuid5(NAMESPACE_DNS, f"identity-native-unrelated-{index}")),
+         "email": f"unrelated-native-{index}@acceptance.invalid", "level": 0}
+        for index in range(62)
+    ]
+    unrelated_native_pairs = {
+        (str(item["id"]), str(item["email"])) for item in unrelated_native
+    }
+    inbound["settings"]["clients"].extend(unrelated_native)
+    active_path.write_text(json.dumps(baseline_config, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    native.restart_xray_child()
+    assert_native_matches_active(native, active_path)
+
+    def outbound(index: int) -> dict:
+        return {
+            "tag": f"member-{index}", "protocol": "vless",
+            "settings": {"vnext": [{
+                "address": f"member-{index}.example.invalid", "port": 443,
+                "users": [{"id": str(uuid5(NAMESPACE_DNS, f"identity-member-{index}")), "encryption": "none"}],
+            }]},
+            "streamSettings": {"network": "tcp", "security": "tls",
+                               "tlsSettings": {"serverName": f"member-{index}.example.invalid"}},
+        }
+
+    old_profile = {
+        "remarks": "identity profile before review",
+        "outbounds": [outbound(index) for index in range(7)] + [
+            {"tag": "direct", "protocol": "freedom"},
+            {"tag": "reject", "protocol": "blackhole"},
+            {"tag": "dns", "protocol": "dns"},
+        ],
+        "routing": {"rules": [{"type": "field", "outboundTag": "direct"}]},
+    }
+    new_profile = json.loads(json.dumps(old_profile))
+    new_profile["outbounds"][7:7] = [outbound(index) for index in range(7, 10)]
+    # Policy/root change makes this a reviewed mapping, never automatic growth.
+    new_profile["routing"]["rules"].append({"type": "field", "outboundTag": "reject"})
+
+    def content_id(profile: dict) -> str:
+        raw = json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        return "sub:" + hashlib.sha256(raw).hexdigest()
+
+    def identity_fingerprint(values) -> str:
+        payload = json.dumps(sorted(values), ensure_ascii=False, separators=(",", ":")).encode()
+        return hashlib.sha256(payload).hexdigest()
+
+    old_id, new_id = content_id(old_profile), content_id(new_profile)
+    code, seeded = http_json(
+        f"{stack['api']}/__acceptance/xray/identity-refresh", method="POST",
+        payload={"profile": old_profile},
+    )
+    assert code == 200 and seeded.get("ok") is True and seeded.get("server_ids") == [old_id], {
+        "status": code, "ok": seeded.get("ok"), "refreshed_count": seeded.get("refreshed_count"),
+    }
+
+    # Seed seven public subscription subjects and the one internal auto subject.
+    # The native fixture contributes 62 unrelated loaded clients; generation
+    # adds seven virtual public and one virtual internal identity, for 70 unchanged.
+    def digest(value: str, length: int) -> str:
+        return hashlib.sha1(value.encode()).hexdigest()[:length]
+
+    def subject(connection, client_uuid: str, email: str) -> None:
+        connection.execute(
+            """INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind,
+               stable_key, display_name, desired_mode, runtime_state, is_active, is_deleted, metadata_json)
+               VALUES (?, 'explicit_external_client', 'vless_client', 'xray', ?, ?, 'enabled', 'active', 1, 0, ?)""",
+            (f"xray:{client_uuid}", f"xray:{client_uuid}", email,
+             json.dumps({"detail": {"email": email, "client_uuid": client_uuid, "enabled": True}})),
+        )
+
+    connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("UPDATE server_preferences SET vpn_auto=1 WHERE server_id=?", (old_id,))
+        for index, token in enumerate(tokens):
+            cursor = connection.execute(
+                "INSERT INTO subscription_accounts (slug, display_name, enabled) VALUES (?, ?, 1)",
+                (f"identity-account-{index}", f"Identity account {index}"),
+            )
+            connection.execute(
+                "INSERT INTO subscription_clients (account_id, token, app_type, enabled) VALUES (?, ?, 'xray', 1)",
+                (cursor.lastrowid, token),
+            )
+            email = f"sub-{digest(token, 10)}-{digest(old_id, 12)}@fwrouter.local"
+            client_uuid = str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{token}:{old_id}"))
+            subject(connection, client_uuid, email)
+        internal_email = f"vpn-auto-{digest(old_id, 12)}@fwrouter.local"
+        internal_uuid = str(uuid5(NAMESPACE_DNS, "identity-acceptance-vpn-auto"))
+        subject(connection, internal_uuid, internal_email)
+        connection.commit()
+    finally:
+        connection.close()
+
+    code, baseline = http_json(
+        f"{stack['api']}/__acceptance/xray/reconcile", method="POST",
+        payload={"include_vpn_auto": True}, timeout=75,
+    )
+    assert code == 200 and baseline.get("ok") is True, {
+        "status": code, "ok": baseline.get("ok"), "stage": baseline.get("stage"),
+        "error_code": baseline.get("error_code"),
+    }
+    assert_native_matches_active(native, active_path)
+    baseline_pairs = set(loaded_identities(native))
+    affected = {
+        (str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{token}:{old_id}")),
+         f"sub-{digest(token, 10)}-{digest(old_id, 12)}@fwrouter.local")
+        for token in tokens
+    }
+    affected.add((internal_uuid, internal_email))
+    assert len(baseline_pairs) == 78
+    assert affected <= baseline_pairs, {
+        "affected_count": len(affected), "baseline_count": len(baseline_pairs),
+        "baseline_sha256": identity_fingerprint(baseline_pairs),
+    }
+    unaffected = baseline_pairs - affected
+    assert len(unaffected) == 70
+    assert len(unrelated_native_pairs & unaffected) == 62, {
+        "unrelated_native_count": len(unrelated_native_pairs & unaffected),
+        "unaffected_count": len(unaffected),
+        "baseline_sha256": identity_fingerprint(baseline_pairs),
+    }
+    before_snapshots = {
+        token: read_subscription_rows(state, token)["snapshots"] for token in tokens
+    }
+    # Leave a genuine prepared checkpoint by injecting a controlled exception
+    # immediately after the production writer persists it. This qualifies the
+    # durable pre-native boundary across restart; it is not a SIGKILL test.
+    checkpoint = state / "xray" / ".generation" / "generation-checkpoint.json"
+    interrupted_email = "identity-interrupted-candidate@acceptance.invalid"
+    interrupted_uuid = str(uuid5(NAMESPACE_DNS, "identity-interrupted-candidate"))
+    connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+    try:
+        subject(connection, interrupted_uuid, interrupted_email)
+        connection.commit()
+    finally:
+        connection.close()
+    arm_code, armed = http_json(
+        f"{stack['api']}/__acceptance/xray/checkpoint-failure/arm", method="POST",
+    )
+    assert arm_code == 200 and armed.get("ok") is True and armed.get("armed") is True
+    reloads_before_failure = native.reload_calls
+    failed_code, failed_generation = http_json(
+        f"{stack['api']}/__acceptance/xray/reconcile", method="POST",
+        payload={"include_vpn_auto": True}, timeout=75,
+    )
+    assert failed_code == 200 and failed_generation.get("ok") is False, {
+        "status": failed_code, "ok": failed_generation.get("ok"),
+        "stage": failed_generation.get("stage"), "error_code": failed_generation.get("error_code"),
+    }
+    checkpoint_data = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert checkpoint_data.get("phase") == "prepared"
+    old_checkpoint_bytes = checkpoint.read_bytes()
+    old_checkpoint_sha = hashlib.sha256(old_checkpoint_bytes).hexdigest()
+    assert native.reload_calls == reloads_before_failure
+    active_before_checkpoint_failure = active_path.read_bytes()
+    mihomo_active_path = state / "generated" / "mihomo" / "config.yaml"
+    mihomo_before_checkpoint_failure = mihomo_active_path.read_bytes()
+    loaded_before_restart = set(loaded_identities(native))
+    assert len(loaded_before_restart) == len(baseline_pairs) and identity_fingerprint(loaded_before_restart) == identity_fingerprint(baseline_pairs), {
+        "loaded_count": len(loaded_before_restart), "loaded_sha256": identity_fingerprint(loaded_before_restart),
+        "expected_count": len(baseline_pairs), "expected_sha256": identity_fingerprint(baseline_pairs),
+    }
+    # Restart the owned worker gracefully after the controlled exception has
+    # returned. No recovery action is requested, so the marker must remain.
+    prior_worker = stack["worker"]
+    prior_worker.terminate()
+    prior_worker.wait(timeout=5)
+    restarted_worker, restarted_api = stack["start_worker"]()
+    stack["worker"], stack["api"] = restarted_worker, restarted_api
+    assert checkpoint.is_file() and hashlib.sha256(checkpoint.read_bytes()).hexdigest() == old_checkpoint_sha
+    assert native.reload_calls == reloads_before_failure
+    assert active_path.read_bytes() == active_before_checkpoint_failure
+    assert mihomo_active_path.read_bytes() == mihomo_before_checkpoint_failure
+    loaded_after_restart = set(loaded_identities(native))
+    assert len(loaded_after_restart) == len(baseline_pairs) and identity_fingerprint(loaded_after_restart) == identity_fingerprint(baseline_pairs), {
+        "loaded_count": len(loaded_after_restart), "loaded_sha256": identity_fingerprint(loaded_after_restart),
+        "expected_count": len(baseline_pairs), "expected_sha256": identity_fingerprint(baseline_pairs),
+    }
+
+    connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+    try:
+        connection.execute(
+            "UPDATE subjects SET is_active=0, is_deleted=1, deleted_at=CURRENT_TIMESTAMP "
+            "WHERE subject_id=?", (f"xray:{interrupted_uuid}",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    # The actual source refresh now replaces the old content-addressed profile;
+    # its root/policy change cannot silently migrate identity.
+    code, refreshed = http_json(
+        f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
+        payload={"profile": new_profile},
+    )
+    assert code == 200 and refreshed.get("ok") is True and refreshed.get("server_ids") == [new_id], {
+        "status": code, "ok": refreshed.get("ok"), "refreshed_count": refreshed.get("refreshed_count"),
+    }
+
+    code, context = http_json(f"{restarted_api}/__acceptance/xray/identity-context")
+    assert code == 200 and context.get("ok") is True
+    mapping = {
+        "old_server_id": old_id, "new_server_id": new_id,
+        "expected_identity_revision": 1,
+        "old_profile": old_profile, "new_profile": new_profile,
+    }
+    manifest = {
+        "version": 1,
+        "expected_selection_revision": context["selection_revision"],
+        "expected_identity_digest": context["identity_digest"],
+        "checkpoint_sha256": old_checkpoint_sha,
+        "mappings": [mapping],
+    }
+    def cli(payload: dict) -> tuple[int, dict]:
+        code, result = http_json(
+            f"{restarted_api}/__acceptance/xray/identity-cli", method="POST",
+            payload=payload, timeout=90,
+        )
+        assert code == 200 and result.get("stderr_empty") is True, {
+            "status": code, "ok": result.get("ok"), "error_code": result.get("error_code"),
+        }
+        return int(result.get("exit_code", 1)), result.get("receipt", {})
+
+    reloads_before_intent = native.reload_calls
+    active_before_intent = active_path.read_bytes()
+    dry_code, dry = cli({"action": "dry-run", "manifest": manifest})
+    assert dry_code == 0 and dry.get("ok") is True and dry.get("native_applied") is False, {
+        "exit_code": dry_code, "receipt": {key: dry.get(key) for key in
+            ("ok", "error_code", "status", "mappings_count", "changed_count", "native_applied")},
+    }
+    assert dry.get("mappings_count") == 1 and dry.get("preserved_identity_count") == 8
+    assert native.reload_calls == reloads_before_intent
+    apply_code, applied = cli({
+        "action": "apply", "manifest": manifest,
+        "expected_plan_sha256": str(dry.get("plan_sha256") or ""),
+    })
+    assert apply_code == 0 and applied.get("ok") is True, {
+        "exit_code": apply_code, "receipt": {key: applied.get(key) for key in
+            ("ok", "error_code", "status", "changed_count", "native_applied", "public_snapshots_changed")},
+    }
+    assert applied.get("native_applied") is False and applied.get("public_snapshots_changed") is False
+    assert applied.get("mappings_count") == 1 and applied.get("preserved_identity_count") == 8
+    assert native.reload_calls == reloads_before_intent
+    assert active_path.read_bytes() == active_before_intent
+    assert {token: read_subscription_rows(state, token)["snapshots"] for token in tokens} == before_snapshots
+
+    # Old checkpoint recovery is fenced after migration intent and performs no
+    # native write; the only authorized path is exact-SHA fresh supersession.
+    code, declined = http_json(
+        f"{stack['api']}/__acceptance/xray/reconcile", method="POST",
+        payload={"direct_checkpoint": True}, timeout=75,
+    )
+    assert code == 200 and declined.get("ok") is False, {
+        "status": code, "ok": declined.get("ok"), "recovered": declined.get("recovered"),
+        "reason": declined.get("reason"),
+    }
+    assert native.reload_calls == reloads_before_intent
+    supersede_code, superseded = cli({
+        "action": "supersede", "checkpoint_sha256": old_checkpoint_sha,
+        "migration_plan_sha256": str(applied["plan_sha256"]),
+    })
+    assert supersede_code == 0 and superseded.get("ok") is True and superseded.get("native_applied") is True, {
+        "exit_code": supersede_code, "receipt": {key: superseded.get(key) for key in
+            ("ok", "status", "stage", "error_code", "native_applied", "recovery_status", "recovery_reason")},
+    }
+    assert_native_matches_active(native, active_path)
+    loaded_after_supersession = set(loaded_identities(native))
+    assert len(loaded_after_supersession) == 78 and identity_fingerprint(loaded_after_supersession) == identity_fingerprint(unaffected | affected), {
+        "loaded_count": len(loaded_after_supersession),
+        "loaded_sha256": identity_fingerprint(loaded_after_supersession),
+    }
+    final_checkpoint_data = json.loads(checkpoint.read_text(encoding="utf-8"))
+    supersession = final_checkpoint_data.get("supersession")
+    assert isinstance(supersession, dict)
+    archive_path = Path(str(supersession.get("archive_path") or ""))
+    assert archive_path.is_file() and archive_path.read_bytes() == old_checkpoint_bytes
+    assert supersession.get("checkpoint_sha256") == old_checkpoint_sha
+    assert supersession.get("migration_plan_sha256") == applied.get("plan_sha256")
+    assert supersession.get("migration_transition_count") == 1
+    assert all(read_subscription_rows(state, token)["snapshots"] for token in tokens)
+
+    def snapshot_pairs(token: str) -> list[tuple[str, str, str]]:
+        rows = read_subscription_rows(state, token)["snapshots"]
+        nodes = json.loads(rows[0]["nodes_json"]) if rows else []
+        return sorted(
+            (str(node.get("server_id") or ""), str(node.get("client_uuid") or ""),
+             str(node.get("client_email") or ""))
+            for node in nodes if isinstance(node, dict)
+        )
+
+    snapshots_after_migration = {token: snapshot_pairs(token) for token in tokens}
+
+    # Worker restart and another source observation retain the exact published
+    # credential set and native proof.
+    stack["worker"].terminate()
+    stack["worker"].wait(timeout=5)
+    restarted_worker, restarted_api = stack["start_worker"]()
+    stack["worker"], stack["api"] = restarted_worker, restarted_api
+    code, repeated_refresh = http_json(
+        f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
+        payload={"profile": new_profile},
+    )
+    assert code == 200 and repeated_refresh.get("ok") is True and repeated_refresh.get("server_ids") == [new_id]
+    code, recovered = http_json(
+        f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
+        payload={"include_vpn_auto": True}, timeout=75,
+    )
+    assert code == 200 and recovered.get("ok") is True, {
+        "status": code, "ok": recovered.get("ok"), "stage": recovered.get("stage"),
+        "error_code": recovered.get("error_code"),
+    }
+    assert_native_matches_active(native, active_path)
+    loaded_after_restart = set(loaded_identities(native))
+    assert len(loaded_after_restart) == 78 and identity_fingerprint(loaded_after_restart) == identity_fingerprint(unaffected | affected), {
+        "loaded_count": len(loaded_after_restart),
+        "loaded_sha256": identity_fingerprint(loaded_after_restart),
+    }
+    assert {token: snapshot_pairs(token) for token in tokens} == snapshots_after_migration
+
+    # A subsequent real API create with an injected native reload fault retains
+    # the proven native preimage while leaving the new desired client visible.
+    probe_email = "identity-rollback-probe@acceptance.invalid"
+    native.fail_next_reload()
+    reload_count_before_fault = native.reload_calls
+    code, accepted = http_json(
+        f"{restarted_api}/xray/clients", method="POST",
+        payload={"alias": "identity-rollback-probe", "email": probe_email,
+                 "requested_by": "hosted-acceptance", "allow_blocked_egress": True},
+        timeout=75,
+    )
+    assert code == 200 and accepted.get("ok") is True, {"status": code, "ok": accepted.get("ok")}
+    rollback = await_job(restarted_api, accepted)
+    assert rollback.get("status") == "failed", {"status": rollback.get("status"), "error_code": rollback.get("error_code")}
+    assert native.reload_calls > reload_count_before_fault
+    loaded_after_rollback = set(loaded_identities(native))
+    assert len(loaded_after_rollback) == 78 and identity_fingerprint(loaded_after_rollback) == identity_fingerprint(unaffected | affected), {
+        "loaded_count": len(loaded_after_rollback),
+        "loaded_sha256": identity_fingerprint(loaded_after_rollback),
+    }
+    desired = json.loads(active_path.read_text(encoding="utf-8"))
+    desired_clients = next(item for item in desired["inbounds"] if item.get("tag") == "vless-ws")["settings"]["clients"]
+    assert any(item.get("email") == probe_email for item in desired_clients)
 
 
 def test_xray_generation_fence_rejects_replaced_native_incarnation(acceptance_stack):

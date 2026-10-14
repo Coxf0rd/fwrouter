@@ -200,6 +200,12 @@
       "contract": "A reload fault remains failed while desired bytes and loaded bytes stay distinguishable."
     },
     {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "Reviewed profile continuity reaches native Xray only through a fresh fenced generation."
+    },
+    {
       "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
       "suite": "functional",
       "level": "L3",

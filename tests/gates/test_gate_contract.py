@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 import zipfile
 from contextlib import redirect_stdout
@@ -49,6 +50,7 @@ class GateContractTests(unittest.TestCase):
         paths = {row["path"] for row in self.manifest["test_files"]}
         self.assertEqual({
             "tests/gates/test_network_fixture_contract.py",
+            "tests/gates/test_subscription_identity_contract.py",
             "tests/acceptance/test_dependency_image_contract.py",
             "tests/acceptance/test_consume_dependency_image_contract.py",
         }, gate.STDLIB_CONTRACT_PATHS - {
@@ -62,6 +64,48 @@ class GateContractTests(unittest.TestCase):
     def test_unknown_changed_path_fails_closed(self) -> None:
         with self.assertRaises(gate.GateError):
             gate.domain_for_path("unmapped/binary.blob", self.manifest)
+
+    def test_targeted_marker_fails_required_ci_immediately_after_checkout(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        checkout = workflow.index("uses: actions/checkout@")
+        guard = workflow.index("- name: Stop targeted qualification before full required CI")
+        python_setup = workflow.index("uses: actions/setup-python@")
+        block = workflow[guard:python_setup]
+        self.assertLess(checkout, guard)
+        self.assertLess(guard, python_setup)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", block)
+        self.assertIn("github.event.pull_request.head.ref == 'fix/api-runtime-health-scale-stability'", block)
+        self.assertIn("git log -1 --format=%B | grep -Fq -- 'ci:validate-identities'", block)
+        self.assertIn(
+            "Targeted qualification requested; full required CI NOT RUN. Normal final push required.",
+            block,
+        )
+        self.assertIn("exit 1", block)
+        self.assertNotIn("continue-on-error", block)
+
+        script = textwrap.dedent(block.split("        run: |", 1)[1].split("\n      - ", 1)[0])
+        with tempfile.TemporaryDirectory(prefix="fwrouter-targeted-marker-") as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Gate Contract"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "gate-contract@example.invalid"],
+                           cwd=repo, check=True)
+            (repo / "receipt.txt").write_text("targeted\n", encoding="utf-8")
+            subprocess.run(["git", "add", "receipt.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "--quiet", "-m", "ci:validate-identities"],
+                           cwd=repo, check=True)
+            targeted = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=repo,
+                                      text=True, capture_output=True, check=False)
+            self.assertEqual(1, targeted.returncode)
+            self.assertIn(
+                "Targeted qualification requested; full required CI NOT RUN. Normal final push required.",
+                targeted.stderr,
+            )
+            subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", "final source"],
+                           cwd=repo, check=True)
+            ordinary = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=repo,
+                                      text=True, capture_output=True, check=False)
+            self.assertEqual(0, ordinary.returncode, ordinary.stderr)
 
     def test_changed_python_f821_checks_only_changed_python_and_selects_one_rule(self) -> None:
         relative = str(Path(__file__).relative_to(gate.ROOT))
@@ -252,6 +296,10 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("- name: Run exact hosted functional profile bundle", workflow)
         self.assertIn('if: always()\n        env:\n          AFFECTED_OUTCOME:', workflow)
         self.assertIn('--unit-failure-report --unit-exit-code "$unit_exit"', workflow)
+        self.assertIn('"ci:validate-identities": "identity-diagnostic"', workflow)
+        self.assertIn("identity-diagnostic", workflow)
+        full_bundle = workflow.split("  full-affected-functional:", 1)[1].split("    runs-on:", 1)[0]
+        self.assertNotIn("identity-diagnostic", full_bundle)
 
     def test_main_push_smoke_reuses_ordinary_or_runs_one_exact_native_diagnostic(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
@@ -468,9 +516,9 @@ class GateContractTests(unittest.TestCase):
         spec.loader.exec_module(module)
         partitions = module.hosted_partition_nodeids()
         self.assertEqual({"functional-ordinary", "provider-cohort", "packet-diagnostic"}, set(partitions))
-        self.assertEqual((26, 11, 2), tuple(len(partitions[key]) for key in
+        self.assertEqual((27, 11, 2), tuple(len(partitions[key]) for key in
                                              ("functional-ordinary", "provider-cohort", "packet-diagnostic")))
-        self.assertEqual(39, len(set().union(*partitions.values())))
+        self.assertEqual(40, len(set().union(*partitions.values())))
         self.assertFalse(partitions["functional-ordinary"] & partitions["provider-cohort"])
         self.assertFalse(partitions["packet-diagnostic"] & set().union(
             partitions["functional-ordinary"], partitions["provider-cohort"]))

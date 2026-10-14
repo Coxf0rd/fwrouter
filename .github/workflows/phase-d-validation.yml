@@ -2,7 +2,7 @@ name: Phase D branch validation (temporary)
 
 on:
   push:
-    branches: [stage/test-architecture-ci-stabilization]
+    branches: [stage/test-architecture-ci-stabilization, fix/api-runtime-health-scale-stability]
 
 permissions:
   contents: read
@@ -50,6 +50,7 @@ jobs:
               "ci:validate-unit-fixtures": "unit-fixtures",
               "ci:validate-unit-residual": "unit-residual",
               "ci:validate-unit-acceptance-tail": "unit-acceptance-tail",
+              "ci:validate-identities": "identity-diagnostic",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
           selected = [stage for marker, stage in markers.items() if marker in message]
@@ -200,6 +201,42 @@ jobs:
             > "$RUNNER_TEMP/phase-d-preflight/network-fixture-contract.log" 2>&1
           python tests/gates/test_smoke_contract.py \
             > "$RUNNER_TEMP/phase-d-preflight/smoke-contract.log" 2>&1
+      - name: Run subscription identity L1 subset through the manifest gate
+        if: needs.select-stage.outputs.stage == 'identity-diagnostic'
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/phase-d-identities"
+          mkdir -p "$root"
+          python tests/gates/gate.py subset-plan --domain test-infrastructure --level L1 \
+            --output "$root/subscription-l1-plan.json" > "$root/subscription-l1-plan.log"
+          set +e
+          python tests/gates/gate.py run --plan "$root/subscription-l1-plan.json" \
+            --manual-subset --output "$root/subscription-l1-report.json" \
+            > "$root/subscription-l1-run.log" 2>&1
+          result=$?
+          set -e
+          python3 - "$root/subscription-l1-run.log" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tests/gates")
+          from gate import redact_failure_output
+          print(redact_failure_output(Path(sys.argv[1]).read_text(encoding="utf-8"))[-65536:])
+          PY
+          exit "$result"
+      - name: Run identity migration L3 regression nodes in the isolated gate
+        if: needs.select-stage.outputs.stage == 'identity-diagnostic'
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/phase-d-identities"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$root/migration-l3.xml" \
+            --report "$root/migration-l3-report.json" \
+            --log "$root/migration-l3.log" \
+            tests/test_db_migrations.py::test_database_upgrade_cli_is_explicit_backed_up_and_idempotent \
+            tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade \
+            tests/test_db_migrations.py::test_subscription_identity_migration_preserves_references_and_membership \
+            tests/test_xray_vpn_auto_lifecycle.py::test_reviewed_profile_identity_mapping_preserves_credentials_without_publishing \
+            tests/test_xray_vpn_auto_lifecycle.py::test_unmapped_inventory_replacement_does_not_inherit_or_publish_identity
       - name: Run qualified source-manifest regression before native profiles
         if: >-
           needs.select-stage.outputs.stage == 'qualified' ||
@@ -452,6 +489,7 @@ jobs:
        needs.select-stage.outputs.stage == 'kernel-preflight' ||
        needs.select-stage.outputs.stage == 'kernel-recovery-diagnostic' ||
        needs.select-stage.outputs.stage == 'packet-diagnostic' ||
+       needs.select-stage.outputs.stage == 'identity-diagnostic' ||
        needs.select-stage.outputs.stage == 'targets')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -488,6 +526,7 @@ jobs:
           cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" \
             "$RUNNER_TEMP/phase-diagnostic-runtime-inputs.json"
       - name: Run the fixed application/native diagnostic or kernel preflight
+        if: needs.select-stage.outputs.stage != 'identity-diagnostic'
         env:
           VALIDATION_STAGE: ${{ needs.select-stage.outputs.stage }}
         run: |
@@ -521,6 +560,127 @@ jobs:
           PY
           printf 'Acceptance launcher exit status: %s\n' "$launcher_status"
           exit "$launcher_status"
+      - name: Run reviewed identity migration and two cold startup scale receipts
+        if: needs.select-stage.outputs.stage == 'identity-diagnostic'
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/phase-d-identities"
+          mkdir -p "$root"
+          run_launcher() {
+            local suite="$1" log="$2" attempt_dir="${3:-}"
+            local result=0
+            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
+              > "$log" 2>&1 || result=$?
+            python3 - "$log" <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "tests/acceptance")
+          from launcher import _redact_public
+          print(_redact_public(Path(sys.argv[1]).read_bytes(), limit=65536).decode("utf-8", "replace"))
+          PY
+            if [ "$result" -eq 0 ] && [ -n "$attempt_dir" ]; then
+              python3 - "$suite" "$attempt_dir" "$RUNNER_TEMP" <<'PY'
+          import json, shutil, sys
+          from pathlib import Path
+          suite, output, runner_temp = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+          prior = set()
+          for receipt in output.parent.glob("startup-attempt-*/hosted-acceptance-report.json"):
+              try:
+                  prior.add(json.loads(receipt.read_text(encoding="utf-8")).get("suite_nonce"))
+              except (OSError, json.JSONDecodeError):
+                  pass
+          candidates = []
+          for receipt in runner_temp.glob("fwrouter-acceptance-*-artifacts/hosted-acceptance-report.json"):
+              try:
+                  row = json.loads(receipt.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  continue
+              if row.get("suite") == suite and row.get("suite_nonce") not in prior:
+                  candidates.append((receipt.stat().st_mtime_ns, receipt, row))
+          if not candidates:
+              raise SystemExit("new startup suite receipt was not found")
+          _mtime, receipt, row = max(candidates, key=lambda item: item[0])
+          output.mkdir(parents=True, exist_ok=False)
+          for name in ("hosted-acceptance-report.json", "runtime-scale-metrics.json",
+                       "application-acceptance.xml", "application-acceptance-receipt.json"):
+              source = receipt.parent / name
+              if not source.is_file() or source.is_symlink():
+                  raise SystemExit(f"startup receipt artifact is missing or unsafe: {name}")
+              shutil.copyfile(source, output / name)
+          (output / "attempt.json").write_text(json.dumps({
+              "suite": row.get("suite"), "suite_nonce": row.get("suite_nonce"),
+              "source_revision": row.get("source_revision"), "plan_digest": row.get("plan_digest"),
+              "artifact_source": str(receipt.parent.name),
+          }, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+            fi
+            return "$result"
+          }
+          run_launcher identity-diagnostic "$root/identity-migration.log"
+          run_launcher runtime-scale-diagnostic "$root/startup-attempt-1.log" "$root/startup-attempt-1"
+          run_launcher runtime-scale-diagnostic "$root/startup-attempt-2.log" "$root/startup-attempt-2"
+          python3 - "$root" <<'PY'
+          import json, sys
+          from pathlib import Path
+          import os
+          root = Path(sys.argv[1])
+          scale = []
+          errors = []
+          for attempt_dir in sorted(root.glob("startup-attempt-[12]")):
+              path = attempt_dir / "hosted-acceptance-report.json"
+              try:
+                  row = json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  errors.append(f"invalid receipt: {path.name}")
+                  continue
+              if row.get("suite") != "runtime-scale-diagnostic":
+                  continue
+              if row.get("status") != "passed":
+                  errors.append(f"runtime scale hosted receipt is not passed: {path.name}")
+              if row.get("source_revision") != __import__("subprocess").check_output(
+                      ["git", "rev-parse", "HEAD"], text=True).strip():
+                  errors.append(f"runtime scale source revision mismatch: {path.name}")
+              if row.get("plan_digest") != os.environ.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST"):
+                  errors.append(f"runtime scale plan digest mismatch: {path.name}")
+              if not row.get("suite_nonce"):
+                  errors.append(f"runtime scale suite nonce missing: {path.name}")
+              metrics_path = attempt_dir / "runtime-scale-metrics.json"
+              try:
+                  metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  errors.append(f"startup metrics missing or invalid: {metrics_path.name}")
+                  continue
+              value = metrics.get("startup_wall_seconds")
+              if not isinstance(value, (int, float)) or isinstance(value, bool):
+                  errors.append(f"startup wall time missing: {metrics_path.name}")
+              elif value >= 45:
+                  errors.append(f"startup exceeded hard 45 second budget: {metrics_path.name}")
+              scale.append({"attempt": len(scale) + 1, "suite_nonce": row.get("suite_nonce"),
+                            "source_revision": row.get("source_revision"),
+                            "plan_digest": row.get("plan_digest"),
+                            "startup_wall_seconds": value,
+                            "engineering_margin_40s": value < 40 if isinstance(value, (int, float)) else False})
+          if len(scale) != 2:
+              errors.append(f"expected two independent cold startup receipts; found {len(scale)}")
+          if len({item.get("suite_nonce") for item in scale}) != len(scale):
+              errors.append("cold startup receipts do not have distinct run nonces")
+          margin_demonstrated = len(scale) == 2 and all(
+              isinstance(item["startup_wall_seconds"], (int, float))
+              and item["startup_wall_seconds"] < 40 for item in scale)
+          result = {"schema": "fwrouter-startup-scale-repeat/v1",
+                    "status": "failed" if errors else "passed",
+                    "hard_budget_seconds": 45,
+                    "engineering_margin_goal_seconds": 40,
+                    "engineering_margin_status": "demonstrated" if margin_demonstrated else "not_demonstrated",
+                    "startup_margin_claim": "at_least_5_seconds" if margin_demonstrated else "none",
+                    "source_commit": __import__("subprocess").check_output(
+                        ["git", "rev-parse", "HEAD"], text=True).strip(),
+                    "attempts": scale, "errors": errors}
+          (root / "startup-repeat-validation.json").write_text(
+              json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(result, sort_keys=True))
+          raise SystemExit(bool(errors))
+          PY
       - name: Validate the strict application/native smoke receipt
         if: success() && needs.select-stage.outputs.stage == 'minimal'
         env:
@@ -595,6 +755,7 @@ jobs:
         with:
           name: phase-d-xray-diagnostic-${{ github.sha }}
           path: |
+            ${{ runner.temp }}/phase-d-identities/**
             ${{ runner.temp }}/phase-d-diagnostic-plan-copy.json
             ${{ runner.temp }}/phase-diagnostic-*.log
             ${{ runner.temp }}/phase-diagnostic-runtime-inputs.json
@@ -751,7 +912,7 @@ jobs:
           compression-level: 3
 
   full-affected-functional:
-    name: Full affected L0-L5 and functional 37 + packet 1 bundle
+    name: Full affected L0-L5 and functional 38 + packet 2-node bundle
     needs: [select-stage, qualified-native]
     if: >-
       needs.qualified-native.result == 'success' &&

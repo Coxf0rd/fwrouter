@@ -143,8 +143,8 @@ def test_transition_recovery_requires_recorded_config_digest_before_native_mutat
     assert _database_snapshot() == revisions_before
 
 
-def test_inventory_replacement_changes_only_its_derived_profile_identity_before_publication(monkeypatch, tmp_path: Path) -> None:
-    """Inventory identity convergence must not silently publish unverified nodes."""
+def test_unmapped_inventory_replacement_does_not_inherit_or_publish_identity(monkeypatch, tmp_path: Path) -> None:
+    """A replacement keeps a fresh derived identity until a reviewed map is installed."""
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     tokens = [f"inventory-delta-{index}" for index in range(7)]
@@ -194,6 +194,9 @@ def test_inventory_replacement_changes_only_its_derived_profile_identity_before_
     _seed_server(replacement.server_id, server_name=replacement.server_name, raw=replacement.raw)
     with db_session() as connection:
         connection.execute("UPDATE servers SET inventory_state = 'missing' WHERE server_id = ?", (retiring.server_id,))
+        assert connection.execute(
+            "SELECT 1 FROM subscription_node_aliases WHERE server_id=?", (replacement.server_id,),
+        ).fetchone() is None
     for token in tokens:
         old = {node["server_id"]: node for node in original[token]}
         new = {node["server_id"]: node for node in list_desired_subscription_xray_clients(token)}
@@ -207,6 +210,131 @@ def test_inventory_replacement_changes_only_its_derived_profile_identity_before_
         assert old[retiring.server_id]["client_uuid"] in published_ids
         assert new[replacement.server_id]["client_uuid"] not in published_ids
     assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before
+
+
+def test_reviewed_profile_identity_mapping_preserves_credentials_without_publishing(monkeypatch, tmp_path: Path) -> None:
+    """A reviewed map updates intent while native and public state await generation proof."""
+    from uuid import NAMESPACE_DNS, uuid5
+
+    from fwrouter_api.adapters.subscription import parse_subscription_payload
+    from fwrouter_api.services.subscription_profiles import _subscription_email
+    from fwrouter_api.services.subscription_node_identity import canonical_digest
+    from fwrouter_api.services import subscription as subscription_service
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    tokens = [f"reviewed-map-{index}" for index in range(7)]
+    for token in tokens:
+        _seed_subscription_identity(slug=token, token=token)
+
+    def member(index: int) -> dict[str, Any]:
+        return {
+            "tag": f"reviewed-member-{index}", "protocol": "vless",
+            "settings": {"vnext": [{"address": f"member-{index}.example.invalid", "port": 443,
+                                      "users": [{"id": f"reviewed-fixture-id-{index}"}]}]},
+            "streamSettings": {"network": "tcp", "security": "tls",
+                               "tlsSettings": {"serverName": f"member-{index}.example.invalid"}},
+        }
+
+    services = [{"tag": "direct", "protocol": "freedom"},
+                {"tag": "reject", "protocol": "blackhole"},
+                {"tag": "dns", "protocol": "dns"}]
+    previous = {"remarks": "reviewed-profile-before", "outbounds": [member(0), *services]}
+    reviewed = {"remarks": "reviewed-profile-after-policy-review", "outbounds": [member(0), *services]}
+    old_server = parse_subscription_payload(json.dumps(previous)).servers[0]
+    new_server = parse_subscription_payload(json.dumps(reviewed)).servers[0]
+    _seed_server(old_server.server_id, server_name=old_server.server_name, raw=old_server.raw)
+    _seed_server(new_server.server_id, server_name=new_server.server_name, raw=new_server.raw)
+    source_url = "https://reviewed.example.invalid/subscription"
+    source_id = subscription_service._source_id(source_url)
+
+    persisted: dict[str, str] = {}
+    with db_session() as connection:
+        connection.execute(
+            """INSERT INTO subscription_server_memberships
+               (source_id, server_id, source_url, entry_identity_hash, parser_format, display_name, is_active)
+               VALUES (?, ?, ?, 'old-profile', 'json', ?, 0)""",
+            (source_id, old_server.server_id, source_url, old_server.server_name),
+        )
+        connection.execute(
+            """INSERT INTO subscription_server_memberships
+               (source_id, server_id, source_url, entry_identity_hash, parser_format, display_name, is_active)
+               VALUES (?, ?, ?, 'new-profile', 'json', ?, 1)""",
+            (source_id, new_server.server_id, source_url, new_server.server_name),
+        )
+        for token in tokens:
+            email = _subscription_email(token, old_server.server_id)
+            client_uuid = str(uuid5(NAMESPACE_DNS, f"reviewed-public:{token}"))
+            persisted[email] = client_uuid
+            connection.execute(
+                """INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind,
+                   stable_key, display_name, desired_mode, runtime_state, is_active, is_deleted, metadata_json)
+                   VALUES (?, 'explicit_external_client', 'vless_client', 'xray', ?, ?, 'enabled', 'active', 1, 0, ?)""",
+                (f"xray:{client_uuid}", f"xray:{client_uuid}", email,
+                 json.dumps({"detail": {"email": email, "client_uuid": client_uuid}})),
+            )
+            connection.execute(
+                "INSERT INTO subscription_profile_snapshots (token, nodes_json) VALUES (?, ?) ",
+                (token, json.dumps([{"server_id": old_server.server_id, "client_email": email,
+                                     "client_uuid": client_uuid}], sort_keys=True)),
+            )
+        internal_email = xray_subscription_service._vpn_auto_xray_client_email(old_server.server_id)
+        internal_uuid = str(uuid5(NAMESPACE_DNS, "reviewed-internal"))
+        persisted[internal_email] = internal_uuid
+        connection.execute(
+            """INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind,
+               stable_key, display_name, desired_mode, runtime_state, is_active, is_deleted, metadata_json)
+               VALUES (?, 'explicit_external_client', 'vless_client', 'xray', ?, ?, 'enabled', 'active', 1, 0, ?)""",
+            (f"xray:{internal_uuid}", f"xray:{internal_uuid}", internal_email,
+             json.dumps({"detail": {"email": internal_email, "client_uuid": internal_uuid}})),
+        )
+        selection_revision = read_selection_revision(connection)
+
+    snapshots_before = _database_snapshot()["subscription_profile_snapshots"]
+    manifest = [{
+        "old_server_id": old_server.server_id,
+        "new_server_id": new_server.server_id,
+        "old_profile": previous,
+        "new_profile": reviewed,
+        "expected_identity_revision": 1,
+    }]
+    identity_digest = canonical_digest(sorted((value, key) for key, value in persisted.items()))
+
+    with pytest.raises(RuntimeError, match="IDENTITY_MIGRATION_SELECTION_STALE"):
+        xray_subscription_service.migrate_subscription_profile_identities(
+            manifest,
+            expected_selection_revision=selection_revision + 1,
+            expected_identity_digest=identity_digest,
+        )
+    assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM subscription_node_aliases WHERE server_id=?", (new_server.server_id,),
+        ).fetchone() is None
+
+    result = xray_subscription_service.migrate_subscription_profile_identities(
+        manifest,
+        expected_selection_revision=selection_revision,
+        expected_identity_digest=identity_digest,
+    )
+    assert result["ok"] is True
+    assert result["native_applied"] is False
+    assert result["fresh_generation_required"] is True
+    assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT current_server_id FROM subscription_node_identities WHERE origin_server_id=?",
+            (old_server.server_id,),
+        ).fetchone()[0] == new_server.server_id
+        for scope in [*(f"subscription:{token}" for token in tokens), "vpn-auto"]:
+            row = connection.execute(
+                """SELECT c.client_uuid FROM subscription_node_credentials c
+                   JOIN subscription_node_aliases a USING (identity_id)
+                   WHERE c.scope=? AND a.server_id=?""",
+                (scope, new_server.server_id),
+            ).fetchone()
+            assert row is not None
 
 
 @pytest.mark.parametrize("client_count", [1, 70])
@@ -241,6 +369,12 @@ def test_profile_binding_plan_reuses_owned_enforcement_without_per_client_native
     def unexpected_per_client_enrichment(*_args, **_kwargs):
         raise AssertionError("planner must enrich persisted identity with its owned snapshot only")
     monkeypatch.setattr(xray_client_state, "get_subject_with_effective_state", unexpected_per_client_enrichment)
+    persisted_subject_reads = []
+    read_subject = xray_client_state.get_subject
+    def counted_subject_read(subject_id):
+        persisted_subject_reads.append(subject_id)
+        return read_subject(subject_id)
+    monkeypatch.setattr(xray_client_state, "get_subject", counted_subject_read)
     preflight_calls = []
     original = subject_policy_service._default_subject_runtime_enforcement
     def observed_preflight(**kwargs):
@@ -251,6 +385,8 @@ def test_profile_binding_plan_reuses_owned_enforcement_without_per_client_native
     bindings, modes, assignments = xray_subscription_service._prospective_profile_bindings(
         nodes, token_prefix="sub-", preserve_existing_overrides=False,
     )
+    assert len(persisted_subject_reads) == client_count
+    assert len(set(persisted_subject_reads)) == client_count
     assert len(preflight_calls) == 1  # Existing mode projection takes one shared preflight.
     assert len(bindings) == client_count and modes == []
     assert {row["client_uuid"] for row in bindings} == {row["client_uuid"] for row in nodes}

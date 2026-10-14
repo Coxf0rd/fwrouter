@@ -127,13 +127,22 @@ _TARGET_DIAGNOSTIC_NODEIDS = (
 _KERNEL_RECOVERY_SUITE = "kernel-recovery-diagnostic"
 _KERNEL_DATAPLANE_SUITES = {_KERNEL_RECOVERY_SUITE, "provider-cohort", "reentry-diagnostic"}
 _PACKET_DIAGNOSTIC_SUITE = "packet-diagnostic"
+_RUNTIME_SCALE_DIAGNOSTIC_SUITE = "runtime-scale-diagnostic"
+_IDENTITY_DIAGNOSTIC_SUITE = "identity-diagnostic"
 _PACKET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_packet_dataplane.py::test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks",
     "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
 )
+_RUNTIME_SCALE_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
+)
+_IDENTITY_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_xray_generation.py::test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery",
+)
 _DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic",
                       "recovery-diagnostic", "reentry-diagnostic", _KERNEL_RECOVERY_SUITE,
-                      _PACKET_DIAGNOSTIC_SUITE}
+                      _PACKET_DIAGNOSTIC_SUITE, _RUNTIME_SCALE_DIAGNOSTIC_SUITE,
+                      _IDENTITY_DIAGNOSTIC_SUITE}
 _KERNEL_SUITES = {"kernel-preflight"}
 PACKET_NETWORKS = {
     "lan": {"subnet": "10.240.0.0/29", "gateway": "10.240.0.6", "router": "10.240.0.1", "client": "10.240.0.2"},
@@ -2430,9 +2439,15 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
             diagnostics = set(_REENTRY_DIAGNOSTIC_NODEIDS)
         elif suite == _PACKET_DIAGNOSTIC_SUITE:
             diagnostics = set(_PACKET_DIAGNOSTIC_NODEIDS)
+        elif suite == _RUNTIME_SCALE_DIAGNOSTIC_SUITE:
+            diagnostics = set(_RUNTIME_SCALE_DIAGNOSTIC_NODEIDS)
+        elif suite == _IDENTITY_DIAGNOSTIC_SUITE:
+            diagnostics = set(_IDENTITY_DIAGNOSTIC_NODEIDS)
         else:
             raise NotRun("diagnostic suite has no fixed node set")
-        expected_catalog_suite = "packet" if suite == _PACKET_DIAGNOSTIC_SUITE else "functional"
+        expected_catalog_suite = "packet" if suite in {
+            _PACKET_DIAGNOSTIC_SUITE, _RUNTIME_SCALE_DIAGNOSTIC_SUITE
+        } else "functional"
         if not diagnostics.issubset({row["nodeid"] for row in rows if row["suite"] == expected_catalog_suite}):
             raise NotRun("fixed diagnostic node set is absent from its exact source catalog suite")
         return diagnostics
@@ -2441,11 +2456,11 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         functional = {row["nodeid"] for row in rows if row["suite"] == "functional"}
         packet = {row["nodeid"] for row in rows if row["suite"] == "packet"}
         provider = set(_PROVIDER_COHORT_NODEIDS)
-        if (len(functional) != 37 or len(packet) != 2 or len(provider) != 11
+        if (len(functional) != 38 or len(packet) != 2 or len(provider) != 11
                 or not provider <= functional or functional & packet):
-            raise NotRun("functional profile partitions differ from the reviewed 37+2 inventory")
+            raise NotRun("functional profile partitions differ from the reviewed 38+2 inventory")
         selected = functional - provider
-        if len(selected) != 26 or selected & provider or selected | provider != functional:
+        if len(selected) != 27 or selected & provider or selected | provider != functional:
             raise NotRun("ordinary/provider profile partitions are not disjoint and exhaustive")
     if not selected:
         raise NotRun("acceptance suite has no registered scenarios")
@@ -3376,9 +3391,10 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     docker = shutil.which("docker", path=docker_env.get("PATH"))
     if not docker:
         raise NotRun("Docker CLI is unavailable on the qualified hosted runner")
-    packet_mode = suite == _PACKET_DIAGNOSTIC_SUITE
+    packet_mode = suite in {_PACKET_DIAGNOSTIC_SUITE, _RUNTIME_SCALE_DIAGNOSTIC_SUITE}
     kernel_preflight = suite in _KERNEL_SUITES
-    kernel_dataplane = suite in {*_KERNEL_DATAPLANE_SUITES, _PACKET_DIAGNOSTIC_SUITE}
+    kernel_dataplane = suite in {*_KERNEL_DATAPLANE_SUITES, _PACKET_DIAGNOSTIC_SUITE,
+                                 _RUNTIME_SCALE_DIAGNOSTIC_SUITE}
     kernel_profile = kernel_preflight or kernel_dataplane
     dependency_profile = suite != "recovery"
     if dependency_profile:
@@ -4228,7 +4244,8 @@ def main() -> int:
                         choices=("functional-ordinary", "recovery", "xray-diagnostic", "provider-diagnostic",
                                  "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
                                  "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight",
-                                 "kernel-recovery-diagnostic", "packet-diagnostic"),
+                                 "kernel-recovery-diagnostic", "packet-diagnostic",
+                                 "identity-diagnostic", "runtime-scale-diagnostic"),
                         default="functional-ordinary")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import time
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,6 @@ from fwrouter_api.services.xray_common import (
 )
 from fwrouter_api.services.xray_runtime_state import _is_xray_supported_server_config, _module_state
 from fwrouter_api.services.xray_subscription import build_xray_vless_uri
-from fwrouter_api.services.subjects import get_subject
 from fwrouter_api.services.subject_inventory import DEFAULT_DESIRED_MODE_BY_TYPE, EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE
 from fwrouter_api.services.xray_bindings import (
     _annotate_bindings_with_handoff,
@@ -80,6 +80,253 @@ def _full_xray_client_uri(client: XrayClient, *, display_name: str | None = None
 def _vpn_auto_xray_client_email(server_id: str) -> str:
     digest = hashlib.sha1(server_id.encode("utf-8")).hexdigest()[:12]
     return f"vpn-auto-{digest}@fwrouter.local"
+
+
+def _prepare_durable_profile_credentials(*, include_vpn_auto: bool,
+                                         legacy_native_clients: list[Any] | None = None) -> None:
+    """Persist credential intent before taking the generation source fence.
+
+    Adopt local durable identities, never the possibly partially applied native
+    candidate. Each node's original legacy seed is retained after aliasing.
+    """
+    if not xray_writer_guard_is_held():
+        raise RuntimeError("XRAY_IDENTITY_WRITER_REQUIRED")
+    from fwrouter_api.services.subscription_node_identity import (
+        register_node, retain_credentials, credentials_for_scope, IdentityConflict,
+    )
+    from fwrouter_api.services.subscription_profiles import (
+        _subscription_servers, _subscription_email, _subscription_uuid,
+    )
+    servers = _subscription_servers()
+    if any(server.raw.get("_fwrouter_identity_migration_required") is True for server in servers):
+        raise IdentityConflict("IDENTITY_MIGRATION_REQUIRED")
+    auto_servers = _vpn_auto_servers_for_xray_subscription() if include_vpn_auto else []
+    with db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        tokens = [str(row["token"]) for row in connection.execute(
+            "SELECT c.token FROM subscription_clients c JOIN subscription_accounts a "
+            "ON a.account_id=c.account_id WHERE c.enabled=1 AND a.enabled=1 ORDER BY c.token"
+        )]
+        persisted: dict[str, str] = {}
+        for row in connection.execute(
+            "SELECT json_extract(metadata_json, '$.detail.email') AS email, "
+            "COALESCE(json_extract(metadata_json, '$.detail.client_uuid'), "
+            "json_extract(metadata_json, '$.detail.client_id')) AS client_uuid "
+            "FROM subjects WHERE implementation_kind='xray' AND is_deleted=0"
+        ):
+            if not row["email"] or not row["client_uuid"]:
+                continue
+            email, value = str(row["email"]), str(row["client_uuid"])
+            if email in persisted and persisted[email] != value:
+                raise IdentityConflict("IDENTITY_LOCAL_PROJECTION_CONFLICT")
+            persisted[email] = value
+        native_by_email: dict[str, str] = {}
+        for client in legacy_native_clients or []:
+            email = str(getattr(client, "email", "") or "")
+            value = str(getattr(client, "client_uuid", "") or getattr(client, "client_id", "") or "")
+            if not email or not value or email in persisted:
+                continue
+            if email in native_by_email and native_by_email[email] != value:
+                raise IdentityConflict("IDENTITY_NATIVE_PROJECTION_CONFLICT")
+            native_by_email[email] = value
+        for email, value in native_by_email.items():
+            persisted.setdefault(email, value)
+        origins: dict[str, str] = {}
+        active_identity_owners: dict[str, str] = {}
+        for server in [*servers, *auto_servers]:
+            server_id = str(server["server_id"])
+            identity_id = register_node(connection, server_id)
+            prior_owner = active_identity_owners.get(identity_id)
+            if prior_owner is not None and prior_owner != server_id:
+                raise IdentityConflict("IDENTITY_ACTIVE_ALIAS_CONFLICT")
+            active_identity_owners[identity_id] = server_id
+            row = connection.execute("SELECT origin_server_id FROM subscription_node_identities "
+                                     "WHERE identity_id=?", (identity_id,)).fetchone()
+            origins[server_id] = str(row["origin_server_id"])
+        for token in tokens:
+            retained = credentials_for_scope(connection, "subscription:" + token)
+            for server in servers:
+                server_id = str(server["server_id"])
+                if server_id in retained:
+                    if retained[server_id]["revoked"]:
+                        continue
+                    continue
+                origin = origins[server_id]
+                email = _subscription_email(token, origin)
+                retain_credentials(connection, scope="subscription:" + token, server_id=server_id,
+                                   client_email=email,
+                                   client_uuid=persisted.get(email) or _subscription_uuid(token, origin))
+        retained_auto = credentials_for_scope(connection, "vpn-auto")
+        for server in auto_servers:
+            server_id = str(server["server_id"])
+            if server_id in retained_auto:
+                if retained_auto[server_id]["revoked"]:
+                    continue
+                continue
+            email = _vpn_auto_xray_client_email(origins[server_id])
+            retain_credentials(connection, scope="vpn-auto", server_id=server_id,
+                               client_email=email, client_uuid=persisted.get(email) or str(uuid4()))
+
+
+@xray_writer_guarded
+def migrate_subscription_profile_identities(
+    mappings: list[dict[str, Any]], *, expected_selection_revision: int | None = None,
+    expected_identity_digest: str | None = None, apply: bool = False,
+    expected_plan_sha256: str | None = None, checkpoint_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Preview or install reviewed identity continuity without native changes.
+
+    Preview is rollback-only. Apply requires the exact digest returned by a
+    preview so source ownership, identity preimage, and selection revision are
+    revalidated under the shared writer reservation.
+    """
+    from fwrouter_api.services.subscription_node_identity import (
+        migrate_profile_identity, retain_credentials, origin_server_id_for_server,
+        IdentityConflict, canonical_digest, profile_provenance,
+    )
+    from fwrouter_api.services.subscription_profiles import _subscription_email
+    from fwrouter_api.services.vpn_auto_selection_state import (
+        read_selection_revision, advance_selection_revision,
+    )
+    if not mappings or len(mappings) > 256:
+        raise IdentityConflict("IDENTITY_MIGRATION_MANIFEST_INVALID")
+    if checkpoint_sha256 is not None and (
+        len(checkpoint_sha256) != 64 or any(char not in "0123456789abcdef" for char in checkpoint_sha256)
+    ):
+        raise IdentityConflict("IDENTITY_MIGRATION_CHECKPOINT_DIGEST_INVALID")
+    from fwrouter_api.db.connection import get_db_path
+    from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION, inspect_database_schema
+    db_path = get_db_path()
+    if not db_path.is_file():
+        raise IdentityConflict("IDENTITY_DATABASE_UNAVAILABLE")
+    schema_connection = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5.0)
+    try:
+        schema_state = inspect_database_schema(schema_connection)
+    finally:
+        schema_connection.close()
+    if schema_state.get("actual_schema_version") != EXPECTED_SCHEMA_VERSION:
+        raise IdentityConflict("IDENTITY_SCHEMA_UPGRADE_REQUIRED")
+    checkpoint_path = _xray_generation_checkpoint_path(_xray_adapter())
+    if checkpoint_path.exists() and checkpoint_sha256 is None:
+        raise IdentityConflict("IDENTITY_MIGRATION_CHECKPOINT_DIGEST_REQUIRED")
+    if checkpoint_sha256 is not None and not checkpoint_path.is_file():
+        raise IdentityConflict("IDENTITY_MIGRATION_CHECKPOINT_UNAVAILABLE")
+    if checkpoint_sha256 is not None:
+        try:
+            actual_checkpoint_sha256 = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise IdentityConflict("IDENTITY_MIGRATION_CHECKPOINT_UNAVAILABLE") from exc
+        if actual_checkpoint_sha256 != checkpoint_sha256:
+            raise IdentityConflict("IDENTITY_MIGRATION_CHECKPOINT_STALE")
+    old_ids = [str(item.get("old_server_id") or "") for item in mappings]
+    new_ids = [str(item.get("new_server_id") or "") for item in mappings]
+    if len(set(old_ids)) != len(old_ids) or len(set(new_ids)) != len(new_ids):
+        raise IdentityConflict("IDENTITY_MIGRATION_AMBIGUOUS")
+    with db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        current_revision = read_selection_revision(connection)
+        persisted: dict[str, str] = {}
+        for row in connection.execute(
+            "SELECT json_extract(metadata_json, '$.detail.email') AS email, "
+            "COALESCE(json_extract(metadata_json, '$.detail.client_uuid'), "
+            "json_extract(metadata_json, '$.detail.client_id')) AS client_uuid "
+            "FROM subjects WHERE implementation_kind='xray' AND is_deleted=0 AND is_active=1"
+        ):
+            if row["email"] and row["client_uuid"]:
+                email, value = str(row["email"]), str(row["client_uuid"])
+                if email in persisted and persisted[email] != value:
+                    raise IdentityConflict("IDENTITY_LOCAL_PROJECTION_CONFLICT")
+                persisted[email] = value
+        identity_digest = canonical_digest(sorted((value, key) for key, value in persisted.items()))
+        if expected_selection_revision is not None and current_revision != expected_selection_revision:
+            raise IdentityConflict("IDENTITY_MIGRATION_SELECTION_STALE")
+        if expected_identity_digest is not None and identity_digest != expected_identity_digest:
+            raise IdentityConflict("IDENTITY_MIGRATION_PREIMAGE_STALE")
+        source_preimage = {
+            "identities": [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_identities ORDER BY identity_id")],
+            "aliases": [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_aliases ORDER BY server_id")],
+            "credentials": [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_credentials ORDER BY scope, identity_id")],
+            "credential_history": [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_credential_history ORDER BY client_uuid")],
+            "memberships": [dict(row) for row in connection.execute(
+                "SELECT source_id, server_id, is_active FROM subscription_server_memberships "
+                "ORDER BY source_id, server_id")],
+            "servers": [dict(row) for row in connection.execute(
+                "SELECT server_id, inventory_state, raw_json FROM servers ORDER BY server_id")],
+        }
+        plan_sha256 = canonical_digest({
+            "manifest_sha256": canonical_digest(mappings),
+            "selection_revision": current_revision,
+            "identity_preimage_sha256": identity_digest,
+            "source_preimage_sha256": canonical_digest(source_preimage),
+            "checkpoint_sha256": checkpoint_sha256,
+        })
+        if apply and not expected_plan_sha256:
+            raise IdentityConflict("IDENTITY_MIGRATION_PLAN_DIGEST_REQUIRED")
+        if expected_plan_sha256 is not None and expected_plan_sha256 != plan_sha256:
+            raise IdentityConflict("IDENTITY_MIGRATION_PLAN_STALE")
+        tokens = [str(row["token"]) for row in connection.execute(
+            "SELECT c.token FROM subscription_clients c JOIN subscription_accounts a "
+            "ON a.account_id=c.account_id WHERE c.enabled=1 AND a.enabled=1 ORDER BY c.token"
+        )]
+        changed = 0
+        for item in mappings:
+            old_id = str(item["old_server_id"])
+            origin_id = origin_server_id_for_server(connection, old_id)
+            target_id = str(item["new_server_id"])
+            target_row = connection.execute(
+                "SELECT raw_json, inventory_state FROM servers WHERE server_id=?", (target_id,),
+            ).fetchone()
+            if not target_row or target_row["inventory_state"] != "active":
+                raise IdentityConflict("IDENTITY_MIGRATION_SERVER_UNAVAILABLE")
+            target_raw = json.loads(target_row["raw_json"] or "{}")
+            if target_raw.get("_fwrouter_profile_provenance") != profile_provenance(item["new_profile"]):
+                raise IdentityConflict("IDENTITY_MIGRATION_STORED_WITNESS_MISMATCH")
+            for scope, email in [
+                *(("subscription:" + token, _subscription_email(token, origin_id)) for token in tokens),
+                ("vpn-auto", _vpn_auto_xray_client_email(origin_id)),
+            ]:
+                retained_scope = credentials_for_scope(connection, scope)
+                existing = retained_scope.get(old_id)
+                if existing and existing["revoked"]:
+                    continue
+                if email not in persisted:
+                    raise IdentityConflict("IDENTITY_MIGRATION_CREDENTIAL_PREIMAGE_MISSING")
+                retain_credentials(connection, scope=scope, server_id=old_id,
+                                   client_uuid=persisted[email], client_email=email)
+            prior = connection.execute("SELECT identity_id FROM subscription_node_aliases WHERE server_id=?",
+                                       (str(item["new_server_id"]),)).fetchone()
+            migrate_profile_identity(
+                connection, old_server_id=old_id, new_server_id=str(item["new_server_id"]),
+                old_profile=item["old_profile"], new_profile=item["new_profile"],
+                expected_revision=int(item["expected_identity_revision"]),
+                allow_profile_change=True,
+                operator_plan_sha256=plan_sha256,
+                checkpoint_sha256=checkpoint_sha256,
+            )
+            target_raw.pop("_fwrouter_identity_migration_required", None)
+            connection.execute(
+                "UPDATE servers SET raw_json=? WHERE server_id=? AND inventory_state='active'",
+                (json.dumps(target_raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")), target_id),
+            )
+            changed += int(prior is None)
+        revision = current_revision
+        if changed:
+            revision = advance_selection_revision(connection, expected_revision=current_revision)
+            if revision is None:
+                raise IdentityConflict("IDENTITY_MIGRATION_SELECTION_STALE")
+        if not apply:
+            connection.rollback()
+    return {"ok": True, "status": "applied" if apply else "dry_run",
+            "mappings_count": len(mappings), "changed_count": changed,
+            "preserved_identity_count": len(persisted), "selection_revision": revision,
+            "identity_preimage_sha256": identity_digest, "plan_sha256": plan_sha256,
+            "checkpoint_sha256": checkpoint_sha256,
+            "native_applied": False, "public_snapshots_changed": False,
+            "fresh_generation_required": True}
 
 
 def _is_subscription_profile_email(email: str) -> bool:
@@ -447,7 +694,7 @@ def _prospective_profile_bindings(
         current = _xray_subject_for_client(client_uuid, include_effective_state=False)
         if isinstance(current, dict):
             subject_id = str(current.get("subject_id") or f"xray:{client_uuid}")
-            subject = get_subject(subject_id) or current
+            subject = current
         else:
             subject_id = f"xray:{client_uuid}"
             subject = {
@@ -701,6 +948,116 @@ def _xray_generation_checkpoint_path(adapter: Any) -> Path:
     return Path(adapter.config_path).parent / ".generation" / "generation-checkpoint.json"
 
 
+def _identity_migration_ledger_matches(*, plan_sha256: str, checkpoint_sha256: str) -> int:
+    with db_session() as connection:
+        row = connection.execute(
+            """SELECT COUNT(*) AS count FROM subscription_node_identity_transitions
+               WHERE operator_plan_sha256=? AND checkpoint_sha256=?""",
+            (plan_sha256, checkpoint_sha256),
+        ).fetchone()
+    return int(row["count"] or 0)
+
+
+def _checkpoint_supersession_state(
+    adapter: Any, checkpoint_path: Path, *, checkpoint_sha256: str, plan_sha256: str,
+) -> dict[str, Any]:
+    from fwrouter_api.services.subscription_node_identity import canonical_digest
+    from fwrouter_api.services import mihomo_config
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    raw = checkpoint_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != checkpoint_sha256:
+        raise RuntimeError("XRAY_SUPERSESSION_CHECKPOINT_STALE")
+    if _identity_migration_ledger_matches(plan_sha256=plan_sha256,
+                                          checkpoint_sha256=checkpoint_sha256) <= 0:
+        raise RuntimeError("XRAY_SUPERSESSION_MIGRATION_PROOF_MISSING")
+    config_path = Path(adapter.config_path)
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    xray_config_sha = hashlib.sha256(config_path.read_bytes()).hexdigest()
+    xray_mounted_sha = adapter.get_runtime_config_sha256()
+    if not xray_mounted_sha or xray_mounted_sha != xray_config_sha:
+        raise RuntimeError("XRAY_SUPERSESSION_MOUNTED_CONFIG_MISMATCH")
+    with db_session() as connection:
+        selection_fence = read_selection_fence(connection)
+    projection = _current_xray_projection_snapshot()
+    loaded_identities = sorted(adapter.list_loaded_client_identities())
+    mihomo_incarnation = get_mihomo_runtime_incarnation()
+    xray_incarnation = adapter.get_runtime_incarnation()
+    if not mihomo_incarnation or not xray_incarnation:
+        raise RuntimeError("XRAY_SUPERSESSION_RUNTIME_INCARNATION_UNAVAILABLE")
+    return {
+        "checkpoint_sha256": checkpoint_sha256,
+        "plan_sha256": plan_sha256,
+        "source_fingerprint": _generation_source_fingerprint(),
+        "selection_fence": selection_fence,
+        "mihomo_config_sha256": hashlib.sha256(mihomo_path.read_bytes()).hexdigest(),
+        "mihomo_runtime_incarnation": mihomo_incarnation,
+        "xray_config_sha256": xray_config_sha,
+        "xray_mounted_config_sha256": xray_mounted_sha,
+        "xray_runtime_incarnation": xray_incarnation,
+        "database_identity_sha256": canonical_digest(projection["identities"]),
+        "database_identity_count": len(projection["identities"]),
+        "loaded_identity_sha256": canonical_digest(loaded_identities),
+        "loaded_identity_count": len(loaded_identities),
+        "rollback_preimage_projection_matches": loaded_identities == projection["identities"],
+    }
+
+
+def _checkpoint_supersession_state_unchanged(
+    adapter: Any, checkpoint_path: Path, baseline: dict[str, Any],
+) -> bool:
+    try:
+        current = _checkpoint_supersession_state(
+            adapter, checkpoint_path,
+            checkpoint_sha256=str(baseline["checkpoint_sha256"]),
+            plan_sha256=str(baseline["plan_sha256"]),
+        )
+        return current == baseline
+    except Exception:
+        return False
+
+
+def _archive_checkpoint_exact(checkpoint_path: Path, checkpoint_sha256: str) -> Path:
+    raw = checkpoint_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != checkpoint_sha256:
+        raise RuntimeError("XRAY_SUPERSESSION_CHECKPOINT_STALE")
+    archive_dir = checkpoint_path.parent / "checkpoint-archive"
+    archive_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if archive_dir.is_symlink() or not archive_dir.is_dir():
+        raise RuntimeError("XRAY_SUPERSESSION_ARCHIVE_PATH_INVALID")
+    archive_dir.chmod(0o700)
+    archive_info = archive_dir.lstat()
+    if archive_info.st_uid != os.geteuid() or stat.S_IMODE(archive_info.st_mode) != 0o700:
+        raise RuntimeError("XRAY_SUPERSESSION_ARCHIVE_PATH_INVALID")
+    target = archive_dir / f"generation-checkpoint-{checkpoint_sha256}.json"
+    temporary = archive_dir / f".archive-{uuid4().hex}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        try:
+            os.close(descriptor)
+        except (OSError, UnboundLocalError):
+            pass
+    try:
+        os.link(temporary, target, follow_symlinks=False)
+    except FileExistsError:
+        info = target.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                or target.read_bytes() != raw):
+            temporary.unlink(missing_ok=True)
+            raise RuntimeError("XRAY_SUPERSESSION_ARCHIVE_CONFLICT")
+    temporary.unlink(missing_ok=True)
+    _fsync_directory(archive_dir)
+    return target
+
+
 def _fsync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -709,9 +1066,45 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _atomic_write_private_checkpoint(path: Path, text: str) -> None:
+    """Replace checkpoint bytes atomically with mode 0600 before publication."""
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(text.encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.close(descriptor)
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _generation_source_fingerprint() -> str:
     with db_session() as connection:
         sources = [
+            [dict(row) for row in connection.execute("SELECT * FROM subscription_node_identities ORDER BY identity_id")],
+            [dict(row) for row in connection.execute("SELECT * FROM subscription_node_aliases ORDER BY server_id")],
+            [dict(row) for row in connection.execute("SELECT * FROM subscription_node_credentials ORDER BY scope, identity_id")],
+            [dict(row) for row in connection.execute("SELECT * FROM subscription_node_credential_history ORDER BY client_uuid")],
+            [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_identity_transitions ORDER BY identity_id, from_revision"
+            )],
+            [dict(row) for row in connection.execute("SELECT source_id, server_id, is_active FROM subscription_server_memberships ORDER BY source_id, server_id")],
             [dict(row) for row in connection.execute("SELECT account_id, slug, enabled FROM subscription_accounts ORDER BY account_id").fetchall()],
             [dict(row) for row in connection.execute("SELECT client_id, account_id, token, enabled FROM subscription_clients ORDER BY client_id").fetchall()],
             [dict(row) for row in connection.execute("SELECT server_id, vpn_auto, vpn_auto_priority, manually_deleted_at FROM server_preferences ORDER BY server_id").fetchall()],
@@ -855,18 +1248,40 @@ def _write_xray_generation_checkpoint(
     source_fingerprint: str,
     staged_generation: dict[str, Any],
     managed_email_prefixes: list[str],
+    supersession: dict[str, Any] | None = None,
 ) -> Path:
     from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
     from fwrouter_api.services import mihomo_config
-    from fwrouter_api.services.artifacts import atomic_write_text
     from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
     from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
 
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint_path.parent.chmod(0o700)
-    if checkpoint_path.exists():
+    if checkpoint_path.exists() and supersession is None:
         raise RuntimeError("An unresolved Xray generation checkpoint already exists.")
+    if supersession is not None:
+        old_sha = str(supersession.get("checkpoint_sha256") or "")
+        plan_sha = str(supersession.get("plan_sha256") or "")
+        baseline = supersession.get("baseline")
+        if (not checkpoint_path.is_file() or not isinstance(baseline, dict)
+                or not _checkpoint_supersession_state_unchanged(adapter, checkpoint_path, baseline)
+                or old_sha != baseline.get("checkpoint_sha256")
+                or plan_sha != baseline.get("plan_sha256")):
+            raise RuntimeError("XRAY_SUPERSESSION_CONTEXT_STALE")
+        xray_candidate = Path(str(staged_generation.get("xray_candidate_path") or ""))
+        xray_candidate_sha = str(staged_generation.get("xray_candidate_sha256") or "")
+        mihomo_candidates = staged_generation.get("mihomo_candidates") or {}
+        native_validation = staged_generation.get("native_validation") or {}
+        if (not xray_candidate.is_file() or len(xray_candidate_sha) != 64
+                or hashlib.sha256(xray_candidate.read_bytes()).hexdigest() != xray_candidate_sha):
+            raise RuntimeError("XRAY_SUPERSESSION_CANDIDATE_CHANGED")
+        for name in ("transition", "final"):
+            candidate_path = Path(str(mihomo_candidates.get(name) or ""))
+            expected = str(((native_validation.get(name) or {}).get("candidate_sha256")) or "")
+            if (not candidate_path.is_file() or len(expected) != 64
+                    or hashlib.sha256(candidate_path.read_bytes()).hexdigest() != expected):
+                raise RuntimeError("XRAY_SUPERSESSION_CANDIDATE_CHANGED")
     xray_path = Path(adapter.config_path)
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
     binding_path = _xray_bindings_path()
@@ -925,9 +1340,50 @@ def _write_xray_generation_checkpoint(
             "mihomo_final_sha256": ((staged_generation.get("native_validation") or {}).get("final") or {}).get("candidate_sha256"),
         },
     }
-    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
-    checkpoint_path.chmod(0o600)
-    _fsync_directory(checkpoint_path.parent)
+    native_receipts = staged_generation.get("native_validation") or {}
+    xray_receipt = native_receipts.get("xray") or {}
+    mihomo_receipts: dict[str, Any] = {}
+    for name in ("transition", "final"):
+        candidate = native_receipts.get(name) or {}
+        validation = candidate.get("validation") or {}
+        receipt_bytes = json.dumps(
+            validation, sort_keys=True, separators=(",", ":"), default=str,
+        ).encode("utf-8")
+        mihomo_receipts[name] = {
+            "ok": validation.get("ok") is True,
+            "candidate_sha256": candidate.get("candidate_sha256"),
+            "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        }
+    identity_receipt_bytes = json.dumps(
+        xray_receipt.get("expected_client_identities") or [],
+        sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")
+    data["native_validation_proof"] = {
+        "xray": {
+            "ok": xray_receipt.get("stage") == "validated",
+            "candidate_sha256": xray_receipt.get("candidate_sha256"),
+            "expected_client_identities_sha256": hashlib.sha256(identity_receipt_bytes).hexdigest(),
+        },
+        "mihomo": mihomo_receipts,
+    }
+    if supersession is not None:
+        archive_path = _archive_checkpoint_exact(checkpoint_path, str(supersession["checkpoint_sha256"]))
+        data["supersession"] = {
+            "checkpoint_sha256": str(supersession["checkpoint_sha256"]),
+            "archive_path": str(archive_path),
+            "migration_plan_sha256": str(supersession["plan_sha256"]),
+            "migration_transition_count": _identity_migration_ledger_matches(
+                plan_sha256=str(supersession["plan_sha256"]),
+                checkpoint_sha256=str(supersession["checkpoint_sha256"]),
+            ),
+            "baseline": supersession["baseline"],
+            "rollback_preimage_projection_matches": bool(
+                supersession["baseline"].get("rollback_preimage_projection_matches")
+            ),
+        }
+        if not _checkpoint_supersession_state_unchanged(adapter, checkpoint_path, supersession["baseline"]):
+            raise RuntimeError("XRAY_SUPERSESSION_CONTEXT_STALE")
+    _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
     return checkpoint_path
 
 
@@ -935,8 +1391,6 @@ def _update_xray_generation_checkpoint(
     checkpoint_path: Path, *, phase: str, selection_revision: int | None = None,
     xray_runtime_incarnation: str | None = None, xray_mounted_config_sha256: str | None = None,
 ) -> None:
-    from fwrouter_api.services.artifacts import atomic_write_text
-
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     data["phase"] = phase
     from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
@@ -949,9 +1403,7 @@ def _update_xray_generation_checkpoint(
         data["xray_runtime_incarnation_after"] = xray_runtime_incarnation
     if xray_mounted_config_sha256 is not None:
         data["xray_mounted_config_sha256_after"] = xray_mounted_config_sha256
-    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
-    checkpoint_path.chmod(0o600)
-    _fsync_directory(checkpoint_path.parent)
+    _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
 
 def _capture_generation_auto_selection() -> dict[str, Any]:
@@ -1152,7 +1604,9 @@ def _current_bindings_artifact_parity(bindings: list[dict[str, Any]], modes: lis
     return parity, hashlib.sha256(raw).hexdigest()
 
 
-def _verify_current_public_projection(snapshot: dict[str, Any]) -> bool:
+def _verify_current_public_projection(
+    snapshot: dict[str, Any], *, supersession: dict[str, Any] | None = None,
+) -> bool:
     """Require every published node to remain a member of current committed Xray identities."""
     identities = set(snapshot["identities"])
     from fwrouter_api.services.custom_servers import VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
@@ -1189,8 +1643,98 @@ def _verify_current_public_projection(snapshot: dict[str, Any]) -> bool:
                         or not active_auto):
                     return False
             else:
-                if bound_server_id != public_server_id:
+                if bound_server_id != public_server_id and not _supersession_alias_owns(
+                    public_server_id, bound_server_id, supersession,
+                ):
                     return False
+    return True
+
+
+def _supersession_alias_owns(
+    public_server_id: str, bound_server_id: str, supersession: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(supersession, dict):
+        return False
+    checkpoint_sha = str(supersession.get("checkpoint_sha256") or "")
+    plan_sha = str(supersession.get("migration_plan_sha256") or "")
+    if len(checkpoint_sha) != 64 or len(plan_sha) != 64:
+        return False
+    with db_session() as connection:
+        row = connection.execute(
+            """SELECT 1 FROM subscription_node_aliases AS old
+               JOIN subscription_node_aliases AS new ON new.identity_id=old.identity_id
+               JOIN subscription_node_identity_transitions AS t ON t.identity_id=old.identity_id
+               WHERE old.server_id=? AND new.server_id=? AND t.from_server_id=old.server_id
+                 AND t.to_server_id=new.server_id AND t.operator_plan_sha256=?
+                 AND t.checkpoint_sha256=? LIMIT 1""",
+            (public_server_id, bound_server_id, plan_sha, checkpoint_sha),
+        ).fetchone()
+    return row is not None
+
+
+def _supersession_current_candidate_owned(
+    adapter: Any, checkpoint: dict[str, Any], projection: dict[str, Any],
+) -> bool:
+    supersession = checkpoint.get("supersession")
+    staged = checkpoint.get("staged_generation")
+    after_selection = checkpoint.get("auto_selection_after")
+    if not isinstance(supersession, dict) or not isinstance(staged, dict):
+        return False
+    phase = str(checkpoint.get("phase") or "")
+    if phase not in {"runtime_applied", "inventory_synced", "bindings_written",
+                     "projections_cleaned", "selection_verified", "restore_failed"}:
+        return False
+    expected_xray = str(staged.get("xray_candidate_sha256") or "")
+    expected_mihomo = str(staged.get("mihomo_final_sha256") or "")
+    proof = checkpoint.get("native_validation_proof")
+    xray_proof = proof.get("xray") if isinstance(proof, dict) else None
+    mihomo_proof = proof.get("mihomo") if isinstance(proof, dict) else None
+    if (not isinstance(xray_proof, dict) or xray_proof.get("ok") is not True
+            or xray_proof.get("candidate_sha256") != expected_xray
+            or not isinstance(mihomo_proof, dict)):
+        return False
+    for name in ("transition", "final"):
+        item = mihomo_proof.get(name)
+        candidate_sha = str(staged.get(f"mihomo_{name}_sha256") or "")
+        receipt_sha = str(item.get("receipt_sha256") or "") if isinstance(item, dict) else ""
+        if (not isinstance(item, dict) or item.get("ok") is not True
+                or item.get("candidate_sha256") != candidate_sha
+                or len(receipt_sha) != 64
+                or any(char not in "0123456789abcdef" for char in receipt_sha)):
+            return False
+    if len(expected_xray) != 64 or len(expected_mihomo) != 64:
+        return False
+    try:
+        from fwrouter_api.services import mihomo_config
+        xray_path = Path(adapter.config_path)
+        mihomo_path = Path(mihomo_config._resolved_base_config_path())
+        current_xray_sha = hashlib.sha256(xray_path.read_bytes()).hexdigest()
+        current_mihomo_sha = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+        if (current_xray_sha != expected_xray
+                or adapter.get_runtime_config_sha256() != expected_xray
+                or current_mihomo_sha != expected_mihomo):
+            return False
+        if (not checkpoint.get("xray_runtime_incarnation_after")
+                or adapter.get_runtime_incarnation() != checkpoint.get("xray_runtime_incarnation_after")):
+            return False
+        from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+        if (not checkpoint.get("mihomo_runtime_incarnation")
+                or get_mihomo_runtime_incarnation() != checkpoint.get("mihomo_runtime_incarnation")):
+            return False
+        fence = projection.get("fence") or {}
+        if checkpoint.get("selection_revision") != fence.get("revision"):
+            return False
+        if isinstance(after_selection, dict):
+            if (after_selection.get("selection_revision") != fence.get("revision")
+                    or after_selection.get("selection_decision_id") != fence.get("decision_id")):
+                return False
+        expected_source = checkpoint.get("derived_source_fingerprint") or checkpoint.get("source_fingerprint")
+        if expected_source != _generation_source_fingerprint():
+            return False
+        if sorted(adapter.list_loaded_client_identities()) != sorted(projection["identities"]):
+            return False
+    except Exception:
+        return False
     return True
 
 
@@ -1212,6 +1756,10 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
         checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
         attempt_path = _generation_recovery_attempt_path(checkpoint_path, checkpoint_digest)
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        supersession = checkpoint.get("supersession") if isinstance(checkpoint.get("supersession"), dict) else None
+        if supersession is not None and not supersession.get("rollback_preimage_projection_matches"):
+            return {"ok": False, "recovered": "current_projection_unproven",
+                    "reason": "supersession_preimage_unproven"}
         previous_attempt = None
         if attempt_path.exists():
             previous_attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
@@ -1222,6 +1770,16 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
                 return {"ok": False, "recovered": "current_projection_unproven", "reason": "recovery_attempt_phase_unknown"}
         generation_id = str(checkpoint.get("generation_id") or "")
         projection = _current_xray_projection_snapshot()
+        supersession_owned = bool(
+            isinstance(supersession, dict)
+            and not supersession.get("rollback_preimage_projection_matches")
+            and _supersession_current_candidate_owned(adapter, checkpoint, projection)
+        )
+        if (isinstance(supersession, dict)
+                and not supersession.get("rollback_preimage_projection_matches")
+                and not supersession_owned):
+            return {"ok": False, "recovered": "current_projection_unproven",
+                    "reason": "supersession_current_candidate_unowned"}
         bindings = collect_xray_runtime_bindings()
         modes = collect_xray_client_mode_directives()
         expected = sorted((str(a), str(b)) for a, b in projection["identities"])
@@ -1234,7 +1792,9 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
              str(item.get("client_email") or "").strip()) for item in modes
         }
         if (not expected or (binding_identities | mode_identities) != set(expected)
-                or not _verify_current_public_projection(projection)):
+                or not _verify_current_public_projection(
+                    projection, supersession=supersession if supersession_owned else None,
+                )):
             return {"ok": False, "recovered": "current_projection_unproven", "reason": "committed_projection_mismatch"}
         artifact_parity, bindings_digest = _current_bindings_artifact_parity(bindings, modes)
         if not artifact_parity:
@@ -1302,6 +1862,10 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
         native = adapter.test_config(str(candidate_path))
         if not native.ok or hashlib.sha256(candidate_path.read_bytes()).hexdigest() != candidate_sha:
             return {"ok": False, "recovered": "current_projection_unproven", "reason": "native_candidate_invalid"}
+        if (supersession_owned
+                and candidate_sha != str((checkpoint.get("staged_generation") or {}).get("xray_candidate_sha256") or "")):
+            return {"ok": False, "recovered": "current_projection_unproven",
+                    "reason": "supersession_candidate_rebuild_mismatch"}
 
         operation_id = (str(previous_attempt.get("operation_id")) if isinstance(previous_attempt, dict)
                         else uuid4().hex)
@@ -1388,7 +1952,9 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
 
         if not stable(runtime_incarnation=before_incarnation) or not core_selection_stable():
             return {"ok": False, "recovered": "current_projection_unproven", "reason": "preapply_revalidation_failed"}
-        if resume_owned_restart:
+        if supersession_owned:
+            after_incarnation = before_incarnation
+        elif resume_owned_restart:
             after_incarnation = before_incarnation
         else:
             save_attempt("reload_started")
@@ -1398,7 +1964,8 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
                 return {"ok": False, "recovered": "current_projection_unproven", "reason": "xray_reload_failed"}
             after_incarnation = adapter.get_runtime_incarnation()
         if (adapter.get_runtime_config_sha256() != candidate_sha
-                or (not resume_owned_restart and after_incarnation == before_incarnation)
+                or (not resume_owned_restart and not supersession_owned
+                    and after_incarnation == before_incarnation)
                 or not stable(applied=True, runtime_incarnation=after_incarnation)):
             return {"ok": False, "recovered": "current_projection_unproven", "reason": "runtime_revalidation_failed"}
         loaded = adapter.list_loaded_client_identities()
@@ -1436,17 +2003,12 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
 
 
 def _mark_generation_selection_verification_required(checkpoint_path: Path) -> None:
-    from fwrouter_api.services.artifacts import atomic_write_text
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     data["selection_verification_required"] = True
-    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
-    checkpoint_path.chmod(0o600)
-    _fsync_directory(checkpoint_path.parent)
+    _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
 
 def _record_xray_generation_derived_rows(checkpoint_path: Path, *, phase: str) -> None:
-    from fwrouter_api.services.artifacts import atomic_write_text
-
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     data["auto_selection_after"] = _capture_generation_auto_selection()
     data["derived_rows_after"] = _capture_generation_derived_rows(
@@ -1455,9 +2017,7 @@ def _record_xray_generation_derived_rows(checkpoint_path: Path, *, phase: str) -
     )
     data["derived_source_fingerprint"] = _generation_source_fingerprint()
     data["phase"] = phase
-    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
-    checkpoint_path.chmod(0o600)
-    _fsync_directory(checkpoint_path.parent)
+    _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
 
 def _xray_generation_snapshots_changed(checkpoint_path: Path) -> bool:
@@ -1491,9 +2051,7 @@ def _record_xray_generation_snapshot_postimage(checkpoint_path: Path) -> None:
             after[token] = dict(row) if row else None
     data["subscription_snapshots_after"] = after
     data["phase"] = "snapshots_published"
-    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
-    checkpoint_path.chmod(0o600)
-    _fsync_directory(checkpoint_path.parent)
+    _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
 
 def _publish_mihomo_udp_receipt_with_owner(
@@ -1831,6 +2389,14 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
 
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    supersession = data.get("supersession") if isinstance(data.get("supersession"), dict) else None
+    if supersession is not None and not supersession.get("rollback_preimage_projection_matches"):
+        # The old native set was not proven equal to the newly committed DB
+        # identity projection. Restoring it would falsely certify a stale
+        # preimage as last-good; retain the immutable evidence and stay blocked.
+        _update_xray_generation_checkpoint(checkpoint_path, phase="restore_failed")
+        return {"ok": False, "recovered": "restore_failed",
+                "reason": "supersession_preimage_unproven"}
     # Refuse stale recovery before the first file write/reload. The checkpoint
     # must still own both the runtime incarnation and the selection fence.
     expected_incarnation = str(data.get("mihomo_runtime_incarnation") or "")
@@ -2095,9 +2661,7 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
         data["auto_selection_after"] = after_selection
     data["selection_revision"] = rollback_revision
     data["phase"] = "restore_started"
-    atomic_write_text(checkpoint_path, json.dumps(data, sort_keys=True))
-    checkpoint_path.chmod(0o600)
-    _fsync_directory(checkpoint_path.parent)
+    _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
     artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
     for key in ("xray_config", "mihomo_config", "xray_bindings"):
         artifact = artifacts.get(key) if isinstance(artifacts.get(key), dict) else {}
@@ -2315,6 +2879,8 @@ def reconcile_xray_subscription_profile_nodes(
     token_or_slug: str | None = None, promote_public_profile: bool = True,
     cleanup_deleted_projections: bool = True, preserve_existing_overrides: bool = False,
     include_vpn_auto: bool = False, verification_callback: Any = None,
+    _supersede_checkpoint_sha256: str | None = None,
+    _migration_plan_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Run staged generation as guarded apply, unguarded verification, guarded publish."""
     with xray_writer_guard(timeout_seconds=30.0):
@@ -2327,6 +2893,8 @@ def reconcile_xray_subscription_profile_nodes(
             preserve_existing_overrides=preserve_existing_overrides,
             include_vpn_auto=include_vpn_auto,
             verification_callback=verification_callback,
+            _supersede_checkpoint_sha256=_supersede_checkpoint_sha256,
+            _migration_plan_sha256=_migration_plan_sha256,
             _defer_selection_verification=callable(verification_callback),
         )
     pending = result.get("_pending_generation") if isinstance(result, dict) else None
@@ -2437,8 +3005,7 @@ def reconcile_xray_subscription_profile_nodes(
         checkpoint["selection_operation_id"] = operation_id
         checkpoint["selection_revision"] = fence["revision"]
         checkpoint["pre_publication_verification"] = verification
-        atomic_write_text(checkpoint_path, json.dumps(checkpoint, sort_keys=True))
-        checkpoint_path.chmod(0o600)
+        _atomic_write_private_checkpoint(checkpoint_path, json.dumps(checkpoint, sort_keys=True))
         if verification.get("ok"):
             _mark_generation_selection_verification_required(checkpoint_path)
             _record_xray_generation_derived_rows(checkpoint_path, phase="selection_verified")
@@ -2463,10 +3030,49 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
     include_vpn_auto: bool = False,
     verification_callback: Any = None,
     _defer_selection_verification: bool = False,
+    _supersede_checkpoint_sha256: str | None = None,
+    _migration_plan_sha256: str | None = None,
 ) -> dict[str, Any]:
     adapter = _xray_adapter()
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
-    if checkpoint_path.exists():
+    supersession: dict[str, Any] | None = None
+    if bool(_supersede_checkpoint_sha256) != bool(_migration_plan_sha256):
+        return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
+                "error_code": "XRAY_SUPERSESSION_PROOF_REQUIRED"}
+    if _supersede_checkpoint_sha256 is not None:
+        for value in (_supersede_checkpoint_sha256, _migration_plan_sha256 or ""):
+            if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+                return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
+                        "error_code": "XRAY_SUPERSESSION_DIGEST_INVALID"}
+        if not checkpoint_path.is_file():
+            return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
+                    "error_code": "XRAY_SUPERSESSION_CHECKPOINT_UNAVAILABLE"}
+        try:
+            if hashlib.sha256(checkpoint_path.read_bytes()).hexdigest() != _supersede_checkpoint_sha256:
+                raise RuntimeError("XRAY_SUPERSESSION_CHECKPOINT_STALE")
+            if _identity_migration_ledger_matches(
+                plan_sha256=str(_migration_plan_sha256), checkpoint_sha256=_supersede_checkpoint_sha256,
+            ) <= 0:
+                raise RuntimeError("XRAY_SUPERSESSION_MIGRATION_PROOF_MISSING")
+            supersession = {"checkpoint_sha256": _supersede_checkpoint_sha256,
+                            "plan_sha256": _migration_plan_sha256, "baseline": None}
+        except Exception as exc:
+            code = str(exc)
+            if not code.startswith("XRAY_SUPERSESSION_"):
+                code = "XRAY_SUPERSESSION_ADMISSION_FAILED"
+            return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
+                    "error_code": code}
+    if checkpoint_path.exists() and supersession is None:
+        checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+        with db_session() as connection:
+            migration_tied_to_checkpoint = connection.execute(
+                "SELECT 1 FROM subscription_node_identity_transitions "
+                "WHERE checkpoint_sha256=? LIMIT 1", (checkpoint_digest,),
+            ).fetchone()
+        if migration_tied_to_checkpoint:
+            return {"ok": False, "status": "pending", "stage": "generation_supersession_required",
+                    "error_code": "XRAY_GENERATION_SUPERSESSION_REQUIRED",
+                    "last_good_retained": True}
         try:
             checkpoint_phase = str(json.loads(checkpoint_path.read_text(encoding="utf-8")).get("phase") or "")
         except Exception:
@@ -2522,22 +3128,41 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             "last_good_retained": True,
         }
 
+    existing_clients = list(adapter.list_clients())
+    _prepare_durable_profile_credentials(
+        include_vpn_auto=include_vpn_auto and token_or_slug is None,
+        legacy_native_clients=existing_clients,
+    )
+    if supersession is not None:
+        try:
+            supersession["baseline"] = _checkpoint_supersession_state(
+                adapter, checkpoint_path,
+                checkpoint_sha256=str(supersession["checkpoint_sha256"]),
+                plan_sha256=str(supersession["plan_sha256"]),
+            )
+        except Exception as exc:
+            code = str(exc)
+            if not code.startswith("XRAY_SUPERSESSION_"):
+                code = "XRAY_SUPERSESSION_ADMISSION_FAILED"
+            return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
+                    "error_code": code}
     source_fingerprint = _generation_source_fingerprint()
     subscription_nodes = list_desired_subscription_xray_clients(token_or_slug)
     desired_nodes = list(subscription_nodes)
     affected_profile_tokens = list_subscription_profile_tokens(token_or_slug)
-    existing_clients = list(adapter.list_clients())
     if include_vpn_auto and token_or_slug is None:
-        existing_auto = {
-            str(client.email or "").lower(): client
-            for client in existing_clients
-            if str(client.email or "").lower().startswith("vpn-auto-")
-        }
+        from fwrouter_api.services.subscription_node_identity import credentials_for_scope, IdentityConflict
+        with db_session() as connection:
+            retained_auto = credentials_for_scope(connection, "vpn-auto")
         for server in _vpn_auto_servers_for_xray_subscription():
             server_id = str(server["server_id"])
-            email = _vpn_auto_xray_client_email(server_id)
-            client = existing_auto.get(email.lower())
-            client_uuid = str(client.client_uuid or client.client_id) if client else str(uuid4())
+            credential = retained_auto.get(server_id)
+            if credential and credential["revoked"]:
+                continue
+            if not credential:
+                raise IdentityConflict("IDENTITY_AUTO_CREDENTIAL_UNAVAILABLE")
+            email = str(credential["client_email"])
+            client_uuid = str(credential["client_uuid"])
             server_name = str(server.get("server_name") or server_id)
             desired_nodes.append({
                 "server_id": server_id,
@@ -2598,6 +3223,11 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                 "stage": "source_intent_changed",
                 "error_code": "XRAY_GENERATION_SOURCE_CHANGED_DURING_STAGE",
             }
+        if supersession is not None and not _checkpoint_supersession_state_unchanged(
+            adapter, checkpoint_path, supersession["baseline"],
+        ):
+            return {"ok": False, "status": "failed", "stage": "generation_supersession_revalidation",
+                    "error_code": "XRAY_SUPERSESSION_CONTEXT_STALE", "last_good_retained": True}
         generation_id = uuid4().hex
         try:
             checkpoint_path = _write_xray_generation_checkpoint(
@@ -2608,6 +3238,7 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                 source_fingerprint=source_fingerprint,
                 staged_generation=staged_generation,
                 managed_email_prefixes=managed_prefixes,
+                supersession=supersession,
             )
         except Exception as exc:
             return {
@@ -2773,9 +3404,7 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             from fwrouter_api.services.artifacts import atomic_write_text
             checkpoint_data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
             checkpoint_data["selection_operation_id"] = checkpoint_data.get("generation_id")
-            atomic_write_text(checkpoint_path, json.dumps(checkpoint_data, sort_keys=True))
-            checkpoint_path.chmod(0o600)
-            _fsync_directory(checkpoint_path.parent)
+            _atomic_write_private_checkpoint(checkpoint_path, json.dumps(checkpoint_data, sort_keys=True))
             return {"_pending_generation": {
                 "verification_callback": verification_callback,
                 "checkpoint_path": str(checkpoint_path),

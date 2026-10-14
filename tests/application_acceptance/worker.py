@@ -2825,6 +2825,16 @@ def build_app(socket_path: Path):
 
     def recover_xray_generation(payload: dict[str, Any]) -> dict[str, Any]:
         from fwrouter_api.services.xray_subscription_service import reconcile_xray_subscription_profile_nodes
+        if payload.get("direct_checkpoint") is True:
+            from fwrouter_api.services.xray_subscription_service import (
+                _recover_checkpoint_from_current_projection,
+                _xray_generation_checkpoint_path,
+                _xray_adapter,
+            )
+            adapter = _xray_adapter()
+            return _recover_checkpoint_from_current_projection(
+                adapter, _xray_generation_checkpoint_path(adapter),
+            )
         options: dict[str, Any] = {}
         if payload.get("verify_selection") is True:
             from fwrouter_api.services.xray_subscription_service import (
@@ -2867,10 +2877,151 @@ def build_app(socket_path: Path):
             requested_by="hosted-acceptance-recovery",
             token_or_slug=str(payload.get("token") or "") or None,
             materialize=True,
+            include_vpn_auto=payload.get("include_vpn_auto") is True,
             **options,
         )
 
     app.add_api_route("/api/v2/__acceptance/xray/reconcile", recover_xray_generation, methods=["POST"])
+
+    def arm_prepared_checkpoint_failure() -> dict[str, Any]:
+        """Fail once after the real prepared checkpoint write has returned."""
+        failure_flag = state / "run" / "fail-after-prepared-checkpoint-once"
+        descriptor = os.open(
+            failure_flag,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.close(descriptor)
+        return {"ok": True, "armed": True}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/checkpoint-failure/arm",
+        arm_prepared_checkpoint_failure,
+        methods=["POST"],
+    )
+
+    def refresh_identity_fixture_profile(payload: dict[str, Any]) -> dict[str, Any]:
+        """Run the real subscription inventory upsert for a synthetic JSON profile."""
+        if set(payload) != {"profile"} or not isinstance(payload.get("profile"), dict):
+            return {"ok": False, "error_code": "IDENTITY_FIXTURE_PROFILE_INVALID"}
+        import json as _json
+        from fwrouter_api.adapters.subscription import parse_subscription_payload
+        from fwrouter_api.services.subscription import _upsert_subscription_servers
+        parsed = parse_subscription_payload(_json.dumps(payload["profile"], sort_keys=True))
+        if not parsed.servers:
+            return {"ok": False, "error_code": "IDENTITY_FIXTURE_PROFILE_UNSUPPORTED"}
+        source_url = "https://identity.acceptance.invalid/subscription"
+        servers = parsed.servers
+        result = _upsert_subscription_servers(
+            servers, servers_by_url={source_url: servers},
+        )
+        return {
+            "ok": bool(result.get("ok", True)),
+            "server_ids": [str(server.server_id) for server in servers],
+            "refreshed_count": len(servers),
+        }
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/identity-refresh",
+        refresh_identity_fixture_profile,
+        methods=["POST"],
+    )
+
+    def identity_manifest_context() -> dict[str, Any]:
+        """Return only revision and digest needed to author a private test manifest."""
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.services.subscription_node_identity import canonical_digest
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+        with db_session() as connection:
+            pairs = []
+            for row in connection.execute(
+                "SELECT json_extract(metadata_json, '$.detail.email') AS email, "
+                "COALESCE(json_extract(metadata_json, '$.detail.client_uuid'), "
+                "json_extract(metadata_json, '$.detail.client_id')) AS client_uuid "
+                "FROM subjects WHERE implementation_kind='xray' AND is_deleted=0 AND is_active=1"
+            ):
+                if row["email"] and row["client_uuid"]:
+                    pairs.append((str(row["client_uuid"]), str(row["email"])))
+            return {
+                "ok": True,
+                "selection_revision": read_selection_revision(connection),
+                "identity_digest": canonical_digest(sorted(pairs)),
+            }
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/identity-context",
+        identity_manifest_context,
+        methods=["GET"],
+    )
+
+    def run_identity_cli(payload: dict[str, Any]) -> dict[str, Any]:
+        """Exercise the protected CLI in this fixture's patched, owned runtime."""
+        import contextlib
+        import io
+        import json as _json
+        import os as _os
+        from fwrouter_api.cli import main as cli_main
+        action = payload.get("action")
+        if action in {"dry-run", "apply"}:
+            manifest = payload.get("manifest")
+            if not isinstance(manifest, dict):
+                return {"ok": False, "error_code": "IDENTITY_MANIFEST_INVALID"}
+            path = state / "run" / "identity-migration-manifest.json"
+            raw = _json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            descriptor = _os.open(path, _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_CLOEXEC, 0o600)
+            try:
+                with _os.fdopen(descriptor, "wb", closefd=False) as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    _os.fsync(stream.fileno())
+            finally:
+                _os.close(descriptor)
+            try:
+                argv = ["xray", "identity-migration", "--manifest", str(path)]
+                if action == "apply":
+                    plan = payload.get("expected_plan_sha256")
+                    if not isinstance(plan, str):
+                        return {"ok": False, "error_code": "IDENTITY_MIGRATION_PLAN_DIGEST_REQUIRED"}
+                    argv += ["--apply", "--expected-plan-sha256", plan]
+                output, errors = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    exit_code = cli_main(argv)
+                try:
+                    receipt = _json.loads(output.getvalue())
+                except ValueError:
+                    return {"ok": False, "error_code": "IDENTITY_CLI_RECEIPT_INVALID", "exit_code": exit_code}
+                return {"ok": exit_code == 0 and receipt.get("ok") is True,
+                        "exit_code": exit_code, "stderr_empty": not errors.getvalue(),
+                        "receipt": receipt}
+            finally:
+                path.unlink(missing_ok=True)
+        if action == "supersede":
+            checkpoint_sha = payload.get("checkpoint_sha256")
+            plan_sha = payload.get("migration_plan_sha256")
+            if not isinstance(checkpoint_sha, str) or not isinstance(plan_sha, str):
+                return {"ok": False, "error_code": "XRAY_SUPERSESSION_PROOF_REQUIRED"}
+            output, errors = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                exit_code = cli_main([
+                    "xray", "generation", "supersede",
+                    "--checkpoint-sha256", checkpoint_sha,
+                    "--migration-plan-sha256", plan_sha,
+                    "--apply",
+                ])
+            try:
+                receipt = _json.loads(output.getvalue())
+            except ValueError:
+                return {"ok": False, "error_code": "XRAY_SUPERSESSION_RECEIPT_INVALID", "exit_code": exit_code}
+            return {"ok": exit_code == 0 and receipt.get("ok") is True,
+                    "exit_code": exit_code, "stderr_empty": not errors.getvalue(),
+                    "receipt": receipt}
+        return {"ok": False, "error_code": "IDENTITY_CLI_ACTION_INVALID"}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/identity-cli",
+        run_identity_cli,
+        methods=["POST"],
+    )
 
     def wait_for_acceptance_job(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         timeout_seconds = payload.get("timeout_seconds", 75)
@@ -3170,14 +3321,30 @@ def build_app(socket_path: Path):
 
 
 def _bind_xray_checkpoint_barrier(socket_path: Path, state: Path) -> None:
-    """Expose a barrier after the checkpoint directory fsync has completed."""
+    """Expose post-write barriers and one-shot durable-checkpoint fault injection."""
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
             or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
         raise RuntimeError("Xray checkpoint barriers require the qualified test worker")
     from fwrouter_api.services import xray_subscription_service
 
     real_fsync_directory = xray_subscription_service._fsync_directory
+    original_write_checkpoint = xray_subscription_service._write_xray_generation_checkpoint
     checkpoint_path = state / "xray" / ".generation" / "generation-checkpoint.json"
+    fail_after_prepared_write = state / "run" / "fail-after-prepared-checkpoint-once"
+
+    def write_checkpoint_then_inject(*args: Any, **kwargs: Any) -> Any:
+        result = original_write_checkpoint(*args, **kwargs)
+        try:
+            value = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            should_fail = value.get("phase") == "prepared" and fail_after_prepared_write.is_file()
+        except (OSError, ValueError, TypeError):
+            should_fail = False
+        if should_fail:
+            fail_after_prepared_write.unlink(missing_ok=True)
+            raise RuntimeError("ACCEPTANCE_PREPARED_CHECKPOINT_POSTWRITE_FAILURE")
+        return result
+
+    xray_subscription_service._write_xray_generation_checkpoint = write_checkpoint_then_inject
 
     def fsync_directory_with_checkpoint_barrier(path: Path) -> None:
         real_fsync_directory(path)

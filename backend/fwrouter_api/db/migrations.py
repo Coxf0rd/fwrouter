@@ -1410,6 +1410,11 @@ def _migrate_11_to_12(connection: sqlite3.Connection) -> None:
     _prune_default_provider_module_bootstrap(connection)
 
 
+def _migrate_24_to_25(connection: sqlite3.Connection) -> None:
+    from fwrouter_api.db.subscription_identity_schema import create_identity_schema
+    create_identity_schema(connection)
+
+
 MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(7, 8, _migrate_7_to_8),
     SchemaMigration(8, 9, _migrate_8_to_9),
@@ -1428,6 +1433,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(21, 22, _migrate_21_to_22),
     SchemaMigration(22, 23, _migrate_22_to_23),
     SchemaMigration(23, 24, _migrate_23_to_24),
+    SchemaMigration(24, 25, _migrate_24_to_25),
 )
 
 

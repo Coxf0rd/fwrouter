@@ -122,6 +122,7 @@ TEST_FILE_GLOBS = (
 STDLIB_CONTRACT_PATHS = {
     "tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
     "tests/gates/test_smoke_contract.py", "tests/gates/test_network_fixture_contract.py",
+    "tests/gates/test_subscription_identity_contract.py",
     "tests/acceptance/test_dependency_image_contract.py",
     "tests/acceptance/test_consume_dependency_image_contract.py",
 }
@@ -1816,7 +1817,11 @@ def command_run(args: argparse.Namespace) -> int:
                 argv = ["sh", path]
                 cwd = ROOT
             elif path in STDLIB_CONTRACT_PATHS:
-                argv = [sys.executable, path]
+                if path == "tests/gates/test_subscription_identity_contract.py":
+                    argv = [sys.executable, "-m", "unittest", "discover", "-s",
+                            str(ROOT / "tests/gates"), "-p", "test_subscription_identity_contract.py"]
+                else:
+                    argv = [sys.executable, path]
                 cwd = ROOT
             else:
                 blocked.append(f"{path}: no reviewed runner adapter")

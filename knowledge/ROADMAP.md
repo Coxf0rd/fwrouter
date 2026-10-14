@@ -1,5 +1,12 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 durable continuity implementation — 2026-10-14
+
+User approved persistent logical-node credential mapping, including all78 original production identities and internal VPN-auto continuity. Source/test drafts are being integrated in PR8; migration, refresh, restart, recovery and rollback hosted qualification are NOT RUN. The protected operator migration must precede ordinary generation; stale legacy checkpoint resume is forbidden and fresh owned supersession requires preserved evidence, atomic checkpoint replacement and all current fences/native proof. Conflicts/deletion/explicit rotation must be qualified. PR8 remains Draft, Production Live Acceptance BLOCKED, production API/dependents held with no mutation in this phase.
+
+Startup44.8415s/45s remains an unresolved margin risk despite repeat28.1711s. Only a confirmed redundant subject lookup is being removed; no measured improvement or sufficient margin is claimed. Targeted qualification follows the coherent package; one full CI is reserved for final readiness. CI milestone stays CLOSED, CD DEFERRED, unrelated milestones remain paused. See api_runtime_stability_2026-10-13/REPORT.md; historical checkpoints below remain preserved.
+
+
 ## PR8 repeated hosted qualification / recovery decision gate — 2026-10-14
 
 47d64e2 run38551736466 SUCCESS, unchanged runtime/test/workflow code relative to successfulca1cd8a run38548698209. Each:1451 routine,26+1 qualified native,26 ordinary,11 Provider,2 packet/scale PASS,0 FAIL/SKIP. Nonempty82 identities retained exactly/82 bindings/7 verified snapshots/actual Reality TCP VPN-source observations/24 HTTP200 reads. Startup28.1711s and44.8415s, HWM947256/908944KiB, max API1.5216/2.2285s, health0.0041/0.0118s, observed shutdown0.2136/0.2639s. Two scoped PASS; variance/near45s margin remains a risk, no host-systemd/soak claim.

@@ -132,3 +132,10 @@ The legacy xray_applied checkpoint has stale selection/Mihomo fences and no pers
 ### First strict nonempty hosted startup — 38548698209
 
 ca1cd8a hosted fixture passes with82 preloaded identities (70 public,10 internal including the virtual vpn-auto target,2 fixed), all identities retained and7 snapshots verified. Real Reality TCP is observed via native HEAD and endpoint VPN source;24 concurrent reads/cleanup pass. Startup44.8415s is strictly below45s but near the limit; reproducibility is pending. This does not repair original production78 identities or authorize restarting held API/dependents. See REPORT.md for scoped metrics and unimplemented continuity/recovery contract.
+
+
+### PR8 durable identity migration / recovery source contract (2026-10-14)
+
+Schema25 separates content-addressed provider inventory from persistent logical-node credential intent. Public token-scoped and internal VPN-auto credentials retain UUID/email through admitted profile aliases. Strict automatic growth requires canonical ordered witnesses and source ownership; incompatible/legacy replacement is marked migration-required, not silently registered with new credentials. Reviewed private manifest preview/apply is an offline operator path before normal generation. Schema upgrade, intent migration and native generation are separate operations.
+
+A migrated legacy checkpoint cannot resume directly. Explicit SHA/ledger-bound supersession stages and validates a fresh generation, preserves the old checkpoint archive, and replaces the active marker atomically under fresh source/selection/incarnation/native fences. Recovery can close only proven current candidate/projection state; a mixed identity preimage is not a healthy rollback target. Previous schema24 code is incompatible with schema25 persistent mapping. No live operation has been performed by this source change. Hosted native qualification and startup margin remain pending; do not start production API/dependent units on this documentation alone.

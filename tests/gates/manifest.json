@@ -5303,9 +5303,34 @@
       "slow": true,
       "timeout_seconds": 900,
       "execution_profile": "hosted-kernel-packet"
+    },
+    {
+      "baseline_policy": "not applicable: pure-stdlib SQLite identity contract tests",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "synthetic in-memory SQLite schemas and profile provenance fixtures",
+      "fixture_owner": "tests/gates/test_subscription_identity_contract.py",
+      "id": "subscription-identity-contract",
+      "isolation": "in-memory SQLite only; source-loaded identity module; no application package import, network, Docker, or native execution",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/gates/test_subscription_identity_contract.py",
+      "primary_level": "L1",
+      "risk_notes": "pure SQLite identity migration and provenance contracts; suite executes under the isolated manifest gate",
+      "runtime_dependencies": [
+        "Python 3.11 standard library"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
     }
   ],
-  "version": "2026.10.13.2",
+  "version": "2026.10.14.1",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

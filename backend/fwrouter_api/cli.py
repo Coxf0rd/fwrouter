@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import sqlite3
+import stat
+import re
 from collections import Counter
 from collections.abc import Sequence
+from pathlib import Path
+from uuid import uuid4
 
 from fwrouter_api.services import diagnostics
 from fwrouter_api.services.reconcile import ReconcileResult, build_reconcile_response
@@ -73,6 +80,256 @@ def _print_diagnose(*, json_output: bool = False) -> int:
     return 0 if report.status in {"healthy", "warning", "inactive", "disabled"} else 1
 
 
+def _load_private_identity_manifest(path_value: str) -> dict[str, object]:
+    path = Path(path_value)
+    parent_info = path.parent.lstat()
+    if (stat.S_ISLNK(parent_info.st_mode) or not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != os.geteuid()
+            or stat.S_IMODE(parent_info.st_mode) & 0o022):
+        raise ValueError("IDENTITY_MANIFEST_PARENT_NOT_PRIVATE")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                or info.st_size <= 0 or info.st_size > 4 * 1024 * 1024):
+            raise ValueError("IDENTITY_MANIFEST_FILE_NOT_PRIVATE")
+        path_info = path.lstat()
+        if (stat.S_ISLNK(path_info.st_mode) or path_info.st_dev != info.st_dev
+                or path_info.st_ino != info.st_ino):
+            raise ValueError("IDENTITY_MANIFEST_FILE_CHANGED")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(4 * 1024 * 1024 + 1)
+    finally:
+        os.close(descriptor)
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict) or value.get("version") != 1:
+        raise ValueError("IDENTITY_MANIFEST_INVALID")
+    allowed = {
+        "version", "expected_selection_revision", "expected_identity_digest",
+        "checkpoint_sha256", "mappings",
+    }
+    if set(value) - allowed:
+        raise ValueError("IDENTITY_MANIFEST_INVALID")
+    if type(value.get("expected_selection_revision")) is not int:
+        raise ValueError("IDENTITY_MANIFEST_SELECTION_FENCE_REQUIRED")
+    digest = str(value.get("expected_identity_digest") or "")
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("IDENTITY_MANIFEST_PREIMAGE_DIGEST_REQUIRED")
+    if not isinstance(value.get("mappings"), list):
+        raise ValueError("IDENTITY_MANIFEST_INVALID")
+    return value
+
+
+def _run_identity_migration(args: argparse.Namespace) -> int:
+    try:
+        manifest = _load_private_identity_manifest(args.manifest)
+        if args.apply and not args.expected_plan_sha256:
+            raise ValueError("IDENTITY_MIGRATION_PLAN_DIGEST_REQUIRED")
+        if not args.apply and args.expected_plan_sha256:
+            raise ValueError("IDENTITY_MIGRATION_PLAN_DIGEST_UNEXPECTED")
+        from fwrouter_api.services.xray_subscription_service import migrate_subscription_profile_identities
+
+        result = migrate_subscription_profile_identities(
+            manifest["mappings"],
+            expected_selection_revision=manifest["expected_selection_revision"],
+            expected_identity_digest=manifest["expected_identity_digest"],
+            checkpoint_sha256=manifest.get("checkpoint_sha256"),
+            apply=bool(args.apply),
+            expected_plan_sha256=args.expected_plan_sha256,
+        )
+        safe_keys = {
+            "ok", "status", "mappings_count", "changed_count", "preserved_identity_count",
+            "selection_revision", "identity_preimage_sha256", "plan_sha256",
+            "checkpoint_sha256", "native_applied", "public_snapshots_changed",
+            "fresh_generation_required",
+        }
+        print(json.dumps({key: value for key, value in result.items() if key in safe_keys},
+                         ensure_ascii=False, sort_keys=True))
+        return 0
+    except Exception as exc:
+        candidate = str(exc)
+        code = candidate if re.fullmatch(r"IDENTITY_[A-Z0-9_]+", candidate) else type(exc).__name__
+        print(json.dumps({"ok": False, "error_code": code}, sort_keys=True))
+        return 1
+
+
+def _run_checkpoint_supersession(args: argparse.Namespace) -> int:
+    if not args.apply:
+        print(json.dumps({"ok": False, "error_code": "XRAY_SUPERSESSION_APPLY_REQUIRED"}))
+        return 2
+    try:
+        from fwrouter_api.services.xray_subscription_service import reconcile_xray_subscription_profile_nodes
+
+        result = reconcile_xray_subscription_profile_nodes(
+            requested_by="operator",
+            include_vpn_auto=True,
+            _supersede_checkpoint_sha256=args.checkpoint_sha256,
+            _migration_plan_sha256=args.migration_plan_sha256,
+        )
+        output = {
+            "ok": bool(result.get("ok")),
+            "status": result.get("status"),
+            "stage": result.get("stage") if isinstance(result.get("stage"), str)
+            and re.fullmatch(r"[a-z0-9_]+", result["stage"]) else None,
+            "error_code": result.get("error_code") if isinstance(result.get("error_code"), str)
+            and re.fullmatch(r"[A-Z0-9_]+", result["error_code"]) else None,
+            "supersedes_checkpoint_sha256": args.checkpoint_sha256,
+            "migration_plan_sha256": args.migration_plan_sha256,
+            "native_applied": bool(result.get("generation_apply")),
+            "recovery_status": (result.get("generation_recovery") or {}).get("recovered")
+            if isinstance(result.get("generation_recovery"), dict)
+            and isinstance((result.get("generation_recovery") or {}).get("recovered"), str)
+            and re.fullmatch(r"[a-z0-9_]+", (result.get("generation_recovery") or {})["recovered"])
+            else None,
+            "recovery_reason": (result.get("generation_recovery") or {}).get("reason")
+            if isinstance(result.get("generation_recovery"), dict)
+            and isinstance((result.get("generation_recovery") or {}).get("reason"), str)
+            and re.fullmatch(r"[a-z0-9_]+", (result.get("generation_recovery") or {})["reason"])
+            else None,
+        }
+        print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+        return 0 if output["ok"] else 1
+    except Exception as exc:
+        candidate = str(exc)
+        code = candidate if re.fullmatch(r"XRAY_[A-Z0-9_]+", candidate) else type(exc).__name__
+        print(json.dumps({"ok": False, "error_code": code}, sort_keys=True))
+        return 1
+
+
+def _database_schema_version(path: Path) -> int | None:
+    _validate_database_path(path)
+    uri = path.absolute().as_uri() + "?mode=ro"
+    connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+    try:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
+        ).fetchone()
+        if not exists:
+            return None
+        row = connection.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()
+        return int(row[0]) if row else None
+    finally:
+        connection.close()
+
+
+def _validate_database_path(path: Path) -> None:
+    absolute = Path(os.path.abspath(path))
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current = current / component
+        info = current.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError("DATABASE_PATH_SYMLINK_REJECTED")
+        if current != absolute and not stat.S_ISDIR(info.st_mode):
+            raise ValueError("DATABASE_PATH_INVALID")
+    info = absolute.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+        raise ValueError("DATABASE_PATH_INVALID")
+
+
+def _create_schema_upgrade_backup(db_path: Path, expected_schema: int) -> tuple[Path, str]:
+    _validate_database_path(db_path)
+    backup_dir = db_path.parent / "backups"
+    try:
+        backup_dir.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    info = backup_dir.lstat()
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError("DATABASE_BACKUP_DIRECTORY_INVALID")
+    backup_path = backup_dir / f"{db_path.name}.schema-upgrade-{uuid4().hex}.bak"
+    descriptor = os.open(
+        backup_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    os.close(descriptor)
+    source = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30.0)
+    destination = sqlite3.connect(backup_path, timeout=30.0)
+    try:
+        source.backup(destination)
+        destination.commit()
+        integrity = destination.execute("PRAGMA integrity_check").fetchone()
+        version_row = destination.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()
+        if (not integrity or integrity[0] != "ok" or not version_row
+                or int(version_row[0]) != expected_schema):
+            raise ValueError("DATABASE_BACKUP_VALIDATION_FAILED")
+    finally:
+        destination.close()
+        source.close()
+    backup_path.chmod(0o600)
+    with backup_path.open("rb") as stream:
+        os.fsync(stream.fileno())
+    descriptor = os.open(backup_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    digest = hashlib.sha256(backup_path.read_bytes()).hexdigest()
+    return backup_path, digest
+
+
+def _run_database_upgrade(args: argparse.Namespace) -> int:
+    backup_path: Path | None = None
+    backup_sha256: str | None = None
+    try:
+        from fwrouter_api.db.connection import get_db_path, initialize_database
+        from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION
+
+        db_path = get_db_path()
+        if not db_path.is_file():
+            raise ValueError("DATABASE_SCHEMA_FILE_UNAVAILABLE")
+        current = _database_schema_version(db_path)
+        if current != args.expected_schema:
+            raise ValueError("DATABASE_SCHEMA_EXPECTATION_STALE")
+        target_version = int(EXPECTED_SCHEMA_VERSION)
+        if current == target_version and args.expected_schema == target_version:
+            print(json.dumps({"ok": True, "status": "already_current", "current_schema": current,
+                              "target_schema": target_version, "database_changed": False}, sort_keys=True))
+            return 0
+        if target_version != args.expected_schema + 1:
+            raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
+        if not args.apply:
+            print(json.dumps({"ok": True, "status": "dry_run", "current_schema": current,
+                              "target_schema": target_version, "database_changed": False},
+                             sort_keys=True))
+            return 0
+        if not args.confirm_offline:
+            raise ValueError("DATABASE_OFFLINE_CONFIRMATION_REQUIRED")
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard(timeout_seconds=30.0):
+            if _database_schema_version(db_path) != args.expected_schema:
+                raise ValueError("DATABASE_SCHEMA_EXPECTATION_STALE")
+            backup_path, backup_sha256 = _create_schema_upgrade_backup(db_path, args.expected_schema)
+            if _database_schema_version(db_path) != args.expected_schema:
+                raise ValueError("DATABASE_SCHEMA_EXPECTATION_STALE")
+            schema = initialize_database()
+        if not schema.get("ok") or schema.get("actual_schema_version") != str(target_version):
+            print(json.dumps({"ok": False, "status": "failed", "error_code": "DATABASE_SCHEMA_UPGRADE_FAILED",
+                              "backup_path": str(backup_path), "backup_sha256": backup_sha256,
+                              "actual_schema": schema.get("actual_schema_version")}, sort_keys=True))
+            return 1
+        print(json.dumps({"ok": True, "status": "applied", "current_schema": current,
+                          "target_schema": target_version, "database_changed": True,
+                          "backup_path": str(backup_path), "backup_sha256": backup_sha256}, sort_keys=True))
+        return 0
+    except Exception as exc:
+        candidate = str(exc)
+        code = candidate if re.fullmatch(r"DATABASE_[A-Z0-9_]+", candidate) else type(exc).__name__
+        print(json.dumps({"ok": False, "error_code": code,
+                          "backup_path": str(backup_path) if backup_path else None,
+                          "backup_sha256": backup_sha256}, sort_keys=True))
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fwrouter")
     subparsers = parser.add_subparsers(dest="command")
@@ -81,12 +338,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     reconcile_subparsers.add_parser("check")
     diagnose_parser = subparsers.add_parser("diagnose")
     diagnose_parser.add_argument("--json", action="store_true", dest="json_output")
+    xray_parser = subparsers.add_parser("xray")
+    xray_subparsers = xray_parser.add_subparsers(dest="xray_command")
+    identity_parser = xray_subparsers.add_parser("identity-migration")
+    identity_parser.add_argument("--manifest", required=True)
+    identity_parser.add_argument("--apply", action="store_true")
+    identity_parser.add_argument("--expected-plan-sha256")
+    generation_parser = xray_subparsers.add_parser("generation")
+    generation_subparsers = generation_parser.add_subparsers(dest="generation_command")
+    supersede_parser = generation_subparsers.add_parser("supersede")
+    supersede_parser.add_argument("--checkpoint-sha256", required=True)
+    supersede_parser.add_argument("--migration-plan-sha256", required=True)
+    supersede_parser.add_argument("--apply", action="store_true")
+    database_parser = subparsers.add_parser("database")
+    database_subparsers = database_parser.add_subparsers(dest="database_command")
+    upgrade_parser = database_subparsers.add_parser("upgrade")
+    upgrade_parser.add_argument("--expected-schema", required=True, type=int)
+    upgrade_parser.add_argument("--apply", action="store_true")
+    upgrade_parser.add_argument(
+        "--confirm-offline", action="store_true",
+        help="confirm the API and background workers are stopped before applying the migration",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "reconcile" and args.reconcile_command == "check":
         return _print_reconcile_check()
     if args.command == "diagnose":
         return _print_diagnose(json_output=bool(args.json_output))
+    if args.command == "xray" and args.xray_command == "identity-migration":
+        return _run_identity_migration(args)
+    if args.command == "xray" and args.xray_command == "generation" and args.generation_command == "supersede":
+        return _run_checkpoint_supersession(args)
+    if args.command == "database" and args.database_command == "upgrade":
+        return _run_database_upgrade(args)
     parser.print_help()
     return 2
 

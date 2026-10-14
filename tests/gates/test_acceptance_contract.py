@@ -266,13 +266,13 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((26, 11, 2), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((27, 11, 2), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
         with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
             launcher.expected_acceptance_nodeids("functional")
-        self.assertEqual(39, len(ordinary | provider | packet))
+        self.assertEqual(40, len(ordinary | provider | packet))
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(
                 [{"nodeid": nodeid, "status": "passed",
@@ -3443,7 +3443,8 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual("NOTRUN", receipt["status"])
 
     def test_junit_requires_exact_suite_node_ids_without_skips_or_duplicates(self):
-        for suite in ("functional-ordinary", "recovery", "reentry-diagnostic"):
+        for suite in ("functional-ordinary", "recovery", "reentry-diagnostic",
+                      "identity-diagnostic", "runtime-scale-diagnostic"):
             with self.subTest(suite=suite), tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-junit-") as temp:
                 expected = launcher.expected_acceptance_nodeids(suite)
                 root = ET.Element("testsuite")
@@ -3501,7 +3502,8 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual([("functional-ordinary", "recovery", "xray-diagnostic", "provider-diagnostic",
                            "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
                            "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight",
-                           "kernel-recovery-diagnostic", "packet-diagnostic")], suite_choices)
+                           "kernel-recovery-diagnostic", "packet-diagnostic", "identity-diagnostic",
+                           "runtime-scale-diagnostic")], suite_choices)
         suite_defaults = [
             ast.literal_eval(keyword.value)
             for node in ast.walk(tree)
@@ -3711,6 +3713,43 @@ class AcceptanceContractTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('"ci:validate-packet": "packet-diagnostic"', workflow)
         self.assertIn('if [[ "$VALIDATION_STAGE" == packet-diagnostic ]]; then suite=packet-diagnostic; fi', workflow)
+
+    def test_identity_and_runtime_scale_diagnostics_have_separate_fixed_nodes(self):
+        identity = (
+            "tests/application_acceptance/test_xray_generation.py::"
+            "test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery"
+        )
+        scale = (
+            "tests/application_acceptance/test_runtime_scale.py::"
+            "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
+        )
+        self.assertEqual({identity}, launcher.expected_acceptance_nodeids("identity-diagnostic"))
+        self.assertEqual({scale}, launcher.expected_acceptance_nodeids("runtime-scale-diagnostic"))
+        self.assertIn(identity, launcher.expected_acceptance_nodeids("functional-ordinary"))
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids("identity-diagnostic-extra")
+        source = LAUNCHER_PATH.read_text(encoding="utf-8")
+        self.assertIn('_IDENTITY_DIAGNOSTIC_NODEIDS = (', source)
+        self.assertIn('_RUNTIME_SCALE_DIAGNOSTIC_NODEIDS = (', source)
+        self.assertIn('packet_mode = suite in {_PACKET_DIAGNOSTIC_SUITE, _RUNTIME_SCALE_DIAGNOSTIC_SUITE}', source)
+        self.assertIn('_RUNTIME_SCALE_DIAGNOSTIC_SUITE}', source)
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"ci:validate-identities": "identity-diagnostic"', workflow)
+        self.assertIn("Run identity migration L3 regression nodes in the isolated gate", workflow)
+        self.assertIn(
+            "tests/test_db_migrations.py::test_database_upgrade_cli_is_explicit_backed_up_and_idempotent",
+            workflow,
+        )
+        self.assertIn("Run reviewed identity migration and two cold startup scale receipts", workflow)
+        self.assertIn('run_launcher runtime-scale-diagnostic "$root/startup-attempt-1.log"', workflow)
+        self.assertIn('run_launcher runtime-scale-diagnostic "$root/startup-attempt-2.log"', workflow)
+        self.assertIn('output.mkdir(parents=True, exist_ok=False)', workflow)
+        self.assertIn('"runtime-scale-metrics.json"', workflow)
+        self.assertIn('"hard_budget_seconds": 45', workflow)
+        self.assertIn('"engineering_margin_goal_seconds": 40', workflow)
+        self.assertIn('"engineering_margin_status": "demonstrated" if margin_demonstrated else "not_demonstrated"', workflow)
+        self.assertIn('"startup_margin_claim": "at_least_5_seconds" if margin_demonstrated else "none"', workflow)
 
     def test_dns53_junit_projection_is_compact_and_excludes_duplicate_or_raw_proofs(self):
         packet_path = Path(__file__).parents[1] / "application_acceptance" / "test_packet_dataplane.py"
