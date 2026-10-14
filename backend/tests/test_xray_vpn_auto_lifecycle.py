@@ -219,6 +219,7 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
     from uuid import NAMESPACE_DNS, uuid5
 
     from fwrouter_api.adapters.subscription import parse_subscription_payload
+    from fwrouter_api.adapters.xray import NoopXrayAdapter
     from fwrouter_api.services.subscription_profiles import _subscription_email
     from fwrouter_api.services.subscription_node_identity import canonical_digest
     from fwrouter_api.services import subscription as subscription_service
@@ -226,6 +227,13 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
 
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    # The identity migration derives its checkpoint location from the adapter
+    # config path. Give the no-op adapter a test-owned path so this contract
+    # test can prove that no checkpoint exists without touching host paths or
+    # invoking any native Xray operations.
+    test_adapter = NoopXrayAdapter()
+    test_adapter.config_path = tmp_path / "xray" / "config.json"
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: test_adapter)
     tokens = [f"reviewed-map-{index}" for index in range(7)]
     for token in tokens:
         _seed_subscription_identity(slug=token, token=token)

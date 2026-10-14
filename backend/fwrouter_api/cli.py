@@ -207,6 +207,114 @@ _SCHEMA_25_IDENTITY_TABLES = frozenset({
 })
 
 
+def _column_contract(connection: sqlite3.Connection, table_name: str) -> dict[str, tuple[str, int, str | None, int]]:
+    """Return column semantics without depending on SQLite declaration formatting."""
+    return {
+        str(row["name"]): (
+            " ".join(str(row["type"] or "").upper().split()),
+            int(row["notnull"]),
+            " ".join(str(row["dflt_value"]).strip().split())
+            if row["dflt_value"] is not None else None,
+            int(row["pk"]),
+        )
+        for row in connection.execute(f"PRAGMA table_info({table_name})")
+    }
+
+
+def _foreign_key_contract(connection: sqlite3.Connection, table_name: str) -> tuple[tuple[object, ...], ...]:
+    rows = connection.execute(f"PRAGMA foreign_key_list({table_name})").fetchall()
+    return tuple(sorted(
+        (
+            str(row["table"]), str(row["from"]), str(row["to"]),
+            str(row["on_update"]).upper(), str(row["on_delete"]).upper(),
+            str(row["match"]).upper(), int(row["id"]), int(row["seq"]),
+        )
+        for row in rows
+    ))
+
+
+def _index_contracts(connection: sqlite3.Connection, table_name: str) -> set[tuple[object, ...]]:
+    """Describe indexes semantically; custom non-unique performance indexes may be additive."""
+    contracts: set[tuple[object, ...]] = set()
+    for index in connection.execute(f"PRAGMA index_list({table_name})"):
+        quoted_index = '"' + str(index["name"]).replace('"', '""') + '"'
+        columns = tuple(
+            (int(row["seqno"]),
+             str(row["name"]) if row["name"] is not None else None,
+             int(row["desc"]), str(row["coll"] or "BINARY").upper(), int(row["key"]))
+            for row in connection.execute(f"PRAGMA index_xinfo({quoted_index})")
+            if int(row["key"])
+        )
+        contracts.add((int(index["unique"]), int(index["partial"]), columns))
+    return contracts
+
+
+def _schema_version_matches_canonical_structure(
+    connection: sqlite3.Connection,
+    schema_version: int,
+) -> bool:
+    """Require a supported schema version to match canonical SQLite structure.
+
+    `inspect_database_schema` intentionally audits selected critical tables. An
+    upgrade admission check has a stricter job: it must reject missing or
+    altered baseline tables before creating a backup or applying migration.
+    Build the reference from the repository's canonical schema.sql. For v24,
+    remove only the five additive v25 identity tables. Compare SQLite metadata
+    so equivalent DDL formatting and harmless custom non-unique indexes remain
+    compatible.
+    """
+    expected = sqlite3.connect(":memory:")
+    expected.row_factory = sqlite3.Row
+    try:
+        schema_path = Path(__file__).parent / "db" / "schema.sql"
+        expected.executescript(schema_path.read_text(encoding="utf-8"))
+        if schema_version == 24:
+            for table_name in (
+                "subscription_node_credential_history",
+                "subscription_node_identity_transitions",
+                "subscription_node_credentials",
+                "subscription_node_aliases",
+                "subscription_node_identities",
+            ):
+                expected.execute(f'DROP TABLE "{table_name}"')
+            expected.execute(
+                "UPDATE schema_meta SET value = '24' WHERE key = 'schema_version'"
+            )
+        elif schema_version != 25:
+            return False
+
+        expected_tables = {
+            str(row["name"])
+            for row in expected.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        actual_tables = {
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        }
+        if not expected_tables.issubset(actual_tables):
+            return False
+        for table_name in expected_tables:
+            if _column_contract(expected, table_name) != _column_contract(connection, table_name):
+                return False
+            if _foreign_key_contract(expected, table_name) != _foreign_key_contract(connection, table_name):
+                return False
+            expected_indexes = _index_contracts(expected, table_name)
+            actual_indexes = _index_contracts(connection, table_name)
+            if not expected_indexes.issubset(actual_indexes):
+                return False
+            # Additional non-unique indexes do not alter the data contract.
+            # Unknown UNIQUE indexes can change accepted writes, so fail closed.
+            if any(index not in expected_indexes and index[0] for index in actual_indexes):
+                return False
+        return True
+    finally:
+        expected.close()
+
+
 def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_schema: int) -> int:
     _validate_database_path(path)
     from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION, inspect_database_schema
@@ -214,6 +322,7 @@ def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_sche
     uri = path.absolute().as_uri() + "?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=5.0)
     connection.row_factory = sqlite3.Row
+    canonical_structure_matches = False
     try:
         state = inspect_database_schema(connection)
         try:
@@ -221,6 +330,20 @@ def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_sche
             foreign_key_violations = list(connection.execute("PRAGMA foreign_key_check"))
         except sqlite3.Error as exc:
             raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED") from exc
+        actual_value = state.get("actual_schema_version")
+        try:
+            actual_schema = int(actual_value) if actual_value is not None else None
+        except (TypeError, ValueError):
+            actual_schema = None
+        if (
+            (expected_schema, target_schema) in {(24, 25), (25, 25)}
+            and actual_schema == expected_schema
+            and integrity == ["ok"]
+            and not foreign_key_violations
+        ):
+            canonical_structure_matches = _schema_version_matches_canonical_structure(
+                connection, expected_schema,
+            )
     finally:
         connection.close()
     actual_value = state.get("actual_schema_version")
@@ -236,10 +359,14 @@ def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_sche
     if expected_schema == target_schema == int(EXPECTED_SCHEMA_VERSION):
         if not state.get("ok"):
             raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+        if not canonical_structure_matches:
+            raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
         return actual_schema
 
     if (expected_schema, target_schema) != (24, 25):
         raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
+    if not canonical_structure_matches:
+        raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
     tables = state.get("tables") if isinstance(state.get("tables"), dict) else {}
     if set(_SCHEMA_25_IDENTITY_TABLES) - set(tables):
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")

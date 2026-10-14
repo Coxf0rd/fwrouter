@@ -625,7 +625,7 @@ jobs:
           import sys
           sys.path.insert(0, "tests/acceptance")
           from launcher import _redact_public
-          print(_redact_public(Path(sys.argv[1]).read_bytes(), limit=65536).decode("utf-8", "replace"))
+          print(_redact_public(Path(sys.argv[1]).read_bytes(), limit=65536))
           PY
             if [ "$result" -eq 0 ] && [ -n "$attempt_dir" ]; then
               python3 - "$suite" "$attempt_dir" "$RUNNER_TEMP" <<'PY'

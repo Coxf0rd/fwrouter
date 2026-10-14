@@ -841,34 +841,58 @@ def test_database_upgrade_cli_refuses_schema_24_structural_drift_without_backup(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _configure_env(monkeypatch, tmp_path)
-    with _connect_raw() as connection:
-        _install_genuine_schema_24(connection)
-        connection.execute("DROP TABLE settings")
-        tables_before = [
-            str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            )
-        ]
-        before = _table_snapshot(connection, tables_before)
-
     from fwrouter_api.cli import main
     from fwrouter_api.db.connection import get_db_path
 
-    backups = get_db_path().parent / "backups"
-    assert main([
-        "database", "upgrade", "--expected-schema", "24", "--apply", "--confirm-offline",
-    ]) == 1
-    refusal = json.loads(capsys.readouterr().out)
-    assert refusal["error_code"] == "DATABASE_SCHEMA_PREFLIGHT_FAILED"
-    assert not backups.exists()
-    with _connect_raw() as connection:
-        assert connection.execute(
-            "SELECT value FROM schema_meta WHERE key='schema_version'"
-        ).fetchone()[0] == "24"
-        assert _table_snapshot(connection, tables_before) == before
+    # Keep one exact-node test for the hosted gate while exercising three
+    # independent schema-24 preimages. A function-level parametrization would
+    # expand the pytest node IDs and require a different exact-node contract.
+    drifts = (
+        ("missing-settings-table", "DROP TABLE settings"),
+        ("missing-settings-column", "ALTER TABLE settings DROP COLUMN value_json"),
+        ("missing-required-index", "DROP INDEX idx_servers_inventory_state"),
+    )
+    for case_name, mutation in drifts:
+        case_root = tmp_path / case_name
+        _configure_env(monkeypatch, case_root)
+        with _connect_raw() as connection:
+            _install_genuine_schema_24(connection)
+            connection.execute(mutation)
+            tables_before = [
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+            ]
+            rows_before = _table_snapshot(connection, tables_before)
+            schema_before = [
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+                )
+            ]
+
+        backups = get_db_path().parent / "backups"
+        assert main([
+            "database", "upgrade", "--expected-schema", "24", "--apply", "--confirm-offline",
+        ]) == 1, case_name
+        refusal = json.loads(capsys.readouterr().out)
+        assert refusal["error_code"] == "DATABASE_SCHEMA_PREFLIGHT_FAILED", case_name
+        assert not backups.exists(), case_name
+        with _connect_raw() as connection:
+            assert connection.execute(
+                "SELECT value FROM schema_meta WHERE key='schema_version'"
+            ).fetchone()[0] == "24", case_name
+            assert _table_snapshot(connection, tables_before) == rows_before, case_name
+            assert [
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+                )
+            ] == schema_before, case_name
 
 
 @pytest.mark.no_database_autoinit
