@@ -388,6 +388,21 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         "status": code, "ok": refreshed.get("ok"), "refreshed_count": refreshed.get("refreshed_count"),
     }
 
+    # Simulate a target written by the previous parser: it retains the exact
+    # raw/profile identity fields but has no durable provenance witness.
+    connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+    try:
+        row = connection.execute("SELECT raw_json FROM servers WHERE server_id=?", (new_id,)).fetchone()
+        assert row is not None
+        legacy_raw = json.loads(row[0])
+        assert isinstance(legacy_raw.get("_fwrouter_profile_provenance"), dict)
+        legacy_raw.pop("_fwrouter_profile_provenance")
+        connection.execute("UPDATE servers SET raw_json=? WHERE server_id=?",
+                           (json.dumps(legacy_raw, sort_keys=True), new_id))
+        connection.commit()
+    finally:
+        connection.close()
+
     code, context = http_json(f"{restarted_api}/__acceptance/xray/identity-context")
     assert code == 200 and context.get("ok") is True
     mapping = {
@@ -420,6 +435,14 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
             ("ok", "error_code", "status", "mappings_count", "changed_count", "native_applied")},
     }
     assert dry.get("mappings_count") == 1 and dry.get("preserved_identity_count") == 8
+    connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+    try:
+        current_raw = json.loads(connection.execute(
+            "SELECT raw_json FROM servers WHERE server_id=?", (new_id,),
+        ).fetchone()[0])
+        assert "_fwrouter_profile_provenance" not in current_raw
+    finally:
+        connection.close()
     assert native.reload_calls == reloads_before_intent
     apply_code, applied = cli({
         "action": "apply", "manifest": manifest,
@@ -431,6 +454,17 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     }
     assert applied.get("native_applied") is False and applied.get("public_snapshots_changed") is False
     assert applied.get("mappings_count") == 1 and applied.get("preserved_identity_count") == 8
+    connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+    try:
+        persisted_raw = json.loads(connection.execute(
+            "SELECT raw_json FROM servers WHERE server_id=?", (new_id,),
+        ).fetchone()[0])
+        persisted_witness = persisted_raw.pop("_fwrouter_profile_provenance")
+        assert persisted_raw == legacy_raw
+        assert persisted_witness.get("content") == new_id.removeprefix("sub:")
+        assert persisted_witness.get("version") == 1
+    finally:
+        connection.close()
     assert native.reload_calls == reloads_before_intent
     assert active_path.read_bytes() == active_before_intent
     assert {token: read_subscription_rows(state, token)["snapshots"] for token in tokens} == before_snapshots
@@ -508,6 +542,56 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     }
     assert {token: snapshot_pairs(token) for token in tokens} == snapshots_after_migration
 
+    # Tombstone one migrated public credential, then prove stale snapshots and
+    # repeated source refresh/restart cannot put it back into native Xray.
+    revoked_token = tokens[0]
+    revoked_email = f"sub-{digest(revoked_token, 10)}-{digest(old_id, 12)}@fwrouter.local"
+    revoked_uuid = str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{revoked_token}:{old_id}"))
+    revoke_code, revoke_result = http_json(
+        f"{restarted_api}/__acceptance/xray/identity-revoke", method="POST",
+        payload={"server_id": new_id},
+    )
+    assert revoke_code == 200 and revoke_result.get("ok") is True and revoke_result.get("revoked") is True, {
+        "status": revoke_code, "ok": revoke_result.get("ok"), "revoked": revoke_result.get("revoked"),
+    }
+    from urllib.parse import quote
+    from urllib.request import urlopen
+    with urlopen(f"{restarted_api}/s/{quote(revoked_token)}?format=raw-vless", timeout=10) as response:
+        public_export = response.read(1024 * 1024).decode("utf-8", "replace")
+    assert revoked_email not in public_export and revoked_uuid not in public_export, {
+        "export_length": len(public_export), "export_sha256": hashlib.sha256(public_export.encode()).hexdigest(),
+    }
+    stack["worker"].terminate()
+    stack["worker"].wait(timeout=5)
+    restarted_worker, restarted_api = stack["start_worker"]()
+    stack["worker"], stack["api"] = restarted_worker, restarted_api
+    code, post_revoke_refresh = http_json(
+        f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
+        payload={"profile": new_profile},
+    )
+    assert code == 200 and post_revoke_refresh.get("ok") is True
+    code, post_revoke_reconcile = http_json(
+        f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
+        payload={"include_vpn_auto": True}, timeout=75,
+    )
+    assert code == 200 and post_revoke_reconcile.get("ok") is True, {
+        "status": code, "ok": post_revoke_reconcile.get("ok"),
+        "stage": post_revoke_reconcile.get("stage"), "error_code": post_revoke_reconcile.get("error_code"),
+    }
+    loaded_after_revocation = set(loaded_identities(native))
+    expected_after_revocation = (unaffected | affected) - {(revoked_uuid, revoked_email)}
+    assert len(loaded_after_revocation) == 77 and identity_fingerprint(loaded_after_revocation) == identity_fingerprint(expected_after_revocation), {
+        "loaded_count": len(loaded_after_revocation),
+        "loaded_sha256": identity_fingerprint(loaded_after_revocation),
+        "expected_count": len(expected_after_revocation),
+        "expected_sha256": identity_fingerprint(expected_after_revocation),
+    }
+    assert all(
+        revoked_uuid not in {pair[1] for pair in snapshot_pairs(token)}
+        and revoked_email not in {pair[2] for pair in snapshot_pairs(token)}
+        for token in tokens
+    )
+
     # A subsequent real API create with an injected native reload fault retains
     # the proven native preimage while leaving the new desired client visible.
     probe_email = "identity-rollback-probe@acceptance.invalid"
@@ -524,7 +608,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     assert rollback.get("status") == "failed", {"status": rollback.get("status"), "error_code": rollback.get("error_code")}
     assert native.reload_calls > reload_count_before_fault
     loaded_after_rollback = set(loaded_identities(native))
-    assert len(loaded_after_rollback) == 78 and identity_fingerprint(loaded_after_rollback) == identity_fingerprint(unaffected | affected), {
+    assert len(loaded_after_rollback) == 77 and identity_fingerprint(loaded_after_rollback) == identity_fingerprint(expected_after_revocation), {
         "loaded_count": len(loaded_after_rollback),
         "loaded_sha256": identity_fingerprint(loaded_after_rollback),
     }

@@ -82,6 +82,54 @@ def _vpn_auto_xray_client_email(server_id: str) -> str:
     return f"vpn-auto-{digest}@fwrouter.local"
 
 
+def _admit_legacy_profile_witness(
+    *, server_id: str, stored_raw: dict[str, Any], profile: dict[str, Any],
+    expected_provenance: dict[str, Any],
+) -> bool:
+    """Prove a schema-24 JSON-profile target from its exact stored raw projection.
+
+    Older rows predate persisted profile provenance. Reparse the operator's
+    canonical witness with the current pure parser and require its complete
+    normalized proxy projection to match the stored row. Only the two fields
+    introduced for this migration flow may be absent/ignored.
+    """
+    if not isinstance(profile, dict) or server_id != "sub:" + str(expected_provenance.get("content") or ""):
+        return False
+    marker = stored_raw.get("_fwrouter_identity_migration_required")
+    if marker is not None and marker is not True:
+        return False
+    if (
+        stored_raw.get("_fwrouter_raw_identity_sha256") != expected_provenance.get("content")
+        or stored_raw.get("_fwrouter_parser_format") != "json_profile"
+        or stored_raw.get("_fwrouter_server_id") != server_id
+    ):
+        return False
+    try:
+        from fwrouter_api.adapters.subscription import _servers_from_json_profile
+
+        parsed_servers, _diagnostics = _servers_from_json_profile(profile)
+    except Exception:
+        return False
+    if len(parsed_servers) != 1:
+        return False
+    parsed = parsed_servers[0]
+    if (
+        parsed.server_id != server_id
+        or parsed.parser_format != "json_profile"
+        or hashlib.sha256(str(parsed.raw_identity or "").encode("utf-8")).hexdigest()
+        != expected_provenance.get("content")
+        or parsed.raw.get("_fwrouter_profile_provenance") != expected_provenance
+    ):
+        return False
+    expected_raw = dict(parsed.raw)
+    expected_raw.pop("_fwrouter_profile_provenance", None)
+    expected_raw.pop("_fwrouter_identity_migration_required", None)
+    normalized_stored = dict(stored_raw)
+    normalized_stored.pop("_fwrouter_profile_provenance", None)
+    normalized_stored.pop("_fwrouter_identity_migration_required", None)
+    return normalized_stored == expected_raw
+
+
 def _prepare_durable_profile_credentials(*, include_vpn_auto: bool,
                                          legacy_native_clients: list[Any] | None = None) -> None:
     """Persist credential intent before taking the generation source fence.
@@ -182,7 +230,7 @@ def migrate_subscription_profile_identities(
     """
     from fwrouter_api.services.subscription_node_identity import (
         migrate_profile_identity, retain_credentials, origin_server_id_for_server,
-        IdentityConflict, canonical_digest, profile_provenance,
+        credentials_for_scope, IdentityConflict, canonical_digest, profile_provenance,
     )
     from fwrouter_api.services.subscription_profiles import _subscription_email
     from fwrouter_api.services.vpn_auto_selection_state import (
@@ -283,8 +331,16 @@ def migrate_subscription_profile_identities(
             if not target_row or target_row["inventory_state"] != "active":
                 raise IdentityConflict("IDENTITY_MIGRATION_SERVER_UNAVAILABLE")
             target_raw = json.loads(target_row["raw_json"] or "{}")
-            if target_raw.get("_fwrouter_profile_provenance") != profile_provenance(item["new_profile"]):
-                raise IdentityConflict("IDENTITY_MIGRATION_STORED_WITNESS_MISMATCH")
+            expected_provenance = profile_provenance(item["new_profile"])
+            if "_fwrouter_profile_provenance" in target_raw:
+                if target_raw.get("_fwrouter_profile_provenance") != expected_provenance:
+                    raise IdentityConflict("IDENTITY_MIGRATION_STORED_WITNESS_MISMATCH")
+            else:
+                if not _admit_legacy_profile_witness(
+                    server_id=target_id, stored_raw=target_raw,
+                    profile=item["new_profile"], expected_provenance=expected_provenance,
+                ):
+                    raise IdentityConflict("IDENTITY_MIGRATION_STORED_WITNESS_MISMATCH")
             for scope, email in [
                 *(("subscription:" + token, _subscription_email(token, origin_id)) for token in tokens),
                 ("vpn-auto", _vpn_auto_xray_client_email(origin_id)),
@@ -308,6 +364,7 @@ def migrate_subscription_profile_identities(
                 checkpoint_sha256=checkpoint_sha256,
             )
             target_raw.pop("_fwrouter_identity_migration_required", None)
+            target_raw["_fwrouter_profile_provenance"] = expected_provenance
             connection.execute(
                 "UPDATE servers SET raw_json=? WHERE server_id=? AND inventory_state='active'",
                 (json.dumps(target_raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")), target_id),

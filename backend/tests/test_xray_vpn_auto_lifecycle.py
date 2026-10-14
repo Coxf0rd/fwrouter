@@ -245,7 +245,11 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
     old_server = parse_subscription_payload(json.dumps(previous)).servers[0]
     new_server = parse_subscription_payload(json.dumps(reviewed)).servers[0]
     _seed_server(old_server.server_id, server_name=old_server.server_name, raw=old_server.raw)
-    _seed_server(new_server.server_id, server_name=new_server.server_name, raw=new_server.raw)
+    # Emulate an existing schema-24 parser row that has complete canonical raw
+    # provenance fields but predates the durable profile witness.
+    legacy_target_raw = dict(new_server.raw)
+    legacy_target_raw.pop("_fwrouter_profile_provenance", None)
+    _seed_server(new_server.server_id, server_name=new_server.server_name, raw=legacy_target_raw)
     source_url = "https://reviewed.example.invalid/subscription"
     source_id = subscription_service._source_id(source_url)
 
@@ -313,16 +317,62 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
             "SELECT 1 FROM subscription_node_aliases WHERE server_id=?", (new_server.server_id,),
         ).fetchone() is None
 
-    result = xray_subscription_service.migrate_subscription_profile_identities(
+    for corrupt_field in ("_fwrouter_raw_identity_sha256", "_fwrouter_topology"):
+        corrupted = json.loads(json.dumps(legacy_target_raw))
+        if corrupt_field == "_fwrouter_raw_identity_sha256":
+            corrupted[corrupt_field] = "0" * 64
+        else:
+            corrupted[corrupt_field]["endpoints"][0]["host"] = "tampered.invalid"
+        with db_session() as connection:
+            connection.execute("UPDATE servers SET raw_json=? WHERE server_id=?",
+                               (json.dumps(corrupted, sort_keys=True), new_server.server_id))
+        with pytest.raises(RuntimeError, match="IDENTITY_MIGRATION_STORED_WITNESS_MISMATCH"):
+            xray_subscription_service.migrate_subscription_profile_identities(
+                manifest, expected_selection_revision=selection_revision,
+                expected_identity_digest=identity_digest,
+            )
+        assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before
+        with db_session() as connection:
+            assert connection.execute(
+                "SELECT 1 FROM subscription_node_aliases WHERE server_id=?", (new_server.server_id,),
+            ).fetchone() is None
+            connection.execute("UPDATE servers SET raw_json=? WHERE server_id=?",
+                               (json.dumps(legacy_target_raw, sort_keys=True), new_server.server_id))
+
+    preview = xray_subscription_service.migrate_subscription_profile_identities(
         manifest,
         expected_selection_revision=selection_revision,
         expected_identity_digest=identity_digest,
     )
-    assert result["ok"] is True
+    assert preview["ok"] is True and preview["status"] == "dry_run"
+    assert preview["native_applied"] is False
+    assert preview["fresh_generation_required"] is True
+    assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM subscription_node_aliases WHERE server_id=?", (new_server.server_id,),
+        ).fetchone() is None
+        dry_run_raw = json.loads(connection.execute(
+            "SELECT raw_json FROM servers WHERE server_id=?", (new_server.server_id,),
+        ).fetchone()[0])
+        assert "_fwrouter_profile_provenance" not in dry_run_raw
+
+    result = xray_subscription_service.migrate_subscription_profile_identities(
+        manifest,
+        expected_selection_revision=selection_revision,
+        expected_identity_digest=identity_digest,
+        apply=True,
+        expected_plan_sha256=preview["plan_sha256"],
+    )
+    assert result["ok"] is True and result["status"] == "applied"
     assert result["native_applied"] is False
     assert result["fresh_generation_required"] is True
     assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before
     with db_session() as connection:
+        stored_witness = json.loads(connection.execute(
+            "SELECT raw_json FROM servers WHERE server_id=?", (new_server.server_id,),
+        ).fetchone()[0])["_fwrouter_profile_provenance"]
+        assert stored_witness.get("content") == new_server.server_id.removeprefix("sub:")
         assert connection.execute(
             "SELECT current_server_id FROM subscription_node_identities WHERE origin_server_id=?",
             (old_server.server_id,),

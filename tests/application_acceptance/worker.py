@@ -2954,6 +2954,42 @@ def build_app(socket_path: Path):
         methods=["GET"],
     )
 
+    def revoke_identity_fixture_credential(payload: dict[str, Any]) -> dict[str, Any]:
+        """Tombstone one fixed synthetic public credential through the real service helper."""
+        expected_scope = "subscription:identity-public-0@acceptance.invalid"
+        expected_server = str(payload.get("server_id") or "")
+        if set(payload) != {"server_id"} or not expected_server.startswith("sub:"):
+            return {"ok": False, "error_code": "IDENTITY_FIXTURE_REVOCATION_INVALID"}
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        from fwrouter_api.services.subscription_node_identity import revoke_credentials
+        with xray_writer_guard(timeout_seconds=30.0):
+            with db_session() as connection:
+                row = connection.execute(
+                    "SELECT identity_id FROM subscription_node_aliases WHERE server_id=?",
+                    (expected_server,),
+                ).fetchone()
+                if row is None:
+                    return {"ok": False, "error_code": "IDENTITY_FIXTURE_CREDENTIAL_UNAVAILABLE"}
+                credential = connection.execute(
+                    "SELECT epoch FROM subscription_node_credentials WHERE scope=? AND identity_id=?",
+                    (expected_scope, row["identity_id"]),
+                ).fetchone()
+                if credential is None:
+                    return {"ok": False, "error_code": "IDENTITY_FIXTURE_CREDENTIAL_UNAVAILABLE"}
+                result = revoke_credentials(
+                    connection, scope=expected_scope, identity_id=str(row["identity_id"]),
+                    expected_epoch=int(credential["epoch"]),
+                )
+        return {"ok": True, "revoked": result.get("revoked") == 1,
+                "epoch": result.get("epoch")}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/identity-revoke",
+        revoke_identity_fixture_credential,
+        methods=["POST"],
+    )
+
     def run_identity_cli(payload: dict[str, Any]) -> dict[str, Any]:
         """Exercise the protected CLI in this fixture's patched, owned runtime."""
         import contextlib
