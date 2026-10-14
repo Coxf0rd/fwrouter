@@ -2463,12 +2463,22 @@ def _rollback_mihomo_config(routing: dict[str, object], *, unsafe_direct: bool =
     }
 
 
+def _rollback_routing_snapshot() -> dict[str, object]:
+    from fwrouter_api.services.server_state import ensure_routing_global_state
+
+    ensure_routing_global_state()
+    routing = xray_subscription_service._capture_generation_auto_selection().get("routing")
+    assert isinstance(routing, dict), "rollback policy fixture requires persisted routing state"
+    return routing
+
+
 def test_generation_rollback_refuses_unsafe_mihomo_preimage_before_any_active_write(monkeypatch, tmp_path: Path) -> None:
     """Identity parity does not authorize restoring a DIRECT fail-open checkpoint."""
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
     _enable_xray_module()
+    _rollback_routing_snapshot()
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
     _patch_xray_adapters(monkeypatch, adapter)
     from fwrouter_api.services import mihomo_config, subscription_pipeline
@@ -2530,7 +2540,7 @@ def test_rollback_mihomo_preimage_requires_policy_and_native_validation(monkeypa
     initialize_database()
     from fwrouter_api.services import mihomo_config, subscription_pipeline
 
-    routing = xray_subscription_service._capture_generation_auto_selection()["routing"]
+    routing = _rollback_routing_snapshot()
     candidate_parent = Path(mihomo_config._resolved_base_config_path()).parent
     candidate_parent.mkdir(parents=True, exist_ok=True)
     safe_config = _rollback_mihomo_config(routing)
@@ -2568,7 +2578,7 @@ def test_rollback_mihomo_preimage_rejects_reachable_nested_direct(monkeypatch, t
     initialize_database()
     from fwrouter_api.services import subscription_pipeline
 
-    routing = xray_subscription_service._capture_generation_auto_selection()["routing"]
+    routing = _rollback_routing_snapshot()
     unsafe = _rollback_mihomo_config(routing)
     unsafe["proxy-groups"] = [
         {"name": "vpn-auto", "type": "select", "proxies": ["nested-vpn", "REJECT"]},
@@ -2591,7 +2601,7 @@ def test_rollback_mihomo_preimage_rejects_nested_group_cycle(monkeypatch, tmp_pa
     initialize_database()
     from fwrouter_api.services import subscription_pipeline
 
-    routing = xray_subscription_service._capture_generation_auto_selection()["routing"]
+    routing = _rollback_routing_snapshot()
     cyclic = _rollback_mihomo_config(routing)
     cyclic["proxy-groups"] = [
         {"name": "vpn-auto", "type": "select", "proxies": ["nested-a", "REJECT"]},
@@ -2625,7 +2635,7 @@ def test_owned_restore_revision_change_during_native_validation_prevents_active_
     _write_xray_config(config_path, [])
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
     mihomo_path.parent.mkdir(parents=True, exist_ok=True)
-    safe_preimage = _rollback_mihomo_config(xray_subscription_service._capture_generation_auto_selection()["routing"])
+    safe_preimage = _rollback_mihomo_config(_rollback_routing_snapshot())
     mihomo_path.write_text(__import__("yaml").safe_dump(safe_preimage, sort_keys=False), encoding="utf-8")
     bindings_path = _xray_bindings_path()
     bindings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2681,7 +2691,7 @@ def test_owned_restore_revalidates_after_reload_before_database_restore(monkeypa
     _write_xray_config(config_path, [])
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
     mihomo_path.parent.mkdir(parents=True, exist_ok=True)
-    safe_preimage = _rollback_mihomo_config(xray_subscription_service._capture_generation_auto_selection()["routing"])
+    safe_preimage = _rollback_mihomo_config(_rollback_routing_snapshot())
     mihomo_path.write_text(__import__("yaml").safe_dump(safe_preimage, sort_keys=False), encoding="utf-8")
     bindings_path = _xray_bindings_path()
     bindings_path.parent.mkdir(parents=True, exist_ok=True)
