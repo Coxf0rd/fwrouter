@@ -57,3 +57,16 @@ No negative outage/fail-closed experiments or manual nft edits were executed. Su
 5. Once qualified, repeat controlled backend activation and full live acceptance, then restore exactly the previously active dependent units only after readiness/native stability. User merge remains separate.
 
 Overall Production Acceptance BLOCKED. CI milestone CLOSED; CD DEFERRED; Operational Performance Fixes not started. Raw evidence protected locally; no secrets or client IDs in this report.
+
+
+## Read-only diagnostic clarification — 2026-10-14
+
+This updates the unresolved causal questions above without changing the failed live receipt. Production remains installed at4ffd686, with API/dependent units held. No activation, UUID restoration, native reload, rollback or configuration mutation is performed in this diagnostic phase.
+
+Protected historical/current subscription metadata establishes the exact upstream delta: the canonical JSON profile has10→13 outbounds, with the original7 VLESS members unchanged and3 additional VLESS members before the unchanged service suffix. All other root fields are equal. Parser `_servers_from_json_profile` hashes the entire canonical profile; logical topology uses that server ID as its profile key. The changed inventory was persisted before activation. Seven public credentials derive deterministically from unchanged profile tokens plus the changed server ID; the eighth is the replacement internal vpn-auto credential. This is not random rotation, a URI-path formatting defect, or a new PR8 UUID algorithm. Seventy identities are unchanged. Seven published credentials remain absent from native; actual authentication attempts/disconnections were not observed.
+
+Checkpoint xray_applied records the new native candidate, while active Mihomo already matches the final candidate. Selection revision and Mihomo incarnation differ from the durable checkpoint; Xray incarnation matches. Direct stale resume/restore is inadmissible. New source persists the missing transition digest and rejects unproved/foreign transition bytes before writes. That fix cannot retrofit proof into the existing production marker.
+
+Committed-projection fallback first requires binding/mode identity parity and valid published snapshots, then bindings-artifact parity and mounted/native configuration checks. The observed DB/native8-identity difference independently fails its later config-identity equality predicate; the first actual refusal has not been executed or established. Do not claim a specific first refusal from configuration counts alone.
+
+Recovery remains NOT RUN. Preserve the original78 credentials in a fresh owned transaction, qualify full bindings/public/native state, keep current unrelated Core intent and fail-closed, and choose an authoritative continuity mapping for the changed7→10-member profile. A frozen last-good profile and a qualified new-profile migration are distinct recovery options; neither is authorized or executed on production here. Host/name/primary-endpoint aliasing is insufficient. PR8's measured performance/native gates and a durable identity-continuity decision remain prerequisites to a separately authorized live recovery. See REPORT.md for actual hosted run receipts.

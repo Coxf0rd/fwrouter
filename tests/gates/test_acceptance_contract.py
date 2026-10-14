@@ -5424,5 +5424,38 @@ class AcceptanceContractTests(unittest.TestCase):
                                   "FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE"], events)
 
 
+class ScaleInboundOwnershipContract(unittest.TestCase):
+    def helper(self):
+        source = Path(__file__).parents[1] / "application_acceptance" / "test_runtime_scale.py"
+        tree = ast.parse(source.read_text())
+        node = next(item for item in tree.body if isinstance(item, ast.FunctionDef)
+                    and item.name == "_scale_xray_config_with_managed_clients")
+        namespace = {"json": json, "Any": object}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
+        return namespace[node.name]
+
+    def test_scale_owns_exact_clients_and_preserves_api(self):
+        fixture = Path(__file__).parents[1] / "application_acceptance" / "fixtures" / "xray.initial.json"
+        original = json.loads(fixture.read_text())
+        before = json.dumps(original, sort_keys=True)
+        clients = [{"id": "test-owned-client", "email": "owned@example.invalid"}]
+        result = self.helper()(original, clients)
+        self.assertEqual(before, json.dumps(original, sort_keys=True))
+        self.assertEqual(["fwrouter-api", "vless-ws"], [row["tag"] for row in result["inbounds"]])
+        self.assertEqual(clients, result["inbounds"][1]["settings"]["clients"])
+        self.assertEqual(original["inbounds"][0], result["inbounds"][0])
+        self.assertFalse(any(row.get("inboundTag") == ["acceptance-provider-upstream"]
+                             for row in result["routing"]["rules"]))
+        clients[0]["id"] = "mutated-input"
+        self.assertEqual("test-owned-client", result["inbounds"][1]["settings"]["clients"][0]["id"])
+
+    def test_unexpected_client_inbound_is_refused(self):
+        fixture = Path(__file__).parents[1] / "application_acceptance" / "fixtures" / "xray.initial.json"
+        config = json.loads(fixture.read_text())
+        config["inbounds"].append({"tag": "unexpected", "settings": {"clients": [{"id": "unowned"}]}})
+        with self.assertRaisesRegex(AssertionError, "unexpected client-bearing"):
+            self.helper()(config, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

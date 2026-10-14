@@ -196,6 +196,28 @@ def _seed_scale_rules_source(state: Path) -> dict[str, Any]:
     }
 
 
+def _scale_xray_config_with_managed_clients(config: dict[str, Any], clients: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep exactly the scale-owned clients, excluding the shared upstream fixture."""
+    result = json.loads(json.dumps(config))
+    inbounds = result.get("inbounds")
+    if not isinstance(inbounds, list):
+        raise AssertionError("scale config has no inbound list")
+    managed = [row for row in inbounds if row.get("tag") == "vless-ws"]
+    auxiliary = [row for row in inbounds if row.get("tag") == "acceptance-provider-upstream"]
+    if len(managed) != 1 or len(auxiliary) != 1:
+        raise AssertionError("scale config does not match the shared inbound fixture")
+    for row in inbounds:
+        if row not in managed + auxiliary and (row.get("settings") or {}).get("clients"):
+            raise AssertionError("unexpected client-bearing scale inbound")
+    result["inbounds"] = [row for row in inbounds if row.get("tag") != "acceptance-provider-upstream"]
+    managed[0]["settings"]["clients"] = json.loads(json.dumps(clients))
+    result["routing"]["rules"] = [
+        row for row in result["routing"]["rules"]
+        if row.get("inboundTag") != ["acceptance-provider-upstream"]
+    ]
+    return result
+
+
 def _seed_scale_xray_subjects(state: Path, xray_config: dict[str, Any]) -> dict[str, Any]:
     """Persist the synthetic native VLESS identities through the inventory row contract."""
     from fwrouter_api.db.connection import db_session
@@ -591,9 +613,9 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             "native_clients": 81,
         }
         xray_path = Path(stack["state"]) / "xray" / "config.json"
-        xray_config = json.loads(xray_path.read_text())
-        inbound = next(row for row in xray_config["inbounds"] if row.get("tag") == "vless-ws")
-        inbound["settings"]["clients"] = profile_state["clients"]
+        xray_config = _scale_xray_config_with_managed_clients(
+            json.loads(xray_path.read_text()), profile_state["clients"],
+        )
         xray_path.write_text(json.dumps(xray_config))
         metrics["xray_source"] = _seed_scale_xray_subjects(Path(stack["state"]), xray_config)
         native.restart_xray_child()
@@ -678,6 +700,14 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         assert binding_state.get("applied_count") == len(expected_binding_pairs), {
             "applied_count": binding_state.get("applied_count"),
             "expected_binding_count": len(expected_binding_pairs),
+        }
+        actual_binding_pairs = {
+            (str(row.get("client_uuid") or row.get("client_id") or ""), str(row.get("client_email") or ""))
+            for row in binding_state["bindings"] if row.get("status") == "applied"
+        }
+        assert actual_binding_pairs == expected_binding_pairs, {
+            "missing_count": len(expected_binding_pairs - actual_binding_pairs),
+            "unexpected_count": len(actual_binding_pairs - expected_binding_pairs),
         }
         metrics["applied_profile_bindings"] = len(expected_binding_pairs)
 

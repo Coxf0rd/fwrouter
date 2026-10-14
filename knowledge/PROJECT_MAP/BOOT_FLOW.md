@@ -120,3 +120,10 @@ Feature-source4ffd686 is installed backend/docs only after hosted full scope PAS
 ### Nonempty profile planner and stale recovery qualification
 
 Read-only checkpoint forensics finds DB's original78 identities preserved but native candidate8 replacements/public snapshots uncommitted. Stale selection revision/Mihomo incarnation and missing inventory bindings prohibit blind resume or file restore. New checkpoints retain transition config digests and recovery requires them before native mutation. Nonempty hosted reproduction38478166408 reaches the redundant per-client effective-state/preflight loop; the prospective planner now resolves persisted identities and performs enrichment once with its shared snapshots, retaining final source/CAS/native proof. Qualification is pending; production API/workers/timers remain held, not repaired by a source commit.
+
+
+### Profile identity and recovery boundary — 2026-10-14
+
+Protected read-only evidence resolves the8-credential delta: the provider JSON profile gained3 VLESS members (7→10), changing its full canonical-profile hash/server ID before activation. Seven public uuid5 credentials and one internal credential follow that new ID;70 others remain unchanged. Source does not silently alias distinct logical profiles or rewrite production identities. A stable-identity migration needs an authoritative continuity contract and fresh owned publication, not display-name/primary-endpoint guessing.
+
+The legacy xray_applied checkpoint has stale selection/Mihomo fences and no persisted transition digest. New transition-proof regressions and candidate-copy/immutability regressions belong to the routine L3 suite, not its narrow qualified test_xray.py carve-outs. Committed-projection fallback requires binding/mode/public projection and artifact parity before its later native-config identity check; an unexecuted fallback has no observed first refusal. Production API/dependents remain held; current hosted readiness qualification is reported in the linked runtime audit.
