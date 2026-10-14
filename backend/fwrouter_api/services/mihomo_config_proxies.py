@@ -99,16 +99,154 @@ def _logical_profile_groups() -> list[dict[str, Any]]:
         members = _logical_profile_members(raw, logical_runtime_name=runtime_name)
         if not members:
             continue
-        groups.append(
-            {
-                "name": runtime_name,
-                "type": runtime_policy,
-                "proxies": [str(member["name"]) for member in members],
-                "url": "https://www.gstatic.com/generate_204",
-                "interval": LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS,
-            }
-        )
+        groups.append(_generated_logical_profile_group(runtime_name, members, runtime_policy))
     return groups
+
+
+def _generated_logical_profile_group(
+    runtime_name: str,
+    members: list[dict[str, Any]],
+    runtime_policy: str = "fallback",
+) -> dict[str, Any]:
+    return {
+        "name": runtime_name,
+        "type": runtime_policy,
+        "proxies": [str(member["name"]) for member in members],
+        "url": "https://www.gstatic.com/generate_204",
+        "interval": LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS,
+    }
+
+
+def _known_inactive_logical_profile_groups(
+    *,
+    active_group_names: set[str] | None = None,
+    candidate_names: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return exact generated groups whose persisted profile is not active.
+
+    This includes profiles made inactive by inventory reconciliation and
+    profiles intentionally excluded from the runtime proxy inventory. It does
+    not infer ownership from names: the source row must retain logical-profile
+    topology and the group must match the generator's complete shape later.
+    """
+    if active_group_names is None:
+        active_group_names = {str(group["name"]) for group in _logical_profile_groups()}
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT server_name, raw_json FROM servers"
+        ).fetchall()
+
+    inactive: dict[str, dict[str, Any]] = {}
+    ambiguous_names: set[str] = set()
+    for row in rows:
+        try:
+            raw = json.loads(row["raw_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        topology = raw.get("_fwrouter_topology")
+        if not isinstance(topology, dict) or topology.get("kind") != "logical_profile":
+            continue
+        if str(topology.get("runtime_policy") or "fallback") != "fallback":
+            continue
+        runtime_name = str(
+            raw.get("_fwrouter_runtime_name") or raw.get("name") or row["server_name"] or ""
+        ).strip()
+        if not runtime_name or runtime_name in active_group_names:
+            continue
+        if candidate_names is not None and runtime_name not in candidate_names:
+            continue
+        members = _logical_profile_members(raw, logical_runtime_name=runtime_name)
+        if not members:
+            continue
+        generated = _generated_logical_profile_group(runtime_name, members)
+        previous = inactive.get(runtime_name)
+        if runtime_name in ambiguous_names:
+            continue
+        if previous is not None:
+            inactive.pop(runtime_name, None)
+            ambiguous_names.add(runtime_name)
+            continue
+        inactive[runtime_name] = generated
+    return inactive
+
+
+def _proxy_group_is_referenced(config: dict[str, Any], group_name: str) -> bool:
+    for group in config.get("proxy-groups") or []:
+        if not isinstance(group, dict) or str(group.get("name") or "").strip() == group_name:
+            continue
+        targets = group.get("proxies")
+        if isinstance(targets, list) and group_name in targets:
+            return True
+    for listener in config.get("listeners") or []:
+        if isinstance(listener, dict) and str(listener.get("proxy") or "").strip() == group_name:
+            return True
+    rule_sets = [config.get("rules")]
+    sub_rules = config.get("sub-rules")
+    if isinstance(sub_rules, dict):
+        rule_sets.extend(sub_rules.values())
+    for rules in rule_sets:
+        if not isinstance(rules, list):
+            continue
+        for rule in rules:
+            if not isinstance(rule, str):
+                continue
+            parts = [part.strip() for part in rule.split(",")]
+            if parts and parts[-1].lower() == "no-resolve":
+                parts.pop()
+            if parts and parts[-1] == group_name:
+                return True
+    return False
+
+
+def _stale_generated_logical_profile_group_names(
+    base_config: dict[str, Any],
+    *,
+    logical_profile_groups: list[dict[str, Any]] | None = None,
+) -> set[str]:
+    """Identify unchanged FWRouter groups for profiles no longer in inventory.
+
+    The base Mihomo file is also the input to the next generated candidate, so
+    groups emitted by a previous generation can outlive their source row. Only
+    prune a group when its persisted source row proves it was a logical profile,
+    its name and full generated fallback shape still match that source, and none
+    of its member proxies exist in the candidate. Modified or ambiguous groups
+    are left for the normal native validator to accept or reject.
+    """
+    proxies = base_config.get("proxies") if isinstance(base_config.get("proxies"), list) else []
+    proxy_names = {
+        str(proxy.get("name") or "").strip()
+        for proxy in proxies
+        if isinstance(proxy, dict) and str(proxy.get("name") or "").strip()
+    }
+    groups = base_config.get("proxy-groups")
+    if not isinstance(groups, list) or not groups:
+        return set()
+
+    stale_names: set[str] = set()
+    active_groups = logical_profile_groups if logical_profile_groups is not None else _logical_profile_groups()
+    active_group_names = {str(group["name"]) for group in active_groups}
+    for runtime_name, expected in _known_inactive_logical_profile_groups(
+        active_group_names=active_group_names,
+        candidate_names={
+            str(group.get("name") or "").strip()
+            for group in groups
+            if isinstance(group, dict) and str(group.get("name") or "").strip()
+        },
+    ).items():
+        member_names = [str(name).strip() for name in expected.get("proxies", [])]
+        # Do not remove a group whose old members still form any part of the
+        # candidate. It may still be referenced by an independent selector or
+        # be part of an in-flight last-good transition.
+        if any(name in proxy_names for name in member_names):
+            continue
+        for group in groups:
+            if not isinstance(group, dict) or group != expected:
+                continue
+            stale_names.add(runtime_name)
+            break
+    return stale_names
 
 
 def _runtime_proxy_inventory_count() -> int:
@@ -133,6 +271,10 @@ def _merge_runtime_proxies(
         str(group["name"])
         for group in _logical_profile_groups()
     }
+    inactive_logical_groups = _known_inactive_logical_profile_groups(
+        active_group_names=active_logical_group_names,
+        candidate_names=set(required_last_good_names or set()),
+    )
     runtime_proxies: list[dict[str, Any]] = []
     seen_names: set[str] = set()
 
@@ -219,6 +361,42 @@ def _merge_runtime_proxies(
         runtime_proxies.append(proxy)
         seen_names.add(name)
 
+    # Keep the old, already-applied logical-profile path intact while an Xray
+    # handoff still targets that group. Once Xray converges, its name is no
+    # longer in required_last_good_names and the stale group and its proxies
+    # can be pruned by the normal candidate generation path.
+    required_names = required_last_good_names or set()
+    old_proxy_rows = {
+        str(item.get("name") or "").strip(): item
+        for item in (base_config.get("proxies") or [])
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    old_groups = {
+        str(item.get("name") or "").strip(): item
+        for item in (base_config.get("proxy-groups") or [])
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    for group_name, group in inactive_logical_groups.items():
+        if group_name not in required_names or old_groups.get(group_name) != group:
+            continue
+        for member_name in group.get("proxies") or []:
+            name = str(member_name or "").strip()
+            if not name or name in seen_names:
+                continue
+            old_proxy = old_proxy_rows.get(name)
+            if not isinstance(old_proxy, dict):
+                continue
+            normalized = _normalize_proxy_list({"proxies": [dict(old_proxy)]}).get("proxies")
+            if not isinstance(normalized, list) or not normalized:
+                continue
+            proxy = normalized[0]
+            proxy_type = str(proxy.get("type") or "").strip().lower()
+            if not proxy_type or (proxy_type != "http" and not str(proxy.get("server") or "").strip()):
+                continue
+            proxy = _project_native_proxy(proxy)
+            runtime_proxies.append(proxy)
+            seen_names.add(name)
+
     return runtime_proxies
 
 
@@ -255,16 +433,20 @@ def _load_custom_proxy_names() -> set[str]:
 
 def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]:
     existing_groups = base_config.get("proxy-groups") if isinstance(base_config.get("proxy-groups"), list) else []
+    logical_profile_groups = _logical_profile_groups()
+    stale_generated_groups = _stale_generated_logical_profile_group_names(
+        base_config,
+        logical_profile_groups=logical_profile_groups,
+    )
     groups_by_name: dict[str, dict[str, Any]] = {}
     for group in existing_groups:
         if not isinstance(group, dict):
             continue
         name = str(group.get("name") or "").strip()
-        if not name:
+        if not name or name in stale_generated_groups:
             continue
         groups_by_name[name] = dict(group)
 
-    logical_profile_groups = _logical_profile_groups()
     logical_group_names = {str(group["name"]) for group in logical_profile_groups}
     for group in logical_profile_groups:
         groups_by_name[str(group["name"])] = group
@@ -333,6 +515,26 @@ def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]
             "type": "select",
             "proxies": proxies,
         }
+
+    # Evaluate ownership references after FWRouter-owned selectors have been
+    # rebuilt. A stale name present only in the old vpn-auto/vpn-global
+    # projection is not a live external reference. User groups, rules and
+    # listeners remain unchanged and protect their referenced group; the
+    # native validator then decides whether that retained config is usable.
+    reference_config = dict(base_config)
+    reference_config["proxy-groups"] = list(groups_by_name.values())
+    for name in stale_generated_groups:
+        if _proxy_group_is_referenced(reference_config, name):
+            previous = next(
+                (
+                    group
+                    for group in existing_groups
+                    if isinstance(group, dict) and str(group.get("name") or "").strip() == name
+                ),
+                None,
+            )
+            if isinstance(previous, dict):
+                groups_by_name[name] = dict(previous)
 
     ordered_names = ["vpn-auto", "vpn-global"]
     ordered_names.extend(

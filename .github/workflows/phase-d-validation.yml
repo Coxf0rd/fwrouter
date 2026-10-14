@@ -265,6 +265,26 @@ jobs:
           PY
             rm -f "$root/xray-l3-run.raw"
           fi
+          if [ "$result" -eq 0 ]; then
+            python tests/gates/gate.py subset-plan --domain mihomo --level L3 \
+              --output "$root/mihomo-l3-plan.json" > "$root/mihomo-l3-plan.log"
+            set +e
+            python tests/gates/gate.py run --plan "$root/mihomo-l3-plan.json" \
+              --manual-subset --output "$root/mihomo-l3-report.json" \
+              > "$root/mihomo-l3-run.raw" 2>&1
+            result=$?
+            set -e
+            python3 - "$root/mihomo-l3-run.raw" "$root/mihomo-l3-run.log" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tests/gates")
+          from gate import redact_failure_output
+          output = redact_failure_output(Path(sys.argv[1]).read_text(encoding="utf-8"))[-65536:]
+          Path(sys.argv[2]).write_text(output, encoding="utf-8")
+          print(output)
+          PY
+            rm -f "$root/mihomo-l3-run.raw"
+          fi
           exit "$result"
       - name: Retain sanitized identity qualification evidence
         if: always() && needs.select-stage.outputs.stage == 'identity-diagnostic'
@@ -283,6 +303,10 @@ jobs:
             ${{ runner.temp }}/phase-d-identities/xray-l3-plan.log
             ${{ runner.temp }}/phase-d-identities/xray-l3-report.json
             ${{ runner.temp }}/phase-d-identities/xray-l3-run.log
+            ${{ runner.temp }}/phase-d-identities/mihomo-l3-plan.json
+            ${{ runner.temp }}/phase-d-identities/mihomo-l3-plan.log
+            ${{ runner.temp }}/phase-d-identities/mihomo-l3-report.json
+            ${{ runner.temp }}/phase-d-identities/mihomo-l3-run.log
           if-no-files-found: warn
           retention-days: 30
           compression-level: 3

@@ -1475,6 +1475,256 @@ def test_structured_profile_materializes_members_and_keeps_logical_fallback_grou
     assert all(member not in by_name["vpn-auto"]["proxies"] for member in by_name[logical_name]["proxies"])
 
 
+def test_mihomo_rebuild_prunes_only_exact_stale_owned_profile_group(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A refresh may remove an old generated profile group, but not user groups.
+
+    The inactive DB row is the ownership witness. The old generated fallback
+    shape is matched exactly; an edited group with the same name is retained so
+    that native Mihomo validation can reject a dangling reference safely.
+    """
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    logical_id = "sub:stale-logical-profile"
+    logical_name = "Stale logical profile [stale1234]"
+    stale_members = [f"{logical_name} :: {index}" for index in ("old-a", "old-b")]
+    raw = {
+        "name": logical_name,
+        "_fwrouter_runtime_name": logical_name,
+        "_fwrouter_topology": {
+            "kind": "logical_profile",
+            "runtime_policy": "fallback",
+            "endpoints": [
+                {"identity": f"sub:{suffix}", "runtime": {
+                    "type": "socks5", "server": f"{suffix}.example.invalid", "port": 1080,
+                }}
+                for suffix in ("old-a", "old-b")
+            ],
+        },
+    }
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) "
+            "VALUES (?, ?, 'subscription', ?, 'missing')",
+            (logical_id, "Stale logical profile", json.dumps(raw)),
+        )
+
+    exact_generated = {
+        "name": logical_name,
+        "type": "fallback",
+        "proxies": stale_members,
+        "url": "https://www.gstatic.com/generate_204",
+        "interval": mihomo_proxies_service.LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS,
+    }
+    edited_same_name = {**exact_generated, "proxies": [*stale_members, "DIRECT"]}
+    unknown_owner = {
+        **exact_generated,
+        "name": "Unknown logical profile [unknown1]",
+        "proxies": ["Unknown logical profile [unknown1] :: member-x"],
+    }
+    unrelated = {
+        "name": "user-selected-egress",
+        "type": "select",
+        "proxies": ["DIRECT", "vpn-auto"],
+    }
+    exact_groups = mihomo_proxies_service._ensure_selector_groups({
+        "proxies": [], "proxy-groups": [exact_generated, unrelated],
+    })
+    exact_names = {group["name"] for group in exact_groups}
+    assert logical_name not in exact_names
+    assert {group["name"]: group for group in exact_groups}["user-selected-egress"] == unrelated
+
+    edited_groups = mihomo_proxies_service._ensure_selector_groups({
+        "proxies": [], "proxy-groups": [edited_same_name, unknown_owner, unrelated],
+    })
+    by_name = {group["name"]: group for group in edited_groups}
+    assert by_name[logical_name] == edited_same_name
+    assert by_name[unknown_owner["name"]] == unknown_owner
+    assert by_name["user-selected-egress"] == unrelated
+    assert "DIRECT" in by_name["user-selected-egress"]["proxies"]
+
+    referenced_groups = mihomo_proxies_service._ensure_selector_groups({
+        "proxies": [], "proxy-groups": [exact_generated],
+        "rules": [f"DOMAIN,example.test,{logical_name},no-resolve"],
+    })
+    assert {group["name"]: group for group in referenced_groups}[logical_name] == exact_generated
+
+    custom_reference = {
+        "name": "operator-profile-selector",
+        "type": "select",
+        "proxies": [logical_name, "DIRECT"],
+    }
+    custom_reference_groups = mihomo_proxies_service._ensure_selector_groups({
+        "proxies": [], "proxy-groups": [exact_generated, custom_reference],
+    })
+    custom_reference_by_name = {group["name"]: group for group in custom_reference_groups}
+    assert custom_reference_by_name[logical_name] == exact_generated
+    assert custom_reference_by_name["operator-profile-selector"] == custom_reference
+
+    stale_auto_reference = {
+        "name": "vpn-auto", "type": "select", "proxies": [logical_name, "REJECT"],
+    }
+    rebuilt_groups = mihomo_proxies_service._ensure_selector_groups({
+        "proxies": [], "proxy-groups": [exact_generated, stale_auto_reference],
+    })
+    rebuilt_by_name = {group["name"]: group for group in rebuilt_groups}
+    assert logical_name not in rebuilt_by_name
+    assert logical_name not in rebuilt_by_name["vpn-auto"]["proxies"]
+
+
+def test_mihomo_rebuild_replaces_active_profile_group_and_preserves_unrelated_selectors(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    logical_id = "sub:refreshed-logical-profile"
+    logical_name = "Refreshed logical profile [fresh1234]"
+    raw = {
+        "name": logical_name,
+        "_fwrouter_runtime_name": logical_name,
+        "_fwrouter_topology": {
+            "kind": "logical_profile",
+            "runtime_policy": "fallback",
+            "endpoints": [
+                {"identity": "sub:new-a", "runtime": {
+                    "type": "socks5", "server": "new-a.example.invalid", "port": 1080,
+                }},
+                {"identity": "sub:new-b", "runtime": {
+                    "type": "socks5", "server": "new-b.example.invalid", "port": 1080,
+                }},
+            ],
+        },
+    }
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) "
+            "VALUES (?, ?, 'subscription', ?, 'active')",
+            (logical_id, "Refreshed logical profile", json.dumps(raw)),
+        )
+        connection.execute(
+            "INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES (?, 1, 1)",
+            (logical_id,),
+        )
+
+    old_group = {
+        "name": logical_name,
+        "type": "fallback",
+        "proxies": [f"{logical_name} :: old-a", f"{logical_name} :: old-b"],
+        "url": "https://www.gstatic.com/generate_204",
+        "interval": mihomo_proxies_service.LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS,
+    }
+    custom = {"name": "operator-custom", "type": "select", "proxies": ["DIRECT", "vpn-auto"]}
+    base = {"proxies": [], "proxy-groups": [old_group, custom]}
+
+    proxies = mihomo_proxies_service._merge_runtime_proxies(base)
+    groups = mihomo_proxies_service._ensure_selector_groups({**base, "proxies": proxies})
+    by_name = {group["name"]: group for group in groups}
+    expected_members = [f"{logical_name} :: new-a", f"{logical_name} :: new-b"]
+
+    assert [proxy["name"] for proxy in proxies] == expected_members
+    assert by_name[logical_name]["type"] == "fallback"
+    assert by_name[logical_name]["proxies"] == expected_members
+    assert not set(old_group["proxies"]) & set(by_name[logical_name]["proxies"])
+    assert by_name["operator-custom"] == custom
+
+
+def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_it(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    old_id = "sub:handoff-old-profile"
+    old_name = "Old handoff profile [old12345]"
+    old_a = f"{old_name} :: old-a"
+    old_b = f"{old_name} :: old-b"
+    old_raw = {
+        "name": old_name,
+        "_fwrouter_runtime_name": old_name,
+        "_fwrouter_topology": {
+            "kind": "logical_profile",
+            "runtime_policy": "fallback",
+            "endpoints": [
+                {"identity": "sub:old-a", "runtime": {
+                    "type": "socks5", "server": "old-a.example.invalid", "port": 1080,
+                }},
+                {"identity": "sub:old-b", "runtime": {
+                    "type": "socks5", "server": "old-b.example.invalid", "port": 1080,
+                }},
+            ],
+        },
+    }
+    new_id = "sub:handoff-new-profile"
+    new_name = "New handoff profile [new12345]"
+    new_raw = {
+        "name": new_name,
+        "_fwrouter_runtime_name": new_name,
+        "_fwrouter_topology": {
+            "kind": "logical_profile",
+            "runtime_policy": "fallback",
+            "endpoints": [
+                {"identity": "sub:new-a", "runtime": {
+                    "type": "socks5", "server": "new-a.example.invalid", "port": 1080,
+                }},
+            ],
+        },
+    }
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) "
+            "VALUES (?, ?, 'subscription', ?, 'missing')",
+            (old_id, "Old handoff profile", json.dumps(old_raw)),
+        )
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) "
+            "VALUES (?, ?, 'subscription', ?, 'active')",
+            (new_id, "New handoff profile", json.dumps(new_raw)),
+        )
+        connection.execute(
+            "INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES (?, 1, 1)",
+            (new_id,),
+        )
+
+    old_group = {
+        "name": old_name,
+        "type": "fallback",
+        "proxies": [old_a, old_b],
+        "url": "https://www.gstatic.com/generate_204",
+        "interval": mihomo_proxies_service.LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS,
+    }
+    old_proxy_a = {
+        "name": old_a, "type": "socks5", "server": "old-a.example.invalid", "port": 1080,
+    }
+    base = {"proxies": [old_proxy_a], "proxy-groups": [old_group]}
+
+    during_handoff = mihomo_proxies_service._merge_runtime_proxies(
+        base, required_last_good_names={old_name},
+    )
+    during_names = {proxy["name"] for proxy in during_handoff}
+    assert old_a in during_names
+    assert old_b not in during_names  # Missing base member must never be synthesized.
+    assert f"{new_name} :: new-a" in during_names
+    during_groups = mihomo_proxies_service._ensure_selector_groups({
+        **base, "proxies": during_handoff,
+    })
+    during_by_name = {group["name"]: group for group in during_groups}
+    assert during_by_name[old_name] == old_group
+    assert during_by_name[new_name]["proxies"] == [f"{new_name} :: new-a"]
+
+    after_convergence = mihomo_proxies_service._merge_runtime_proxies(
+        base, required_last_good_names=set(),
+    )
+    after_names = {proxy["name"] for proxy in after_convergence}
+    assert old_a not in after_names and old_b not in after_names
+    assert f"{new_name} :: new-a" in after_names
+    after_groups = mihomo_proxies_service._ensure_selector_groups({
+        **base, "proxies": after_convergence,
+    })
+    after_by_name = {group["name"]: group for group in after_groups}
+    assert old_name not in after_by_name
+    assert after_by_name[new_name]["proxies"] == [f"{new_name} :: new-a"]
+
+
 def test_xray_handoff_candidate_restores_required_missing_server_proxy(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
