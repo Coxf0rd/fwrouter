@@ -94,7 +94,44 @@ def _extract_bootstrap_phase_summary():
     return namespace["phase_summary"]
 
 
+def _extract_worker_candidate_fingerprint(state_root: Path):
+    """Load the worker's bounded file fingerprint without importing FWRouter."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+    build_app = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_app"
+    )
+    function = next(
+        node for node in ast.walk(build_app)
+        if isinstance(node, ast.FunctionDef) and node.name == "candidate_fingerprint"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {
+        "Any": Any, "Path": Path, "stat": stat, "os": os,
+        "hashlib": hashlib, "state": state_root,
+    }
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+    return namespace["candidate_fingerprint"]
+
+
 class AcceptanceContractTests(unittest.TestCase):
+    def test_worker_candidate_fingerprint_is_bounded_owned_and_path_redacted(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-candidate-fingerprint-") as temp:
+            root = Path(temp) / "state"
+            root.mkdir()
+            candidate = root / "mihomo-candidate.yaml"
+            candidate.write_bytes(b"synthetic-candidate-content")
+            fingerprint = _extract_worker_candidate_fingerprint(root)
+            result = fingerprint(candidate)
+            self.assertEqual(candidate.name, result["candidate"])
+            self.assertEqual(candidate.stat().st_size, result["bytes"])
+            self.assertEqual(hashlib.sha256(candidate.read_bytes()).hexdigest(), result["sha256"])
+            self.assertNotIn(str(root), json.dumps(result))
+            self.assertIsNone(fingerprint(Path(temp) / "outside.yaml"))
+            linked = root / "linked-candidate.yaml"
+            linked.symlink_to(candidate)
+            self.assertIsNone(fingerprint(linked))
+
     def test_bootstrap_projection_exposes_only_the_staged_native_proof_needed_by_scale_gate(self):
         project = _extract_bootstrap_phase_summary()
         source = {

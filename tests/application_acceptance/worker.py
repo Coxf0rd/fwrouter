@@ -9,6 +9,7 @@ import json
 import os
 import re
 import socket
+import stat
 import sys
 import threading
 import time
@@ -2616,12 +2617,42 @@ def build_app(socket_path: Path):
     faulthandler.register(signal.SIGUSR1, all_threads=True)
     from fwrouter_api.services import bootstrap as bootstrap_service
     from fwrouter_api.services import mihomo_config, subscription_pipeline
+    from fwrouter_api.services import apply_orchestrator, mihomo_reconcile
     from fwrouter_api.services import xray_subscription_service
 
     bootstrap_diagnostic_lock = threading.Lock()
     bootstrap_diagnostic_active = False
     bootstrap_diagnostic_counts: dict[str, int] = {}
     bootstrap_diagnostic_limit = 8
+
+    def candidate_fingerprint(candidate_value: Any) -> dict[str, Any] | None:
+        if not isinstance(candidate_value, (str, Path)):
+            return None
+        candidate_path = Path(candidate_value)
+        try:
+            info = candidate_path.lstat()
+            resolved = candidate_path.resolve(strict=True)
+            resolved.relative_to(state.resolve(strict=True))
+            if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.getuid()):
+                return None
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(resolved, flags)
+            with os.fdopen(descriptor, "rb") as stream:
+                opened_info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(opened_info.st_mode) or opened_info.st_uid != os.getuid()
+                        or opened_info.st_size > 64 * 1024 * 1024):
+                    return None
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return {
+                "candidate": resolved.name,
+                "bytes": opened_info.st_size,
+                "sha256": digest.hexdigest(),
+            }
+        except (OSError, RuntimeError, ValueError):
+            return None
 
     def observe_xray_generation_phase(name: str, original: Any) -> Any:
         def observed(*args: Any, **kwargs: Any) -> Any:
@@ -2635,6 +2666,18 @@ def build_app(socket_path: Path):
                 record_phase = count <= bootstrap_diagnostic_limit
             if not record_phase:
                 return original(*args, **kwargs)
+            result: Any = None
+            candidate_validation = name in {
+                "mihomo_config.validate_candidate", "subscription_pipeline.validate_candidate",
+            }
+            candidate_value = kwargs.get("candidate_path")
+            if candidate_validation and candidate_value is None and name == "subscription_pipeline.validate_candidate":
+                candidate_value = args[0] if args else None
+            fingerprint_wall_before = time.monotonic()
+            fingerprint_cpu_before = time.process_time()
+            candidate_before = candidate_fingerprint(candidate_value) if candidate_validation else None
+            fingerprint_before_wall = time.monotonic() - fingerprint_wall_before
+            fingerprint_before_cpu = time.process_time() - fingerprint_cpu_before
             started = time.monotonic()
             cpu_started = time.process_time()
             prefix = "FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
@@ -2661,6 +2704,33 @@ def build_app(socket_path: Path):
                         summary = binding_identity_summary(result[0], expected, origin_lookup)
                     bootstrap_observation["prospective_binding_identity_parity"] = summary
                     print("FWROUTER_ACCEPTANCE_BINDING_IDENTITY_PARITY " + json.dumps(summary), flush=True)
+                elif name == "_stage_profile_native_candidates" and isinstance(result, dict):
+                    native = result.get("native_validation")
+                    safe: dict[str, Any] = {"ok": result.get("ok") is True}
+                    if isinstance(native, dict):
+                        for phase in ("transition", "final"):
+                            candidate = native.get(phase)
+                            if not isinstance(candidate, dict):
+                                continue
+                            candidate_digest = candidate.get("candidate_sha256")
+                            validation = candidate.get("validation")
+                            if not isinstance(candidate_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", candidate_digest):
+                                continue
+                            validation = validation if isinstance(validation, dict) else {}
+                            safe[phase] = {
+                                "candidate_sha256": candidate_digest,
+                                "validation_ok": validation.get("ok") is True,
+                                "candidate_write_reused": validation.get("candidate_write_reused") is True,
+                                "native_validation_reused": validation.get("native_validation_reused") is True,
+                            }
+                        transition = safe.get("transition")
+                        final = safe.get("final")
+                        if isinstance(transition, dict) and isinstance(final, dict):
+                            safe["candidate_hashes_match"] = (
+                                transition["candidate_sha256"] == final["candidate_sha256"]
+                            )
+                    bootstrap_observation["staged_native_candidate_diagnostics"] = safe
+                    print("FWROUTER_ACCEPTANCE_STAGED_NATIVE_CANDIDATES " + json.dumps(safe), flush=True)
                 return result
             finally:
                 elapsed = round(time.monotonic() - started, 4)
@@ -2670,6 +2740,41 @@ def build_app(socket_path: Path):
                     timings.setdefault(name, []).append(elapsed)
                     cpu_timings = bootstrap_observation.setdefault("phase_cpu_timings", {})
                     cpu_timings.setdefault(name, []).append(cpu_elapsed)
+                if candidate_validation:
+                    fingerprint_after_wall = time.monotonic()
+                    fingerprint_after_cpu = time.process_time()
+                    candidate_after = candidate_fingerprint(candidate_value)
+                    fingerprint_after_cpu = time.process_time() - fingerprint_after_cpu
+                    fingerprint_after_wall = time.monotonic() - fingerprint_after_wall
+                    validation_summary: dict[str, Any] = {
+                        "phase": name,
+                        "role": "native" if name == "subscription_pipeline.validate_candidate" else "local",
+                        "elapsed_seconds": elapsed,
+                        "cpu_seconds": cpu_elapsed,
+                        "diagnostic_fingerprint_seconds": round(
+                            fingerprint_before_wall + fingerprint_after_wall, 4,
+                        ),
+                        "diagnostic_fingerprint_cpu_seconds": round(
+                            fingerprint_before_cpu + fingerprint_after_cpu, 4,
+                        ),
+                        "candidate_before": candidate_before,
+                        "candidate_after": candidate_after,
+                    }
+                    if isinstance(result, dict):
+                        if type(result.get("ok")) is bool:
+                            validation_summary["ok"] = result["ok"]
+                        if type(result.get("returncode")) is int and -1 <= result["returncode"] <= 255:
+                            validation_summary["returncode"] = result["returncode"]
+                        error_code = result.get("error_code")
+                        if isinstance(error_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", error_code):
+                            validation_summary["error_code"] = error_code
+                    elif result is None:
+                        validation_summary["result"] = "raised"
+                    with bootstrap_diagnostic_lock:
+                        validation_rows = bootstrap_observation.setdefault("candidate_validation_timings", [])
+                        if len(validation_rows) < 16:
+                            validation_rows.append(validation_summary)
+                    print("FWROUTER_ACCEPTANCE_CANDIDATE_VALIDATION " + json.dumps(validation_summary), flush=True)
                 print(prefix + json.dumps({
                     "phase": name, "event": "exit", "call": count,
                     "seconds": elapsed, "cpu_seconds": cpu_elapsed,
@@ -2701,6 +2806,8 @@ def build_app(socket_path: Path):
 
     def observe_phase(name, original):
         def observed(*args, **kwargs):
+            if not bootstrap_diagnostic_active:
+                return original(*args, **kwargs)
             started = time.monotonic()
             cpu_started = time.process_time()
             print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
@@ -2712,8 +2819,8 @@ def build_app(socket_path: Path):
                 elapsed = round(time.monotonic() - started, 4)
                 cpu_elapsed = round(time.process_time() - cpu_started, 4)
                 with bootstrap_diagnostic_lock:
-                    bootstrap_observation.setdefault("phase_timings", {})[name] = [elapsed]
-                    bootstrap_observation.setdefault("phase_cpu_timings", {})[name] = [cpu_elapsed]
+                    bootstrap_observation.setdefault("phase_timings", {}).setdefault(name, []).append(elapsed)
+                    bootstrap_observation.setdefault("phase_cpu_timings", {}).setdefault(name, []).append(cpu_elapsed)
                 print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
                     "phase": name, "event": "exit", "seconds": elapsed,
                     "cpu_seconds": cpu_elapsed,
@@ -2724,6 +2831,13 @@ def build_app(socket_path: Path):
                   "recover_startup_intended_routing", "recover_startup_scoped_subject_routing",
                   "recover_startup_xray_subscription_profiles", "_run_startup_dnsmasq_reconcile_step"):
         setattr(bootstrap_service, phase, observe_phase(phase, getattr(bootstrap_service, phase)))
+    for module, attribute, phase in (
+        (bootstrap_service, "_read_startup_dataplane_payload", "startup.read_dataplane_payload"),
+        (bootstrap_service, "_wait_for_startup_vpn_dataplane_ready", "startup.wait_vpn_dataplane_ready"),
+        (apply_orchestrator, "apply_global_mode_immediately", "startup.apply_global_mode_immediately"),
+        (mihomo_reconcile, "promote_mihomo_candidate_config", "startup.promote_mihomo_candidate_config"),
+    ):
+        setattr(module, attribute, observe_phase(phase, getattr(module, attribute)))
 
     def phase_summary(value: Any) -> dict[str, Any]:
         value = value if isinstance(value, dict) else {}

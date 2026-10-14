@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 load qualification / engineering threshold — 2026-10-15
+
+Run38617926070 confirms native identity acceptance but scale stops at an added40s engineering assertion: actual readiness43.5133s meets45s hard budget. Per user clarification40s is advisory; retain45s and all actual load/health/memory/shutdown/native predicates. New scoped load repeats pending; no full requiredCI or production activation yet. Prior40s FAIL remains historical evidence. PR8 Draft, production held/Live Acceptance BLOCKED; CI milestone CLOSED/CD DEFERRED.
+
 ## PR8 startup bottleneck follow-up — 2026-10-15
 
 Sourcecd4584f run38605119405 confirms complete isolated native durable identity/migration/refresh/restart/rollback acceptance. Startup readiness still FAIL at45s;46.3387s includes timeout handling and is not successful startup. Second scale attempt/final full CI NOT RUN. Measured live routing12.8421s and Xray recovery27.1367s dominate; timeout enters a duplicate final Mihomo reconcile after staged native publication. A guarded completed-publication receipt removes only duplicate work; legacy/no-proof paths retain native checks. Hosted improvement and40s engineering margin remain unconfirmed. PR8 Draft/BLOCKED, production API/dependents held without changes, CI milestone CLOSED/CD DEFERRED. See runtime stability REPORT.md; historical checkpoints remain below.
