@@ -181,8 +181,11 @@ def acceptance_stack(request):
                 if proc.poll() is not None:
                     pytest.fail(f"owned API worker exited before readiness: {suite_root / f'uvicorn-{port}.log'}")
                 try:
-                    code, _ = http_json(base + "/xray", timeout=0.5)
-                    if code == 200:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    code, _ = http_json(base + "/xray", timeout=min(0.5, remaining))
+                    if code == 200 and time.monotonic() < deadline:
                         return proc, base
                 except (OSError, ValueError, TimeoutError):
                     threading.Event().wait(0.1)
