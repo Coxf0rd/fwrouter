@@ -101,6 +101,55 @@ def test_vpn_auto_reconcile_removes_stale_identity_and_recreates_one_stable_iden
     assert len([client for client in second_clients if client["email"] == virtual_email]) == 1
 
 
+def test_identity_migration_marker_blocks_durable_credentials_before_registration(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """An unresolved server marker must stop preparation before identity writes."""
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services.subscription_node_identity import IdentityConflict
+    from fwrouter_api.services.subscription_profiles import _subscription_servers
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    server_id = "profile-requires-reviewed-identity-map"
+    _seed_server(server_id, raw={"_fwrouter_identity_migration_required": True})
+    _seed_subscription_identity(slug="identity-marker", token="identity-marker-token")
+
+    # Use the real list helper to cover its dictionary projection and ensure the
+    # safety check consults persisted server metadata by ID.
+    servers = _subscription_servers()
+    assert any(server.get("server_id") == server_id for server in servers)
+    assert all(isinstance(server, dict) for server in servers)
+
+    identity_tables = (
+        "subscription_node_identities",
+        "subscription_node_aliases",
+        "subscription_node_credentials",
+        "subscription_node_credential_history",
+        "subscription_node_identity_transitions",
+    )
+    with db_session() as connection:
+        before = {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in identity_tables
+        }
+    assert before == {table: 0 for table in identity_tables}
+
+    with xray_writer_guard(timeout_seconds=5.0):
+        with pytest.raises(IdentityConflict, match="IDENTITY_MIGRATION_REQUIRED"):
+            xray_subscription_service._prepare_durable_profile_credentials(include_vpn_auto=False)
+
+    with db_session() as connection:
+        after = {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in identity_tables
+        }
+        row = connection.execute("SELECT raw_json FROM servers WHERE server_id=?", (server_id,)).fetchone()
+        assert row is not None
+        assert json.loads(row["raw_json"])["_fwrouter_identity_migration_required"] is True
+    assert after == before
+
+
 @pytest.mark.parametrize("recorded_digest", [True, False], ids=["changed-active-config", "missing-transition-proof"])
 def test_transition_recovery_requires_recorded_config_digest_before_native_mutation(
     monkeypatch, tmp_path: Path, recorded_digest: bool,

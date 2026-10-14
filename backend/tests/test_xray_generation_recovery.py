@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -104,7 +105,10 @@ def _setup(monkeypatch, tmp_path: Path, *, fail: str | None = None):
     monkeypatch.setattr(xray_bindings, "get_xray_handoff_listeners", lambda _bindings=None: [{"port": 53123}])
     monkeypatch.setattr(mihomo.DEFAULT_MIHOMO_ADAPTER, "check_port", lambda *_a, **_k: fail != "handoff_unready")
     monkeypatch.setattr(service, "_generation_source_fingerprint", lambda: "source-stable")
-    monkeypatch.setattr(service, "_verify_current_public_projection", lambda _snapshot: fail != "public_mismatch")
+    monkeypatch.setattr(
+        service, "_verify_current_public_projection",
+        lambda _snapshot, *, supersession=None: fail != "public_mismatch",
+    )
     monkeypatch.setattr(service, "collect_xray_runtime_bindings", lambda: [{
         "client_uuid": IDENTITY[0], "client_email": IDENTITY[1], "selected_server_id": "server",
     }])
@@ -142,6 +146,108 @@ def _setup(monkeypatch, tmp_path: Path, *, fail: str | None = None):
     checkpoint.write_text(json.dumps({"generation_id": "old-gen", "phase": "restore_failed"}), encoding="utf-8")
     checkpoint.chmod(0o600)
     return adapter, checkpoint
+
+
+def _write_supersession_candidate_proof(adapter: _Adapter, checkpoint: Path) -> dict[str, Any]:
+    """Build internally consistent persisted proof fields for the ownership predicate unit test."""
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    xray_sha = hashlib.sha256(adapter.config_path.read_bytes()).hexdigest()
+    mihomo_sha = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+    transition_sha = hashlib.sha256(b"isolated transition candidate").hexdigest()
+    transition_receipt = hashlib.sha256(b"isolated transition receipt").hexdigest()
+    final_receipt = hashlib.sha256(b"isolated final receipt").hexdigest()
+    checkpoint_data = {
+        "generation_id": "current-candidate-generation",
+        "phase": "runtime_applied",
+        "source_fingerprint": "source-stable",
+        "derived_source_fingerprint": "source-stable",
+        "selection_revision": 4,
+        "xray_runtime_incarnation_after": adapter.get_runtime_incarnation(),
+        "mihomo_runtime_incarnation": "mihomo-running",
+        "auto_selection_after": {"selection_revision": 4, "selection_decision_id": "current"},
+        "supersession": {"rollback_preimage_projection_matches": False},
+        "staged_generation": {
+            "xray_candidate_sha256": xray_sha,
+            "mihomo_transition_sha256": transition_sha,
+            "mihomo_final_sha256": mihomo_sha,
+        },
+        "native_validation_proof": {
+            "xray": {"ok": True, "candidate_sha256": xray_sha},
+            "mihomo": {
+                "transition": {
+                    "ok": True, "candidate_sha256": transition_sha,
+                    "receipt_sha256": transition_receipt,
+                },
+                "final": {
+                    "ok": True, "candidate_sha256": mihomo_sha,
+                    "receipt_sha256": final_receipt,
+                },
+            },
+        },
+    }
+    checkpoint.write_text(json.dumps(checkpoint_data, sort_keys=True), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    return checkpoint_data
+
+
+def test_supersession_recovery_allows_owned_current_candidate_past_preimage_gate(
+    monkeypatch, tmp_path: Path,
+):
+    """A mismatched old preimage is admissible only when the saved current proof owns runtime."""
+    adapter, checkpoint = _setup(monkeypatch, tmp_path, fail="public_mismatch")
+    checkpoint_data = _write_supersession_candidate_proof(adapter, checkpoint)
+    projection = service._current_xray_projection_snapshot()
+
+    # Exercise the real ownership predicate over persisted hashes, native
+    # incarnation/readback, source fingerprint, and Core revision/decision.
+    assert service._supersession_current_candidate_owned(adapter, checkpoint_data, projection) is True
+
+    # The recovery flow must get past the formerly unconditional preimage
+    # refusal. It then correctly stops at the next, independently failed
+    # committed-public-projection proof.
+    result = service._recover_checkpoint_from_current_projection(adapter, checkpoint)
+    assert result == {
+        "ok": False,
+        "recovered": "current_projection_unproven",
+        "reason": "committed_projection_mismatch",
+    }
+
+
+def test_supersession_recovery_refuses_unowned_candidate_when_preimage_differs(
+    monkeypatch, tmp_path: Path,
+):
+    adapter, checkpoint = _setup(monkeypatch, tmp_path)
+    checkpoint_data = {
+        "generation_id": "unowned-candidate-generation",
+        "phase": "restore_failed",
+        "supersession": {"rollback_preimage_projection_matches": False},
+        "staged_generation": {
+            "xray_candidate_sha256": "0" * 64,
+            "mihomo_final_sha256": "0" * 64,
+        },
+    }
+    checkpoint.write_text(json.dumps(checkpoint_data, sort_keys=True), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    checkpoint_before = checkpoint.read_bytes()
+    config_before = adapter.config_path.read_bytes()
+    loaded_before = list(adapter.list_loaded_client_identities())
+    checkpoint_digest = hashlib.sha256(checkpoint_before).hexdigest()
+
+    assert service._supersession_current_candidate_owned(
+        adapter, checkpoint_data, service._current_xray_projection_snapshot(),
+    ) is False
+    result = service._recover_checkpoint_from_current_projection(adapter, checkpoint)
+
+    assert result == {
+        "ok": False,
+        "recovered": "current_projection_unproven",
+        "reason": "supersession_current_candidate_unowned",
+    }
+    assert checkpoint.read_bytes() == checkpoint_before
+    assert adapter.config_path.read_bytes() == config_before
+    assert adapter.reload_count == 0
+    assert adapter.list_loaded_client_identities() == loaded_before
+    assert not service._generation_recovery_attempt_path(checkpoint, checkpoint_digest).exists()
 
 
 def test_current_projection_recovery_reloads_and_closes_checkpoint(monkeypatch, tmp_path: Path):

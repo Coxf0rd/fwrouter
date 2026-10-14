@@ -339,6 +339,10 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         "status": failed_code, "ok": failed_generation.get("ok"),
         "stage": failed_generation.get("stage"), "error_code": failed_generation.get("error_code"),
     }
+    assert failed_generation.get("stage") == "checkpoint_prepare"
+    assert failed_generation.get("error_code") == "XRAY_GENERATION_CHECKPOINT_FAILED"
+    assert failed_generation.get("error_message") == "ACCEPTANCE_PREPARED_CHECKPOINT_POSTWRITE_FAILURE"
+    assert not (state / "run" / "fail-after-prepared-checkpoint-once").exists()
     checkpoint_data = json.loads(checkpoint.read_text(encoding="utf-8"))
     assert checkpoint_data.get("phase") == "prepared"
     old_checkpoint_bytes = checkpoint.read_bytes()

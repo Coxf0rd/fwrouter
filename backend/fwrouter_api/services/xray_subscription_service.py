@@ -146,11 +146,29 @@ def _prepare_durable_profile_credentials(*, include_vpn_auto: bool,
         _subscription_servers, _subscription_email, _subscription_uuid,
     )
     servers = _subscription_servers()
-    if any(server.raw.get("_fwrouter_identity_migration_required") is True for server in servers):
-        raise IdentityConflict("IDENTITY_MIGRATION_REQUIRED")
     auto_servers = _vpn_auto_servers_for_xray_subscription() if include_vpn_auto else []
+    server_ids = {
+        str(server.get("server_id") or "")
+        for server in [*servers, *auto_servers]
+        if isinstance(server, dict) and str(server.get("server_id") or "")
+    }
     with db_session() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        if server_ids:
+            placeholders = ", ".join("?" for _ in server_ids)
+            for row in connection.execute(
+                f"SELECT raw_json FROM servers WHERE inventory_state='active' "
+                f"AND server_id IN ({placeholders})",
+                tuple(sorted(server_ids)),
+            ):
+                try:
+                    stored_raw = json.loads(row["raw_json"] or "{}")
+                except (TypeError, ValueError) as exc:
+                    raise IdentityConflict("IDENTITY_SERVER_PROJECTION_INVALID") from exc
+                if not isinstance(stored_raw, dict):
+                    raise IdentityConflict("IDENTITY_SERVER_PROJECTION_INVALID")
+                if stored_raw.get("_fwrouter_identity_migration_required") is True:
+                    raise IdentityConflict("IDENTITY_MIGRATION_REQUIRED")
         tokens = [str(row["token"]) for row in connection.execute(
             "SELECT c.token FROM subscription_clients c JOIN subscription_accounts a "
             "ON a.account_id=c.account_id WHERE c.enabled=1 AND a.enabled=1 ORDER BY c.token"
@@ -1838,9 +1856,6 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
         attempt_path = _generation_recovery_attempt_path(checkpoint_path, checkpoint_digest)
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
         supersession = checkpoint.get("supersession") if isinstance(checkpoint.get("supersession"), dict) else None
-        if supersession is not None and not supersession.get("rollback_preimage_projection_matches"):
-            return {"ok": False, "recovered": "current_projection_unproven",
-                    "reason": "supersession_preimage_unproven"}
         previous_attempt = None
         if attempt_path.exists():
             previous_attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
