@@ -713,6 +713,185 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     }
     assert {token: snapshot_pairs(token) for token in tokens} == snapshots_after_migration
 
+    # Grow the reviewed logical profile through the real parser/upsert path.
+    # This makes the subsequent native generation materially different while
+    # requiring all eight credentials to remain attached to the same logical
+    # profile identity.
+    grown_profile = json.loads(json.dumps(new_profile))
+    grown_profile["outbounds"].insert(10, outbound(10))
+    grown_id = content_id(grown_profile)
+    identity_id_before_growth, credentials_before_growth = profile_credentials(new_id)
+    growth_code, growth = http_json(
+        f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
+        payload={"profile": grown_profile},
+    )
+    assert growth_code == 200 and growth.get("ok") is True and growth.get("server_ids") == [grown_id], {
+        "status": growth_code, "ok": growth.get("ok"), "refreshed_count": growth.get("refreshed_count"),
+    }
+    grown_member_ids = profile_member_ids(grown_id)
+    assert len(grown_member_ids) == 11 and refreshed_member_ids <= grown_member_ids
+    identity_id_after_growth, credentials_after_growth = profile_credentials(grown_id)
+    assert (identity_id_after_growth == identity_id_before_growth
+            and credentials_after_growth == credentials_before_growth
+            and len(credentials_after_growth) == 8), {
+        "same_logical_identity": identity_id_after_growth == identity_id_before_growth,
+        "credential_count": len(credentials_after_growth),
+        "expected_credential_count": 8,
+        "credential_sha256": identity_fingerprint(credentials_after_growth),
+        "expected_sha256": identity_fingerprint(credentials_before_growth),
+    }
+
+    # Fault the validated private Mihomo final candidate only after the real
+    # Xray apply and durable xray_applied checkpoint. This drives the production
+    # owned-generation restore path, including CAS and native preimage proof,
+    # instead of resuming the older stale checkpoint directly.
+    before_integrity_fault = set(loaded_identities(native))
+    assert len(before_integrity_fault) == 78
+    assert before_integrity_fault == set(loaded_after_restart)
+    mihomo_active_path = state / "generated" / "mihomo" / "config.yaml"
+    mihomo_preimage_bytes = mihomo_active_path.read_bytes()
+    snapshots_before_integrity_fault = {token: snapshot_pairs(token) for token in tokens}
+    fence_code, fence_response = http_json(f"{restarted_api}/__acceptance/selection/fence")
+    assert fence_code == 200 and fence_response.get("ok") is True
+    fence_before_integrity_fault = fence_response.get("fence")
+    assert isinstance(fence_before_integrity_fault, dict)
+
+    native.hold_checkpoint_phase("xray_applied")
+    reconcile_result: Queue = Queue(maxsize=1)
+
+    def reconcile_with_candidate_integrity_fault() -> None:
+        try:
+            reconcile_result.put(("result", http_json(
+                f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
+                payload={"include_vpn_auto": True}, timeout=110,
+            )), timeout=2)
+        except Exception as exc:
+            reconcile_result.put(("exception", exc), timeout=2)
+
+    generation_thread = threading.Thread(
+        target=reconcile_with_candidate_integrity_fault,
+        name="acceptance-xray-applied-recovery", daemon=True,
+    )
+    generation_thread.start()
+    try:
+        assert native.checkpoint_entered.wait(25), (
+            "real generation did not durably reach xray_applied before candidate integrity fault"
+        )
+        checkpoint_data = json.loads(checkpoint.read_text(encoding="utf-8"))
+        staged = checkpoint_data.get("staged_generation")
+        assert checkpoint_data.get("phase") == "xray_applied" and isinstance(staged, dict), {
+            "phase": checkpoint_data.get("phase"), "staged_generation_present": isinstance(staged, dict),
+        }
+        assert (checkpoint_data.get("xray_runtime_incarnation_after")
+                and checkpoint_data.get("mihomo_runtime_incarnation")), {
+            "xray_incarnation_present": bool(checkpoint_data.get("xray_runtime_incarnation_after")),
+            "mihomo_incarnation_present": bool(checkpoint_data.get("mihomo_runtime_incarnation")),
+        }
+        assert hashlib.sha256(mihomo_active_path.read_bytes()).hexdigest() == staged.get(
+            "mihomo_transition_sha256"
+        ), "active Mihomo config is not the checkpointed transition generation"
+        assert_mihomo_launch_matches_active(native, mihomo_active_path)
+        assert checkpoint_data.get("selection_revision") == fence_before_integrity_fault.get("revision"), {
+            "checkpoint_revision": checkpoint_data.get("selection_revision"),
+            "fence_revision": fence_before_integrity_fault.get("revision"),
+        }
+        loaded_at_checkpoint = set(loaded_identities(native))
+        assert sorted(loaded_at_checkpoint) == sorted(
+            tuple(pair) for pair in checkpoint_data.get("expected_client_identities", [])
+        )
+        assert len(loaded_at_checkpoint) == 78
+        candidate_value = staged.get("mihomo_final_path")
+        assert isinstance(candidate_value, str) and candidate_value
+        final_candidate = Path(candidate_value)
+        generation_dir = state / "xray" / ".generation"
+        assert final_candidate.parent.resolve() == generation_dir.resolve()
+        candidate_info = final_candidate.lstat()
+        assert stat.S_ISREG(candidate_info.st_mode) and candidate_info.st_size < 32 * 1024 * 1024
+        expected_candidate_sha = str(staged.get("mihomo_final_sha256") or "")
+        assert len(expected_candidate_sha) == 64
+        assert hashlib.sha256(final_candidate.read_bytes()).hexdigest() == expected_candidate_sha
+        assert expected_candidate_sha != hashlib.sha256(mihomo_preimage_bytes).hexdigest(), (
+            "11-member source refresh did not produce a distinct Mihomo final generation"
+        )
+        integrity_marker = b"\n# acceptance post-validation candidate integrity fault\n"
+        fd = os.open(final_candidate, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            written = os.write(fd, integrity_marker)
+            assert written == len(integrity_marker), "short write while injecting bounded candidate integrity fault"
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        native.release_checkpoint()
+        generation_thread.join(timeout=115)
+
+    assert not generation_thread.is_alive(), "bounded native checkpoint recovery did not finish"
+    result_kind, reconcile_value = reconcile_result.get(timeout=2)
+    assert result_kind == "result", {"thread_result": result_kind, "exception_type": type(reconcile_value).__name__}
+    fault_code, fault = reconcile_value
+    assert fault_code == 200 and fault.get("ok") is False, {
+        "status": fault_code, "ok": fault.get("ok"), "stage": fault.get("stage"),
+        "error_code": fault.get("error_code"),
+    }
+    assert fault.get("stage") == "mihomo_final_apply"
+    assert fault.get("error_code") == "XRAY_GENERATION_FINAL_APPLY_FAILED"
+    recovery = fault.get("generation_recovery")
+    assert isinstance(recovery, dict) and recovery.get("ok") is True
+    assert recovery.get("recovered") == "restored_last_good"
+    assert recovery.get("mihomo_preimage_proof", {}).get("ok") is True
+    assert recovery.get("mihomo_preimage_proof", {}).get("policy_verified") is True
+    assert recovery.get("mihomo_preimage_proof", {}).get("native_config_validated") is True
+    assert recovery.get("xray_reload") is True and recovery.get("mihomo_restart") is True
+    assert recovery.get("derived_rows_restored") is True
+    assert recovery.get("xray_runtime_readback", {}).get("ok") is True
+    assert recovery.get("mihomo_runtime_readback", {}).get("ok") is True
+    assert not checkpoint.exists(), "successful last-good restore left an active generation checkpoint"
+    assert mihomo_active_path.read_bytes() == mihomo_preimage_bytes
+    assert_native_matches_active(native, active_path)
+    assert_mihomo_launch_matches_active(native, mihomo_active_path)
+    loaded_after_integrity_fault = set(loaded_identities(native))
+    assert loaded_after_integrity_fault == before_integrity_fault and len(loaded_after_integrity_fault) == 78
+    assert {token: snapshot_pairs(token) for token in tokens} == snapshots_before_integrity_fault
+    restored_fence_code, restored_fence_response = http_json(
+        f"{restarted_api}/__acceptance/selection/fence",
+    )
+    assert restored_fence_code == 200 and restored_fence_response.get("ok") is True
+    restored_fence = restored_fence_response.get("fence")
+    assert isinstance(restored_fence, dict)
+    assert (type(fence_before_integrity_fault.get("revision")) is int
+            and type(restored_fence.get("revision")) is int
+            and restored_fence["revision"] > fence_before_integrity_fault["revision"])
+    assert restored_fence.get("active_server_id") == fence_before_integrity_fault.get("active_server_id")
+    assert restored_fence.get("decision_id") == fence_before_integrity_fault.get("decision_id")
+
+    # Restart the worker and prove the source refresh and native reconcile still
+    # converge on the grown topology without changing any of the 78 identities.
+    stack["worker"].terminate()
+    stack["worker"].wait(timeout=5)
+    restarted_worker, restarted_api = stack["start_worker"]()
+    stack["worker"], stack["api"] = restarted_worker, restarted_api
+    code, recovered_refresh = http_json(
+        f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
+        payload={"profile": grown_profile},
+    )
+    assert code == 200 and recovered_refresh.get("ok") is True
+    assert recovered_refresh.get("server_ids") == [grown_id]
+    code, recovered_after_fault = http_json(
+        f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
+        payload={"include_vpn_auto": True}, timeout=75,
+    )
+    assert code == 200 and recovered_after_fault.get("ok") is True, {
+        "status": code, "ok": recovered_after_fault.get("ok"),
+        "stage": recovered_after_fault.get("stage"), "error_code": recovered_after_fault.get("error_code"),
+    }
+    assert_native_matches_active(native, active_path)
+    assert_mihomo_launch_matches_active(native, mihomo_active_path)
+    loaded_after_fault_restart = set(loaded_identities(native))
+    assert loaded_after_fault_restart == before_integrity_fault and len(loaded_after_fault_restart) == 78
+    identity_id_after_restart, credentials_after_restart = profile_credentials(grown_id)
+    assert (identity_id_after_restart == identity_id_before_growth
+            and credentials_after_restart == credentials_before_growth)
+
     # Tombstone one migrated public credential, then prove stale snapshots and
     # repeated source refresh/restart cannot put it back into native Xray.
     revoked_token = tokens[0]
@@ -720,14 +899,21 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     revoked_uuid = str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{revoked_token}:{old_id}"))
     revoke_code, revoke_result = http_json(
         f"{restarted_api}/__acceptance/xray/identity-revoke", method="POST",
-        payload={"server_id": new_id},
+        payload={"server_id": grown_id},
     )
     assert revoke_code == 200 and revoke_result.get("ok") is True and revoke_result.get("revoked") is True, {
         "status": revoke_code, "ok": revoke_result.get("ok"), "revoked": revoke_result.get("revoked"),
     }
-    from urllib.parse import quote
+    from urllib.parse import quote, urlsplit, urlunsplit
     from urllib.request import urlopen
-    with urlopen(f"{restarted_api}/s/{quote(revoked_token)}?format=raw-vless", timeout=10) as response:
+    api_parts = urlsplit(restarted_api)
+    assert api_parts.scheme == "http" and api_parts.netloc and api_parts.path.endswith("/api/v2")
+    public_url = urlunsplit((
+        api_parts.scheme, api_parts.netloc, f"/s/{quote(revoked_token, safe='')}",
+        "format=raw-vless", "",
+    ))
+    with urlopen(public_url, timeout=10) as response:
+        assert response.status == 200, {"public_export_status": response.status}
         public_export = response.read(1024 * 1024).decode("utf-8", "replace")
     assert revoked_email not in public_export and revoked_uuid not in public_export, {
         "export_length": len(public_export), "export_sha256": hashlib.sha256(public_export.encode()).hexdigest(),
@@ -738,9 +924,10 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     stack["worker"], stack["api"] = restarted_worker, restarted_api
     code, post_revoke_refresh = http_json(
         f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
-        payload={"profile": new_profile},
+        payload={"profile": grown_profile},
     )
     assert code == 200 and post_revoke_refresh.get("ok") is True
+    assert post_revoke_refresh.get("server_ids") == [grown_id]
     code, post_revoke_reconcile = http_json(
         f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
         payload={"include_vpn_auto": True}, timeout=75,
