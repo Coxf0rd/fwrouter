@@ -67,6 +67,20 @@ def _free_loopback_port() -> int:
         return int(listener.getsockname()[1])
 
 
+def _health_response_is_ready(status_code: int, payload: object) -> bool:
+    """Accept readiness only after the ASGI lifespan and database are healthy."""
+    if status_code != 200 or not isinstance(payload, dict) or payload.get("ok") is not True:
+        return False
+    data = payload.get("data")
+    if not isinstance(data, dict) or data.get("service") != "fwrouter-api" or data.get("status") != "healthy":
+        return False
+    database = data.get("database")
+    if not isinstance(database, dict) or database.get("status") != "healthy":
+        return False
+    schema = database.get("schema")
+    return isinstance(schema, dict) and schema.get("ok") is True
+
+
 def _startup_phase_diagnostics(log_path: Path) -> dict[str, object]:
     """Extract only bounded timing fields from the owned worker's phase markers."""
     prefix = b"FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
@@ -264,8 +278,14 @@ def acceptance_stack(request):
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
-                    code, _ = http_json(base + "/xray", timeout=min(0.5, remaining))
-                    if code == 200 and time.monotonic() < deadline:
+                    code, payload = http_json(base + "/health", timeout=min(0.5, remaining))
+                    if _health_response_is_ready(code, payload) and time.monotonic() < deadline:
+                        proc._acceptance_readiness_probe = {
+                            "path": "/health",
+                            "status_code": code,
+                            "healthy": True,
+                            "elapsed_seconds": round(time.monotonic() - spawned_at, 4),
+                        }
                         return proc, base
                 except (OSError, ValueError, TimeoutError):
                     threading.Event().wait(0.1)

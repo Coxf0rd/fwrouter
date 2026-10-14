@@ -64,6 +64,19 @@ APPLICATION_ACCEPTANCE_CONFTEST = Path(__file__).parents[1] / "application_accep
 APPLICATION_ACCEPTANCE_WORKER = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
+def _extract_health_readiness_predicate():
+    """Load the pure acceptance predicate without importing the app or pytest fixtures."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_health_response_is_ready"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace: dict[str, Any] = {}
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_CONFTEST), "exec"), namespace)
+    return namespace["_health_response_is_ready"]
+
+
 def _extract_startup_phase_parser():
     """Load the small parser without importing pytest fixtures or FWRouter modules."""
     tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
@@ -115,6 +128,56 @@ def _extract_worker_candidate_fingerprint(state_root: Path):
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_startup_readiness_uses_strict_health_and_xray_is_a_separate_bounded_readback(self):
+        ready = _extract_health_readiness_predicate()
+        healthy = {
+            "ok": True,
+            "data": {
+                "service": "fwrouter-api", "status": "healthy",
+                "database": {"status": "healthy", "schema": {"ok": True}},
+            },
+        }
+        self.assertTrue(ready(200, healthy))
+        self.assertFalse(ready(503, healthy))
+        for invalid in (
+            {},
+            {**healthy, "ok": False},
+            {"ok": True, "data": {**healthy["data"], "service": "other"}},
+            {"ok": True, "data": {**healthy["data"], "status": "starting"}},
+            {"ok": True, "data": {**healthy["data"], "database": {"status": "failed", "schema": {"ok": True}}}},
+            {"ok": True, "data": {**healthy["data"], "database": {"status": "healthy", "schema": {"ok": False}}}},
+        ):
+            self.assertFalse(ready(200, invalid), invalid)
+        self.assertFalse(ready(200, None))
+
+        fixture_source = APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8")
+        fixture_tree = ast.parse(fixture_source)
+        acceptance_stack = next(
+            node for node in fixture_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "acceptance_stack"
+        )
+        start_worker = next(
+            node for node in ast.walk(acceptance_stack)
+            if isinstance(node, ast.FunctionDef) and node.name == "start_worker"
+        )
+        start_source = ast.get_source_segment(fixture_source, start_worker) or ""
+        self.assertIn('base + "/health"', start_source)
+        self.assertIn("_health_response_is_ready(code, payload)", start_source)
+        self.assertNotIn('base + "/xray"', start_source)
+
+        scale_source = (Path(__file__).parents[1] / "application_acceptance" / "test_runtime_scale.py").read_text(
+            encoding="utf-8")
+        scale_tree = ast.parse(scale_source)
+        scale_case = next(
+            node for node in scale_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
+        )
+        scale_case_source = ast.get_source_segment(scale_source, scale_case) or ""
+        self.assertIn('http_json(api + "/xray", timeout=20.0)', scale_case_source)
+        self.assertIn('"native_loaded_client_count": len(loaded_after_readback)', scale_case_source)
+        self.assertIn("len(loaded_after_readback) == SCALE_NATIVE_CLIENT_COUNT", scale_case_source)
+
     def test_worker_candidate_fingerprint_is_bounded_owned_and_path_redacted(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-candidate-fingerprint-") as temp:
             root = Path(temp) / "state"

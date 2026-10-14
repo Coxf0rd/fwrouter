@@ -678,6 +678,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             )
             metrics["startup_ready"] = True
             metrics["startup_deadline_seconds"] = STARTUP_HARD_LIMIT_SECONDS
+            metrics["startup_readiness_probe"] = getattr(active_worker, "_acceptance_readiness_probe", None)
             metrics["rss_hwm_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmHWM")
             metrics["rss_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmRSS")
             metrics["api_process_cpu_seconds_at_readiness"] = _read_process_cpu_seconds(active_worker.pid)
@@ -720,6 +721,10 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         metrics["startup_engineering_target_met"] = (
             metrics["startup_wall_seconds"] < STARTUP_ENGINEERING_TARGET_SECONDS
         )
+        assert metrics["startup_readiness_probe"] == {
+            "path": "/health", "status_code": 200, "healthy": True,
+            "elapsed_seconds": metrics["startup_readiness_probe"]["elapsed_seconds"],
+        }, metrics["startup_readiness_probe"]
         assert bootstrap_code == 200, bootstrap_payload
         assert observation.get("schema") == "fwrouter-runtime-bootstrap-observation/v1", observation
         assert observation.get("worker_pid") == active_worker.pid, observation
@@ -729,6 +734,40 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             "startup_wall_seconds": metrics["startup_wall_seconds"],
             "hard_limit_seconds": STARTUP_HARD_LIMIT_SECONDS,
         }
+        # Readiness is the bounded /health lifecycle check. Keep the richer
+        # public Xray projection as a separate, measured functional request so
+        # a timeout here cannot create overlapping startup-poll requests.
+        xray_probe_started = time.monotonic()
+        try:
+            xray_code, xray_payload = http_json(api + "/xray", timeout=20.0)
+        except (OSError, ValueError, TimeoutError) as exc:
+            metrics["xray_public_readback"] = {
+                "status_code": None,
+                "error_type": type(exc).__name__,
+                "elapsed_seconds": round(time.monotonic() - xray_probe_started, 4),
+            }
+            raise
+        xray_elapsed = round(time.monotonic() - xray_probe_started, 4)
+        xray_data = xray_payload.get("data") if isinstance(xray_payload.get("data"), dict) else {}
+        xray_status = xray_data.get("xray") if isinstance(xray_data.get("xray"), dict) else {}
+        xray_details = xray_status.get("details") if isinstance(xray_status.get("details"), dict) else {}
+        loaded_after_readback = loaded_identities(native)
+        metrics["xray_public_readback"] = {
+            "status_code": xray_code,
+            "ok": xray_payload.get("ok") is True,
+            "elapsed_seconds": xray_elapsed,
+            "runtime_state": xray_status.get("runtime_state"),
+            "configured_client_count": xray_details.get("clients_count"),
+            "native_loaded_client_count": len(loaded_after_readback),
+            "native_loaded_client_count_unique": len(set(loaded_after_readback)),
+        }
+        assert xray_code == 200 and xray_payload.get("ok") is True, metrics["xray_public_readback"]
+        assert xray_elapsed < 20.0, metrics["xray_public_readback"]
+        assert xray_status.get("runtime_state") == "running", metrics["xray_public_readback"]
+        assert xray_details.get("clients_count") == SCALE_NATIVE_CLIENT_COUNT, metrics["xray_public_readback"]
+        assert len(loaded_after_readback) == SCALE_NATIVE_CLIENT_COUNT, metrics["xray_public_readback"]
+        assert len(set(loaded_after_readback)) == SCALE_NATIVE_CLIENT_COUNT, metrics["xray_public_readback"]
+        assert loaded_after_readback == native_identities_before, metrics["xray_public_readback"]
         live_recovery = observation.get("live_recovery")
         assert isinstance(live_recovery, dict), observation
         live_routing = live_recovery.get("live_routing")
