@@ -50,7 +50,7 @@ def main() -> int:
             command, timeout=840, output_limit=4 * 1024 * 1024,
             cwd=ROOT / "backend", env=env,
         )
-        args.log.write_text(output, encoding="utf-8")
+        args.log.write_text(gate.redact_failure_output(output)[-65536:], encoding="utf-8")
         observed: dict[str, str] = {}
         if node_report.is_file() and node_report.stat().st_size <= 2 * 1024 * 1024:
             payload: Any = json.loads(node_report.read_text(encoding="utf-8"))
@@ -71,19 +71,33 @@ def main() -> int:
             "pytest_exit_code": code,
             "output_truncated": truncated,
             "junit_present": junit_inside.is_file(),
+            "junit_sanitized": False,
+            "junit_error": None,
             "exact_node_coverage": exact,
             "owned_temp_cleanup": False,
         }
         args.junit.parent.mkdir(parents=True, exist_ok=True)
         if junit_inside.is_file():
-            shutil.copyfile(junit_inside, args.junit)
+            try:
+                args.junit.write_bytes(gate.sanitize_junit_artifact(
+                    junit_inside.read_bytes(), 4 * 1024 * 1024))
+                report["junit_sanitized"] = True
+            except gate.GateError as exc:
+                report["junit_error"] = str(exc)
         shutil.rmtree(owned)
         report["owned_temp_cleanup"] = not owned.exists()
         report["junit_present"] = args.junit.is_file()
         args.report.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({
+            "scope": report["scope"], "counts": counts,
+            "exact_node_coverage": exact, "junit_sanitized": report["junit_sanitized"],
+            "owned_temp_cleanup": report["owned_temp_cleanup"],
+        }, sort_keys=True))
+        if code != 0 or truncated or counts["failed"] or counts["skipped"] or not exact:
+            print(report["junit_error"] or gate.redact_failure_output(output)[-8192:])
         return 0 if (code == 0 and not truncated and counts["failed"] == 0
                      and counts["skipped"] == 0 and exact and report["junit_present"]
-                     and report["owned_temp_cleanup"]) else 1
+                     and report["junit_sanitized"] and report["owned_temp_cleanup"]) else 1
     finally:
         if owned.exists():
             shutil.rmtree(owned, ignore_errors=True)

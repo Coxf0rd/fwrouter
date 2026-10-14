@@ -3737,8 +3737,35 @@ class AcceptanceContractTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('"ci:validate-identities": "identity-diagnostic"', workflow)
         self.assertIn("Run identity migration L3 regression nodes in the isolated gate", workflow)
+        self.assertIn("python tests/gates/gate.py subset-plan --domain xray --level L3", workflow)
+        self.assertIn("tests/gates/gate.py run --plan \"$root/xray-l3-plan.json\"", workflow)
+        self.assertIn("Retain sanitized identity qualification evidence", workflow)
+        for artifact in (
+            "subscription-l1-report.json", "subscription-l1-run.log", "migration-l3.xml",
+            "migration-l3-report.json", "migration-l3.log", "xray-l3-plan.json",
+            "xray-l3-report.json", "xray-l3-run.log",
+        ):
+            self.assertIn(f"phase-d-identities/{artifact}", workflow)
+        evidence_start = workflow.index("Retain sanitized identity qualification evidence")
+        evidence_end = workflow.find("      - name:", evidence_start)
+        evidence_step = workflow[evidence_start:] if evidence_end < 0 else workflow[evidence_start:evidence_end]
+        self.assertIn("if: always() && needs.select-stage.outputs.stage == 'identity-diagnostic'", evidence_step)
+        self.assertNotIn("fwrouter-acceptance-", evidence_step)
+        self.assertNotIn("phase-d-identities/**", evidence_step)
+        exact_runner = (Path(__file__).parents[1] / "gates" / "run_exact_nodes.py").read_text(
+            encoding="utf-8")
+        self.assertIn("gate.redact_failure_output(output)", exact_runner)
+        self.assertIn("gate.sanitize_junit_artifact(", exact_runner)
         self.assertIn(
             "tests/test_db_migrations.py::test_database_upgrade_cli_is_explicit_backed_up_and_idempotent",
+            workflow,
+        )
+        self.assertIn(
+            "tests/test_subscription_refresh_outcomes.py::test_staged_profile_verification_runs_outside_writer_guard",
+            workflow,
+        )
+        self.assertIn(
+            "tests/test_subscription_refresh_outcomes.py::test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for_rollback",
             workflow,
         )
         self.assertIn("Run reviewed identity migration and two cold startup scale receipts", workflow)

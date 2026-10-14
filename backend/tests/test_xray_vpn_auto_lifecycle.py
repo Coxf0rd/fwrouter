@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
+import stat
 from typing import Any
 import pytest
 
@@ -385,6 +387,150 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
                 (scope, new_server.server_id),
             ).fetchone()
             assert row is not None
+
+
+@pytest.mark.parametrize(
+    ("writer", "failure"),
+    [
+        ("atomic", "write"), ("atomic", "fsync"), ("atomic", "publish"),
+        ("archive", "write"), ("archive", "fsync"), ("archive", "publish"),
+    ],
+    ids=["atomic-write", "atomic-fsync", "atomic-replace", "archive-write", "archive-fsync", "archive-link"],
+)
+def test_private_checkpoint_writer_failure_preserves_marker_and_cleans_temp(
+    monkeypatch, tmp_path: Path, writer: str, failure: str,
+) -> None:
+    """Private checkpoint write failures retain the previous marker and remove partial files."""
+    marker = tmp_path / "generation-checkpoint.json"
+    marker.write_text('{"phase":"previous"}', encoding="utf-8")
+    marker.chmod(0o600)
+    original_bytes = marker.read_bytes()
+    real_open, real_close = os.open, os.close
+    writer_fds: set[int] = set()
+    close_counts: dict[int, int] = {}
+
+    def tracked_open(path, flags, mode=0o777):
+        descriptor = real_open(path, flags, mode)
+        if str(path).endswith(".tmp"):
+            writer_fds.add(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor: int) -> None:
+        if descriptor in writer_fds:
+            close_counts[descriptor] = close_counts.get(descriptor, 0) + 1
+        real_close(descriptor)
+
+    monkeypatch.setattr(xray_subscription_service.os, "open", tracked_open)
+    monkeypatch.setattr(xray_subscription_service.os, "close", tracked_close)
+
+    if failure == "write":
+        monkeypatch.setattr(
+            xray_subscription_service, "_write_all_fd",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected private write failure")),
+        )
+    elif failure == "fsync":
+        monkeypatch.setattr(xray_subscription_service.os, "fsync",
+                            lambda _fd: (_ for _ in ()).throw(OSError("injected private fsync failure")))
+    elif writer == "atomic":
+        monkeypatch.setattr(xray_subscription_service.os, "replace",
+                            lambda *_args: (_ for _ in ()).throw(OSError("injected marker replace failure")))
+    else:
+        monkeypatch.setattr(xray_subscription_service.os, "link",
+                            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("injected archive link failure")))
+
+    with pytest.raises(OSError):
+        if writer == "atomic":
+            xray_subscription_service._atomic_write_private_checkpoint(marker, '{"phase":"next"}')
+        else:
+            digest = hashlib.sha256(original_bytes).hexdigest()
+            xray_subscription_service._archive_checkpoint_exact(marker, digest)
+
+    assert marker.read_bytes() == original_bytes
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+    assert writer_fds and set(close_counts) == writer_fds
+    assert all(count == 1 for count in close_counts.values())
+    assert not list(tmp_path.glob("*.tmp"))
+    archive_dir = marker.parent / "checkpoint-archive"
+    if writer == "archive":
+        assert archive_dir.is_dir()
+        assert not list(archive_dir.glob("*.tmp"))
+        assert not list(archive_dir.glob("generation-checkpoint-*.json"))
+
+
+@pytest.mark.parametrize("writer", ["atomic", "archive"], ids=["atomic", "archive"])
+def test_private_checkpoint_writer_closes_once_before_publish_even_if_fd_is_reused(
+    monkeypatch, tmp_path: Path, writer: str,
+) -> None:
+    """A closed writer descriptor is never closed again after its number is reused."""
+    marker = tmp_path / "generation-checkpoint.json"
+    marker.write_text('{"phase":"previous"}', encoding="utf-8")
+    marker.chmod(0o600)
+    real_open, real_close, real_dup2, real_fstat = os.open, os.close, os.dup2, os.fstat
+    real_replace, real_link = os.replace, os.link
+    writer_fds: set[int] = set()
+    close_counts: dict[int, int] = {}
+    reused_fds: set[int] = set()
+    publish_observations: list[tuple[int, int]] = []
+
+    def tracked_open(path, flags, mode=0o777):
+        descriptor = real_open(path, flags, mode)
+        if str(path).endswith(".tmp"):
+            writer_fds.add(descriptor)
+        return descriptor
+
+    def close_and_reuse(descriptor: int) -> None:
+        if descriptor not in writer_fds:
+            real_close(descriptor)
+            return
+        count = close_counts.get(descriptor, 0) + 1
+        close_counts[descriptor] = count
+        real_close(descriptor)
+        if count == 1:
+            replacement = real_open(os.devnull, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+            if replacement != descriptor:
+                real_dup2(replacement, descriptor)
+                real_close(replacement)
+            reused_fds.add(descriptor)
+
+    def assert_writer_closed_before_publish() -> None:
+        for descriptor in writer_fds:
+            publish_observations.append((descriptor, close_counts.get(descriptor, 0)))
+            assert close_counts.get(descriptor) == 1
+            assert descriptor in reused_fds
+
+    def tracked_replace(source, destination) -> None:
+        assert_writer_closed_before_publish()
+        real_replace(source, destination)
+
+    def tracked_link(source, destination, **kwargs) -> None:
+        assert_writer_closed_before_publish()
+        real_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(xray_subscription_service.os, "open", tracked_open)
+    monkeypatch.setattr(xray_subscription_service.os, "close", close_and_reuse)
+    monkeypatch.setattr(xray_subscription_service.os, "replace", tracked_replace)
+    monkeypatch.setattr(xray_subscription_service.os, "link", tracked_link)
+    try:
+        if writer == "atomic":
+            xray_subscription_service._atomic_write_private_checkpoint(marker, '{"phase":"next"}')
+            assert marker.read_text(encoding="utf-8") == '{"phase":"next"}'
+        else:
+            original = marker.read_bytes()
+            archived = xray_subscription_service._archive_checkpoint_exact(
+                marker, hashlib.sha256(original).hexdigest(),
+            )
+            assert archived.read_bytes() == original
+            assert stat.S_IMODE(archived.stat().st_mode) == 0o600
+        assert publish_observations and all(count == 1 for _, count in publish_observations)
+        assert close_counts and all(count == 1 for count in close_counts.values())
+        assert all(real_fstat(descriptor) for descriptor in reused_fds)
+        assert not list(tmp_path.glob("*.tmp"))
+    finally:
+        for descriptor in reused_fds:
+            try:
+                real_close(descriptor)
+            except OSError:
+                pass
 
 
 @pytest.mark.parametrize("client_count", [1, 70])

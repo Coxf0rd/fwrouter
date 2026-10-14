@@ -212,22 +212,27 @@ jobs:
           set +e
           python tests/gates/gate.py run --plan "$root/subscription-l1-plan.json" \
             --manual-subset --output "$root/subscription-l1-report.json" \
-            > "$root/subscription-l1-run.log" 2>&1
+            > "$root/subscription-l1-run.raw" 2>&1
           result=$?
           set -e
-          python3 - "$root/subscription-l1-run.log" <<'PY'
+          python3 - "$root/subscription-l1-run.raw" "$root/subscription-l1-run.log" <<'PY'
           import sys
           from pathlib import Path
           sys.path.insert(0, "tests/gates")
           from gate import redact_failure_output
-          print(redact_failure_output(Path(sys.argv[1]).read_text(encoding="utf-8"))[-65536:])
+          output = redact_failure_output(Path(sys.argv[1]).read_text(encoding="utf-8"))[-65536:]
+          Path(sys.argv[2]).write_text(output, encoding="utf-8")
+          print(output)
           PY
+          rm -f "$root/subscription-l1-run.raw"
           exit "$result"
       - name: Run identity migration L3 regression nodes in the isolated gate
         if: needs.select-stage.outputs.stage == 'identity-diagnostic'
         run: |
           set -euo pipefail
           root="$RUNNER_TEMP/phase-d-identities"
+          mkdir -p "$root"
+          result=0
           python tests/gates/run_exact_nodes.py \
             --junit "$root/migration-l3.xml" \
             --report "$root/migration-l3-report.json" \
@@ -236,7 +241,50 @@ jobs:
             tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade \
             tests/test_db_migrations.py::test_subscription_identity_migration_preserves_references_and_membership \
             tests/test_xray_vpn_auto_lifecycle.py::test_reviewed_profile_identity_mapping_preserves_credentials_without_publishing \
-            tests/test_xray_vpn_auto_lifecycle.py::test_unmapped_inventory_replacement_does_not_inherit_or_publish_identity
+            tests/test_xray_vpn_auto_lifecycle.py::test_unmapped_inventory_replacement_does_not_inherit_or_publish_identity \
+            tests/test_subscription_refresh_outcomes.py::test_staged_profile_verification_runs_outside_writer_guard \
+            tests/test_subscription_refresh_outcomes.py::test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for_rollback || result=$?
+          if [ "$result" -eq 0 ]; then
+            python tests/gates/gate.py subset-plan --domain xray --level L3 \
+              --output "$root/xray-l3-plan.json" > "$root/xray-l3-plan.log"
+            set +e
+            python tests/gates/gate.py run --plan "$root/xray-l3-plan.json" \
+              --manual-subset --output "$root/xray-l3-report.json" \
+              > "$root/xray-l3-run.raw" 2>&1
+            result=$?
+            set -e
+            python3 - "$root/xray-l3-run.raw" "$root/xray-l3-run.log" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tests/gates")
+          from gate import redact_failure_output
+          output = redact_failure_output(Path(sys.argv[1]).read_text(encoding="utf-8"))[-65536:]
+          Path(sys.argv[2]).write_text(output, encoding="utf-8")
+          print(output)
+          PY
+            rm -f "$root/xray-l3-run.raw"
+          fi
+          exit "$result"
+      - name: Retain sanitized identity qualification evidence
+        if: always() && needs.select-stage.outputs.stage == 'identity-diagnostic'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-identity-l1-l3-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phase-d-identities/subscription-l1-plan.json
+            ${{ runner.temp }}/phase-d-identities/subscription-l1-plan.log
+            ${{ runner.temp }}/phase-d-identities/subscription-l1-report.json
+            ${{ runner.temp }}/phase-d-identities/subscription-l1-run.log
+            ${{ runner.temp }}/phase-d-identities/migration-l3.xml
+            ${{ runner.temp }}/phase-d-identities/migration-l3-report.json
+            ${{ runner.temp }}/phase-d-identities/migration-l3.log
+            ${{ runner.temp }}/phase-d-identities/xray-l3-plan.json
+            ${{ runner.temp }}/phase-d-identities/xray-l3-plan.log
+            ${{ runner.temp }}/phase-d-identities/xray-l3-report.json
+            ${{ runner.temp }}/phase-d-identities/xray-l3-run.log
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
       - name: Run qualified source-manifest regression before native profiles
         if: >-
           needs.select-stage.outputs.stage == 'qualified' ||

@@ -1090,29 +1090,37 @@ def _archive_checkpoint_exact(checkpoint_path: Path, checkpoint_sha256: str) -> 
     target = archive_dir / f"generation-checkpoint-{checkpoint_sha256}.json"
     temporary = archive_dir / f".archive-{uuid4().hex}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
     try:
-        descriptor = os.open(temporary, flags, 0o600)
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-    finally:
         try:
-            os.close(descriptor)
-        except (OSError, UnboundLocalError):
-            pass
-    try:
-        os.link(temporary, target, follow_symlinks=False)
-    except FileExistsError:
-        info = target.lstat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
-                or target.read_bytes() != raw):
+            descriptor = os.open(temporary, flags, 0o600)
+            _write_all_fd(descriptor, raw)
+            os.fsync(descriptor)
+        finally:
+            if descriptor is not None:
+                owned_descriptor, descriptor = descriptor, None
+                os.close(owned_descriptor)
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        except FileExistsError:
+            info = target.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                    or target.read_bytes() != raw):
+                raise RuntimeError("XRAY_SUPERSESSION_ARCHIVE_CONFLICT")
+        _fsync_directory(archive_dir)
+        return target
+    finally:
+        if descriptor is not None:
+            owned_descriptor, descriptor = descriptor, None
+            try:
+                os.close(owned_descriptor)
+            except OSError:
+                pass
+        try:
             temporary.unlink(missing_ok=True)
-            raise RuntimeError("XRAY_SUPERSESSION_ARCHIVE_CONFLICT")
-    temporary.unlink(missing_ok=True)
-    _fsync_directory(archive_dir)
-    return target
+        except OSError:
+            pass
 
 
 def _fsync_directory(path: Path) -> None:
@@ -1123,28 +1131,43 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _write_all_fd(descriptor: int, data: bytes) -> None:
+    """Write bytes to an already-owned descriptor without reopening it via fdopen."""
+    remaining = memoryview(data)
+    while remaining:
+        try:
+            written = os.write(descriptor, remaining[:1024 * 1024])
+        except InterruptedError:
+            continue
+        if written <= 0:
+            raise OSError("short write to private checkpoint")
+        remaining = remaining[written:]
+
+
 def _atomic_write_private_checkpoint(path: Path, text: str) -> None:
     """Replace checkpoint bytes atomically with mode 0600 before publication."""
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
+    descriptor: int | None = None
     try:
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(text.encode("utf-8"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.close(descriptor)
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        _write_all_fd(descriptor, text.encode("utf-8"))
+        os.fsync(descriptor)
+        owned_descriptor, descriptor = descriptor, None
+        os.close(owned_descriptor)
         os.replace(temporary, path)
         _fsync_directory(path.parent)
     finally:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
+        if descriptor is not None:
+            owned_descriptor, descriptor = descriptor, None
+            try:
+                os.close(owned_descriptor)
+            except OSError:
+                pass
         try:
             temporary.unlink(missing_ok=True)
         except OSError:
