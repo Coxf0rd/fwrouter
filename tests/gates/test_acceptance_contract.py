@@ -4234,7 +4234,8 @@ class AcceptanceContractTests(unittest.TestCase):
         fake_data = ModuleType("fwrouter_api.services.dataplane_global")
         fake_data._read_effective_rules_artifact_uncached = lambda: uncached_artifact
         fake_rules = ModuleType("fwrouter_api.services.rules")
-        fake_rules.get_manual_rules_texts = lambda: {"effective_json_path": str(reader_path)}
+        fake_rules.get_rules_state = lambda: {"effective_json_path": str(reader_path)}
+        fake_rules.get_manual_rules_texts = mock.Mock(side_effect=AssertionError("diagnostic export adds artifact decode"))
         fake_services = ModuleType("fwrouter_api.services")
         fake_services.__path__ = []
         fake_services.dataplane_global = fake_data
@@ -4275,6 +4276,7 @@ class AcceptanceContractTests(unittest.TestCase):
             "cached_presence_matches_reader_result": True,
         })
         self.assertIs(fake_cache._CACHE[cache_key], cached_none)
+        fake_rules.get_manual_rules_texts.assert_not_called()
 
         reader_error = OSError("fixture reader error")
         reader_calls.clear()

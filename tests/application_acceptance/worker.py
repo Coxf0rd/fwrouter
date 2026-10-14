@@ -66,7 +66,10 @@ def _packet_dns_effective_artifact_observation() -> dict[str, Any]:
 
         uncached_value = dataplane_global._read_effective_rules_artifact_uncached()
         try:
-            state = rules.get_manual_rules_texts()
+            # Only the writer path is needed. The text/export read-model also
+            # decodes the full artifact and reads every rules text file, adding
+            # diagnostic work inside the measured startup path.
+            state = rules.get_rules_state()
             writer_path = Path(state["effective_json_path"]).resolve(strict=False)
             settings = get_settings()
             reader_paths = (
