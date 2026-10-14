@@ -988,10 +988,46 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
                  "requested_by": "hosted-acceptance", "allow_blocked_egress": True},
         timeout=75,
     )
-    assert code == 200 and accepted.get("ok") is True, {"status": code, "ok": accepted.get("ok")}
-    rollback = await_job(restarted_api, accepted)
-    assert rollback.get("status") == "failed", {"status": rollback.get("status"), "error_code": rollback.get("error_code")}
-    assert native.reload_calls > reload_count_before_fault
+    accepted_data = accepted.get("data") if isinstance(accepted.get("data"), dict) else {}
+    accepted_error = accepted_data.get("error") if isinstance(accepted_data.get("error"), dict) else {}
+    job_ref = accepted_data.get("job") if isinstance(accepted_data.get("job"), dict) else {}
+    job_id = str(job_ref.get("job_id") or "")
+    immediate_failure = bool(
+        accepted.get("ok") is False
+        and accepted_error.get("code") == "HARNESS_XRAY_RELOAD_FAILURE"
+        and accepted_error.get("job_id") == job_id
+    )
+    accepted_for_processing = bool(
+        accepted.get("ok") is True
+        and accepted_data.get("status") in {"queued", "running"}
+        and accepted_data.get("error") is None
+    )
+    assert code == 200 and job_id and (immediate_failure or accepted_for_processing), {
+        "status": code, "ok": accepted.get("ok"),
+        "error_code": accepted_error.get("code"), "job_id_present": bool(job_id),
+        "error_job_id_matches": accepted_error.get("job_id") == job_id,
+        "accepted_status": accepted_data.get("status"),
+    }
+    # Poll only this returned job id; never treat an arbitrary API failure as
+    # evidence that the harness-injected native reload boundary was reached.
+    terminal_job = await_job(restarted_api, {"data": {"job": {"job_id": job_id}}})
+    terminal_result = terminal_job.get("result") if isinstance(terminal_job.get("result"), dict) else {}
+    terminal_client = terminal_result.get("xray_client") if isinstance(terminal_result.get("xray_client"), dict) else {}
+    terminal_client_result = terminal_client.get("result") if isinstance(terminal_client.get("result"), dict) else {}
+    assert (terminal_job.get("job_id") == job_id and terminal_job.get("status") == "failed"
+            and terminal_job.get("error_code") == "HARNESS_XRAY_RELOAD_FAILURE"
+            and terminal_result.get("error_code") == "HARNESS_XRAY_RELOAD_FAILURE"
+            and terminal_client_result.get("error_code") == "HARNESS_XRAY_RELOAD_FAILURE"), {
+        "same_job": terminal_job.get("job_id") == job_id,
+        "job_status": terminal_job.get("status"),
+        "job_error_code": terminal_job.get("error_code"),
+        "result_error_code": terminal_result.get("error_code"),
+        "native_error_code": terminal_client_result.get("error_code"),
+    }
+    assert native.reload_calls > reload_count_before_fault, {
+        "reload_calls_before": reload_count_before_fault,
+        "reload_calls_after": native.reload_calls,
+    }
     loaded_after_rollback = set(loaded_identities(native))
     assert len(loaded_after_rollback) == 77 and identity_fingerprint(loaded_after_rollback) == identity_fingerprint(expected_after_revocation), {
         "loaded_count": len(loaded_after_rollback),
