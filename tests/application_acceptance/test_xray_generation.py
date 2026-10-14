@@ -186,6 +186,10 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     tokens = [f"identity-public-{index}@acceptance.invalid" for index in range(7)]
     active_path = state / "xray" / "config.json"
 
+    # Core vpn-auto admission requires VLESS over TCP/gRPC with Reality and a
+    # public key. Keep this profile eligible through both revisions; plain TLS
+    # would correctly exclude it and make the seeded profile-owned internal
+    # identity impossible to expect in native output.
     # These 62 unmanaged identities are loaded by the actual native child before
     # FWRouter generates managed credentials; they must remain untouched.
     baseline_config = json.loads(active_path.read_text(encoding="utf-8"))
@@ -208,10 +212,20 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
             "tag": f"member-{index}", "protocol": "vless",
             "settings": {"vnext": [{
                 "address": f"member-{index}.example.invalid", "port": 443,
-                "users": [{"id": str(uuid5(NAMESPACE_DNS, f"identity-member-{index}")), "encryption": "none"}],
+                "users": [{"id": str(uuid5(NAMESPACE_DNS, f"identity-member-{index}")),
+                           "encryption": "none", "flow": "xtls-rprx-vision"}],
             }]},
-            "streamSettings": {"network": "tcp", "security": "tls",
-                               "tlsSettings": {"serverName": f"member-{index}.example.invalid"}},
+            "streamSettings": {
+                "network": "tcp", "security": "reality",
+                "realitySettings": {
+                    "serverName": f"member-{index}.example.invalid",
+                    # Valid deterministic X25519 test public key (RFC 7748
+                    # basepoint), not a provider credential or endpoint key.
+                    "publicKey": "CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "shortId": "0123456789abcdef",
+                    "fingerprint": "chrome",
+                },
+            },
         }
 
     old_profile = {
@@ -244,6 +258,20 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     assert code == 200 and seeded.get("ok") is True and seeded.get("server_ids") == [old_id], {
         "status": code, "ok": seeded.get("ok"), "refreshed_count": seeded.get("refreshed_count"),
     }
+
+    def profile_member_ids(server_id: str) -> set[str]:
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            row = connection.execute("SELECT raw_json FROM servers WHERE server_id=?", (server_id,)).fetchone()
+            assert row is not None
+            raw = json.loads(row[0])
+            endpoints = raw.get("_fwrouter_topology", {}).get("endpoints", [])
+            return {str(item.get("identity") or "") for item in endpoints if isinstance(item, dict)}
+        finally:
+            connection.close()
+
+    original_member_ids = profile_member_ids(old_id)
+    assert len(original_member_ids) == 7
 
     # Seed seven public subscription subjects and the one internal auto subject.
     def digest(value: str, length: int) -> str:
@@ -434,6 +462,10 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     assert code == 200 and refreshed.get("ok") is True and refreshed.get("server_ids") == [new_id], {
         "status": code, "ok": refreshed.get("ok"), "refreshed_count": refreshed.get("refreshed_count"),
     }
+    refreshed_member_ids = profile_member_ids(new_id)
+    assert len(refreshed_member_ids) == 10
+    assert original_member_ids <= refreshed_member_ids
+    assert len(refreshed_member_ids - original_member_ids) == 3
 
     # Simulate a target written by the previous parser: it retains the exact
     # raw/profile identity fields but has no durable provenance witness.
