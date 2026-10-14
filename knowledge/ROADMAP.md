@@ -1,5 +1,11 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 current hosted diagnostic checkpoint — 2026-10-14
+
+Source499d23f run38540649011: startup43.265s, HWM803828KiB, observed cleanup2.3185s, but scale FAIL at one newly generated internal vpn-auto identity. Early diagnostics establish the fixture omitted the virtual internal target that `_vpn_auto_servers_for_xray_subscription` always returns. Corrected fixture preloads82 identities (70 public,10 internal including virtual,2 fixed), requiring exact unchanged native/binding sets before/after; hosted verification pending. Previous92de4c9 run1451 routine PASS including full-JSON7→10-member identity regression, qualified26+1/ordinary26/Provider11/original packet1 PASS, but45.64s startup FAIL. Thus stability/Reality TCP/steady HTTP are not accepted.
+
+Original production78 credentials remain in protected DB/preimage; seven published credentials absent from native after partial convergence. Durable profile identity continuity is proposed but NOT IMPLEMENTED; it must preserve Core/CAS/native proof and cover next refresh/rollback, rather than rewrite snapshots or alias by endpoint. Production API/dependents remain held, no config/identity/activation writes; PR8 DRAFT/BLOCKED and Live Acceptance BLOCKED. CI milestone stays CLOSED/CD DEFERRED. Historical checkpoints below are preserved; current report is api_runtime_stability_2026-10-13/REPORT.md.
+
 ## PR8 current diagnostic clarification — 2026-10-14
 
 Production remains installed4ffd686 with API/dependent units held; this diagnostic phase performs no activation/reload/UUID or configuration mutation. Protected raw JSON evidence shows the provider profile gained3 VLESS members (7→10), changing its canonical full-profile hash/server ID before activation. Seven public and one internal derived credentials changed;70 retained. Original78 remain in DB/preimage, seven published credentials are absent from native, and actual client authentication impact is not observed. Stable credential recovery across that changed logical-profile key needs authoritative continuity mapping; host/name/primary-endpoint aliasing is not accepted.

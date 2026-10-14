@@ -22,7 +22,7 @@ MIN_CONFIG_BYTES = 20_000_000
 RSS_LIMIT_KIB = 1_572_864
 SCALE_PROFILE_COUNT = 7
 SCALE_SERVERS_PER_PROFILE = 9
-SCALE_INTERNAL_AUTO_CLIENTS = 9
+SCALE_INTERNAL_AUTO_CLIENTS = SCALE_SERVERS_PER_PROFILE + 1
 SCALE_FIXED_EXTERNAL_CLIENTS = 2
 SCALE_NATIVE_CLIENT_COUNT = (
     SCALE_PROFILE_COUNT * (SCALE_SERVERS_PER_PROFILE + 1)
@@ -279,7 +279,9 @@ def _seed_scale_subscription_profiles(state: Path) -> dict[str, Any]:
         ensure_subscription_identity,
         list_desired_subscription_xray_clients,
     )
-    from fwrouter_api.services.xray_subscription_service import _vpn_auto_xray_client_email
+    from fwrouter_api.services.xray_subscription_service import (
+        _vpn_auto_xray_client_email, _vpn_auto_servers_for_xray_subscription,
+    )
 
     if get_settings().paths.state_dir.resolve(strict=False) != state.resolve(strict=False):
         raise AssertionError("scale profile DB escaped the owned test state")
@@ -379,8 +381,13 @@ def _seed_scale_subscription_profiles(state: Path) -> dict[str, Any]:
         {"id": str(node["client_uuid"]), "email": str(node["client_email"]), "level": 0}
         for node in profile_nodes
     ]
+    internal_servers = _vpn_auto_servers_for_xray_subscription()
+    if {row["server_id"] for row in internal_servers} != {
+        VIRTUAL_XRAY_VPN_AUTO_SERVER_ID, *(server["server_id"] for server in servers)
+    }:
+        raise AssertionError("internal auto inventory is not the owned real and virtual server set")
     internal_auto_clients = []
-    for index, server in enumerate(servers, start=1):
+    for server in internal_servers:
         server_id = server["server_id"]
         internal_auto_clients.append({
             "id": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"acceptance-scale-vpn-auto:{server_id}")),
@@ -608,9 +615,9 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         assert profile_state["expected_counts"] == {
             "profile_accounts": 7,
             "profile_nodes": 70,
-            "internal_vpn_auto_clients": 9,
+            "internal_vpn_auto_clients": 10,
             "fixed_external_clients": 2,
-            "native_clients": 81,
+            "native_clients": 82,
         }
         xray_path = Path(stack["state"]) / "xray" / "config.json"
         xray_config = _scale_xray_config_with_managed_clients(
