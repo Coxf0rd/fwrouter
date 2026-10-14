@@ -107,6 +107,21 @@ class GateContractTests(unittest.TestCase):
                                       text=True, capture_output=True, check=False)
             self.assertEqual(0, ordinary.returncode, ordinary.stderr)
 
+    def test_identity_diagnostic_uses_available_main_base_without_rebasing_legacy_stages(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
+        identity_base = (
+            "PHASE_D_BASE_SHA: ${{ needs.select-stage.outputs.stage == 'identity-diagnostic' && "
+            "'1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || "
+            "'6bdf37e9c73b5728b8d50e971f34d848610eb345' }}"
+        )
+        self.assertEqual(2, workflow.count(identity_base))
+        self.assertEqual(1, workflow.count(
+            "PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345"))
+        identity_step = workflow.split("Run subscription identity L1 subset", 1)[0]
+        self.assertIn("git cat-file -e \"$PHASE_D_BASE_SHA^{commit}\"", identity_step)
+        self.assertIn('git diff --check "$PHASE_D_BASE_SHA...HEAD"', identity_step)
+        self.assertIn('python tests/gates/gate.py plan --base "$PHASE_D_BASE_SHA"', workflow)
+
     def test_changed_python_f821_checks_only_changed_python_and_selects_one_rule(self) -> None:
         relative = str(Path(__file__).relative_to(gate.ROOT))
         with tempfile.TemporaryDirectory(prefix="fwrouter-f821-contract-") as temp, \
