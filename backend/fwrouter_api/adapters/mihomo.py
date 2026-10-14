@@ -840,13 +840,32 @@ class MihomoHttpAdapter(MihomoAdapter):
             if (cached is not None and cached[0] == config_text and cached[2] is parsed_config
                     and isinstance(configured_rules, list) and len(configured_rules) <= MAX_CACHED_POLICY_RULE_COUNT):
                 analysis = cached[3]
+                cacheable_analysis = True
                 if analysis.get("validator_identity") != validator_identity:
-                    analysis.clear()
-                    analysis["validator_identity"] = validator_identity
-                return self._vpn_udp_policy_readback(
-                    config_text, proxies, native_rules, _parsed_config=parsed_config,
-                    _configuration_analysis=analysis,
-                )
+                    # YAML scalar aliases can expand a small document into a
+                    # large expected-rule vector. Bound expanded UTF-8 input,
+                    # not just file bytes/count, before retaining analysis.
+                    expanded_bytes = 0
+                    for rule in configured_rules:
+                        if not isinstance(rule, str):
+                            cacheable_analysis = False
+                            break
+                        try:
+                            expanded_bytes += len(rule.encode("utf-8"))
+                        except UnicodeEncodeError:
+                            cacheable_analysis = False
+                            break
+                        if expanded_bytes > MAX_CACHED_POLICY_CONFIG_BYTES:
+                            cacheable_analysis = False
+                            break
+                    if cacheable_analysis:
+                        analysis.clear()
+                        analysis["validator_identity"] = validator_identity
+                if cacheable_analysis:
+                    return self._vpn_udp_policy_readback(
+                        config_text, proxies, native_rules, _parsed_config=parsed_config,
+                        _configuration_analysis=analysis,
+                    )
         return self._vpn_udp_policy_readback(
             config_text, proxies, native_rules, _parsed_config=parsed_config,
         )

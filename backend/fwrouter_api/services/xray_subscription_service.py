@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -572,13 +573,46 @@ def _stage_profile_native_candidates(
     native_validator_identity = (
         f"docker:{native_image_id}:network-none:read-only" if native_image_id else None
     )
+    def candidate_input_context():
+        from fwrouter_api.services.mihomo_config_inbounds import _candidate_base_config_paths
+        from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint, _file_hash
+        try:
+            paths = _candidate_base_config_paths()
+            if len(paths) > 8:
+                return None  # Avoid hashing unbounded historical fallback files.
+            fingerprint = current_mihomo_input_fingerprint().get("hash")
+            if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+                return None
+            return (fingerprint, tuple((str(path), _file_hash(path)) for path in paths), write_mihomo_candidate_config)
+        except (OSError, ValueError, sqlite3.Error):
+            return None  # Unknown context keeps the original full render/validation.
+
+    transition_context = None
+    transition_written = None
     for name, handoffs in (("transition", transition_assignments), ("final", assignments)):
         candidate_path = stage_dir / f"mihomo-{name}.candidate.yaml"
-        written = write_mihomo_candidate_config(
-            candidate_path=candidate_path,
-            xray_handoff_assignments=handoffs,
-            include_internal_config=True,
-        )
+        context_before = candidate_input_context()
+        write_reused = bool(name == "final" and transition_written is not None
+                            and transition_assignments == assignments
+                            and transition_context is not None and context_before == transition_context)
+        if write_reused:
+            from fwrouter_api.services.artifacts import atomic_copy_file
+            transition_path = Path(staged_mihomo["transition"])
+            expected_transition_hash = native["transition"]["candidate_sha256"]
+            if hashlib.sha256(transition_path.read_bytes()).hexdigest() != expected_transition_hash:
+                return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_AFTER_VALIDATION"}
+            atomic_copy_file(transition_path, candidate_path)
+            written = transition_written
+        else:
+            written = write_mihomo_candidate_config(
+                candidate_path=candidate_path,
+                xray_handoff_assignments=handoffs,
+                include_internal_config=True,
+            )
+        if name == "transition":
+            context_after = candidate_input_context()
+            transition_context = context_before if context_before is not None and context_before == context_after else None
+            transition_written = written
         candidate_hash = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
         candidate_config = written.get("_candidate_config") if isinstance(written.get("_candidate_config"), dict) else {}
         local_validation = validate_local_mihomo(candidate_path=candidate_path, candidate_config=candidate_config)
@@ -602,6 +636,7 @@ def _stage_profile_native_candidates(
             "local": _strip_raw_payload(local_validation),
             "native": _strip_raw_payload(native_validation),
             "native_validation_reused": cached_native_validation is not None,
+            "candidate_write_reused": write_reused,
         }
         if not validation["ok"]:
             return {
@@ -610,6 +645,8 @@ def _stage_profile_native_candidates(
                 "error_code": "MIHOMO_CANDIDATE_INVALID",
                 "validation": _strip_raw_payload(validation),
             }
+        if write_reused and candidate_input_context() != transition_context:
+            return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_STAGE_INPUTS_CHANGED_AFTER_VALIDATION"}
         if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != candidate_hash:
             return {"ok": False, "stage": f"mihomo_{name}_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"}
         if cached_native_validation is None and native_validator_identity is not None:

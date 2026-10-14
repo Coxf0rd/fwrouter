@@ -955,7 +955,10 @@ def _run_profile_candidate_validation_case(
     native_result: dict[str, object] | None = None,
     mutate_candidate: bool = False,
     image_id: str | None = "sha256:" + "a" * 64,
+    input_context_changes: bool = False,
 ):
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
     from types import SimpleNamespace
     from fwrouter_api.services import subscription_pipeline
 
@@ -964,6 +967,9 @@ def _run_profile_candidate_validation_case(
     config_path.write_text("{}\n", encoding="utf-8")
     native_calls: list[str] = []
     local_calls: list[str] = []
+    input_context = {"hash": "a" * 64}
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint",
+                        lambda: dict(input_context))
 
     class Adapter:
         def __init__(self):
@@ -986,6 +992,8 @@ def _run_profile_candidate_validation_case(
 
     def validate_native(candidate_path, *, image_reference=None):
         native_calls.append(str(candidate_path))
+        if input_context_changes and Path(candidate_path).name == "mihomo-transition.candidate.yaml":
+            input_context["hash"] = "b" * 64
         assert image_reference == image_id
         if mutate_candidate:
             Path(candidate_path).write_text("changed\n", encoding="utf-8")

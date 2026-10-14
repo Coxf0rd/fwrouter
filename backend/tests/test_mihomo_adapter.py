@@ -455,6 +455,22 @@ def test_config_analysis_cache_preserves_streaming_fallback_above_rule_budget(mo
         assert adapter._policy_config_cache[3] == {}
 
 
+def test_config_analysis_cache_bounds_expanded_yaml_scalar_aliases(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.adapters import mihomo as adapter_module
+    rule = "DOMAIN," + "a" * 100 + ".test,DIRECT"
+    text = "rules:\n  - &owned " + rule + "\n  - *owned\n  - *owned\n"
+    monkeypatch.setattr(adapter_module, "MAX_CACHED_POLICY_CONFIG_BYTES", len(text.encode("utf-8")))
+    adapter = MihomoHttpAdapter(config_path=tmp_path / "config.yaml")
+    parsed = adapter._parsed_vpn_udp_policy_config(text)
+    assert adapter._policy_config_cache is not None
+    assert len(parsed["rules"]) == 3
+    assert sum(len(rule.encode("utf-8")) for rule in parsed["rules"]) > len(text.encode("utf-8"))
+    result = adapter._readback_with_config_analysis(text, {}, [], parsed)
+    assert result["native_top_level_rules_match"] is False
+    assert result["policy_installed"] is False
+    assert adapter._policy_config_cache[3] == {}
+
+
 def test_policy_parse_cache_rejects_changed_unsafe_content_and_loader_changes(monkeypatch, tmp_path: Path) -> None:
     sentinel = tmp_path / "unsafe-cache-constructor-ran"
     adapter = MihomoHttpAdapter(config_path=tmp_path / "unused.yaml")

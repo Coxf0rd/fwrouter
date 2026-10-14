@@ -17,6 +17,7 @@ from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.services import xray_subscription_service
 from test_xray import (
     _configure_env,
+    _run_profile_candidate_validation_case,
     _seed_server,
     _seed_routing_state,
     _seed_subscription_identity,
@@ -225,3 +226,24 @@ def test_profile_binding_plan_reuses_owned_enforcement_without_per_client_native
     # Ordinary callers retain the original fresh effective-state path.
     with pytest.raises(AssertionError, match="planner must enrich"):
         xray_client_state._xray_subject_for_client(nodes[0]["client_uuid"])
+
+
+@pytest.mark.parametrize("case", ["identical", "different-handoffs", "changed-inputs"])
+def test_identical_candidate_copy_retains_both_validations_and_rejects_changed_context(monkeypatch, tmp_path: Path, case: str) -> None:
+    old = [{"selected_server_id": "retiring-target", "port": 53124}] if case == "different-handoffs" else []
+    result, local_calls, native_calls = _run_profile_candidate_validation_case(
+        monkeypatch, tmp_path, old_assignments=old,
+        assignments=[{"selected_server_id": "owned-target", "port": 53123}],
+        image_id=None, input_context_changes=case == "changed-inputs",
+    )
+    assert result["ok"] is True
+    assert len(local_calls) == 2 and len(native_calls) == 2
+    transition = result["native_validation"]["transition"]
+    final = result["native_validation"]["final"]
+    assert transition["validation"]["candidate_write_reused"] is False
+    assert final["validation"]["candidate_write_reused"] is (case == "identical")
+    assert final["validation"]["native_validation_reused"] is False
+    if case != "different-handoffs":
+        assert transition["candidate_sha256"] == final["candidate_sha256"]
+    else:
+        assert transition["candidate_sha256"] != final["candidate_sha256"]
