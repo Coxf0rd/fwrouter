@@ -3068,7 +3068,6 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
                 "SELECT * FROM subscription_node_credentials WHERE scope='vpn-auto' AND identity_id=?",
                 (auto_identity,),
             ).fetchone())
-        assert retained_auto_after == retained_auto
         assert retained_auto_after == retained_auto_before
 
     clients = staged_inputs["desired_clients"]
@@ -3090,6 +3089,12 @@ def test_vpn_auto_stage_exception_compensates_new_identity_intent(monkeypatch, t
     _patch_xray_adapters(monkeypatch, adapter)
     before_db = _database_snapshot()
     before_config = config_path.read_bytes()
+    # Isolate this compensation test from planner behavior, which has separate
+    # coverage; the actual durable credential preparation and cleanup remain real.
+    monkeypatch.setattr(
+        xray_subscription_service, "_prospective_profile_bindings",
+        lambda *_args, **_kwargs: ([], [], []),
+    )
     stage_calls = 0
 
     def raise_during_stage(**_kwargs):
