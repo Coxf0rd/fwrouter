@@ -246,8 +246,6 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     }
 
     # Seed seven public subscription subjects and the one internal auto subject.
-    # The native fixture contributes 62 unrelated loaded clients; generation
-    # adds seven virtual public and one virtual internal identity, for 70 unchanged.
     def digest(value: str, length: int) -> str:
         return hashlib.sha1(value.encode()).hexdigest()[:length]
 
@@ -299,13 +297,58 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         for token in tokens
     }
     affected.add((internal_uuid, internal_email))
-    assert len(baseline_pairs) == 78
-    assert affected <= baseline_pairs, {
-        "affected_count": len(affected), "baseline_count": len(baseline_pairs),
+    assert len(affected) == 8
+    virtual_id = "virtual:xray:vpn-auto"
+    public_virtual = {
+        (str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{token}:{virtual_id}")),
+         f"sub-{digest(token, 10)}-{digest(virtual_id, 12)}@fwrouter.local")
+        for token in tokens
+    }
+    virtual_auto_email = f"vpn-auto-{digest(virtual_id, 12)}@fwrouter.local"
+    virtual_auto = {pair for pair in baseline_pairs if pair[1] == virtual_auto_email}
+    expected_categories = {
+        "preloaded_native": unrelated_native_pairs,
+        "public_profile_server": {
+            (str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{token}:{old_id}")),
+             f"sub-{digest(token, 10)}-{digest(old_id, 12)}@fwrouter.local")
+            for token in tokens
+        },
+        "internal_profile_server": {(internal_uuid, internal_email)},
+        "public_virtual_selector": public_virtual,
+        "internal_virtual_selector": virtual_auto,
+    }
+    category_counts = {
+        name: len(pairs & baseline_pairs) for name, pairs in expected_categories.items()
+    }
+    expected_counts = {
+        "preloaded_native": 62,
+        "public_profile_server": 7,
+        "internal_profile_server": 1,
+        "public_virtual_selector": 7,
+        "internal_virtual_selector": 1,
+    }
+    assert category_counts == expected_counts and len(baseline_pairs) == 78, {
+        "category_counts": category_counts,
+        "expected_category_counts": expected_counts,
+        "baseline_count": len(baseline_pairs),
         "baseline_sha256": identity_fingerprint(baseline_pairs),
     }
+    expected_baseline = set().union(*expected_categories.values())
+    assert baseline_pairs == expected_baseline, {
+        "unexpected_count": len(baseline_pairs - expected_baseline),
+        "missing_count": len(expected_baseline - baseline_pairs),
+        "baseline_sha256": identity_fingerprint(baseline_pairs),
+        "expected_sha256": identity_fingerprint(expected_baseline),
+    }
+    assert affected <= baseline_pairs
     unaffected = baseline_pairs - affected
     assert len(unaffected) == 70
+    assert unrelated_native_pairs <= baseline_pairs, {
+        "unrelated_native_count": len(unrelated_native_pairs & baseline_pairs),
+        "baseline_count": len(baseline_pairs),
+        "baseline_sha256": identity_fingerprint(baseline_pairs),
+    }
+    assert public_virtual <= unaffected and virtual_auto <= unaffected
     assert len(unrelated_native_pairs & unaffected) == 62, {
         "unrelated_native_count": len(unrelated_native_pairs & unaffected),
         "unaffected_count": len(unaffected),
