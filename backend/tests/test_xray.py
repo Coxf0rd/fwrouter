@@ -696,10 +696,19 @@ def test_staged_generation_finalizer_does_not_return_completion_when_checkpoint_
 
         monkeypatch.setattr(Path, "unlink", fail_checkpoint_unlink)
     else:
+        real_fsync_directory = xray_subscription_service._fsync_directory
+
+        def fail_final_directory_fsync(path: Path) -> None:
+            # Earlier fsyncs persist the postimage/checkpoint and must succeed.
+            # Fail only the durability barrier after the checkpoint unlink.
+            if not checkpoint.exists():
+                raise OSError("injected checkpoint directory fsync failure")
+            real_fsync_directory(path)
+
         monkeypatch.setattr(
             xray_subscription_service,
             "_fsync_directory",
-            lambda _path: (_ for _ in ()).throw(OSError("injected checkpoint directory fsync failure")),
+            fail_final_directory_fsync,
         )
 
     with pytest.raises(OSError, match="injected checkpoint"):
