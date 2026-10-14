@@ -2636,7 +2636,28 @@ def build_app(socket_path: Path):
             prefix = "FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
             print(prefix + json.dumps({"phase": name, "event": "enter", "call": count}), flush=True)
             try:
-                return original(*args, **kwargs)
+                result = original(*args, **kwargs)
+                if name == "_prospective_profile_bindings":
+                    from .xray_support import binding_identity_summary
+                    from fwrouter_api.db.connection import db_session
+                    config_path = state / "xray" / "config.json"
+                    if config_path.stat().st_size > 4 * 1024 * 1024:
+                        raise RuntimeError("qualified diagnostic config exceeds size bound")
+                    config = json.loads(config_path.read_text())
+                    inbound = next(item for item in config["inbounds"] if item.get("tag") == "vless-ws")
+                    expected = {(str(item["id"]), str(item["email"]))
+                                for item in inbound["settings"]["clients"]}
+                    with db_session() as connection:
+                        def origin_lookup(subject_id):
+                            row = connection.execute(
+                                "SELECT subject_type,subject_role,is_active,is_deleted FROM subjects WHERE subject_id=?",
+                                (subject_id,),
+                            ).fetchone()
+                            return dict(row) if row is not None else {}
+                        summary = binding_identity_summary(result[0], expected, origin_lookup)
+                    bootstrap_observation["prospective_binding_identity_parity"] = summary
+                    print("FWROUTER_ACCEPTANCE_BINDING_IDENTITY_PARITY " + json.dumps(summary), flush=True)
+                return result
             finally:
                 elapsed = round(time.monotonic() - started, 4)
                 with bootstrap_diagnostic_lock:

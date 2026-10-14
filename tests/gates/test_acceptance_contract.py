@@ -5424,6 +5424,24 @@ class AcceptanceContractTests(unittest.TestCase):
                                   "FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE"], events)
 
 
+class BindingOriginDiagnosticContract(unittest.TestCase):
+    def test_bounded_summary_never_exports_identity_or_arbitrary_metadata(self):
+        from application_acceptance.xray_support import binding_identity_summary
+        expected = {("owned-id", "owned-email")}
+        rows = [{"client_uuid": "owned-id", "client_email": "owned-email"}] * 2
+        rows += [{"subject_id": f"private-subject-{i}", "client_uuid": f"private-uuid-{i}",
+                  "client_email": f"private-email-{i}"} for i in range(6)]
+        result = binding_identity_summary(rows, expected, lambda key: {
+            "subject_type": "private-type", "subject_role": "private-role", "is_active": 1,
+            "metadata_json": "private-token"})
+        self.assertEqual(8, result["row_count"])
+        self.assertEqual(1, result["duplicate_count"])
+        self.assertEqual(6, result["unexpected_count"])
+        self.assertEqual(4, len(result["unexpected_origins"]))
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(0, result["missing_count"])
+
+
 class ScaleInboundOwnershipContract(unittest.TestCase):
     def helper(self):
         source = Path(__file__).parents[1] / "application_acceptance" / "test_runtime_scale.py"
