@@ -2726,6 +2726,31 @@ def test_owned_restore_revalidates_after_reload_before_database_restore(monkeypa
         return result
 
     monkeypatch.setattr(adapter, "reload", reload_then_external_drift)
+    from fwrouter_api.services import mihomo_runtime as mihomo_runtime_service
+    original_restart = mihomo_runtime_service.restart_mihomo_container
+    restart_receipts: list[dict[str, object]] = []
+
+    def record_fenced_restart(**kwargs):
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+        before_incarnation = mihomo_runtime_service.get_mihomo_runtime_incarnation()
+        with db_session() as connection:
+            revision_before = read_selection_revision(connection)
+        restart_result = original_restart(**kwargs)
+        after_incarnation = mihomo_runtime_service.get_mihomo_runtime_incarnation()
+        restart_receipts.append({
+            "request": {
+                key: kwargs.get(key)
+                for key in ("action", "selection_fenced", "expected_selection_revision")
+            },
+            "revision_before": revision_before,
+            "before_incarnation": before_incarnation,
+            "result": restart_result,
+            "after_incarnation": after_incarnation,
+        })
+        return restart_result
+
+    monkeypatch.setattr(mihomo_runtime_service, "restart_mihomo_container", record_fenced_restart)
     result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
 
     assert result["ok"] is False
@@ -2733,8 +2758,24 @@ def test_owned_restore_revalidates_after_reload_before_database_restore(monkeypa
         f"rollback declined before post-reload ownership check: {str(result.get('reason') or 'missing')[:96]}"
     )
     assert result.get("xray_reload") is True
-    assert result.get("mihomo_restart") is True
+    assert result.get("mihomo_restart") is (drift == "snapshot")
     assert result.get("derived_rows_restored") is False
+    assert len(restart_receipts) == 1
+    restart_receipt = restart_receipts[0]
+    request = restart_receipt["request"]
+    assert request["action"] == "force_recreate"
+    assert request["selection_fenced"] is True
+    assert request["expected_selection_revision"] == initial_revision + 1
+    if drift == "snapshot":
+        assert restart_receipt["revision_before"] == request["expected_selection_revision"]
+        assert restart_receipt["result"] == {"ok": True, "action": "test"}
+        assert restart_receipt["after_incarnation"] != restart_receipt["before_incarnation"]
+    else:
+        assert restart_receipt["revision_before"] > request["expected_selection_revision"]
+        assert restart_receipt["result"] == {
+            "ok": False, "action": "test", "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT",
+        }
+        assert restart_receipt["after_incarnation"] == restart_receipt["before_incarnation"]
     assert checkpoint.exists()
     with db_session() as connection:
         current_snapshot = connection.execute(
