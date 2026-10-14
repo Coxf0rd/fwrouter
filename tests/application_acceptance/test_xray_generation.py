@@ -654,14 +654,25 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         "loaded_count": len(loaded_after_supersession),
         "loaded_sha256": identity_fingerprint(loaded_after_supersession),
     }
-    final_checkpoint_data = json.loads(checkpoint.read_text(encoding="utf-8"))
-    supersession = final_checkpoint_data.get("supersession")
-    assert isinstance(supersession, dict)
-    archive_path = Path(str(supersession.get("archive_path") or ""))
-    assert archive_path.is_file() and archive_path.read_bytes() == old_checkpoint_bytes
-    assert supersession.get("checkpoint_sha256") == old_checkpoint_sha
-    assert supersession.get("migration_plan_sha256") == applied.get("plan_sha256")
-    assert supersession.get("migration_transition_count") == 1
+    # Successful publication deliberately removes the active checkpoint. Prove
+    # supersession through its retained CLI receipt, the deterministic durable
+    # archive, and the migration ledger instead of expecting a pending marker.
+    assert superseded.get("supersedes_checkpoint_sha256") == old_checkpoint_sha
+    assert superseded.get("migration_plan_sha256") == applied.get("plan_sha256")
+    assert not checkpoint.exists(), "successful supersession left an active generation checkpoint"
+    archive_path = checkpoint.parent / "checkpoint-archive" / f"generation-checkpoint-{old_checkpoint_sha}.json"
+    assert archive_path.is_file() and not archive_path.is_symlink()
+    assert archive_path.read_bytes() == old_checkpoint_bytes
+    connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+    try:
+        transition_count = connection.execute(
+            "SELECT COUNT(*) FROM subscription_node_identity_transitions "
+            "WHERE operator_plan_sha256=? AND checkpoint_sha256=?",
+            (applied.get("plan_sha256"), old_checkpoint_sha),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert transition_count == 1, {"migration_transition_count": transition_count}
     assert all(read_subscription_rows(state, token)["snapshots"] for token in tokens)
 
     def snapshot_pairs(token: str) -> list[tuple[str, str, str]]:
