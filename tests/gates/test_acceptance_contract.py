@@ -163,6 +163,8 @@ class AcceptanceContractTests(unittest.TestCase):
         start_source = ast.get_source_segment(fixture_source, start_worker) or ""
         self.assertIn('base + "/health"', start_source)
         self.assertIn("_health_response_is_ready(code, payload)", start_source)
+        self.assertIn("timeout=min(0.5, remaining)", start_source)
+        self.assertIn('"path": "/health"', start_source)
         self.assertNotIn('base + "/xray"', start_source)
 
         scale_source = (Path(__file__).parents[1] / "application_acceptance" / "test_runtime_scale.py").read_text(
@@ -175,6 +177,7 @@ class AcceptanceContractTests(unittest.TestCase):
         )
         scale_case_source = ast.get_source_segment(scale_source, scale_case) or ""
         self.assertIn('http_json(api + "/xray", timeout=20.0)', scale_case_source)
+        self.assertIn('metrics["startup_readiness_probe"]', scale_case_source)
         self.assertIn('"native_loaded_client_count": len(loaded_after_readback)', scale_case_source)
         self.assertIn("len(loaded_after_readback) == SCALE_NATIVE_CLIENT_COUNT", scale_case_source)
 

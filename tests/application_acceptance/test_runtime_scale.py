@@ -721,10 +721,14 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         metrics["startup_engineering_target_met"] = (
             metrics["startup_wall_seconds"] < STARTUP_ENGINEERING_TARGET_SECONDS
         )
-        assert metrics["startup_readiness_probe"] == {
-            "path": "/health", "status_code": 200, "healthy": True,
-            "elapsed_seconds": metrics["startup_readiness_probe"]["elapsed_seconds"],
-        }, metrics["startup_readiness_probe"]
+        readiness_probe = metrics["startup_readiness_probe"]
+        assert (
+            isinstance(readiness_probe, dict)
+            and readiness_probe.get("path") == "/health"
+            and readiness_probe.get("status_code") == 200
+            and readiness_probe.get("healthy") is True
+            and isinstance(readiness_probe.get("elapsed_seconds"), (int, float))
+        ), readiness_probe
         assert bootstrap_code == 200, bootstrap_payload
         assert observation.get("schema") == "fwrouter-runtime-bootstrap-observation/v1", observation
         assert observation.get("worker_pid") == active_worker.pid, observation

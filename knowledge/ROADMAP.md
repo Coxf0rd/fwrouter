@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 hosted load acceptance — 2026-10-15
+
+Run38641631465/source43e8b7b SUCCESS: native identity case1 plus startup/load2 PASS.48/48 concurrentAPI reads successful; healthmax0.0071s, otherAPImax2.3345s, publicXray~0.184s, shutdown0.2639s; exact82 identities/native proof/cleanup retained. Startup44.5947/44.9644s meets45s but remains near threshold; advisory40s not met. HWM854656/997800KiB is API process lifetime, not aggregate/native. This confirms short synthetic load, not longsoak/liveproduction. Final full requiredPRCI pending, PR8 Draft; production held/Live Acceptance BLOCKED, CI milestone CLOSED/CD DEFERRED.
+
 ## PR8 load qualification / engineering threshold — 2026-10-15
 
 Run38617926070 confirms native identity acceptance but scale stops at an added40s engineering assertion: actual readiness43.5133s meets45s hard budget. Per user clarification40s is advisory; retain45s and all actual load/health/memory/shutdown/native predicates. New scoped load repeats pending; no full requiredCI or production activation yet. Prior40s FAIL remains historical evidence. PR8 Draft, production held/Live Acceptance BLOCKED; CI milestone CLOSED/CD DEFERRED.
