@@ -3042,8 +3042,11 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
     before_db = _database_snapshot()
     before_config = config_path.read_bytes()
     staged_inputs: dict[str, object] = {}
+    stage_calls = 0
 
     def reject_stage(**kwargs):
+        nonlocal stage_calls
+        stage_calls += 1
         staged_inputs.update(kwargs)
         return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_CANDIDATE_INVALID"}
 
@@ -3052,7 +3055,12 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
         result = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
 
         assert result["ok"] is False
-        assert result["error_code"] == "MIHOMO_CANDIDATE_INVALID"
+        safe_failure = {
+            key: result.get(key)
+            for key in ("stage", "error_code", "compensation_reason")
+        }
+        assert stage_calls == _attempt + 1, safe_failure
+        assert result["error_code"] == "MIHOMO_CANDIDATE_INVALID", safe_failure
         after_db = _database_snapshot()
         assert before_db == after_db, database_table_diff(before_db, after_db)
         with db_session() as connection:
@@ -3109,8 +3117,11 @@ def test_vpn_auto_source_fence_change_preserves_unverified_identity_intent(monke
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
     _patch_xray_adapters(monkeypatch, adapter)
     before_db = _database_snapshot()
+    stage_calls = 0
 
     def invalidate_source_fence(**_kwargs):
+        nonlocal stage_calls
+        stage_calls += 1
         with db_session() as connection:
             connection.execute(
                 "UPDATE servers SET raw_json=? WHERE server_id=?",
@@ -3122,8 +3133,13 @@ def test_vpn_auto_source_fence_change_preserves_unverified_identity_intent(monke
     failed = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
 
     assert failed["ok"] is False
-    assert failed["error_code"] == "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED"
-    assert failed["compensation_reason"] == "source_fingerprint_changed"
+    safe_failure = {
+        key: failed.get(key)
+        for key in ("stage", "error_code", "compensation_reason")
+    }
+    assert stage_calls == 1, safe_failure
+    assert failed["error_code"] == "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED", safe_failure
+    assert failed["compensation_reason"] == "source_fingerprint_changed", safe_failure
     after_db = _database_snapshot()
     assert after_db != before_db
     with db_session() as connection:
@@ -3149,8 +3165,11 @@ def test_vpn_auto_external_reference_blocks_identity_compensation(monkeypatch, t
     _write_xray_config(config_path, [])
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
     _patch_xray_adapters(monkeypatch, adapter)
+    stage_calls = 0
 
     def publish_external_reference(**_kwargs):
+        nonlocal stage_calls
+        stage_calls += 1
         with db_session() as connection:
             credential = connection.execute(
                 "SELECT a.server_id, c.client_uuid, c.client_email FROM subscription_node_aliases a "
@@ -3170,8 +3189,13 @@ def test_vpn_auto_external_reference_blocks_identity_compensation(monkeypatch, t
     failed = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
 
     assert failed["ok"] is False
-    assert failed["error_code"] == "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED"
-    assert failed["compensation_reason"] == "identity_snapshot_reference_exists"
+    safe_failure = {
+        key: failed.get(key)
+        for key in ("stage", "error_code", "compensation_reason")
+    }
+    assert stage_calls == 1, safe_failure
+    assert failed["error_code"] == "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED", safe_failure
+    assert failed["compensation_reason"] == "identity_snapshot_reference_exists", safe_failure
     with db_session() as connection:
         credential = connection.execute(
             "SELECT c.client_uuid, c.client_email FROM subscription_node_aliases a "
