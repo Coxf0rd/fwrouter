@@ -3027,7 +3027,9 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
                 scope="vpn-auto",
                 server_id=VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
                 client_uuid="11111111-1111-4111-8111-111111111111",
-                client_email="retained-vpn-auto@fwrouter.local",
+                client_email=xray_subscription_service._vpn_auto_xray_client_email(
+                    VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+                ),
             )
             assert retained_auto["client_uuid"] == "11111111-1111-4111-8111-111111111111"
     with db_session() as connection:
@@ -3071,7 +3073,13 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
         assert retained_auto_after == retained_auto_before
 
     clients = staged_inputs["desired_clients"]
-    assert any(str(client["email"]).startswith("vpn-auto-") for client in clients)
+    assert any(
+        client["email"] == xray_subscription_service._vpn_auto_xray_client_email(
+            VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+        )
+        and client["client_uuid"] == "11111111-1111-4111-8111-111111111111"
+        for client in clients
+    )
     assert before_config == config_path.read_bytes()
 
 
