@@ -198,22 +198,70 @@ def _run_checkpoint_supersession(args: argparse.Namespace) -> int:
         return 1
 
 
-def _database_schema_version(path: Path) -> int | None:
+_SCHEMA_25_IDENTITY_TABLES = frozenset({
+    "subscription_node_identities",
+    "subscription_node_aliases",
+    "subscription_node_credentials",
+    "subscription_node_identity_transitions",
+    "subscription_node_credential_history",
+})
+
+
+def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_schema: int) -> int:
     _validate_database_path(path)
+    from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION, inspect_database_schema
+
     uri = path.absolute().as_uri() + "?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+    connection.row_factory = sqlite3.Row
     try:
-        exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'"
-        ).fetchone()
-        if not exists:
-            return None
-        row = connection.execute(
-            "SELECT value FROM schema_meta WHERE key='schema_version'"
-        ).fetchone()
-        return int(row[0]) if row else None
+        state = inspect_database_schema(connection)
+        try:
+            integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
+            foreign_key_violations = list(connection.execute("PRAGMA foreign_key_check"))
+        except sqlite3.Error as exc:
+            raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED") from exc
     finally:
         connection.close()
+    actual_value = state.get("actual_schema_version")
+    try:
+        actual_schema = int(actual_value) if actual_value is not None else None
+    except (TypeError, ValueError):
+        actual_schema = None
+    if actual_schema != expected_schema:
+        raise ValueError("DATABASE_SCHEMA_EXPECTATION_STALE")
+    if integrity != ["ok"] or foreign_key_violations:
+        raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+
+    if expected_schema == target_schema == int(EXPECTED_SCHEMA_VERSION):
+        if not state.get("ok"):
+            raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+        return actual_schema
+
+    if (expected_schema, target_schema) != (24, 25):
+        raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
+    tables = state.get("tables") if isinstance(state.get("tables"), dict) else {}
+    if set(_SCHEMA_25_IDENTITY_TABLES) - set(tables):
+        raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+    # The only tolerated v24 drift is the version marker plus all five v25
+    # identity tables being wholly absent. Partial table creation or any
+    # baseline table mismatch means this is not a supported upgrade preimage.
+    if any(bool(tables[name].get("exists")) for name in _SCHEMA_25_IDENTITY_TABLES):
+        raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+    if any(not table.get("ok") for name, table in tables.items()
+           if name not in _SCHEMA_25_IDENTITY_TABLES):
+        raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+    problems = state.get("problems") if isinstance(state.get("problems"), list) else []
+    allowed_problem_keys = {
+        ("SCHEMA_VERSION_MISMATCH", None),
+        *(("TABLE_SCHEMA_MISMATCH", name) for name in _SCHEMA_25_IDENTITY_TABLES),
+    }
+    if any((problem.get("code"), problem.get("table")) not in allowed_problem_keys
+           for problem in problems):
+        raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+    if len(problems) != len(_SCHEMA_25_IDENTITY_TABLES) + 1:
+        raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+    return actual_schema
 
 
 def _validate_database_path(path: Path) -> None:
@@ -287,10 +335,15 @@ def _run_database_upgrade(args: argparse.Namespace) -> int:
         db_path = get_db_path()
         if not db_path.is_file():
             raise ValueError("DATABASE_SCHEMA_FILE_UNAVAILABLE")
-        current = _database_schema_version(db_path)
-        if current != args.expected_schema:
-            raise ValueError("DATABASE_SCHEMA_EXPECTATION_STALE")
         target_version = int(EXPECTED_SCHEMA_VERSION)
+        if not (
+            (args.expected_schema == target_version and target_version == 25)
+            or (args.expected_schema == 24 and target_version == 25)
+        ):
+            raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
+        current = _database_upgrade_preflight(
+            db_path, expected_schema=args.expected_schema, target_schema=target_version,
+        )
         if current == target_version and args.expected_schema == target_version:
             print(json.dumps({"ok": True, "status": "already_current", "current_schema": current,
                               "target_schema": target_version, "database_changed": False}, sort_keys=True))
@@ -306,11 +359,13 @@ def _run_database_upgrade(args: argparse.Namespace) -> int:
             raise ValueError("DATABASE_OFFLINE_CONFIRMATION_REQUIRED")
         from fwrouter_api.adapters.xray_common import xray_writer_guard
         with xray_writer_guard(timeout_seconds=30.0):
-            if _database_schema_version(db_path) != args.expected_schema:
-                raise ValueError("DATABASE_SCHEMA_EXPECTATION_STALE")
+            _database_upgrade_preflight(
+                db_path, expected_schema=args.expected_schema, target_schema=target_version,
+            )
             backup_path, backup_sha256 = _create_schema_upgrade_backup(db_path, args.expected_schema)
-            if _database_schema_version(db_path) != args.expected_schema:
-                raise ValueError("DATABASE_SCHEMA_EXPECTATION_STALE")
+            _database_upgrade_preflight(
+                db_path, expected_schema=args.expected_schema, target_schema=target_version,
+            )
             schema = initialize_database()
         if not schema.get("ok") or schema.get("actual_schema_version") != str(target_version):
             print(json.dumps({"ok": False, "status": "failed", "error_code": "DATABASE_SCHEMA_UPGRADE_FAILED",

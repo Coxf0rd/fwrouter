@@ -238,6 +238,7 @@ jobs:
             --report "$root/migration-l3-report.json" \
             --log "$root/migration-l3.log" \
             tests/test_db_migrations.py::test_database_upgrade_cli_is_explicit_backed_up_and_idempotent \
+            tests/test_db_migrations.py::test_database_upgrade_cli_refuses_schema_24_structural_drift_without_backup \
             tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade \
             tests/test_db_migrations.py::test_subscription_identity_migration_preserves_references_and_membership \
             tests/test_xray_vpn_auto_lifecycle.py::test_reviewed_profile_identity_mapping_preserves_credentials_without_publishing \

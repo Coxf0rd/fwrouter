@@ -248,6 +248,7 @@ def migrate_subscription_profile_identities(
     if not db_path.is_file():
         raise IdentityConflict("IDENTITY_DATABASE_UNAVAILABLE")
     schema_connection = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5.0)
+    schema_connection.row_factory = sqlite3.Row
     try:
         schema_state = inspect_database_schema(schema_connection)
     finally:

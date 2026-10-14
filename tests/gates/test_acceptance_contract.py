@@ -3761,6 +3761,10 @@ class AcceptanceContractTests(unittest.TestCase):
             workflow,
         )
         self.assertIn(
+            "tests/test_db_migrations.py::test_database_upgrade_cli_refuses_schema_24_structural_drift_without_backup",
+            workflow,
+        )
+        self.assertIn(
             "tests/test_subscription_refresh_outcomes.py::test_staged_profile_verification_runs_outside_writer_guard",
             workflow,
         )
