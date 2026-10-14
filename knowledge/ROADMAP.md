@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 atomicity and load requalification — 2026-10-15
+
+Run38646554002/sourceeb295ac SUCCESS: component atomicity checks, full native identity1 and startup/load2 PASS. Startup35.5317/35.8416s;48/48 successful concurrent reads, healthmax0.0099s/allAPImax1.825s; HWM938144/904396KiB, shutdown0.2138s. Exact82synthetic identities/native proof/cleanup preserved. Prior finalfull38642672427 had1525PASS/1FAIL duepre-checkpoint identity persistence; invocation-owned compensation nowqualified. Final fullrequiredPR rerun pending beforeReady; no production/liveacceptance. Previous near45srun remainsvarianceevidence. CI milestone CLOSED/CD DEFERRED.
+
 ## PR8 hosted load acceptance — 2026-10-15
 
 Run38641631465/source43e8b7b SUCCESS: native identity case1 plus startup/load2 PASS.48/48 concurrentAPI reads successful; healthmax0.0071s, otherAPImax2.3345s, publicXray~0.184s, shutdown0.2639s; exact82 identities/native proof/cleanup retained. Startup44.5947/44.9644s meets45s but remains near threshold; advisory40s not met. HWM854656/997800KiB is API process lifetime, not aggregate/native. This confirms short synthetic load, not longsoak/liveproduction. Final full requiredPRCI pending, PR8 Draft; production held/Live Acceptance BLOCKED, CI milestone CLOSED/CD DEFERRED.
