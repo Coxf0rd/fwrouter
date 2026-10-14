@@ -1098,3 +1098,22 @@ def test_recovery_selection_snapshot_uses_one_bounded_nested_selector_read(monke
     assert reads == [1.5]
     assert result["active_target"] != "logical-provider-id"
     assert result["effective_member_runtime_identity"] != "provider-member-id"
+
+
+def test_simple_udp_domain_native_guard_aliases_preserve_exact_parity_and_reject_extra_conditions() -> None:
+    proxies = {"vpn-auto": {"all": ["REJECT"], "now": "REJECT"},
+               "vpn-global": {"all": ["vpn-auto", "REJECT"], "now": "vpn-auto"}}
+    for native_type, config_type in [("Domain", "DOMAIN"), ("DomainSuffix", "DOMAIN-SUFFIX"), ("DomainKeyword", "DOMAIN-KEYWORD")]:
+        guard = f"AND,((NETWORK,udp),({config_type},owned.test)),REJECT"
+        config = yaml.safe_dump({"rules": [f"{config_type},owned.test,vpn-global", guard, "MATCH,DIRECT"],
+            "proxy-groups": [{"name": "vpn-auto", "proxies": ["REJECT"]},
+                             {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]}],
+            "sub-rules": {"fwrouter-transparent": [f"{config_type},owned.test,vpn-global", guard, "MATCH,DIRECT"],
+                          "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"]}})
+        for condition, operator in [(native_type, " && "), (native_type, ","), (config_type, ",")]:
+            native = [{"type": native_type, "payload": "owned.test", "proxy": "vpn-global"},
+                      {"type": "AND", "payload": f"((Network,udp){operator}({condition},owned.test))", "proxy": "REJECT"},
+                      {"type": "Match", "payload": "", "proxy": "DIRECT"}]
+            assert MihomoHttpAdapter._vpn_udp_policy_readback(config, proxies, native)["native_top_level_rules_match"] is True
+            native[1]["payload"] = f"((Network,udp),({condition},owned.test),(Network,tcp))"
+            assert MihomoHttpAdapter._vpn_udp_policy_readback(config, proxies, native)["native_top_level_rules_match"] is False

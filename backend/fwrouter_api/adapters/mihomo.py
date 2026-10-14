@@ -26,6 +26,9 @@ TRANSPARENT_TPROXY_PROXY_NAME = "vpn-global"
 TRANSPARENT_TPROXY_RULE_NAME = "fwrouter-transparent"
 MAX_CACHED_POLICY_CONFIG_BYTES = 32 * 1024 * 1024
 MAX_CACHED_POLICY_RULE_COUNT = 250_000
+_SIMPLE_DOMAIN_UDP_GUARD = re.compile(
+    r"\(\((?:Network|NETWORK),udp\)(?:,| && )\((Domain|DOMAIN|DomainSuffix|DOMAIN-SUFFIX|DomainKeyword|DOMAIN-KEYWORD),([^,()]+)\)\)"
+)
 BUILTIN_PROXY_NAMES = {
     "COMPATIBLE",
     "DIRECT",
@@ -965,6 +968,8 @@ class MihomoHttpAdapter(MihomoAdapter):
             native_condition_type_to_config = {**native_type_to_config, "SrcPort": "SRC-PORT", "DstPort": "DST-PORT"}
 
             def canonicalize_nested_cidrs(payload: str) -> str | None:
+                if "IP-CIDR" not in payload:
+                    return payload  # The exact CIDR regex cannot match this input.
                 def replace(match: re.Match[str]) -> str:
                     rule_type, value, raw_params = match.groups()
                     params = [item for item in raw_params.split(",") if item]
@@ -1004,6 +1009,11 @@ class MihomoHttpAdapter(MihomoAdapter):
                     except ValueError:
                         return None
                 if config_type == "AND":
+                    simple_guard = _SIMPLE_DOMAIN_UDP_GUARD.fullmatch(payload)
+                    if simple_guard is not None:
+                        condition, value = simple_guard.groups()
+                        condition = native_condition_type_to_config.get(condition, condition)
+                        return config_type, f"((NETWORK,udp),({condition},{value}))"
                     payload = payload.replace(" && ", ",")
                     payload = re.sub(
                         r"(?<=\(|,)([A-Za-z][A-Za-z0-9]*)(?=,)",
