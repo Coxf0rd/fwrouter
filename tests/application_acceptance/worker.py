@@ -3803,8 +3803,6 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)
-                sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_CANDIDATE_GRAPH_WRITTEN\n")
-                sys.stderr.flush()
         except Exception as exc:
             try:
                 sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_CANDIDATE_GRAPH_WRITE_FAILED "

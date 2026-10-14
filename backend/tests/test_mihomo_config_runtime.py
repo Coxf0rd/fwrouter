@@ -1640,6 +1640,10 @@ def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_
     old_b = f"{old_name} :: old-b"
     old_raw = {
         "name": old_name,
+        "type": "vless",
+        "server": "old-profile.example.invalid",
+        "port": 443,
+        "uuid": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
         "_fwrouter_runtime_name": old_name,
         "_fwrouter_topology": {
             "kind": "logical_profile",
@@ -1695,14 +1699,17 @@ def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_
     old_proxy_a = {
         "name": old_a, "type": "socks5", "server": "old-a.example.invalid", "port": 1080,
     }
-    base = {"proxies": [old_proxy_a], "proxy-groups": [old_group]}
+    old_proxy_b = {
+        "name": old_b, "type": "socks5", "server": "old-b.example.invalid", "port": 1080,
+    }
+    base = {"proxies": [old_proxy_a, old_proxy_b], "proxy-groups": [old_group]}
 
     during_handoff = mihomo_proxies_service._merge_runtime_proxies(
-        base, required_last_good_names={old_name},
+        base, required_last_good_names={old_name}, required_last_good_server_ids={old_id},
     )
     during_names = {proxy["name"] for proxy in during_handoff}
-    assert old_a in during_names
-    assert old_b not in during_names  # Missing base member must never be synthesized.
+    assert old_a in during_names and old_b in during_names
+    assert old_name not in during_names  # The profile owner is a group, not a duplicate native proxy.
     assert f"{new_name} :: new-a" in during_names
     during_groups = mihomo_proxies_service._ensure_selector_groups({
         **base, "proxies": during_handoff,
@@ -1710,6 +1717,18 @@ def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_
     during_by_name = {group["name"]: group for group in during_groups}
     assert during_by_name[old_name] == old_group
     assert during_by_name[new_name]["proxies"] == [f"{new_name} :: new-a"]
+
+    missing_member_base = {"proxies": [old_proxy_a], "proxy-groups": [old_group]}
+    missing_member_names = {
+        proxy["name"] for proxy in mihomo_proxies_service._merge_runtime_proxies(
+            missing_member_base,
+            required_last_good_names={old_name},
+            required_last_good_server_ids={old_id},
+        )
+    }
+    assert old_a in missing_member_names
+    assert old_b not in missing_member_names  # Persisted topology does not synthesize missing native members.
+    assert old_name not in missing_member_names
 
     after_convergence = mihomo_proxies_service._merge_runtime_proxies(
         base, required_last_good_names=set(),

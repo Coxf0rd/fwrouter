@@ -322,6 +322,15 @@ def _merge_runtime_proxies(
                 continue
             if not isinstance(raw, dict):
                 continue
+            topology = raw.get("_fwrouter_topology")
+            if isinstance(topology, dict) and topology.get("kind") == "logical_profile":
+                # Logical profiles are represented by generated proxy-groups,
+                # not by a single native proxy. Their last-good handoff is
+                # retained below from the group's owned member definitions.
+                # Normalizing the profile row here would create a proxy whose
+                # name collides with that group and makes native validation
+                # reject the candidate configuration.
+                continue
             proxy = _normalize_proxy_list({"proxies": [dict(raw)]}).get("proxies")[0]
             name = str(proxy.get("name") or "").strip()
             proxy_type = str(proxy.get("type") or "").strip().lower()
