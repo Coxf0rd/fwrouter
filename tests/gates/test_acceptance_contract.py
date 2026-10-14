@@ -61,6 +61,7 @@ native_runner = importlib.util.module_from_spec(NATIVE_SPEC)
 NATIVE_SPEC.loader.exec_module(native_runner)
 WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 APPLICATION_ACCEPTANCE_CONFTEST = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
+APPLICATION_ACCEPTANCE_WORKER = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 
 
 def _extract_startup_phase_parser():
@@ -76,7 +77,84 @@ def _extract_startup_phase_parser():
     return namespace["_startup_phase_diagnostics"]
 
 
+def _extract_bootstrap_phase_summary():
+    """Load the nested redacted projection without importing the application worker."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+    build_app = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_app"
+    )
+    function = next(
+        node for node in ast.walk(build_app)
+        if isinstance(node, ast.FunctionDef) and node.name == "phase_summary"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {"Any": Any, "re": re}
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+    return namespace["phase_summary"]
+
+
 class AcceptanceContractTests(unittest.TestCase):
+    def test_bootstrap_projection_exposes_only_the_staged_native_proof_needed_by_scale_gate(self):
+        project = _extract_bootstrap_phase_summary()
+        source = {
+            "ok": True,
+            "status": "success",
+            "inventory_authority": "persisted_success",
+            "staged_publication_receipt": {
+                "schema": 1, "staged_native_publication_complete": True,
+                "client_uuid": "UUID_SENTINEL",
+            },
+            "generation_apply": {
+                "final_mihomo": {"ok": True, "config": "RAW_CONFIG_SENTINEL"},
+                "public_snapshots_changed": True,
+                "xray": {"client_uuid": "UUID_SENTINEL"},
+            },
+            "public_profile_promote": {"profiles_count": 7, "nodes_count": 70,
+                                        "client_uuid": "UUID_SENTINEL"},
+            "final_mihomo_reconcile": {
+                "ok": True, "skipped": True,
+                "reason": "staged_publication_native_proof_complete",
+                "details": "RAW_DETAILS_SENTINEL",
+            },
+            "raw_subscription": "RAW_SUBSCRIPTION_SENTINEL",
+        }
+        result = project(source)
+        self.assertTrue(result["ok"])
+        self.assertEqual("success", result["status"])
+        self.assertEqual("persisted_success", result["inventory_authority"])
+        self.assertEqual({"schema": 1, "staged_native_publication_complete": True},
+                         result["staged_publication_receipt"])
+        self.assertEqual({"final_mihomo": {"ok": True}, "public_snapshots_changed": True},
+                         result["generation_apply"])
+        self.assertEqual({"profiles_count": 7, "nodes_count": 70}, result["public_profile_promote"])
+        self.assertEqual({"ok": True, "skipped": True,
+                          "reason": "staged_publication_native_proof_complete"},
+                         result["final_mihomo_reconcile"])
+        encoded = json.dumps(result)
+        for sentinel in ("UUID_SENTINEL", "RAW_CONFIG_SENTINEL", "RAW_DETAILS_SENTINEL",
+                         "RAW_SUBSCRIPTION_SENTINEL"):
+            self.assertNotIn(sentinel, encoded)
+
+    def test_bootstrap_projection_does_not_promote_malformed_proof_or_counts_to_success(self):
+        project = _extract_bootstrap_phase_summary()
+        malformed = {
+            "ok": True,
+            "status": "success",
+            "staged_publication_receipt": {"schema": True, "staged_native_publication_complete": "true"},
+            "generation_apply": {
+                "final_mihomo": {"ok": "true"}, "public_snapshots_changed": 1,
+            },
+            "public_profile_promote": {"profiles_count": True, "nodes_count": -1},
+            "final_mihomo_reconcile": {"ok": True, "skipped": True, "reason": "untrusted reason"},
+        }
+        result = project(malformed)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("staged_publication_receipt", result)
+        self.assertNotIn("generation_apply", result)
+        self.assertNotIn("public_profile_promote", result)
+        self.assertEqual({"ok": True, "skipped": True}, result["final_mihomo_reconcile"])
+
     def test_startup_phase_diagnostic_parser_reads_only_a_bounded_tail(self):
         parser = _extract_startup_phase_parser()
         prefix = b"FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "

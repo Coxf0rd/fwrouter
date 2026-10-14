@@ -2749,6 +2749,41 @@ def build_app(socket_path: Path):
                                 if type(nested.get(field)) is bool or (
                                     field == "error_code" and isinstance(nested.get(field), str)
                                     and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", nested[field]))}
+        receipt = value.get("staged_publication_receipt")
+        if (isinstance(receipt, dict) and type(receipt.get("schema")) is int
+                and receipt.get("schema") == 1
+                and receipt.get("staged_native_publication_complete") is True):
+            summary["staged_publication_receipt"] = {
+                "schema": 1, "staged_native_publication_complete": True,
+            }
+        generation_apply = value.get("generation_apply")
+        if isinstance(generation_apply, dict):
+            generation_summary: dict[str, Any] = {}
+            final_mihomo = generation_apply.get("final_mihomo")
+            if isinstance(final_mihomo, dict) and type(final_mihomo.get("ok")) is bool:
+                generation_summary["final_mihomo"] = {"ok": final_mihomo["ok"]}
+            if type(generation_apply.get("public_snapshots_changed")) is bool:
+                generation_summary["public_snapshots_changed"] = generation_apply["public_snapshots_changed"]
+            if generation_summary:
+                summary["generation_apply"] = generation_summary
+        promotion = value.get("public_profile_promote")
+        if isinstance(promotion, dict):
+            promotion_summary = {
+                key: promotion[key] for key in ("profiles_count", "nodes_count")
+                if type(promotion.get(key)) is int and promotion[key] >= 0
+            }
+            if promotion_summary:
+                summary["public_profile_promote"] = promotion_summary
+        final_reconcile = value.get("final_mihomo_reconcile")
+        if isinstance(final_reconcile, dict):
+            reconcile_summary = {
+                key: final_reconcile[key] for key in ("ok", "skipped")
+                if type(final_reconcile.get(key)) is bool
+            }
+            if final_reconcile.get("reason") == "staged_publication_native_proof_complete":
+                reconcile_summary["reason"] = "staged_publication_native_proof_complete"
+            if reconcile_summary:
+                summary["final_mihomo_reconcile"] = reconcile_summary
         return summary
 
     def observed_bootstrap() -> dict[str, Any]:
