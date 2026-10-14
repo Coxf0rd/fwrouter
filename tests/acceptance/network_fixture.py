@@ -882,6 +882,14 @@ class _EndpointHandler(_QuietHandler):
     def do_HEAD(self) -> None:
         if self.server.server_address == (SERVICE_VIP, HTTP_PORT) and self.path == "/generate_204":
             self._send_generate_204()
+        elif self.server.server_address == (SERVICE_VIP, HTTP_PORT) and self.path == "/probe":
+            # Pinned Mihomo URLTest performs HEAD, not GET. Record the real
+            # incoming peer without writing a response body for HEAD.
+            _OBS.record("http", self.client_address[0])
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
         else:
             self.send_response(404)
             self.send_header("Content-Length", "0")

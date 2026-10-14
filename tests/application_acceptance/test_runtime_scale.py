@@ -652,6 +652,9 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             )
         finally:
             metrics["startup_wall_seconds"] = round(time.monotonic() - start, 4)
+        assert metrics["startup_wall_seconds"] < 45.0, {
+            "startup_wall_seconds": metrics["startup_wall_seconds"], "limit_seconds": 45.0,
+        }
         stack["worker"] = active_worker
         stack["api"] = api
 

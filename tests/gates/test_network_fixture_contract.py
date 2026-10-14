@@ -2335,6 +2335,18 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 fixture._EndpointHandler.do_POST(handler)
                 self.assertEqual(handler.response[0], 400)
 
+        probe = FakeHealthHandler((fixture.SERVICE_VIP, fixture.HTTP_PORT), "/probe")
+        probe.client_address = (fixture.SERVICE_VIP, 12345)
+        fixture._EndpointHandler.do_HEAD(probe)
+        self.assertEqual((200, None), probe.response)
+        self.assertIn(("Content-Length", "0"), probe.headers_out)
+        self.assertEqual(1, fixture._OBS.snapshot()["counts"]["http"])
+        self.assertEqual(fixture.SERVICE_VIP, fixture._OBS.snapshot()["last_peers"]["http"])
+        control = FakeHealthHandler((fixture.ENDPOINT_WAN_IP, fixture.ENDPOINT_CONTROL_PORT), "/probe")
+        fixture._EndpointHandler.do_HEAD(control)
+        self.assertEqual((404, None), control.response)
+        self.assertEqual(1, fixture._OBS.snapshot()["counts"]["http"])
+
         self.assertIn('self.path == "/generate_204"', _method_source("_EndpointHandler", "do_GET"))
         self.assertIn('self.path == "/generate_204"', _method_source("_EndpointHandler", "do_HEAD"))
 
