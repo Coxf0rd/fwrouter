@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import ast
 import builtins
+import copy
 import hashlib
 import json
 import re
@@ -15,10 +16,11 @@ import stat
 import sys
 import socket
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 from unittest import mock
 import io
 from pathlib import Path
+from typing import Any
 import xml.etree.ElementTree as ET
 from types import ModuleType, SimpleNamespace
 
@@ -968,8 +970,6 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('else "/opt/fwrouter-test/bin:/usr/bin:/bin"', conftest)
 
     def test_owned_worker_rewrites_only_copied_logical_health_check_groups(self):
-        from application_acceptance import worker
-
         original = [
             {"name": "fallback-group", "type": "fallback", "url": "https://www.gstatic.com/generate_204",
              "proxies": ["member-a"]},
@@ -978,7 +978,16 @@ class AcceptanceContractTests(unittest.TestCase):
             {"name": "selector", "type": "select", "proxies": ["member-a", "member-b"]},
         ]
         probe_url = "http://127.0.0.1:52044/generate_204"
-        observed = worker._owned_logical_health_check_groups(original, probe_url)
+        worker_tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"), filename=str(WORKER_PATH))
+        helper_node = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_owned_logical_health_check_groups"
+        )
+        helper_namespace = {"copy": copy, "urlsplit": urlsplit, "Any": Any}
+        exec(compile(ast.Module(body=[helper_node], type_ignores=[]), str(WORKER_PATH), "exec"), helper_namespace)
+        owned_groups = helper_namespace["_owned_logical_health_check_groups"]
+
+        observed = owned_groups(original, probe_url)
         self.assertEqual(probe_url, observed[0]["url"])
         self.assertEqual(probe_url, observed[1]["url"])
         self.assertEqual(original[2], observed[2])
@@ -995,10 +1004,10 @@ class AcceptanceContractTests(unittest.TestCase):
             "http://user@127.0.0.1:52044/generate_204",
         ):
             with self.subTest(probe_url=unsafe), self.assertRaises(RuntimeError):
-                worker._owned_logical_health_check_groups(original, unsafe)
+                owned_groups(original, unsafe)
         packet_profile = {"profile": "hosted-kernel-packet"}
         packet_url = "http://203.0.113.53:9080/generate_204"
-        packet_groups = worker._owned_logical_health_check_groups(
+        packet_groups = owned_groups(
             original, packet_url, profile=packet_profile)
         self.assertEqual(packet_url, packet_groups[0]["url"])
         self.assertEqual(packet_url, packet_groups[1]["url"])
@@ -1010,16 +1019,16 @@ class AcceptanceContractTests(unittest.TestCase):
             "http://203.0.113.53:9080/generate_204?url=http://127.0.0.1",
         ):
             with self.subTest(packet_probe_url=unsafe), self.assertRaises(RuntimeError):
-                worker._owned_logical_health_check_groups(original, unsafe, profile=packet_profile)
+                owned_groups(original, unsafe, profile=packet_profile)
         with self.assertRaises(RuntimeError):
-            worker._owned_logical_health_check_groups(original, packet_url)
+            owned_groups(original, packet_url)
         dataplane_profile = {
             "profile": "hosted-kernel-dataplane",
             "mihomo_handoff": {"address": "172.18.0.1", "subnet": "172.18.0.0/24",
                                "gateway": "172.18.0.254"},
         }
         internal_url = "http://172.18.0.1:49152/generate_204"
-        internal_groups = worker._owned_logical_health_check_groups(
+        internal_groups = owned_groups(
             original, internal_url, profile=dataplane_profile, expected_probe_port=49152)
         self.assertEqual(internal_url, internal_groups[0]["url"])
         for unsafe in (
@@ -1029,16 +1038,75 @@ class AcceptanceContractTests(unittest.TestCase):
             "http://172.18.0.1:49152/generate_204?target=127.0.0.1",
         ):
             with self.subTest(dataplane_probe_url=unsafe), self.assertRaises(RuntimeError):
-                worker._owned_logical_health_check_groups(
+                owned_groups(
                     original, unsafe, profile=dataplane_profile, expected_probe_port=49152)
         with self.assertRaises(RuntimeError):
-            worker._owned_logical_health_check_groups(
+            owned_groups(
                 original, internal_url, profile=dataplane_profile, expected_probe_port=49153)
-        normal_groups = worker._owned_logical_health_check_groups(original, probe_url)
+        normal_groups = owned_groups(original, probe_url)
         self.assertEqual(probe_url, normal_groups[0]["url"])
         source = WORKER_PATH.read_text(encoding="utf-8")
-        self.assertIn("mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge", source)
-        self.assertIn("generated = original_logical_profile_groups()", source)
+        worker_tree = ast.parse(source, filename=str(WORKER_PATH))
+        bind_function = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_bind_acceptance_mihomo"
+        )
+        wrapper_node = next(
+            node for node in bind_function.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "generated_logical_profile_group_on_owned_bridge"
+        )
+        def generated_factory(runtime_name, members, runtime_policy="fallback"):
+            return {
+                "name": runtime_name,
+                "type": runtime_policy,
+                "proxies": [member["name"] for member in members],
+                "url": "https://www.gstatic.com/generate_204",
+                "interval": 300,
+            }
+
+        factory_namespace = {
+            "original_generated_logical_profile_group": generated_factory,
+            "_owned_logical_health_check_groups": owned_groups,
+            "owned_probe_url": internal_url,
+            "acceptance_profile": dataplane_profile,
+            "owned_probe_port": 49152,
+            "Any": Any,
+        }
+        exec(compile(ast.Module(body=[wrapper_node], type_ignores=[]), str(WORKER_PATH), "exec"), factory_namespace)
+        wrapped_factory = factory_namespace["generated_logical_profile_group_on_owned_bridge"]
+        active_group = wrapped_factory("active-profile", [{"name": "active-member"}])
+        inactive_group = wrapped_factory("inactive-profile", [{"name": "inactive-member"}])
+        self.assertEqual(internal_url, active_group["url"])
+        self.assertEqual(internal_url, inactive_group["url"])
+        self.assertEqual(["active-member"], active_group["proxies"])
+        self.assertEqual(["inactive-member"], inactive_group["proxies"])
+        with self.assertRaises(RuntimeError):
+            owned_groups([generated_factory("wrong-endpoint", [{"name": "member"}])],
+                         "http://172.18.0.2:49152/generate_204",
+                         profile=dataplane_profile, expected_probe_port=49152)
+
+        service_path = WORKER_PATH.parents[2] / "backend/fwrouter_api/services/mihomo_config_proxies.py"
+        service_tree = ast.parse(service_path.read_text(encoding="utf-8"), filename=str(service_path))
+        for function_name in ("_logical_profile_groups", "_known_inactive_logical_profile_groups"):
+            function_node = next(
+                node for node in service_tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == function_name
+            )
+            factory_calls = [
+                node for node in ast.walk(function_node)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "_generated_logical_profile_group"
+            ]
+            self.assertTrue(factory_calls, function_name)
+        self.assertIn(
+            "mihomo_config_proxies._generated_logical_profile_group = generated_logical_profile_group_on_owned_bridge",
+            source,
+        )
+        self.assertNotIn(
+            "mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge",
+            source,
+        )
 
     def test_owned_core_candidate_rpc_is_profile_gated_and_delegates_to_core_selector(self):
         from application_acceptance import worker

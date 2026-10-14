@@ -3428,7 +3428,7 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
             or parsed_provider_endpoint.query or parsed_provider_endpoint.fragment):
         raise RuntimeError("acceptance Mihomo probe target must be the owned loopback provider bridge")
 
-    original_logical_profile_groups = mihomo_config_proxies._logical_profile_groups
+    original_generated_logical_profile_group = mihomo_config_proxies._generated_logical_profile_group
     if packet_profile:
         owned_probe_url = "http://203.0.113.53:9080/generate_204"
     elif profile_mode == "hosted-kernel-dataplane":
@@ -3442,13 +3442,15 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
     else:
         owned_probe_url = f"{provider_endpoint}/generate_204"
 
-    def logical_profile_groups_on_owned_bridge() -> list[dict[str, Any]]:
-        generated = original_logical_profile_groups()
+    def generated_logical_profile_group_on_owned_bridge(
+        runtime_name: str, members: list[dict[str, Any]], *args: Any, **kwargs: Any,
+    ) -> dict[str, Any]:
+        generated = original_generated_logical_profile_group(runtime_name, members, *args, **kwargs)
         return _owned_logical_health_check_groups(
-            generated, owned_probe_url, profile=acceptance_profile,
-            expected_probe_port=owned_probe_port)
+            [generated], owned_probe_url, profile=acceptance_profile,
+            expected_probe_port=owned_probe_port)[0]
 
-    mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge
+    mihomo_config_proxies._generated_logical_profile_group = generated_logical_profile_group_on_owned_bridge
 
     member_diagnostic_state = {"used": False}
     member_diagnostic_lock = threading.Lock()

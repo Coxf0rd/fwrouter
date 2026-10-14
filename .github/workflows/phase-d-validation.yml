@@ -244,7 +244,14 @@ jobs:
             tests/test_xray_vpn_auto_lifecycle.py::test_reviewed_profile_identity_mapping_preserves_credentials_without_publishing \
             tests/test_xray_vpn_auto_lifecycle.py::test_unmapped_inventory_replacement_does_not_inherit_or_publish_identity \
             tests/test_subscription_refresh_outcomes.py::test_staged_profile_verification_runs_outside_writer_guard \
-            tests/test_subscription_refresh_outcomes.py::test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for_rollback || result=$?
+            tests/test_subscription_refresh_outcomes.py::test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for_rollback \
+            tests/test_xray.py::test_generation_rollback_refuses_unsafe_mihomo_preimage_before_any_active_write \
+            tests/test_xray.py::test_rollback_mihomo_preimage_requires_policy_and_native_validation \
+            tests/test_xray.py::test_rollback_mihomo_preimage_rejects_reachable_nested_direct \
+            tests/test_xray.py::test_rollback_mihomo_preimage_rejects_nested_group_cycle \
+            tests/test_xray.py::test_owned_restore_revision_change_during_native_validation_prevents_active_mutations \
+            'tests/test_xray.py::test_owned_restore_revalidates_after_reload_before_database_restore[snapshot]' \
+            'tests/test_xray.py::test_owned_restore_revalidates_after_reload_before_database_restore[fence]' || result=$?
           if [ "$result" -eq 0 ]; then
             python tests/gates/gate.py subset-plan --domain xray --level L3 \
               --output "$root/xray-l3-plan.json" > "$root/xray-l3-plan.log"
