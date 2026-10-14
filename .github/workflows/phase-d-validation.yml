@@ -257,6 +257,13 @@ jobs:
               --junit "$root/startup-publication.xml" \
               --report "$root/startup-publication-report.json" \
               --log "$root/startup-publication.log" \
+              tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged \
+              tests/test_xray.py::test_vpn_auto_stage_exception_compensates_new_identity_intent \
+              tests/test_xray.py::test_vpn_auto_source_fence_change_preserves_unverified_identity_intent \
+              tests/test_xray.py::test_vpn_auto_external_reference_blocks_identity_compensation \
+              'tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[success]' \
+              'tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[receipt_failure]' \
+              'tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[readback_failure]' \
               tests/test_bootstrap.py::test_startup_vpn_auto_reconcile_promotes_profiles_after_final_mihomo \
               'tests/test_bootstrap.py::test_startup_consumes_completed_staged_publication_without_duplicate_mihomo_or_promotion[pending-cas-cleared]' \
               'tests/test_bootstrap.py::test_startup_consumes_completed_staged_publication_without_duplicate_mihomo_or_promotion[pending-cas-refused]' \

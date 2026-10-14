@@ -2311,6 +2311,7 @@ def test_subscription_profile_reconcile_is_idempotent(monkeypatch, tmp_path: Pat
 def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
     monkeypatch, tmp_path: Path, rollback_failure: str, isolated_host_observations,
 ) -> None:
+    """Component rollback contract; hosted native acceptance covers real readback."""
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -2342,6 +2343,14 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
         good_snapshots = [dict(row) for row in connection.execute(
             "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots ORDER BY token"
         ).fetchall()]
+        good_identity_rows = {
+            table: [dict(row) for row in connection.execute(f'SELECT * FROM "{table}" ORDER BY 1, 2')]
+            for table in (
+                "subscription_node_identities",
+                "subscription_node_aliases",
+                "subscription_node_credentials",
+            )
+        }
 
     _seed_subscription_identity(slug="new-generation", token="new-generation")
     publish_rollback_receipt = xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt
@@ -2354,6 +2363,18 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
     monkeypatch.setattr(
         xray_subscription_service, "_publish_xray_generation_rollback_mihomo_udp_receipt",
         rollback_receipt,
+    )
+    checkpoint_phases_at_recovery: list[str] = []
+    restore_checkpoint = xray_subscription_service._restore_xray_generation_checkpoint
+
+    def observe_checkpoint_at_recovery(adapter_arg, checkpoint_path_arg):
+        checkpoint_phases_at_recovery.append(
+            str(json.loads(Path(checkpoint_path_arg).read_text(encoding="utf-8")).get("phase") or "")
+        )
+        return restore_checkpoint(adapter_arg, checkpoint_path_arg)
+
+    monkeypatch.setattr(
+        xray_subscription_service, "_restore_xray_generation_checkpoint", observe_checkpoint_at_recovery,
     )
     apply_candidate = xray_subscription_service._apply_staged_mihomo_candidate
     def fail_final_candidate(candidate_path: str, expected_sha256: str):
@@ -2373,6 +2394,27 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
 
     assert failed["ok"] is False
     assert failed["stage"] == "mihomo_final_apply"
+    assert "xray_applied" in checkpoint_phases_at_recovery
+    # A checkpoint-admitted generation owns its durable credential intent even
+    # when native apply later rolls back. Those credentials are the recovery
+    # identity source; compensating them here would make resume ambiguous.
+    with db_session() as connection:
+        identity_rows_after_failure = {
+            table: [dict(row) for row in connection.execute(f'SELECT * FROM "{table}" ORDER BY 1, 2')]
+            for table in (
+                "subscription_node_identities",
+                "subscription_node_aliases",
+                "subscription_node_credentials",
+            )
+        }
+    assert identity_rows_after_failure != good_identity_rows
+    for table, rows in good_identity_rows.items():
+        after = identity_rows_after_failure[table]
+        assert all(row in after for row in rows), table
+    assert any(
+        row["scope"] == "subscription:new-generation"
+        for row in identity_rows_after_failure["subscription_node_credentials"]
+    )
     assert config_path.read_bytes() == good_config
     assert bindings_path.read_bytes() == good_bindings
     with db_session() as connection:
@@ -2961,6 +3003,7 @@ def test_subscription_profile_reconcile_does_not_resurrect_disabled_clients(monk
 
 
 def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeypatch, tmp_path: Path) -> None:
+    """Component boundary test: candidate rejection must compensate only owned intent."""
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -2969,6 +3012,29 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
         lambda: [],
     )
     _enable_xray_module()
+    _seed_subscription_identity(slug="identity-atomic", token="identity-atomic")
+    _seed_server("identity-atomic-node")
+    # Keep one durable VPN-auto mapping from before this rejected generation.
+    # The invocation may create mappings for the new subscription scope, but
+    # compensation must remove only those invocation-owned rows.
+    from fwrouter_api.services.subscription_node_identity import register_node, retain_credentials
+    from fwrouter_api.services.xray_subscription_service import VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
+    with xray_writer_guard():
+        with db_session() as connection:
+            auto_identity = register_node(connection, VIRTUAL_XRAY_VPN_AUTO_SERVER_ID)
+            retained_auto = retain_credentials(
+                connection,
+                scope="vpn-auto",
+                server_id=VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+                client_uuid="11111111-1111-4111-8111-111111111111",
+                client_email="retained-vpn-auto@fwrouter.local",
+            )
+            assert retained_auto["client_uuid"] == "11111111-1111-4111-8111-111111111111"
+    with db_session() as connection:
+        retained_auto_before = dict(connection.execute(
+            "SELECT * FROM subscription_node_credentials WHERE scope='vpn-auto' AND identity_id=?",
+            (auto_identity,),
+        ).fetchone())
     config_path, _ = _xray_paths()
     _write_xray_config(config_path, [{"id": "old-runtime", "email": "vpn-auto-old@fwrouter.local"}])
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
@@ -2982,15 +3048,143 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
         return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_CANDIDATE_INVALID"}
 
     monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", reject_stage)
-    result = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
+    for _attempt in range(2):
+        result = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
 
-    assert result["ok"] is False
-    assert result["error_code"] == "MIHOMO_CANDIDATE_INVALID"
+        assert result["ok"] is False
+        assert result["error_code"] == "MIHOMO_CANDIDATE_INVALID"
+        after_db = _database_snapshot()
+        assert before_db == after_db, database_table_diff(before_db, after_db)
+        with db_session() as connection:
+            retained_auto_after = dict(connection.execute(
+                "SELECT * FROM subscription_node_credentials WHERE scope='vpn-auto' AND identity_id=?",
+                (auto_identity,),
+            ).fetchone())
+        assert retained_auto_after == retained_auto
+        assert retained_auto_after == retained_auto_before
+
     clients = staged_inputs["desired_clients"]
     assert any(str(client["email"]).startswith("vpn-auto-") for client in clients)
     assert before_config == config_path.read_bytes()
+
+
+def test_vpn_auto_stage_exception_compensates_new_identity_intent(monkeypatch, tmp_path: Path) -> None:
+    """Component boundary test for an exception before checkpoint admission."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="exception", token="exception")
+    _seed_server("exception-node")
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "old-runtime", "email": "vpn-auto-old@fwrouter.local"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    before_db = _database_snapshot()
+    before_config = config_path.read_bytes()
+
+    def raise_during_stage(**_kwargs):
+        raise RuntimeError("test-only candidate validation exception")
+
+    monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", raise_during_stage)
+    failed = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
+
+    assert failed["ok"] is False
+    assert failed["stage"] == "native_candidate_validation"
+    assert failed["error_code"] == "XRAY_GENERATION_CANDIDATE_VALIDATION_FAILED"
+    assert _database_snapshot() == before_db
+    assert config_path.read_bytes() == before_config
+
+
+def test_vpn_auto_source_fence_change_preserves_unverified_identity_intent(monkeypatch, tmp_path: Path) -> None:
+    """Component boundary test: a changed source fence must refuse compensation."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="source-fence", token="source-fence")
+    _seed_server("source-fence-node")
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "old-runtime", "email": "vpn-auto-old@fwrouter.local"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    before_db = _database_snapshot()
+
+    def invalidate_source_fence(**_kwargs):
+        with db_session() as connection:
+            connection.execute(
+                "UPDATE servers SET raw_json=? WHERE server_id=?",
+                (json.dumps({"test_source_revision": "changed"}), "source-fence-node"),
+            )
+        return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_CANDIDATE_INVALID"}
+
+    monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", invalidate_source_fence)
+    failed = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
+
+    assert failed["ok"] is False
+    assert failed["error_code"] == "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED"
+    assert failed["compensation_reason"] == "source_fingerprint_changed"
     after_db = _database_snapshot()
-    assert before_db == after_db, database_table_diff(before_db, after_db)
+    assert after_db != before_db
+    with db_session() as connection:
+        durable = [dict(row) for row in connection.execute(
+            "SELECT c.scope, c.client_uuid, c.client_email FROM subscription_node_credentials c "
+            "JOIN subscription_node_aliases a ON a.identity_id=c.identity_id "
+            "WHERE a.server_id=? ORDER BY c.scope",
+            ("source-fence-node",),
+        )]
+    assert durable
+    assert any(row["scope"] == "subscription:source-fence" for row in durable)
+
+
+def test_vpn_auto_external_reference_blocks_identity_compensation(monkeypatch, tmp_path: Path) -> None:
+    """Component boundary test: a snapshot reference makes identity rows non-owned."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="ownership", token="ownership")
+    _seed_server("ownership-node")
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+
+    def publish_external_reference(**_kwargs):
+        with db_session() as connection:
+            credential = connection.execute(
+                "SELECT a.server_id, c.client_uuid, c.client_email FROM subscription_node_aliases a "
+                "JOIN subscription_node_credentials c ON c.identity_id=a.identity_id "
+                "WHERE a.server_id=? AND c.scope=?",
+                ("ownership-node", "subscription:ownership"),
+            ).fetchone()
+            assert credential is not None
+            connection.execute(
+                "INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at) "
+                "VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                ("ownership", json.dumps([dict(credential)])),
+            )
+        return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_CANDIDATE_INVALID"}
+
+    monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", publish_external_reference)
+    failed = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
+
+    assert failed["ok"] is False
+    assert failed["error_code"] == "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED"
+    assert failed["compensation_reason"] == "identity_snapshot_reference_exists"
+    with db_session() as connection:
+        credential = connection.execute(
+            "SELECT c.client_uuid, c.client_email FROM subscription_node_aliases a "
+            "JOIN subscription_node_credentials c ON c.identity_id=a.identity_id "
+            "WHERE a.server_id=? AND c.scope=?",
+            ("ownership-node", "subscription:ownership"),
+        ).fetchone()
+        snapshot = connection.execute(
+            "SELECT nodes_json FROM subscription_profile_snapshots WHERE token=?", ("ownership",),
+        ).fetchone()
+    assert credential is not None
+    assert snapshot is not None
+    assert json.loads(snapshot["nodes_json"])[0]["client_uuid"] == credential["client_uuid"]
 
 
 def test_public_subscription_profile_is_read_only_and_exportable_only(monkeypatch, tmp_path: Path) -> None:

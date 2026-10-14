@@ -131,7 +131,7 @@ def _admit_legacy_profile_witness(
 
 
 def _prepare_durable_profile_credentials(*, include_vpn_auto: bool,
-                                         legacy_native_clients: list[Any] | None = None) -> None:
+                                         legacy_native_clients: list[Any] | None = None) -> dict[str, list[dict[str, Any]]]:
     """Persist credential intent before taking the generation source fence.
 
     Adopt local durable identities, never the possibly partially applied native
@@ -152,8 +152,21 @@ def _prepare_durable_profile_credentials(*, include_vpn_auto: bool,
         for server in [*servers, *auto_servers]
         if isinstance(server, dict) and str(server.get("server_id") or "")
     }
+    journal: dict[str, list[dict[str, Any]]] = {"identities": [], "aliases": [], "credentials": []}
     with db_session() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        identity_ids_before = {
+            str(row["identity_id"])
+            for row in connection.execute("SELECT identity_id FROM subscription_node_identities")
+        }
+        aliases_before = {
+            str(row["server_id"])
+            for row in connection.execute("SELECT server_id FROM subscription_node_aliases")
+        }
+        credentials_before = {
+            (str(row["scope"]), str(row["identity_id"]))
+            for row in connection.execute("SELECT scope, identity_id FROM subscription_node_credentials")
+        }
         if server_ids:
             placeholders = ", ".join("?" for _ in server_ids)
             for row in connection.execute(
@@ -232,6 +245,176 @@ def _prepare_durable_profile_credentials(*, include_vpn_auto: bool,
             email = _vpn_auto_xray_client_email(origins[server_id])
             retain_credentials(connection, scope="vpn-auto", server_id=server_id,
                                client_email=email, client_uuid=persisted.get(email) or str(uuid4()))
+        journal["identities"] = [
+            dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_identities ORDER BY identity_id"
+            ) if str(row["identity_id"]) not in identity_ids_before
+        ]
+        journal["aliases"] = [
+            dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_aliases ORDER BY server_id"
+            ) if str(row["server_id"]) not in aliases_before
+        ]
+        journal["credentials"] = [
+            dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_credentials ORDER BY scope, identity_id"
+            ) if (str(row["scope"]), str(row["identity_id"])) not in credentials_before
+        ]
+    return journal
+
+
+def _discard_unapplied_profile_identity_intent(
+    journal: dict[str, list[dict[str, Any]]], *, checkpoint_path: Path,
+    checkpoint_preimage_exists: bool, checkpoint_preimage_sha256: str | None,
+    expected_source_fingerprint: str | None,
+) -> dict[str, Any]:
+    """Compensate only this invocation's identity rows before checkpoint admission.
+
+    The caller holds the Xray writer reservation. Existing mappings are never
+    included in the journal and are never modified by this compensation.
+    """
+    if not xray_writer_guard_is_held():
+        return {"ok": False, "reason": "writer_reservation_missing"}
+    identities = journal.get("identities") or []
+    aliases = journal.get("aliases") or []
+    credentials = journal.get("credentials") or []
+    if not identities and not aliases and not credentials:
+        return {"ok": True, "removed": 0}
+    if not expected_source_fingerprint or (checkpoint_preimage_exists and not checkpoint_preimage_sha256):
+        return {"ok": False, "reason": "source_fingerprint_unavailable"}
+    try:
+        current_exists = checkpoint_path.is_file()
+        current_sha256 = _generation_checkpoint_sha256(checkpoint_path) if current_exists else None
+        if current_exists != checkpoint_preimage_exists or current_sha256 != checkpoint_preimage_sha256:
+            return {"ok": False, "reason": "checkpoint_ownership_changed"}
+
+        identity_ids = {str(row["identity_id"]) for row in identities}
+        identity_ids.update(str(row["identity_id"]) for row in aliases)
+        identity_ids.update(str(row["identity_id"]) for row in credentials)
+        alias_ids = {str(row["server_id"]) for row in aliases}
+        credential_keys = {(str(row["scope"]), str(row["identity_id"])) for row in credentials}
+        credential_uuids = {str(row["client_uuid"]) for row in credentials}
+        credential_emails = {str(row["client_email"]) for row in credentials}
+
+        with db_session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            # This read runs while the SQLite writer lock is held, so no other
+            # database writer can invalidate the source proof between check and delete.
+            if _generation_source_fingerprint() != expected_source_fingerprint:
+                return {"ok": False, "reason": "source_fingerprint_changed"}
+            current_exists = checkpoint_path.is_file()
+            current_sha256 = _generation_checkpoint_sha256(checkpoint_path) if current_exists else None
+            if current_exists != checkpoint_preimage_exists or current_sha256 != checkpoint_preimage_sha256:
+                return {"ok": False, "reason": "checkpoint_ownership_changed"}
+
+            def exact_rows(table: str, key_columns: tuple[str, ...], expected: list[dict[str, Any]]) -> bool:
+                for row in expected:
+                    where = " AND ".join(f"{column}=?" for column in key_columns)
+                    key = tuple(row[column] for column in key_columns)
+                    current = connection.execute(
+                        f'SELECT * FROM "{table}" WHERE {where}', key,
+                    ).fetchone()
+                    if current is None or dict(current) != row:
+                        return False
+                return True
+
+            if not (
+                exact_rows("subscription_node_identities", ("identity_id",), identities)
+                and exact_rows("subscription_node_aliases", ("server_id",), aliases)
+                and exact_rows("subscription_node_credentials", ("scope", "identity_id"), credentials)
+            ):
+                return {"ok": False, "reason": "journal_rows_changed"}
+
+            for identity_id in identity_ids:
+                if connection.execute(
+                    "SELECT 1 FROM subscription_node_identity_transitions WHERE identity_id=? LIMIT 1",
+                    (identity_id,),
+                ).fetchone():
+                    return {"ok": False, "reason": "identity_transition_exists"}
+                if connection.execute(
+                    "SELECT 1 FROM subscription_node_credential_history WHERE identity_id=? LIMIT 1",
+                    (identity_id,),
+                ).fetchone():
+                    return {"ok": False, "reason": "credential_history_exists"}
+                actual_credentials = {
+                    (str(row["scope"]), str(row["identity_id"]))
+                    for row in connection.execute(
+                        "SELECT scope, identity_id FROM subscription_node_credentials WHERE identity_id=?",
+                        (identity_id,),
+                    )
+                }
+                if actual_credentials - credential_keys:
+                    return {"ok": False, "reason": "identity_has_unowned_credentials"}
+                actual_aliases = {
+                    str(row["server_id"])
+                    for row in connection.execute(
+                        "SELECT server_id FROM subscription_node_aliases WHERE identity_id=?",
+                        (identity_id,),
+                    )
+                }
+                if actual_aliases - alias_ids:
+                    return {"ok": False, "reason": "identity_has_unowned_aliases"}
+
+            for row in connection.execute(
+                "SELECT stable_key, metadata_json FROM subjects WHERE implementation_kind='xray'"
+            ):
+                if str(row["stable_key"] or "") in alias_ids:
+                    return {"ok": False, "reason": "identity_subject_reference_exists"}
+                try:
+                    metadata = json.loads(row["metadata_json"] or "{}")
+                except (TypeError, ValueError):
+                    return {"ok": False, "reason": "identity_subject_projection_unreadable"}
+                detail = metadata.get("detail") if isinstance(metadata, dict) else None
+                detail = detail if isinstance(detail, dict) else {}
+                if any(str(detail.get(key) or "") in values for key, values in (
+                    ("client_uuid", credential_uuids), ("client_id", credential_uuids),
+                    ("email", credential_emails),
+                )):
+                    return {"ok": False, "reason": "identity_subject_reference_exists"}
+
+            for row in connection.execute("SELECT nodes_json FROM subscription_profile_snapshots"):
+                try:
+                    nodes = json.loads(row["nodes_json"] or "[]")
+                except (TypeError, ValueError):
+                    return {"ok": False, "reason": "identity_snapshot_unreadable"}
+                if not isinstance(nodes, list):
+                    return {"ok": False, "reason": "identity_snapshot_unreadable"}
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+                    if any(str(node.get(key) or "") in values for key, values in (
+                        ("server_id", alias_ids), ("client_uuid", credential_uuids),
+                        ("client_id", credential_uuids), ("client_email", credential_emails),
+                        ("email", credential_emails),
+                    )):
+                        return {"ok": False, "reason": "identity_snapshot_reference_exists"}
+
+            for row in credentials:
+                changed = connection.execute(
+                    "DELETE FROM subscription_node_credentials WHERE scope=? AND identity_id=?",
+                    (row["scope"], row["identity_id"]),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("XRAY_IDENTITY_INTENT_COMPENSATION_STALE")
+            for row in aliases:
+                changed = connection.execute(
+                    "DELETE FROM subscription_node_aliases WHERE server_id=? AND identity_id=?",
+                    (row["server_id"], row["identity_id"]),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("XRAY_IDENTITY_INTENT_COMPENSATION_STALE")
+            for row in identities:
+                changed = connection.execute(
+                    "DELETE FROM subscription_node_identities WHERE identity_id=? AND origin_server_id=? "
+                    "AND current_server_id=? AND revision=? AND provenance_sha256=? AND created_at=?",
+                    (row["identity_id"], row["origin_server_id"], row["current_server_id"],
+                     row["revision"], row["provenance_sha256"], row["created_at"]),
+                ).rowcount
+                if changed != 1:
+                    raise RuntimeError("XRAY_IDENTITY_INTENT_COMPENSATION_STALE")
+        return {"ok": True, "removed": len(identities) + len(aliases) + len(credentials)}
+    except Exception:
+        return {"ok": False, "reason": "compensation_error"}
 
 
 @xray_writer_guarded
@@ -1022,6 +1205,14 @@ def _apply_staged_mihomo_candidate(candidate_path: str, expected_sha256: str) ->
 
 def _xray_generation_checkpoint_path(adapter: Any) -> Path:
     return Path(adapter.config_path).parent / ".generation" / "generation-checkpoint.json"
+
+
+def _generation_checkpoint_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _identity_migration_ledger_matches(*, plan_sha256: str, checkpoint_sha256: str) -> int:
@@ -3426,10 +3617,53 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
         }
 
     existing_clients = list(adapter.list_clients())
-    _prepare_durable_profile_credentials(
+    checkpoint_preimage_exists = checkpoint_path.is_file()
+    checkpoint_preimage_sha256 = (
+        _generation_checkpoint_sha256(checkpoint_path) if checkpoint_preimage_exists else None
+    )
+    identity_intent_journal = _prepare_durable_profile_credentials(
         include_vpn_auto=include_vpn_auto and token_or_slug is None,
         legacy_native_clients=existing_clients,
     )
+    if not isinstance(identity_intent_journal, dict) or any(
+        not isinstance(identity_intent_journal.get(key), list)
+        or any(not isinstance(row, dict) for row in identity_intent_journal.get(key, []))
+        for key in ("identities", "aliases", "credentials")
+    ):
+        return {
+            "ok": False, "status": "pending", "stage": "identity_intent_journal",
+            "error_code": "XRAY_IDENTITY_INTENT_JOURNAL_UNAVAILABLE",
+            "last_good_retained": True,
+        }
+
+    def fail_before_checkpoint(result: dict[str, Any]) -> dict[str, Any]:
+        compensation = _discard_unapplied_profile_identity_intent(
+            identity_intent_journal,
+            checkpoint_path=checkpoint_path,
+            checkpoint_preimage_exists=checkpoint_preimage_exists,
+            checkpoint_preimage_sha256=checkpoint_preimage_sha256,
+            expected_source_fingerprint=source_fingerprint,
+        )
+        if compensation.get("ok"):
+            return result
+        return {
+            "ok": False,
+            "status": "pending",
+            "stage": "identity_intent_compensation",
+            "error_code": "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED",
+            "failed_operation": str(result.get("error_code") or result.get("stage") or "generation_failed"),
+            "compensation_reason": str(compensation.get("reason") or "unverified"),
+            "last_good_retained": True,
+        }
+
+    try:
+        source_fingerprint = _generation_source_fingerprint()
+    except Exception:
+        source_fingerprint = None
+        return fail_before_checkpoint({
+            "ok": False, "status": "failed", "stage": "generation_source_fingerprint",
+            "error_code": "XRAY_GENERATION_SOURCE_FINGERPRINT_UNAVAILABLE",
+        })
     if supersession is not None:
         try:
             supersession["baseline"] = _checkpoint_supersession_state(
@@ -3441,90 +3675,136 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             code = str(exc)
             if not code.startswith("XRAY_SUPERSESSION_"):
                 code = "XRAY_SUPERSESSION_ADMISSION_FAILED"
-            return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
-                    "error_code": code}
-    source_fingerprint = _generation_source_fingerprint()
-    subscription_nodes = list_desired_subscription_xray_clients(token_or_slug)
+            return fail_before_checkpoint({"ok": False, "status": "failed",
+                                           "stage": "generation_supersession_admission",
+                                           "error_code": code})
+    try:
+        subscription_nodes = list_desired_subscription_xray_clients(token_or_slug)
+    except Exception:
+        return fail_before_checkpoint({"ok": False, "status": "failed",
+                                       "stage": "generation_source_projection",
+                                       "error_code": "XRAY_GENERATION_SOURCE_PROJECTION_FAILED"})
     desired_nodes = list(subscription_nodes)
-    affected_profile_tokens = list_subscription_profile_tokens(token_or_slug)
+    try:
+        affected_profile_tokens = list_subscription_profile_tokens(token_or_slug)
+    except Exception:
+        return fail_before_checkpoint({"ok": False, "status": "failed",
+                                       "stage": "generation_profile_projection",
+                                       "error_code": "XRAY_GENERATION_PROFILE_PROJECTION_FAILED"})
     if include_vpn_auto and token_or_slug is None:
         from fwrouter_api.services.subscription_node_identity import credentials_for_scope, IdentityConflict
-        with db_session() as connection:
-            retained_auto = credentials_for_scope(connection, "vpn-auto")
-        for server in _vpn_auto_servers_for_xray_subscription():
-            server_id = str(server["server_id"])
-            credential = retained_auto.get(server_id)
-            if credential and credential["revoked"]:
-                continue
-            if not credential:
-                raise IdentityConflict("IDENTITY_AUTO_CREDENTIAL_UNAVAILABLE")
-            email = str(credential["client_email"])
-            client_uuid = str(credential["client_uuid"])
-            server_name = str(server.get("server_name") or server_id)
-            desired_nodes.append({
-                "server_id": server_id,
-                "server_name": server_name,
-                "client_uuid": client_uuid,
-                "client_email": email,
-                "xray_alias": server_name,
-                "vpn_auto": True,
-            })
-    desired_by_email = {
-        str(node["client_email"]): node
-        for node in desired_nodes
-        if str(node.get("client_email") or "").strip()
-    }
-    token_prefix = ""
-    if token_or_slug:
-        token_prefix = f"sub-{_stable_digest(str(token_or_slug).strip().lower(), length=10)}-"
-    desired_clients = [
-        {
-            "client_uuid": node["client_uuid"],
-            "client_id": node["client_uuid"],
-            "email": node["client_email"],
-            "alias": node["xray_alias"],
+        try:
+            with db_session() as connection:
+                retained_auto = credentials_for_scope(connection, "vpn-auto")
+            auto_servers = _vpn_auto_servers_for_xray_subscription()
+        except Exception:
+            return fail_before_checkpoint({"ok": False, "status": "failed",
+                                           "stage": "generation_auto_projection",
+                                           "error_code": "XRAY_GENERATION_AUTO_PROJECTION_FAILED"})
+        try:
+            for server in auto_servers:
+                server_id = str(server["server_id"])
+                credential = retained_auto.get(server_id)
+                if credential and credential["revoked"]:
+                    continue
+                if not credential:
+                    raise IdentityConflict("IDENTITY_AUTO_CREDENTIAL_UNAVAILABLE")
+                email = str(credential["client_email"])
+                client_uuid = str(credential["client_uuid"])
+                server_name = str(server.get("server_name") or server_id)
+                desired_nodes.append({
+                    "server_id": server_id,
+                    "server_name": server_name,
+                    "client_uuid": client_uuid,
+                    "client_email": email,
+                    "xray_alias": server_name,
+                    "vpn_auto": True,
+                })
+        except Exception:
+            return fail_before_checkpoint({"ok": False, "status": "failed",
+                                           "stage": "generation_auto_credentials",
+                                           "error_code": "XRAY_GENERATION_AUTO_CREDENTIALS_UNAVAILABLE"})
+    try:
+        desired_by_email = {
+            str(node["client_email"]): node
+            for node in desired_nodes
+            if str(node.get("client_email") or "").strip()
         }
-        for node in desired_nodes
-    ]
-    managed_prefixes = [token_prefix] if token_prefix else ["sub-"]
-    if include_vpn_auto and token_or_slug is None:
-        managed_prefixes.append("vpn-auto-")
+        token_prefix = ""
+        if token_or_slug:
+            token_prefix = f"sub-{_stable_digest(str(token_or_slug).strip().lower(), length=10)}-"
+        desired_clients = [
+            {
+                "client_uuid": node["client_uuid"],
+                "client_id": node["client_uuid"],
+                "email": node["client_email"],
+                "alias": node["xray_alias"],
+            }
+            for node in desired_nodes
+        ]
+        managed_prefixes = [token_prefix] if token_prefix else ["sub-"]
+        if include_vpn_auto and token_or_slug is None:
+            managed_prefixes.append("vpn-auto-")
+    except Exception:
+        return fail_before_checkpoint({"ok": False, "status": "failed",
+                                       "stage": "generation_candidate_projection",
+                                       "error_code": "XRAY_GENERATION_CANDIDATE_PROJECTION_FAILED"})
     staged_generation: dict[str, Any] | None = None
     if callable(getattr(adapter, "stage_subscription_generation", None)):
-        prospective_bindings, prospective_modes, handoff_assignments = _prospective_profile_bindings(
-            desired_nodes,
-            token_prefix=token_prefix or "sub-",
-            managed_email_prefixes=managed_prefixes,
-            preserve_existing_overrides=preserve_existing_overrides,
-        )
-        staged_generation = _stage_profile_native_candidates(
-            adapter=adapter,
-            desired_clients=desired_clients,
-            managed_email_prefixes=managed_prefixes,
-            bindings=prospective_bindings,
-            client_modes=prospective_modes,
-            assignments=handoff_assignments,
-        )
+        try:
+            prospective_bindings, prospective_modes, handoff_assignments = _prospective_profile_bindings(
+                desired_nodes,
+                token_prefix=token_prefix or "sub-",
+                managed_email_prefixes=managed_prefixes,
+                preserve_existing_overrides=preserve_existing_overrides,
+            )
+            staged_generation = _stage_profile_native_candidates(
+                adapter=adapter,
+                desired_clients=desired_clients,
+                managed_email_prefixes=managed_prefixes,
+                bindings=prospective_bindings,
+                client_modes=prospective_modes,
+                assignments=handoff_assignments,
+            )
+            if not isinstance(staged_generation, dict):
+                raise TypeError("XRAY_GENERATION_CANDIDATE_RESULT_INVALID")
+        except Exception:
+            return fail_before_checkpoint({"ok": False, "status": "failed",
+                                           "stage": "native_candidate_validation",
+                                           "error_code": "XRAY_GENERATION_CANDIDATE_VALIDATION_FAILED"})
         if not staged_generation.get("ok"):
-            return {
+            return fail_before_checkpoint({
                 "ok": False,
                 "status": "failed",
                 "stage": staged_generation.get("stage") or "native_candidate_validation",
                 "error_code": staged_generation.get("error_code") or "XRAY_GENERATION_CANDIDATE_INVALID",
                 "details": _strip_raw_payload(staged_generation),
-            }
-        if _generation_source_fingerprint() != source_fingerprint:
-            return {
+            })
+        try:
+            staged_source_fingerprint = _generation_source_fingerprint()
+        except Exception:
+            return fail_before_checkpoint({"ok": False, "status": "failed",
+                                           "stage": "generation_source_revalidation",
+                                           "error_code": "XRAY_GENERATION_SOURCE_FINGERPRINT_UNAVAILABLE"})
+        if staged_source_fingerprint != source_fingerprint:
+            return fail_before_checkpoint({
                 "ok": False,
                 "status": "failed",
                 "stage": "source_intent_changed",
                 "error_code": "XRAY_GENERATION_SOURCE_CHANGED_DURING_STAGE",
-            }
-        if supersession is not None and not _checkpoint_supersession_state_unchanged(
-            adapter, checkpoint_path, supersession["baseline"],
-        ):
-            return {"ok": False, "status": "failed", "stage": "generation_supersession_revalidation",
-                    "error_code": "XRAY_SUPERSESSION_CONTEXT_STALE", "last_good_retained": True}
+            })
+        if supersession is not None:
+            try:
+                supersession_still_owned = _checkpoint_supersession_state_unchanged(
+                    adapter, checkpoint_path, supersession["baseline"],
+                )
+            except Exception:
+                supersession_still_owned = False
+            if not supersession_still_owned:
+                return fail_before_checkpoint({"ok": False, "status": "failed",
+                                               "stage": "generation_supersession_revalidation",
+                                               "error_code": "XRAY_SUPERSESSION_CONTEXT_STALE",
+                                               "last_good_retained": True})
         generation_id = uuid4().hex
         try:
             checkpoint_path = _write_xray_generation_checkpoint(
@@ -3537,14 +3817,13 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                 managed_email_prefixes=managed_prefixes,
                 supersession=supersession,
             )
-        except Exception as exc:
-            return {
+        except Exception:
+            return fail_before_checkpoint({
                 "ok": False,
                 "status": "failed",
                 "stage": "checkpoint_prepare",
                 "error_code": "XRAY_GENERATION_CHECKPOINT_FAILED",
-                "error_message": str(exc),
-            }
+            })
         transition = staged_generation["mihomo_candidates"]["transition"]
         applied_transition = _apply_staged_mihomo_candidate(
             transition,
