@@ -791,10 +791,37 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
             "mihomo_transition_sha256"
         ), "active Mihomo config is not the checkpointed transition generation"
         assert_mihomo_launch_matches_active(native, mihomo_active_path)
-        assert checkpoint_data.get("selection_revision") == fence_before_integrity_fault.get("revision"), {
-            "checkpoint_revision": checkpoint_data.get("selection_revision"),
-            "fence_revision": fence_before_integrity_fault.get("revision"),
+        recorded_before_selection = checkpoint_data.get("auto_selection_before")
+        assert isinstance(recorded_before_selection, dict)
+        initial_revision = fence_before_integrity_fault.get("revision")
+        checkpoint_revision = checkpoint_data.get("selection_revision")
+        assert (type(initial_revision) is int
+                and recorded_before_selection.get("selection_revision") == initial_revision
+                and type(checkpoint_revision) is int
+                and checkpoint_revision > initial_revision), {
+            "initial_revision": initial_revision,
+            "checkpoint_preimage_revision": recorded_before_selection.get("selection_revision"),
+            "checkpoint_owned_revision": checkpoint_revision,
         }
+        barrier_fence_code, barrier_fence_response = http_json(
+            f"{restarted_api}/__acceptance/selection/fence",
+        )
+        assert barrier_fence_code == 200 and barrier_fence_response.get("ok") is True
+        barrier_fence = barrier_fence_response.get("fence")
+        assert (isinstance(barrier_fence, dict)
+                and barrier_fence.get("revision") == checkpoint_revision
+                and barrier_fence.get("active_server_id") == fence_before_integrity_fault.get("active_server_id")
+                and barrier_fence.get("decision_id") == fence_before_integrity_fault.get("decision_id")), {
+            "checkpoint_revision": checkpoint_revision,
+            "barrier_fence": {key: barrier_fence.get(key) for key in
+                ("revision", "active_server_id", "decision_id")} if isinstance(barrier_fence, dict) else None,
+            "pre_operation_fence": {key: fence_before_integrity_fault.get(key) for key in
+                ("revision", "active_server_id", "decision_id")},
+        }
+        after_selection = checkpoint_data.get("auto_selection_after")
+        if isinstance(after_selection, dict):
+            assert after_selection.get("selection_revision") == checkpoint_revision
+            assert after_selection.get("selection_decision_id") == barrier_fence.get("decision_id")
         loaded_at_checkpoint = set(loaded_identities(native))
         assert sorted(loaded_at_checkpoint) == sorted(
             tuple(pair) for pair in checkpoint_data.get("expected_client_identities", [])
@@ -860,7 +887,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     assert isinstance(restored_fence, dict)
     assert (type(fence_before_integrity_fault.get("revision")) is int
             and type(restored_fence.get("revision")) is int
-            and restored_fence["revision"] > fence_before_integrity_fault["revision"])
+            and restored_fence["revision"] > checkpoint_revision)
     assert restored_fence.get("active_server_id") == fence_before_integrity_fault.get("active_server_id")
     assert restored_fence.get("decision_id") == fence_before_integrity_fault.get("decision_id")
 
