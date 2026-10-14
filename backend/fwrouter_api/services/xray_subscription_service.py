@@ -3824,12 +3824,13 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                 managed_email_prefixes=managed_prefixes,
                 supersession=supersession,
             )
-        except Exception:
+        except Exception as exc:
             return fail_before_checkpoint({
                 "ok": False,
                 "status": "failed",
                 "stage": "checkpoint_prepare",
                 "error_code": "XRAY_GENERATION_CHECKPOINT_FAILED",
+                "error_message": str(exc),
             })
         transition = staged_generation["mihomo_candidates"]["transition"]
         applied_transition = _apply_staged_mihomo_candidate(
