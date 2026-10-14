@@ -150,28 +150,62 @@ def test_inventory_replacement_changes_only_its_derived_profile_identity_before_
     tokens = [f"inventory-delta-{index}" for index in range(7)]
     for token in tokens:
         _seed_subscription_identity(slug=token, token=token)
+    from fwrouter_api.adapters.subscription import parse_subscription_payload
+
+    def member(index):
+        return {
+            "tag": f"owned-member-{index}", "protocol": "vless",
+            "settings": {"vnext": [{"address": f"member-{index}.example.invalid", "port": 443,
+                                      "users": [{"id": f"owned-fixture-id-{index}"}]}]},
+            "streamSettings": {"network": "tcp", "security": "tls",
+                               "tlsSettings": {"serverName": f"member-{index}.example.invalid"}},
+        }
+
+    service_outbounds = [{"tag": "direct", "protocol": "freedom"},
+                         {"tag": "reject", "protocol": "blackhole"},
+                         {"tag": "dns", "protocol": "dns"}]
+    original_profile = {"remarks": "owned-growth-profile",
+                        "outbounds": [*(member(index) for index in range(7)), *service_outbounds]}
+    changed_profile = json.loads(json.dumps(original_profile))
+    changed_profile["outbounds"] = [*changed_profile["outbounds"][:7],
+                                    *(member(index) for index in range(7, 10)), *service_outbounds]
+    old_result = parse_subscription_payload(json.dumps(original_profile))
+    new_result = parse_subscription_payload(json.dumps(changed_profile))
+    assert old_result.ok and new_result.ok
+    assert len(old_result.servers) == len(new_result.servers) == 1
+    retiring = old_result.servers[0]
+    replacement = new_result.servers[0]
+    assert retiring.server_name == replacement.server_name
+    assert retiring.host == replacement.host
+    assert retiring.server_id != replacement.server_id
+    assert len(retiring.raw["_fwrouter_topology"]["endpoints"]) == 7
+    assert len(replacement.raw["_fwrouter_topology"]["endpoints"]) == 10
+    assert original_profile["outbounds"][:7] == changed_profile["outbounds"][:7]
+    for profile, server in ((original_profile, retiring), (changed_profile, replacement)):
+        canonical = json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        assert server.server_id == "sub:" + hashlib.sha256(canonical.encode()).hexdigest()
     _seed_server("server-retained")
-    _seed_server("server-retiring")
+    _seed_server(retiring.server_id, server_name=retiring.server_name, raw=retiring.raw)
     original = {token: list_desired_subscription_xray_clients(token) for token in tokens}
     for nodes in original.values():
         promote_runtime_verified_subscription_nodes(nodes)
     from uuid import NAMESPACE_DNS, uuid5
     snapshots_before = _database_snapshot()["subscription_profile_snapshots"]
-    _seed_server("server-replacement")
+    _seed_server(replacement.server_id, server_name=replacement.server_name, raw=replacement.raw)
     with db_session() as connection:
-        connection.execute("UPDATE servers SET inventory_state = 'missing' WHERE server_id = 'server-retiring'")
+        connection.execute("UPDATE servers SET inventory_state = 'missing' WHERE server_id = ?", (retiring.server_id,))
     for token in tokens:
         old = {node["server_id"]: node for node in original[token]}
         new = {node["server_id"]: node for node in list_desired_subscription_xray_clients(token)}
-        assert "server-retiring" not in new and "server-replacement" in new
+        assert retiring.server_id not in new and replacement.server_id in new
         assert new["server-retained"]["client_uuid"] == old["server-retained"]["client_uuid"]
         assert new["server-retained"]["client_email"] == old["server-retained"]["client_email"]
-        assert new["server-replacement"]["client_uuid"] == str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{token}:server-replacement"))
-        assert new["server-replacement"]["client_uuid"] != old["server-retiring"]["client_uuid"]
+        assert new[replacement.server_id]["client_uuid"] == str(uuid5(NAMESPACE_DNS, f"fwrouter-subscription:{token}:{replacement.server_id}"))
+        assert new[replacement.server_id]["client_uuid"] != old[retiring.server_id]["client_uuid"]
         published = next(row for row in snapshots_before if row["token"] == token)
         published_ids = {node["client_uuid"] for node in json.loads(published["nodes_json"])}
-        assert old["server-retiring"]["client_uuid"] in published_ids
-        assert new["server-replacement"]["client_uuid"] not in published_ids
+        assert old[retiring.server_id]["client_uuid"] in published_ids
+        assert new[replacement.server_id]["client_uuid"] not in published_ids
     assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before
 
 

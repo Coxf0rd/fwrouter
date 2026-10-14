@@ -697,18 +697,45 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             for client in profile_state["clients"]
         }
         binding_state = assert_applied_bindings(Path(stack["state"]), expected_binding_pairs)
-        assert binding_state.get("applied_count") == len(expected_binding_pairs), {
-            "applied_count": binding_state.get("applied_count"),
-            "expected_binding_count": len(expected_binding_pairs),
-        }
         actual_binding_pairs = {
             (str(row.get("client_uuid") or row.get("client_id") or ""), str(row.get("client_email") or ""))
             for row in binding_state["bindings"] if row.get("status") == "applied"
         }
-        assert actual_binding_pairs == expected_binding_pairs, {
+        unexpected_rows = [row for row in binding_state["bindings"] if (
+            str(row.get("client_uuid") or row.get("client_id") or ""), str(row.get("client_email") or "")
+        ) not in expected_binding_pairs]
+        from fwrouter_api.db.connection import db_session
+        unexpected_origins = []
+        with db_session() as connection:
+            for row in unexpected_rows[:4]:
+                origin = connection.execute(
+                    "SELECT subject_type, subject_role, is_active, is_deleted, desired_mode, metadata_json "
+                    "FROM subjects WHERE subject_id=?", (row.get("subject_id"),),
+                ).fetchone()
+                detail = json.loads(origin["metadata_json"]) if origin is not None else {}
+                email = str(row.get("client_email") or "")
+                unexpected_origins.append({
+                    "subject_type": origin["subject_type"] if origin else None,
+                    "subject_role": origin["subject_role"] if origin else None,
+                    "is_active": origin["is_active"] if origin else None,
+                    "is_deleted": origin["is_deleted"] if origin else None,
+                    "desired_mode": origin["desired_mode"] if origin else None,
+                    "origin_source": detail.get("source"),
+                    "is_auxiliary_upstream_email": email == "acceptance-provider-upstream",
+                    "is_internal_auto_email": email.startswith("vpn-auto-"),
+                    "is_subscription_email": email.startswith("sub-"),
+                    "is_fixed_scale_email": email.startswith("acceptance-scale-fixed-"),
+                    "has_selected_server": bool(row.get("selected_server_id")),
+                })
+        metrics["bindings_identity_parity"] = {
+            "row_count": len(binding_state["bindings"]), "unique_count": len(actual_binding_pairs),
             "missing_count": len(expected_binding_pairs - actual_binding_pairs),
             "unexpected_count": len(actual_binding_pairs - expected_binding_pairs),
+            "unexpected_origins": unexpected_origins,
+            "native_identities_unchanged": loaded_identities(native) == native_identities_before,
         }
+        assert binding_state.get("applied_count") == len(expected_binding_pairs), metrics["bindings_identity_parity"]
+        assert actual_binding_pairs == expected_binding_pairs, metrics["bindings_identity_parity"]
         metrics["applied_profile_bindings"] = len(expected_binding_pairs)
 
         nodes_by_token: dict[str, set[tuple[str, str]]] = {token: set() for token in profile_state["profile_tokens"]}
