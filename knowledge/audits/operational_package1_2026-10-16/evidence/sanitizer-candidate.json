@@ -1,0 +1,108 @@
+{
+  "source": "/srv/fwrouter/backend/fwrouter_api/services/event_contract.py",
+  "repeats": 5,
+  "classification_calls_per_run": 100000,
+  "records_per_size_per_run": 600,
+  "workloads": {
+    "key_classification_peak_alloc_bytes": 802468,
+    "key_classification": [
+      {
+        "wall_seconds": 0.16154665092471987,
+        "cpu_seconds": 0.16152969,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      },
+      {
+        "wall_seconds": 0.1570997079834342,
+        "cpu_seconds": 0.157092578,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      },
+      {
+        "wall_seconds": 0.16014848300255835,
+        "cpu_seconds": 0.160106362,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      },
+      {
+        "wall_seconds": 0.1635165309999138,
+        "cpu_seconds": 0.16347143399999997,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      },
+      {
+        "wall_seconds": 0.15637697896454483,
+        "cpu_seconds": 0.15636017800000002,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      }
+    ],
+    "nested_small_records": [
+      {
+        "wall_seconds": 0.05417310097254813,
+        "cpu_seconds": 0.054167843000000104,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      },
+      {
+        "wall_seconds": 0.0477122439770028,
+        "cpu_seconds": 0.047707683000000056,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      },
+      {
+        "wall_seconds": 0.04794969595968723,
+        "cpu_seconds": 0.04794538199999998,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      },
+      {
+        "wall_seconds": 0.048732753028161824,
+        "cpu_seconds": 0.04872335299999997,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      },
+      {
+        "wall_seconds": 0.0478265390265733,
+        "cpu_seconds": 0.04781664500000016,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      }
+    ],
+    "nested_small_peak_alloc_bytes": 636806,
+    "nested_large_records": [
+      {
+        "wall_seconds": 0.08055270102340728,
+        "cpu_seconds": 0.0805465059999999,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      },
+      {
+        "wall_seconds": 0.07644219498615712,
+        "cpu_seconds": 0.07642546300000008,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      },
+      {
+        "wall_seconds": 0.07541102194227278,
+        "cpu_seconds": 0.07540541199999984,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      },
+      {
+        "wall_seconds": 0.08035586099140346,
+        "cpu_seconds": 0.08034983400000018,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      },
+      {
+        "wall_seconds": 0.08721621497534215,
+        "cpu_seconds": 0.08720759000000022,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      }
+    ],
+    "nested_large_peak_alloc_bytes": 636806
+  },
+  "instrumented_reference": {
+    "operation": "100000 _sensitive_key calls",
+    "re_sub_calls": 100000,
+    "classified_sensitive": 38890,
+    "instrumented": true
+  }
+}

@@ -1,5 +1,13 @@
 # FWRouter engineering roadmap mirror
 
+## Operational Package 1 source checkpoint — 2026-10-16
+
+Package1 is authorized and implemented from current main `baafbf209331da763d95bae40c32e4176b158e4d` on `perf/operational-package1-configured-reads-sanitizer`. Scope: configured-read line materialization/absence guards and immutable sanitizer key normalization only. Targeted84/84 passed; final full safe required PR CI is pending and must pass at the exact final HEAD before Ready for user Squash and Merge. No deployment/live acceptance is inferred; no agent merge. See [Package1 source/measurement report](audits/operational_package1_2026-10-16/REPORT.md).
+
+The measured22.7 MB early-header component wall median is195.985→44.638 ms and traced peak34,453,245→1,466 B; missing-section262.841→33.120 ms. The late-header fallback preserves original C split allocation semantics, and the small-case ranges overlap. Synthetic sanitizer600-record CPU reductions are72.3%/60.4%; identical output digests and security canaries verified. These are component results, not production savings. No persistent configured cache, SQLite/batching/I/O/scrub-file changes, native-proof/interval/timeout/resource-limit changes or Package2 work is included.
+
+Production remains the separately accepted bounded `baafbf2` rollout with original78 preserved; CI milestone CLOSED, CD DEFERRED, external Client E2E/full Debian host/release gates still separate NOT RUN/BLOCKED. Prior correction/PR11-open/PAUSED rows below are dated history and do not override this authorization/source checkpoint or prove a deployment. Existing rollout/resource pending sync patches are preserved unchanged; their publication needs deliberate reconciliation with this newer notice, not blind application. The old operational branch6004400 is preserved, not replayed. Stage5 and later milestones remain unopened.
+
 ## Current correction checkpoint — 2026-10-16
 
 PR11 was merged as ccc576c. Actual main CI38767801965 FAILED the concurrent startup-scale load: worker exit-9/RemoteDisconnected. Rollout stopped at preflight, before production copy/restart; production remainsffe506e, original78 preserved. Diagnostic38777720255 proved a2GiB cgroup OOM kill. The corrective branch fixes large HTTPX controller-body lifetime; targeted38779324831 passed migration and two cold scale attempts with unchanged limits. Final required PR/main qualification is still required. See [correction report](audits/startup_scale_concurrent_disconnect_2026-10-16/REPORT.md). Earlier PR11 OPEN/source-qualified entries below are historical checkpoints, superseded by this dated notice; no milestone or deployment has been accepted from the targeted result.

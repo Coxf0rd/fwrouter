@@ -1,5 +1,9 @@
 # Roadmap decision register — reconciled 2026-10-15
 
+## Package1 implementation checkpoint — 2026-10-16
+
+D-10/D-12 current-code audits are complete within their declared limits. User authorized configured reads and immutable sanitizer constants only; source and84 targeted tests pass, full required PR CI still pending. [Package1 report](../../audits/operational_package1_2026-10-16/REPORT.md) contains source/measurement/equivalence evidence. D-11 cache lifecycle, SQLite/persistence and I/O optimizations are not authorized in this package. Current production isbaafbf2 bounded stabilization; no new deployment. Older dated rows remain historical; no blanket operational milestone acceptance or next-stage authority follows.
+
 This register indexes approved requirements in the [single active roadmap](../../ROADMAP.md). It does not start work, create new stages or claim planned validation has passed. P0=current safety/stabilization, P1=correctness/dependency/release priority, P2=evidence-based improvement after foundations. Existing ADRs describe their dated implementation choices; bundled Mihomo/Xray choices do not make those services mandatory or singleton platform dependencies.
 
 ## Delivery and current acceptance decisions

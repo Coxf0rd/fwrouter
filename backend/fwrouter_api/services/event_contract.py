@@ -31,6 +31,9 @@ _SAFE_CONTEXT_KEYS = {
     "connection_id", "workflow_id", "causation_id", "correlation_id",
     "recovery_attempt_id", "attempt_id", "generation_id",
 }
+_NORMALIZED_SAFE_CONTEXT_KEYS = frozenset(
+    re.sub(r"[^a-z0-9]", "", item) for item in _SAFE_CONTEXT_KEYS
+)
 _QUERY_SECRET = re.compile(
     r"(?:token|secret|password|passwd|key|auth|authorization|credential|signature|sig|cookie|access_token|refresh_token)",
     re.IGNORECASE,
@@ -97,7 +100,7 @@ def database_timestamp(value: str) -> str:
 
 def _sensitive_key(key: Any) -> bool:
     normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
-    if normalized in {re.sub(r"[^a-z0-9]", "", item) for item in _SAFE_CONTEXT_KEYS}:
+    if normalized in _NORMALIZED_SAFE_CONTEXT_KEYS:
         return False
     if normalized.endswith("id") and not any(
         marker in normalized for marker in ("token", "key", "secret", "password", "credential")
