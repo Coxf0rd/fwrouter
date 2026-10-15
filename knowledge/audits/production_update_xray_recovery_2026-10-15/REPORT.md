@@ -47,3 +47,13 @@ Safe local tooling210PASS, changedAST/F821/manifest171files/diff/surfacePASS. Ho
 ## First affected qualification — run38703959462/source6f7e4c0
 
 Routine1471PASS/1FAIL/0SKIP; qualified/native/application profiles NOTRUN because failfast. The relational old-profile fixture reused the first member UUID in its second persisted row while the base proxy had a distinct UUID. Exact ownership comparison correctly refusedMIHOMO_XRAY_HANDOFF_MEMBER_OWNERSHIP_AMBIGUOUS; fixture UUID is corrected, safety check unchanged. Independentreview also found local/native leaf error hidden by the genericMIHOMO_CANDIDATE_INVALID wrapper; bounded failed_operation selection now follows only a failed validator's valid ASCII code, preserves the outer contract and ignores successful/untrusted validators. Actual staging-helper and negative/priority component regressions added. No further production change.
+
+## Corrected affected qualification — run38704757481/source1ce6b27
+
+1538PASS/1FAIL/0SKIP:1472routinePASS,26qualifiedchild+1DockerXrayPASS, ordinary27PASS, Provider10PASS/1browserFAIL,packet/scale2PASS. Strengthened real native migration/recovery testPASS:fixture partialbase lacksoldgroup/members, transition reconstructs persisted graph and finalprunesit, exact78continuity/refresh/restart/recovery assertions retained. Native proof/source/plan/owned cleanup receipts retained; no production rollout of fix.
+
+RemainingFAIL is test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate:Chromium SIGSEGV during BrowserType.launch, before UI/API action. DBus warnings are not established rootcause; no OOM/fixture/nativefailure inferred. Treat browserNOTPASSED, aggregatecorrectlyFAIL. Diagnostics retained; finalmandatoryfullPRCI onfrozenpackage is needed beforeReady, with unchanged browser assertion/no retry masking.
+
+ScalePASS:startup41.0065s/45s, APIworkerHWM973728KiB,24/24HTTP200,healthmax0.0077s/allAPImax2.1687s,gracefulshutdown0.2641s,82syntheticidentities exact. Advisory40sunmet, runner variance remainsrisk; not productionmetrics.
+
+Independent browser artifact review:Chromiumbinary/bundle hashes match acrosspartitions; host snapshots availableRAM14→12GiB, disk84→79GiBfree, swapunused. These do not establish event-time/cgroup state. NoOOM/PID/tmpfs/bundle mismatch evidence; exactSIGSEGVrootcause unknown. No speculativebrowserfix is made. The required finalfull run will report the unchanged browsercase honestly.

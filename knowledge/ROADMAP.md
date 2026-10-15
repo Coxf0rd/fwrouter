@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## Recovery fix hosted checkpoint — 2026-10-15
+
+PR10 source1ce6b27 affectedrun38704757481:1538PASS/1browserlaunchSIGSEGVFAIL/0SKIP. Strengthened78identitynative migration/recovery/refresh/restart andmissingoldgrouptransition/finalprunePASS, routine1472PASS, qualified26+1PASS, ordinary27PASS,Provider10PASS1FAIL,packet/scale2PASS. Exactbrowsercauseunknown; noassert/timeout/retryweakening. FinalmandatoryfullCIpendingbeforeReady. Productiondabf9f4backend/schema25 installed, reviewed78mappingpreserved, nativeapplyblocked/APIheld. Original78restoration/HTTP502/liveacceptance remainBLOCKED; usermerge+newmainCIrequired. See production_update_xray_recovery_2026-10-15/REPORT.md. CI milestoneCLOSED/CDDEFERRED.
+
 ## Production recovery after PR8 — 2026-10-15
 
 PR8 mergedmain dabf9f4, actualmainCI38699377108:1623PASS/0FAIL/0SKIP, mandatorysafeL0-L5/native/packet proof accepted. Controlledbackend/docs deployed438matchingfiles, hostguard/environment preserved. Protectedoffline schema24→25 and reviewed durableidentitymapping preserve78PASS; no nativewrite/publicsnapshotpublication at these steps. Freshsupersession blockedbeforeapply by missingretiredlogicalprofile handoff target; compensation separately refuses unchangedpreexisting references. Native78unchanged(70original/8priorreplacement), activeconfigs/checkpoint preserved, DBintegrity/FKPASS. API/dependentunitsheld, LiveAcceptanceBLOCKED. Sourcecorrection in fix/xray-supersession-handoff-recovery; usermerge+newmainCIrequired beforefurtherrollout. Two historicalFWRoutertaggedRescue DNSDNATrules remain; firewallunchanged. See production_update_xray_recovery_2026-10-15/REPORT.md. CI milestoneCLOSED/CDDEFERRED; unrelatedwork remains paused.
