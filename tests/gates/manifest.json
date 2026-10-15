@@ -4923,13 +4923,13 @@
       "runtime_dependencies": [
         "Python 3.11 standard library"
       ],
-      "fixture_owner": "tests/gates/smoke.py, temporary SQLite fixtures, and injected HTTP/command adapters",
-      "fixture_identity": "synthetic temporary SQLite; fake HTTP and subprocess adapters",
-      "isolation": "temporary databases and fake adapters; guarded FastAPI child requires the real bounded runner and is not invoked by injected-runner unit cases",
+      "fixture_owner": "tests/gates/smoke.py, temporary SQLite, owned loopback API/proxy servers, and injected command adapters",
+      "fixture_identity": "synthetic temporary SQLite and payloads; owned loopback API/proxy; fake subprocess adapters",
+      "isolation": "temporary databases, owned ephemeral loopback servers with bounded shutdown, and fake adapters; no production data or external endpoint; guarded FastAPI child is not invoked by injected-runner cases",
       "native": false,
       "opt_in": false,
       "slow": false,
-      "network": "none",
+      "network": "controlled",
       "destructive": false,
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
@@ -4938,7 +4938,7 @@
       "max_artifact_bytes": 1048576,
       "max_workers": 1,
       "baseline_policy": "not applicable: tests the isolated/read-only smoke adapter",
-      "risk_notes": "smoke contract tests use injected runners for app-boundary cases; bounded process-group tests use only temporary synthetic child processes and import no application module"
+      "risk_notes": "loopback-only API/proxy regression ignores inherited proxies and rejects redirects; bounded child-process tests use only synthetic temporary state and import no application module"
     },
     {
       "baseline_policy": "not applicable: pure-stdlib boundary contract tests",
@@ -5382,7 +5382,7 @@
       "timeout_seconds": 30
     }
   ],
-  "version": "2026.10.14.1",
+  "version": "2026.10.15.1",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
