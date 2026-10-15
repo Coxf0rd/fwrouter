@@ -27,6 +27,17 @@
     "backend/tests/test_xray.py::test_xray_writer_guard_serializes_processes",
     "backend/tests/test_xray_default_runner_archive.py::test_default_runner_reads_archive_with_real_popen_and_selector",
     "backend/tests/test_xray_default_runner_archive.py::test_default_runner_archive_timeout_kills_child",
-    "backend/tests/test_xray_default_runner_archive.py::test_default_runner_archive_size_limit_kills_child"
+    "backend/tests/test_xray_default_runner_archive.py::test_default_runner_archive_size_limit_kills_child",
+    "backend/tests/test_xray.py::test_profile_generation_preserves_specific_nested_native_validation_failure",
+    "backend/tests/test_xray.py::test_generation_failure_operation_rejects_untrusted_nested_codes[lowercase]",
+    "backend/tests/test_xray.py::test_generation_failure_operation_rejects_untrusted_nested_codes[bad-punctuation]",
+    "backend/tests/test_xray.py::test_generation_failure_operation_rejects_untrusted_nested_codes[overlong]",
+    "backend/tests/test_xray.py::test_generation_failure_operation_rejects_untrusted_nested_codes[newline]",
+    "backend/tests/test_xray.py::test_generation_failure_operation_prefers_failed_local_code_only",
+    "backend/tests/test_xray.py::test_identity_compensation_allows_unchanged_preexisting_subject_and_snapshot_references",
+    "backend/tests/test_xray.py::test_identity_reference_preimage_rejects_malformed_projection_before_cleanup",
+    "backend/tests/test_xray.py::test_vpn_auto_stage_exception_compensates_new_identity_intent",
+    "backend/tests/test_xray.py::test_vpn_auto_source_fence_change_preserves_unverified_identity_intent",
+    "backend/tests/test_xray.py::test_vpn_auto_external_reference_blocks_identity_compensation"
   ]
 }

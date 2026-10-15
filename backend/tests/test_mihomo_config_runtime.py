@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import yaml
+import pytest
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
@@ -1629,8 +1630,9 @@ def test_mihomo_rebuild_replaces_active_profile_group_and_preserves_unrelated_se
     assert by_name["operator-custom"] == custom
 
 
+@pytest.mark.parametrize("use_relational_members", [False, True])
 def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_it(
-    monkeypatch, tmp_path: Path,
+    monkeypatch, tmp_path: Path, use_relational_members: bool,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1645,15 +1647,20 @@ def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_
         "port": 443,
         "uuid": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
         "_fwrouter_runtime_name": old_name,
+        "_fwrouter_server_id": old_id,
         "_fwrouter_topology": {
             "kind": "logical_profile",
             "runtime_policy": "fallback",
             "endpoints": [
                 {"identity": "sub:old-a", "runtime": {
-                    "type": "socks5", "server": "old-a.example.invalid", "port": 1080,
+                    "type": "vless", "server": "old-a.example.invalid", "port": 443,
+                    "uuid": "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "network": "tcp",
+                    "tls": True, "security": "reality",
                 }},
                 {"identity": "sub:old-b", "runtime": {
-                    "type": "socks5", "server": "old-b.example.invalid", "port": 1080,
+                    "type": "vless", "server": "old-b.example.invalid", "port": 443,
+                    "uuid": "6ba7b811-9dad-11d1-80b4-00c04fd430c8", "network": "grpc",
+                    "tls": True, "security": "reality",
                 }},
             ],
         },
@@ -1688,6 +1695,27 @@ def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_
             "INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES (?, 1, 1)",
             (new_id,),
         )
+        if use_relational_members:
+            connection.execute(
+                "INSERT INTO logical_server_topology "
+                "(logical_server_id, topology_kind, selection_policy) VALUES (?, 'logical_multi', 'fallback')",
+                (old_id,),
+            )
+            for index, (member_id, runtime_name, host) in enumerate((
+                ("old-a", old_a, "old-a.example.invalid"),
+                ("old-b", old_b, "old-b.example.invalid"),
+            )):
+                connection.execute(
+                    "INSERT INTO logical_server_members "
+                    "(logical_server_id, member_id, member_runtime_name, member_config_json, "
+                    "transport_fingerprint, member_order, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)",
+                    (old_id, member_id, runtime_name,
+                     json.dumps({"type": "vless", "server": host, "port": 443,
+                                 "uuid": f"6ba7b81{index}-9dad-11d1-80b4-00c04fd430c8",
+                                 "network": "tcp" if index == 0 else "grpc",
+                                 "tls": True, "security": "reality"}),
+                     f"fingerprint-{index}", index),
+                )
 
     old_group = {
         "name": old_name,
@@ -1697,10 +1725,14 @@ def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_
         "interval": mihomo_proxies_service.LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS,
     }
     old_proxy_a = {
-        "name": old_a, "type": "socks5", "server": "old-a.example.invalid", "port": 1080,
+        "name": old_a, "type": "vless", "server": "old-a.example.invalid", "port": 443,
+        "uuid": "6ba7b810-9dad-11d1-80b4-00c04fd430c8", "network": "tcp",
+        "tls": True, "security": "reality",
     }
     old_proxy_b = {
-        "name": old_b, "type": "socks5", "server": "old-b.example.invalid", "port": 1080,
+        "name": old_b, "type": "vless", "server": "old-b.example.invalid", "port": 443,
+        "uuid": "6ba7b811-9dad-11d1-80b4-00c04fd430c8", "network": "grpc",
+        "tls": True, "security": "reality",
     }
     base = {"proxies": [old_proxy_a, old_proxy_b], "proxy-groups": [old_group]}
 
@@ -1727,8 +1759,18 @@ def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_
         )
     }
     assert old_a in missing_member_names
-    assert old_b not in missing_member_names  # Persisted topology does not synthesize missing native members.
+    assert old_b in missing_member_names  # The exact persisted profile member is enough for its applied handoff.
     assert old_name not in missing_member_names
+
+    absent_old_group_base = {"proxies": [], "proxy-groups": []}
+    retained_members = mihomo_proxies_service._merge_runtime_proxies(
+        absent_old_group_base,
+        required_last_good_names={old_name},
+        required_last_good_server_ids={old_id},
+    )
+    retained_groups = {group["name"]: group for group in absent_old_group_base["proxy-groups"]}
+    assert {proxy["name"] for proxy in retained_members} >= {old_a, old_b}
+    assert retained_groups[old_name] == old_group
 
     after_convergence = mihomo_proxies_service._merge_runtime_proxies(
         base, required_last_good_names=set(),
@@ -1742,6 +1784,41 @@ def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_
     after_by_name = {group["name"]: group for group in after_groups}
     assert old_name not in after_by_name
     assert after_by_name[new_name]["proxies"] == [f"{new_name} :: new-a"]
+
+
+def test_mihomo_refuses_conflicting_inactive_handoff_group(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    old_id = "sub:handoff-conflicting-old-profile"
+    old_name = "Old conflicting handoff profile [old98765]"
+    old_raw = {
+        "name": old_name,
+        "_fwrouter_runtime_name": old_name,
+        "_fwrouter_topology": {
+            "kind": "logical_profile",
+            "runtime_policy": "fallback",
+            "endpoints": [{"identity": "sub:old", "runtime": {
+                "type": "socks5", "server": "old.example.invalid", "port": 1080,
+            }}],
+        },
+    }
+    custom_group = {"name": old_name, "type": "select", "proxies": ["DIRECT"]}
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) "
+            "VALUES (?, ?, 'subscription', ?, 'missing')",
+            (old_id, "Old conflicting handoff profile", json.dumps(old_raw)),
+        )
+    base = {"proxies": [], "proxy-groups": [custom_group]}
+    try:
+        mihomo_proxies_service._merge_runtime_proxies(
+            base, required_last_good_names={old_name}, required_last_good_server_ids={old_id},
+        )
+    except ValueError as exc:
+        assert str(exc) == "MIHOMO_XRAY_HANDOFF_TARGET_OWNERSHIP_AMBIGUOUS"
+    else:
+        raise AssertionError("ambiguous same-name handoff group must fail closed")
+    assert base["proxy-groups"] == [custom_group]
 
 
 def test_xray_handoff_candidate_restores_required_missing_server_proxy(monkeypatch, tmp_path: Path) -> None:

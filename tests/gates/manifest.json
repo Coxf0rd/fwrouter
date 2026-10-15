@@ -949,6 +949,32 @@
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
       "destructive": false,
+      "domain": "core",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "mocked CLI service boundary with synthetic allowlisted and rejected diagnostic values",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_cli_generation_diagnostics",
+      "isolation": "temporary test state and fake adapters per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_cli_generation_diagnostics.py",
+      "primary_level": "L2",
+      "risk_notes": "bounded public CLI projection for checkpoint supersession failure diagnostics",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
       "domain": "runtime",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
@@ -2612,6 +2638,32 @@
       ],
       "slow": false,
       "timeout_seconds": 60
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "xray",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "temporary SQLite state with module-owned subject-policy spies",
+      "fixture_owner": "backend/tests/test_xray_bindings_projection.py",
+      "id": "test_xray_bindings_projection",
+      "isolation": "temporary FWRouter state directory and monkeypatched subject enrichment",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_xray_bindings_projection.py",
+      "primary_level": "L2",
+      "risk_notes": "Verifies managed Xray identity prefixes are excluded before expensive projection enrichment while default collector behavior remains unchanged.",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",

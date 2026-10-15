@@ -27,10 +27,20 @@ COORDINATOR_ROOT = "/tmp/fwrouter-qcp-test-root"
 COORDINATOR_MARKER = ".fwrouter-gate-test-root-owned"
 COORDINATOR_MARKER_CONTENT = "FWROUTER_GATE_TEST_ROOT_V1\n"
 PYTEST_WORKDIR = "/workspace/backend"
-EXPECTED_TOTAL = 26
+EXPECTED_TOTAL = 37
 SMALL_OUTPUT_LIMIT = 64 * 1024
 DIAGNOSTIC_LIMIT = 4096
 MAX_JUNIT_BYTES = launcher.MAX_RECEIPT_BYTES
+QUALIFIED_CHILD_NODE_FILES = {
+    "backend/tests/test_protocol_native_validation.py": 20,
+    "backend/tests/test_traffic_accounting.py": 1,
+    "backend/tests/test_vpn_auto_writer_guard.py": 1,
+    "backend/tests/test_xray.py": 12,
+    "backend/tests/test_xray_default_runner_archive.py": 3,
+}
+_QUALIFIED_CHILD_NODEID = re.compile(
+    r"(backend/tests/(test_[A-Za-z0-9_]+)\.py)::(test_[A-Za-z0-9_]+)(?:\[([^\[\]\r\n]{1,160})\])?"
+)
 _DIAGNOSTIC_UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b")
 _DIAGNOSTIC_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 
@@ -371,6 +381,36 @@ print(json.dumps({'status':'passed','nonce':d['suite_nonce'],'profile_sha256':ha
 '''
 
 
+def _qualified_child_nodeids() -> list[str]:
+    scenarios_path = ROOT / "tests/acceptance/qualified-child-scenarios.json"
+    try:
+        scenarios = json.loads(scenarios_path.read_text(encoding="utf-8"))
+        expected_ids = scenarios["nodeids"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise launcher.NotRun("qualified-child exact scenario registry is unavailable") from exc
+    if (not isinstance(expected_ids, list) or any(not isinstance(item, str) for item in expected_ids)
+            or scenarios.get("schema") != "fwrouter-qualified-child-scenarios/v1"
+            or scenarios.get("protocol_case_count") != 20 or len(expected_ids) != EXPECTED_TOTAL
+            or len(expected_ids) != len(set(expected_ids))):
+        raise launcher.NotRun("qualified-child exact scenario registry has an invalid identity/count contract")
+    counts = {path: 0 for path in QUALIFIED_CHILD_NODE_FILES}
+    for nodeid in expected_ids:
+        match = _QUALIFIED_CHILD_NODEID.fullmatch(nodeid)
+        if not match or match.group(1) not in counts:
+            raise launcher.NotRun("qualified-child registry contains an unreviewed node ID")
+        counts[match.group(1)] += 1
+    if counts != QUALIFIED_CHILD_NODE_FILES:
+        raise launcher.NotRun("qualified-child registry file selection differs from the reviewed node counts")
+    if sum(nodeid.startswith("backend/tests/test_protocol_native_validation.py::")
+           for nodeid in expected_ids) != scenarios["protocol_case_count"]:
+        raise launcher.NotRun("qualified-child protocol case count differs from the reviewed contract")
+    return expected_ids
+
+
+def _qualified_child_pytest_selectors() -> list[str]:
+    return [nodeid.removeprefix("backend/") for nodeid in _qualified_child_nodeids()]
+
+
 def _read_junit(path: Path) -> dict[str, Any]:
     if not path.is_file() or path.is_symlink() or path.stat().st_size > launcher.MAX_RECEIPT_BYTES:
         raise launcher.NotRun("qualified-child JUnit report is missing or oversized")
@@ -379,13 +419,8 @@ def _read_junit(path: Path) -> dict[str, Any]:
     except (ET.ParseError, OSError) as exc:
         raise launcher.NotRun("qualified-child JUnit report is invalid") from exc
     statuses: dict[str, str] = {}
-    scenarios_path = ROOT / "tests/acceptance/qualified-child-scenarios.json"
-    try:
-        scenarios = json.loads(scenarios_path.read_text(encoding="utf-8"))
-        expected_ids = scenarios["nodeids"]
-    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
-        raise launcher.NotRun("qualified-child exact scenario registry is unavailable") from exc
-    expected = set(expected_ids) if isinstance(expected_ids, list) else set()
+    expected_ids = _qualified_child_nodeids()
+    expected = set(expected_ids)
     for case in cases:
         classname, name = case.get("classname", ""), case.get("name", "")
         if not name:
@@ -405,11 +440,9 @@ def _read_junit(path: Path) -> dict[str, Any]:
         statuses[nodeid] = status
     errors = []
     protocol_ids = [node for node in expected if node.startswith("backend/tests/test_protocol_native_validation.py::")]
-    if (scenarios.get("schema") != "fwrouter-qualified-child-scenarios/v1"
-            or scenarios.get("protocol_case_count") != 20
-            or len(expected) != EXPECTED_TOTAL or len(protocol_ids) != 20
+    if (len(expected) != EXPECTED_TOTAL or len(protocol_ids) != 20
             or len(statuses) != EXPECTED_TOTAL or set(statuses) != expected):
-        errors.append("observed node IDs differ from the checked-in exact 20 protocol plus six cohort contract")
+        errors.append("observed node IDs differ from the checked-in exact 20 protocol plus 17 supporting cohort contract")
     counts = {name: sum(status == name for status in statuses.values())
               for name in ("passed", "failed", "skipped")}
     if counts["failed"] or counts["skipped"]:
@@ -536,13 +569,7 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
             raise launcher.NotRun("qualified-child in-container isolation preflight did not pass")
         receipt["preflight"] = {key: preflight[key] for key in
                                  ("tmp_flags", "tmp_type", "tmp_source", "configured_tmpfs", "jq_version")}
-        selectors = [
-            "tests/test_protocol_native_validation.py",
-            "tests/test_traffic_accounting.py::test_traffic_collect_script_reads_global_vpn_mark_and_xray_stats",
-            "tests/test_vpn_auto_writer_guard.py::test_writer_guard_serializes_processes_and_cleans_up_after_flock_timeout",
-            "tests/test_xray.py::test_xray_writer_guard_serializes_processes",
-            "tests/test_xray_default_runner_archive.py",
-        ]
+        selectors = _qualified_child_pytest_selectors()
         in_junit = f"{COORDINATOR_ROOT}/qualified-child.xml"
         cmd = [docker, "exec", "--workdir", PYTEST_WORKDIR,
                "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",

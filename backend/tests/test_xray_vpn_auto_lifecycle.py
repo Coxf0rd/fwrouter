@@ -640,7 +640,7 @@ def test_profile_binding_plan_reuses_owned_enforcement_without_per_client_native
     )
     assert len(persisted_subject_reads) == client_count
     assert len(set(persisted_subject_reads)) == client_count
-    assert len(preflight_calls) == 1  # Existing mode projection takes one shared preflight.
+    assert len(preflight_calls) == 0  # Managed clients are excluded before the discarded mode projection.
     assert len(bindings) == client_count and modes == []
     assert {row["client_uuid"] for row in bindings} == {row["client_uuid"] for row in nodes}
     assert all(row["selected_server_id"] == "profile-plan-server" for row in bindings)

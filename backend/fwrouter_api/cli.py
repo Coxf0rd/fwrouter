@@ -175,6 +175,12 @@ def _run_checkpoint_supersession(args: argparse.Namespace) -> int:
             and re.fullmatch(r"[a-z0-9_]+", result["stage"]) else None,
             "error_code": result.get("error_code") if isinstance(result.get("error_code"), str)
             and re.fullmatch(r"[A-Z0-9_]+", result["error_code"]) else None,
+            "failed_operation": result.get("failed_operation")
+            if isinstance(result.get("failed_operation"), str)
+            and re.fullmatch(r"[A-Z0-9_]{1,96}", result["failed_operation"]) else None,
+            "compensation_reason": result.get("compensation_reason")
+            if isinstance(result.get("compensation_reason"), str)
+            and re.fullmatch(r"[a-z0-9_]{1,96}", result["compensation_reason"]) else None,
             "supersedes_checkpoint_sha256": args.checkpoint_sha256,
             "migration_plan_sha256": args.migration_plan_sha256,
             "native_applied": bool(result.get("generation_apply")),

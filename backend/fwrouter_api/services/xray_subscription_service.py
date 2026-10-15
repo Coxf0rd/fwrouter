@@ -61,6 +61,22 @@ from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
 import fwrouter_api.services.subject_policy as subject_policy_service
 
 
+def _generation_failure_operation(result: dict[str, Any]) -> str:
+    """Expose a validated leaf validator code while retaining generic result codes."""
+    details = result.get("details")
+    validation = details.get("validation") if isinstance(details, dict) else None
+    if isinstance(validation, dict):
+        for validator_name in ("local", "native"):
+            validator = validation.get(validator_name)
+            if not isinstance(validator, dict) or validator.get("ok") is not False:
+                continue
+            code = validator.get("error_code")
+            if (isinstance(code, str) and 1 <= len(code) <= 96
+                    and code.isascii() and all(char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for char in code)):
+                return code
+    return str(result.get("error_code") or result.get("stage") or "generation_failed")
+
+
 XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE = "xray_subscription_profile_delete"
 XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX = "subscription-account:"
 
@@ -84,6 +100,45 @@ def _full_xray_client_uri(client: XrayClient, *, display_name: str | None = None
 def _vpn_auto_xray_client_email(server_id: str) -> str:
     digest = hashlib.sha1(server_id.encode("utf-8")).hexdigest()[:12]
     return f"vpn-auto-{digest}@fwrouter.local"
+
+
+def _identity_projection_reference_sha256(connection: sqlite3.Connection) -> str:
+    """Hash Xray subject/snapshot references used to fence intent compensation."""
+    subjects = [
+        [row["subject_id"], row["stable_key"], row["metadata_json"]]
+        for row in connection.execute(
+            "SELECT subject_id, stable_key, metadata_json FROM subjects "
+            "WHERE implementation_kind='xray' ORDER BY subject_id"
+        )
+    ]
+    for _, _, metadata_json in subjects:
+        try:
+            metadata = json.loads(metadata_json or "{}")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("IDENTITY_SUBJECT_PROJECTION_UNREADABLE") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError("IDENTITY_SUBJECT_PROJECTION_UNREADABLE")
+    snapshots = [
+        [row["token"], row["nodes_json"], row["runtime_verified_at"], row["updated_at"]]
+        for row in connection.execute(
+            "SELECT token, nodes_json, runtime_verified_at, updated_at "
+            "FROM subscription_profile_snapshots ORDER BY token"
+        )
+    ]
+    for _, nodes_json, _, _ in snapshots:
+        try:
+            nodes = json.loads(nodes_json or "[]")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("IDENTITY_SNAPSHOT_PROJECTION_UNREADABLE") from exc
+        if not isinstance(nodes, list):
+            raise ValueError("IDENTITY_SNAPSHOT_PROJECTION_UNREADABLE")
+        if any(not isinstance(node, dict) for node in nodes):
+            raise ValueError("IDENTITY_SNAPSHOT_PROJECTION_UNREADABLE")
+    payload = json.dumps(
+        {"subjects": subjects, "snapshots": snapshots},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _admit_legacy_profile_witness(
@@ -135,7 +190,7 @@ def _admit_legacy_profile_witness(
 
 
 def _prepare_durable_profile_credentials(*, include_vpn_auto: bool,
-                                         legacy_native_clients: list[Any] | None = None) -> dict[str, list[dict[str, Any]]]:
+                                         legacy_native_clients: list[Any] | None = None) -> dict[str, Any]:
     """Persist credential intent before taking the generation source fence.
 
     Adopt local durable identities, never the possibly partially applied native
@@ -156,9 +211,10 @@ def _prepare_durable_profile_credentials(*, include_vpn_auto: bool,
         for server in [*servers, *auto_servers]
         if isinstance(server, dict) and str(server.get("server_id") or "")
     }
-    journal: dict[str, list[dict[str, Any]]] = {"identities": [], "aliases": [], "credentials": []}
+    journal: dict[str, Any] = {"identities": [], "aliases": [], "credentials": []}
     with db_session() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        journal["external_reference_preimage_sha256"] = _identity_projection_reference_sha256(connection)
         identity_ids_before = {
             str(row["identity_id"])
             for row in connection.execute("SELECT identity_id FROM subscription_node_identities")
@@ -268,7 +324,7 @@ def _prepare_durable_profile_credentials(*, include_vpn_auto: bool,
 
 
 def _discard_unapplied_profile_identity_intent(
-    journal: dict[str, list[dict[str, Any]]], *, checkpoint_path: Path,
+    journal: dict[str, Any], *, checkpoint_path: Path,
     checkpoint_preimage_exists: bool, checkpoint_preimage_sha256: str | None,
     expected_source_fingerprint: str | None,
 ) -> dict[str, Any]:
@@ -297,8 +353,6 @@ def _discard_unapplied_profile_identity_intent(
         identity_ids.update(str(row["identity_id"]) for row in credentials)
         alias_ids = {str(row["server_id"]) for row in aliases}
         credential_keys = {(str(row["scope"]), str(row["identity_id"])) for row in credentials}
-        credential_uuids = {str(row["client_uuid"]) for row in credentials}
-        credential_emails = {str(row["client_email"]) for row in credentials}
 
         with db_session() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -310,6 +364,13 @@ def _discard_unapplied_profile_identity_intent(
             current_sha256 = _generation_checkpoint_sha256(checkpoint_path) if current_exists else None
             if current_exists != checkpoint_preimage_exists or current_sha256 != checkpoint_preimage_sha256:
                 return {"ok": False, "reason": "checkpoint_ownership_changed"}
+            expected_reference_sha256 = journal.get("external_reference_preimage_sha256")
+            if (
+                not isinstance(expected_reference_sha256, str)
+                or len(expected_reference_sha256) != 64
+                or _identity_projection_reference_sha256(connection) != expected_reference_sha256
+            ):
+                return {"ok": False, "reason": "identity_projection_references_changed"}
 
             def exact_rows(table: str, key_columns: tuple[str, ...], expected: list[dict[str, Any]]) -> bool:
                 for row in expected:
@@ -365,40 +426,6 @@ def _discard_unapplied_profile_identity_intent(
                 }
                 if actual_aliases - alias_ids:
                     return {"ok": False, "reason": "identity_has_unowned_aliases"}
-
-            for row in connection.execute(
-                "SELECT stable_key, metadata_json FROM subjects WHERE implementation_kind='xray'"
-            ):
-                if str(row["stable_key"] or "") in alias_ids:
-                    return {"ok": False, "reason": "identity_subject_reference_exists"}
-                try:
-                    metadata = json.loads(row["metadata_json"] or "{}")
-                except (TypeError, ValueError):
-                    return {"ok": False, "reason": "identity_subject_projection_unreadable"}
-                detail = metadata.get("detail") if isinstance(metadata, dict) else None
-                detail = detail if isinstance(detail, dict) else {}
-                if any(str(detail.get(key) or "") in values for key, values in (
-                    ("client_uuid", credential_uuids), ("client_id", credential_uuids),
-                    ("email", credential_emails),
-                )):
-                    return {"ok": False, "reason": "identity_subject_reference_exists"}
-
-            for row in connection.execute("SELECT nodes_json FROM subscription_profile_snapshots"):
-                try:
-                    nodes = json.loads(row["nodes_json"] or "[]")
-                except (TypeError, ValueError):
-                    return {"ok": False, "reason": "identity_snapshot_unreadable"}
-                if not isinstance(nodes, list):
-                    return {"ok": False, "reason": "identity_snapshot_unreadable"}
-                for node in nodes:
-                    if not isinstance(node, dict):
-                        continue
-                    if any(str(node.get(key) or "") in values for key, values in (
-                        ("server_id", alias_ids), ("client_uuid", credential_uuids),
-                        ("client_id", credential_uuids), ("client_email", credential_emails),
-                        ("email", credential_emails),
-                    )):
-                        return {"ok": False, "reason": "identity_snapshot_reference_exists"}
 
             for row in credentials:
                 changed = connection.execute(
@@ -947,8 +974,14 @@ def _prospective_profile_bindings(
     """Build candidate bindings and modes without creating runtime projections."""
     prefixes = [str(value).lower() for value in (managed_email_prefixes or [token_prefix]) if value]
     scoped_email = lambda item: any(str(item.get("client_email") or "").lower().startswith(prefix) for prefix in prefixes)
-    bindings = [item for item in collect_xray_runtime_bindings() if not scoped_email(item)]
-    modes = [item for item in collect_xray_client_mode_directives() if not scoped_email(item)]
+    bindings = [
+        item for item in collect_xray_runtime_bindings(exclude_client_email_prefixes=prefixes)
+        if not scoped_email(item)
+    ]
+    modes = [
+        item for item in collect_xray_client_mode_directives(exclude_client_email_prefixes=prefixes)
+        if not scoped_email(item)
+    ]
     routing = subject_policy_service.get_routing_snapshot()
     enforcement = subject_policy_service.build_runtime_enforcement_state()
     bypass = subject_policy_service.get_core_bypass_state()
@@ -3662,7 +3695,7 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             "status": "pending",
             "stage": "identity_intent_compensation",
             "error_code": "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED",
-            "failed_operation": str(result.get("error_code") or result.get("stage") or "generation_failed"),
+            "failed_operation": _generation_failure_operation(result),
             "compensation_reason": str(compensation.get("reason") or "unverified"),
             "last_good_retained": True,
         }

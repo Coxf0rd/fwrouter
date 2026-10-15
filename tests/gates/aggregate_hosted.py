@@ -349,10 +349,10 @@ def validate_qcp_receipt(path: Path, plan: dict[str, Any], runtime_inputs: dict[
         problems.append("qualified-child receipt nonce is invalid")
     if receipt.get("cleanup") != "owned_resources_removed":
         problems.append("qualified-child owned-resource cleanup is not confirmed")
-    if (len(statuses) != 26 or any(value != "passed" for value in statuses.values())
-            or tests.get("tests") != 26 or tests.get("failed") != 0 or tests.get("skipped") != 0
+    if (len(statuses) != 37 or any(value != "passed" for value in statuses.values())
+            or tests.get("tests") != 37 or tests.get("failed") != 0 or tests.get("skipped") != 0
             or tests.get("contract_valid") is not True):
-        problems.append("qualified-child did not report 26 passing exact node IDs")
+        problems.append("qualified-child did not report 37 passing exact node IDs")
         statuses = {}
     if not isinstance(expected_ids, list) or set(expected_ids) != set(statuses) or len(expected_ids) != len(set(expected_ids)):
         problems.append("qualified-child expected ID registry differs from observed node IDs")
@@ -361,9 +361,9 @@ def validate_qcp_receipt(path: Path, plan: dict[str, Any], runtime_inputs: dict[
     expected_qcp = scenario.get("nodeids", [])
     if (scenario.get("schema") != "fwrouter-qualified-child-scenarios/v1"
             or scenario.get("protocol_case_count") != 20
-            or len(expected_qcp) != 26 or len(expected_qcp) != len(set(expected_qcp))
+            or len(expected_qcp) != 37 or len(expected_qcp) != len(set(expected_qcp))
             or set(statuses) != set(expected_qcp)):
-        problems.append("qualified-child exact IDs differ from the checked-in 20+6 scenario contract")
+        problems.append("qualified-child exact IDs differ from the checked-in 20 protocol plus 17 supporting scenario contract")
 
     profile_path = path.with_name("profile.json")
     profile = read_json(profile_path)

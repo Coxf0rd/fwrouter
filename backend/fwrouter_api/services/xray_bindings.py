@@ -67,11 +67,23 @@ def _annotate_bindings_with_handoff(bindings: list[dict[str, Any]]) -> list[dict
     return annotated
 
 
-def collect_xray_runtime_bindings() -> list[dict[str, Any]]:
+def _email_matches_prefix(email: Any, prefixes: tuple[str, ...]) -> bool:
+    return isinstance(email, str) and any(email.lower().startswith(prefix) for prefix in prefixes)
+
+
+def collect_xray_runtime_bindings(
+    *, exclude_client_email_prefixes: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, Any]]:
+    prefixes = tuple(str(prefix).lower() for prefix in (exclude_client_email_prefixes or ()) if prefix)
+    email_projection = (
+        "CASE WHEN json_valid(s.metadata_json) "
+        "THEN json_extract(s.metadata_json, '$.detail.email') END"
+        if prefixes else "NULL"
+    )
     with db_session() as connection:
         rows = connection.execute(
-            """
-            SELECT s.subject_id
+            f"""
+            SELECT s.subject_id, {email_projection} AS client_email
             FROM subjects AS s
             WHERE s.implementation_kind = 'xray'
               AND COALESCE(json_extract(s.metadata_json, '$.detail.enabled'), 1) = 1
@@ -80,6 +92,13 @@ def collect_xray_runtime_bindings() -> list[dict[str, Any]]:
             ORDER BY s.subject_id
             """
         ).fetchall()
+
+    # Missing or non-string email metadata remains in the conservative path.
+    # Only an explicit matching managed prefix is excluded before enrichment.
+    if prefixes:
+        rows = [row for row in rows if not _email_matches_prefix(row["client_email"], prefixes)]
+    if not rows and prefixes:
+        return []
 
     routing = subject_policy_service.get_routing_snapshot()
     runtime_enforcement = subject_policy_service.build_runtime_enforcement_state()
@@ -103,8 +122,11 @@ def collect_xray_runtime_bindings() -> list[dict[str, Any]]:
     return _annotate_bindings_with_handoff(bindings)
 
 
-def collect_xray_client_mode_directives() -> list[dict[str, Any]]:
+def collect_xray_client_mode_directives(
+    *, exclude_client_email_prefixes: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, Any]]:
     """Return explicit non-VPN Xray policies that require a per-user rule."""
+    prefixes = tuple(str(prefix).lower() for prefix in (exclude_client_email_prefixes or ()) if prefix)
     with db_session() as connection:
         rows = connection.execute(
             """
@@ -121,6 +143,8 @@ def collect_xray_client_mode_directives() -> list[dict[str, Any]]:
             ORDER BY subject_id
             """
         ).fetchall()
+    if prefixes:
+        rows = [row for row in rows if not _email_matches_prefix(row["client_email"], prefixes)]
     if not rows:
         return []
 
