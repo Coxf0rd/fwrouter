@@ -16,7 +16,7 @@ import tempfile
 from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -126,7 +126,12 @@ def _default_http_get(url: str, timeout: int, kind: str) -> Mapping[str, Any]:
                              headers: Any, newurl: str) -> None:
             return None
     try:
-        response = build_opener(NoRedirect).open(Request(url, method="GET"), timeout=timeout)
+        # This helper is specifically for loopback acceptance.  urllib's
+        # default ProxyHandler reads ambient proxy variables and may route a
+        # loopback request through an external proxy unless bypass is configured.
+        response = build_opener(ProxyHandler({}), NoRedirect).open(
+            Request(url, method="GET"), timeout=timeout
+        )
     except (HTTPError, URLError, OSError):
         return {"status_code": None, "api_ok": False, "fields": {}}
     try:

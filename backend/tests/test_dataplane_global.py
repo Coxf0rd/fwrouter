@@ -197,7 +197,7 @@ def test_build_nft_rule_sets_protects_custom_proxy_ip(
             """,
             (
                 "custom-https:test:deadbeef",
-                "161.0.21.33",
+                "192.0.2.44",
                 8000,
                 "user",
                 "pass",
@@ -211,7 +211,7 @@ def test_build_nft_rule_sets_protects_custom_proxy_ip(
 
     nft_sets = build_nft_rule_sets(None)
 
-    assert "161.0.21.33/32" in nft_sets["protected_ipv4"]
+    assert "192.0.2.44/32" in nft_sets["protected_ipv4"]
     assert "192.168.0.0/16" in nft_sets["protected_ipv4"]
 
 

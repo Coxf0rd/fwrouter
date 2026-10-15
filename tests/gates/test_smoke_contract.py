@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import ast
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
+import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 PATH = Path(__file__).with_name("smoke.py")
 SPEC = importlib.util.spec_from_file_location("fwrouter_smoke", PATH)
@@ -96,6 +100,69 @@ class SmokeContractTests(unittest.TestCase):
             self.assertTrue(all(url.startswith("http://127.0.0.1:5000/api/v2/") for url, _ in calls))
             self.assertNotIn("must-not-leak", repr(result))
             self.assertIn("GET", repr(result))
+
+    def test_default_live_get_ignores_ambient_proxy_and_rejects_redirects(self):
+        api_paths = []
+        proxy_paths = []
+
+        class ApiHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                api_paths.append(self.path)
+                if self.path == "/redirect":
+                    self.send_response(302)
+                    self.send_header("Location", "/health")
+                    self.end_headers()
+                    return
+                payload = {
+                    "ok": True,
+                    "data": {"service": "fwrouter-api", "status": "healthy",
+                             "database": {"status": "healthy", "schema": {"ok": True}}},
+                }
+                body = json.dumps(payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *args):
+                return
+
+        class ProxyHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                proxy_paths.append(self.path)
+                self.send_error(502)
+
+            def log_message(self, _format, *args):
+                return
+
+        api = ThreadingHTTPServer(("127.0.0.1", 0), ApiHandler)
+        proxy = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
+        threads = [threading.Thread(target=server.serve_forever, daemon=True)
+                   for server in (api, proxy)]
+        for thread in threads:
+            thread.start()
+        try:
+            proxy_url = f"http://127.0.0.1:{proxy.server_port}"
+            ambient = {key: proxy_url for key in
+                       ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy",
+                        "ALL_PROXY", "all_proxy")}
+            with patch.dict(smoke.os.environ, ambient, clear=True):
+                base = f"http://127.0.0.1:{api.server_port}"
+                result = smoke._default_http_get(base + "/health", 2, "health")
+                redirected = smoke._default_http_get(base + "/redirect", 2, "health")
+            self.assertEqual([], proxy_paths)
+            self.assertEqual(200, result["status_code"])
+            self.assertTrue(result["api_ok"])
+            self.assertEqual(["/health", "/redirect"], api_paths)
+            self.assertIsNone(redirected["status_code"])
+            self.assertFalse(redirected["api_ok"])
+        finally:
+            for server in (api, proxy):
+                server.shutdown()
+                server.server_close()
+            for thread in threads:
+                thread.join(timeout=2)
 
     def test_readonly_database_rejects_noncanonical_schema_version(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -1,5 +1,12 @@
 # Invariants
 
+## Current checkpoint — 2026-10-15
+
+The CI milestone is CLOSED following actual squash/main validation (PR5, main run38363962787). PR8 merged as dabf9f4; PR10 merged/deployed as ffe506e. Production remains ffe506e with the original78 identities restored and API/Gateway recovered. PR11 isolation/redaction fixes are source-only, not deployed: Synthetic Functional Acceptance PASS, Production State Acceptance PARTIAL, controlled external E2E NOT RUN, overall Production Acceptance BLOCKED. These are recorded receipts, not new live probes. Earlier dated checkpoints below are historical where superseded; they do not reopen CI or describe the current held/recovery state.
+
+Use the [active roadmap](../ROADMAP.md) and [decision register](DECISIONS/ROADMAP_DECISION_REGISTER_2026-10-15.md) for priorities, dependencies and remaining evidence. Operational Performance requires a fresh audit after PR8/10/11 before replaying old optimization packages. Full Debian host/systemd/reboot and positive external E2E remain separate unqualified gates. No implementation or production action is authorized by this documentation reconciliation.
+
+
 - `/srv/fwrouter` is the git/source root. Live paths under `/opt`, `/etc`, `/usr/local`, `/var/lib`, `/var/log`, and `/run` are deployment/runtime targets.
 - FWRouter core is the routing authority. Mihomo is an egress adapter, not the network policy engine.
 - `fwrouter:global` represents FWRouter own traffic and must stay direct-safe. It must not become a normal user-facing VPN subject.
@@ -22,6 +29,6 @@
 - Applied dataplane status observes the live contour and applied manifest/critical markers; it does not repeat candidate syntax validation of the already-applied nft file. Strict native candidate validation remains mandatory in apply/check and candidate-only fallback. Unchanged intent alone never permits skipping runtime readback.
 
 
-### Current CI and deferred CD boundary — 2026-10-08
+### Historical CI and deferred CD boundary — 2026-10-08
 
 The next active milestone is **Test Architecture & CI Stabilization**; the phased plan is [CI_STABILIZATION_AND_GATED_CD.md](CI_STABILIZATION_AND_GATED_CD.md). Use GitHub-hosted Actions only; no self-hosted runner or project-owned test VM. Operational Performance Fixes remain PAUSED/BLOCKED until full application staging acceptance, then Stage 5 and the remaining canonical order follow. CD is deferred until a separate decision; production deployment remains manual through the existing installer. External telemetry/metrics and traffic accounting stay late after extraction and DB/architecture stabilization.

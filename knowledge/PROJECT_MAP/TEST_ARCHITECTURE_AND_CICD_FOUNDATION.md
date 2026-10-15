@@ -1,6 +1,13 @@
 # Test Architecture and CI/CD Foundation
 
-## Current PR readiness — 2026-10-13
+## Current checkpoint — 2026-10-15
+
+The CI milestone is CLOSED following actual squash/main validation (PR5, main run38363962787). PR8 merged as dabf9f4; PR10 merged/deployed as ffe506e. Production remains ffe506e with the original78 identities restored and API/Gateway recovered. PR11 isolation/redaction fixes are source-only, not deployed: Synthetic Functional Acceptance PASS, Production State Acceptance PARTIAL, controlled external E2E NOT RUN, overall Production Acceptance BLOCKED. These are recorded receipts, not new live probes. Earlier dated checkpoints below are historical where superseded; they do not reopen CI or describe the current held/recovery state.
+
+Use the [active roadmap](../ROADMAP.md) and [decision register](DECISIONS/ROADMAP_DECISION_REGISTER_2026-10-15.md) for priorities, dependencies and remaining evidence. Operational Performance requires a fresh audit after PR8/10/11 before replaying old optimization packages. Full Debian host/systemd/reboot and positive external E2E remain separate unqualified gates. No implementation or production action is authorized by this documentation reconciliation.
+
+
+## Historical PR readiness — 2026-10-13
 
 PhaseE PRE-MERGE ACCEPTED at actual PR5/run38347054113:1429/0/0, qualified26+1, ordinary26/Provider11/packet1, strict receipts/cleanup and historical7/7. Squash-only/auto-delete and existing Main required stable Actions15368 check now configured with no bypass. Latest protected PR HEAD must pass before user Squash and Merge; post-merge main validation remains OPEN, CD DEFERRED and production UNCHANGED. Earlier dated BLOCKED/settings-pending pointers below preserve pre-PR history, superseded only by [final handoff](../audits/test_architecture_phase_e_2026-10-13/FINAL_HANDOFF.md). No agent merge or deploy.
 
@@ -121,6 +128,12 @@ Do not run L6 after every small edit. For every implementation report, state the
 - L0 whitespace validation checks the immutable committed `base...HEAD` range recorded in the plan, including when the checkout worktree is clean.
 - Reproduction instructions state the exact command, repository commit, runtime/tool versions, fixture identity and environment variables that affect selection.
 - Keep CPU, RAM, wall time, parallel workers, temporary disk, native process count and container resources bounded. Resource limits are part of test correctness, not only CI cost control.
+
+### Credential provenance and live-state boundary — 2026-10-15
+
+Fixture identity must be independently synthetic: use reserved test namespaces/documentation addresses and generated fixture credentials, not literals copied from DB, backups or real subscriptions. Sanitized real API captures must declare their origin, remove credential values and be consumed through an explicit controlled transport. String overlap, display names and fixture-sized record counts do not establish origin. Inbound Xray client identities, provider upstream credentials and subscription bearer tokens are separate security scopes.
+
+Live-state reads of real profiles require explicit authorization and private bounded evidence; they are not synthetic tests or proof of upstream E2E. Loopback smoke ignores ambient proxies and rejects redirects. Subscription gateways must never log raw paths/query strings, identities or arbitrary error/request text; retain only allowlisted method/status/event metadata. Synthetic canary regressions verify these boundaries. A historical credential disclosure is not revoked by removing a fixture from current HEAD; ownership assessment and any rotation require a separate targeted plan. See [2026-10-15 findings and qualification](../audits/test_isolation_live_acceptance_2026-10-15/REPORT.md).
 
 ## Baseline classification and durable evidence
 

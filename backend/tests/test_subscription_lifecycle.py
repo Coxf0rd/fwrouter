@@ -7,6 +7,7 @@ from fwrouter_api.db.connection import get_db_path, initialize_database
 import json
 import hashlib
 import sqlite3
+import uuid
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -362,7 +363,8 @@ def test_subscription_refresh_keeps_best_failed_candidate_diagnostics(monkeypatc
 
 
 def test_subscription_fetch_diagnostics_do_not_include_credentials(monkeypatch) -> None:
-    secret_uuid = "d0414af1-f955-4c10-b8ed-8bfe6db952d7"
+    # Stable parser fixture identity; reserved .test name keeps it synthetic.
+    secret_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, "subscription-fixture.fwrouter.test"))
     secret_key = "very-secret-public-key"
     _install_fake_http(
         monkeypatch,
@@ -408,9 +410,9 @@ def test_subscription_parse_plain_uri_subscription() -> None:
 
 def test_subscription_parse_vless_reality_xhttp_regression() -> None:
     uri = (
-        "vless://uuid-a@my.crushboy.net:443?"
+        "vless://uuid-a@parser-fixture.fwrouter.test:443?"
         "encryption=none&type=xhttp&path=%2Fb9ecd35b28fe&mode=stream-one"
-        "&security=reality&sni=my.crushboy.net&fp=random&pbk=public-key&sid=a1b2c3d4"
+        "&security=reality&sni=parser-fixture.fwrouter.test&fp=random&pbk=public-key&sid=a1b2c3d4"
         "#🇩🇪Auto%20Server🔋%20-%20NEW"
     )
 
@@ -420,7 +422,7 @@ def test_subscription_parse_vless_reality_xhttp_regression() -> None:
     assert result.ok is True
     assert server.server_name == "🇩🇪Auto Server🔋 - NEW"
     assert server.protocol == "vless"
-    assert server.host == "my.crushboy.net"
+    assert server.host == "parser-fixture.fwrouter.test"
     assert server.port == 443
     assert server.transport == "xhttp"
     assert server.raw["security"] == "reality"
