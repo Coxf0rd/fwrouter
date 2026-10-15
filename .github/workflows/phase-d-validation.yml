@@ -154,7 +154,7 @@ jobs:
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
       - name: Check full Phase D delta syntax and whitespace from fixed checkpoint
         env:
-          PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
+          PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
@@ -680,7 +680,7 @@ jobs:
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
       - name: Bind diagnostic to fixed source and complete Phase D plan
         env:
-          PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
+          PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"

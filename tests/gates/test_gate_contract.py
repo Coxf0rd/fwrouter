@@ -77,7 +77,7 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", block)
         self.assertIn("github.event.pull_request.head.ref == 'fix/api-runtime-health-scale-stability'", block)
         self.assertIn(
-            "git log -1 --format=%B | grep -Eq -- 'ci:validate-(identities|final-fixes)'",
+            "git log -1 --format=%B | grep -Eq -- 'ci:validate-(identities|final-fixes|packet)'",
             block,
         )
         self.assertIn(
@@ -96,7 +96,7 @@ class GateContractTests(unittest.TestCase):
                            cwd=repo, check=True)
             (repo / "receipt.txt").write_text("targeted\n", encoding="utf-8")
             subprocess.run(["git", "add", "receipt.txt"], cwd=repo, check=True)
-            for marker in ("ci:validate-identities", "ci:validate-final-fixes"):
+            for marker in ("ci:validate-identities", "ci:validate-final-fixes", "ci:validate-packet"):
                 with self.subTest(marker=marker):
                     subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", marker],
                                    cwd=repo, check=True)
@@ -235,7 +235,8 @@ class GateContractTests(unittest.TestCase):
         workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
         identity_base = (
             "PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || "
-            "needs.select-stage.outputs.stage == 'final-regressions-diagnostic') && "
+            "needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || "
+            "needs.select-stage.outputs.stage == 'packet-diagnostic') && "
             "'1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || "
             "'6bdf37e9c73b5728b8d50e971f34d848610eb345' }}"
         )
@@ -246,6 +247,10 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("git cat-file -e \"$PHASE_D_BASE_SHA^{commit}\"", identity_step)
         self.assertIn('git diff --check "$PHASE_D_BASE_SHA...HEAD"', identity_step)
         self.assertIn('python tests/gates/gate.py plan --base "$PHASE_D_BASE_SHA"', workflow)
+
+        selector = workflow.split("markers = {", 1)[1].split("\n          }", 1)[0]
+        self.assertEqual(1, selector.count('"ci:validate-packet": "packet-diagnostic"'))
+        self.assertEqual(1, selector.count('"ci:validate-final-fixes": "final-regressions-diagnostic"'))
 
     def test_final_regressions_diagnostic_is_fixed_four_node_kernel_suite(self) -> None:
         launcher_path = gate.ROOT / "tests/acceptance/launcher.py"

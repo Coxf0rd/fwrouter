@@ -447,7 +447,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         reentry_diagnostic = source.index('"phase": "provider-reentry"')
         reentry_assertion = source.index('assert code == 200 and reentered.get("ok") is True')
         self.assertLess(reentry_diagnostic, reentry_assertion)
-        self.assertIn("CAPTURE_LIMIT = 512", source)
+        self.assertIn("CAPTURE_LIMIT = 2048", source)
         self.assertIn("expect_active_server=False", source)
         capability_state = functions["_packet_capability_state"]
         capability_source = ast.get_source_segment(source, capability_state)
@@ -689,7 +689,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
     def test_tmpfs_capture_export_uses_only_fixed_root_owned_bounded_file(self):
         tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
         functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-        namespace = {"PACKET_CAPTURE_SNAPLEN": {"tcp": 54, "udp": 42}, "Any": object,
+        namespace = {"PACKET_CAPTURE_SNAPLEN": {"tcp": 54, "udp": 42},
+                     "PACKET_CAPTURE_LIMIT": 2048, "Any": object,
                      "NotRun": type("NotRun", (Exception,), {})}
         for name in ("packet_capture_copy_code", "_docker_copy_capture"):
             exec(compile(ast.Module(body=[functions[name]], type_ignores=[]), str(LAUNCHER), "exec"), namespace)
@@ -701,7 +702,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertEqual(ast.literal_eval(assignments["root_path"]), "/tmp/fwrouter-packet-evidence")
         self.assertIn("capture_name", worker_text)
         self.assertIn(".pcap", worker_text)
-        self.assertEqual(ast.unparse(assignments["maximum"]), "24 + 512 * (16 + 54)")
+        self.assertEqual(ast.unparse(assignments["maximum"]), "24 + 2048 * (16 + 54)")
         self.assertIn("os.O_NOFOLLOW", worker_text)
         self.assertIn("root_info.st_uid != 0", worker_text)
         self.assertIn("stat.S_IMODE(root_info.st_mode) != 448", worker_text)
@@ -730,7 +731,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
                               "_redact_public": lambda value, *, limit: value.decode()[:limit]
                               if isinstance(value, bytes) else str(value)[:limit],
                               "PACKET_CAPTURE_SOURCES": {"/tmp/fwrouter-packet-evidence/tcp.pcap": "tcp"},
-                              "PACKET_CAPTURE_LIMIT": 512, "os": os, "stat": stat})
+                              "PACKET_CAPTURE_LIMIT": 2048, "os": os, "stat": stat})
             result = namespace["_docker_copy_capture"](
                 "docker", "fixed-container", "/tmp/fwrouter-packet-evidence/tcp.pcap", destination, env={})
             self.assertTrue(result["copied"])
@@ -886,7 +887,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         launcher_tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
         generators = {node.name: node for node in launcher_tree.body if isinstance(node, ast.FunctionDef)
                       and node.name in {"packet_capture_start_code", "packet_capture_stop_code"}}
-        namespace = {}
+        namespace = {"PACKET_CAPTURE_LIMIT": 2048}
         for name, node in generators.items():
             exec(compile(ast.Module(body=[node], type_ignores=[]), str(LAUNCHER), "exec"), namespace)
         start = namespace["packet_capture_start_code"]()
@@ -991,6 +992,63 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("libpcap0.8=1.10.3-1", dockerfile)
         self.assertIn('receipt["packet_capture_runtime"] = capture_result',
                       LAUNCHER.read_text(encoding="utf-8"))
+
+    def test_packet_capture_budget_is_bounded_and_saturation_blocks_acceptance(self):
+        worker_path = ROOT / "tests" / "acceptance" / "packet_capture_worker.py"
+        worker_tree = ast.parse(worker_path.read_text(encoding="utf-8"))
+        worker_limit = next(node.value for node in worker_tree.body if isinstance(node, ast.Assign)
+                            and any(isinstance(target, ast.Name) and target.id == "PACKET_LIMIT"
+                                    for target in node.targets))
+        launcher_tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
+        launcher_limit = next(node.value for node in launcher_tree.body if isinstance(node, ast.Assign)
+                              and any(isinstance(target, ast.Name) and target.id == "PACKET_CAPTURE_LIMIT"
+                                      for target in node.targets))
+        packet_tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))
+        packet_functions = {node.name: node for node in packet_tree.body if isinstance(node, ast.FunctionDef)}
+        parser_limit = next(node.value for node in packet_tree.body if isinstance(node, ast.Assign)
+                            and any(isinstance(target, ast.Name) and target.id == "CAPTURE_LIMIT"
+                                    for target in node.targets))
+        self.assertEqual((ast.literal_eval(worker_limit), ast.literal_eval(launcher_limit),
+                          ast.literal_eval(parser_limit)), (2048, 2048, 2048))
+        maximum_combined_bytes = (24 + 2048 * (16 + 54)) + (24 + 2048 * (16 + 42))
+        self.assertEqual(maximum_combined_bytes, 262192)
+        self.assertLess(maximum_combined_bytes, 257 * 1024)
+
+        generator_namespace = {"PACKET_CAPTURE_LIMIT": 2048}
+        for name in ("packet_capture_start_code", "packet_capture_stop_code"):
+            node = next(item for item in launcher_tree.body
+                        if isinstance(item, ast.FunctionDef) and item.name == name)
+            exec(compile(ast.Module(body=[node], type_ignores=[]), str(LAUNCHER), "exec"),
+                 generator_namespace)
+        start_code = generator_namespace["packet_capture_start_code"]()
+        stop_code = generator_namespace["packet_capture_stop_code"]()
+        self.assertIn('"packet_limit_per_capture":2048', start_code)
+        self.assertIn('row.get("packet_limit")!=2048', start_code)
+        self.assertIn("<=2048", stop_code)
+        self.assertIn("24+2048*(16+snaplen)", stop_code)
+
+        helper = packet_functions["_capture_budget_exhausted"]
+        namespace = {"CAPTURE_LIMIT": 2048}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(PACKET_TEST), "exec"), namespace)
+        exhausted = namespace["_capture_budget_exhausted"]
+        self.assertFalse(exhausted({"tcp": 2047}))
+        self.assertTrue(exhausted({"tcp": 2048}))
+        self.assertTrue(exhausted({"tcp": 2048, "udp": 2047}))
+        packet_counts_source = ast.get_source_segment(PACKET_TEST.read_text(encoding="utf-8"),
+                                                       packet_functions["_packet_counts"])
+        self.assertLess(packet_counts_source.index("_capture_budget_exhausted(record_counts)"),
+                        packet_counts_source.index("return {**tcp, **udp}"))
+        self.assertIn("packet capture budget exhausted before complete dataplane acceptance",
+                      packet_counts_source)
+        wait_source = ast.get_source_segment(PACKET_TEST.read_text(encoding="utf-8"),
+                                             packet_functions["_wait_packet_counts"])
+        self.assertIn("if predicate(current):", wait_source)
+        self.assertIn("timeout_seconds: float = 3.0", wait_source)
+
+        validate = ast.get_source_segment(PACKET_TEST.read_text(encoding="utf-8"),
+                                          packet_functions["_pcap_counts"])
+        self.assertIn("records > CAPTURE_LIMIT", validate)
+        self.assertIn("record_counts[capture_name] = records", validate)
 
     def test_packet_application_scenario_requires_real_core_counter_deltas_and_header_only_flows(self):
         source = PACKET_TEST.read_text(encoding="utf-8")

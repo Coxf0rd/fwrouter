@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 full acceptance follow-up — 2026-10-15
+
+Run38693525225/sourcebb8d6d6:1622 PASS/1 FAIL/0 SKIP. Original migration/reentry failures closed in hosted scope; runtime-scale startup29.1161s/45s, APIworkerHWM926400KiB,24/24HTTP200, shutdown0.2638s,82 synthetic identities preserved. Packet gate failed because bounded TCP capture exhausted512records before the late selector proof; exact endpoint flow remains unverified, not a routingPASS. Consistent2048record header-only capture budget and saturation rejection under narrow packet qualification; corrected fullrequiredPRCI follows only after targetPASS. PR8Draft/BLOCKED, production units held/no mutations, CI milestoneCLOSED/CDDEFERRED. See runtime stability REPORT; historical checkpoints retained.
+
 ## PR8 targeted final regressions accepted — 2026-10-15
 
 Run38692443202/sourceae8d26e SUCCESS:43 exact component and4 real hosted native/browser PASS,0 FAIL/SKIP. Correct schema25 migration preserves legacy rows/credentials/native identities; verified Emergency Direct reentry and selector race pass. Account deletion now atomically tombstones owned durable credentials after native removal; real UI→API→native deletion and unrelated-scope preservation PASS. Reentry prepares current Mihomo proof with exact operation/job-bound CAS receipt and retains Direct on refusal; conservative fast-path status does not replace native proof. Final complete safeL0-L5 PR CI pending beforeReady; no production/live restoration or activation. CI milestone CLOSED/CD DEFERRED; historical evidence below retained. See runtime stability REPORT.md.

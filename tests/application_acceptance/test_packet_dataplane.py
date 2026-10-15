@@ -40,7 +40,7 @@ CAPTURE_ROOT = Path("/tmp/fwrouter-packet-evidence")
 TCP_CAPTURE_PATH = CAPTURE_ROOT / "tcp.pcap"
 UDP_CAPTURE_PATH = CAPTURE_ROOT / "udp.pcap"
 CAPTURE_SUMMARY_PATH = CAPTURE_ROOT / "appboundedpacket-summary.json"
-CAPTURE_LIMIT = 512
+CAPTURE_LIMIT = 2048
 TCP_SNAPLEN = 54
 UDP_SNAPLEN = 42
 NEGATIVE_CAPTURE_DRAIN_SECONDS = 1.0
@@ -522,7 +522,8 @@ def _refresh_packet_capability(stack: dict[str, Any], api: str, bridge: Any, sou
 
 
 def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
-                 expected_ports: set[int]) -> dict[tuple[str, str, str, int], int]:
+                 expected_ports: set[int], *, record_counts: dict[str, int] | None = None,
+                 capture_name: str | None = None) -> dict[tuple[str, str, str, int], int]:
     """Read only fixed IPv4 headers from a launcher-owned bounded live pcap."""
     try:
         root_info = CAPTURE_ROOT.lstat()
@@ -607,12 +608,25 @@ def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
         counts[(src, dst, "tcp" if protocol == 6 else "udp", dst_port)] = (
             counts.get((src, dst, "tcp" if protocol == 6 else "udp", dst_port), 0) + 1
         )
+    if record_counts is not None and capture_name is not None:
+        record_counts[capture_name] = records
     return counts
 
 
+def _capture_budget_exhausted(record_counts: dict[str, int]) -> bool:
+    """A full bounded capture cannot support a complete dataplane acceptance."""
+    return any(type(count) is int and count >= CAPTURE_LIMIT for count in record_counts.values())
+
+
 def _packet_counts() -> dict[tuple[str, str, str, int], int]:
-    tcp = _pcap_counts(TCP_CAPTURE_PATH, TCP_SNAPLEN, 6, {53, 5301, ENDPOINT_SELECTOR_PORT, 9080})
-    udp = _pcap_counts(UDP_CAPTURE_PATH, UDP_SNAPLEN, 17, {53, 9081, 5353})
+    record_counts: dict[str, int] = {}
+    tcp = _pcap_counts(TCP_CAPTURE_PATH, TCP_SNAPLEN, 6,
+                       {53, 5301, ENDPOINT_SELECTOR_PORT, 9080},
+                       record_counts=record_counts, capture_name="tcp")
+    udp = _pcap_counts(UDP_CAPTURE_PATH, UDP_SNAPLEN, 17, {53, 9081, 5353},
+                       record_counts=record_counts, capture_name="udp")
+    if _capture_budget_exhausted(record_counts):
+        raise AssertionError("packet capture budget exhausted before complete dataplane acceptance")
     return {**tcp, **udp}
 
 

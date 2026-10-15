@@ -179,7 +179,7 @@ PACKET_LIBPCAP_API_VERSION_PREFIX = "libpcap version 1.10.3"
 PACKET_DNSMASQ_BASE_VERSION = "2.90-4~deb12u2"
 PACKET_BIND9_DNSUTILS_VERSION = "1:9.18.49-1~deb12u1"
 PACKET_IPTABLES_VERSION = "1.8.9-2"
-PACKET_CAPTURE_LIMIT = 512
+PACKET_CAPTURE_LIMIT = 2048
 PACKET_CAPTURE_SNAPLEN = {"tcp": 54, "udp": 42}
 PACKET_CAPTURE_SOURCES = {
     f"/tmp/fwrouter-packet-evidence/{name}.pcap": name for name in PACKET_CAPTURE_SNAPLEN
@@ -224,7 +224,7 @@ def packet_capture_copy_code(name: str) -> str:
     return r'''import os, stat
 root_path = "/tmp/fwrouter-packet-evidence"
 capture_name = ''' + repr(name) + r''' + ".pcap"
-maximum = 24 + 512 * (16 + ''' + str(snaplen) + r''')
+maximum = 24 + ''' + str(PACKET_CAPTURE_LIMIT) + r''' * (16 + ''' + str(snaplen) + r''')
 root_fd = -1
 capture_fd = -1
 def fail(message):
@@ -1875,7 +1875,7 @@ try:
     for name,expected in expected_flows.items():
         row=ready["flows"][name]
         if (row.get("filter")!=expected["filter"] or row.get("snaplen")!=expected["snaplen"]
-            or row.get("linktype")!=1 or row.get("packet_limit")!=512
+            or row.get("linktype")!=1 or row.get("packet_limit")!=''' + str(PACKET_CAPTURE_LIMIT) + r'''
             or row.get("header",{}).get("snaplen")!=expected["snaplen"]
             or row.get("header",{}).get("linktype")!=1
             or row.get("header",{}).get("major")!=2 or row.get("header",{}).get("minor")!=4):
@@ -1896,7 +1896,7 @@ try:
                       "worker_sha256":worker_sha,"libpcap_package_version":ready["libpcap_package_version"],
                       "libpcap_api_version":ready["libpcap_api_version"],
                       "libpcap_library_sha256":ready["libpcap_library_sha256"],
-                      "tcp_snaplen":54,"udp_snaplen":42,"packet_limit_per_capture":512},sort_keys=True,separators=(",",":")))
+                      "tcp_snaplen":54,"udp_snaplen":42,"packet_limit_per_capture":''' + str(PACKET_CAPTURE_LIMIT) + r'''},sort_keys=True,separators=(",",":")))
 except Exception as exc:
     if process is not None and process.poll() is None:
         try: process.send_signal(signal.SIGINT)
@@ -1993,11 +1993,11 @@ for name,snaplen in (("tcp",54),("udp",42)):
     row=final["flows"][name]; path=root/(name+".pcap"); info=path.lstat()
     expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302 or dst port 5303)) or (tcp and dst host 1.1.1.1 and dst port 53)"
                 if name=="tcp" else "(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 198.51.100.77 and dst port 9081) or (udp and dst host 10.250.240.2 and dst port 9081) or (udp and dst host 1.1.1.1 and dst port 53)")
-    if (type(row.get("count")) is not int or not 0<=row["count"]<=512 or row.get("snaplen")!=snaplen
+    if (type(row.get("count")) is not int or not 0<=row["count"]<=''' + str(PACKET_CAPTURE_LIMIT) + r''' or row.get("snaplen")!=snaplen
         or row.get("filter")!=expected_filter or row.get("header",{}).get("major")!=2
         or row.get("header",{}).get("minor")!=4 or row.get("header",{}).get("linktype")!=1
         or path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077
-        or not 24<=info.st_size<=24+512*(16+snaplen)):
+        or not 24<=info.st_size<=24+''' + str(PACKET_CAPTURE_LIMIT) + r'''*(16+snaplen)):
         raise SystemExit("owned bounded capture file or final count is invalid")
     files[name]={"bytes":info.st_size,"packets":row["count"],"snaplen":snaplen}
 print(json.dumps({"status":"stopped","worker_status":result,"worker_pid":pid,

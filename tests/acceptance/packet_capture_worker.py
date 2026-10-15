@@ -32,7 +32,7 @@ PCAP_NETMASK_UNKNOWN = 0xFFFFFFFF
 # libpcap 1.10.3 pcap/pcap.h: PCAP_D_INOUT=0, PCAP_D_IN=1, PCAP_D_OUT=2.
 PCAP_D_OUT = 2
 DLT_EN10MB = 1
-PACKET_LIMIT = 512
+PACKET_LIMIT = 2048
 FLOWS = {
     "tcp": {
         "snaplen": 54,
