@@ -579,3 +579,14 @@ Packet FAIL is isolated capture exhaustion: TCP pcap exactly35864 bytes =24+512�
 Scale PASS:startup29.1161s/45s, RSSready612724KiB, APIworker lifetime HWM926400KiB (~904.7MiB),24/24HTTP200, healthmax0.0063s/allAPImax1.5823s, gracefulfinalshutdown0.2638s. Exact82 synthetic identities configured/loaded/unique; publicXray0.0812s and nativeRealityTCPHTTP200 with VPN-source observation. These are hosted APIworker metrics, not aggregate memory or production soak. Earlier near45s variance remains historical evidence.
 
 PR8 remainsDraft/BLOCKED pending targeted packet proof and corrected full requiredPRCI. No production services, credentials, networking or runtime changed.
+
+
+### Packet capture qualification — run38696050646/source56cab4d
+
+SUCCESS: packet/kernel acceptance and the existing profile's runtime-scale case2 PASS/0 FAIL/0 SKIP. Actual header-only captures:TCP560records/39224bytes,UDP22records/1300bytes, both below2048; previous512 ceiling was demonstrably insufficient. Complete actual CoreEmergencyDirect/reentry/selector packet assertions nowPASS, not inferred from API. Source/plan/native input receipt matches56cab4d, no cleanup_errors; host route/firewall namespace cleanup receipts retained. Staticbootstrap and fastlanePASS. Other unselected diagnostic jobs remainSKIPPED/NOTRUN, not added to testPASS counts. Local safe tooling240 PASS (72gate+126acceptance+42network contracts), F821/diff/surfacePASS.
+
+Scale repeat startup43.2059s/45s, RSSready614048KiB, APIworker lifetimeHWM870504KiB,24/24HTTP200, healthmax0.0094s/allAPImax2.3265s, publicXray0.1498s with82 exact native identities, finalgracefulshutdown0.2639s. Advisory40s unmet; observed29.1161↔43.2059s variance remains a deployment/soak risk, not a newly raised timeout.
+
+Final independent source review found no additional demonstrated blocker in reentry publication/CAS/native proof, durable credentials/deletion or additive schema migration. Clarification of earlier offline-upgrade wording: normal bootstrap retains the existing automatic additive24→25 migration policy; the CLI provides the explicitly offline, canonical-preflight and protected-backup operator path, not a runtime prohibition on startup migration. For production, keep API/dependent writers stopped and execute that backed procedure plus reviewed identity mapping before starting ordinary generation. Genuine24→25 row-preservation/downgrade refusal and native identity continuity are separately qualified; no single combined genuine24 native-generation receipt is claimed. Actual78 production identity restoration remainsNOTRUN.
+
+The corrected final complete requiredPRCI follows on the frozen source; Ready is conditional on its real success. This rerun is necessary because the previous finalrun's mandatory packet proof failed at the demonstrated capture infrastructure limit. No productsource changed after accepted43+4 target, and no production mutation occurred.

@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 packet target accepted / final required CI — 2026-10-15
+
+Run38696050646/source56cab4d SUCCESS:packet+scale2 PASS/0 FAIL/0 SKIP, actualTCP560/UDP22 bounded header records confirm correctedcapturecapacity. Runtime startup43.2059s/45s, HWM870504KiB,24/24HTTP200, shutdown0.2639s;40sadvisoryunmet and runner variance retained as risk. Schema25/reentry/deletion target43+4 previouslyPASS. Corrected final complete requiredPRCI pending on frozen source, PR8Draft until verified; productionheld/no mutations, CI milestoneCLOSED/CDDEFERRED. Offline backed CLI remains production operator prerequisite; bootstrap's existing additive migration policy is unchanged. Historical evidence retained in runtimeREPORT.
+
 ## PR8 full acceptance follow-up — 2026-10-15
 
 Run38693525225/sourcebb8d6d6:1622 PASS/1 FAIL/0 SKIP. Original migration/reentry failures closed in hosted scope; runtime-scale startup29.1161s/45s, APIworkerHWM926400KiB,24/24HTTP200, shutdown0.2638s,82 synthetic identities preserved. Packet gate failed because bounded TCP capture exhausted512records before the late selector proof; exact endpoint flow remains unverified, not a routingPASS. Consistent2048record header-only capture budget and saturation rejection under narrow packet qualification; corrected fullrequiredPRCI follows only after targetPASS. PR8Draft/BLOCKED, production units held/no mutations, CI milestoneCLOSED/CDDEFERRED. See runtime stability REPORT; historical checkpoints retained.
