@@ -1,0 +1,23 @@
+{
+  "base_sha": "baafbf209331da763d95bae40c32e4176b158e4d",
+  "runtime_source_sha256": {
+    "backend/fwrouter_api/adapters/mihomo.py": "1e6887f42d9ec24a75757fec6af1ffae50ab6fac86c3ee528b273c527bed06bf",
+    "backend/fwrouter_api/services/event_contract.py": "90f4787227ea6e4f3b326a3e24bb86e96e16a107499e546e6add433620931512"
+  },
+  "tests_source_sha256": {
+    "backend/tests/test_configured_metadata_efficiency.py": "eb765e177829c29f69353eef864c01eafbf366e08ace08e92d69abf20feb5c63",
+    "backend/tests/test_sanitizer_constant_efficiency.py": "d97fb5c8847abb3604063c5e912ccb07ca4245263dad04e2695e96e6f6457881"
+  },
+  "metadata_measurement_source_matches": true,
+  "sanitizer_binding": "runtime file hash recorded at integration; same minimal5-line source diff as candidate benchmark, exact output digests match frozen baseline",
+  "local_targeted": {
+    "pass": 85,
+    "fail": 0,
+    "skip": 0
+  },
+  "surface_check": "PASS",
+  "manifest_validation": "PASS 174 test files",
+  "syntax_and_diff_check": "PASS",
+  "final_required_pr_ci": "PENDING",
+  "production": "UNCHANGED"
+}

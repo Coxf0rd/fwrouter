@@ -1,0 +1,108 @@
+{
+  "source": "/root/fwrouter-recovery/package1-20261016/baseline/backend/fwrouter_api/services/event_contract.py",
+  "repeats": 5,
+  "classification_calls_per_run": 100000,
+  "records_per_size_per_run": 600,
+  "workloads": {
+    "key_classification_peak_alloc_bytes": 804065,
+    "key_classification": [
+      {
+        "wall_seconds": 1.3830118959303945,
+        "cpu_seconds": 1.3810602330000001,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      },
+      {
+        "wall_seconds": 1.283815684961155,
+        "cpu_seconds": 1.2837286850000003,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      },
+      {
+        "wall_seconds": 1.2822674850467592,
+        "cpu_seconds": 1.2822147840000002,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      },
+      {
+        "wall_seconds": 1.2915756449801847,
+        "cpu_seconds": 1.2914867599999997,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      },
+      {
+        "wall_seconds": 1.2795399579918012,
+        "cpu_seconds": 1.279479749,
+        "output_sha256": "3defde7d9aba8ed7fb5d375b6ae43284caddb087bf6fad5903e4dd4025ee77e0"
+      }
+    ],
+    "nested_small_records": [
+      {
+        "wall_seconds": 0.17424582003150135,
+        "cpu_seconds": 0.17422576000000056,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      },
+      {
+        "wall_seconds": 0.17137903801631182,
+        "cpu_seconds": 0.17137064399999957,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      },
+      {
+        "wall_seconds": 0.1730798470089212,
+        "cpu_seconds": 0.1730717540000004,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      },
+      {
+        "wall_seconds": 0.17230213491711766,
+        "cpu_seconds": 0.17229443399999944,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      },
+      {
+        "wall_seconds": 0.17617442505434155,
+        "cpu_seconds": 0.17614851899999984,
+        "output_sha256": "d317aff63a28289f156e763508b80ce7d5ae01c43b3944ba14495b1e720bc292",
+        "input_bytes": 405350
+      }
+    ],
+    "nested_small_peak_alloc_bytes": 638425,
+    "nested_large_records": [
+      {
+        "wall_seconds": 0.20057475997600704,
+        "cpu_seconds": 0.20056045200000128,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      },
+      {
+        "wall_seconds": 0.20415868796408176,
+        "cpu_seconds": 0.20413523300000058,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      },
+      {
+        "wall_seconds": 0.20405379601288587,
+        "cpu_seconds": 0.20404360600000082,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      },
+      {
+        "wall_seconds": 0.20276947203092277,
+        "cpu_seconds": 0.2027595919999996,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      },
+      {
+        "wall_seconds": 0.20022273599170148,
+        "cpu_seconds": 0.20021338799999988,
+        "output_sha256": "f6f653a2606ac8d1e9548268365b2a7daca33068cc6c3ffabe167827f3c3daad",
+        "input_bytes": 1375550
+      }
+    ],
+    "nested_large_peak_alloc_bytes": 638425
+  },
+  "instrumented_reference": {
+    "operation": "100000 _sensitive_key calls",
+    "re_sub_calls": 1400000,
+    "classified_sensitive": 38890,
+    "instrumented": true
+  }
+}

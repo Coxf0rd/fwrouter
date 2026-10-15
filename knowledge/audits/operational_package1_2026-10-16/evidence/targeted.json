@@ -1,0 +1,9 @@
+{
+  "tests": 85,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "execution_exit": 0,
+  "scope": "10 explicit component regression files; private coordinator root; network namespace; no native/production execution",
+  "initial_reporting_attempt": "tests completed; JUnit path rejected by safety fence; NOT accepted success. Corrected invocation uses existing owned-root protocol; no guard changes."
+}

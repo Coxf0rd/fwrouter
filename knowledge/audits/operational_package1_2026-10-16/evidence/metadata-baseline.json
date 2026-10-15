@@ -1,0 +1,481 @@
+{
+  "backend": "/root/fwrouter-recovery/package1-20261016/baseline/backend",
+  "config_scans_per_call": "source-coded baseline: listener ports, tun, transparent listeners, bind-address scalar, secret scalar; 5 independent splitlines calls",
+  "dotenv_loaded": false,
+  "environment_cleared": true,
+  "label": "baafbf2-baseline",
+  "metrics": [
+    {
+      "bytes": 0,
+      "cpu_ms": [
+        0.025371,
+        0.016907,
+        0.014194,
+        0.012982,
+        0.027596
+      ],
+      "process_memory_after": {
+        "VmHWM": 28556,
+        "VmRSS": 28556
+      },
+      "process_memory_before": {
+        "VmHWM": 28556,
+        "VmRSS": 28556
+      },
+      "repeats": 5,
+      "result": {
+        "config_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/empty-early-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/missing-contours.yaml",
+        "fwrouter_contours": {},
+        "mixed_port": null,
+        "redir_port": null,
+        "secret_present": false,
+        "tproxy_port": null,
+        "transparent_listener_bind": null,
+        "transparent_listener_bind_valid": false,
+        "transparent_listener_loopback_bound": false,
+        "transparent_tcp_listener_bind": null,
+        "transparent_tcp_listener_present": false,
+        "transparent_tcp_listener_socket_present": false,
+        "transparent_udp_listener_bind": null,
+        "transparent_udp_listener_present": false,
+        "transparent_udp_listener_socket_present": false,
+        "tun_enabled": false
+      },
+      "scan_counts": {
+        "materialized_line_strings": 0,
+        "splitlines_calls": 5
+      },
+      "shape": "early-header",
+      "size": "empty",
+      "tracemalloc_peak_bytes": 784,
+      "wall_ms": [
+        0.033005,
+        0.018164,
+        0.015282,
+        0.014011,
+        0.028933
+      ]
+    },
+    {
+      "bytes": 0,
+      "cpu_ms": [
+        0.023362,
+        0.014601,
+        0.01331,
+        0.011947,
+        0.012283
+      ],
+      "process_memory_after": {
+        "VmHWM": 28556,
+        "VmRSS": 28556
+      },
+      "process_memory_before": {
+        "VmHWM": 28556,
+        "VmRSS": 28556
+      },
+      "repeats": 5,
+      "result": {
+        "config_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/empty-missing-section.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/missing-contours.yaml",
+        "fwrouter_contours": {},
+        "mixed_port": null,
+        "redir_port": null,
+        "secret_present": false,
+        "tproxy_port": null,
+        "transparent_listener_bind": null,
+        "transparent_listener_bind_valid": false,
+        "transparent_listener_loopback_bound": false,
+        "transparent_tcp_listener_bind": null,
+        "transparent_tcp_listener_present": false,
+        "transparent_tcp_listener_socket_present": false,
+        "transparent_udp_listener_bind": null,
+        "transparent_udp_listener_present": false,
+        "transparent_udp_listener_socket_present": false,
+        "tun_enabled": false
+      },
+      "scan_counts": {
+        "materialized_line_strings": 0,
+        "splitlines_calls": 5
+      },
+      "shape": "missing-section",
+      "size": "empty",
+      "tracemalloc_peak_bytes": 784,
+      "wall_ms": [
+        0.025822,
+        0.015792,
+        0.014219,
+        0.012824,
+        0.013244
+      ]
+    },
+    {
+      "bytes": 32672,
+      "cpu_ms": [
+        0.243743,
+        0.236941,
+        0.240917,
+        0.239835,
+        0.238812
+      ],
+      "process_memory_after": {
+        "VmHWM": 28556,
+        "VmRSS": 28556
+      },
+      "process_memory_before": {
+        "VmHWM": 28556,
+        "VmRSS": 28556
+      },
+      "repeats": 5,
+      "result": {
+        "config_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/small-early-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/missing-contours.yaml",
+        "fwrouter_contours": {},
+        "mixed_port": null,
+        "redir_port": 7892,
+        "secret_present": false,
+        "tproxy_port": null,
+        "transparent_listener_bind": "127.0.0.1",
+        "transparent_listener_bind_valid": false,
+        "transparent_listener_loopback_bound": true,
+        "transparent_tcp_listener_bind": "127.0.0.1",
+        "transparent_tcp_listener_present": false,
+        "transparent_tcp_listener_socket_present": false,
+        "transparent_udp_listener_bind": null,
+        "transparent_udp_listener_present": false,
+        "transparent_udp_listener_socket_present": false,
+        "tun_enabled": true
+      },
+      "scan_counts": {
+        "materialized_line_strings": 3555,
+        "splitlines_calls": 5
+      },
+      "shape": "early-header",
+      "size": "small",
+      "tracemalloc_peak_bytes": 73857,
+      "wall_ms": [
+        0.245797,
+        0.237978,
+        0.241858,
+        0.240728,
+        0.251028
+      ]
+    },
+    {
+      "bytes": 32701,
+      "cpu_ms": [
+        0.319188,
+        0.314387,
+        0.337853,
+        0.333985,
+        0.312945
+      ],
+      "process_memory_after": {
+        "VmHWM": 28556,
+        "VmRSS": 28556
+      },
+      "process_memory_before": {
+        "VmHWM": 28556,
+        "VmRSS": 28556
+      },
+      "repeats": 5,
+      "result": {
+        "config_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/small-missing-section.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/missing-contours.yaml",
+        "fwrouter_contours": {},
+        "mixed_port": null,
+        "redir_port": null,
+        "secret_present": false,
+        "tproxy_port": null,
+        "transparent_listener_bind": null,
+        "transparent_listener_bind_valid": false,
+        "transparent_listener_loopback_bound": false,
+        "transparent_tcp_listener_bind": null,
+        "transparent_tcp_listener_present": false,
+        "transparent_tcp_listener_socket_present": false,
+        "transparent_udp_listener_bind": null,
+        "transparent_udp_listener_present": false,
+        "transparent_udp_listener_socket_present": false,
+        "tun_enabled": false
+      },
+      "scan_counts": {
+        "materialized_line_strings": 1500,
+        "splitlines_calls": 5
+      },
+      "shape": "missing-section",
+      "size": "small",
+      "tracemalloc_peak_bytes": 50245,
+      "wall_ms": [
+        0.320984,
+        0.315367,
+        0.33877,
+        0.334919,
+        0.313832
+      ]
+    },
+    {
+      "bytes": 1048522,
+      "cpu_ms": [
+        6.89791,
+        6.519789,
+        5.671808,
+        5.819487,
+        5.587166
+      ],
+      "process_memory_after": {
+        "VmHWM": 32548,
+        "VmRSS": 32548
+      },
+      "process_memory_before": {
+        "VmHWM": 31228,
+        "VmRSS": 31228
+      },
+      "repeats": 5,
+      "result": {
+        "config_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/medium-early-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/missing-contours.yaml",
+        "fwrouter_contours": {},
+        "mixed_port": null,
+        "redir_port": 7892,
+        "secret_present": false,
+        "tproxy_port": null,
+        "transparent_listener_bind": "127.0.0.1",
+        "transparent_listener_bind_valid": false,
+        "transparent_listener_loopback_bound": true,
+        "transparent_tcp_listener_bind": "127.0.0.1",
+        "transparent_tcp_listener_present": false,
+        "transparent_tcp_listener_socket_present": false,
+        "transparent_udp_listener_bind": null,
+        "transparent_udp_listener_present": false,
+        "transparent_udp_listener_socket_present": false,
+        "tun_enabled": true
+      },
+      "scan_counts": {
+        "materialized_line_strings": 49730,
+        "splitlines_calls": 5
+      },
+      "shape": "early-header",
+      "size": "medium",
+      "tracemalloc_peak_bytes": 1612027,
+      "wall_ms": [
+        6.903296,
+        6.523088,
+        5.674008,
+        5.821812,
+        5.589625
+      ]
+    },
+    {
+      "bytes": 1048551,
+      "cpu_ms": [
+        11.701734,
+        11.139078,
+        11.522815,
+        10.445229,
+        10.56696
+      ],
+      "process_memory_after": {
+        "VmHWM": 33604,
+        "VmRSS": 33516
+      },
+      "process_memory_before": {
+        "VmHWM": 33604,
+        "VmRSS": 32728
+      },
+      "repeats": 5,
+      "result": {
+        "config_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/medium-missing-section.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/missing-contours.yaml",
+        "fwrouter_contours": {},
+        "mixed_port": null,
+        "redir_port": null,
+        "secret_present": false,
+        "tproxy_port": null,
+        "transparent_listener_bind": null,
+        "transparent_listener_bind_valid": false,
+        "transparent_listener_loopback_bound": false,
+        "transparent_tcp_listener_bind": null,
+        "transparent_tcp_listener_present": false,
+        "transparent_tcp_listener_socket_present": false,
+        "transparent_udp_listener_bind": null,
+        "transparent_udp_listener_present": false,
+        "transparent_udp_listener_socket_present": false,
+        "tun_enabled": false
+      },
+      "scan_counts": {
+        "materialized_line_strings": 47675,
+        "splitlines_calls": 5
+      },
+      "shape": "missing-section",
+      "size": "medium",
+      "tracemalloc_peak_bytes": 1592031,
+      "wall_ms": [
+        11.706433,
+        11.141042,
+        11.525423,
+        10.44719,
+        10.569235
+      ]
+    },
+    {
+      "bytes": 22699932,
+      "cpu_ms": [
+        205.512762,
+        195.973629,
+        195.976576,
+        187.507401,
+        182.165558
+      ],
+      "process_memory_after": {
+        "VmHWM": 106664,
+        "VmRSS": 95988
+      },
+      "process_memory_before": {
+        "VmHWM": 86808,
+        "VmRSS": 55456
+      },
+      "repeats": 5,
+      "result": {
+        "config_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/large-early-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/missing-contours.yaml",
+        "fwrouter_contours": {},
+        "mixed_port": null,
+        "redir_port": 7892,
+        "secret_present": false,
+        "tproxy_port": null,
+        "transparent_listener_bind": "127.0.0.1",
+        "transparent_listener_bind_valid": false,
+        "transparent_listener_loopback_bound": true,
+        "transparent_tcp_listener_bind": "127.0.0.1",
+        "transparent_tcp_listener_present": false,
+        "transparent_tcp_listener_socket_present": false,
+        "transparent_udp_listener_bind": null,
+        "transparent_udp_listener_present": false,
+        "transparent_udp_listener_socket_present": false,
+        "tun_enabled": true
+      },
+      "scan_counts": {
+        "materialized_line_strings": 1033885,
+        "splitlines_calls": 5
+      },
+      "shape": "early-header",
+      "size": "large",
+      "tracemalloc_peak_bytes": 34453245,
+      "wall_ms": [
+        205.546964,
+        195.984971,
+        195.987701,
+        187.517511,
+        182.175895
+      ]
+    },
+    {
+      "bytes": 22699961,
+      "cpu_ms": [
+        270.974484,
+        262.378133,
+        262.828417,
+        257.577055,
+        263.586051
+      ],
+      "process_memory_after": {
+        "VmHWM": 127288,
+        "VmRSS": 96104
+      },
+      "process_memory_before": {
+        "VmHWM": 127288,
+        "VmRSS": 96668
+      },
+      "repeats": 5,
+      "result": {
+        "config_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/large-missing-section.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/missing-contours.yaml",
+        "fwrouter_contours": {},
+        "mixed_port": null,
+        "redir_port": null,
+        "secret_present": false,
+        "tproxy_port": null,
+        "transparent_listener_bind": null,
+        "transparent_listener_bind_valid": false,
+        "transparent_listener_loopback_bound": false,
+        "transparent_tcp_listener_bind": null,
+        "transparent_tcp_listener_present": false,
+        "transparent_tcp_listener_socket_present": false,
+        "transparent_udp_listener_bind": null,
+        "transparent_udp_listener_present": false,
+        "transparent_udp_listener_socket_present": false,
+        "tun_enabled": false
+      },
+      "scan_counts": {
+        "materialized_line_strings": 1031830,
+        "splitlines_calls": 5
+      },
+      "shape": "missing-section",
+      "size": "large",
+      "tracemalloc_peak_bytes": 34433249,
+      "wall_ms": [
+        271.001289,
+        262.398582,
+        262.841215,
+        257.603051,
+        263.619687
+      ]
+    },
+    {
+      "bytes": 22699961,
+      "cpu_ms": [
+        174.724514,
+        188.191793,
+        179.936486,
+        173.953769,
+        179.09018
+      ],
+      "process_memory_after": {
+        "VmHWM": 127668,
+        "VmRSS": 96520
+      },
+      "process_memory_before": {
+        "VmHWM": 127668,
+        "VmRSS": 96520
+      },
+      "repeats": 5,
+      "result": {
+        "config_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/large-late-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-m5k1zi_n/missing-contours.yaml",
+        "fwrouter_contours": {},
+        "mixed_port": null,
+        "redir_port": 7892,
+        "secret_present": false,
+        "tproxy_port": null,
+        "transparent_listener_bind": "127.0.0.1",
+        "transparent_listener_bind_valid": false,
+        "transparent_listener_loopback_bound": true,
+        "transparent_tcp_listener_bind": "127.0.0.1",
+        "transparent_tcp_listener_present": false,
+        "transparent_tcp_listener_socket_present": false,
+        "transparent_udp_listener_bind": null,
+        "transparent_udp_listener_present": false,
+        "transparent_udp_listener_socket_present": false,
+        "tun_enabled": true
+      },
+      "scan_counts": {
+        "materialized_line_strings": 1069095,
+        "splitlines_calls": 5
+      },
+      "shape": "late-header",
+      "size": "large",
+      "tracemalloc_peak_bytes": 34791339,
+      "wall_ms": [
+        174.759237,
+        188.222647,
+        179.957286,
+        173.964794,
+        179.101469
+      ]
+    }
+  ],
+  "python": "3.11.2 (main, Apr 28 2025, 14:11:48) [GCC 12.2.0]",
+  "python_executable": "/opt/fwrouter-api/.venv/bin/python",
+  "sockets_and_controllers": "not used; socket observation stubbed false",
+  "source_sha256": "f83812317a6e7ba438a871ebf8c853052c3a95dc184b9b80673e6add1cbe200f"
+}

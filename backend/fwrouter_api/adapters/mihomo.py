@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import quote
 
 from concurrent.futures import ThreadPoolExecutor
@@ -47,6 +47,51 @@ GROUP_PROXY_TYPES = {
     "LoadBalance",
     "Relay",
 }
+_CONFIG_NON_LF_ASCII_BOUNDARIES = ("\r", "\v", "\f", "\x1c", "\x1d", "\x1e")
+_CONFIG_LAZY_SCAN_PREFIX_CHARS = 32 * 1024
+
+
+def _iter_config_lines(text: str) -> Iterator[str]:
+    """Yield ``str.splitlines()``-equivalent lines for configured scans.
+
+    Config scanners often stop near the header. ``splitlines()`` eagerly
+    materializes every line first, so use ``str.find`` for large LF-only
+    configs. Small and non-LF/Unicode text keeps the exact C implementation.
+    Callers also retain that implementation when the first matching header is
+    far into the document, where a full scan is expected.
+    """
+    if not text:
+        return
+    if (len(text) <= 32 * 1024 or not text.isascii()
+            or any(boundary in text for boundary in _CONFIG_NON_LF_ASCII_BOUNDARIES)):
+        yield from text.splitlines()
+        return
+    start = 0
+    while True:
+        boundary = text.find("\n", start)
+        if boundary < 0:
+            break
+        yield text[start:boundary]
+        start = boundary + 1
+    if start < len(text):
+        yield text[start:]
+
+
+def _configured_scan_lines(text: str, marker: str) -> Iterator[str]:
+    """Choose lazy iteration only when the first marker is a plausible header.
+
+    A marker first seen inside a comment, nested value, or other line content
+    cannot satisfy the scanners' column-zero header checks. Keep those cases
+    on ``splitlines()``: traversing a large document lazily to a missing header
+    is slower than the C implementation and saves no useful early-return work.
+    """
+    marker_offset = text.find(marker)
+    if marker_offset < 0:
+        return iter(())
+    if (marker_offset > _CONFIG_LAZY_SCAN_PREFIX_CHARS
+            or (marker_offset > 0 and text[marker_offset - 1] != "\n")):
+        return iter(text.splitlines())
+    return _iter_config_lines(text)
 
 
 def _transparent_bind_address_valid(value: str | None) -> bool:
@@ -419,7 +464,8 @@ class MihomoHttpAdapter(MihomoAdapter):
     def _config_top_level_scalar(self, key: str, *, text: str | None = None) -> str | None:
         source = text if text is not None else self._config_text()
         prefix = f"{key}:"
-        for line in source.splitlines():
+        lines = _configured_scan_lines(source, prefix)
+        for line in lines:
             if not line or line.startswith((" ", "\t", "-")):
                 continue
             if line.startswith(prefix):
@@ -428,6 +474,7 @@ class MihomoHttpAdapter(MihomoAdapter):
 
     def _scan_listener_ports(self, *, text: str | None = None) -> dict[str, int | None]:
         source = text if text is not None else self._config_text()
+        lines = _configured_scan_lines(source, "listeners:")
         mixed_port: int | None = None
         tproxy_port: int | None = None
         redir_port: int | None = None
@@ -444,7 +491,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 redir_port = port_value
 
         current_port: int | None = None
-        for raw_line in source.splitlines():
+        for raw_line in lines:
             line = raw_line.rstrip("\n")
             stripped = line.strip()
             if not stripped:
@@ -494,6 +541,7 @@ class MihomoHttpAdapter(MihomoAdapter):
 
     def _scan_transparent_listeners(self, *, text: str | None = None) -> dict[str, dict[str, Any]]:
         source = text if text is not None else self._config_text()
+        lines = _configured_scan_lines(source, "listeners:")
         in_listeners = False
         current: dict[str, Any] | None = None
         result: dict[str, dict[str, Any]] = {}
@@ -509,7 +557,7 @@ class MihomoHttpAdapter(MihomoAdapter):
             if name == TRANSPARENT_TPROXY_LISTENER_NAME and listener_type == "tproxy":
                 result["tproxy"] = dict(current)
 
-        for raw_line in source.splitlines():
+        for raw_line in lines:
             line = raw_line.rstrip("\n")
             stripped = line.strip()
             if not stripped:
@@ -548,8 +596,9 @@ class MihomoHttpAdapter(MihomoAdapter):
 
     def _scan_tun_enabled(self, *, text: str | None = None) -> bool:
         source = text if text is not None else self._config_text()
+        lines = _configured_scan_lines(source, "tun:")
         in_tun = False
-        for raw_line in source.splitlines():
+        for raw_line in lines:
             line = raw_line.rstrip("\n")
             stripped = line.strip()
             if not stripped:

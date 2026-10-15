@@ -1,5 +1,9 @@
 # Project Map
 
+## Package1 source checkpoint — 2026-10-16
+
+Current main/production baselinebaafbf2; Package1 branch implements configured-read and immutable sanitizer CPU work only, with85 targeted tests passing. [Package1 report](../audits/operational_package1_2026-10-16/REPORT.md) includes reproducible synthetic baselines, CPU/allocation ranges, source ownership and final PR-CI gate. Full required CI pending; no source deployment or Package2. Existing dated checkpoints below retain history and are superseded only within these explicit boundaries.
+
 ## Current checkpoint — 2026-10-15
 
 The CI milestone is CLOSED following actual squash/main validation (PR5, main run38363962787). PR8 merged as dabf9f4; PR10 merged/deployed as ffe506e. Production remains ffe506e with the original78 identities restored and API/Gateway recovered. PR11 isolation/redaction fixes are source-only, not deployed: Synthetic Functional Acceptance PASS, Production State Acceptance PARTIAL, controlled external E2E NOT RUN, overall Production Acceptance BLOCKED. These are recorded receipts, not new live probes. Earlier dated checkpoints below are historical where superseded; they do not reopen CI or describe the current held/recovery state.
