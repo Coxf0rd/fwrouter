@@ -1115,12 +1115,15 @@ class MihomoHttpAdapter(MihomoAdapter):
     def _get_json(self, path: str, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         timeout = self.timeout_seconds if timeout_seconds is None else max(0.1, float(timeout_seconds))
         with httpx.Client(timeout=timeout, trust_env=False) as client:
-            response = client.get(
+            # Avoid Response.json(): its buffered content can stay reachable through
+            # httpx's response/stream cycle until cyclic GC runs on large payloads.
+            with client.stream(
+                "GET",
                 f"{self.base_url}{path}",
                 headers=self._headers(),
-            )
-            response.raise_for_status()
-            data = response.json()
+            ) as response:
+                response.raise_for_status()
+                data = json.loads(b"".join(response.iter_bytes()))
 
         if not isinstance(data, dict):
             return {"value": data}

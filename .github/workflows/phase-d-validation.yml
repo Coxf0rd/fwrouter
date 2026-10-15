@@ -2,7 +2,7 @@ name: Phase D branch validation (temporary)
 
 on:
   push:
-    branches: [stage/test-architecture-ci-stabilization, fix/api-runtime-health-scale-stability]
+    branches: [stage/test-architecture-ci-stabilization, fix/api-runtime-health-scale-stability, fix/startup-scale-concurrent-disconnect]
 
 permissions:
   contents: read
