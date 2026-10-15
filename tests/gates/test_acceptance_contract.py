@@ -5262,6 +5262,45 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIsNotNone(acceptance_profile._qualification_error(dict(facts, uid=0)))
         self.assertIsNotNone(acceptance_profile._qualification_error(dict(facts, gid=0)))
 
+    def test_success_diagnostics_retain_only_first_and_exact_emergency_reentry(self):
+        conftest_path = APPLICATION_ACCEPTANCE_CONFTEST
+        tree = ast.parse(conftest_path.read_text(encoding="utf-8"), filename=str(conftest_path))
+        critical_definition = next(
+            node for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name)
+                    and target.id == "_CRITICAL_SUCCESS_DIAGNOSTIC_NODEIDS"
+                    for target in node.targets)
+        )
+        retention_helper = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_retain_acceptance_diagnostic"
+        )
+        acceptance_stack = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "acceptance_stack"
+        )
+        self.assertEqual(1, sum(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "_retain_acceptance_diagnostic"
+            for node in ast.walk(acceptance_stack)
+        ))
+        self.assertFalse(any(isinstance(node, (ast.Import, ast.ImportFrom))
+                             for node in ast.walk(retention_helper)))
+        namespace = {}
+        exec(compile(ast.Module(body=[critical_definition, retention_helper], type_ignores=[]),
+                     str(conftest_path), "exec"), namespace)
+        retain = namespace["_retain_acceptance_diagnostic"]
+        critical_nodeid = (
+            "tests/application_acceptance/test_core_provider_mihomo.py::"
+            "test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct"
+        )
+        self.assertEqual({critical_nodeid}, namespace["_CRITICAL_SUCCESS_DIAGNOSTIC_NODEIDS"])
+        self.assertTrue(retain("first-success", failed=False, has_records=False))
+        self.assertTrue(retain("failed-node", failed=True, has_records=True))
+        self.assertTrue(retain(critical_nodeid, failed=False, has_records=True))
+        self.assertFalse(retain("ordinary-later-success", failed=False, has_records=True))
+
     def test_kernel_dataplane_profile_has_exact_root_capability_namespace_and_receipt_scope(self):
         facts = {"uid": 0, "gid": 0, "cap_eff": 1 << 12, "netns_matches_pid1": True,
                  "netns_differs_from_host": True, "hostname": "acceptance-container",

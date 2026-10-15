@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 targeted final regressions accepted — 2026-10-15
+
+Run38692443202/sourceae8d26e SUCCESS:43 exact component and4 real hosted native/browser PASS,0 FAIL/SKIP. Correct schema25 migration preserves legacy rows/credentials/native identities; verified Emergency Direct reentry and selector race pass. Account deletion now atomically tombstones owned durable credentials after native removal; real UI→API→native deletion and unrelated-scope preservation PASS. Reentry prepares current Mihomo proof with exact operation/job-bound CAS receipt and retains Direct on refusal; conservative fast-path status does not replace native proof. Final complete safeL0-L5 PR CI pending beforeReady; no production/live restoration or activation. CI milestone CLOSED/CD DEFERRED; historical evidence below retained. See runtime stability REPORT.md.
+
 ## PR8 final two-failure qualification — 2026-10-15
 
 Full required run38647432817/source764421b:1591 PASS/2 FAIL/0 SKIP. Startup/load and identity preservation PASS; startup43.252s, process HWM877204KiB, healthmax0.0086s, shutdown0.2639s. Remaining migration acceptance expected obsolete schema24 instead of correct25; test-only preservation/idempotency correction under qualification. Emergency Direct reentry is safely refused by Core verification because native UDP policy proof is unconfirmed; verified Direct fallback is preserved. Underlying proof mismatch is under bounded hosted diagnosis, not yet a proven product defect. PR8 Draft/BLOCKED; targeted migration/reentry first, final full required CI only after stable targetPASS. Production API/dependents remain held, no deployment or identity changes. CI milestone CLOSED/CD DEFERRED. See runtime stability REPORT.md; historical evidence retained.

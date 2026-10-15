@@ -23,6 +23,17 @@ from .http_support import http_json
 from .joined_support import ProviderHttpTestBridge
 
 
+_CRITICAL_SUCCESS_DIAGNOSTIC_NODEIDS = frozenset({
+    "tests/application_acceptance/test_core_provider_mihomo.py::"
+    "test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
+})
+
+
+def _retain_acceptance_diagnostic(nodeid: str, *, failed: bool, has_records: bool) -> bool:
+    """Retain all failures, the first success, and one exact critical recovery success."""
+    return bool(failed or nodeid in _CRITICAL_SUCCESS_DIAGNOSTIC_NODEIDS or not has_records)
+
+
 def _owned_dir(path: Path) -> bool:
     try:
         info = path.lstat()
@@ -445,7 +456,11 @@ def acceptance_stack(request):
                 break
         phases = request.config._fwrouter_acceptance_reports.get(request.node.nodeid, {})
         failed = not setup_complete or any(value == "failed" for value in phases.values()) or bool(cleanup_errors)
-        if failed or not request.config._fwrouter_diagnostic_records:
+        if _retain_acceptance_diagnostic(
+            request.node.nodeid,
+            failed=failed,
+            has_records=bool(request.config._fwrouter_diagnostic_records),
+        ):
             request.config._fwrouter_diagnostic_records.append({
                 "nodeid": request.node.nodeid, "status": "failed" if failed else "passed",
                 "worker_logs": worker_logs[:8], "native": native_diagnostics,
