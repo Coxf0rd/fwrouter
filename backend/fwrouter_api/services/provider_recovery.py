@@ -214,6 +214,115 @@ def _recovery_context_matches(controller: Any, snapshot: dict[str, Any], *,
     return str(state.get("path_key") or "") == snapshot["path_key"]
 
 
+def _mihomo_reentry_runtime_ready(routing: dict[str, Any]) -> bool:
+    """Require the current VPN routing intent and installed UDP policy proof."""
+    try:
+        from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
+        from fwrouter_api.services.apply_orchestrator import mihomo_runtime_satisfies_routing
+
+        health = DEFAULT_MIHOMO_ADAPTER.health()
+        if not isinstance(health.details, dict):
+            return False
+        udp_policy = health.details.get("vpn_udp_policy")
+        if not isinstance(udp_policy, dict) or udp_policy.get("policy_installed") is not True:
+            return False
+        return bool(mihomo_runtime_satisfies_routing(routing).get("ok"))
+    except Exception:
+        return False
+
+
+def _same_reentry_context_except_incarnation(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """Only a self-owned Mihomo reconciliation may change runtime incarnation."""
+    keys = set(before) | set(after)
+    keys.discard("runtime_incarnation")
+    return all(before.get(key) == after.get(key) for key in keys)
+
+
+def _prepare_verified_reentry_runtime(controller: Any, pending: dict[str, Any]) -> dict[str, Any]:
+    """Prepare verified Mihomo policy while Emergency Direct still owns routing.
+
+    The recovery snapshot used for the later network probe is captured only
+    after any reconcile, since a native restart legitimately changes the
+    runtime incarnation. Selection, provider, intent and incident fences may
+    never be rebased across that preparation.
+    """
+    before = _capture_recovery_context(controller, pending)
+    if before is None:
+        return {"ok": False, "error_code": "provider_recovery_fence_unavailable"}
+
+    from fwrouter_api.services import apply_orchestrator as apply
+    routing = apply.get_routing_snapshot()
+    if str(routing.get("desired_mode") or "") != str(before.get("desired_mode") or ""):
+        return {"ok": False, "error_code": "provider_recovery_stale"}
+
+    if _mihomo_reentry_runtime_ready(routing):
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard(timeout_seconds=5.0):
+            if (_recovery_context_matches(controller, before)
+                    and _mihomo_reentry_runtime_ready(routing)):
+                return {"ok": True, "snapshot": before, "prepared": False}
+
+    from fwrouter_api.services.apply_orchestrator_constants import LOCK_APPLY
+    from fwrouter_api.services.jobs import (
+        JobLockConflictError,
+        create_job,
+        mark_job_failed,
+        mark_job_running,
+        mark_job_success,
+    )
+    try:
+        job = create_job(
+            "provider_reentry_mihomo_prepare",
+            lock_key=LOCK_APPLY,
+            requested_by="watchdog.provider_recovery",
+            input_data={"reentry": True},
+        )
+    except JobLockConflictError:
+        return {"ok": False, "error_code": "provider_recovery_writer_busy"}
+
+    job_id = str(job["job_id"])
+    mark_job_running(job_id)
+    try:
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard(timeout_seconds=5.0):
+            if not _recovery_context_matches(controller, before):
+                result = {"ok": False, "error_code": "provider_recovery_stale"}
+            else:
+                from fwrouter_api.services.apply_orchestrator_handler_common import _reconcile_vpn_runtime_for_apply
+
+                reconciled = _reconcile_vpn_runtime_for_apply(routing, job_id=job_id)
+                if not isinstance(reconciled, dict) or not reconciled.get("ok"):
+                    result = {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_FAILED"}
+                else:
+                    after = _capture_recovery_context(controller, pending)
+                    if (after is None
+                            or not _same_reentry_context_except_incarnation(before, after)
+                            or not after.get("runtime_incarnation")
+                            or not _mihomo_reentry_runtime_ready(routing)):
+                        result = {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_UNVERIFIED"}
+                    elif not _recovery_context_matches(controller, after):
+                        result = {"ok": False, "error_code": "provider_recovery_stale"}
+                    else:
+                        result = {"ok": True, "snapshot": after, "prepared": True}
+
+        if result.get("ok"):
+            mark_job_success(job_id, result={"prepared": True})
+        else:
+            mark_job_failed(
+                job_id,
+                error_code=str(result.get("error_code") or "MIHOMO_REENTRY_PREPARE_FAILED"),
+                error_message="Mihomo VPN policy could not be verified for provider re-entry.",
+            )
+        return result
+    except Exception:
+        mark_job_failed(
+            job_id,
+            error_code="MIHOMO_REENTRY_PREPARE_FAILED",
+            error_message="Mihomo VPN policy preparation failed.",
+        )
+        return {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_FAILED"}
+
+
 def _provider_down_evidence_is_fresh(observed_at: float, *, now: float | None = None) -> bool:
     current = time.time() if now is None else float(now)
     age = current - float(observed_at)
@@ -543,6 +652,18 @@ def _try_verified_reentry(controller: Any, *, timeout_ms: int, reason: str) -> d
         if snapshot is None:
             return {"ok": False, "status": "emergency_direct", "action": "none",
                     "effective_override": "emergency_direct", "error_code": "provider_recovery_fence_unavailable"}
+
+    # Prepare native VPN policy only after any required Direct repair and before
+    # taking the final fence used by probe, claim and apply.
+    prepared = _prepare_verified_reentry_runtime(controller, pending)
+    if not prepared.get("ok"):
+        return {"ok": False, "status": "emergency_direct", "action": "none",
+                "effective_override": "emergency_direct",
+                "error_code": str(prepared.get("error_code") or "MIHOMO_REENTRY_PREPARE_FAILED")}
+    snapshot = prepared.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return {"ok": False, "status": "emergency_direct", "action": "none",
+                "effective_override": "emergency_direct", "error_code": "provider_recovery_fence_unavailable"}
 
     # The preflight is a potentially slow network/runtime probe and always runs
     # before entering the shared writer guard.

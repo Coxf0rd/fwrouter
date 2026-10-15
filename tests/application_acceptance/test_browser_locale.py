@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import http.server
+import hashlib
 import json
+import sqlite3
 import threading
 import urllib.error
 import urllib.request
@@ -10,6 +12,44 @@ from pathlib import Path
 
 import pytest
 from .http_support import http_json
+
+
+def _credential_rows_digest(rows: list[tuple[object, ...]]) -> str:
+    """Compare credential state without exposing UUIDs, emails, or scopes in pytest output."""
+    canonical = sorted(tuple(str(value) for value in row) for row in rows)
+    return hashlib.sha256(json.dumps(canonical, separators=(",", ":")).encode()).hexdigest()
+
+
+def _subscription_credential_state(database: Path, scope: str) -> tuple[list[tuple], list[tuple]]:
+    """Read target credentials and unrelated active credentials without app imports."""
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)
+    try:
+        target = [tuple(row) for row in connection.execute(
+            """SELECT scope, identity_id, client_uuid, client_email, epoch, revoked
+               FROM subscription_node_credentials WHERE scope=? ORDER BY identity_id""",
+            (scope,),
+        )]
+        unrelated_active = [tuple(row) for row in connection.execute(
+            """SELECT scope, identity_id, client_uuid, client_email, epoch, revoked
+               FROM subscription_node_credentials WHERE scope<>? AND revoked=0
+               ORDER BY scope, identity_id""",
+            (scope,),
+        )]
+        return target, unrelated_active
+    finally:
+        connection.close()
+
+
+def _subscription_credential_history(database: Path, scope: str) -> list[tuple]:
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)
+    try:
+        return [tuple(row) for row in connection.execute(
+            """SELECT client_uuid, scope, identity_id, epoch, operation_id_sha256
+               FROM subscription_node_credential_history WHERE scope=? ORDER BY identity_id""",
+            (scope,),
+        )]
+    finally:
+        connection.close()
 
 
 def _matches_preferences_patch(response, browser_origin: str, server_id: str) -> bool:
@@ -638,6 +678,20 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
             assert original_group_member_ids <= loaded_ids_before_delete, {
                 "missing_original_profile_members_before_delete": len(original_group_member_ids - loaded_ids_before_delete),
             }
+            subscription_token = str(
+                (original_group.get("subscription_client") or {}).get("token") or ""
+            )
+            assert subscription_token, "generated subscription fixture has no stable account token"
+            credential_scope = f"subscription:{subscription_token}"
+            database = stack["state"] / "fwrouter.db"
+            credentials_before_delete, unrelated_active_before_delete = _subscription_credential_state(
+                database, credential_scope,
+            )
+            assert credentials_before_delete and all(row[5] == 0 for row in credentials_before_delete), (
+                "actual generated subscription fixture must have active durable credentials; "
+                f"observed_rows={len(credentials_before_delete)}"
+            )
+            history_before_delete = _subscription_credential_history(database, credential_scope)
             encoded_delete_ref = urllib.parse.quote(str(original_group["delete_ref"]), safe="")
             delete = row.locator('[data-settings-delete-kind="xray_client_group"]')
             assert delete.get_attribute("data-settings-delete-id") == original_subject_id
@@ -653,6 +707,39 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
                 "group_members_remaining": len(original_group_member_ids.intersection(identity for identity, _email in loaded_after_delete)),
             }
             assert (client_id, email) not in loaded_after_delete
+            credentials_after_delete, unrelated_active_after_delete = _subscription_credential_state(
+                database, credential_scope,
+            )
+            expected_revoked_credentials = sorted(
+                (row[0], row[1], row[2], row[3], row[4] + 1, 1)
+                for row in credentials_before_delete
+            )
+            assert _credential_rows_digest(credentials_after_delete) == _credential_rows_digest(
+                expected_revoked_credentials
+            ), (
+                "account deletion must atomically tombstone the exact durable credential set; "
+                f"before={len(credentials_before_delete)} after={len(credentials_after_delete)}"
+            )
+            expected_new_history = [
+                (
+                    row[2], row[0], row[1], row[4],
+                    hashlib.sha256(f"revoke:{row[0]}:{row[1]}:{row[4]}".encode()).hexdigest(),
+                )
+                for row in credentials_before_delete
+            ]
+            history_after_delete = _subscription_credential_history(database, credential_scope)
+            assert _credential_rows_digest(history_after_delete) == _credential_rows_digest(
+                history_before_delete + expected_new_history
+            ), (
+                "account deletion must retain one exact history record per retired credential; "
+                f"before={len(history_before_delete)} after={len(history_after_delete)}"
+            )
+            assert _credential_rows_digest(unrelated_active_after_delete) == _credential_rows_digest(
+                unrelated_active_before_delete
+            ), (
+                "account deletion must preserve unrelated active credentials; "
+                f"before={len(unrelated_active_before_delete)} after={len(unrelated_active_after_delete)}"
+            )
             assert not page_errors, page_errors
             browser.close()
     finally:

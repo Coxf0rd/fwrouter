@@ -69,6 +69,10 @@ class _SubscriptionProfileDeleteAccountMismatch(RuntimeError):
     pass
 
 
+class _SubscriptionProfileCredentialRevocationFailed(RuntimeError):
+    pass
+
+
 def _full_xray_client_uri(client: XrayClient, *, display_name: str | None = None) -> str:
     label = display_name or client.alias or client.email or client.client_id
     return build_xray_vless_uri(
@@ -4276,6 +4280,43 @@ def delete_xray_subscription_profile(
         return {"ok": False, "status": "failed", "stage": "resolve_account", "error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND", "error_message": "Subscription profile was not found."}
     try:
         with db_session() as connection:
+            # The durable identity tables intentionally outlive subscription
+            # rows, so account deletion must tombstone every credential scope
+            # owned by this account before its tokens cascade away. Keep this
+            # in the same transaction as the final account DELETE: a stale
+            # delete target or projection-cleanup failure must not revoke a
+            # still-existing account. Native removal and profile reconciliation
+            # have already succeeded above while this function owns the Xray
+            # writer reservation.
+            account_tokens = [
+                str(row["token"])
+                for row in connection.execute(
+                    "SELECT token FROM subscription_clients WHERE account_id=? ORDER BY client_id",
+                    (int(account_id),),
+                )
+            ]
+            from fwrouter_api.services.subscription_node_identity import (
+                IdentityConflict, revoke_credentials,
+            )
+            try:
+                for account_token in account_tokens:
+                    scope = "subscription:" + account_token
+                    credential_rows = connection.execute(
+                        "SELECT identity_id, epoch, revoked FROM subscription_node_credentials WHERE scope=?",
+                        (scope,),
+                    ).fetchall()
+                    for credential in credential_rows:
+                        if bool(credential["revoked"]):
+                            continue
+                        revoke_credentials(
+                            connection,
+                            scope=scope,
+                            identity_id=str(credential["identity_id"]),
+                            expected_epoch=int(credential["epoch"]),
+                        )
+            except IdentityConflict as exc:
+                raise _SubscriptionProfileCredentialRevocationFailed() from exc
+
             cleanup = _merge_projection_cleanups(
                 cleanup,
                 cleanup_xray_subscription_profile_projection(token, connection=connection),
@@ -4285,6 +4326,14 @@ def delete_xray_subscription_profile(
                 raise _SubscriptionProfileDeleteAccountMismatch()
     except _SubscriptionProfileDeleteAccountMismatch:
         return {"ok": False, "status": "failed", "stage": "delete_account", "error_code": "SUBSCRIPTION_PROFILE_NOT_FOUND", "error_message": "Subscription profile was not found."}
+    except _SubscriptionProfileCredentialRevocationFailed:
+        return {
+            "ok": False,
+            "status": "failed",
+            "stage": "revoke_subscription_credentials",
+            "error_code": "SUBSCRIPTION_CREDENTIAL_REVOCATION_FAILED",
+            "error_message": "Subscription credentials could not be safely revoked.",
+        }
 
     payload = {
         "ok": True,

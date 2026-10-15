@@ -4172,6 +4172,18 @@ def test_disabled_subscription_profile_hard_delete_preserves_other_account(monke
         connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (92, 'other-profile', 1)")
         connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (92, 'other-profile-token', 1)")
         connection.execute("INSERT INTO subscription_profile_snapshots (token, nodes_json) VALUES ('other-profile-token', '[]')")
+        from fwrouter_api.services.subscription_node_identity import register_node, retain_credentials
+
+        identity_id = register_node(connection, "server-identity")
+        retain_credentials(connection, scope="subscription:disabled-target", server_id="server-identity",
+                           client_uuid="00000000-0000-4000-8000-000000000091",
+                           client_email="deleted-scope@example.test")
+        retain_credentials(connection, scope="vpn-auto", server_id="server-identity",
+                           client_uuid="00000000-0000-4000-8000-000000000092",
+                           client_email="unrelated-auto@example.test")
+        retain_credentials(connection, scope="subscription:other-profile-token", server_id="server-identity",
+                           client_uuid="00000000-0000-4000-8000-000000000093",
+                           client_email="other-scope@example.test")
     monkeypatch.setattr(xray_subscription_service, "_sync_xray_inventory", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(xray_subscription_service, "reconcile_xray_subscription_profile_nodes", lambda **_kwargs: {"ok": True, "nodes_count": 0})
     result = xray_subscription_service.delete_xray_subscription_profile(
@@ -4179,6 +4191,11 @@ def test_disabled_subscription_profile_hard_delete_preserves_other_account(monke
     )
     assert result["ok"] is True
     assert result["stage"] == "completed"
+    replay = xray_subscription_service.delete_xray_subscription_profile(
+        "disabled-target", account_id=91, requested_by="pytest",
+    )
+    assert replay["ok"] is False
+    assert replay["stage"] == "resolve_account"
     serialized = json.dumps(result).lower()
     assert "disabled-target" not in serialized
     with db_session() as connection:
@@ -4187,6 +4204,46 @@ def test_disabled_subscription_profile_hard_delete_preserves_other_account(monke
         assert connection.execute("SELECT 1 FROM subscription_profile_snapshots WHERE token = 'disabled-target'").fetchone() is None
         assert connection.execute("SELECT 1 FROM subscription_accounts WHERE account_id = 92").fetchone() is not None
         assert connection.execute("SELECT 1 FROM subscription_profile_snapshots WHERE token = 'other-profile-token'").fetchone() is not None
+        deleted_credential = connection.execute(
+            "SELECT client_uuid, revoked, epoch FROM subscription_node_credentials "
+            "WHERE scope='subscription:disabled-target' AND identity_id=?", (identity_id,),
+        ).fetchone()
+        history = connection.execute(
+            "SELECT client_uuid, scope, identity_id, epoch FROM subscription_node_credential_history "
+            "WHERE scope='subscription:disabled-target' AND identity_id=?", (identity_id,),
+        ).fetchall()
+        assert deleted_credential is not None
+        assert deleted_credential["client_uuid"] == "00000000-0000-4000-8000-000000000091"
+        assert deleted_credential["revoked"] == 1
+        assert deleted_credential["epoch"] == 2
+        assert len(history) == 1
+        assert history[0]["client_uuid"] == "00000000-0000-4000-8000-000000000091"
+        assert connection.execute(
+            "SELECT revoked FROM subscription_node_credentials WHERE scope='vpn-auto' AND identity_id=?",
+            (identity_id,),
+        ).fetchone()["revoked"] == 0
+        assert connection.execute(
+            "SELECT revoked FROM subscription_node_credentials "
+            "WHERE scope='subscription:other-profile-token' AND identity_id=?", (identity_id,),
+        ).fetchone()["revoked"] == 0
+        assert connection.execute(
+            "SELECT epoch FROM subscription_node_credentials "
+            "WHERE scope='subscription:disabled-target' AND identity_id=?", (identity_id,),
+        ).fetchone()["epoch"] == 2
+
+    # The public legacy creator may re-create the same slug/token. Its durable
+    # tombstone must keep the retired server identity out of the new profile.
+    from fwrouter_api.services.subscription_profiles import build_subscription_nodes, ensure_subscription_identity
+
+    _seed_server("server-identity")
+    recreated = ensure_subscription_identity("disabled-target")
+    assert recreated["ok"] is True
+    assert recreated["client"]["token"] == "disabled-target"
+    recreated_nodes = build_subscription_nodes(recreated)
+    assert "00000000-0000-4000-8000-000000000091" not in {
+        str(node.get("client_uuid") or "") for node in recreated_nodes
+    }
+    assert "server-identity" not in {str(node.get("server_id") or "") for node in recreated_nodes}
 
 
 def test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mismatch(monkeypatch, tmp_path: Path) -> None:
@@ -4196,6 +4253,12 @@ def test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mi
         connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (96, 'rollback-profile', 1)")
         connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (96, 'rollback-profile', 1)")
         connection.execute("INSERT INTO subscription_profile_snapshots (token, nodes_json) VALUES ('rollback-profile', '[]')")
+        from fwrouter_api.services.subscription_node_identity import register_node, retain_credentials
+
+        identity_id = register_node(connection, "rollback-server")
+        retain_credentials(connection, scope="subscription:rollback-profile", server_id="rollback-server",
+                           client_uuid="00000000-0000-4000-8000-000000000096",
+                           client_email="rollback-profile@example.test")
     monkeypatch.setattr(xray_subscription_service, "_sync_xray_inventory", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: type("Adapter", (), {"list_clients": lambda _self: []})())
     monkeypatch.setattr(xray_subscription_service, "reconcile_xray_subscription_profile_nodes", lambda **_kwargs: {"ok": True, "nodes_count": 0})
@@ -4215,9 +4278,58 @@ def test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mi
         account = connection.execute("SELECT account_id, enabled FROM subscription_accounts WHERE account_id = 96").fetchone()
         child = connection.execute("SELECT token, enabled FROM subscription_clients WHERE account_id = 96").fetchone()
         snapshot = connection.execute("SELECT token FROM subscription_profile_snapshots WHERE token = 'rollback-profile'").fetchone()
+        credential = connection.execute(
+            "SELECT revoked, epoch FROM subscription_node_credentials "
+            "WHERE scope='subscription:rollback-profile' AND identity_id=?", (identity_id,),
+        ).fetchone()
+        history = connection.execute(
+            "SELECT 1 FROM subscription_node_credential_history WHERE identity_id=?", (identity_id,),
+        ).fetchone()
     assert account is not None and account["enabled"] == 0
     assert child is not None and child["enabled"] == 0
     assert snapshot is not None
+    assert credential is not None and credential["revoked"] == 0 and credential["epoch"] == 1
+    assert history is None
+
+
+def test_subscription_profile_delete_reconcile_failure_does_not_revoke_identity_credentials(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (97, 'failed-profile', 1)")
+        connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (97, 'failed-profile', 1)")
+        from fwrouter_api.services.subscription_node_identity import register_node, retain_credentials
+
+        identity_id = register_node(connection, "failed-server")
+        retain_credentials(connection, scope="subscription:failed-profile", server_id="failed-server",
+                           client_uuid="00000000-0000-4000-8000-000000000097",
+                           client_email="failed-profile@example.test")
+    monkeypatch.setattr(xray_subscription_service, "_sync_xray_inventory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: type("Adapter", (), {"list_clients": lambda _self: []})())
+    monkeypatch.setattr(
+        xray_subscription_service, "reconcile_xray_subscription_profile_nodes",
+        lambda **_kwargs: {"ok": False, "error_code": "TEST_NATIVE_APPLY_FAILED"},
+    )
+
+    result = xray_subscription_service.delete_xray_subscription_profile(
+        "failed-profile", account_id=97, requested_by="pytest",
+    )
+    assert result["ok"] is False
+    assert result["stage"] == "reconcile_subscription_profile_delete"
+    with db_session() as connection:
+        account = connection.execute("SELECT enabled FROM subscription_accounts WHERE account_id=97").fetchone()
+        credential = connection.execute(
+            "SELECT revoked, epoch FROM subscription_node_credentials "
+            "WHERE scope='subscription:failed-profile' AND identity_id=?", (identity_id,),
+        ).fetchone()
+        history = connection.execute(
+            "SELECT 1 FROM subscription_node_credential_history WHERE identity_id=?", (identity_id,),
+        ).fetchone()
+    assert account is not None and account["enabled"] == 0
+    assert credential is not None and credential["revoked"] == 0 and credential["epoch"] == 1
+    assert history is None
 
 
 def test_subscription_profile_delete_preserves_database_rows_when_materialize_fails(monkeypatch, tmp_path: Path) -> None:

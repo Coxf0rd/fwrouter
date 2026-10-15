@@ -1528,6 +1528,7 @@ def _install_acceptance_recovery_apply_observer() -> None:
 
     from fwrouter_api.routes import selector as selector_route
     from fwrouter_api.services import apply_orchestrator as apply
+    from fwrouter_api.services import apply_orchestrator_handler_common
     from fwrouter_api.services import provider_recovery
     from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
     from fwrouter_api.services import mihomo_reconcile_fingerprint
@@ -1645,6 +1646,18 @@ def _install_acceptance_recovery_apply_observer() -> None:
             result["on_demand"] = {**counts, "results": statuses}
         if "selected_member_id" in value:
             result["selected_member_present"] = bool(value.get("selected_member_id"))
+        native_proof = value.get("native_udp_policy_proof")
+        if isinstance(native_proof, dict):
+            safe_proof: dict[str, Any] = {}
+            for key in ("ok", "native_top_level_rules_match", "selector_membership_matches", "guarded_rules_match"):
+                if isinstance(native_proof.get(key), bool):
+                    safe_proof[key] = native_proof[key]
+            for key in ("stage", "reason", "error_code"):
+                item = valid_code(native_proof.get(key))
+                if item:
+                    safe_proof[key] = item
+            if safe_proof:
+                result["native_udp_policy_proof"] = safe_proof
         supported_modes = value.get("supported_modes")
         if isinstance(supported_modes, dict) and type(supported_modes.get("vpn")) is bool:
             result["vpn_supported"] = supported_modes["vpn"]
@@ -1708,6 +1721,7 @@ def _install_acceptance_recovery_apply_observer() -> None:
     original_apply_under_policy = provider_recovery._apply_override_under_policy
     original_selector_call = selector_route.select_vpn_auto_server
     original_core_apply = apply._run_pipeline_for_state
+    original_reconcile_vpn_runtime_for_apply = apply_orchestrator_handler_common._reconcile_vpn_runtime_for_apply
     original_mihomo_health = MihomoHttpAdapter.health
     original_mihomo_proxies = MihomoHttpAdapter._proxies
     original_active_config_hash = mihomo_reconcile_fingerprint.active_config_hash
@@ -2009,12 +2023,31 @@ def _install_acceptance_recovery_apply_observer() -> None:
         record("core_apply_result", operation=operation, result=result)
         return result
 
+    def observed_reentry_mihomo_reconcile(routing: Any, *, job_id: str) -> Any:
+        operation = getattr(local, "operation", None)
+        if operation != 3:
+            return original_reconcile_vpn_runtime_for_apply(routing, job_id=job_id)
+        record("mihomo_reentry_prepare_enter", operation=operation)
+        previous_phase = getattr(local, "phase", None)
+        local.phase = "reentry_prepare"
+        try:
+            result = original_reconcile_vpn_runtime_for_apply(routing, job_id=job_id)
+        except Exception as exc:
+            record("mihomo_reentry_prepare_exception", operation=operation,
+                   exception_type=type(exc).__name__)
+            raise
+        finally:
+            local.phase = previous_phase
+        record("mihomo_reentry_prepare_result", operation=operation, result=result)
+        return result
+
     provider_recovery.enter_emergency_direct = observed_enter
     provider_recovery.try_verified_reentry = observed_reentry
     provider_recovery._apply_override = observed_apply
     provider_recovery._apply_override_under_policy = observed_apply_under_policy
     selector_route.select_vpn_auto_server = observed_selector_call
     apply._run_pipeline_for_state = observed_core_apply
+    apply_orchestrator_handler_common._reconcile_vpn_runtime_for_apply = observed_reentry_mihomo_reconcile
 
 
 def _install_acceptance_xray_generation_rollback_observer() -> None:

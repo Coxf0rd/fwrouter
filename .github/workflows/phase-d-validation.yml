@@ -329,6 +329,27 @@ jobs:
             rm -f "$root/mihomo-l3-run.raw"
           fi
           exit "$result"
+      - name: Run final deletion and verified-reentry unit regressions
+        if: needs.select-stage.outputs.stage == 'final-regressions-diagnostic'
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/phase-d-preflight"
+          mkdir -p "$root"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$root/final-regressions-unit.xml" \
+            --report "$root/final-regressions-unit-report.json" \
+            --log "$root/final-regressions-unit.log" \
+            tests/test_xray.py::test_disabled_subscription_profile_hard_delete_preserves_other_account \
+            tests/test_xray.py::test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mismatch \
+            tests/test_xray.py::test_subscription_profile_delete_reconcile_failure_does_not_revoke_identity_credentials \
+            tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade \
+            tests/test_provider_recovery.py::test_verified_reentry_prepare_skips_reconcile_only_with_installed_policy_and_current_intent \
+            tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean \
+            tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_routing_parity_even_with_installed_policy \
+            tests/test_provider_recovery.py::test_mihomo_reentry_ready_accepts_native_policy_and_matching_routing \
+            tests/test_provider_recovery.py::test_verified_reentry_prepare_reconciles_before_probe_and_preserves_direct_on_failure \
+            tests/test_provider_recovery.py::test_verified_reentry_prepare_reconcile_precedes_probe_and_allows_only_incarnation_change \
+            tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences
       - name: Retain sanitized identity qualification evidence
         if: always() && needs.select-stage.outputs.stage == 'identity-diagnostic'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
