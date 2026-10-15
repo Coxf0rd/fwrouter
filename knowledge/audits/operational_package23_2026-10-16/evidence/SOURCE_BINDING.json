@@ -1,0 +1,22 @@
+{
+  "base": "3f96e1e73be0e0fc25208a406ecc9ff259f6480f",
+  "runtime_sha256": "922c28c5581eb833348f224885fdd21367ca13f3093c4b8b0d423f9fa6e0217f",
+  "test_sha256": "3db48841318d08cdff392acbb665a234dbb101cfbbafa98360f3a24bf092cf16",
+  "targeted_repeats": [
+    {
+      "pass": 95,
+      "fail": 0,
+      "skip": 0,
+      "seconds": 4.82
+    },
+    {
+      "pass": 95,
+      "fail": 0,
+      "skip": 0,
+      "seconds": 4.59
+    }
+  ],
+  "first_targeted": "1 fail/91pass; diagnostic retained; final coherent suite95pass twice",
+  "full_PR_CI": "pending final HEAD",
+  "production": "UNCHANGED"
+}

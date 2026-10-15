@@ -5432,6 +5432,32 @@
       ],
       "slow": false,
       "timeout_seconds": 30
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "core",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "module-owned deterministic fixtures; see test file and fixture_owner",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_probe_cache_lifecycle",
+      "isolation": "temporary test state and fake adapters per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_probe_cache_lifecycle.py",
+      "primary_level": "L1",
+      "risk_notes": "file-level default; node overrides may refine mixed tests",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
     }
   ],
   "version": "2026.10.15.1",

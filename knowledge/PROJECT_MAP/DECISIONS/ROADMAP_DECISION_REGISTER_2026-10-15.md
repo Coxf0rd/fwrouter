@@ -1,5 +1,9 @@
 # Roadmap decision register — reconciled 2026-10-15
 
+## Operational Packages 2/3 source checkpoint — 2026-10-16
+
+User authorized Package2 and conditionalPackage3 together. Branch `perf/operational-package2-3` from main3f96e1e implements bounded cache lifecycle and exact external-observation connection invalidation; targeted95/95 twice. Full required finalPRCI pending. Package3 conditionalchmod pilot DEFERRED after overlapping measurement ranges; scrub/native/DB/I/O changes DEFERRED pending safety/cost proof; PRAGMA/WAL/fsync/transactions unchanged. No production mutation,merge or Stage5. Package2 acceptance remains source/CI/deploy/live-separated. See [Package2/3 report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/REPORT.md). PR14 roadmap reconciliation remains separately OPEN; retain its newer decisions and history.
+
 ## Package1 implementation checkpoint — 2026-10-16
 
 D-10/D-12 current-code audits are complete within their declared limits. User authorized configured reads and immutable sanitizer constants only; source and85 targeted tests pass, full required PR CI still pending. [Package1 report](../../audits/operational_package1_2026-10-16/REPORT.md) contains source/measurement/equivalence evidence. D-11 cache lifecycle, SQLite/persistence and I/O optimizations are not authorized in this package. Current production isbaafbf2 bounded stabilization; no new deployment. Older dated rows remain historical; no blanket operational milestone acceptance or next-stage authority follows.

@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## Operational Packages 2/3 source checkpoint — 2026-10-16
+
+User authorized Package2 and conditionalPackage3 together. Branch `perf/operational-package2-3` from main3f96e1e implements bounded cache lifecycle and exact external-observation connection invalidation; targeted95/95 twice. Full required finalPRCI pending. Package3 conditionalchmod pilot DEFERRED after overlapping measurement ranges; scrub/native/DB/I/O changes DEFERRED pending safety/cost proof; PRAGMA/WAL/fsync/transactions unchanged. No production mutation,merge or Stage5. Package2 acceptance remains source/CI/deploy/live-separated. See [Package2/3 report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/REPORT.md). PR14 roadmap reconciliation remains separately OPEN; retain its newer decisions and history.
+
 ## Operational Package 1 source checkpoint — 2026-10-16
 
 Package1 is authorized and implemented from current main `baafbf209331da763d95bae40c32e4176b158e4d` on `perf/operational-package1-configured-reads-sanitizer`. Scope: configured-read line materialization/absence guards and immutable sanitizer key normalization only. Targeted85/85 passed; final full safe required PR CI is pending and must pass at the exact final HEAD before Ready for user Squash and Merge. No deployment/live acceptance is inferred; no agent merge. See [Package1 source/measurement report](audits/operational_package1_2026-10-16/REPORT.md).

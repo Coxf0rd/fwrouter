@@ -1,0 +1,212 @@
+{
+  "source": "3f96e1e73be0e0fc25208a406ecc9ff259f6480f-plus-cache-change",
+  "platform": "Linux-6.1.0-30-amd64-x86_64-with-glibc2.36",
+  "python": "3.11.2 (main, Apr 28 2025, 14:11:48) [GCC 12.2.0]",
+  "untraced_repeats": {
+    "five_repeat_cold_and_warm": {
+      "summary_100_subjects_and_32_proxies": [
+        {
+          "case": "summary_100_subjects_and_32_proxies",
+          "wall_seconds": 0.004047002177685499,
+          "cpu_seconds": 0.004048775999999997,
+          "entries_after": 1,
+          "accounted_retained_bytes": 122265,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.002906020963564515,
+          "5000_hit_cpu_seconds": 0.0029059199999999993
+        },
+        {
+          "case": "summary_100_subjects_and_32_proxies",
+          "wall_seconds": 0.003746578935533762,
+          "cpu_seconds": 0.003747359999999998,
+          "entries_after": 1,
+          "accounted_retained_bytes": 122265,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.0027271900326013565,
+          "5000_hit_cpu_seconds": 0.0027269300000000024
+        },
+        {
+          "case": "summary_100_subjects_and_32_proxies",
+          "wall_seconds": 0.0034259529784321785,
+          "cpu_seconds": 0.003426663999999996,
+          "entries_after": 1,
+          "accounted_retained_bytes": 122265,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.0024884960148483515,
+          "5000_hit_cpu_seconds": 0.002488343000000004
+        },
+        {
+          "case": "summary_100_subjects_and_32_proxies",
+          "wall_seconds": 0.0034298719838261604,
+          "cpu_seconds": 0.003430536000000005,
+          "entries_after": 1,
+          "accounted_retained_bytes": 122265,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.002505921060219407,
+          "5000_hit_cpu_seconds": 0.0025054909999999986
+        },
+        {
+          "case": "summary_100_subjects_and_32_proxies",
+          "wall_seconds": 0.003619597991928458,
+          "cpu_seconds": 0.003620796999999995,
+          "entries_after": 1,
+          "accounted_retained_bytes": 122265,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.00271415407769382,
+          "5000_hit_cpu_seconds": 0.002714330000000001
+        }
+      ],
+      "subject_projection_1000": [
+        {
+          "case": "subject_projection_1000",
+          "wall_seconds": 0.011104014934971929,
+          "cpu_seconds": 0.011105029000000002,
+          "entries_after": 1,
+          "accounted_retained_bytes": 1061086,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.002744985045865178,
+          "5000_hit_cpu_seconds": 0.0027445669999999894
+        },
+        {
+          "case": "subject_projection_1000",
+          "wall_seconds": 0.010665435111150146,
+          "cpu_seconds": 0.010666560000000005,
+          "entries_after": 1,
+          "accounted_retained_bytes": 1061086,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.002646818058565259,
+          "5000_hit_cpu_seconds": 0.002646646999999988
+        },
+        {
+          "case": "subject_projection_1000",
+          "wall_seconds": 0.011654858011752367,
+          "cpu_seconds": 0.011655578,
+          "entries_after": 1,
+          "accounted_retained_bytes": 1061086,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.0027569287922233343,
+          "5000_hit_cpu_seconds": 0.002756684999999995
+        },
+        {
+          "case": "subject_projection_1000",
+          "wall_seconds": 0.010761904064565897,
+          "cpu_seconds": 0.010762427000000005,
+          "entries_after": 1,
+          "accounted_retained_bytes": 1061086,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.00254682800732553,
+          "5000_hit_cpu_seconds": 0.0025461570000000072
+        },
+        {
+          "case": "subject_projection_1000",
+          "wall_seconds": 0.010753411101177335,
+          "cpu_seconds": 0.01075383299999999,
+          "entries_after": 1,
+          "accounted_retained_bytes": 1061086,
+          "same_object": true,
+          "5000_hit_wall_seconds": 0.00255787605419755,
+          "5000_hit_cpu_seconds": 0.0025572809999999946
+        }
+      ]
+    },
+    "five_repeat_unique_churn": [
+      {
+        "case": "unique_live_1000_one_kib",
+        "wall_seconds": 0.014284366043284535,
+        "cpu_seconds": 0.014286219000000003,
+        "entries_after": 256,
+        "accounted_retained_bytes": 352768,
+        "expected_unique_payloads": 1000,
+        "payload_bytes_each": 1024
+      },
+      {
+        "case": "unique_live_1000_one_kib",
+        "wall_seconds": 0.013324091909453273,
+        "cpu_seconds": 0.013325554000000017,
+        "entries_after": 256,
+        "accounted_retained_bytes": 352768,
+        "expected_unique_payloads": 1000,
+        "payload_bytes_each": 1024
+      },
+      {
+        "case": "unique_live_1000_one_kib",
+        "wall_seconds": 0.012094635982066393,
+        "cpu_seconds": 0.012095632999999995,
+        "entries_after": 256,
+        "accounted_retained_bytes": 352768,
+        "expected_unique_payloads": 1000,
+        "payload_bytes_each": 1024
+      },
+      {
+        "case": "unique_live_1000_one_kib",
+        "wall_seconds": 0.013050181092694402,
+        "cpu_seconds": 0.013045605000000016,
+        "entries_after": 256,
+        "accounted_retained_bytes": 352768,
+        "expected_unique_payloads": 1000,
+        "payload_bytes_each": 1024
+      },
+      {
+        "case": "unique_live_1000_one_kib",
+        "wall_seconds": 0.012941580032929778,
+        "cpu_seconds": 0.012943465999999987,
+        "entries_after": 256,
+        "accounted_retained_bytes": 352768,
+        "expected_unique_payloads": 1000,
+        "payload_bytes_each": 1024
+      }
+    ]
+  },
+  "traced_diagnostics": [
+    {
+      "case": "summary_100_subjects_and_32_proxies",
+      "traced_wall_seconds": 0.018470786977559328,
+      "traced_cpu_seconds": 0.018472596000000008,
+      "tracemalloc_net_bytes": 70376,
+      "tracemalloc_peak_bytes": 71712,
+      "entries_after": 1,
+      "inflight_after": 0,
+      "accounted_retained_bytes": 122265,
+      "same_object": true,
+      "5000_hit_wall_seconds": 0.012390210991725326,
+      "5000_hit_cpu_seconds": 0.012390063000000007
+    },
+    {
+      "case": "subject_projection_1000",
+      "traced_wall_seconds": 0.06761077186092734,
+      "traced_cpu_seconds": 0.06761162599999998,
+      "tracemalloc_net_bytes": 817184,
+      "tracemalloc_peak_bytes": 818736,
+      "entries_after": 1,
+      "inflight_after": 0,
+      "accounted_retained_bytes": 1061086,
+      "same_object": true,
+      "5000_hit_wall_seconds": 0.012426197994500399,
+      "5000_hit_cpu_seconds": 0.012425468999999967
+    },
+    {
+      "case": "unique_live_1000_one_kib",
+      "traced_wall_seconds": 0.08605460682883859,
+      "traced_cpu_seconds": 0.08605790299999999,
+      "tracemalloc_net_bytes": 347104,
+      "tracemalloc_peak_bytes": 406222,
+      "entries_after": 256,
+      "inflight_after": 0,
+      "accounted_retained_bytes": 352768,
+      "expected_unique_payloads": 1000,
+      "payload_bytes_each": 1024
+    },
+    {
+      "case": "expired_unique_1000_one_kib",
+      "traced_wall_seconds": 1.101319822948426,
+      "traced_cpu_seconds": 0.09123521500000004,
+      "tracemalloc_net_bytes": 66260,
+      "tracemalloc_peak_bytes": 405715,
+      "entries_after": 1,
+      "inflight_after": 0,
+      "accounted_retained_bytes": 342,
+      "expired_before_trigger": 256,
+      "expired_after_trigger": 1
+    }
+  ]
+}
