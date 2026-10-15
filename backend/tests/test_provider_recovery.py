@@ -1554,6 +1554,8 @@ def _run_reentry_prepare_with_owned_revision(monkeypatch, *, receipt_overrides=N
     pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
                "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
     _install_pending_state(monkeypatch, pending)
+    monkeypatch.setattr(provider_recovery, "_prepare_verified_reentry_runtime",
+                        _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME)
     before = _reentry_prepare_context(pending)
     before["selection_fence"] = {"revision": 12, "owner": "vpn-auto"}
     after = {**before, "runtime_incarnation": "runtime-b",
@@ -1592,6 +1594,8 @@ def test_verified_reentry_rejects_unreceipted_runtime_incarnation_change(monkeyp
     pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
                "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
     _install_pending_state(monkeypatch, pending)
+    monkeypatch.setattr(provider_recovery, "_prepare_verified_reentry_runtime",
+                        _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME)
     before = _reentry_prepare_context(pending)
     after = {**before, "runtime_incarnation": "runtime-b"}
     snapshots = iter([before, after])

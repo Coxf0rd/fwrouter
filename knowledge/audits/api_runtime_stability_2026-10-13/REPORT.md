@@ -552,3 +552,7 @@ Exact component22 PASS/0 FAIL/0 SKIP with coverage receipt accepted. Hosted migr
 ### Exact owned generation receipt — source qualification package
 
 A successful structural Mihomo reconciliation may advance its own selection revision under CAS. It now returns a private phase receipt only after current native proof, publication ownership and durable UDP receipt persistence succeed. Provider preparation acknowledges only that operation/job, exact old→old+1 and current config hash/incarnation; every other selection/provenance and recovery field must match. Any incarnation change requires this receipt too. Failed/foreign/unreceipted transitions remain rejected. Internal receipt values are omitted from operational log payloads; bounded acceptance diagnostics emit only changed field names, revisions and proof booleans.33 exact component cases and the four real native/browser cases are selected for qualification; actual hosted proof of the previous changed predicate remains pending.
+
+### Receipt fixture qualification — run38691256566/source2aff5c4
+
+Exact component33 collected:23 PASS/10 FAIL/0 SKIP; native NOT RUN. Ten new receipt tests used the state-machine fixture mock rather than the real preparation helper, producing incorrect positive/negative outcomes. Dedicated receipt fixture and unreceipted-incarnation test now explicitly restore the real helper; all dedicated prepare test call paths were audited. No production logic or assertion was altered to address this fixture failure. Targeted qualification remains pending, final requiredfull NOT RUN.
