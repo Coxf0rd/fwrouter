@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## Production recovery after PR8 — 2026-10-15
+
+PR8 mergedmain dabf9f4, actualmainCI38699377108:1623PASS/0FAIL/0SKIP, mandatorysafeL0-L5/native/packet proof accepted. Controlledbackend/docs deployed438matchingfiles, hostguard/environment preserved. Protectedoffline schema24→25 and reviewed durableidentitymapping preserve78PASS; no nativewrite/publicsnapshotpublication at these steps. Freshsupersession blockedbeforeapply by missingretiredlogicalprofile handoff target; compensation separately refuses unchangedpreexisting references. Native78unchanged(70original/8priorreplacement), activeconfigs/checkpoint preserved, DBintegrity/FKPASS. API/dependentunitsheld, LiveAcceptanceBLOCKED. Sourcecorrection in fix/xray-supersession-handoff-recovery; usermerge+newmainCIrequired beforefurtherrollout. Two historicalFWRoutertaggedRescue DNSDNATrules remain; firewallunchanged. See production_update_xray_recovery_2026-10-15/REPORT.md. CI milestoneCLOSED/CDDEFERRED; unrelatedwork remains paused.
+
 ## PR8 packet target accepted / final required CI — 2026-10-15
 
 Run38696050646/source56cab4d SUCCESS:packet+scale2 PASS/0 FAIL/0 SKIP, actualTCP560/UDP22 bounded header records confirm correctedcapturecapacity. Runtime startup43.2059s/45s, HWM870504KiB,24/24HTTP200, shutdown0.2639s;40sadvisoryunmet and runner variance retained as risk. Schema25/reentry/deletion target43+4 previouslyPASS. Corrected final complete requiredPRCI pending on frozen source, PR8Draft until verified; productionheld/no mutations, CI milestoneCLOSED/CDDEFERRED. Offline backed CLI remains production operator prerequisite; bootstrap's existing additive migration policy is unchanged. Historical evidence retained in runtimeREPORT.

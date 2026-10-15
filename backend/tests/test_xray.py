@@ -3227,7 +3227,7 @@ def test_vpn_auto_external_reference_blocks_identity_compensation(monkeypatch, t
     }
     assert stage_calls == 1, safe_failure
     assert failed["error_code"] == "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED", safe_failure
-    assert failed["compensation_reason"] == "identity_snapshot_reference_exists", safe_failure
+    assert failed["compensation_reason"] == "identity_projection_references_changed", safe_failure
     with db_session() as connection:
         credential = connection.execute(
             "SELECT c.client_uuid, c.client_email FROM subscription_node_aliases a "
@@ -3241,6 +3241,112 @@ def test_vpn_auto_external_reference_blocks_identity_compensation(monkeypatch, t
     assert credential is not None
     assert snapshot is not None
     assert json.loads(snapshot["nodes_json"])[0]["client_uuid"] == credential["client_uuid"]
+
+
+def test_identity_compensation_allows_unchanged_preexisting_subject_and_snapshot_references(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="compensation-preimage", token="compensation-preimage")
+    identity_id = "identity:compensation-preimage"
+    server_id = "sub:compensation-preimage"
+    scope = "subscription:compensation-preimage"
+    client_uuid = "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+    client_email = "client-compensation-preimage@example.invalid"
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind, "
+            "stable_key, desired_mode, metadata_json) VALUES (?, 'subscription_client', 'vless_client', "
+            "'xray', ?, 'direct', ?)",
+            ("xray:compensation-preimage", server_id, json.dumps({"detail": {
+                "client_uuid": client_uuid, "email": client_email,
+            }})),
+        )
+        connection.execute(
+            "INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            ("compensation-preimage", json.dumps([{
+                "server_id": server_id, "client_uuid": client_uuid, "client_email": client_email,
+            }])),
+        )
+        preimage_sha256 = xray_subscription_service._identity_projection_reference_sha256(connection)
+        connection.execute(
+            "INSERT INTO subscription_node_identities "
+            "(identity_id, origin_server_id, current_server_id, revision, provenance_sha256) "
+            "VALUES (?, ?, ?, 1, ?)",
+            (identity_id, server_id, server_id, "a" * 64),
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_aliases (server_id, identity_id) VALUES (?, ?)",
+            (server_id, identity_id),
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_credentials (scope, identity_id, client_uuid, client_email) "
+            "VALUES (?, ?, ?, ?)",
+            (scope, identity_id, client_uuid, client_email),
+        )
+        identity = dict(connection.execute(
+            "SELECT * FROM subscription_node_identities WHERE identity_id=?", (identity_id,),
+        ).fetchone())
+        alias = dict(connection.execute(
+            "SELECT * FROM subscription_node_aliases WHERE server_id=?", (server_id,),
+        ).fetchone())
+        credential = dict(connection.execute(
+            "SELECT * FROM subscription_node_credentials WHERE identity_id=?", (identity_id,),
+        ).fetchone())
+        subject_before = dict(connection.execute(
+            "SELECT * FROM subjects WHERE subject_id=?", ("xray:compensation-preimage",),
+        ).fetchone())
+        snapshot_before = dict(connection.execute(
+            "SELECT * FROM subscription_profile_snapshots WHERE token=?",
+            ("compensation-preimage",),
+        ).fetchone())
+    refs_before = {
+        "subject": "xray:compensation-preimage",
+        "snapshot": "compensation-preimage",
+    }
+    checkpoint = tmp_path / "missing-checkpoint.json"
+    monkeypatch.setattr(xray_subscription_service, "_generation_source_fingerprint", lambda: "source")
+    with xray_writer_guard():
+        result = xray_subscription_service._discard_unapplied_profile_identity_intent(
+            {"identities": [identity], "aliases": [alias], "credentials": [credential],
+             "external_reference_preimage_sha256": preimage_sha256},
+            checkpoint_path=checkpoint, checkpoint_preimage_exists=False,
+            checkpoint_preimage_sha256=None, expected_source_fingerprint="source",
+        )
+    assert result == {"ok": True, "removed": 3}
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM subjects WHERE subject_id=?", (refs_before["subject"],),
+        ).fetchone() is not None
+        subject_after = dict(connection.execute(
+            "SELECT * FROM subjects WHERE subject_id=?", (refs_before["subject"],),
+        ).fetchone())
+        snapshot = connection.execute(
+            "SELECT * FROM subscription_profile_snapshots WHERE token=?",
+            (refs_before["snapshot"],),
+        ).fetchone()
+        assert snapshot is not None
+        assert subject_after == subject_before
+        assert dict(snapshot) == snapshot_before
+        assert json.loads(snapshot["nodes_json"])[0]["client_uuid"] == client_uuid
+        assert connection.execute(
+            "SELECT 1 FROM subscription_node_identities WHERE identity_id=?", (identity_id,),
+        ).fetchone() is None
+
+
+def test_identity_reference_preimage_rejects_malformed_projection_before_cleanup(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="malformed-preimage", token="malformed-preimage")
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at) "
+            "VALUES ('malformed-preimage', '{', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        with pytest.raises(ValueError, match="IDENTITY_SNAPSHOT_PROJECTION_UNREADABLE"):
+            xray_subscription_service._identity_projection_reference_sha256(connection)
 
 
 def test_public_subscription_profile_is_read_only_and_exportable_only(monkeypatch, tmp_path: Path) -> None:

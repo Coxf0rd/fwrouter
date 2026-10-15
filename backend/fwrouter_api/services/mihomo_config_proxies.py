@@ -172,6 +172,42 @@ def _known_inactive_logical_profile_groups(
     return inactive
 
 
+def _inactive_logical_profile_members(
+    runtime_name: str, expected_group: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Return members only when one persisted inactive profile owns the exact group."""
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT inventory_state, server_name, raw_json FROM servers "
+            "WHERE CASE WHEN json_valid(raw_json) THEN COALESCE("
+            "json_extract(raw_json, '$._fwrouter_runtime_name'), "
+            "json_extract(raw_json, '$.name'), server_name) ELSE server_name END=? LIMIT 3",
+            (runtime_name,),
+        ).fetchall()
+    # The bounded read is also the uniqueness proof: a saturated result is
+    # ambiguous even if only one of the returned rows parses as a candidate.
+    if len(rows) >= 3:
+        return None
+    matches: list[list[dict[str, Any]]] = []
+    for row in rows:
+        try:
+            raw = json.loads(row["raw_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        topology = raw.get("_fwrouter_topology")
+        if not isinstance(topology, dict) or topology.get("kind") != "logical_profile":
+            continue
+        name = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or row["server_name"] or "").strip()
+        if name != runtime_name or str(row["inventory_state"] or "") == "active":
+            continue
+        members = _logical_profile_members(raw, logical_runtime_name=runtime_name)
+        if _generated_logical_profile_group(runtime_name, members) == expected_group:
+            matches.append(members)
+    return matches[0] if len(matches) == 1 else None
+
+
 def _proxy_group_is_referenced(config: dict[str, Any], group_name: str) -> bool:
     for group in config.get("proxy-groups") or []:
         if not isinstance(group, dict) or str(group.get("name") or "").strip() == group_name:
@@ -386,16 +422,71 @@ def _merge_runtime_proxies(
         if isinstance(item, dict) and str(item.get("name") or "").strip()
     }
     for group_name, group in inactive_logical_groups.items():
-        if group_name not in required_names or old_groups.get(group_name) != group:
+        if group_name not in required_names:
             continue
+
+        # The Xray binding is the authority for whether an old logical group
+        # still has a live consumer. Its source row and ordered member
+        # definitions are the authority for rebuilding that group while the
+        # new profile generation is being validated. The active Mihomo file
+        # may already have lost the old group, so requiring it to be present
+        # there would make an otherwise recoverable handoff impossible.
+        existing_group = old_groups.get(group_name)
+        if existing_group is not None and existing_group != group:
+            # A same-name operator or modified group is ambiguous ownership;
+            # leave it intact and refuse to build a candidate that would bind
+            # the retained Xray listener to an unproven target.
+            raise ValueError("MIHOMO_XRAY_HANDOFF_TARGET_OWNERSHIP_AMBIGUOUS")
+        source_members = _inactive_logical_profile_members(group_name, group)
+        if source_members is None:
+            continue
+        if existing_group is None:
+            base_config.setdefault("proxy-groups", []).append(group)
+            old_groups[group_name] = group
+
+        source_by_name = {str(member.get("name") or "").strip(): member for member in source_members}
+        present_by_name = dict(old_proxy_rows)
+        present_by_name.update({
+            str(item.get("name") or "").strip(): item
+            for item in runtime_proxies
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        })
         for member_name in group.get("proxies") or []:
             name = str(member_name or "").strip()
-            if not name or name in seen_names:
+            if not name:
                 continue
             old_proxy = old_proxy_rows.get(name)
-            if not isinstance(old_proxy, dict):
+            source_proxy = source_by_name.get(name)
+            if name in seen_names:
+                present_proxy = present_by_name.get(name)
+                expected_proxy = source_proxy
+                if not isinstance(present_proxy, dict) or not isinstance(expected_proxy, dict):
+                    raise ValueError("MIHOMO_XRAY_HANDOFF_MEMBER_OWNERSHIP_AMBIGUOUS")
+                present_normalized = _normalize_proxy_list({
+                    "proxies": [_project_native_proxy(dict(present_proxy))],
+                }).get("proxies")
+                expected_normalized = _normalize_proxy_list({
+                    "proxies": [_project_native_proxy(dict(expected_proxy))],
+                }).get("proxies")
+                if present_normalized != expected_normalized:
+                    raise ValueError("MIHOMO_XRAY_HANDOFF_MEMBER_OWNERSHIP_AMBIGUOUS")
                 continue
-            normalized = _normalize_proxy_list({"proxies": [dict(old_proxy)]}).get("proxies")
+            if isinstance(old_proxy, dict) and isinstance(source_proxy, dict):
+                # Prefer the currently installed definition only when it is
+                # the same persisted member. This retains its native form
+                # without silently changing an owned handoff target.
+                old_normalized = _normalize_proxy_list({
+                    "proxies": [_project_native_proxy(dict(old_proxy))],
+                }).get("proxies")
+                source_normalized = _normalize_proxy_list({
+                    "proxies": [_project_native_proxy(dict(source_proxy))],
+                }).get("proxies")
+                if old_normalized != source_normalized:
+                    raise ValueError("MIHOMO_XRAY_HANDOFF_MEMBER_OWNERSHIP_AMBIGUOUS")
+            proxy_source = old_proxy if isinstance(old_proxy, dict) else source_proxy
+            if not isinstance(proxy_source, dict):
+                continue
+            normalized = _normalize_proxy_list({"proxies": [dict(proxy_source)]}).get("proxies")
             if not isinstance(normalized, list) or not normalized:
                 continue
             proxy = normalized[0]
@@ -405,6 +496,7 @@ def _merge_runtime_proxies(
             proxy = _project_native_proxy(proxy)
             runtime_proxies.append(proxy)
             seen_names.add(name)
+            present_by_name[name] = proxy
 
     return runtime_proxies
 

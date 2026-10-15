@@ -11,6 +11,8 @@ from queue import Queue
 from pathlib import Path
 from uuid import NAMESPACE_DNS, uuid5
 
+import yaml
+
 from .http_support import http_json
 from .xray_support import (
     active_identities,
@@ -505,6 +507,42 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     assert original_member_ids <= refreshed_member_ids
     assert len(refreshed_member_ids - original_member_ids) == 3
 
+    # Reproduce the production partial-apply shape: old Xray bindings still
+    # point at the old profile, while the current Mihomo base has already lost
+    # that generated group and its member proxies. The native process remains
+    # on its previously loaded config until the candidate is applied.
+    connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+    try:
+        old_raw_row = connection.execute(
+            "SELECT raw_json FROM servers WHERE server_id=?", (old_id,),
+        ).fetchone()
+        assert old_raw_row is not None
+        old_runtime_name = str(json.loads(old_raw_row[0]).get("_fwrouter_runtime_name") or "")
+        assert old_runtime_name
+    finally:
+        connection.close()
+    mihomo_active_path = state / "generated" / "mihomo" / "config.yaml"
+    mihomo_partial = yaml.safe_load(mihomo_active_path.read_text(encoding="utf-8"))
+    old_group_row = next(
+        (group for group in mihomo_partial.get("proxy-groups", [])
+         if isinstance(group, dict) and group.get("name") == old_runtime_name),
+        None,
+    )
+    assert old_group_row is not None
+    old_member_names = set(str(name) for name in old_group_row.get("proxies", []))
+    assert old_member_names
+    mihomo_partial["proxy-groups"] = [
+        group for group in mihomo_partial.get("proxy-groups", [])
+        if not isinstance(group, dict) or group.get("name") != old_runtime_name
+    ]
+    mihomo_partial["proxies"] = [
+        proxy for proxy in mihomo_partial.get("proxies", [])
+        if not isinstance(proxy, dict) or proxy.get("name") not in old_member_names
+    ]
+    mihomo_active_path.write_text(
+        yaml.safe_dump(mihomo_partial, allow_unicode=True, sort_keys=False), encoding="utf-8",
+    )
+
     # Simulate a target written by the previous parser: it retains the exact
     # raw/profile identity fields but has no durable provenance witness.
     connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
@@ -659,6 +697,29 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     # archive, and the migration ledger instead of expecting a pending marker.
     assert superseded.get("supersedes_checkpoint_sha256") == old_checkpoint_sha
     assert superseded.get("migration_plan_sha256") == applied.get("plan_sha256")
+    transition_candidate_path = state / "xray" / ".generation" / "mihomo-transition.candidate.yaml"
+    transition_candidate = yaml.safe_load(transition_candidate_path.read_text(encoding="utf-8"))
+    transition_groups = {
+        group.get("name"): group for group in transition_candidate.get("proxy-groups", [])
+        if isinstance(group, dict)
+    }
+    transition_proxies = {
+        proxy.get("name") for proxy in transition_candidate.get("proxies", [])
+        if isinstance(proxy, dict)
+    }
+    assert old_runtime_name in transition_groups
+    assert old_member_names <= transition_proxies
+    final_mihomo = yaml.safe_load(mihomo_active_path.read_text(encoding="utf-8"))
+    final_group_names = {
+        group.get("name") for group in final_mihomo.get("proxy-groups", [])
+        if isinstance(group, dict)
+    }
+    final_proxy_names = {
+        proxy.get("name") for proxy in final_mihomo.get("proxies", [])
+        if isinstance(proxy, dict)
+    }
+    assert old_runtime_name not in final_group_names
+    assert not (old_member_names & final_proxy_names)
     assert not checkpoint.exists(), "successful supersession left an active generation checkpoint"
     archive_path = checkpoint.parent / "checkpoint-archive" / f"generation-checkpoint-{old_checkpoint_sha}.json"
     assert archive_path.is_file() and not archive_path.is_symlink()
