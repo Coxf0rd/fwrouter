@@ -146,6 +146,7 @@ _FINAL_REGRESSIONS_DIAGNOSTIC_SUITE = "final-regressions-diagnostic"
 _FINAL_REGRESSIONS_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_database_application.py::test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state",
     *_RECOVERY_DIAGNOSTIC_NODEIDS,
+    "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 )
 _DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic",
                       "recovery-diagnostic", "reentry-diagnostic", _KERNEL_RECOVERY_SUITE,

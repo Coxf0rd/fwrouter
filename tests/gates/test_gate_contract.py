@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import tempfile
 import textwrap
@@ -246,7 +247,7 @@ class GateContractTests(unittest.TestCase):
         self.assertIn('git diff --check "$PHASE_D_BASE_SHA...HEAD"', identity_step)
         self.assertIn('python tests/gates/gate.py plan --base "$PHASE_D_BASE_SHA"', workflow)
 
-    def test_final_regressions_diagnostic_is_fixed_three_node_kernel_suite(self) -> None:
+    def test_final_regressions_diagnostic_is_fixed_four_node_kernel_suite(self) -> None:
         launcher_path = gate.ROOT / "tests/acceptance/launcher.py"
         spec = importlib.util.spec_from_file_location("fwrouter_final_regressions_launcher", launcher_path)
         self.assertIsNotNone(spec)
@@ -258,6 +259,8 @@ class GateContractTests(unittest.TestCase):
             "tests/application_acceptance/test_database_application.py::"
             "test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state",
             *launcher._RECOVERY_DIAGNOSTIC_NODEIDS,
+            "tests/application_acceptance/test_browser_locale.py::"
+            "test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
         }
         self.assertEqual(expected, launcher.expected_acceptance_nodeids(suite))
         self.assertEqual(expected, set(launcher._FINAL_REGRESSIONS_DIAGNOSTIC_NODEIDS))
@@ -282,7 +285,7 @@ class GateContractTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(suite_choices))
         self.assertIn(suite, suite_choices[0])
-        self.assertEqual(3, len(expected))
+        self.assertEqual(4, len(expected))
 
         scenarios = json.loads((gate.ROOT / "tests/acceptance/scenarios.json").read_text())
         catalog = {row["nodeid"]: row for row in scenarios["scenarios"]}
@@ -308,20 +311,33 @@ class GateContractTests(unittest.TestCase):
             "tests/test_xray.py::test_subscription_profile_delete_reconcile_failure_does_not_revoke_identity_credentials",
             "tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade",
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_skips_reconcile_only_with_installed_policy_and_current_intent",
-            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean",
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[False]",
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[None]",
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[true]",
             "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_routing_parity_even_with_installed_policy",
             "tests/test_provider_recovery.py::test_mihomo_reentry_ready_accepts_native_policy_and_matching_routing",
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_reconciles_before_probe_and_preserves_direct_on_failure",
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_reconcile_precedes_probe_and_allows_only_incarnation_change",
-            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[active_target_id]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[binding]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[credential_fingerprint]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[desired_mode]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[eligible]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[exclusive]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[path_key]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pending]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pool]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[selection_fence]",
         }
         self.assertIn("needs.select-stage.outputs.stage == 'final-regressions-diagnostic'", deletion_step)
         self.assertIn("tests/gates/run_exact_nodes.py", deletion_step)
-        self.assertEqual(deletion_nodeids, {
-            line.strip().rstrip("\\").strip()
-            for line in deletion_step.splitlines()
-            if line.strip().startswith("tests/")
-        })
+        observed_deletion_nodeids = set()
+        for line in deletion_step.splitlines():
+            tokens = shlex.split(line.strip().rstrip("\\").strip())
+            if tokens and tokens[0].startswith("tests/"):
+                self.assertEqual(1, len(tokens), "each exact node ID must be one shell argument")
+                observed_deletion_nodeids.add(tokens[0])
+        self.assertEqual(deletion_nodeids, observed_deletion_nodeids)
         self.assertIn('--junit "$root/final-regressions-unit.xml"', deletion_step)
         self.assertIn('--report "$root/final-regressions-unit-report.json"', deletion_step)
         self.assertIn('--log "$root/final-regressions-unit.log"', deletion_step)

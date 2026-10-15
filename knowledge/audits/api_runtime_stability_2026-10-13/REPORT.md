@@ -540,3 +540,7 @@ Related final review fixes account deletion credential resurrection: exact accou
 ### Targeted component fixture correction — run38689498471/sourcee14089a
 
 Hosted exact unit cohort:21 PASS/1 FAIL/0 SKIP. Actual schema24→25 and three deletion/atomicity contracts PASS. The failing prepare-order test inherited no_guard from the state-machine fixture but asserted actual guard ownership inside its delegated reconcile; the resulting AssertionError was safely caught as preparation failure. Test now tracks guard entry/exit deterministically, asserts reconcile inside and endpoint probe outside. No runtime change or weakened lifecycle/native assertion. Bootstrap failure correctly prevented the three native cases (NOT RUN); next scoped run repeats only this exact component/native package.
+
+### Exact parameter coverage correction — run38689781643/source46c3e06
+
+All22 hosted component cases PASS/0 FAIL/0 SKIP, but strict exact-node receipt rejects the workflow selection: two function-only selectors expand to3+10 parameterized cases, so observed IDs do not equal expected IDs. Gate remainsFAIL; native suite NOT RUN. Workflow now enumerates the exact22 parameter IDs; runner strictness is unchanged. The next coherent target includes the existing real Chromium Xray editor/account-delete case alongside migration and two recovery cases, so new deletion assertions are qualified before the one final full requiredPR run. No production mutation.
