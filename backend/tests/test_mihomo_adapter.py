@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import gc
+import json
 import os
 import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 import yaml
 
 from fwrouter_api.adapters.mihomo import (
@@ -16,6 +20,8 @@ from fwrouter_api.adapters.mihomo import (
     MihomoRuntimeState,
 )
 from fwrouter_api.adapters import mihomo as mihomo_module
+
+_REAL_HTTPX_CLIENT = httpx.Client
 
 
 def test_vpn_udp_native_readback_requires_reject_groups_and_paired_guards() -> None:
@@ -1117,3 +1123,105 @@ def test_simple_udp_domain_native_guard_aliases_preserve_exact_parity_and_reject
             assert MihomoHttpAdapter._vpn_udp_policy_readback(config, proxies, native)["native_top_level_rules_match"] is True
             native[1]["payload"] = f"((Network,udp),({condition},owned.test),(Network,tcp))"
             assert MihomoHttpAdapter._vpn_udp_policy_readback(config, proxies, native)["native_top_level_rules_match"] is False
+
+
+def _install_streaming_mock_controller(monkeypatch, status: int, body: bytes):
+    responses: list[weakref.ReferenceType] = []
+    requests = []
+    streams = []
+
+    class TrackingByteStream(httpx.SyncByteStream):
+        def __init__(self, content: bytes) -> None:
+            self._chunks = [content]
+            self.was_closed = False
+
+        def __iter__(self):
+            while self._chunks:
+                yield self._chunks.pop(0)
+
+        def close(self) -> None:
+            self.was_closed = True
+            self._chunks.clear()
+
+    def handler(request):
+        requests.append(request)
+        stream = TrackingByteStream(body)
+        response = httpx.Response(status, stream=stream, headers={"content-type": "application/json"})
+        streams.append(stream)
+        responses.append(weakref.ref(response))
+        return response
+
+    transport = httpx.MockTransport(handler)
+    client_options = []
+
+    def make_client(*, timeout, trust_env):
+        client_options.append((timeout, trust_env))
+        return _REAL_HTTPX_CLIENT(transport=transport, timeout=timeout, trust_env=trust_env)
+
+    monkeypatch.setattr(mihomo_module.httpx, "Client", make_client)
+    adapter = MihomoHttpAdapter(base_url="http://controller.test", timeout_seconds=7.0)
+    adapter._headers = lambda: {"Authorization": "Bearer synthetic-test-token"}  # type: ignore[method-assign]
+    return adapter, responses, requests, streams, client_options
+
+
+def test_get_json_streams_large_rule_body_without_caching_raw_response_content(monkeypatch) -> None:
+    rules = [f"DOMAIN-SUFFIX,r{index:06d}.test,vpn-global" for index in range(199_257)]
+    payload = {"rules": rules, "metadata": {"source": "synthetic"}}
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    adapter, response_refs, requests, streams, client_options = _install_streaming_mock_controller(
+        monkeypatch, 200, body,
+    )
+    monkeypatch.setattr(adapter, "_headers", lambda: {"Authorization": "Bearer synthetic-test-token"})
+    was_enabled = gc.isenabled()
+    try:
+        gc.disable()
+        result = adapter._get_json("/rules", timeout_seconds=2.5)
+        assert result == payload
+        assert len(result["rules"]) == 199_257
+        assert result["rules"][0] == rules[0]
+        assert result["rules"][-1] == rules[-1]
+        response = response_refs[0]()
+        assert response is not None
+        assert getattr(response, "_content", None) is None
+        assert response.is_closed
+        assert streams[0].was_closed
+        assert streams[0]._chunks == []
+        assert requests[0].method == "GET"
+        assert str(requests[0].url) == "http://controller.test/rules"
+        assert requests[0].headers["authorization"] == "Bearer synthetic-test-token"
+        assert client_options == [(2.5, False)]
+    finally:
+        if was_enabled:
+            gc.enable()
+        else:
+            gc.disable()
+
+
+def test_get_json_wraps_non_dict_streamed_json(monkeypatch) -> None:
+    adapter, _refs, _requests, streams, _options = _install_streaming_mock_controller(
+        monkeypatch, 200, b'["first", "last"]',
+    )
+
+    assert adapter._get_json("/proxies") == {"value": ["first", "last"]}
+    assert streams[0].was_closed
+
+
+def test_get_json_stream_parse_and_status_errors_close_stream_without_changing_errors(monkeypatch) -> None:
+    invalid_adapter, invalid_refs, _requests, invalid_streams, _options = _install_streaming_mock_controller(
+        monkeypatch, 200, b"{invalid-json",
+    )
+    with pytest.raises(json.JSONDecodeError):
+        invalid_adapter._get_json("/rules")
+    invalid_response = invalid_refs[0]()
+    assert invalid_response is not None and getattr(invalid_response, "_content", None) is None
+    assert invalid_streams[0].was_closed
+
+    status_adapter, status_refs, _requests, status_streams, _options = _install_streaming_mock_controller(
+        monkeypatch, 503, b'{"error":"unavailable"}',
+    )
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        status_adapter._get_json("/rules")
+    assert raised.value.response.status_code == 503
+    status_response = status_refs[0]()
+    assert status_response is not None and getattr(status_response, "_content", None) is None
+    assert status_streams[0].was_closed
