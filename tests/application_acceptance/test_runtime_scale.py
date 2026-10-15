@@ -478,6 +478,59 @@ def _read_process_cpu_seconds(pid: int) -> float | None:
         return None
 
 
+def _read_worker_resource_snapshot(worker) -> dict[str, Any]:
+    """Capture bounded API-process and cgroup memory evidence around scale waves."""
+    pid = int(getattr(worker, "pid", 0) or 0)
+    snapshot: dict[str, Any] = {
+        "worker_pid": pid or None,
+        "worker_returncode": worker.poll(),
+        "process_rss_kib": _read_rss_kib(pid) if pid else None,
+        "process_hwm_kib": _read_rss_kib(pid, field="VmHWM") if pid else None,
+        "process_cpu_seconds": _read_process_cpu_seconds(pid) if pid else None,
+        "process_threads": None,
+        "cgroup": None,
+    }
+    try:
+        status = Path(f"/proc/{pid}/status").read_text(encoding="ascii")
+        for line in status.splitlines():
+            if line.startswith("Threads:"):
+                snapshot["process_threads"] = int(line.split()[1])
+                break
+    except (OSError, ValueError, IndexError):
+        pass
+
+    # The test worker and this pytest process share the acceptance container's
+    # cgroup. Read only fixed scalar controller files; never recurse or dump raw
+    # cgroup paths/process contents into the receipt.
+    try:
+        cgroup_pid = pid if Path(f"/proc/{pid}/cgroup").exists() else os.getpid()
+        cgroup_lines = Path(f"/proc/{cgroup_pid}/cgroup").read_text(encoding="ascii").splitlines()
+        relative = next(line.split(":", 2)[2] for line in cgroup_lines if line.startswith("0::"))
+        cgroup_dir = (Path("/sys/fs/cgroup") / relative.lstrip("/")).resolve()
+        root = Path("/sys/fs/cgroup").resolve()
+        if cgroup_dir == root or root in cgroup_dir.parents:
+            values: dict[str, Any] = {}
+            for name in ("memory.current", "memory.peak", "memory.max"):
+                try:
+                    raw = (cgroup_dir / name).read_text(encoding="ascii").strip()
+                    values[name.removeprefix("memory.")] = int(raw) if raw.isdigit() else raw[:32]
+                except OSError:
+                    values[name.removeprefix("memory.")] = None
+            try:
+                events: dict[str, int] = {}
+                for line in (cgroup_dir / "memory.events").read_text(encoding="ascii").splitlines():
+                    fields = line.split()
+                    if len(fields) == 2 and fields[0] in {"low", "high", "max", "oom", "oom_kill", "oom_group_kill"}:
+                        events[fields[0]] = int(fields[1])
+                values["events"] = events
+            except (OSError, ValueError, IndexError):
+                values["events"] = None
+            snapshot["cgroup"] = values
+    except (OSError, StopIteration, ValueError):
+        pass
+    return snapshot
+
+
 class _RssSampler:
     def __init__(self, pid: int) -> None:
         self.pid = pid
@@ -942,12 +995,26 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         metrics["api_process_cpu_seconds_after_native_probe"] = _read_process_cpu_seconds(active_worker.pid)
         waves: list[list[dict[str, Any]]] = []
         metrics["waves"] = waves
+        metrics["wave_resource_observations"] = []
         for wave_number in range(4):
             if wave_number:
                 # Let the shared read-only health cache expire between waves so
                 # each wave includes one fresh large native readback.
                 threading.Event().wait(2.1)
-            wave = _run_six_client_wave(api)
+            wave_observation: dict[str, Any] = {
+                "wave": wave_number + 1,
+                "before": _read_worker_resource_snapshot(active_worker),
+            }
+            metrics["wave_resource_observations"].append(wave_observation)
+            try:
+                wave = _run_six_client_wave(api)
+            except BaseException as exc:
+                wave_observation["failure"] = {
+                    "type": type(exc).__name__,
+                }
+                wave_observation["after"] = _read_worker_resource_snapshot(active_worker)
+                raise
+            wave_observation["after"] = _read_worker_resource_snapshot(active_worker)
             waves.append(wave)
             for result in wave:
                 assert result["status_code"] == 200 and result["ok"] is True, result

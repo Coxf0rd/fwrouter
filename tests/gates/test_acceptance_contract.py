@@ -5950,5 +5950,103 @@ class ScaleInboundOwnershipContract(unittest.TestCase):
             self.helper()(config, [])
 
 
+class RuntimeScaleFailureDiagnosticsContract(unittest.TestCase):
+    def setUp(self):
+        self.source = Path(__file__).parents[1] / "application_acceptance" / "test_runtime_scale.py"
+        self.tree = ast.parse(self.source.read_text(encoding="utf-8"))
+        self.function = next(
+            item for item in self.tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "_read_worker_resource_snapshot"
+        )
+
+    def test_disappeared_worker_uses_parent_cgroup_and_keeps_only_bounded_fields(self):
+        namespace = {
+            "Any": Any,
+            "Path": Path,
+            "os": SimpleNamespace(getpid=lambda: 99),
+            "_read_rss_kib": lambda *_args, **_kwargs: None,
+            "_read_process_cpu_seconds": lambda _pid: None,
+        }
+        exec(compile(ast.Module(body=[self.function], type_ignores=[]), str(self.source), "exec"), namespace)
+
+        original_read_text = Path.read_text
+        original_exists = Path.exists
+
+        def read_text(path, *, encoding=None):
+            value = str(path)
+            if value == "/proc/99/cgroup":
+                return "0::/private/credential-shaped-path\n"
+            if value.endswith("/memory.current"):
+                return "123456\n"
+            if value.endswith("/memory.peak"):
+                return "234567\n"
+            if value.endswith("/memory.max"):
+                return "1048576\n"
+            if value.endswith("/memory.events"):
+                return "low 0\nhigh 0\nmax 4\noom 2\noom_kill 1\n"
+            if value.startswith("/proc/42/"):
+                raise FileNotFoundError(value)
+            return original_read_text(path, encoding=encoding)
+
+        def exists(path):
+            if str(path) == "/proc/42/cgroup":
+                return False
+            return original_exists(path)
+
+        worker = SimpleNamespace(pid=42, poll=lambda: -9)
+        with mock.patch.object(Path, "read_text", read_text), mock.patch.object(Path, "exists", exists):
+            result = namespace["_read_worker_resource_snapshot"](worker)
+
+        self.assertEqual(-9, result["worker_returncode"])
+        self.assertEqual(1, result["cgroup"]["events"]["oom_kill"])
+        self.assertEqual(123456, result["cgroup"]["current"])
+        self.assertNotIn("credential-shaped-path", json.dumps(result))
+        self.assertEqual({
+            "worker_pid", "worker_returncode", "process_rss_kib", "process_hwm_kib",
+            "process_cpu_seconds", "process_threads", "cgroup",
+        }, set(result))
+
+    def test_failed_wave_redacts_exception_text_and_reraises_same_exception(self):
+        test_function = next(
+            item for item in self.tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name == "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
+        )
+        handler = next(
+            node for node in ast.walk(test_function)
+            if isinstance(node, ast.Try)
+            and any(isinstance(item, ast.ExceptHandler)
+                    and isinstance(item.type, ast.Name) and item.type.id == "BaseException"
+                    and item.name == "exc" for item in node.handlers)
+            and any(isinstance(item, ast.Assign)
+                    and isinstance(item.value, ast.Call)
+                    and isinstance(item.value.func, ast.Name)
+                    and item.value.func.id == "_run_six_client_wave" for item in node.body)
+        )
+        sentinel = RuntimeError("private exception detail " + ("x" * 10000))
+        observation: dict[str, Any] = {}
+
+        def fail_wave(_api):
+            raise sentinel
+
+        namespace = {
+            "wave_observation": observation,
+            "active_worker": object(),
+            "api": "http://127.0.0.1:5000",
+            "_run_six_client_wave": fail_wave,
+            "_read_worker_resource_snapshot": lambda _worker: {"worker_returncode": -9},
+            "BaseException": BaseException,
+            "type": type,
+        }
+        with self.assertRaises(RuntimeError) as raised:
+            exec(compile(ast.Module(body=[handler], type_ignores=[]), str(self.source), "exec"), namespace)
+
+        self.assertIs(sentinel, raised.exception)
+        self.assertEqual({"type": "RuntimeError"}, observation["failure"])
+        self.assertNotIn("private exception detail", json.dumps(observation))
+        self.assertEqual({"worker_returncode": -9}, observation["after"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
