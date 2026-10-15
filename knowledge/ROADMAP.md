@@ -1,5 +1,12 @@
 # FWRouter engineering roadmap mirror
 
+## Current correction checkpoint — 2026-10-16
+
+PR11 was merged as ccc576c. Actual main CI38767801965 FAILED the concurrent startup-scale load: worker exit-9/RemoteDisconnected. Rollout stopped at preflight, before production copy/restart; production remainsffe506e, original78 preserved. Diagnostic38777720255 proved a2GiB cgroup OOM kill. The corrective branch fixes large HTTPX controller-body lifetime; targeted38779324831 passed migration and two cold scale attempts with unchanged limits. Final required PR/main qualification is still required. See [correction report](audits/startup_scale_concurrent_disconnect_2026-10-16/REPORT.md). Earlier PR11 OPEN/source-qualified entries below are historical checkpoints, superseded by this dated notice; no milestone or deployment has been accepted from the targeted result.
+
+Public upstream credential investigation/rotation is outside this rollout by user instruction; no value is published or rotated. Preserve a final Git-history/credential exposure check under pre-public-release cleanup. Fixture replacement does not revoke historical disclosure. Stage9/10 host and positive controlled external E2E gates remain separate and NOT RUN; Operational Performance does not resume automatically.
+
+
 ## Authority, current state and evidence — reconciled 2026-10-15
 
 The owner-local `/решения/roadmap/fwrouter/ROADMAP.md` is canonical; `knowledge/ROADMAP.md` publishes its reviewed English active plan. Their active plan is synchronized; titles and link roots identify their locations. Different historical checkpoints are retained in each tree's [exact pre-reconciliation snapshot](history/ROADMAP_PRE_2026-10-15_DECISION_RECONCILIATION.md), not silently merged or discarded. Snapshot links retain original location context. [History index](history/README.md) preserves earlier decisions and evidence. Historical reports are not rewritten.

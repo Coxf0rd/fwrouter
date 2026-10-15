@@ -21,3 +21,18 @@ Private evidence: `/root/fwrouter-recovery/rollout-ccc576c-20261015/` contains R
 ## Corrective source checkpoint
 
 The shared Mihomo GET reader now uses a streaming response context and parses the complete decoded byte sequence without asking HTTPX to buffer it on Response. Response/connection closure, headers, trust_env=False, timeout calculation, HTTPStatusError/JSONDecodeError behavior and non-dictionary wrapping are retained. This is not an incremental native-rule validator: JSON cardinality/order/value proof still runs unchanged. No normalized-config cache or safety assertion was removed. Local adapter regressions32/32 and acceptance contracts128/128 PASS. The large synthetic MockTransport case covers199257 rules with cyclic GC disabled/restored, exact payload parity and no buffered response content; list/error paths close their streams. Native cold-start qualification remains pending for this source checkpoint.
+
+## Targeted hosted qualification at cb257dd
+
+[38779324831](https://github.com/Coxf0rd/fwrouter/actions/runs/38779324831) SUCCESS at exact cb257dd79115d644826c39dc349476db80fdc564: migration qualification and two independent cold runtime-scale attempts. Each completed all24 concurrent requests and exact82 synthetic identity preservation with native proof and graceful cleanup. No production data or external user endpoint was used.
+
+| Metric | Attempt1 | Attempt2 |
+|---|---:|---:|
+| Startup seconds (unchanged45s ceiling) |27.3304|27.9976|
+| API lifetime HWM KiB |919020|857576|
+| Shared cgroup peak bytes (unchanged2147483648 limit) |2048380928|1993809920|
+| Cgroup oom_kill |0|0|
+| Maximum wave request seconds |1.5566|1.5751|
+| Graceful shutdown seconds |0.2137|0.2639|
+
+The controller-body lifetime fix eliminates OOM in these qualified runs; it does not prove every source of memory growth is removed. RSS still increases between the four cold-cache waves; aggregate headroom remains finite and this is not a long-soak or production performance claim. Keep resource-growth investigation as a measured follow-up; do not raise limits or infer zero resource cost. Startup improvement is observed under hosted conditions, not a controlled universal production speedup. Final required PR CI must independently confirm the complete affected scope at its documentation HEAD. Production stays untouched/rollout paused until correction is user-merged and real main CI succeeds.
