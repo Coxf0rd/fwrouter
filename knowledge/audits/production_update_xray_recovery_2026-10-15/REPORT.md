@@ -73,3 +73,7 @@ Exactworkload matches priorPASS35.7282s/41.0065s; phaseCPU/wall generallyslower,
 ## Scoped planner work removal
 
 Optionalprefixfilter inbinding/modecollectors nowselects carry-forward rows beforeget_subject/enrichment. Scopedplanner passesexistingmanagedprefixes andretainsdefensivepostfilter; normalcallers,missing/non-stringemails andcase-insensitivematching preservebehavior. Regressionseeds82subjects,proves2fixedenrichedversus82default,carry-forwardidentityparity,andmissing/non-stringemailretention. Existing recoveryfixtures acceptnewoptionalkeyword. NewL2Xrayfile registered(manifest172). SafeAST/F821/manifest/diff/surfacePASS. Nativeproof/CAS/readback/45sstartupdeadline unchanged; actualstartupbenefit remainsunmeasured untilfrozenfullhostedrun.
+
+## Planner regression expectation — run38735013402/sourcea3c41da
+
+1562routinePASS/2FAIL, qualified/native/scaleNOTRUN. Both parameterized old planner tests expectedone sharedmodecollectorpreflight even thoughallseededsubjects are managedandnowexcludedbeforethat discardedprojection. Exactnewexpectation0assertsremovedwork; ownplanner routing/enforcement/bypasssnapshot,per-nodeeffectiveenrichment,bindingidentity/targetparity,andnoDBmutation assertions remain. New82row/default/nonstringprojectiontestsPASS. No runtimechange for thisfixturecorrection; actualstartupbenefit stillNOTRUN.
