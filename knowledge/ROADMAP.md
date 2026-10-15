@@ -2,7 +2,7 @@
 
 ## Operational Packages 2/3 source checkpoint — 2026-10-16
 
-User authorized Package2 and conditionalPackage3 together. Branch `perf/operational-package2-3` from main3f96e1e implements bounded cache lifecycle and exact external-observation connection invalidation; targeted95/95 twice. Full required finalPRCI pending. Package3 conditionalchmod pilot DEFERRED after overlapping measurement ranges; scrub/native/DB/I/O changes DEFERRED pending safety/cost proof; PRAGMA/WAL/fsync/transactions unchanged. No production mutation,merge or Stage5. Package2 acceptance remains source/CI/deploy/live-separated. See [Package2/3 report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/REPORT.md). PR14 roadmap reconciliation remains separately OPEN; retain its newer decisions and history.
+User authorized Package2 and conditionalPackage3 together. Branch `perf/operational-package2-3` from main3f96e1e implements bounded cache lifecycle and exact external-observation connection invalidation; final corrective targeted105/105 and independentQA105/105 PASS; first fullCI38822958169 failed unchanged snapshot reuse and is preserved as failed history. Corrective finalHEAD full required PRCI pending. Package3 conditionalchmod pilot DEFERRED after overlapping measurement ranges; scrub/native/DB/I/O changes DEFERRED pending safety/cost proof; PRAGMA/WAL/fsync/transactions unchanged. No production mutation,merge or Stage5. Package2 acceptance remains source/CI/deploy/live-separated. See [Package2/3 report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/REPORT.md). PR14 roadmap reconciliation remains separately OPEN; retain its newer decisions and history.
 
 ## Operational Package 1 source checkpoint — 2026-10-16
 

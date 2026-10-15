@@ -20,11 +20,13 @@ Ownership and invalidation:
   revision field: callers' current keys, owner clears and TTLs remain the
   revision/config-generation boundary; native proof is never cached here.
 * The process keeps at most 256 completed entries, 32 MiB of admission-time
-  estimated object graphs, and 24 MiB per value. Estimates walk supported
-  built-in containers and dataclass fields without serialization; unknown or
-  over-budget graphs are returned normally but not retained. Mutable object
-  identity is preserved, so caller mutation after admission can make the
-  estimate lower than the graph's later size.
+  estimated result graphs, and 24 MiB per value. Estimates walk supported
+  built-in containers, exact ``SimpleNamespace`` values, and dataclass fields
+  without serialization; unknown or over-budget graphs are returned normally
+  but not retained. Adapter identity remains encoded in its cache key; cached
+  observations do not retain adapter objects. Mutable result identity is
+  preserved, so caller mutation after admission can make the estimate lower
+  than the graph's later size.
 * Expiry is checked on the requested key on every access and the bounded cache
   is swept at most once per second of subsequent cache activity. There is no
   worker and no disk state: restart begins empty and normal requests rebuild
@@ -38,6 +40,7 @@ import importlib.util
 from pathlib import Path
 import threading
 import weakref
+from types import SimpleNamespace
 
 from fwrouter_api.services import live_probe_cache as cache
 
@@ -384,41 +387,129 @@ def test_colon_connection_clear_fences_old_flight_from_replacement() -> None:
     cache.clear_live_probe_cache()
 
 
-def test_adapter_tokens_are_lifetime_unique_without_hashability_or_retention() -> None:
+def test_nonweak_adapter_results_are_reused_and_isolated_by_owner() -> None:
     class Adapter:
-        __hash__ = None
+        __slots__ = ("calls",)
+
+        def __init__(self):
+            self.calls = 0
+
+        def health(self):
+            self.calls += 1
+            return SimpleNamespace(observation=self.calls)
 
     adapter = Adapter()
-    adapter_id = id(adapter)
-    adapter_ref = weakref.ref(adapter)
-    first = cache._readonly_adapter_token(adapter)
-    assert first == cache._readonly_adapter_token(adapter)
-    assert first is not None
-
     other = Adapter()
-    second = cache._readonly_adapter_token(other)
-    assert second is not None and second != first
+    first = cache.get_readonly_mihomo_health(adapter)
+    assert cache.get_readonly_mihomo_health(adapter) is first
+    other_first = cache.get_readonly_mihomo_health(other)
+    assert cache.get_readonly_mihomo_health(other) is other_first
+    assert first is not other_first
+    assert adapter.calls == other.calls == 1
+
+
+def test_discarded_adapter_graph_is_not_retained_by_cached_health_entry() -> None:
+    class Adapter:
+        def __init__(self):
+            self.large_runtime_state = bytearray(8 * 1024 * 1024)
+
+        def health(self):
+            return {"healthy": True}
+
+    cache.clear_live_probe_cache()
+    adapter = Adapter()
+    adapter_ref = weakref.ref(adapter)
+    cached_health = cache.get_readonly_mihomo_health(adapter)
+    key = next(key for key in cache._CACHE if key.startswith("dataplane_global.mihomo_health."))
+    assert cache.peek_live_probe_cache(key) is cached_health
 
     del adapter
     gc.collect()
+
     assert adapter_ref() is None
-    assert adapter_id not in cache._ADAPTER_TOKENS
+    assert any(value is cached_health for _expiry, value, _size in cache._CACHE.values())
+    assert cache._CACHE_RETAINED_BYTES <= cache._MAX_CACHE_BYTES
 
 
-def test_non_weakrefable_adapter_bypasses_optional_cache() -> None:
-    calls = []
+def test_slow_nonweak_adapter_load_remains_coalesced_past_health_ttl(monkeypatch) -> None:
+    cache.clear_live_probe_cache()
+    clock = [10.0]
+    monkeypatch.setattr(cache, "monotonic", lambda: clock[0])
+    started = threading.Event()
+    release = threading.Event()
+    follower_waiting = threading.Event()
+    event_factory = cache.Event
+
+    class ObservedEvent:
+        def __init__(self):
+            self.event = threading.Event()
+
+        def wait(self, timeout=None):
+            follower_waiting.set()
+            return self.event.wait(timeout)
+
+        def set(self):
+            self.event.set()
 
     class Adapter:
-        __slots__ = ()
+        __slots__ = ("calls",)
+
+        def __init__(self):
+            self.calls = 0
 
         def health(self):
-            calls.append("health")
-            return {"calls": len(calls)}
+            self.calls += 1
+            started.set()
+            assert release.wait(5)
+            return {"calls": self.calls}
 
+    cache.Event = ObservedEvent
     adapter = Adapter()
-    assert cache.get_readonly_mihomo_health(adapter) == {"calls": 1}
-    assert cache.get_readonly_mihomo_health(adapter) == {"calls": 2}
-    assert calls == ["health", "health"]
+    results = {}
+
+    def invoke(name):
+        results[name] = cache.get_readonly_mihomo_health(adapter)
+
+    leader = threading.Thread(target=invoke, args=("leader",), daemon=True)
+    follower = threading.Thread(target=invoke, args=("follower",), daemon=True)
+    try:
+        leader.start()
+        assert started.wait(2)
+        clock[0] = 12.1
+        follower.start()
+        assert follower_waiting.wait(2)
+        release.set()
+        leader.join(2)
+        follower.join(2)
+        assert not leader.is_alive() and not follower.is_alive()
+        assert results["leader"] is results["follower"]
+        assert results["leader"] == {"calls": 1}
+        assert adapter.calls == 1
+    finally:
+        release.set()
+        leader.join(2)
+        if follower.ident is not None:
+            follower.join(2)
+        cache.Event = event_factory
+        cache.clear_live_probe_cache()
+        assert not leader.is_alive() and not follower.is_alive()
+
+
+def test_simple_namespace_result_graph_is_safely_estimable() -> None:
+    result = SimpleNamespace(runtime_state="running", details={"healthy": True})
+    assert 0 < cache._value_size_bytes(result) < cache._MAX_ENTRY_BYTES
+
+
+def test_simple_namespace_subclasses_remain_unsupported() -> None:
+    class ExtendedNamespace(SimpleNamespace):
+        pass
+
+    try:
+        cache._value_size_bytes(ExtendedNamespace(value="unknown"))
+    except cache._UncacheableValue:
+        pass
+    else:
+        raise AssertionError("SimpleNamespace subclasses must not be introspected")
 
 
 def test_fresh_module_starts_empty_and_rebuilds_after_restart() -> None:

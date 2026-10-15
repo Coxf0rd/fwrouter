@@ -14,7 +14,11 @@ Requested-key expiry is checked on every get/peek. A sweep of at most256 entries
 
 Existing service keys and global/matching/connection invalidators remain ownership/revision boundaries; no generic revision field or native-proof cache is invented. The exact colon owner family is added to connection clearing with boundary checks; neighboring IDs/modules remain independent. Clear/inflight event+holder identity fencing prevents an old loader publishing into a replacement generation. Existing pre-clear waiters still receive that old holder’s result as before.
 
-Readonly adapter observations now use weakly registered lifetime-unique tokens rather than reusable object addresses. A separate reentrant registry lock avoids finalizer lock inversion, no strong adapter ownership; unhashable weakrefable adapters work, nonweakrefable adapters bypass this optional snapshot cache. Retired cached values are held until outside cache lock before release, so eviction/expiry/clear cannot deadlock reentrant finalizers/weakref callbacks. Process restart begins with an empty cache and lazily reconstructs derived observations. Canonical intent,credentials,CAS/revisions/incarnations,applied/native proof,last-good/recovery remain unchanged and durable.
+Readonly adapter observations preserve the base adapter type/address key and ordinary reuse, including non-weakrefable adapters. No new owner registry or strong adapter retention is introduced. Potential Python object-address reuse after adapter disposal is a pre-existing limitation, explicitly DEFERRED for separate identity hardening; this package does not claim to resolve it. Retired cached values are held until outside cache lock before release, preventing reentrant finalizer deadlocks. Process restart reconstructs derived observations lazily. Canonical intent, credentials, CAS/revisions/incarnations, applied/native proof and last-good/recovery remain unchanged and durable.
+
+### Failed first full CI and independent review
+
+The first full PR run [38822958169](https://github.com/Coxf0rd/fwrouter/actions/runs/38822958169) failed the unchanged `test_forced_state_snapshot_bypasses_inner_readonly_mihomo_cache`: the initial implementation bypassed non-weakrefable adapters and declined exact `SimpleNamespace` health values. Ordinary snapshot reuse therefore broke. This is an application compatibility regression, not an environment failure. The existing test was preserved. New regressions were first demonstrated RED (5 FAIL / 20 PASS) before the corrective implementation; a subsequent isolated cohort passed 107 tests. Independent QA reproduced 107 PASS, but requested removal of unaccounted strong adapter ownership. The final correction preserves the baseline adapter key without introducing that retention. Exact `SimpleNamespace` result graphs are safely estimated; arbitrary objects/subclasses remain uncached. Final candidate verification and exact source hashes are recorded separately below and in the source receipt. No failed run is reclassified as PASS.
 
 ## Matched synthetic measurements
 
@@ -22,10 +26,10 @@ Readonly adapter observations now use weakly registered lifetime-unique tokens r
 
 | Workload | Baseline median | Candidate median | Meaning |
 |---|---:|---:|---|
-|100-subject summary,one cold+5000hits|1.56ms|3.62ms|Memory accounting adds CPU; not a CPU speedup |
-|1000-subject projection,one cold+5000hits|1.58ms|10.76ms|Bounded admission traversal cost on large object |
-|Summary5000 warm hits only|1.55ms|2.71ms|~0.23microseconds extra per hit |
-|Projection5000 warm hits only|1.56ms|2.65ms|~0.22microseconds extra per hit |
+|100-subject summary,one cold+5000hits|1.56ms|3.59ms|Memory accounting adds CPU; not a CPU speedup |
+|1000-subject projection,one cold+5000hits|1.58ms|9.93ms|Bounded admission traversal cost on large object |
+|Summary5000 warm hits only|1.55ms|2.65ms|~0.23microseconds extra per hit |
+|Projection5000 warm hits only|1.56ms|2.45ms|~0.18microseconds extra per hit |
 |1000 unique1KiB live values|1000 entries|256 entries /352768 accountedB|LRU bound; independent unique byte objects |
 |Expired-key churn after1.01s +trigger|1001 retained entries|1 trigger /342 accountedB|Expiry reclaim on normal activity, not idle worker |
 
@@ -47,7 +51,7 @@ These are explicit conditionalPackage3 dispositions, not implemented optimizatio
 
 ## Verification
 
-New lifecycle suite plus existing cache/runtime/external-source/registry/health/state/migration/security contracts: **95PASS/0FAIL/0SKIP twice**,4.82s and4.59s. Owned temporary coordinator root and network namespace; no production/native operations. Tests cover LRU/byte limits,TTL/expiry,oversized/unknown/deep/cyclic values,mutable identity,owner isolation,colon invalidation,old/newflight fencing,weak adapter lifetime,unhashable/nonweakrefable adapters,reentrant finalizers,restart reconstruction and oversized singleflight. Existing tests retain force/error/TTL and baseline fencing assertions. First integrated attempt1FAIL/91PASS in a new byte-budget test is retained separately; focused diagnostic and both coherent-suite repeats passed. Its original cause is not attributed to application or CI without evidence; final exact-source required CI remains mandatory.
+Final corrective candidate: **105 PASS / 0 FAIL / 0 SKIP**, 5.24s in an owned coordinator root/network namespace. Covers cache/runtime/external-source/registry/health/state/migration/configuration contracts, including the unchanged forced-snapshot test. New first-RED discarded-adapter regression demonstrates that a cached health result does not retain an adapter's 8 MiB state; the result itself remains cached. Earlier 95-pass and 107-pass cohorts refer to earlier candidates and are preserved as historical evidence, not final-source proof. Initial 1 FAIL / 91 PASS byte-budget diagnostic remains unexplained; no root cause is fabricated. Independent re-review **PASSED**, with 105 PASS in 5.15s and unchanged source hashes. Full required CI on the final candidate remains mandatory.
 
 New test is registered under existingL1 isolation/budgets, no assertions/timeouts weakened. Full required safe PR CI is PENDING at this source checkpoint; report actual exactHEAD/run in final handoff/PR body after verification. No L6/L7/host/deploy acceptance inferred. Source changes only cache module +new tests/catalog; SQLite/event scrub/native/apply paths remain unchanged. Native/application/browser/kernel/packet/recovery contracts must pass final full scope.
 

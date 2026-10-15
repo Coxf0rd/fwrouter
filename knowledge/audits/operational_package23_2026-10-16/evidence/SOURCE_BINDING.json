@@ -1,22 +1,31 @@
 {
+  "base_head": "8827a7623489a74bed36ebcc40c615298c2b29ee",
+  "qa_finding": "P2 adapter owner retained outside cache byte estimate",
+  "owner_red": {
+    "result": "1 failed",
+    "log_sha256": "7684aee5be74f811de913e6b61f42d556228cf2a5e77bb5649efd5eea6d26ab7",
+    "junit_sha256": "a4ee9fe53902b800179d6e34e580dc16aa8e77db9e94d4d2b8653810ca664392"
+  },
+  "owner_green": {
+    "result": "105 passed in 5.24s",
+    "log_sha256": "a8e530fdc2af6b45e6a74aaf2056979ed6496096dcdbfd97c0908d689516fb84",
+    "junit_sha256": "b750b2f944b8edca10c48ae41930ba9aab9cd2775ce01713ee501d042f841d7e"
+  },
+  "source_sha256": {
+    "backend/fwrouter_api/services/live_probe_cache.py": "74d4866f9465df9d72ab3bf4cac63a562dc62fb4ae2f3f3cfb4fdc181f81740a",
+    "backend/tests/test_probe_cache_lifecycle.py": "6e17fd58b67497b0ce71ee126a7465573200193174b2806761d6b5e1ab7988a1"
+  },
+  "diff_check": "PASS",
+  "production_or_live_mutation": "none",
+  "id_reuse_hardening": "deferred; adapter key restored to origin/main type and id semantics",
   "base": "3f96e1e73be0e0fc25208a406ecc9ff259f6480f",
-  "runtime_sha256": "922c28c5581eb833348f224885fdd21367ca13f3093c4b8b0d423f9fa6e0217f",
-  "test_sha256": "3db48841318d08cdff392acbb665a234dbb101cfbbafa98360f3a24bf092cf16",
-  "targeted_repeats": [
-    {
-      "pass": 95,
-      "fail": 0,
-      "skip": 0,
-      "seconds": 4.82
-    },
-    {
-      "pass": 95,
-      "fail": 0,
-      "skip": 0,
-      "seconds": 4.59
-    }
-  ],
-  "first_targeted": "1 fail/91pass; diagnostic retained; final coherent suite95pass twice",
-  "full_PR_CI": "pending final HEAD",
-  "production": "UNCHANGED"
+  "full_PR_CI": "PENDING exact final HEAD",
+  "production": "UNCHANGED",
+  "historical_first_full_CI": "38822958169 FAIL: unchanged forced snapshot test; preserved",
+  "benchmark_sha256": "484d496e6ab3928662b0742a0f511219f057b3ddf33e2c69df444657e6209fe5",
+  "independent_QA": {
+    "status": "PASSED",
+    "targeted": "105 passed in 5.15s",
+    "report_sha256": "0a12df5b2d5ee8f6f49ab192e4deb41719affd7f7229dd359bfdb28f8a6571f5"
+  }
 }

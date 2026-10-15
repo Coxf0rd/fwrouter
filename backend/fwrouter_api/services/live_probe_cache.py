@@ -3,11 +3,10 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from collections import OrderedDict
 from enum import Enum
-from itertools import count
-from threading import Event, Lock, RLock
+from threading import Event, Lock
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any, Callable
-import weakref
 
 
 # These are admission-time Python object-graph estimates, not RSS limits. Keep
@@ -21,57 +20,24 @@ _MAX_SIZE_DEPTH = 64
 _EXPIRY_SWEEP_INTERVAL_SECONDS = 1.0
 
 _CACHE_LOCK = Lock()
-_ADAPTER_TOKEN_LOCK = RLock()
 _CACHE: OrderedDict[str, tuple[float, Any, int]] = OrderedDict()
 _CACHE_RETAINED_BYTES = 0
 _INFLIGHT: dict[str, tuple[Event, dict[str, Any]]] = {}
 _LAST_EXPIRY_SWEEP_AT = 0.0
 
 _READONLY_MIHOMO_HEALTH_CACHE_KEY = "dataplane_global.mihomo_health"
-_ADAPTER_TOKENS: dict[int, tuple[weakref.ReferenceType[Any], int]] = {}
-_NEXT_ADAPTER_TOKEN = count(1)
 
 
 class _UncacheableValue(Exception):
     """The value graph cannot be estimated within the admission budget."""
 
 
-def _readonly_adapter_token(adapter: Any) -> int | None:
-    """Return a lifetime-unique token without keeping the adapter alive."""
-    adapter_id = id(adapter)
-    try:
-        weakref.ref(adapter)
-    except TypeError:
-        # A strong-reference fallback would make this cache an adapter owner.
-        # Bypass the optional snapshot cache for objects that cannot be fenced.
-        return None
-
-    with _ADAPTER_TOKEN_LOCK:
-        current = _ADAPTER_TOKENS.get(adapter_id)
-        if current is not None and current[0]() is adapter:
-            return current[1]
-
-        token = next(_NEXT_ADAPTER_TOKEN)
-
-        def discard(reference: weakref.ReferenceType[Any], *, key: int = adapter_id, value: int = token) -> None:
-            with _ADAPTER_TOKEN_LOCK:
-                registered = _ADAPTER_TOKENS.get(key)
-                if registered is not None and registered[0] is reference and registered[1] == value:
-                    _ADAPTER_TOKENS.pop(key, None)
-
-        reference = weakref.ref(adapter, discard)
-        _ADAPTER_TOKENS[adapter_id] = (reference, token)
-        return token
-
-
 def get_readonly_mihomo_health(adapter: Any, *, loader: Callable[[], Any] | None = None) -> Any:
     """Return a short-lived, coalesced Mihomo health snapshot for read-only callers."""
-    adapter_token = _readonly_adapter_token(adapter)
     probe = loader if loader is not None else adapter.health
-    if adapter_token is None:
-        return probe()
-    adapter_type = type(adapter)
-    adapter_identity = f"{adapter_type.__module__}.{adapter_type.__qualname__}.{adapter_token}"
+    adapter_identity = (
+        f"{type(adapter).__module__}.{type(adapter).__qualname__}.{id(adapter):x}"
+    )
     return get_live_probe_cache(
         f"{_READONLY_MIHOMO_HEALTH_CACHE_KEY}.{adapter_identity}",
         ttl_seconds=2.0,
@@ -158,6 +124,15 @@ def _value_size_bytes(value: Any) -> int:
                         raise _UncacheableValue
             return size
 
+        if item_type is SimpleNamespace:
+            # Exact built-in type only: its instance dictionary is a plain
+            # dict, while subclasses and arbitrary objects stay unsupported.
+            size = object.__sizeof__(item)
+            attributes = object.__getattribute__(item, "__dict__")
+            if type(attributes) is not dict:
+                raise _UncacheableValue
+            return size + visit(attributes, depth + 1)
+
         # Do not inspect arbitrary objects, invoke custom sizing hooks, or
         # serialize values that may include credentials or runtime details.
         raise _UncacheableValue
@@ -237,7 +212,7 @@ def get_live_probe_cache(
             if cached is not None:
                 _remove_cache_entry_locked(key, retired)
 
-    retired = []
+    retired: list[tuple[float, Any, int]] = []
     with _CACHE_LOCK:
         _sweep_expired_locked(now, retired, requested_key=key)
         inflight = _INFLIGHT.get(key)
