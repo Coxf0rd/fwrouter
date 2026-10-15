@@ -1551,7 +1551,8 @@ def _install_acceptance_recovery_apply_observer() -> None:
         result: dict[str, Any] = {}
         for key in ("ok", "outcome", "status", "stage", "dataplane_capability", "enforcement_level",
                     "action", "effective_override", "applied", "runtime_verified",
-                    "traffic_enforcement_guaranteed", "selection_outcome", "candidates_count"):
+                    "traffic_enforcement_guaranteed", "selection_outcome", "candidates_count",
+                    "reconcile_reason"):
             item = value.get(key)
             if isinstance(item, bool) or (type(item) is int and 0 <= item <= 10000):
                 result[key] = item
@@ -1559,6 +1560,39 @@ def _install_acceptance_recovery_apply_observer() -> None:
                 char.isascii() and (char.isalnum() or char in "_.- ") for char in item
             ):
                 result[key] = item
+        receipt = value.get("reentry_generation_fence")
+        if isinstance(receipt, dict):
+            result["reentry_generation_fence"] = {
+                "schema_valid": receipt.get("schema") == "mihomo-reentry-generation-fence/v1",
+                "operation_id_matches": bool(value.get("operation_id")
+                                              and receipt.get("operation_id") == value.get("operation_id")),
+                "job_id_matches": bool(value.get("job_id")
+                                        and receipt.get("job_id") == value.get("job_id")),
+                "before_revision": receipt.get("before_revision")
+                if type(receipt.get("before_revision")) is int and 0 <= receipt["before_revision"] <= 1_000_000_000 else None,
+                "selection_revision": receipt.get("selection_revision")
+                if type(receipt.get("selection_revision")) is int and 0 <= receipt["selection_revision"] <= 1_000_000_000 else None,
+                "runtime_incarnation_present": bool(receipt.get("runtime_incarnation")),
+                "active_config_hash_present": isinstance(receipt.get("active_config_hash"), str)
+                and len(receipt["active_config_hash"]) == 64,
+                "native_proof_verified": receipt.get("native_proof_verified") is True,
+                "publication_verified": receipt.get("publication_verified") is True,
+            }
+        for key in ("before_revision", "after_revision", "context_capture_count"):
+            item = value.get(key)
+            if type(item) is int and 0 <= item <= 1_000_000_000:
+                result[key] = item
+        changed_fields = value.get("changed_fields")
+        if isinstance(changed_fields, list):
+            allowed_context_fields = {
+                "pending", "selection_fence.revision", "selection_fence.owner", "pool",
+                "desired_mode", "exclusive", "binding", "eligible", "credential_fingerprint",
+                "runtime_incarnation", "active_target_id", "path_key",
+            }
+            result["changed_fields"] = [
+                item for item in changed_fields[:16]
+                if isinstance(item, str) and item in allowed_context_fields
+            ]
         code = valid_code(value.get("error_code"))
         if code:
             result["error_code"] = code
@@ -1710,6 +1744,30 @@ def _install_acceptance_recovery_apply_observer() -> None:
         except Exception:
             pass
 
+    def context_revision(value: Any) -> int | None:
+        if not isinstance(value, dict):
+            return None
+        fence = value.get("selection_fence")
+        revision = fence.get("revision") if isinstance(fence, dict) else None
+        return revision if type(revision) is int and 0 <= revision <= 1_000_000_000 else None
+
+    def context_changed_fields(before: Any, after: Any) -> list[str]:
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return ["context_unavailable"]
+        fields: list[str] = []
+        for key in sorted(set(before) | set(after)):
+            if key == "selection_fence":
+                left = before.get(key) if isinstance(before.get(key), dict) else {}
+                right = after.get(key) if isinstance(after.get(key), dict) else {}
+                for child in sorted(set(left) | set(right)):
+                    if left.get(child) != right.get(child):
+                        fields.append(f"selection_fence.{child}"[:96])
+            elif before.get(key) != after.get(key):
+                fields.append(key[:96])
+            if len(fields) >= 16:
+                break
+        return fields
+
     def next_operation() -> int:
         with lock:
             state["next_operation"] += 1
@@ -1727,6 +1785,7 @@ def _install_acceptance_recovery_apply_observer() -> None:
     original_active_config_hash = mihomo_reconcile_fingerprint.active_config_hash
     original_runtime_incarnation = mihomo_reconcile_fingerprint._current_runtime_incarnation
     original_load_reconcile_state = mihomo_reconcile_fingerprint._load_state
+    original_capture_recovery_context = provider_recovery._capture_recovery_context
 
     def safe_digest(value: Any) -> str | None:
         if not isinstance(value, str) or not value:
@@ -1935,6 +1994,8 @@ def _install_acceptance_recovery_apply_observer() -> None:
         prior = getattr(local, "operation", None)
         operation = next_operation()
         local.operation = operation
+        if operation == 3:
+            local.reentry_contexts = []
         record("provider_reentry_enter", operation=operation)
         try:
             result = original_reentry(*args, **kwargs)
@@ -1944,9 +2005,28 @@ def _install_acceptance_recovery_apply_observer() -> None:
             raise
         else:
             record("provider_reentry_result", operation=operation, result=result)
+            contexts = getattr(local, "reentry_contexts", []) if operation == 3 else []
+            if len(contexts) >= 3:
+                before, after = contexts[-2], contexts[-1]
+                record("mihomo_reentry_context_diff", operation=operation, result={
+                    "context_capture_count": len(contexts),
+                    "before_revision": context_revision(before),
+                    "after_revision": context_revision(after),
+                    "changed_fields": context_changed_fields(before, after),
+                })
             return result
         finally:
+            if operation == 3:
+                local.reentry_contexts = []
             local.operation = prior
+
+    def observed_capture_recovery_context(*args: Any, **kwargs: Any) -> Any:
+        snapshot = original_capture_recovery_context(*args, **kwargs)
+        if getattr(local, "operation", None) == 3 and isinstance(snapshot, dict):
+            contexts = getattr(local, "reentry_contexts", None)
+            if isinstance(contexts, list) and len(contexts) < 8:
+                contexts.append(snapshot)
+        return snapshot
 
     def observed_apply(*args: Any, **kwargs: Any) -> Any:
         operation = getattr(local, "operation", None)
@@ -2048,6 +2128,7 @@ def _install_acceptance_recovery_apply_observer() -> None:
     selector_route.select_vpn_auto_server = observed_selector_call
     apply._run_pipeline_for_state = observed_core_apply
     apply_orchestrator_handler_common._reconcile_vpn_runtime_for_apply = observed_reentry_mihomo_reconcile
+    provider_recovery._capture_recovery_context = observed_capture_recovery_context
 
 
 def _install_acceptance_xray_generation_rollback_observer() -> None:

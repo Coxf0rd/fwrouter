@@ -360,7 +360,18 @@ jobs:
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[path_key]" \
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pending]" \
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pool]" \
-            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[selection_fence]"
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[selection_fence]" \
+            tests/test_provider_recovery.py::test_verified_reentry_accepts_only_exact_owned_native_revision_receipt \
+            tests/test_provider_recovery.py::test_verified_reentry_rejects_unreceipted_runtime_incarnation_change \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[foreign-job]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[foreign-operation]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[revision-jump]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[native-proof-false]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[publication-false]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[active-hash-mismatch]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[runtime-mismatch]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[unrelated-binding-change]" \
+            tests/test_subscription_refresh_outcomes.py::test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails
       - name: Retain sanitized identity qualification evidence
         if: always() && needs.select-stage.outputs.stage == 'identity-diagnostic'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -137,6 +137,7 @@ def test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails(mon
     assert result["ok"] is False
     assert result["last_good_retained"] is True
     assert result["verification_callback_result"]["error_code"] == "READBACK_MISMATCH"
+    assert "reentry_generation_fence" not in result
     assert base.read_text(encoding="utf-8") == "config: last-good\n"
     assert restarts == ["force_recreate"]
 

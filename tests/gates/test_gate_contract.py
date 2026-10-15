@@ -328,6 +328,17 @@ class GateContractTests(unittest.TestCase):
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pending]",
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pool]",
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[selection_fence]",
+            "tests/test_provider_recovery.py::test_verified_reentry_accepts_only_exact_owned_native_revision_receipt",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unreceipted_runtime_incarnation_change",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[foreign-job]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[foreign-operation]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[revision-jump]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[native-proof-false]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[publication-false]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[active-hash-mismatch]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[runtime-mismatch]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[unrelated-binding-change]",
+            "tests/test_subscription_refresh_outcomes.py::test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails",
         }
         self.assertIn("needs.select-stage.outputs.stage == 'final-regressions-diagnostic'", deletion_step)
         self.assertIn("tests/gates/run_exact_nodes.py", deletion_step)
@@ -338,6 +349,7 @@ class GateContractTests(unittest.TestCase):
                 self.assertEqual(1, len(tokens), "each exact node ID must be one shell argument")
                 observed_deletion_nodeids.add(tokens[0])
         self.assertEqual(deletion_nodeids, observed_deletion_nodeids)
+        self.assertEqual(33, len(deletion_nodeids))
         self.assertIn('--junit "$root/final-regressions-unit.xml"', deletion_step)
         self.assertIn('--report "$root/final-regressions-unit-report.json"', deletion_step)
         self.assertIn('--log "$root/final-regressions-unit.log"', deletion_step)
