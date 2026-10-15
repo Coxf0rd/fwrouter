@@ -1,15 +1,12 @@
 # Project Map
 
-## Package1 source checkpoint — 2026-10-16
+## Current checkpoint — 2026-10-16
 
-Current main/production baselinebaafbf2; Package1 branch implements configured-read and immutable sanitizer CPU work only, with85 targeted tests passing. [Package1 report](../audits/operational_package1_2026-10-16/REPORT.md) includes reproducible synthetic baselines, CPU/allocation ranges, source ownership and final PR-CI gate. Full required CI pending; no source deployment or Package2. Existing dated checkpoints below retain history and are superseded only within these explicit boundaries.
+Production3f96e1e; PR11/12/13 merged, Package1 ACCEPTED bounded source/CI/deploy/live scope, CI milestone CLOSED. API/Gateway/workers/timers and78 originals preserved; no new OOM in recorded windows. Current Operational milestone remains OPEN: Package2 Cache Lifecycle PLANNED, Package3 DB/Native/I/O CONDITIONAL, no implementation approval. [Active roadmap](../ROADMAP.md), [decisions](DECISIONS/ROADMAP_DECISION_REGISTER_2026-10-15.md), [legacy register and reconciliation](../audits/operational_roadmap_legacy_2026-10-16/REPORT.md).
 
-## Current checkpoint — 2026-10-15
+After80min same API PID,6/6 fresh health PASS; RSS≈1.22–1.31GiB,HWM≈1.45GiB,OOM0. No continuous hour-long soak or leak causality claim. External Client E2E and full Debian host/reboot/rollback remain NOT RUN; full release acceptance BLOCKED on separate applicable gates; CD DEFERRED. Stage5 unopened, Stage8→7→Post-Extraction sequence unchanged. No production/config/source edits in this documentation task.
 
-The CI milestone is CLOSED following actual squash/main validation (PR5, main run38363962787). PR8 merged as dabf9f4; PR10 merged/deployed as ffe506e. Production remains ffe506e with the original78 identities restored and API/Gateway recovered. PR11 isolation/redaction fixes are source-only, not deployed: Synthetic Functional Acceptance PASS, Production State Acceptance PARTIAL, controlled external E2E NOT RUN, overall Production Acceptance BLOCKED. These are recorded receipts, not new live probes. Earlier dated checkpoints below are historical where superseded; they do not reopen CI or describe the current held/recovery state.
-
-Use the [active roadmap](../ROADMAP.md) and [decision register](DECISIONS/ROADMAP_DECISION_REGISTER_2026-10-15.md) for priorities, dependencies and remaining evidence. Operational Performance requires a fresh audit after PR8/10/11 before replaying old optimization packages. Full Debian host/systemd/reboot and positive external E2E remain separate unqualified gates. No implementation or production action is authorized by this documentation reconciliation.
-
+Exact previous checkpoints are retained in [history](../history/operational_reconciliation_2026-10-16/PROJECT_MAP_BEFORE.md). Historical source-only/open/PAUSED notices are not current active statuses.
 
 This is the technical project map for development and AI agents. User-facing guides live one level above in `/knowledge`.
 
