@@ -1494,6 +1494,16 @@ def test_verified_reentry_prepare_reconcile_precedes_probe_and_allows_only_incar
     monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: next(readiness))
     from fwrouter_api.adapters import xray_common
     from fwrouter_api.services import apply_orchestrator, apply_orchestrator_handler_common
+    guard = {"depth": 0}
+    @contextmanager
+    def tracked_writer_guard(*_args, **_kwargs):
+        guard["depth"] += 1
+        try:
+            yield
+        finally:
+            guard["depth"] -= 1
+    monkeypatch.setattr(xray_common, "xray_writer_guard", tracked_writer_guard)
+    monkeypatch.setattr(xray_common, "xray_writer_guard_is_held", lambda: guard["depth"] > 0)
     monkeypatch.setattr(apply_orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
     events = []
     _install_reentry_prepare_job_mocks(monkeypatch, events)
@@ -1505,6 +1515,7 @@ def test_verified_reentry_prepare_reconcile_precedes_probe_and_allows_only_incar
     controller = _RecoveryController([{"ok": False}])
     original_probe = controller.probe
     def probe(**kwargs):
+        assert not xray_common.xray_writer_guard_is_held()
         events.append(("probe",))
         return original_probe(**kwargs)
     monkeypatch.setattr(controller, "probe", probe)
