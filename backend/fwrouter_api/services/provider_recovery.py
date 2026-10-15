@@ -214,18 +214,25 @@ def _recovery_context_matches(controller: Any, snapshot: dict[str, Any], *,
     return str(state.get("path_key") or "") == snapshot["path_key"]
 
 
-def _mihomo_reentry_runtime_ready(routing: dict[str, Any]) -> bool:
-    """Require the current VPN routing intent and installed UDP policy proof."""
+def _mihomo_reentry_policy_installed() -> bool:
+    """Require strict native proof that the VPN UDP fail-closed policy is installed."""
     try:
         from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
-        from fwrouter_api.services.apply_orchestrator import mihomo_runtime_satisfies_routing
-
         health = DEFAULT_MIHOMO_ADAPTER.health()
         if not isinstance(health.details, dict):
             return False
         udp_policy = health.details.get("vpn_udp_policy")
-        if not isinstance(udp_policy, dict) or udp_policy.get("policy_installed") is not True:
-            return False
+        return isinstance(udp_policy, dict) and udp_policy.get("policy_installed") is True
+    except Exception:
+        return False
+
+
+def _mihomo_reentry_runtime_ready(routing: dict[str, Any]) -> bool:
+    """Use native policy proof and the conservative routing check to skip reconcile."""
+    if not _mihomo_reentry_policy_installed():
+        return False
+    try:
+        from fwrouter_api.services.apply_orchestrator import mihomo_runtime_satisfies_routing
         return bool(mihomo_runtime_satisfies_routing(routing).get("ok"))
     except Exception:
         return False
@@ -368,7 +375,7 @@ def _prepare_verified_reentry_runtime(controller: Any, pending: dict[str, Any]) 
                                 before, after, reconciled, expected_job_id=job_id,
                             )
                             or not after.get("runtime_incarnation")
-                            or not _mihomo_reentry_runtime_ready(routing)):
+                            or not _mihomo_reentry_policy_installed()):
                         result = {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_UNVERIFIED"}
                     elif not _recovery_context_matches(controller, after):
                         result = {"ok": False, "error_code": "provider_recovery_stale"}

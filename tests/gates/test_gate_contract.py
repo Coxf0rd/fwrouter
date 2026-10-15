@@ -339,6 +339,16 @@ class GateContractTests(unittest.TestCase):
             "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[runtime-mismatch]",
             "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[unrelated-binding-change]",
             "tests/test_subscription_refresh_outcomes.py::test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails",
+            "tests/test_provider_recovery.py::test_verified_reentry_accepts_reconcile_with_native_policy_when_fast_status_is_conservative",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_reconcile_without_native_policy_proof",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-selection_revision]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-exclusive]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-incarnation]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-binding]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-selection_revision]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-exclusive]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-incarnation]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-binding]",
         }
         self.assertIn("needs.select-stage.outputs.stage == 'final-regressions-diagnostic'", deletion_step)
         self.assertIn("tests/gates/run_exact_nodes.py", deletion_step)
@@ -349,7 +359,7 @@ class GateContractTests(unittest.TestCase):
                 self.assertEqual(1, len(tokens), "each exact node ID must be one shell argument")
                 observed_deletion_nodeids.add(tokens[0])
         self.assertEqual(deletion_nodeids, observed_deletion_nodeids)
-        self.assertEqual(33, len(deletion_nodeids))
+        self.assertEqual(43, len(deletion_nodeids))
         self.assertIn('--junit "$root/final-regressions-unit.xml"', deletion_step)
         self.assertIn('--report "$root/final-regressions-unit-report.json"', deletion_step)
         self.assertIn('--log "$root/final-regressions-unit.log"', deletion_step)

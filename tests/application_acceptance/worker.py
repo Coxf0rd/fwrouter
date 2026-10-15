@@ -1578,6 +1578,20 @@ def _install_acceptance_recovery_apply_observer() -> None:
                 "native_proof_verified": receipt.get("native_proof_verified") is True,
                 "publication_verified": receipt.get("publication_verified") is True,
             }
+        for key in (
+            "selector_ok", "selector_native_membership_ok", "transparent_ok", "metadata_ok",
+            "vpn_egress_ready", "runtime_running", "policy_installed", "wiring_proven",
+            "native_top_level_rules_match", "selector_membership_matches", "guarded_rules_match",
+            "expected_auto_matches_native_now", "expected_auto_matches_selected_target",
+            "native_now_matches_selected_target", "expected_auto_server_present",
+            "native_now_present", "selected_target_present",
+        ):
+            item = value.get(key)
+            if isinstance(item, bool):
+                result[key] = item
+        reason = valid_code(value.get("reason"))
+        if reason:
+            result["reason"] = reason
         for key in ("before_revision", "after_revision", "context_capture_count"):
             item = value.get(key)
             if type(item) is int and 0 <= item <= 1_000_000_000:
@@ -1786,6 +1800,9 @@ def _install_acceptance_recovery_apply_observer() -> None:
     original_runtime_incarnation = mihomo_reconcile_fingerprint._current_runtime_incarnation
     original_load_reconcile_state = mihomo_reconcile_fingerprint._load_state
     original_capture_recovery_context = provider_recovery._capture_recovery_context
+    original_mihomo_runtime_satisfies_routing = apply.mihomo_runtime_satisfies_routing
+    original_mihomo_reentry_runtime_ready = provider_recovery._mihomo_reentry_runtime_ready
+    original_mihomo_reentry_policy_installed = provider_recovery._mihomo_reentry_policy_installed
 
     def safe_digest(value: Any) -> str | None:
         if not isinstance(value, str) or not value:
@@ -1920,9 +1937,100 @@ def _install_acceptance_recovery_apply_observer() -> None:
             local.native_snapshots = []
             local.native_sequence = 0
         result = original_mihomo_health(self, *args, **kwargs)
+        if (getattr(local, "operation", None) == 3
+                and getattr(local, "phase", None) in {"reentry_readiness", "reentry_policy_postcondition"}):
+            details = result.details if isinstance(getattr(result, "details", None), dict) else {}
+            policy = details.get("vpn_udp_policy") if isinstance(details.get("vpn_udp_policy"), dict) else {}
+            selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
+            expected_auto = getattr(local, "reentry_expected_auto", "")
+            runtime_state = getattr(result, "runtime_state", "")
+            runtime_state = getattr(runtime_state, "value", runtime_state)
+            record("mihomo_reentry_native_health", operation=3, result={
+                "runtime_running": str(runtime_state) == "running",
+                "policy_installed": policy.get("policy_installed") is True,
+                "wiring_proven": policy.get("wiring_proven") is True,
+                "native_top_level_rules_match": policy.get("native_top_level_rules_match") is True,
+                "selector_membership_matches": policy.get("selector_membership_matches") is True,
+                "guarded_rules_match": policy.get("guarded_rules_match") is True,
+                "expected_auto_server_present": bool(expected_auto),
+                "native_now_present": bool(selectors.get("vpn_auto_now")),
+                "selected_target_present": bool(selectors.get("vpn_auto_selected_target")),
+                "expected_auto_matches_native_now": bool(
+                    expected_auto and selectors.get("vpn_auto_now") == expected_auto
+                ),
+                "expected_auto_matches_selected_target": bool(
+                    expected_auto and selectors.get("vpn_auto_selected_target") == expected_auto
+                ),
+                "native_now_matches_selected_target": bool(
+                    selectors.get("vpn_auto_now")
+                    and selectors.get("vpn_auto_now") == selectors.get("vpn_auto_selected_target")
+                ),
+            })
         if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
             capture_native_reentry_snapshot(self, result, getattr(local, "native_proxies", {}))
         return result
+
+    def observed_mihomo_runtime_satisfies_routing(routing: Any = None) -> Any:
+        result = original_mihomo_runtime_satisfies_routing(routing)
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "reentry_readiness":
+            value = result if isinstance(result, dict) else {}
+            expected_auto = str(routing.get("active_auto_server_id") or "").strip() if isinstance(routing, dict) else ""
+            native_now = value.get("vpn_auto_now")
+            selected_target = value.get("vpn_auto_selected_target")
+            record("mihomo_reentry_routing_readback", operation=3, result={
+                "ok": value.get("ok") is True,
+                "reason": value.get("reason"),
+                "runtime_state": value.get("runtime_state"),
+                "selector_ok": value.get("selector_ok") is True,
+                "selector_native_membership_ok": value.get("selector_native_membership_ok") is True,
+                "transparent_ok": value.get("transparent_ok") is True,
+                "metadata_ok": value.get("metadata_ok") is True,
+                "vpn_egress_ready": value.get("vpn_egress_ready") is True,
+                "expected_auto_server_present": bool(expected_auto),
+                "native_now_present": bool(native_now),
+                "selected_target_present": bool(selected_target),
+                "expected_auto_matches_native_now": bool(expected_auto and native_now == expected_auto),
+                "expected_auto_matches_selected_target": bool(expected_auto and selected_target == expected_auto),
+                "native_now_matches_selected_target": bool(native_now and native_now == selected_target),
+            })
+        return result
+
+    def observed_mihomo_reentry_runtime_ready(routing: Any) -> bool:
+        operation = getattr(local, "operation", None)
+        if operation != 3:
+            return original_mihomo_reentry_runtime_ready(routing)
+        previous_phase = getattr(local, "phase", None)
+        local.phase = "reentry_readiness"
+        local.reentry_expected_auto = (
+            str(routing.get("active_auto_server_id") or "").strip()
+            if isinstance(routing, dict) else ""
+        )
+        try:
+            ready = original_mihomo_reentry_runtime_ready(routing)
+            record("mihomo_reentry_readiness_result", operation=3, result={"ok": bool(ready)})
+            return ready
+        finally:
+            local.phase = previous_phase
+            local.reentry_expected_auto = ""
+
+    def observed_mihomo_reentry_policy_installed() -> bool:
+        operation = getattr(local, "operation", None)
+        if operation != 3:
+            return original_mihomo_reentry_policy_installed()
+        previous_phase = getattr(local, "phase", None)
+        check_phase = (
+            "mihomo_reentry_native_policy_fastpath"
+            if previous_phase == "reentry_readiness"
+            else "mihomo_reentry_native_policy_postcondition"
+        )
+        if previous_phase not in {"reentry_readiness", "reentry_policy_postcondition"}:
+            local.phase = "reentry_policy_postcondition"
+        try:
+            installed = original_mihomo_reentry_policy_installed()
+            record(check_phase, operation=3, result={"policy_installed": installed is True})
+            return installed
+        finally:
+            local.phase = previous_phase
 
     def observed_active_config_hash() -> str | None:
         value = original_active_config_hash()
@@ -1969,6 +2077,9 @@ def _install_acceptance_recovery_apply_observer() -> None:
 
     MihomoHttpAdapter._proxies = observed_mihomo_proxies
     MihomoHttpAdapter.health = observed_mihomo_health
+    apply.mihomo_runtime_satisfies_routing = observed_mihomo_runtime_satisfies_routing
+    provider_recovery._mihomo_reentry_runtime_ready = observed_mihomo_reentry_runtime_ready
+    provider_recovery._mihomo_reentry_policy_installed = observed_mihomo_reentry_policy_installed
     mihomo_reconcile_fingerprint.active_config_hash = observed_active_config_hash
     mihomo_reconcile_fingerprint._current_runtime_incarnation = observed_runtime_incarnation
     mihomo_reconcile_fingerprint._load_state = observed_reconcile_state

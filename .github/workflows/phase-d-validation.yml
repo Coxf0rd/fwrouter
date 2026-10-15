@@ -371,7 +371,17 @@ jobs:
             "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[active-hash-mismatch]" \
             "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[runtime-mismatch]" \
             "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[unrelated-binding-change]" \
-            tests/test_subscription_refresh_outcomes.py::test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails
+            tests/test_subscription_refresh_outcomes.py::test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails \
+            tests/test_provider_recovery.py::test_verified_reentry_accepts_reconcile_with_native_policy_when_fast_status_is_conservative \
+            tests/test_provider_recovery.py::test_verified_reentry_rejects_reconcile_without_native_policy_proof \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-selection_revision]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-exclusive]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-incarnation]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-binding]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-selection_revision]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-exclusive]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-incarnation]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-binding]"
       - name: Retain sanitized identity qualification evidence
         if: always() && needs.select-stage.outputs.stage == 'identity-diagnostic'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
