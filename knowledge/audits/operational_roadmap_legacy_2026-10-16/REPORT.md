@@ -38,7 +38,7 @@ Operational closure requires all eight user criteria: accepted1; decision/accept
 |Expired cache entries / shared probe cache|Measured retention mechanism; Package2, not legacy removal|Bound retained RAM; no proven live leak; invalidation/concurrency/native-proof risk |
 |Repeated SQLite setup/chmod/PRAGMA|UNKNOWN removal economics; conditionalPackage3 + DB/6A|Synthetic498chmod/500PRAGMA per100sessions; chmod fewms, production rate UNKNOWN; permission/FK/durability risk |
 |Unchanged startup scrub temp output|KEEP security scan; conditionalPackage3|Synthetic unchanged1.03MB/pass andfsync; avoid temp I/O only with redaction/append/atomicity/error equivalence; no steady-state SSD claim |
-|Recovery alias `recover_startup_routing_to_direct`|UNKNOWN; Stage6|Only definition/test refs found; external callers unknown; negligible/unmeasured CPU benefit |
+|Recovery alias `recover_startup_routing_to_direct`|UNKNOWN; Stage6|Only definition/test refs found; external callers unknown; unmeasured CPU benefit; no evidence of material savings |
 |logs/events overlapping APIs and adapters|NEEDS MIGRATION; Stage5/6|Possible future simplification; actual duplicate request cost UNKNOWN; clients/historical data risk |
 |`include_legacy` subject option/taxonomy normalization|NEEDS MIGRATION; Stage5/6|Persistent compatibility, not proven no-op; data/upgrade risk |
 |Mihomo fast sentinel,watchdog/Xray facades|KEEP; Stage8→7|Active verified fallback/import seams; no measured savings from deletion |
@@ -48,7 +48,7 @@ Operational closure requires all eight user criteria: accepted1; decision/accept
 
 ## 5. Measured resource relation and early proposals
 
-Only previously measured synthetic costs justify early proposal: cache retention (1000TTL0 keys retained1.024MB), SQLite setup counts (profiled100sessions73.45ms; batching jointly changes transactions and setup, fsync4→4), startup scrub unchanged temp+fsync. These are not evidence that historical migrations/facades/endpoints cause productionCPU27% or physical SSD wear. Exact stack causing rare health tails, legacy row volume, deployed client usage and migration cost remain UNKNOWN.
+The following figures come from the local prior deep resource report `/srv/fwrouter/knowledge/audits/operational_deep_resource_audit_2026-10-16/REPORT.md` (§5 and candidate register) and private synthetic receipts `/root/fwrouter-recovery/deep-audit-20261016/`; they are historical locally inspectable evidence, not newly run or bundled raw evidence in this PR. Only previously measured synthetic costs justify early proposal: cache retention (1000TTL0 keys retained1.024MB), SQLite setup counts (profiled100sessions73.45ms; batching jointly changes transactions and setup, fsync4→4), startup scrub unchanged temp+fsync. These are not evidence that historical migrations/facades/endpoints cause productionCPU27% or physical SSD wear. Exact stack causing rare health tails, legacy row volume, deployed client usage and migration cost remain UNKNOWN.
 
 Potential early source packages require separate approval and isolated matched tests; no removal now. No global connection/cache, delayed durable writer, volatile credentials/checkpoints, lower WAL/fsync/synchronous, arbitrary timeout/memory limit change, or less native proof. Preserve Core ownership,CAS/revisions/incarnations,last-good/atomicity,78 durable identities, fail-closed/explicitDIRECT, DNS and independent Rescue/Tailscale.
 
