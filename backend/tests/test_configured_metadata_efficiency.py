@@ -133,6 +133,38 @@ def test_missing_configured_literals_skip_line_materialization(monkeypatch, tmp_
     assert adapter._scan_tun_enabled(text="mode: rule\n") is False
 
 
+def test_comment_and_nested_markers_take_legacy_splitlines_path(monkeypatch, tmp_path: Path) -> None:
+    text = (
+        "# secret: ignored\n"
+        "# listeners: ignored\n"
+        "# tun: ignored\n"
+        "nested:\n"
+        "  bind-address: 0.0.0.0\n"
+        "  listeners:\n"
+        "    - name: fwrouter-redir\n"
+        "      type: redir\n"
+        "  tun:\n"
+        "    enable: true\n"
+        "# pad the missing-header scan past the lazy prefix bound\n"
+        + "# padding\n" * 5000
+    )
+    path = tmp_path / "config.yaml"
+    path.write_text(text, encoding="utf-8")
+    adapter = MihomoHttpAdapter(config_path=path, contours_path=tmp_path / "missing.yaml")
+
+    def lazy_path_is_unexpected(_source: str):
+        raise AssertionError("comment or nested marker must use splitlines fallback")
+
+    monkeypatch.setattr(mihomo_module, "_iter_config_lines", lazy_path_is_unexpected)
+    assert adapter._config_top_level_scalar("secret", text=text) is None
+    assert adapter._config_top_level_scalar("bind-address", text=text) is None
+    assert adapter._scan_listener_ports(text=text) == {
+        "mixed_port": None, "tproxy_port": None, "redir_port": None,
+    }
+    assert adapter._scan_transparent_listeners(text=text) == {}
+    assert adapter._scan_tun_enabled(text=text) is False
+
+
 def test_config_text_reads_changes_deletion_recreation_and_atomic_replace(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
     replacement = tmp_path / "config.next.yaml"

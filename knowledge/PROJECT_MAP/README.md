@@ -2,7 +2,7 @@
 
 ## Package1 source checkpoint — 2026-10-16
 
-Current main/production baselinebaafbf2; Package1 branch implements configured-read and immutable sanitizer CPU work only, with84 targeted tests passing. [Package1 report](../audits/operational_package1_2026-10-16/REPORT.md) includes reproducible synthetic baselines, CPU/allocation ranges, source ownership and final PR-CI gate. Full required CI pending; no source deployment or Package2. Existing dated checkpoints below retain history and are superseded only within these explicit boundaries.
+Current main/production baselinebaafbf2; Package1 branch implements configured-read and immutable sanitizer CPU work only, with85 targeted tests passing. [Package1 report](../audits/operational_package1_2026-10-16/REPORT.md) includes reproducible synthetic baselines, CPU/allocation ranges, source ownership and final PR-CI gate. Full required CI pending; no source deployment or Package2. Existing dated checkpoints below retain history and are superseded only within these explicit boundaries.
 
 ## Current checkpoint — 2026-10-15
 

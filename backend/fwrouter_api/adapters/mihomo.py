@@ -77,6 +77,23 @@ def _iter_config_lines(text: str) -> Iterator[str]:
         yield text[start:]
 
 
+def _configured_scan_lines(text: str, marker: str) -> Iterator[str]:
+    """Choose lazy iteration only when the first marker is a plausible header.
+
+    A marker first seen inside a comment, nested value, or other line content
+    cannot satisfy the scanners' column-zero header checks. Keep those cases
+    on ``splitlines()``: traversing a large document lazily to a missing header
+    is slower than the C implementation and saves no useful early-return work.
+    """
+    marker_offset = text.find(marker)
+    if marker_offset < 0:
+        return iter(())
+    if (marker_offset > _CONFIG_LAZY_SCAN_PREFIX_CHARS
+            or (marker_offset > 0 and text[marker_offset - 1] != "\n")):
+        return iter(text.splitlines())
+    return _iter_config_lines(text)
+
+
 def _transparent_bind_address_valid(value: str | None) -> bool:
     bind = str(value or "").strip()
     if not bind:
@@ -447,10 +464,7 @@ class MihomoHttpAdapter(MihomoAdapter):
     def _config_top_level_scalar(self, key: str, *, text: str | None = None) -> str | None:
         source = text if text is not None else self._config_text()
         prefix = f"{key}:"
-        if prefix not in source:
-            return None
-        lines = (source.splitlines() if source.find(prefix) > _CONFIG_LAZY_SCAN_PREFIX_CHARS
-                 else _iter_config_lines(source))
+        lines = _configured_scan_lines(source, prefix)
         for line in lines:
             if not line or line.startswith((" ", "\t", "-")):
                 continue
@@ -460,10 +474,7 @@ class MihomoHttpAdapter(MihomoAdapter):
 
     def _scan_listener_ports(self, *, text: str | None = None) -> dict[str, int | None]:
         source = text if text is not None else self._config_text()
-        if "listeners:" not in source:
-            return {"mixed_port": None, "tproxy_port": None, "redir_port": None}
-        lines = (source.splitlines() if source.find("listeners:") > _CONFIG_LAZY_SCAN_PREFIX_CHARS
-                 else _iter_config_lines(source))
+        lines = _configured_scan_lines(source, "listeners:")
         mixed_port: int | None = None
         tproxy_port: int | None = None
         redir_port: int | None = None
@@ -530,10 +541,7 @@ class MihomoHttpAdapter(MihomoAdapter):
 
     def _scan_transparent_listeners(self, *, text: str | None = None) -> dict[str, dict[str, Any]]:
         source = text if text is not None else self._config_text()
-        if "listeners:" not in source:
-            return {}
-        lines = (source.splitlines() if source.find("listeners:") > _CONFIG_LAZY_SCAN_PREFIX_CHARS
-                 else _iter_config_lines(source))
+        lines = _configured_scan_lines(source, "listeners:")
         in_listeners = False
         current: dict[str, Any] | None = None
         result: dict[str, dict[str, Any]] = {}
@@ -588,10 +596,7 @@ class MihomoHttpAdapter(MihomoAdapter):
 
     def _scan_tun_enabled(self, *, text: str | None = None) -> bool:
         source = text if text is not None else self._config_text()
-        if "tun:" not in source:
-            return False
-        lines = (source.splitlines() if source.find("tun:") > _CONFIG_LAZY_SCAN_PREFIX_CHARS
-                 else _iter_config_lines(source))
+        lines = _configured_scan_lines(source, "tun:")
         in_tun = False
         for raw_line in lines:
             line = raw_line.rstrip("\n")

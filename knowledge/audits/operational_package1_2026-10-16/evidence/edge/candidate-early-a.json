@@ -1,0 +1,49 @@
+{
+  "dotenv_loaded": false,
+  "environment_cleared": true,
+  "fixture_bytes": 22700000,
+  "line_count": 206374,
+  "normalized_output": {
+    "config_path": "<synthetic-config>",
+    "contours_path": "<synthetic-contours>",
+    "fwrouter_contours": {},
+    "mixed_port": null,
+    "redir_port": 7892,
+    "secret_present": false,
+    "tproxy_port": null,
+    "transparent_listener_bind": "127.0.0.1",
+    "transparent_listener_bind_valid": false,
+    "transparent_listener_loopback_bound": true,
+    "transparent_tcp_listener_bind": "127.0.0.1",
+    "transparent_tcp_listener_present": false,
+    "transparent_tcp_listener_socket_present": false,
+    "transparent_udp_listener_bind": null,
+    "transparent_udp_listener_present": false,
+    "transparent_udp_listener_socket_present": false,
+    "tun_enabled": true
+  },
+  "normalized_output_sha256": "f8574437fc62c4e29b5bf9cc2d21828cd1046691746accba1b05c61488a97567",
+  "python": "3.11.2 (main, Apr 28 2025, 14:11:48) [GCC 12.2.0]",
+  "python_executable": "/usr/bin/python3",
+  "repeats": 5,
+  "shape": "secret_comment_early_headers",
+  "socket_observation": "stubbed false; no network operation",
+  "source_root": "/srv/fwrouter",
+  "source_sha256": "1e6887f42d9ec24a75757fec6af1ffae50ab6fac86c3ee528b273c527bed06bf",
+  "thread_cpu_median_ms": 77.857605,
+  "thread_cpu_ms": [
+    79.114709,
+    77.857605,
+    79.137198,
+    77.249503,
+    76.920187
+  ],
+  "wall_median_ms": 77.874218,
+  "wall_ms": [
+    79.126549,
+    77.874218,
+    79.169376,
+    77.265259,
+    76.928093
+  ]
+}

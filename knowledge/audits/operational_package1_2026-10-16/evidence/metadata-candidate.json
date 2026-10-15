@@ -3,31 +3,31 @@
   "config_scans_per_call": "source-coded baseline: listener ports, tun, transparent listeners, bind-address scalar, secret scalar; 5 independent splitlines calls",
   "dotenv_loaded": false,
   "environment_cleared": true,
-  "label": "final-lazy-absence-guards",
+  "label": "final-marker-fallback-no-duplicate-find",
   "metrics": [
     {
       "bytes": 0,
       "cpu_ms": [
-        0.024824,
-        0.016152,
-        0.013905,
-        0.012568,
-        0.027741,
-        0.014188,
-        0.012171
+        0.041329,
+        0.023547,
+        0.019392,
+        0.018376,
+        0.038965,
+        0.020263,
+        0.017658
       ],
       "process_memory_after": {
-        "VmHWM": 28236,
-        "VmRSS": 28236
+        "VmHWM": 28260,
+        "VmRSS": 28260
       },
       "process_memory_before": {
-        "VmHWM": 28236,
-        "VmRSS": 28236
+        "VmHWM": 28260,
+        "VmRSS": 28260
       },
       "repeats": 7,
       "result": {
-        "config_path": "/tmp/fwrouter-package1-meta-i05leyvk/empty-early-header.yaml",
-        "contours_path": "/tmp/fwrouter-package1-meta-i05leyvk/missing-contours.yaml",
+        "config_path": "/tmp/fwrouter-package1-meta-x2fycbb_/empty-early-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-x2fycbb_/missing-contours.yaml",
         "fwrouter_contours": {},
         "mixed_port": null,
         "redir_port": null,
@@ -54,38 +54,38 @@
       "size": "empty",
       "tracemalloc_peak_bytes": 784,
       "wall_ms": [
-        0.032947,
-        0.017475,
-        0.014963,
-        0.01367,
-        0.029059,
-        0.015819,
-        0.013183
+        0.045828,
+        0.025154,
+        0.02071,
+        0.019745,
+        0.040554,
+        0.022178,
+        0.018889
       ]
     },
     {
       "bytes": 0,
       "cpu_ms": [
-        0.018252,
-        0.013188,
-        0.01194,
-        0.01205,
-        0.011492,
-        0.011389,
-        0.011734
+        0.024472,
+        0.017482,
+        0.015651,
+        0.015604,
+        0.014812,
+        0.014695,
+        0.013936
       ],
       "process_memory_after": {
-        "VmHWM": 28236,
-        "VmRSS": 28236
+        "VmHWM": 28260,
+        "VmRSS": 28260
       },
       "process_memory_before": {
-        "VmHWM": 28236,
-        "VmRSS": 28236
+        "VmHWM": 28260,
+        "VmRSS": 28260
       },
       "repeats": 7,
       "result": {
-        "config_path": "/tmp/fwrouter-package1-meta-i05leyvk/empty-missing-section.yaml",
-        "contours_path": "/tmp/fwrouter-package1-meta-i05leyvk/missing-contours.yaml",
+        "config_path": "/tmp/fwrouter-package1-meta-x2fycbb_/empty-missing-section.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-x2fycbb_/missing-contours.yaml",
         "fwrouter_contours": {},
         "mixed_port": null,
         "redir_port": null,
@@ -112,38 +112,38 @@
       "size": "empty",
       "tracemalloc_peak_bytes": 784,
       "wall_ms": [
-        0.02035,
-        0.014205,
-        0.012936,
-        0.012956,
-        0.012562,
-        0.012297,
-        0.012695
+        0.026909,
+        0.018736,
+        0.016782,
+        0.016618,
+        0.016021,
+        0.015639,
+        0.014836
       ]
     },
     {
       "bytes": 32672,
       "cpu_ms": [
-        0.228971,
-        0.223979,
-        0.212919,
-        0.217999,
-        0.234752,
-        0.251489,
-        0.273197
+        0.273161,
+        0.252607,
+        0.274144,
+        0.250947,
+        0.246314,
+        0.245274,
+        0.246968
       ],
       "process_memory_after": {
-        "VmHWM": 28752,
-        "VmRSS": 28752
+        "VmHWM": 28716,
+        "VmRSS": 28716
       },
       "process_memory_before": {
-        "VmHWM": 28752,
-        "VmRSS": 28752
+        "VmHWM": 28716,
+        "VmRSS": 28716
       },
       "repeats": 7,
       "result": {
-        "config_path": "/tmp/fwrouter-package1-meta-i05leyvk/small-early-header.yaml",
-        "contours_path": "/tmp/fwrouter-package1-meta-i05leyvk/missing-contours.yaml",
+        "config_path": "/tmp/fwrouter-package1-meta-x2fycbb_/small-early-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-x2fycbb_/missing-contours.yaml",
         "fwrouter_contours": {},
         "mixed_port": null,
         "redir_port": 7892,
@@ -170,38 +170,38 @@
       "size": "small",
       "tracemalloc_peak_bytes": 74288,
       "wall_ms": [
-        0.231512,
-        0.225364,
-        0.214147,
-        0.21931,
-        0.240337,
-        0.252931,
-        0.29137
+        0.276586,
+        0.254117,
+        0.27631,
+        0.252507,
+        0.247924,
+        0.246707,
+        0.248331
       ]
     },
     {
       "bytes": 32701,
       "cpu_ms": [
-        0.071698,
-        0.066792,
-        0.06599,
-        0.065736,
-        0.065451,
-        0.06549,
-        0.065271
+        0.083909,
+        0.076955,
+        0.076987,
+        0.077633,
+        0.076649,
+        0.076754,
+        0.074966
       ],
       "process_memory_after": {
-        "VmHWM": 28752,
-        "VmRSS": 28752
+        "VmHWM": 28716,
+        "VmRSS": 28716
       },
       "process_memory_before": {
-        "VmHWM": 28752,
-        "VmRSS": 28752
+        "VmHWM": 28716,
+        "VmRSS": 28716
       },
       "repeats": 7,
       "result": {
-        "config_path": "/tmp/fwrouter-package1-meta-i05leyvk/small-missing-section.yaml",
-        "contours_path": "/tmp/fwrouter-package1-meta-i05leyvk/missing-contours.yaml",
+        "config_path": "/tmp/fwrouter-package1-meta-x2fycbb_/small-missing-section.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-x2fycbb_/missing-contours.yaml",
         "fwrouter_contours": {},
         "mixed_port": null,
         "redir_port": null,
@@ -228,38 +228,38 @@
       "size": "small",
       "tracemalloc_peak_bytes": 784,
       "wall_ms": [
-        0.074786,
-        0.067805,
-        0.066939,
-        0.066574,
-        0.066479,
-        0.066432,
-        0.066147
+        0.086503,
+        0.078182,
+        0.078054,
+        0.078781,
+        0.077893,
+        0.077911,
+        0.075968
       ]
     },
     {
       "bytes": 1048522,
       "cpu_ms": [
-        1.023645,
-        1.089822,
-        1.020308,
-        0.980759,
-        0.974596,
-        0.972348,
-        0.94077
+        1.219231,
+        1.194285,
+        1.219807,
+        1.217465,
+        1.208752,
+        1.100675,
+        1.244471
       ],
       "process_memory_after": {
-        "VmHWM": 32016,
-        "VmRSS": 32016
+        "VmHWM": 32232,
+        "VmRSS": 32232
       },
       "process_memory_before": {
-        "VmHWM": 30864,
-        "VmRSS": 29908
+        "VmHWM": 30828,
+        "VmRSS": 29860
       },
       "repeats": 7,
       "result": {
-        "config_path": "/tmp/fwrouter-package1-meta-i05leyvk/medium-early-header.yaml",
-        "contours_path": "/tmp/fwrouter-package1-meta-i05leyvk/missing-contours.yaml",
+        "config_path": "/tmp/fwrouter-package1-meta-x2fycbb_/medium-early-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-x2fycbb_/missing-contours.yaml",
         "fwrouter_contours": {},
         "mixed_port": null,
         "redir_port": 7892,
@@ -286,38 +286,38 @@
       "size": "medium",
       "tracemalloc_peak_bytes": 1466,
       "wall_ms": [
-        1.027873,
-        1.091515,
-        1.021707,
-        0.982001,
-        0.975821,
-        0.973472,
-        0.941826
+        1.223416,
+        1.196659,
+        1.221837,
+        1.219513,
+        1.211392,
+        1.102405,
+        1.246535
       ]
     },
     {
       "bytes": 1048551,
       "cpu_ms": [
-        1.508935,
-        1.515677,
-        1.573891,
-        1.543052,
-        1.468188,
-        1.480672,
-        1.649581
+        1.81944,
+        1.817073,
+        1.80921,
+        1.81119,
+        1.833141,
+        1.822925,
+        1.824721
       ],
       "process_memory_after": {
-        "VmHWM": 33072,
-        "VmRSS": 32264
+        "VmHWM": 33024,
+        "VmRSS": 32236
       },
       "process_memory_before": {
-        "VmHWM": 33072,
-        "VmRSS": 32264
+        "VmHWM": 33024,
+        "VmRSS": 32236
       },
       "repeats": 7,
       "result": {
-        "config_path": "/tmp/fwrouter-package1-meta-i05leyvk/medium-missing-section.yaml",
-        "contours_path": "/tmp/fwrouter-package1-meta-i05leyvk/missing-contours.yaml",
+        "config_path": "/tmp/fwrouter-package1-meta-x2fycbb_/medium-missing-section.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-x2fycbb_/missing-contours.yaml",
         "fwrouter_contours": {},
         "mixed_port": null,
         "redir_port": null,
@@ -344,38 +344,38 @@
       "size": "medium",
       "tracemalloc_peak_bytes": 784,
       "wall_ms": [
-        1.512347,
-        1.517021,
-        1.575254,
-        1.544173,
-        1.469198,
-        1.481568,
-        1.650648
+        1.822767,
+        1.818214,
+        1.810197,
+        1.812439,
+        1.834955,
+        1.824365,
+        1.826285
       ]
     },
     {
       "bytes": 22699932,
       "cpu_ms": [
-        43.93527,
-        43.797234,
-        44.369159,
-        47.710917,
-        46.108492,
-        45.870311,
-        44.633805
+        45.700885,
+        45.241829,
+        43.665307,
+        46.067747,
+        45.78852,
+        43.765213,
+        47.287199
       ],
       "process_memory_after": {
-        "VmHWM": 85328,
-        "VmRSS": 74036
+        "VmHWM": 85296,
+        "VmRSS": 74012
       },
       "process_memory_before": {
-        "VmHWM": 76572,
-        "VmRSS": 54444
+        "VmHWM": 76544,
+        "VmRSS": 54416
       },
       "repeats": 7,
       "result": {
-        "config_path": "/tmp/fwrouter-package1-meta-i05leyvk/large-early-header.yaml",
-        "contours_path": "/tmp/fwrouter-package1-meta-i05leyvk/missing-contours.yaml",
+        "config_path": "/tmp/fwrouter-package1-meta-x2fycbb_/large-early-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-x2fycbb_/missing-contours.yaml",
         "fwrouter_contours": {},
         "mixed_port": null,
         "redir_port": 7892,
@@ -402,38 +402,38 @@
       "size": "large",
       "tracemalloc_peak_bytes": 1466,
       "wall_ms": [
-        43.943174,
-        43.801764,
-        44.372919,
-        47.716276,
-        46.127317,
-        45.874426,
-        44.638028
+        45.708041,
+        45.246436,
+        43.686597,
+        46.072385,
+        45.793023,
+        43.769921,
+        48.205284
       ]
     },
     {
       "bytes": 22699961,
       "cpu_ms": [
-        32.920401,
-        33.064868,
-        34.598943,
-        33.71808,
-        33.114706,
-        33.071356,
-        33.265787
+        33.035,
+        35.075461,
+        36.692699,
+        34.055871,
+        33.712974,
+        38.980859,
+        39.418104
       ],
       "process_memory_after": {
-        "VmHWM": 105328,
-        "VmRSS": 74164
+        "VmHWM": 105304,
+        "VmRSS": 74156
       },
       "process_memory_before": {
-        "VmHWM": 96324,
-        "VmRSS": 74180
+        "VmHWM": 96300,
+        "VmRSS": 74156
       },
       "repeats": 7,
       "result": {
-        "config_path": "/tmp/fwrouter-package1-meta-i05leyvk/large-missing-section.yaml",
-        "contours_path": "/tmp/fwrouter-package1-meta-i05leyvk/missing-contours.yaml",
+        "config_path": "/tmp/fwrouter-package1-meta-x2fycbb_/large-missing-section.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-x2fycbb_/missing-contours.yaml",
         "fwrouter_contours": {},
         "mixed_port": null,
         "redir_port": null,
@@ -460,38 +460,38 @@
       "size": "large",
       "tracemalloc_peak_bytes": 784,
       "wall_ms": [
-        32.926522,
-        33.068739,
-        34.602624,
-        33.722583,
-        33.119852,
-        33.075797,
-        33.269939
+        33.04238,
+        35.080235,
+        36.697022,
+        34.078992,
+        33.718658,
+        38.987068,
+        39.422567
       ]
     },
     {
       "bytes": 22699961,
       "cpu_ms": [
-        139.560012,
-        138.343663,
-        136.449501,
-        136.134619,
-        139.105816,
-        142.614541,
-        148.779079
+        150.946996,
+        138.039978,
+        138.214676,
+        139.339559,
+        145.282848,
+        138.418009,
+        138.105041
       ],
       "process_memory_after": {
-        "VmHWM": 107784,
-        "VmRSS": 96504
+        "VmHWM": 107768,
+        "VmRSS": 96456
       },
       "process_memory_before": {
-        "VmHWM": 105868,
-        "VmRSS": 74312
+        "VmHWM": 105860,
+        "VmRSS": 74308
       },
       "repeats": 7,
       "result": {
-        "config_path": "/tmp/fwrouter-package1-meta-i05leyvk/large-late-header.yaml",
-        "contours_path": "/tmp/fwrouter-package1-meta-i05leyvk/missing-contours.yaml",
+        "config_path": "/tmp/fwrouter-package1-meta-x2fycbb_/large-late-header.yaml",
+        "contours_path": "/tmp/fwrouter-package1-meta-x2fycbb_/missing-contours.yaml",
         "fwrouter_contours": {},
         "mixed_port": null,
         "redir_port": 7892,
@@ -518,18 +518,18 @@
       "size": "large",
       "tracemalloc_peak_bytes": 34791339,
       "wall_ms": [
-        139.571807,
-        138.352171,
-        136.586487,
-        136.166506,
-        139.126725,
-        142.623632,
-        148.797837
+        150.968034,
+        138.090035,
+        138.223498,
+        139.365915,
+        145.30154,
+        138.427054,
+        138.128551
       ]
     }
   ],
   "python": "3.11.2 (main, Apr 28 2025, 14:11:48) [GCC 12.2.0]",
-  "python_executable": "/opt/fwrouter-api/.venv/bin/python",
+  "python_executable": "/usr/bin/python3",
   "sockets_and_controllers": "not used; socket observation stubbed false",
-  "source_sha256": "5070ffbadfb3c896f6519ac4e6ec6c3ffec6acaaa37a0409331c2a37e8d3bac6"
+  "source_sha256": "1e6887f42d9ec24a75757fec6af1ffae50ab6fac86c3ee528b273c527bed06bf"
 }
