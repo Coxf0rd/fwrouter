@@ -493,7 +493,7 @@ class AcceptanceContractTests(unittest.TestCase):
             "profile_sha256": profile_sha,
             "tests": {
                 "node_status": {nodeid: "passed" for nodeid in expected_ids},
-                "tests": 26, "failed": 0, "skipped": 0, "contract_valid": True,
+                "tests": len(expected_ids), "failed": 0, "skipped": 0, "contract_valid": True,
             },
         }
 
@@ -2316,8 +2316,26 @@ class AcceptanceContractTests(unittest.TestCase):
             encoding="utf-8")
         self.assertEqual("/workspace/backend", qualified_child.PYTEST_WORKDIR)
         self.assertIn('[docker, "exec", "--workdir", PYTEST_WORKDIR', source)
-        self.assertIn('"tests/test_protocol_native_validation.py"', source)
-        self.assertIn('"tests/test_xray_default_runner_archive.py"', source)
+        scenarios = json.loads((qualified_child.ROOT / "tests/acceptance/qualified-child-scenarios.json").read_text(
+            encoding="utf-8"))
+        expected = [nodeid.removeprefix("backend/") for nodeid in scenarios["nodeids"]]
+        self.assertEqual(expected, qualified_child._qualified_child_pytest_selectors())
+        self.assertEqual(37, len(expected))
+        self.assertTrue(all("::" in selector for selector in expected))
+        required_xray_nodes = {
+            "tests/test_xray.py::test_profile_generation_preserves_specific_nested_native_validation_failure",
+            "tests/test_xray.py::test_generation_failure_operation_rejects_untrusted_nested_codes[lowercase]",
+            "tests/test_xray.py::test_generation_failure_operation_rejects_untrusted_nested_codes[bad-punctuation]",
+            "tests/test_xray.py::test_generation_failure_operation_rejects_untrusted_nested_codes[overlong]",
+            "tests/test_xray.py::test_generation_failure_operation_rejects_untrusted_nested_codes[newline]",
+            "tests/test_xray.py::test_generation_failure_operation_prefers_failed_local_code_only",
+            "tests/test_xray.py::test_identity_compensation_allows_unchanged_preexisting_subject_and_snapshot_references",
+            "tests/test_xray.py::test_identity_reference_preimage_rejects_malformed_projection_before_cleanup",
+            "tests/test_xray.py::test_vpn_auto_stage_exception_compensates_new_identity_intent",
+            "tests/test_xray.py::test_vpn_auto_source_fence_change_preserves_unverified_identity_intent",
+            "tests/test_xray.py::test_vpn_auto_external_reference_blocks_identity_compensation",
+        }
+        self.assertTrue(required_xray_nodes <= set(expected))
 
     def test_qualified_xray_junit_normalizes_only_observed_tests_prefix(self):
         test_name = "test_loaded_client_readback_against_isolated_xray_26_2_6"

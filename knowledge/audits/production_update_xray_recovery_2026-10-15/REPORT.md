@@ -57,3 +57,9 @@ RemainingFAIL is test_real_chromium_provider_exclusive_control_persists_and_excl
 ScalePASS:startup41.0065s/45s, APIworkerHWM973728KiB,24/24HTTP200,healthmax0.0077s/allAPImax2.1687s,gracefulshutdown0.2641s,82syntheticidentities exact. Advisory40sunmet, runner variance remainsrisk; not productionmetrics.
 
 Independent browser artifact review:Chromiumbinary/bundle hashes match acrosspartitions; host snapshots availableRAM14→12GiB, disk84→79GiBfree, swapunused. These do not establish event-time/cgroup state. NoOOM/PID/tmpfs/bundle mismatch evidence; exactSIGSEGVrootcause unknown. No speculativebrowserfix is made. The required finalfull run will report the unchanged browsercase honestly.
+
+## Full artifact audit and exact-node registration correction
+
+Run38707159785/source0b9e9a9 reports1628PASS/0FAIL/0SKIP:1561routine+26qualifiedchild+1DockerXray+27ordinary+11Provider+2packet/scale. BrowsercasePASS with unchangedbinary/test; priorSIGSEGVcauseunknown. Native recoveryPASS, scale35.7282s,HWM891472KiB,24HTTP200,healthmax0.0082s/APImax1.9231s,shutdown0.1637s,82syntheticidentities. Aggregate/source/plan/cleanupPASS.
+
+However finalartifactreview found newcompensation/diagnostic tests in mixedtest_xray.py NOTRUN:its defaultprofile executes2routine IDs and a fixedqualifiedchildcohort. Thus this run is NOT complete acceptance of the newcomponentpackage despite greenregisteredgates. Registration now adds11exactXray IDs (8new,3affectedexisting) to the existingconfinedqualifiedchildprofile:37total=20protocol+17supporting. Actualpytestargv nowcomesfrom the validatedsamecheckedincatalog asJUnitexpectedIDs; exactownedfilecounts/duplicates/foreignIDs/protocolcount/source/cleanup remainstrict. Contractassertsrequirednewnodes andargv/catalogmatch. No newworkflow, retries, timeoutincrease orproductioncodechange. Safe126acceptancecontracts/F821/diffPASS. CorrectedmandatoryfullCIrequired beforeReady.

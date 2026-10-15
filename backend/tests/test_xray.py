@@ -1191,7 +1191,11 @@ def test_profile_generation_preserves_specific_nested_native_validation_failure(
     }) == "MIHOMO_XRAY_HANDOFF_TARGET_MISSING"
 
 
-@pytest.mark.parametrize("invalid_code", ["lowercase_code", "BAD-CODE", "A" * 97, "SECRET\nVALUE"])
+@pytest.mark.parametrize(
+    "invalid_code",
+    ["lowercase_code", "BAD-CODE", "A" * 97, "SECRET\nVALUE"],
+    ids=["lowercase", "bad-punctuation", "overlong", "newline"],
+)
 def test_generation_failure_operation_rejects_untrusted_nested_codes(invalid_code: str) -> None:
     assert xray_subscription_service._generation_failure_operation({
         "error_code": "MIHOMO_CANDIDATE_INVALID",
