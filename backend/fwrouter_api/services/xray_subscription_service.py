@@ -974,8 +974,14 @@ def _prospective_profile_bindings(
     """Build candidate bindings and modes without creating runtime projections."""
     prefixes = [str(value).lower() for value in (managed_email_prefixes or [token_prefix]) if value]
     scoped_email = lambda item: any(str(item.get("client_email") or "").lower().startswith(prefix) for prefix in prefixes)
-    bindings = [item for item in collect_xray_runtime_bindings() if not scoped_email(item)]
-    modes = [item for item in collect_xray_client_mode_directives() if not scoped_email(item)]
+    bindings = [
+        item for item in collect_xray_runtime_bindings(exclude_client_email_prefixes=prefixes)
+        if not scoped_email(item)
+    ]
+    modes = [
+        item for item in collect_xray_client_mode_directives(exclude_client_email_prefixes=prefixes)
+        if not scoped_email(item)
+    ]
     routing = subject_policy_service.get_routing_snapshot()
     enforcement = subject_policy_service.build_runtime_enforcement_state()
     bypass = subject_policy_service.get_core_bypass_state()

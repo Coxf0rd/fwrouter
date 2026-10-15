@@ -109,10 +109,10 @@ def _setup(monkeypatch, tmp_path: Path, *, fail: str | None = None):
         service, "_verify_current_public_projection",
         lambda _snapshot, *, supersession=None: fail != "public_mismatch",
     )
-    monkeypatch.setattr(service, "collect_xray_runtime_bindings", lambda: [{
+    monkeypatch.setattr(service, "collect_xray_runtime_bindings", lambda **_kwargs: [{
         "client_uuid": IDENTITY[0], "client_email": IDENTITY[1], "selected_server_id": "server",
     }])
-    monkeypatch.setattr(service, "collect_xray_client_mode_directives", lambda: [])
+    monkeypatch.setattr(service, "collect_xray_client_mode_directives", lambda **_kwargs: [])
     monkeypatch.setattr(service, "_capture_generation_auto_selection", lambda: {
         "routing": {"server_mode": "auto", "active_auto_server_id": "server"},
     })
@@ -369,7 +369,7 @@ def test_current_projection_recovery_proves_mixed_binding_and_direct_clients(mon
         "identities": [IDENTITY, direct], "snapshots": [], "published_snapshots": [],
         "fence": {"revision": 4, "decision_id": "current", "active_server_id": "server"},
     })
-    monkeypatch.setattr(service, "collect_xray_client_mode_directives", lambda: [{
+    monkeypatch.setattr(service, "collect_xray_client_mode_directives", lambda **_kwargs: [{
         "client_uuid": direct[0], "client_email": direct[1], "effective_mode": "direct",
     }])
     monkeypatch.setattr(xray_materialize, "_verify_active_config_client_modes", lambda *_a, **_k: {
