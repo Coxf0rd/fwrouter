@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## Test isolation and live acceptance checkpoint — 2026-10-15
+
+Production remains `ffe506e`: original78 identities exactly match running Xray/config; API/Gateway/workers/timers are active and seven loopback subscription profiles return200 without durable credential changes. Production State Acceptance is PARTIAL; External E2E is not reclassified as PASS. Confirmed source fixes on `fix/test-data-isolation-live-acceptance` disable inherited proxy routing in loopback smoke, remove raw subscription paths from Gateway logs, and replace production-overlapping parser credentials/endpoints with independently synthetic fixtures. Public-history upstream credential exposure requires owner-scoped assessment; rotation planning is authorized, execution is not. No production source/config/service change in this task. Full required PR CI and user merge precede any separately approved rollout; the host readiness guard must remain preserved. CI milestone CLOSED/CD DEFERRED; Stage8/7 modular matrix remains future coverage, not a refactor here. See [implementation and provenance report](/srv/fwrouter/knowledge/audits/test_isolation_live_acceptance_2026-10-15/REPORT.md). Previous checkpoints below remain historical.
+
 ## Recovery fix hosted checkpoint — 2026-10-15
 
 PR10 source1ce6b27 affectedrun38704757481:1538PASS/1browserlaunchSIGSEGVFAIL/0SKIP. Strengthened78identitynative migration/recovery/refresh/restart andmissingoldgrouptransition/finalprunePASS, routine1472PASS, qualified26+1PASS, ordinary27PASS,Provider10PASS1FAIL,packet/scale2PASS. Exactbrowsercauseunknown; noassert/timeout/retryweakening. FinalmandatoryfullCIpendingbeforeReady. Productiondabf9f4backend/schema25 installed, reviewed78mappingpreserved, nativeapplyblocked/APIheld. Original78restoration/HTTP502/liveacceptance remainBLOCKED; usermerge+newmainCIrequired. See production_update_xray_recovery_2026-10-15/REPORT.md. CI milestoneCLOSED/CDDEFERRED.

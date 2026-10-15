@@ -205,7 +205,7 @@ def test_custom_socks5_proxy_server_runtime_raw_uses_socks5(monkeypatch, tmp_pat
             json={
                 "server_name": "Proxy6 SOCKS5",
                 "proxy_type": "socks5",
-                "host": "161.0.21.33",
+                "host": "192.0.2.44",
                 "port": 8000,
                 "username": "user1",
                 "password": "pw1",
@@ -308,7 +308,7 @@ def test_subscription_refresh_identity_churn_preserves_custom_server_state(
             json={
                 "server_name": "Proxy не заходит",
                 "proxy_type": "socks5",
-                "host": "161.0.21.33",
+                "host": "192.0.2.44",
                 "port": 8000,
                 "username": "user",
                 "password": "pw",

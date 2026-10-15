@@ -122,6 +122,12 @@ Do not run L6 after every small edit. For every implementation report, state the
 - Reproduction instructions state the exact command, repository commit, runtime/tool versions, fixture identity and environment variables that affect selection.
 - Keep CPU, RAM, wall time, parallel workers, temporary disk, native process count and container resources bounded. Resource limits are part of test correctness, not only CI cost control.
 
+### Credential provenance and live-state boundary — 2026-10-15
+
+Fixture identity must be independently synthetic: use reserved test namespaces/documentation addresses and generated fixture credentials, not literals copied from DB, backups or real subscriptions. Sanitized real API captures must declare their origin, remove credential values and be consumed through an explicit controlled transport. String overlap, display names and fixture-sized record counts do not establish origin. Inbound Xray client identities, provider upstream credentials and subscription bearer tokens are separate security scopes.
+
+Live-state reads of real profiles require explicit authorization and private bounded evidence; they are not synthetic tests or proof of upstream E2E. Loopback smoke ignores ambient proxies and rejects redirects. Subscription gateways must never log raw paths/query strings, identities or arbitrary error/request text; retain only allowlisted method/status/event metadata. Synthetic canary regressions verify these boundaries. A historical credential disclosure is not revoked by removing a fixture from current HEAD; ownership assessment and any rotation require a separate targeted plan. See [2026-10-15 findings and qualification](../audits/test_isolation_live_acceptance_2026-10-15/REPORT.md).
+
 ## Baseline classification and durable evidence
 
 A failure may be called baseline only after reproducing the exact node ID on the declared parent/baseline under a comparable environment. Separate pre-existing failures, environment/fixture failures, skipped tests, fixed baseline failures, novel failures and unclassified failures. CI must stop promotion on any novel or unclassified failure. A known baseline failure may be accepted only through a narrow, explicit and reviewable exception backed by durable classification; do not report raw totals as green. Never silently exclude a raw test failure or broaden a test filter to hide it.

@@ -63,12 +63,42 @@ def _resolve_upstream_path(raw_path: str) -> str | None:
 class Handler(BaseHTTPRequestHandler):
     server_version = "FWRouterXraySubGateway/1.0"
 
+    def _write_safe_log(self, event: str, status: object = "-") -> None:
+        method = getattr(self, "command", "")
+        if method not in {
+            "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"
+        }:
+            method = "OTHER"
+
+        status_text = str(status)
+        if not re.fullmatch(r"[1-5][0-9]{2}", status_text):
+            status_text = "-"
+
+        sys.stderr.write(
+            "%s %s method=%s status=%s\n"
+            % (self.log_date_time_string(), event, method, status_text)
+        )
+
+    def log_request(self, code: object = "-", size: object = "-") -> None:
+        self._write_safe_log("access", code)
+
     def log_message(self, fmt: str, *args: object) -> None:
-        sys.stderr.write("%s - - [%s] %s\n" % (
-            self.address_string(),
-            self.log_date_time_string(),
-            fmt % args,
-        ))
+        self._write_safe_log("message")
+
+    def log_error(self, fmt: str, *args: object) -> None:
+        self._write_safe_log("error", getattr(self, "_safe_error_status", "-"))
+
+    def send_error(
+        self,
+        code: int,
+        message: str | None = None,
+        explain: str | None = None,
+    ) -> None:
+        self._safe_error_status = code
+        try:
+            super().send_error(code, message, explain)
+        finally:
+            self._safe_error_status = "-"
 
     def do_HEAD(self) -> None:
         self._proxy(send_body=False)
