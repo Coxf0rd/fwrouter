@@ -1168,6 +1168,55 @@ def test_profile_generation_does_not_reuse_failed_or_mutated_native_validation(
     assert len(changed_native_calls) == 1
 
 
+def test_profile_generation_preserves_specific_nested_native_validation_failure(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    result, _local_calls, native_calls = _run_profile_candidate_validation_case(
+        monkeypatch,
+        tmp_path,
+        old_assignments=[],
+        assignments=[{"selected_server_id": "server-a", "port": 53123}],
+        native_result={"ok": False, "returncode": 1,
+                       "error_code": "MIHOMO_XRAY_HANDOFF_TARGET_MISSING"},
+    )
+
+    assert result["ok"] is False
+    assert len(native_calls) == 1
+    assert result["error_code"] == "MIHOMO_CANDIDATE_INVALID"
+    assert result["validation"]["local"]["ok"] is True
+    assert result["validation"]["native"]["ok"] is False
+    assert xray_subscription_service._generation_failure_operation({
+        "error_code": result["error_code"], "details": result,
+    }) == "MIHOMO_XRAY_HANDOFF_TARGET_MISSING"
+
+
+@pytest.mark.parametrize("invalid_code", ["lowercase_code", "BAD-CODE", "A" * 97, "SECRET\nVALUE"])
+def test_generation_failure_operation_rejects_untrusted_nested_codes(invalid_code: str) -> None:
+    assert xray_subscription_service._generation_failure_operation({
+        "error_code": "MIHOMO_CANDIDATE_INVALID",
+        "details": {"validation": {
+            "local": {"ok": True},
+            "native": {"ok": False, "error_code": invalid_code},
+        }},
+    }) == "MIHOMO_CANDIDATE_INVALID"
+
+
+def test_generation_failure_operation_prefers_failed_local_code_only() -> None:
+    result = {
+        "error_code": "MIHOMO_CANDIDATE_INVALID",
+        "details": {"validation": {
+            "local": {"ok": False, "error_code": "MIHOMO_LOCAL_CONFIG_INVALID"},
+            "native": {"ok": False, "error_code": "MIHOMO_XRAY_HANDOFF_TARGET_MISSING"},
+        }},
+    }
+    assert xray_subscription_service._generation_failure_operation(result) == "MIHOMO_LOCAL_CONFIG_INVALID"
+    result["details"]["validation"]["local"] = {
+        "ok": True, "error_code": "MIHOMO_LOCAL_ERROR_MUST_NOT_LEAK",
+    }
+    assert xray_subscription_service._generation_failure_operation(result) == "MIHOMO_XRAY_HANDOFF_TARGET_MISSING"
+
+
 def test_profile_generation_does_not_reuse_when_native_image_identity_is_unavailable(
     monkeypatch,
     tmp_path: Path,

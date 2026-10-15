@@ -1711,7 +1711,7 @@ def test_mihomo_retains_inactive_profile_only_for_last_good_handoff_then_prunes_
                     "transport_fingerprint, member_order, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)",
                     (old_id, member_id, runtime_name,
                      json.dumps({"type": "vless", "server": host, "port": 443,
-                                 "uuid": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+                                 "uuid": f"6ba7b81{index}-9dad-11d1-80b4-00c04fd430c8",
                                  "network": "tcp" if index == 0 else "grpc",
                                  "tls": True, "security": "reality"}),
                      f"fingerprint-{index}", index),

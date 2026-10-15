@@ -61,6 +61,22 @@ from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
 import fwrouter_api.services.subject_policy as subject_policy_service
 
 
+def _generation_failure_operation(result: dict[str, Any]) -> str:
+    """Expose a validated leaf validator code while retaining generic result codes."""
+    details = result.get("details")
+    validation = details.get("validation") if isinstance(details, dict) else None
+    if isinstance(validation, dict):
+        for validator_name in ("local", "native"):
+            validator = validation.get(validator_name)
+            if not isinstance(validator, dict) or validator.get("ok") is not False:
+                continue
+            code = validator.get("error_code")
+            if (isinstance(code, str) and 1 <= len(code) <= 96
+                    and code.isascii() and all(char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for char in code)):
+                return code
+    return str(result.get("error_code") or result.get("stage") or "generation_failed")
+
+
 XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE = "xray_subscription_profile_delete"
 XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX = "subscription-account:"
 
@@ -3673,7 +3689,7 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             "status": "pending",
             "stage": "identity_intent_compensation",
             "error_code": "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED",
-            "failed_operation": str(result.get("error_code") or result.get("stage") or "generation_failed"),
+            "failed_operation": _generation_failure_operation(result),
             "compensation_reason": str(compensation.get("reason") or "unverified"),
             "last_good_retained": True,
         }
