@@ -75,7 +75,10 @@ class GateContractTests(unittest.TestCase):
         self.assertLess(guard, python_setup)
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", block)
         self.assertIn("github.event.pull_request.head.ref == 'fix/api-runtime-health-scale-stability'", block)
-        self.assertIn("git log -1 --format=%B | grep -Fq -- 'ci:validate-identities'", block)
+        self.assertIn(
+            "git log -1 --format=%B | grep -Eq -- 'ci:validate-(identities|final-fixes)'",
+            block,
+        )
         self.assertIn(
             "Targeted qualification requested; full required CI NOT RUN. Normal final push required.",
             block,
@@ -92,20 +95,22 @@ class GateContractTests(unittest.TestCase):
                            cwd=repo, check=True)
             (repo / "receipt.txt").write_text("targeted\n", encoding="utf-8")
             subprocess.run(["git", "add", "receipt.txt"], cwd=repo, check=True)
-            subprocess.run(["git", "commit", "--quiet", "-m", "ci:validate-identities"],
-                           cwd=repo, check=True)
-            targeted = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=repo,
-                                      text=True, capture_output=True, check=False)
-            self.assertEqual(1, targeted.returncode)
-            self.assertIn(
-                "Targeted qualification requested; full required CI NOT RUN. Normal final push required.",
-                targeted.stderr,
-            )
-            subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", "final source"],
-                           cwd=repo, check=True)
-            ordinary = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=repo,
-                                      text=True, capture_output=True, check=False)
-            self.assertEqual(0, ordinary.returncode, ordinary.stderr)
+            for marker in ("ci:validate-identities", "ci:validate-final-fixes"):
+                with self.subTest(marker=marker):
+                    subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", marker],
+                                   cwd=repo, check=True)
+                    targeted = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=repo,
+                                              text=True, capture_output=True, check=False)
+                    self.assertEqual(1, targeted.returncode)
+                    self.assertIn(
+                        "Targeted qualification requested; full required CI NOT RUN. Normal final push required.",
+                        targeted.stderr,
+                    )
+                    subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", "final source"],
+                                   cwd=repo, check=True)
+                    ordinary = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=repo,
+                                              text=True, capture_output=True, check=False)
+                    self.assertEqual(0, ordinary.returncode, ordinary.stderr)
 
     def test_main_and_trusted_final_pr_use_mandatory_all_plan_policy(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
@@ -228,7 +233,8 @@ class GateContractTests(unittest.TestCase):
     def test_identity_diagnostic_uses_available_main_base_without_rebasing_legacy_stages(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
         identity_base = (
-            "PHASE_D_BASE_SHA: ${{ needs.select-stage.outputs.stage == 'identity-diagnostic' && "
+            "PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || "
+            "needs.select-stage.outputs.stage == 'final-regressions-diagnostic') && "
             "'1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || "
             "'6bdf37e9c73b5728b8d50e971f34d848610eb345' }}"
         )
@@ -239,6 +245,59 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("git cat-file -e \"$PHASE_D_BASE_SHA^{commit}\"", identity_step)
         self.assertIn('git diff --check "$PHASE_D_BASE_SHA...HEAD"', identity_step)
         self.assertIn('python tests/gates/gate.py plan --base "$PHASE_D_BASE_SHA"', workflow)
+
+    def test_final_regressions_diagnostic_is_fixed_three_node_kernel_suite(self) -> None:
+        launcher_path = gate.ROOT / "tests/acceptance/launcher.py"
+        spec = importlib.util.spec_from_file_location("fwrouter_final_regressions_launcher", launcher_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        suite = "final-regressions-diagnostic"
+        expected = {
+            "tests/application_acceptance/test_database_application.py::"
+            "test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state",
+            *launcher._RECOVERY_DIAGNOSTIC_NODEIDS,
+        }
+        self.assertEqual(expected, launcher.expected_acceptance_nodeids(suite))
+        self.assertEqual(expected, set(launcher._FINAL_REGRESSIONS_DIAGNOSTIC_NODEIDS))
+        self.assertIn(suite, launcher._DIAGNOSTIC_SUITES)
+        self.assertIn(suite, launcher._KERNEL_DATAPLANE_SUITES)
+        self.assertNotIn(suite, launcher._KERNEL_SUITES)
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids(f"{suite}-arbitrary")
+
+        import ast
+        launcher_tree = ast.parse(launcher_path.read_text(encoding="utf-8"), filename=str(launcher_path))
+        suite_choices = [
+            ast.literal_eval(keyword.value)
+            for node in ast.walk(launcher_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--suite"
+            for keyword in node.keywords if keyword.arg == "choices"
+        ]
+        self.assertEqual(1, len(suite_choices))
+        self.assertIn(suite, suite_choices[0])
+        self.assertEqual(3, len(expected))
+
+        scenarios = json.loads((gate.ROOT / "tests/acceptance/scenarios.json").read_text())
+        catalog = {row["nodeid"]: row for row in scenarios["scenarios"]}
+        self.assertTrue(expected <= set(catalog))
+        self.assertTrue(all(catalog[nodeid]["suite"] == "functional"
+                            and catalog[nodeid]["level"] == "L3" for nodeid in expected))
+
+        workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
+        self.assertIn('"ci:validate-final-fixes": "final-regressions-diagnostic"', workflow)
+        self.assertIn("needs.select-stage.outputs.stage == 'final-regressions-diagnostic'", workflow)
+        self.assertIn(
+            'if [[ "$VALIDATION_STAGE" == final-regressions-diagnostic ]]; then suite=final-regressions-diagnostic; fi',
+            workflow,
+        )
+        self.assertIn('PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage ==', workflow)
 
     def test_changed_python_f821_checks_only_changed_python_and_selects_one_rule(self) -> None:
         relative = str(Path(__file__).relative_to(gate.ROOT))

@@ -34,7 +34,7 @@ jobs:
           github.event.pull_request.head.ref == 'fix/api-runtime-health-scale-stability'
         run: |
           set -euo pipefail
-          if git log -1 --format=%B | grep -Fq -- 'ci:validate-identities'; then
+          if git log -1 --format=%B | grep -Eq -- 'ci:validate-(identities|final-fixes)'; then
             echo 'Targeted qualification requested; full required CI NOT RUN. Normal final push required.' >&2
             exit 1
           fi

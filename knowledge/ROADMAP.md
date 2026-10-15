@@ -1,5 +1,9 @@
 # FWRouter engineering roadmap mirror
 
+## PR8 final two-failure qualification — 2026-10-15
+
+Full required run38647432817/source764421b:1591 PASS/2 FAIL/0 SKIP. Startup/load and identity preservation PASS; startup43.252s, process HWM877204KiB, healthmax0.0086s, shutdown0.2639s. Remaining migration acceptance expected obsolete schema24 instead of correct25; test-only preservation/idempotency correction under qualification. Emergency Direct reentry is safely refused by Core verification because native UDP policy proof is unconfirmed; verified Direct fallback is preserved. Underlying proof mismatch is under bounded hosted diagnosis, not yet a proven product defect. PR8 Draft/BLOCKED; targeted migration/reentry first, final full required CI only after stable targetPASS. Production API/dependents remain held, no deployment or identity changes. CI milestone CLOSED/CD DEFERRED. See runtime stability REPORT.md; historical evidence retained.
+
 ## PR8 atomicity and load requalification — 2026-10-15
 
 Run38646554002/sourceeb295ac SUCCESS: component atomicity checks, full native identity1 and startup/load2 PASS. Startup35.5317/35.8416s;48/48 successful concurrent reads, healthmax0.0099s/allAPImax1.825s; HWM938144/904396KiB, shutdown0.2138s. Exact82synthetic identities/native proof/cleanup preserved. Prior finalfull38642672427 had1525PASS/1FAIL duepre-checkpoint identity persistence; invocation-owned compensation nowqualified. Final fullrequiredPR rerun pending beforeReady; no production/liveacceptance. Previous near45srun remainsvarianceevidence. CI milestone CLOSED/CD DEFERRED.

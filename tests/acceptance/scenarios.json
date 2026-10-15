@@ -146,10 +146,10 @@
       "contract": "test_provider_status_controls_real_core_apply_and_native_mihomo_parity"
     },
     {
-      "nodeid": "tests/application_acceptance/test_database_application.py::test_schema23_upgrade_preserves_binding_secret_and_native_clients",
+      "nodeid": "tests/application_acceptance/test_database_application.py::test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state",
       "suite": "functional",
       "level": "L3",
-      "contract": "Run the real initializer on an actual v23-shaped provider table, then HTTP readback."
+      "contract": "Probe the v23 provider-column contract against the current schema-25 app DB.\n\nThe acceptance worker is provisioned with the current schema. This test removes\nthe v24 provider column and uses the v23 marker to exercise the supported\nprovider migration path; it is not a complete historical-v23 database fixture.\nThe genuine schema-24-to-25 preimage and downgrade refusal are covered by the\nisolated migration/CLI contract tests."
     },
     {
       "nodeid": "tests/application_acceptance/test_database_application.py::test_application_database_transaction_rollback_is_visible_after_restart",

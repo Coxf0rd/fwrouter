@@ -51,6 +51,7 @@ jobs:
               "ci:validate-unit-residual": "unit-residual",
               "ci:validate-unit-acceptance-tail": "unit-acceptance-tail",
               "ci:validate-identities": "identity-diagnostic",
+              "ci:validate-final-fixes": "final-regressions-diagnostic",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
           selected = [stage for marker, stage in markers.items() if marker in message]
@@ -153,7 +154,7 @@ jobs:
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
       - name: Check full Phase D delta syntax and whitespace from fixed checkpoint
         env:
-          PHASE_D_BASE_SHA: ${{ needs.select-stage.outputs.stage == 'identity-diagnostic' && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
+          PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
@@ -608,6 +609,7 @@ jobs:
        needs.select-stage.outputs.stage == 'kernel-recovery-diagnostic' ||
        needs.select-stage.outputs.stage == 'packet-diagnostic' ||
        needs.select-stage.outputs.stage == 'identity-diagnostic' ||
+       needs.select-stage.outputs.stage == 'final-regressions-diagnostic' ||
        needs.select-stage.outputs.stage == 'targets')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -625,7 +627,7 @@ jobs:
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
       - name: Bind diagnostic to fixed source and complete Phase D plan
         env:
-          PHASE_D_BASE_SHA: ${{ needs.select-stage.outputs.stage == 'identity-diagnostic' && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
+          PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
@@ -660,6 +662,7 @@ jobs:
           if [[ "$VALIDATION_STAGE" == kernel-preflight ]]; then suite=kernel-preflight; fi
           if [[ "$VALIDATION_STAGE" == kernel-recovery-diagnostic ]]; then suite=kernel-recovery-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == packet-diagnostic ]]; then suite=packet-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == final-regressions-diagnostic ]]; then suite=final-regressions-diagnostic; fi
           log="$RUNNER_TEMP/phase-diagnostic-xray.log"
           set +e
           /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \

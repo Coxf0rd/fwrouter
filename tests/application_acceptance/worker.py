@@ -1529,6 +1529,9 @@ def _install_acceptance_recovery_apply_observer() -> None:
     from fwrouter_api.routes import selector as selector_route
     from fwrouter_api.services import apply_orchestrator as apply
     from fwrouter_api.services import provider_recovery
+    from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+    from tests.application_acceptance.diagnostics import encode_safe_reentry_native_record
 
     lock = threading.Lock()
     local = threading.local()
@@ -1705,6 +1708,197 @@ def _install_acceptance_recovery_apply_observer() -> None:
     original_apply_under_policy = provider_recovery._apply_override_under_policy
     original_selector_call = selector_route.select_vpn_auto_server
     original_core_apply = apply._run_pipeline_for_state
+    original_mihomo_health = MihomoHttpAdapter.health
+    original_mihomo_proxies = MihomoHttpAdapter._proxies
+    original_active_config_hash = mihomo_reconcile_fingerprint.active_config_hash
+    original_runtime_incarnation = mihomo_reconcile_fingerprint._current_runtime_incarnation
+    original_load_reconcile_state = mihomo_reconcile_fingerprint._load_state
+
+    def safe_digest(value: Any) -> str | None:
+        if not isinstance(value, str) or not value:
+            return None
+        return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
+
+    def safe_sample(proxy: Any, owned_probe_url: str | None) -> dict[str, Any]:
+        if not isinstance(proxy, dict) or not owned_probe_url:
+            return {"present": False, "alive": None, "latest_delay_ms": None,
+                    "history_age_ms": None, "history_fresh_5s": False}
+        extra = proxy.get("extra") if isinstance(proxy.get("extra"), dict) else {}
+        sample = extra.get(owned_probe_url)
+        if not isinstance(sample, dict):
+            return {"present": False, "alive": None, "latest_delay_ms": None,
+                    "history_age_ms": None, "history_fresh_5s": False}
+        history = sample.get("history") if isinstance(sample.get("history"), list) else []
+        latest = history[-1] if history and isinstance(history[-1], dict) else {}
+        delay = latest.get("delay")
+        delay_ms = delay if type(delay) is int and 0 <= delay <= 65535 else None
+        age_ms = None
+        raw_time = latest.get("time")
+        if isinstance(raw_time, str) and len(raw_time) <= 64:
+            try:
+                from datetime import datetime, timezone
+                parsed = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    age = int((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() * 1000)
+                    if abs(age) <= 31_536_000_000:
+                        age_ms = age
+            except (OverflowError, TypeError, ValueError):
+                pass
+        return {
+            "present": True,
+            "alive": sample.get("alive") if type(sample.get("alive")) is bool else None,
+            "latest_delay_ms": delay_ms,
+            "history_age_ms": age_ms,
+            "history_fresh_5s": type(age_ms) is int and 0 <= age_ms <= 5000,
+        }
+
+    def capture_native_reentry_snapshot(adapter: Any, health: Any, proxies: Any) -> None:
+        """Keep a short ring of native proof snapshots, including final verification."""
+        if getattr(local, "operation", None) != 3 or getattr(local, "phase", None) != "core_apply":
+            return
+        snapshots = getattr(local, "native_snapshots", None)
+        if not isinstance(snapshots, list):
+            snapshots = []
+            local.native_snapshots = snapshots
+        sequence = getattr(local, "native_sequence", 0) + 1
+        local.native_sequence = sequence
+        details = health.details if isinstance(getattr(health, "details", None), dict) else {}
+        policy = details.get("vpn_udp_policy") if isinstance(details.get("vpn_udp_policy"), dict) else {}
+        selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
+        runtime_state = getattr(health, "runtime_state", "")
+        runtime_state = getattr(runtime_state, "value", runtime_state)
+        by_name = proxies if isinstance(proxies, dict) else {}
+        vpn_auto = by_name.get("vpn-auto") if isinstance(by_name.get("vpn-auto"), dict) else {}
+        vpn_global = by_name.get("vpn-global") if isinstance(by_name.get("vpn-global"), dict) else {}
+        selected_auto = vpn_auto.get("now") if isinstance(vpn_auto.get("now"), str) else None
+        selected_global = vpn_global.get("now") if isinstance(vpn_global.get("now"), str) else None
+        target_proxy = by_name.get(selected_auto) if selected_auto else None
+        if not isinstance(target_proxy, dict):
+            target_proxy = vpn_auto
+        probe_url = os.environ.get("FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL")
+        config_sha = safe_digest(getattr(local, "reentry_active_config_hash", None))
+        runtime_sha = safe_digest(getattr(local, "reentry_runtime_incarnation", None))
+        revision = None
+        try:
+            from fwrouter_api.db.connection import db_session
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+            with db_session() as connection:
+                revision = read_selection_revision(connection)
+        except Exception:
+            pass
+        policy_keys = (
+            "policy_installed", "wiring_proven", "native_top_level_rules_match",
+            "selector_membership_matches", "guarded_rules_match", "reconcile_receipt_matches",
+        )
+        receipt = getattr(local, "reentry_receipt", None)
+        snapshot = {
+            "schema": "fwrouter-acceptance-reentry-native-proof/v1",
+            "operation": 3,
+            "sequence": sequence,
+            "phase": "core_apply",
+            "runtime_running": str(runtime_state) == "running",
+            "proof": {key: policy[key] for key in policy_keys if type(policy.get(key)) is bool},
+            "proof_fields_present": sorted(key for key in policy_keys if key in policy),
+            "selector_readback": {
+                "vpn_auto_exists": selectors.get("vpn_auto_exists") is True,
+                "vpn_global_exists": selectors.get("vpn_global_exists") is True,
+                "vpn_global_has_vpn_auto": selectors.get("vpn_global_has_vpn_auto") is True,
+                "vpn_global_now_is_vpn_auto": selectors.get("vpn_global_now") == "vpn-auto",
+                "vpn_auto_selected_sha256": safe_digest(selected_auto),
+                "vpn_global_selected_sha256": safe_digest(selected_global),
+                "vpn_auto_targets_count": min(selectors.get("vpn_auto_targets_count", 0), 10000)
+                if type(selectors.get("vpn_auto_targets_count")) is int else 0,
+                "vpn_auto_now_in_targets": (
+                    selectors.get("vpn_auto_now") in selectors.get("vpn_auto_targets", [])
+                    if isinstance(selectors.get("vpn_auto_targets"), list) else False
+                ),
+            },
+            "native_selected_probe_history": safe_sample(target_proxy, probe_url),
+            "active_config_sha256": config_sha,
+            "runtime_incarnation_sha256": runtime_sha,
+            "receipt": receipt,
+            "selection_revision": revision if type(revision) is int and 0 <= revision <= 2**63 - 1 else None,
+        }
+        snapshots.append(snapshot)
+        del snapshots[:-4]
+
+    def flush_native_reentry_snapshots() -> None:
+        snapshots = getattr(local, "native_snapshots", [])
+        for snapshot in snapshots[-4:]:
+            encoded = encode_safe_reentry_native_record(snapshot, max_bytes=3500)
+            if encoded is not None:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_REENTRY_NATIVE " + encoded + "\n")
+        if snapshots:
+            sys.stderr.flush()
+
+    def observed_mihomo_proxies(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = original_mihomo_proxies(self, *args, **kwargs)
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.native_proxies = result
+        return result
+
+    def observed_mihomo_health(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.native_proxies = {}
+            local.reentry_active_config_hash = None
+            local.reentry_runtime_incarnation = None
+            local.reentry_receipt = None
+            local.reentry_receipt_raw = {}
+            local.native_snapshots = []
+            local.native_sequence = 0
+        result = original_mihomo_health(self, *args, **kwargs)
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            capture_native_reentry_snapshot(self, result, getattr(local, "native_proxies", {}))
+        return result
+
+    def observed_active_config_hash() -> str | None:
+        value = original_active_config_hash()
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.reentry_active_config_hash = value
+            receipt = getattr(local, "reentry_receipt", None)
+            if isinstance(receipt, dict):
+                receipt["active_config_matches"] = bool(
+                    value and getattr(local, "reentry_receipt_raw", {}).get("active_config_hash") == value
+                )
+        return value
+
+    def observed_runtime_incarnation() -> str | None:
+        value = original_runtime_incarnation()
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.reentry_runtime_incarnation = value
+            receipt = getattr(local, "reentry_receipt", None)
+            if isinstance(receipt, dict):
+                receipt["runtime_incarnation_matches"] = bool(
+                    value and getattr(local, "reentry_receipt_raw", {}).get("runtime_incarnation") == value
+                )
+        return value
+
+    def observed_reconcile_state() -> dict[str, Any] | None:
+        loaded = original_load_reconcile_state()
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.reentry_receipt_raw = loaded if isinstance(loaded, dict) else {}
+            local.reentry_receipt = {
+                "present": isinstance(loaded, dict),
+                "active_config_matches": False,
+                "runtime_incarnation_matches": False,
+                "udp_policy_version_matches": (
+                    loaded.get("udp_policy_version") == mihomo_reconcile_fingerprint.UDP_POLICY_RECEIPT_VERSION
+                    if isinstance(loaded, dict) else False
+                ),
+                "native_top_level_rules_match": loaded.get("native_top_level_rules_match") is True
+                if isinstance(loaded, dict) else False,
+                "native_selector_membership_match": loaded.get("native_selector_membership_match") is True
+                if isinstance(loaded, dict) else False,
+                "subrule_config_guard_match": loaded.get("subrule_config_guard_match") is True
+                if isinstance(loaded, dict) else False,
+            }
+        return loaded
+
+    MihomoHttpAdapter._proxies = observed_mihomo_proxies
+    MihomoHttpAdapter.health = observed_mihomo_health
+    mihomo_reconcile_fingerprint.active_config_hash = observed_active_config_hash
+    mihomo_reconcile_fingerprint._current_runtime_incarnation = observed_runtime_incarnation
+    mihomo_reconcile_fingerprint._load_state = observed_reconcile_state
 
     def observed_enter(*args: Any, **kwargs: Any) -> Any:
         prior = getattr(local, "operation", None)
@@ -1801,12 +1995,17 @@ def _install_acceptance_recovery_apply_observer() -> None:
         operation = getattr(local, "operation", None)
         if operation is None:
             return original_core_apply(*args, **kwargs)
+        previous_phase = getattr(local, "phase", None)
+        local.phase = "core_apply"
         try:
             result = original_core_apply(*args, **kwargs)
         except Exception as exc:
             record("core_apply_exception", operation=operation,
                    exception_type=type(exc).__name__)
             raise
+        finally:
+            flush_native_reentry_snapshots()
+            local.phase = previous_phase
         record("core_apply_result", operation=operation, result=result)
         return result
 

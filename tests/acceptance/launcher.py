@@ -125,7 +125,10 @@ _TARGET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 )
 _KERNEL_RECOVERY_SUITE = "kernel-recovery-diagnostic"
-_KERNEL_DATAPLANE_SUITES = {_KERNEL_RECOVERY_SUITE, "provider-cohort", "reentry-diagnostic"}
+_KERNEL_DATAPLANE_SUITES = {
+    _KERNEL_RECOVERY_SUITE, "provider-cohort", "reentry-diagnostic",
+    "final-regressions-diagnostic",
+}
 _PACKET_DIAGNOSTIC_SUITE = "packet-diagnostic"
 _RUNTIME_SCALE_DIAGNOSTIC_SUITE = "runtime-scale-diagnostic"
 _IDENTITY_DIAGNOSTIC_SUITE = "identity-diagnostic"
@@ -139,10 +142,15 @@ _RUNTIME_SCALE_DIAGNOSTIC_NODEIDS = (
 _IDENTITY_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_xray_generation.py::test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery",
 )
+_FINAL_REGRESSIONS_DIAGNOSTIC_SUITE = "final-regressions-diagnostic"
+_FINAL_REGRESSIONS_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_database_application.py::test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state",
+    *_RECOVERY_DIAGNOSTIC_NODEIDS,
+)
 _DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic",
                       "recovery-diagnostic", "reentry-diagnostic", _KERNEL_RECOVERY_SUITE,
                       _PACKET_DIAGNOSTIC_SUITE, _RUNTIME_SCALE_DIAGNOSTIC_SUITE,
-                      _IDENTITY_DIAGNOSTIC_SUITE}
+                      _IDENTITY_DIAGNOSTIC_SUITE, _FINAL_REGRESSIONS_DIAGNOSTIC_SUITE}
 _KERNEL_SUITES = {"kernel-preflight"}
 PACKET_NETWORKS = {
     "lan": {"subnet": "10.240.0.0/29", "gateway": "10.240.0.6", "router": "10.240.0.1", "client": "10.240.0.2"},
@@ -2443,6 +2451,8 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
             diagnostics = set(_RUNTIME_SCALE_DIAGNOSTIC_NODEIDS)
         elif suite == _IDENTITY_DIAGNOSTIC_SUITE:
             diagnostics = set(_IDENTITY_DIAGNOSTIC_NODEIDS)
+        elif suite == _FINAL_REGRESSIONS_DIAGNOSTIC_SUITE:
+            diagnostics = set(_FINAL_REGRESSIONS_DIAGNOSTIC_NODEIDS)
         else:
             raise NotRun("diagnostic suite has no fixed node set")
         expected_catalog_suite = "packet" if suite in {
@@ -4245,7 +4255,8 @@ def main() -> int:
                                  "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
                                  "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight",
                                  "kernel-recovery-diagnostic", "packet-diagnostic",
-                                 "identity-diagnostic", "runtime-scale-diagnostic"),
+                                 "identity-diagnostic", "runtime-scale-diagnostic",
+                                 "final-regressions-diagnostic"),
                         default="functional-ordinary")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()

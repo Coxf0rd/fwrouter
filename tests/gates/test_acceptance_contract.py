@@ -29,6 +29,7 @@ from types import ModuleType, SimpleNamespace
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from application_acceptance.xray_support import parse_inbound_users_reply
 from application_acceptance.joined_support import ProviderHttpTestBridge
+from application_acceptance.diagnostics import encode_safe_reentry_native_record
 sys.path.insert(0, str(Path(__file__).parents[1] / "acceptance"))
 import qualified_child
 import qualified_xray_docker
@@ -128,6 +129,46 @@ def _extract_worker_candidate_fingerprint(state_root: Path):
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_reentry_native_diagnostic_is_redacted_and_size_bounded(self):
+        secret_url = "http://probe-user:probe-pass@vpn-secret.test/private"
+        secret_uuid = "11111111-2222-4333-8444-555555555555"
+        secret_config = "proxies:\n  - uuid: " + secret_uuid
+        payload = {
+            "schema": "fwrouter-acceptance-reentry-native-proof/v1",
+            "operation": 3,
+            "sequence": 99,
+            "phase": "core_apply",
+            "runtime_running": True,
+            "proof": {"wiring_proven": False, "unexpected_raw_value": secret_url},
+            "proof_fields_present": ["wiring_proven", "unexpected_raw_value"],
+            "selector_readback": {
+                "vpn_auto_exists": True,
+                "vpn_auto_selected_sha256": "a" * 64,
+                "raw_selector": secret_uuid,
+            },
+            "native_selected_probe_history": {"present": True, "alive": False, "history": secret_url},
+            "active_config_sha256": "b" * 64,
+            "runtime_incarnation_sha256": "c" * 64,
+            "receipt": {"present": True, "active_config_hash": secret_config},
+            "raw_url": secret_url,
+            "raw_uuid": secret_uuid,
+            "raw_config": secret_config,
+        }
+
+        encoded = encode_safe_reentry_native_record(payload, max_bytes=1024)
+        self.assertIsNotNone(encoded)
+        assert encoded is not None
+        self.assertLessEqual(len(encoded.encode("utf-8")), 1024)
+        self.assertNotIn(secret_url, encoded)
+        self.assertNotIn(secret_uuid, encoded)
+        self.assertNotIn(secret_config, encoded)
+        decoded = json.loads(encoded)
+        self.assertEqual({"wiring_proven": False}, decoded["proof"])
+        self.assertEqual(["wiring_proven"], decoded["proof_fields_present"])
+        self.assertNotIn("raw_selector", decoded["selector_readback"])
+        self.assertNotIn("raw_url", decoded)
+        self.assertIsNone(encode_safe_reentry_native_record(payload, max_bytes=1))
+
     def test_startup_readiness_uses_strict_health_and_xray_is_a_separate_bounded_readback(self):
         ready = _extract_health_readiness_predicate()
         healthy = {
@@ -3808,7 +3849,7 @@ class AcceptanceContractTests(unittest.TestCase):
                            "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
                            "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight",
                            "kernel-recovery-diagnostic", "packet-diagnostic", "identity-diagnostic",
-                           "runtime-scale-diagnostic")], suite_choices)
+                           "runtime-scale-diagnostic", "final-regressions-diagnostic")], suite_choices)
         suite_defaults = [
             ast.literal_eval(keyword.value)
             for node in ast.walk(tree)
