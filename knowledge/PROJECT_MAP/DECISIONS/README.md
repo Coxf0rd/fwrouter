@@ -12,3 +12,7 @@ This directory contains ADRs for decisions that are traceable to code and config
 - `ADR-0008`: component monorepo source tree
 - `ADR-0009`: skip dnsmasq reconcile when selective status is healthy
 - `ADR-0010`: UI i18n and code language
+
+## Roadmap decision reconciliation — 2026-10-15
+
+[Current agreement register](ROADMAP_DECISION_REGISTER_2026-10-15.md) records owning milestones, priority, entry conditions, exit evidence and unresolved facts without replacing historical ADRs.

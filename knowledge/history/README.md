@@ -36,3 +36,10 @@ The exact prior active texts are preserved: [English roadmap mirror](ROADMAP_PRE
 ## Production-readiness consolidation — 2026-10-13
 
 [Exact pre-edit roadmap](ROADMAP_PRE_2026-10-13_PRODUCTION_READINESS.md) retains evidence and the former future-requirements table. Active requirements are now distributed into owning stages; no new acceptance result or implementation/deployment authorization.
+
+## Decision reconciliation — 2026-10-15
+
+- [Exact previous public roadmap mirror](ROADMAP_PRE_2026-10-15_DECISION_RECONCILIATION.md), SHA-256 `def3a4a941edcdcb4dcf1df9a08f6eb8123fc54482dcc85a53431bc162f836d6`.
+- The distinct canonical original is retained outside Git at `/решения/roadmap/fwrouter/history/ROADMAP_PRE_2026-10-15_DECISION_RECONCILIATION.md`, SHA-256 `8325c21fd6a3dfdd1ab6b15ac1fb768834fd9c59e3bf3968cf68724f8587e129`. It is not copied into this repository.
+
+Superseded checkpoints remain byte-preserved. The current plan uses accepted evidence, retains the16-stage order, and indexes decisions in PROJECT_MAP. Publish the reviewed public plan and verify its full required PR CI before replacing the canonical active body; compare the canonical pre-edit hash first to avoid overwriting concurrent changes.
