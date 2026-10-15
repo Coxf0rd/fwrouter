@@ -26,6 +26,7 @@ MAX_COLLECTOR_RESPONSE_BYTES = 256 * 1024
 
 _SCHEDULER_THREAD: threading.Thread | None = None
 _SCHEDULER_STOP = threading.Event()
+_SCHEDULER_LOCK = threading.Lock()
 _LAST_RUN_AT: dict[str, float] = {}
 
 
@@ -273,21 +274,27 @@ def start_external_collector_scheduler() -> bool:
     settings = get_settings()
     if not settings.external_collector_scheduler_enabled:
         return False
-    if _SCHEDULER_THREAD and _SCHEDULER_THREAD.is_alive():
+    with _SCHEDULER_LOCK:
+        if _SCHEDULER_THREAD and _SCHEDULER_THREAD.is_alive():
+            return False
+        _SCHEDULER_STOP.clear()
+        _SCHEDULER_THREAD = threading.Thread(
+            target=_external_collector_scheduler_loop,
+            name="fwrouter-external-collector-scheduler",
+            daemon=True,
+        )
+        _SCHEDULER_THREAD.start()
         return True
-    _SCHEDULER_STOP.clear()
-    _SCHEDULER_THREAD = threading.Thread(
-        target=_external_collector_scheduler_loop,
-        name="fwrouter-external-collector-scheduler",
-        daemon=True,
-    )
-    _SCHEDULER_THREAD.start()
-    return True
 
 
 def stop_external_collector_scheduler(*, timeout_seconds: float = 2.0) -> bool:
-    _SCHEDULER_STOP.set()
-    thread = _SCHEDULER_THREAD
-    if thread and thread.is_alive():
-        thread.join(timeout=timeout_seconds)
-    return not (thread and thread.is_alive())
+    global _SCHEDULER_THREAD
+    with _SCHEDULER_LOCK:
+        if _SCHEDULER_THREAD is None:
+            return False
+        _SCHEDULER_STOP.set()
+        _SCHEDULER_THREAD.join(timeout=timeout_seconds)
+        stopped = not _SCHEDULER_THREAD.is_alive()
+        if stopped:
+            _SCHEDULER_THREAD = None
+        return stopped

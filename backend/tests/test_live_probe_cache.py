@@ -6,7 +6,11 @@ from pathlib import Path
 from types import ModuleType
 
 from fwrouter_api.services import live_probe_cache
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache, get_live_probe_cache
+from fwrouter_api.services.live_probe_cache import (
+    clear_live_probe_cache,
+    get_live_probe_cache,
+    get_readonly_mihomo_health,
+)
 
 
 # Frozen `git show 8ff2648:backend/fwrouter_api/services/live_probe_cache.py` source.
@@ -385,3 +389,73 @@ def test_exception_is_shared_with_preclear_waiter_and_force_refresh_replaces_cac
     }
     assert calls == ["initial", "expired", "forced"]
     clear_live_probe_cache()
+
+
+def test_readonly_mihomo_health_coalesces_by_adapter_and_refreshes_after_clear() -> None:
+    clear_live_probe_cache()
+    started = threading.Event()
+    release = threading.Event()
+    waiter_entered, restore_event = _instrument_first_event_wait(live_probe_cache)
+    results = {}
+
+    class _BlockingAdapter:
+        def __init__(self, value):
+            self.value = value
+            self.calls = 0
+
+        def health(self):
+            self.calls += 1
+            started.set()
+            if not release.wait(5):
+                raise TimeoutError("read-only Mihomo probe was not released")
+            return {"value": self.value, "call": self.calls}
+
+    adapter = _BlockingAdapter("shared")
+
+    def invoke(name):
+        try:
+            results[name] = get_readonly_mihomo_health(adapter)
+        except BaseException as exc:
+            results[name] = exc
+
+    first = threading.Thread(target=invoke, args=("first",), daemon=True)
+    second = threading.Thread(target=invoke, args=("second",), daemon=True)
+    started_threads = []
+    try:
+        first.start()
+        started_threads.append(first)
+        assert started.wait(5)
+        second.start()
+        started_threads.append(second)
+        assert waiter_entered.wait(5)
+        assert adapter.calls == 1
+        release.set()
+        first.join(5)
+        second.join(5)
+        assert not first.is_alive() and not second.is_alive()
+        assert results == {
+            "first": {"value": "shared", "call": 1},
+            "second": {"value": "shared", "call": 1},
+        }
+
+        other = _BlockingAdapter("separate")
+        other_result = get_readonly_mihomo_health(other)
+        assert other.calls == 1
+        assert other_result["value"] == "separate"
+
+        # The read-only helper is a snapshot lane; direct health remains fresh.
+        direct_result = adapter.health()
+        assert direct_result["call"] == 2
+        assert get_readonly_mihomo_health(adapter)["call"] == 1
+
+        clear_live_probe_cache()
+        refreshed = get_readonly_mihomo_health(adapter)
+        assert refreshed["call"] == 3
+        assert adapter.calls == 3
+    finally:
+        release.set()
+        for thread in started_threads:
+            thread.join(5)
+        restore_event()
+        clear_live_probe_cache()
+        assert all(not thread.is_alive() for thread in started_threads), "health coalescing thread survived cleanup"

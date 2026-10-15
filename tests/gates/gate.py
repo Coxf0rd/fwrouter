@@ -107,6 +107,7 @@ UNIT_FIXTURE_COHORTS = {
     "acceptance-tail": UNIT_FIXTURE_ACCEPTANCE_TAIL_PATHS,
 }
 PACKET_EXECUTION_PATH = "tests/application_acceptance/test_packet_dataplane.py"
+PACKET_SCALE_EXECUTION_PATH = "tests/application_acceptance/test_runtime_scale.py"
 EXECUTION_PROFILES = {"qualified-child-process", "hosted-isolated-compose",
                       KERNEL_DATAPLANE_EXECUTION_PROFILE, PACKET_EXECUTION_PROFILE}
 TEST_FILE_GLOBS = (
@@ -121,6 +122,7 @@ TEST_FILE_GLOBS = (
 STDLIB_CONTRACT_PATHS = {
     "tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
     "tests/gates/test_smoke_contract.py", "tests/gates/test_network_fixture_contract.py",
+    "tests/gates/test_subscription_identity_contract.py",
     "tests/acceptance/test_dependency_image_contract.py",
     "tests/acceptance/test_consume_dependency_image_contract.py",
 }
@@ -193,8 +195,9 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if profile == KERNEL_DATAPLANE_EXECUTION_PROFILE:
             raise GateError(f"{path}: hosted-kernel-dataplane is reserved for exact provider-cohort node bindings")
         if profile == PACKET_EXECUTION_PROFILE and (
-            path != PACKET_EXECUTION_PATH
-            or row.get("id") != "application-packet-dataplane"
+            path not in {PACKET_EXECUTION_PATH, PACKET_SCALE_EXECUTION_PATH}
+            or row.get("id") != ("application-packet-dataplane" if path == PACKET_EXECUTION_PATH
+                                  else "application-runtime-scale")
             or row.get("domain") != "application-acceptance"
             or row.get("primary_level") != "L3"
             or row.get("native") is not True
@@ -437,9 +440,66 @@ def make_plan(base: str, manifest: dict[str, Any], paths: list[str] | None = Non
         "required_levels": sorted(required_levels),
         "regression_policy": {"level": "L5", "reasons": shared_reasons, "anchors": l5_anchors},
         "full_suite_required": False,
+        "mandatory_suite_required": False,
         "staging_required": False,
     }
     plan["plan_digest"] = canonical_digest(plan)
+    return plan
+
+
+def make_mandatory_suite_plan(
+    base: str, manifest: dict[str, Any], paths: list[str] | None = None,
+) -> dict[str, Any]:
+    """Plan every existing safe L1-L4 suite plus the current L5 anchors."""
+
+    files = paths if paths is not None else changed_paths(base)
+    if not files:
+        raise GateError("empty change set cannot produce a mandatory acceptance plan")
+    rows = manifest["test_files"]
+    unsupported = [
+        row["path"] for row in rows
+        if row["primary_level"] != "L7" and not row.get("destructive")
+        and row["primary_level"] not in {"L1", "L2", "L3", "L4"}
+    ]
+    if unsupported:
+        raise GateError("mandatory acceptance encountered an unsupported safe primary level")
+
+    plan = make_plan(base, manifest, files, include_native=True)
+    safe_rows = [
+        row for row in rows
+        if row["primary_level"] in {"L1", "L2", "L3", "L4"} and not row.get("destructive")
+    ]
+    staging_paths = sorted(
+        row["path"] for row in rows
+        if row["primary_level"] == "L7" or row.get("destructive")
+    )
+    domains = sorted({row["domain"] for row in rows})
+    anchors = sorted(manifest["policies"]["L5"]["anchors"])
+    if not set(anchors) <= {row["path"] for row in safe_rows}:
+        raise GateError("mandatory acceptance L5 anchors must be safe manifest suites")
+    dependencies = manifest.get("domain_dependencies", {})
+    expanded_domains = dependency_closure(set(domains), dependencies)
+
+    plan.update({
+        "domains": domains,
+        "dependency_domains": sorted(expanded_domains - set(domains)),
+        "selected_files": sorted({row["path"] for row in safe_rows}),
+        "optional_suites": staging_paths,
+        "deferred_staging_suites": staging_paths,
+        "required_native_suites": sorted(row["path"] for row in safe_rows if row.get("native")),
+        "required_execution_profiles": required_execution_profiles(safe_rows),
+        "include_native": True,
+        "required_levels": sorted({"L0", *(row["primary_level"] for row in safe_rows)}),
+        "regression_policy": {
+            "level": "L5",
+            "reasons": sorted(set(domains) & set(manifest["policies"]["L5"].get("shared_domains", []))),
+            "anchors": anchors,
+        },
+        "full_suite_required": False,
+        "mandatory_suite_required": True,
+        "staging_required": False,
+    })
+    plan["plan_digest"] = canonical_digest({key: value for key, value in plan.items() if key != "plan_digest"})
     return plan
 
 
@@ -508,7 +568,24 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
     allowed = {"L0", "L1", "L2", "L3", "L4", "L6"} if allow_l6 else {"L0", "L1", "L2", "L3", "L4"}
     if not set(plan.get("required_levels", [])) <= allowed:
         raise GateError("plan requests a forbidden level")
-    if plan.get("full_suite_required"):
+    if plan.get("mandatory_suite_required"):
+        if (plan.get("mandatory_suite_required") is not True
+                or plan.get("full_suite_required") is not False
+                or plan.get("include_native") is not True
+                or allow_l6 or allow_manual_subset
+                or plan.get("quick_push") or plan.get("manual_subset")):
+            raise GateError("mandatory acceptance must be an include-native L0-L5 plan, separate from L6/L7")
+        actual_paths = changed_paths(plan["base_commit"])
+        if sorted(actual_paths) != sorted(plan["changed_paths"]):
+            raise GateError("mandatory acceptance paths do not match the actual immutable base..HEAD diff")
+        expected = make_mandatory_suite_plan(plan["base_commit"], manifest, actual_paths)
+        expected_selection = {key: value for key, value in expected.items()
+                              if key not in {"created_utc", "plan_digest"}}
+        provided_selection = {key: value for key, value in plan.items()
+                              if key not in {"created_utc", "plan_digest"}}
+        if expected_selection != provided_selection:
+            raise GateError("mandatory acceptance plan is not the deterministic complete safe-suite selection")
+    elif plan.get("full_suite_required"):
         l6_paths = {row["path"] for row in manifest["test_files"]
                     if row["primary_level"] != "L7" and not row.get("destructive")}
         deferred_staging = sorted(row["path"] for row in manifest["test_files"]
@@ -566,12 +643,13 @@ def ensure_plan(plan: dict[str, Any], manifest: dict[str, Any], allow_l6: bool =
         raise GateError("staging plans require a separate disposable-stage runner")
     if not set(plan["selected_files"]) <= manifest_paths(manifest):
         raise GateError("plan references a test file absent from the current manifest")
-    if not plan.get("full_suite_required") and not plan.get("manual_subset") and not plan.get("quick_push"):
+    if (not plan.get("full_suite_required") and not plan.get("mandatory_suite_required")
+            and not plan.get("manual_subset") and not plan.get("quick_push")):
         actual_paths = changed_paths(plan["base_commit"])
         if sorted(actual_paths) != sorted(plan["changed_paths"]):
             raise GateError("change plan paths do not match the actual immutable base..HEAD diff")
         expected = make_plan(plan["base_commit"], manifest, actual_paths, include_native=plan.get("include_native", False))
-        for field in ("path_matches", "domains", "dependency_domains", "selected_files", "optional_suites", "deferred_staging_suites", "required_native_suites", "required_execution_profiles", "include_native", "required_levels", "regression_policy"):
+        for field in ("path_matches", "domains", "dependency_domains", "selected_files", "optional_suites", "deferred_staging_suites", "required_native_suites", "required_execution_profiles", "include_native", "required_levels", "regression_policy", "mandatory_suite_required"):
             if expected[field] != plan.get(field):
                 raise GateError(f"change plan {field} is not the deterministic manifest result")
     expected_profiles = required_execution_profiles(
@@ -920,7 +998,13 @@ def command_plan(args: argparse.Namespace) -> int:
     catalog_errors = check_catalog(manifest)
     if catalog_errors:
         raise GateError("manifest/catalog mismatch: " + "; ".join(catalog_errors))
-    if getattr(args, "quick_push", False):
+    if getattr(args, "mandatory_all", False):
+        if not args.include_native:
+            raise GateError("mandatory acceptance requires --include-native")
+        if getattr(args, "quick_push", False):
+            raise GateError("mandatory acceptance cannot be combined with --quick-push")
+        plan = make_mandatory_suite_plan(args.base, manifest, args.paths or None)
+    elif getattr(args, "quick_push", False):
         if args.include_native:
             raise GateError("quick push plan cannot include native opt-in suites")
         plan = make_quick_push_plan(args.base, manifest, args.paths or None)
@@ -967,6 +1051,7 @@ def command_subset_plan(args: argparse.Namespace) -> int:
         "required_levels": sorted({"L0", *(row["primary_level"] for row in selected_rows)}),
         "regression_policy": {"level": "manual-subset", "anchors": []},
         "full_suite_required": False,
+        "mandatory_suite_required": False,
         "manual_subset": True,
         "manual_gate": "subset",
         "subset_selector": {"domain": args.domain, "level": args.level},
@@ -1095,6 +1180,7 @@ def command_full_suite_plan(args: argparse.Namespace) -> int:
         "required_levels": levels,
         "regression_policy": {"level": "L6", "reasons": ["manual/nightly/release"], "anchors": []},
         "full_suite_required": True,
+        "mandatory_suite_required": False,
         "manual_gate": "L6",
         "staging_required": False,
     }
@@ -1697,14 +1783,16 @@ def command_run(args: argparse.Namespace) -> int:
                            "requires a qualified child-process profile; none is available in the routine gate")
                 blocked.append(f"{row['path']}: {message}")
                 if row.get("native") and not args.include_native and (
-                    row["path"] in plan.get("required_native_suites", []) or plan.get("full_suite_required")
+                    row["path"] in plan.get("required_native_suites", [])
+                    or plan.get("full_suite_required") or plan.get("mandatory_suite_required")
                 ):
                     blocked.append(f"{row['path']}: required native suite needs explicit --include-native planning")
                 continue
             if not row.get("native"):
                 continue
             if not args.include_native:
-                if row["path"] in plan.get("required_native_suites", []) or plan.get("full_suite_required"):
+                if (row["path"] in plan.get("required_native_suites", [])
+                        or plan.get("full_suite_required") or plan.get("mandatory_suite_required")):
                     blocked.append(f"{row['path']}: required native suite needs explicit --include-native planning")
             elif row["path"].endswith("test_protocol_native_validation.py"):
                 binary = args.mihomo_binary
@@ -1814,7 +1902,11 @@ def command_run(args: argparse.Namespace) -> int:
                 argv = ["sh", path]
                 cwd = ROOT
             elif path in STDLIB_CONTRACT_PATHS:
-                argv = [sys.executable, path]
+                if path == "tests/gates/test_subscription_identity_contract.py":
+                    argv = [sys.executable, "-m", "unittest", "discover", "-s",
+                            str(ROOT / "tests/gates"), "-p", "test_subscription_identity_contract.py"]
+                else:
+                    argv = [sys.executable, path]
                 cwd = ROOT
             else:
                 blocked.append(f"{path}: no reviewed runner adapter")
@@ -1861,7 +1953,12 @@ def command_run(args: argparse.Namespace) -> int:
             blocked.extend(l0_problems)
         result = {
             "schema_version": 1,
-            "evidence_scope": "manual_subset" if plan.get("manual_subset") else ("L6_full_suite" if plan.get("full_suite_required") else "affected_change"),
+            "evidence_scope": (
+                "manual_subset" if plan.get("manual_subset") else
+                "L6_full_suite" if plan.get("full_suite_required") else
+                "mandatory_all_safe_suites" if plan.get("mandatory_suite_required") else
+                "affected_change"
+            ),
             "deploy_eligibility": False if plan.get("manual_subset") else None,
             "source_commit": plan["source_commit"],
             "baseline_commit": None,
@@ -1961,6 +2058,8 @@ def parser() -> argparse.ArgumentParser:
     plan.add_argument("--base", required=True)
     plan.add_argument("--paths", nargs="*")
     plan.add_argument("--include-native", action="store_true")
+    plan.add_argument("--mandatory-all", action="store_true",
+                      help="select every safe L1-L4 suite and current L5 anchors; never includes L7")
     plan.add_argument("--quick-push", action="store_true",
                       help="affected-domain fast lane: run only selected L1 suites plus L0")
     plan.add_argument("--output")

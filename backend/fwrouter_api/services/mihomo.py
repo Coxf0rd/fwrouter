@@ -13,6 +13,7 @@ from fwrouter_api.adapters.mihomo import (
 )
 from fwrouter_api.services.modules import get_module_state
 from fwrouter_api.services.servers import sync_servers_from_mihomo
+from fwrouter_api.services.live_probe_cache import get_readonly_mihomo_health
 
 _MIHOMO_RUNTIME_ERRORS = (httpx.HTTPError, OSError, ValueError, yaml.YAMLError)
 
@@ -32,7 +33,7 @@ def get_mihomo_status() -> dict[str, Any]:
     This does not switch servers, refresh subscriptions or apply dataplane.
     """
 
-    health = DEFAULT_MIHOMO_ADAPTER.health()
+    health = get_readonly_mihomo_health(DEFAULT_MIHOMO_ADAPTER)
     servers: list[MihomoServer] = []
     server_inventory_details: dict[str, Any] = {"ok": True}
     try:

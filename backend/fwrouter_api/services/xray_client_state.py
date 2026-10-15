@@ -7,6 +7,7 @@ from fwrouter_api.adapters.xray import XrayClient
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
 from fwrouter_api.services.subject_policy import get_subject_with_effective_state
+from fwrouter_api.services.subjects import get_subject
 
 
 def _subscription_path(client_id: str) -> str:
@@ -35,7 +36,8 @@ def _client_alias_map() -> dict[str, str | None]:
     return aliases
 
 
-def _xray_subject_for_client(client_id: str) -> dict[str, Any] | None:
+def _xray_subject_for_client(client_id: str, *, include_effective_state: bool = True) -> dict[str, Any] | None:
+    """Resolve identity; batch planners can enrich once from their owned snapshot."""
     with db_session() as connection:
         row = connection.execute(
             """
@@ -52,6 +54,8 @@ def _xray_subject_for_client(client_id: str) -> dict[str, Any] | None:
         ).fetchone()
     if row is None:
         return None
+    if not include_effective_state:
+        return get_subject(str(row["subject_id"]))
     return get_subject_with_effective_state(str(row["subject_id"]))
 
 

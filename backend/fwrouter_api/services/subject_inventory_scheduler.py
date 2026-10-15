@@ -81,5 +81,6 @@ def stop_subject_inventory_scheduler(*, timeout_seconds: float = 2.0) -> bool:
         _SUBJECT_INVENTORY_STOP_EVENT.set()
         _SUBJECT_INVENTORY_THREAD.join(timeout=timeout_seconds)
         stopped = not _SUBJECT_INVENTORY_THREAD.is_alive()
-        _SUBJECT_INVENTORY_THREAD = None
+        if stopped:
+            _SUBJECT_INVENTORY_THREAD = None
         return stopped

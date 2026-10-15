@@ -12,6 +12,7 @@ import ipaddress
 import json
 import re
 import socket
+import threading
 import httpx
 import yaml
 
@@ -23,6 +24,11 @@ TRANSPARENT_TPROXY_LISTENER_NAME = "fwrouter-tproxy"
 TRANSPARENT_TPROXY_LISTENER_BIND = "0.0.0.0"
 TRANSPARENT_TPROXY_PROXY_NAME = "vpn-global"
 TRANSPARENT_TPROXY_RULE_NAME = "fwrouter-transparent"
+MAX_CACHED_POLICY_CONFIG_BYTES = 32 * 1024 * 1024
+MAX_CACHED_POLICY_RULE_COUNT = 250_000
+_SIMPLE_DOMAIN_UDP_GUARD = re.compile(
+    r"\(\((?:Network|NETWORK),udp\)(?:,| && )\((Domain|DOMAIN|DomainSuffix|DOMAIN-SUFFIX|DomainKeyword|DOMAIN-KEYWORD),([^,()]+)\)\)"
+)
 BUILTIN_PROXY_NAMES = {
     "COMPATIBLE",
     "DIRECT",
@@ -402,6 +408,8 @@ class MihomoHttpAdapter(MihomoAdapter):
         self.timeout_seconds = timeout_seconds
         self._secret_cache_mtime_ns: int | None = None
         self._secret_cache_value: str = ""
+        self._policy_config_cache_lock = threading.Lock()
+        self._policy_config_cache: tuple[str, type[Any], dict[str, Any], dict[str, Any]] | None = None
 
     def _config_text(self) -> str:
         if not self.config_path.exists():
@@ -638,7 +646,7 @@ class MihomoHttpAdapter(MihomoAdapter):
             return {}
         return {"Authorization": f"Bearer {secret}"}
 
-    def _config_runtime_details(self) -> dict[str, Any]:
+    def _config_runtime_details(self, *, config_text: str | None = None) -> dict[str, Any]:
         contours = {}
         if self.contours_path.exists():
             try:
@@ -666,7 +674,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 "fwrouter_contours": contours,
             }
 
-        config_text = self._config_text()
+        config_text = self._config_text() if config_text is None else config_text
         listener_ports = self._scan_listener_ports(text=config_text)
         mixed_port = listener_ports["mixed_port"]
         tproxy_port = listener_ports["tproxy_port"]
@@ -799,22 +807,85 @@ class MihomoHttpAdapter(MihomoAdapter):
         }
 
     @staticmethod
-    def _vpn_udp_policy_readback(
-        config_text: str,
-        proxies: dict[str, Any],
-        native_rules: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        """Prove the active config and controller selectors are fail-closed for VPN UDP."""
+    def _parse_vpn_udp_policy_config(config_text: str) -> dict[str, Any]:
+        """Parse policy config with the same safe loader and fail-closed behavior."""
         try:
-            # Read the complete current configuration on every proof. libyaml's
-            # safe constructor avoids Python scanner overhead for large rulesets;
-            # do not cache this security-sensitive result across runtime changes.
             loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
             config = yaml.load(config_text, Loader=loader) or {}
         except yaml.YAMLError:
             config = {}
-        if not isinstance(config, dict):
-            config = {}
+        return config if isinstance(config, dict) else {}
+
+    def _parsed_vpn_udp_policy_config(self, config_text: str) -> dict[str, Any]:
+        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+        with self._policy_config_cache_lock:
+            cached = self._policy_config_cache
+            if cached is not None and cached[0] == config_text and cached[1] is loader:
+                return cached[2]
+
+            config = self._parse_vpn_udp_policy_config(config_text)
+            if len(config_text.encode("utf-8")) <= MAX_CACHED_POLICY_CONFIG_BYTES:
+                self._policy_config_cache = (config_text, loader, config, {})
+            else:
+                self._policy_config_cache = None
+            return config
+
+    def _readback_with_config_analysis(
+        self, config_text: str, proxies: dict[str, Any],
+        native_rules: list[dict[str, Any]] | None, parsed_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Reuse only immutable expected-config analysis, never native observations."""
+        from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
+        validator_identity = (type(self)._vpn_udp_policy_readback, _mandatory_vpn_udp_guard)
+        with self._policy_config_cache_lock:
+            cached = self._policy_config_cache
+            configured_rules = parsed_config.get("rules")
+            if (cached is not None and cached[0] == config_text and cached[2] is parsed_config
+                    and isinstance(configured_rules, list) and len(configured_rules) <= MAX_CACHED_POLICY_RULE_COUNT):
+                analysis = cached[3]
+                cacheable_analysis = True
+                if analysis.get("validator_identity") != validator_identity:
+                    # YAML scalar aliases can expand a small document into a
+                    # large expected-rule vector. Bound expanded UTF-8 input,
+                    # not just file bytes/count, before retaining analysis.
+                    expanded_bytes = 0
+                    for rule in configured_rules:
+                        if not isinstance(rule, str):
+                            cacheable_analysis = False
+                            break
+                        try:
+                            expanded_bytes += len(rule.encode("utf-8"))
+                        except UnicodeEncodeError:
+                            cacheable_analysis = False
+                            break
+                        if expanded_bytes > MAX_CACHED_POLICY_CONFIG_BYTES:
+                            cacheable_analysis = False
+                            break
+                    if cacheable_analysis:
+                        analysis.clear()
+                        analysis["validator_identity"] = validator_identity
+                if cacheable_analysis:
+                    return self._vpn_udp_policy_readback(
+                        config_text, proxies, native_rules, _parsed_config=parsed_config,
+                        _configuration_analysis=analysis,
+                    )
+        return self._vpn_udp_policy_readback(
+            config_text, proxies, native_rules, _parsed_config=parsed_config,
+        )
+
+    @staticmethod
+    def _vpn_udp_policy_readback(
+        config_text: str,
+        proxies: dict[str, Any],
+        native_rules: list[dict[str, Any]] | None = None,
+        *,
+        _parsed_config: dict[str, Any] | None = None,
+        _configuration_analysis: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Prove the active config and controller selectors are fail-closed for VPN UDP."""
+        # `health()` passes only an internal parse of the exact bytes it just
+        # read. Direct callers retain the original parse-on-every-call behavior.
+        config = _parsed_config if _parsed_config is not None else MihomoHttpAdapter._parse_vpn_udp_policy_config(config_text)
         configured_groups = [
             item for item in (config.get("proxy-groups") or [])
             if isinstance(item, dict) and str(item.get("name") or "").strip()
@@ -858,19 +929,25 @@ class MihomoHttpAdapter(MihomoAdapter):
             "fwrouter-transparent": sub_rules.get("fwrouter-transparent"),
             "fwrouter-full-vpn": sub_rules.get("fwrouter-full-vpn"),
         }
-        for name, rules in sequences.items():
-            valid = isinstance(rules, list) and bool(rules)
-            if valid:
-                for index, raw_rule in enumerate(rules):
-                    rule = str(raw_rule)
-                    guard = _mandatory_vpn_udp_guard(rule)
-                    if guard and (index + 1 >= len(rules) or str(rules[index + 1]) != guard):
-                        valid = False
-                        break
-            if name == "fwrouter-full-vpn":
-                valid = bool(valid and len(rules) >= 2 and str(rules[-2]) == "MATCH,vpn-global"
-                             and str(rules[-1]) == "NETWORK,udp,REJECT")
-            guarded_sequences[name] = bool(valid)
+        prepared_guards = (_configuration_analysis or {}).get("guarded_sequences")
+        if isinstance(prepared_guards, dict):
+            guarded_sequences = dict(prepared_guards)
+        else:
+            for name, rules in sequences.items():
+                valid = isinstance(rules, list) and bool(rules)
+                if valid:
+                    for index, raw_rule in enumerate(rules):
+                        rule = str(raw_rule)
+                        guard = _mandatory_vpn_udp_guard(rule)
+                        if guard and (index + 1 >= len(rules) or str(rules[index + 1]) != guard):
+                            valid = False
+                            break
+                if name == "fwrouter-full-vpn":
+                    valid = bool(valid and len(rules) >= 2 and str(rules[-2]) == "MATCH,vpn-global"
+                                 and str(rules[-1]) == "NETWORK,udp,REJECT")
+                guarded_sequences[name] = bool(valid)
+            if _configuration_analysis is not None:
+                _configuration_analysis["guarded_sequences"] = dict(guarded_sequences)
         rules_readback_ok = all(guarded_sequences.values())
         native_top_level_rules_ok: bool | None = None
         if native_rules is not None:
@@ -891,6 +968,8 @@ class MihomoHttpAdapter(MihomoAdapter):
             native_condition_type_to_config = {**native_type_to_config, "SrcPort": "SRC-PORT", "DstPort": "DST-PORT"}
 
             def canonicalize_nested_cidrs(payload: str) -> str | None:
+                if "IP-CIDR" not in payload:
+                    return payload  # The exact CIDR regex cannot match this input.
                 def replace(match: re.Match[str]) -> str:
                     rule_type, value, raw_params = match.groups()
                     params = [item for item in raw_params.split(",") if item]
@@ -930,6 +1009,11 @@ class MihomoHttpAdapter(MihomoAdapter):
                     except ValueError:
                         return None
                 if config_type == "AND":
+                    simple_guard = _SIMPLE_DOMAIN_UDP_GUARD.fullmatch(payload)
+                    if simple_guard is not None:
+                        condition, value = simple_guard.groups()
+                        condition = native_condition_type_to_config.get(condition, condition)
+                        return config_type, f"((NETWORK,udp),({condition},{value}))"
                     payload = payload.replace(" && ", ",")
                     payload = re.sub(
                         r"(?<=\(|,)([A-Za-z][A-Za-z0-9]*)(?=,)",
@@ -981,44 +1065,44 @@ class MihomoHttpAdapter(MihomoAdapter):
                 canonical = normalize_native_rule_type(native_type, payload)
                 return (*canonical, target) if canonical is not None else None
 
-            normalized_native_rules: list[tuple[str, str, str]] = []
             has_native_indexes = any(isinstance(item, dict) and "index" in item for item in native_rules)
+            configured_rules = sequences["rules"]
+            prepared_config_rules = (_configuration_analysis or {}).get("normalized_config_rules")
+            if (prepared_config_rules is None and _configuration_analysis is not None
+                    and isinstance(configured_rules, list)):
+                prepared_config_rules = [normalize_config_rule(str(rule)) for rule in configured_rules]
+                _configuration_analysis["normalized_config_rules"] = prepared_config_rules
+            native_top_level_rules_ok = isinstance(configured_rules, list) and len(native_rules) == len(configured_rules)
             for position, item in enumerate(native_rules):
+                if not native_top_level_rules_ok:
+                    break
                 if not isinstance(item, dict):
-                    normalized_native_rules = []
+                    native_top_level_rules_ok = False
                     break
                 native_rule_type = str(item.get("type") or "").strip()
                 payload = str(item.get("payload") or "").strip()
                 target = str(item.get("proxy") or "").strip()
                 extra = item.get("extra") if isinstance(item.get("extra"), dict) else {}
                 if native_rule_type not in native_type_to_config or not target:
-                    normalized_native_rules = []
+                    native_top_level_rules_ok = False
                     break
                 if "disabled" in extra and type(extra.get("disabled")) is not bool:
-                    normalized_native_rules = []
+                    native_top_level_rules_ok = False
                     break
                 if extra.get("disabled") is True:
-                    normalized_native_rules = []
+                    native_top_level_rules_ok = False
                     break
                 if has_native_indexes:
                     index = item.get("index")
                     if type(index) is not int or index != position:
-                        normalized_native_rules = []
+                        native_top_level_rules_ok = False
                         break
                 canonical = normalize_native_rule_type(native_rule_type, payload)
-                if canonical is None:
-                    normalized_native_rules = []
+                configured = (prepared_config_rules[position] if prepared_config_rules is not None
+                              else normalize_config_rule(str(configured_rules[position])))
+                if canonical is None or configured is None or (*canonical, target) != configured:
+                    native_top_level_rules_ok = False
                     break
-                normalized_native_rules.append((*canonical, target))
-            configured_rules = sequences["rules"]
-            native_top_level_rules_ok = bool(
-                isinstance(configured_rules, list)
-                and normalized_native_rules == [
-                    normalized for value in configured_rules
-                    if (normalized := normalize_config_rule(str(value))) is not None
-                ]
-                and len(normalized_native_rules) == len(configured_rules)
-            )
         return {
             "policy_installed": bool(group_readback_ok and rules_readback_ok),
             "selector_membership_matches": group_readback_ok,
@@ -1042,6 +1126,14 @@ class MihomoHttpAdapter(MihomoAdapter):
             return {"value": data}
 
         return data
+
+    def controller_ready(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
+        """Check controller availability without reading or proving runtime policy."""
+        version = self._get_json("/version", timeout_seconds=timeout_seconds)
+        value = version.get("version")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Mihomo controller returned an invalid version response.")
+        return {"ok": True, "version": value.strip()}
 
     def _put_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         with httpx.Client(timeout=self.timeout_seconds, trust_env=False) as client:
@@ -1070,7 +1162,8 @@ class MihomoHttpAdapter(MihomoAdapter):
             return False
 
     def health(self) -> MihomoHealth:
-        config_details = self._config_runtime_details()
+        config_text = self._config_text()
+        config_details = self._config_runtime_details(config_text=config_text)
         try:
             version = self._get_json("/version")
             proxies = self._proxies()
@@ -1080,7 +1173,10 @@ class MihomoHttpAdapter(MihomoAdapter):
                 native_rules = native_rules_value if isinstance(native_rules_value, list) else None
             except (httpx.HTTPError, OSError, ValueError):
                 native_rules = None
-            udp_policy = self._vpn_udp_policy_readback(self._config_text(), proxies, native_rules)
+            parsed_policy_config = self._parsed_vpn_udp_policy_config(config_text)
+            udp_policy = self._readback_with_config_analysis(
+                config_text, proxies, native_rules, parsed_policy_config,
+            )
             udp_policy["wiring_proven"] = udp_policy["policy_installed"]
             try:
                 from fwrouter_api.services.mihomo_reconcile_fingerprint import mihomo_udp_policy_receipt_matches

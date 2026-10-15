@@ -61,5 +61,6 @@ def stop_maintenance_scheduler(*, timeout_seconds: float = 2.0) -> bool:
         _MAINTENANCE_STOP_EVENT.set()
         _MAINTENANCE_THREAD.join(timeout=timeout_seconds)
         stopped = not _MAINTENANCE_THREAD.is_alive()
-        _MAINTENANCE_THREAD = None
+        if stopped:
+            _MAINTENANCE_THREAD = None
         return stopped

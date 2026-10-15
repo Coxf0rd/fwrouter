@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 import hashlib
 import sqlite3
+import uuid
 from pathlib import Path
 
 import pytest
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db import migrations
-from fwrouter_api.db.connection import connect, get_cached_schema_state, initialize_database
+from fwrouter_api.db.connection import (
+    connect,
+    get_cached_schema_state,
+    get_schema_path,
+    initialize_database,
+)
+from fwrouter_api.db.schema_state import inspect_database_schema
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.bootstrap import bootstrap_backend
 
@@ -65,7 +72,9 @@ def test_v20_to21_scrubs_operational_credentials_idempotently(monkeypatch, tmp_p
     operation_records = [json.loads(line) for line in paths.operational_events_path.read_text(encoding="utf-8").splitlines()]
     technical_records = [json.loads(line) for line in technical_path.read_text(encoding="utf-8").splitlines()]
 
-    assert [(item.from_version, item.to_version) for item in applied] == [(20, 21), (21, 22), (22, 23), (23, 24)]
+    assert [(item.from_version, item.to_version) for item in applied] == [
+        (20, 21), (21, 22), (22, 23), (23, 24), (24, 25),
+    ]
     assert applied_again == []
     assert "user:pass" not in first["message"]
     assert "token=abc" not in first["message"]
@@ -495,6 +504,61 @@ def _insert_legacy_data(connection: sqlite3.Connection, version: int) -> None:
     connection.commit()
 
 
+def _install_genuine_schema_24(connection: sqlite3.Connection) -> None:
+    """Build the full current schema and remove only the additive v25 tables."""
+    connection.executescript(get_schema_path().read_text(encoding="utf-8"))
+    # The v25 identity tables reference each other. Drop children before parents
+    # so this fixture remains valid with foreign-key enforcement enabled.
+    for table in (
+        "subscription_node_credential_history",
+        "subscription_node_identity_transitions",
+        "subscription_node_credentials",
+        "subscription_node_aliases",
+        "subscription_node_identities",
+    ):
+        connection.execute(f"DROP TABLE {table}")
+    connection.execute(
+        "UPDATE schema_meta SET value = '24' WHERE key = 'schema_version'"
+    )
+    connection.execute(
+        "INSERT INTO settings (key, value_json) VALUES ('upgrade-fixture', '{\"kept\":true}')"
+    )
+    connection.execute(
+        """INSERT INTO servers (server_id, server_name, provider_name)
+           VALUES ('upgrade-fixture', 'Upgrade fixture', 'pytest')"""
+    )
+    connection.execute(
+        "INSERT INTO server_preferences (server_id, vpn_auto, global_list) VALUES ('upgrade-fixture', 1, 1)"
+    )
+    connection.executemany(
+        """INSERT INTO subjects (
+               subject_id, subject_type, subject_role, implementation_kind,
+               stable_key, display_name, desired_mode, is_active
+           ) VALUES (?, 'xray', 'vless_client', 'xray', ?, ?, 'vpn', 1)""",
+        [
+            (str(uuid.UUID(int=index + 1)), f"fixture-{index}", f"Fixture {index}")
+            for index in range(78)
+        ],
+    )
+    state = inspect_database_schema(connection)
+    assert state["actual_schema_version"] == "24"
+    identity_tables = {
+        "subscription_node_identities",
+        "subscription_node_aliases",
+        "subscription_node_credentials",
+        "subscription_node_credential_history",
+        "subscription_node_identity_transitions",
+    }
+    assert all(not state["tables"][name]["exists"] for name in identity_tables)
+    assert all(
+        info["ok"]
+        for name, info in state["tables"].items()
+        if name not in identity_tables
+    )
+    assert connection.execute("SELECT COUNT(*) FROM subjects").fetchone()[0] == 78
+    assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
 def _schema_version() -> str:
     with _connect_raw() as connection:
         return str(
@@ -637,9 +701,198 @@ def test_upgrade_runs_sequential_migrations(monkeypatch, tmp_path: Path) -> None
         (21, 22),
         (22, 23),
         (23, 24),
+        (24, 25),
     ]
     assert schema_state["ok"] is True
     assert _schema_version() == str(migrations.CURRENT_SCHEMA_VERSION)
+
+
+@pytest.mark.no_database_autoinit
+def test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    with _connect_raw() as connection:
+        _install_legacy_common_schema(connection, 24)
+        _insert_legacy_data(connection, 24)
+        legacy_tables = [
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' AND name <> 'schema_meta' ORDER BY name"
+            ).fetchall()
+        ]
+        before = _table_snapshot(connection, legacy_tables)
+        applied = migrations.run_missing_migrations(connection)
+        assert [(item.from_version, item.to_version) for item in applied] == [(24, 25)]
+        after = _table_snapshot(connection, legacy_tables)
+        identity_tables = {
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert {
+            "subscription_node_identities",
+            "subscription_node_aliases",
+            "subscription_node_credentials",
+            "subscription_node_credential_history",
+            "subscription_node_identity_transitions",
+        } <= identity_tables
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert migrations.run_missing_migrations(connection) == []
+        upgraded_snapshot = _table_snapshot(connection, legacy_tables)
+        assert upgraded_snapshot == after
+
+        # A v24 binary must fail closed before it can mutate a v25 database.
+        before_old_code = {
+            name: _table_rows(connection, name)
+            for name in sorted(legacy_tables + [
+                "schema_meta",
+                "subscription_node_identities",
+                "subscription_node_aliases",
+                "subscription_node_credentials",
+                "subscription_node_credential_history",
+                "subscription_node_identity_transitions",
+            ])
+        }
+        monkeypatch.setattr(migrations, "CURRENT_SCHEMA_VERSION", 24)
+        with pytest.raises(RuntimeError, match="newer than supported 24"):
+            migrations.run_missing_migrations(connection)
+        after_old_code = {
+            name: _table_rows(connection, name)
+            for name in sorted(legacy_tables + [
+                "schema_meta",
+                "subscription_node_identities",
+                "subscription_node_aliases",
+                "subscription_node_credentials",
+                "subscription_node_credential_history",
+                "subscription_node_identity_transitions",
+            ])
+        }
+        assert after_old_code == before_old_code
+        assert before == after
+
+
+@pytest.mark.no_database_autoinit
+def test_database_upgrade_cli_is_explicit_backed_up_and_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    with _connect_raw() as connection:
+        _install_genuine_schema_24(connection)
+        legacy_tables = [
+            str(row[0]) for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' AND name <> 'schema_meta' ORDER BY name"
+            )
+        ]
+        before_rows = _table_snapshot(connection, legacy_tables)
+
+    from fwrouter_api.cli import main
+    from fwrouter_api.db.connection import get_db_path
+    db_path = get_db_path()
+    backups = db_path.parent / "backups"
+    assert main(["database", "upgrade", "--expected-schema", "24"]) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run["status"] == "dry_run" and dry_run["database_changed"] is False
+    assert not backups.exists()
+    with _connect_raw() as connection:
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "24"
+        assert _table_snapshot(connection, legacy_tables) == before_rows
+
+    assert main(["database", "upgrade", "--expected-schema", "24", "--apply"]) == 1
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["error_code"] == "DATABASE_OFFLINE_CONFIRMATION_REQUIRED"
+    assert not backups.exists()
+
+    assert main([
+        "database", "upgrade", "--expected-schema", "24", "--apply", "--confirm-offline",
+    ]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["status"] == "applied" and applied["database_changed"] is True
+    backup_path = Path(applied["backup_path"])
+    assert backup_path.is_file() and backup_path.stat().st_mode & 0o777 == 0o600
+    assert hashlib.sha256(backup_path.read_bytes()).hexdigest() == applied["backup_sha256"]
+    with sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True) as backup:
+        assert backup.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "24"
+    with _connect_raw() as connection:
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "25"
+        assert _table_snapshot(connection, legacy_tables) == before_rows
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+    with _connect_raw() as connection:
+        rows_after_upgrade = _table_snapshot(connection, legacy_tables)
+    assert main(["database", "upgrade", "--expected-schema", "25"]) == 0
+    current = json.loads(capsys.readouterr().out)
+    assert current["status"] == "already_current" and current["database_changed"] is False
+    assert len(list(backups.glob("*.bak"))) == 1
+    with _connect_raw() as connection:
+        assert _table_snapshot(connection, legacy_tables) == rows_after_upgrade
+
+
+@pytest.mark.no_database_autoinit
+def test_database_upgrade_cli_refuses_schema_24_structural_drift_without_backup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from fwrouter_api.cli import main
+    from fwrouter_api.db.connection import get_db_path
+
+    # Keep one exact-node test for the hosted gate while exercising three
+    # independent schema-24 preimages. A function-level parametrization would
+    # expand the pytest node IDs and require a different exact-node contract.
+    drifts = (
+        ("missing-settings-table", "DROP TABLE settings"),
+        ("missing-settings-column", "ALTER TABLE settings DROP COLUMN value_json"),
+        ("missing-required-index", "DROP INDEX idx_servers_inventory_state"),
+    )
+    for case_name, mutation in drifts:
+        case_root = tmp_path / case_name
+        _configure_env(monkeypatch, case_root)
+        with _connect_raw() as connection:
+            _install_genuine_schema_24(connection)
+            connection.execute(mutation)
+            tables_before = [
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+            ]
+            rows_before = _table_snapshot(connection, tables_before)
+            schema_before = [
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+                )
+            ]
+
+        backups = get_db_path().parent / "backups"
+        assert main([
+            "database", "upgrade", "--expected-schema", "24", "--apply", "--confirm-offline",
+        ]) == 1, case_name
+        refusal = json.loads(capsys.readouterr().out)
+        assert refusal["error_code"] == "DATABASE_SCHEMA_PREFLIGHT_FAILED", case_name
+        assert not backups.exists(), case_name
+        with _connect_raw() as connection:
+            assert connection.execute(
+                "SELECT value FROM schema_meta WHERE key='schema_version'"
+            ).fetchone()[0] == "24", case_name
+            assert _table_snapshot(connection, tables_before) == rows_before, case_name
+            assert [
+                tuple(row)
+                for row in connection.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+                )
+            ] == schema_before, case_name
 
 
 @pytest.mark.no_database_autoinit
@@ -937,7 +1190,8 @@ def test_subscription_identity_migration_preserves_references_and_membership(
         fk = connection.execute("PRAGMA foreign_key_check").fetchall()
 
     assert [(item.from_version, item.to_version) for item in applied] == [
-        (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18), (18, 19), (19, 20), (20, 21), (21, 22), (22, 23), (23, 24),
+        (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18),
+        (18, 19), (19, 20), (20, 21), (21, 22), (22, 23), (23, 24), (24, 25),
     ]
     assert old_server is None
     assert server["server_name"] == old_id

@@ -1,3 +1,4 @@
+from fwrouter_api.services import dataplane_live
 from fwrouter_api.services.dataplane_live import (
     _classify_live_global_mode,
     live_mode_matches_intent,
@@ -87,3 +88,72 @@ def test_live_global_mode_does_not_infer_default_from_selective_marker_alone() -
         expected_mode="selective", expected_selective_default="vpn", probe=probe)
     assert not live_mode_matches_intent(
         expected_mode="selective", expected_selective_default="direct", probe=probe)
+
+
+def test_applied_nft_markers_detect_stale_reserved_lan_ingress_rules(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    applied = tmp_path / "applied.nft"
+    applied.write_text(
+        'table inet fwrouter_v2 { chain prerouting { '
+        'comment "fwrouter tproxy handoff udp:5203"; } }\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        dataplane_live,
+        "_read_live_table",
+        lambda: {
+            "ok": True,
+            "raw_table": '''table inet fwrouter_v2 {
+                chain prerouting {
+                    comment "fwrouter tproxy handoff udp:5203"
+                    comment "block IPv6 from LAN ingress rescue0"
+                    comment "allow LAN DNS capture before VPN classify rescue0"
+                }
+            }''',
+        },
+    )
+
+    result = dataplane_live.applied_nft_markers_match_live(applied)
+
+    assert result["ok"] is False
+    assert result["reason"] == "live_table_has_stale_lan_role_markers"
+    assert result["missing_markers_count"] == 0
+    assert result["stale_lan_role_markers"] == [
+        "allow LAN DNS capture before VPN classify rescue0",
+        "block IPv6 from LAN ingress rescue0",
+    ]
+
+
+def test_applied_nft_markers_ignore_current_lan_and_unrelated_rescue_comments(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    applied = tmp_path / "applied.nft"
+    applied.write_text(
+        'table inet fwrouter_v2 { chain prerouting { '
+        'comment "fwrouter tproxy handoff udp:5203"; } }\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        dataplane_live,
+        "_read_live_table",
+        lambda: {
+            "ok": True,
+            "raw_table": '''table inet fwrouter_v2 {
+                chain prerouting {
+                    comment "fwrouter tproxy handoff udp:5203"
+                    comment "block IPv6 from LAN ingress enp2s0"
+                    comment "allow LAN DNS capture before VPN classify enp2s0"
+                    comment "rescue service marker"
+                }
+            }''',
+        },
+    )
+
+    result = dataplane_live.applied_nft_markers_match_live(applied)
+
+    assert result["ok"] is True
+    assert result["stale_lan_role_markers_count"] == 0
+    assert result["stale_lan_role_markers"] == []

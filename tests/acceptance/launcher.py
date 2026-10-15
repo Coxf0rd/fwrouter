@@ -125,14 +125,33 @@ _TARGET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 )
 _KERNEL_RECOVERY_SUITE = "kernel-recovery-diagnostic"
-_KERNEL_DATAPLANE_SUITES = {_KERNEL_RECOVERY_SUITE, "provider-cohort", "reentry-diagnostic"}
+_KERNEL_DATAPLANE_SUITES = {
+    _KERNEL_RECOVERY_SUITE, "provider-cohort", "reentry-diagnostic",
+    "final-regressions-diagnostic",
+}
 _PACKET_DIAGNOSTIC_SUITE = "packet-diagnostic"
+_RUNTIME_SCALE_DIAGNOSTIC_SUITE = "runtime-scale-diagnostic"
+_IDENTITY_DIAGNOSTIC_SUITE = "identity-diagnostic"
 _PACKET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_packet_dataplane.py::test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks",
+    "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
+)
+_RUNTIME_SCALE_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
+)
+_IDENTITY_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_xray_generation.py::test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery",
+)
+_FINAL_REGRESSIONS_DIAGNOSTIC_SUITE = "final-regressions-diagnostic"
+_FINAL_REGRESSIONS_DIAGNOSTIC_NODEIDS = (
+    "tests/application_acceptance/test_database_application.py::test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state",
+    *_RECOVERY_DIAGNOSTIC_NODEIDS,
+    "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 )
 _DIAGNOSTIC_SUITES = {*_DIAGNOSTIC_NODEIDS, "provider-cohort", "fence-diagnostic", "target-diagnostic",
                       "recovery-diagnostic", "reentry-diagnostic", _KERNEL_RECOVERY_SUITE,
-                      _PACKET_DIAGNOSTIC_SUITE}
+                      _PACKET_DIAGNOSTIC_SUITE, _RUNTIME_SCALE_DIAGNOSTIC_SUITE,
+                      _IDENTITY_DIAGNOSTIC_SUITE, _FINAL_REGRESSIONS_DIAGNOSTIC_SUITE}
 _KERNEL_SUITES = {"kernel-preflight"}
 PACKET_NETWORKS = {
     "lan": {"subnet": "10.240.0.0/29", "gateway": "10.240.0.6", "router": "10.240.0.1", "client": "10.240.0.2"},
@@ -160,7 +179,7 @@ PACKET_LIBPCAP_API_VERSION_PREFIX = "libpcap version 1.10.3"
 PACKET_DNSMASQ_BASE_VERSION = "2.90-4~deb12u2"
 PACKET_BIND9_DNSUTILS_VERSION = "1:9.18.49-1~deb12u1"
 PACKET_IPTABLES_VERSION = "1.8.9-2"
-PACKET_CAPTURE_LIMIT = 512
+PACKET_CAPTURE_LIMIT = 2048
 PACKET_CAPTURE_SNAPLEN = {"tcp": 54, "udp": 42}
 PACKET_CAPTURE_SOURCES = {
     f"/tmp/fwrouter-packet-evidence/{name}.pcap": name for name in PACKET_CAPTURE_SNAPLEN
@@ -205,7 +224,7 @@ def packet_capture_copy_code(name: str) -> str:
     return r'''import os, stat
 root_path = "/tmp/fwrouter-packet-evidence"
 capture_name = ''' + repr(name) + r''' + ".pcap"
-maximum = 24 + 512 * (16 + ''' + str(snaplen) + r''')
+maximum = 24 + ''' + str(PACKET_CAPTURE_LIMIT) + r''' * (16 + ''' + str(snaplen) + r''')
 root_fd = -1
 capture_fd = -1
 def fail(message):
@@ -269,6 +288,7 @@ def _docker_copy_capture(docker: str, container: str, source: str, destination: 
         "/tmp/fwrouter-receipts/native-process-diagnostics.json",
         "/tmp/fwrouter-receipts/worker-service-logs.json",
         "/tmp/fwrouter-receipts/state-snapshot.json",
+        "/tmp/fwrouter-receipts/runtime-scale-metrics.json",
     }:
         capture_name = PACKET_CAPTURE_SOURCES.get(source)
         if capture_name is None:
@@ -1838,7 +1858,7 @@ try:
     ready=json.loads(raw.decode("ascii"))
     if not isinstance(ready,dict) or ready.get("status")!="ready":
         raise RuntimeError("worker_startup_failed:"+str(ready.get("stage","unknown"))[:64])
-    expected_flows={"tcp":{"snaplen":54,"filter":"(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302)) or (tcp and dst host 1.1.1.1 and dst port 53)"},
+    expected_flows={"tcp":{"snaplen":54,"filter":"(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302 or dst port 5303)) or (tcp and dst host 1.1.1.1 and dst port 53)"},
                     "udp":{"snaplen":42,"filter":"(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 198.51.100.77 and dst port 9081) or (udp and dst host 10.250.240.2 and dst port 9081) or (udp and dst host 1.1.1.1 and dst port 53)"}}
     api_version=ready.get("libpcap_api_version","")
     api_prefix="libpcap version 1.10.3"
@@ -1855,7 +1875,7 @@ try:
     for name,expected in expected_flows.items():
         row=ready["flows"][name]
         if (row.get("filter")!=expected["filter"] or row.get("snaplen")!=expected["snaplen"]
-            or row.get("linktype")!=1 or row.get("packet_limit")!=512
+            or row.get("linktype")!=1 or row.get("packet_limit")!=''' + str(PACKET_CAPTURE_LIMIT) + r'''
             or row.get("header",{}).get("snaplen")!=expected["snaplen"]
             or row.get("header",{}).get("linktype")!=1
             or row.get("header",{}).get("major")!=2 or row.get("header",{}).get("minor")!=4):
@@ -1876,7 +1896,7 @@ try:
                       "worker_sha256":worker_sha,"libpcap_package_version":ready["libpcap_package_version"],
                       "libpcap_api_version":ready["libpcap_api_version"],
                       "libpcap_library_sha256":ready["libpcap_library_sha256"],
-                      "tcp_snaplen":54,"udp_snaplen":42,"packet_limit_per_capture":512},sort_keys=True,separators=(",",":")))
+                      "tcp_snaplen":54,"udp_snaplen":42,"packet_limit_per_capture":''' + str(PACKET_CAPTURE_LIMIT) + r'''},sort_keys=True,separators=(",",":")))
 except Exception as exc:
     if process is not None and process.poll() is None:
         try: process.send_signal(signal.SIGINT)
@@ -1971,13 +1991,13 @@ if (final.get("status")!="stopped" or final.get("exit_code")!=0 or final.get("pi
 files={}
 for name,snaplen in (("tcp",54),("udp",42)):
     row=final["flows"][name]; path=root/(name+".pcap"); info=path.lstat()
-    expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302)) or (tcp and dst host 1.1.1.1 and dst port 53)"
+    expected_filter=("(tcp and dst host 203.0.113.53 and dst port 9080) or (tcp and dst host 198.51.100.77 and dst port 9080) or (tcp and dst host 10.250.240.2 and dst port 9080) or (tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302 or dst port 5303)) or (tcp and dst host 1.1.1.1 and dst port 53)"
                 if name=="tcp" else "(udp and dst host 203.0.113.53 and (dst port 9081 or dst port 5353)) or (udp and dst host 198.51.100.77 and dst port 9081) or (udp and dst host 10.250.240.2 and dst port 9081) or (udp and dst host 1.1.1.1 and dst port 53)")
-    if (type(row.get("count")) is not int or not 0<=row["count"]<=512 or row.get("snaplen")!=snaplen
+    if (type(row.get("count")) is not int or not 0<=row["count"]<=''' + str(PACKET_CAPTURE_LIMIT) + r''' or row.get("snaplen")!=snaplen
         or row.get("filter")!=expected_filter or row.get("header",{}).get("major")!=2
         or row.get("header",{}).get("minor")!=4 or row.get("header",{}).get("linktype")!=1
         or path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid!=0 or info.st_mode&0o077
-        or not 24<=info.st_size<=24+512*(16+snaplen)):
+        or not 24<=info.st_size<=24+''' + str(PACKET_CAPTURE_LIMIT) + r'''*(16+snaplen)):
         raise SystemExit("owned bounded capture file or final count is invalid")
     files[name]={"bytes":info.st_size,"packets":row["count"],"snaplen":snaplen}
 print(json.dumps({"status":"stopped","worker_status":result,"worker_pid":pid,
@@ -2148,7 +2168,7 @@ def packet_role_readiness_code() -> str:
     """Poll only the fixed role-control endpoints from the router namespace."""
     return r'''import json, time, urllib.error, urllib.request
 targets = {"client":("http://10.240.0.2:8081/ready", lambda x: x.get("role")=="client" and x.get("ready") is True),
-           "endpoint":("http://198.18.240.2:8082/ready", lambda x: x.get("role")=="endpoint" and x.get("ready") is True and isinstance(x.get("sockets"),dict) and all(x["sockets"].get(k) is True for k in ("xray_tcp_5301","xray_tcp_5302","http_tcp_9080","udp_echo_9081","dns_udp_5353","dns_upstream_udp_53","dns_upstream_tcp_53")))}
+           "endpoint":("http://198.18.240.2:8082/ready", lambda x: x.get("role")=="endpoint" and x.get("ready") is True and isinstance(x.get("sockets"),dict) and all(x["sockets"].get(k) is True for k in ("xray_tcp_5301","xray_tcp_5302","xray_tcp_5303","tls_decoy_tcp_9443","http_tcp_9080","udp_echo_9081","dns_udp_5353","dns_upstream_udp_53","dns_upstream_tcp_53")))}
 deadline=time.monotonic()+10.0; ready={}; observations={role:{"attempts":0,"last_error":"not_attempted"} for role in targets}
 while time.monotonic()<deadline and len(ready)<2:
     for role,(url,valid) in targets.items():
@@ -2274,6 +2294,7 @@ rules=[
  'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 8082 accept comment "fwrouter packet guard endpoint control allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 5301 accept comment "fwrouter packet guard vless allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 5302 accept comment "fwrouter packet guard selector vless allow v1"',
+ 'add rule inet fwrouter_packet_guard output ip daddr 198.18.240.2 tcp dport 5303 accept comment "fwrouter packet guard reality allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 1.1.1.1 tcp dport 53 counter name router_dns_tcp_output accept comment "fwrouter packet guard owned dns tcp upstream allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 1.1.1.1 udp dport 53 counter name router_dns_udp_output accept comment "fwrouter packet guard owned dns udp upstream allow v1"',
  'add rule inet fwrouter_packet_guard output ip daddr 198.51.100.77 tcp dport 9080 counter name router_dns_vpn_direct_output accept comment "fwrouter packet guard dns-selected vpn direct-route observation v1"',
@@ -2427,9 +2448,17 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
             diagnostics = set(_REENTRY_DIAGNOSTIC_NODEIDS)
         elif suite == _PACKET_DIAGNOSTIC_SUITE:
             diagnostics = set(_PACKET_DIAGNOSTIC_NODEIDS)
+        elif suite == _RUNTIME_SCALE_DIAGNOSTIC_SUITE:
+            diagnostics = set(_RUNTIME_SCALE_DIAGNOSTIC_NODEIDS)
+        elif suite == _IDENTITY_DIAGNOSTIC_SUITE:
+            diagnostics = set(_IDENTITY_DIAGNOSTIC_NODEIDS)
+        elif suite == _FINAL_REGRESSIONS_DIAGNOSTIC_SUITE:
+            diagnostics = set(_FINAL_REGRESSIONS_DIAGNOSTIC_NODEIDS)
         else:
             raise NotRun("diagnostic suite has no fixed node set")
-        expected_catalog_suite = "packet" if suite == _PACKET_DIAGNOSTIC_SUITE else "functional"
+        expected_catalog_suite = "packet" if suite in {
+            _PACKET_DIAGNOSTIC_SUITE, _RUNTIME_SCALE_DIAGNOSTIC_SUITE
+        } else "functional"
         if not diagnostics.issubset({row["nodeid"] for row in rows if row["suite"] == expected_catalog_suite}):
             raise NotRun("fixed diagnostic node set is absent from its exact source catalog suite")
         return diagnostics
@@ -2438,11 +2467,11 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         functional = {row["nodeid"] for row in rows if row["suite"] == "functional"}
         packet = {row["nodeid"] for row in rows if row["suite"] == "packet"}
         provider = set(_PROVIDER_COHORT_NODEIDS)
-        if (len(functional) != 37 or len(packet) != 1 or len(provider) != 11
+        if (len(functional) != 38 or len(packet) != 2 or len(provider) != 11
                 or not provider <= functional or functional & packet):
-            raise NotRun("functional profile partitions differ from the reviewed 37+1 inventory")
+            raise NotRun("functional profile partitions differ from the reviewed 38+2 inventory")
         selected = functional - provider
-        if len(selected) != 26 or selected & provider or selected | provider != functional:
+        if len(selected) != 27 or selected & provider or selected | provider != functional:
             raise NotRun("ordinary/provider profile partitions are not disjoint and exhaustive")
     if not selected:
         raise NotRun("acceptance suite has no registered scenarios")
@@ -3373,9 +3402,10 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
     docker = shutil.which("docker", path=docker_env.get("PATH"))
     if not docker:
         raise NotRun("Docker CLI is unavailable on the qualified hosted runner")
-    packet_mode = suite == _PACKET_DIAGNOSTIC_SUITE
+    packet_mode = suite in {_PACKET_DIAGNOSTIC_SUITE, _RUNTIME_SCALE_DIAGNOSTIC_SUITE}
     kernel_preflight = suite in _KERNEL_SUITES
-    kernel_dataplane = suite in {*_KERNEL_DATAPLANE_SUITES, _PACKET_DIAGNOSTIC_SUITE}
+    kernel_dataplane = suite in {*_KERNEL_DATAPLANE_SUITES, _PACKET_DIAGNOSTIC_SUITE,
+                                 _RUNTIME_SCALE_DIAGNOSTIC_SUITE}
     kernel_profile = kernel_preflight or kernel_dataplane
     dependency_profile = suite != "recovery"
     if dependency_profile:
@@ -3981,7 +4011,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 ("tcp", 6, 54, {("10.240.0.2", "203.0.113.53", 6): {9080},
                                 ("10.240.0.2", "198.51.100.77", 6): {9080},
                                 ("198.18.240.1", "198.51.100.77", 6): {9080},
-                                ("198.18.240.1", "198.18.240.2", 6): {5301, 5302},
+                                ("198.18.240.1", "198.18.240.2", 6): {5301, 5302, 5303},
                                 ("10.240.0.2", "10.250.240.2", 6): {9080},
                                 ("198.18.240.1", "1.1.1.1", 6): {53}}),
                 ("udp", 17, 42, {("10.240.0.2", "203.0.113.53", 17): {9081, 5353},
@@ -4045,6 +4075,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                 ("/tmp/fwrouter-receipts/native-process-diagnostics.json", "native-process-diagnostics.json"),
                 ("/tmp/fwrouter-receipts/worker-service-logs.json", "worker-service-logs.json"),
                 ("/tmp/fwrouter-receipts/state-snapshot.json", "state-snapshot.json"),
+                ("/tmp/fwrouter-receipts/runtime-scale-metrics.json", "runtime-scale-metrics.json"),
             ):
                 result = _docker_copy_capture(docker, container_id, source, artifact_dir / filename, env=docker_env)
                 exports[filename] = result
@@ -4224,7 +4255,9 @@ def main() -> int:
                         choices=("functional-ordinary", "recovery", "xray-diagnostic", "provider-diagnostic",
                                  "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
                                  "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight",
-                                 "kernel-recovery-diagnostic", "packet-diagnostic"),
+                                 "kernel-recovery-diagnostic", "packet-diagnostic",
+                                 "identity-diagnostic", "runtime-scale-diagnostic",
+                                 "final-regressions-diagnostic"),
                         default="functional-ordinary")
     parser.add_argument("--allow-recovery", action="store_true", help="explicitly select release-only L7 recovery tests")
     args = parser.parse_args()

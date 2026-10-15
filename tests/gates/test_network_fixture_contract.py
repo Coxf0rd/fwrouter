@@ -447,7 +447,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         reentry_diagnostic = source.index('"phase": "provider-reentry"')
         reentry_assertion = source.index('assert code == 200 and reentered.get("ok") is True')
         self.assertLess(reentry_diagnostic, reentry_assertion)
-        self.assertIn("CAPTURE_LIMIT = 512", source)
+        self.assertIn("CAPTURE_LIMIT = 2048", source)
         self.assertIn("expect_active_server=False", source)
         capability_state = functions["_packet_capability_state"]
         capability_source = ast.get_source_segment(source, capability_state)
@@ -689,7 +689,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
     def test_tmpfs_capture_export_uses_only_fixed_root_owned_bounded_file(self):
         tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
         functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-        namespace = {"PACKET_CAPTURE_SNAPLEN": {"tcp": 54, "udp": 42}, "Any": object,
+        namespace = {"PACKET_CAPTURE_SNAPLEN": {"tcp": 54, "udp": 42},
+                     "PACKET_CAPTURE_LIMIT": 2048, "Any": object,
                      "NotRun": type("NotRun", (Exception,), {})}
         for name in ("packet_capture_copy_code", "_docker_copy_capture"):
             exec(compile(ast.Module(body=[functions[name]], type_ignores=[]), str(LAUNCHER), "exec"), namespace)
@@ -701,7 +702,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertEqual(ast.literal_eval(assignments["root_path"]), "/tmp/fwrouter-packet-evidence")
         self.assertIn("capture_name", worker_text)
         self.assertIn(".pcap", worker_text)
-        self.assertEqual(ast.unparse(assignments["maximum"]), "24 + 512 * (16 + 54)")
+        self.assertEqual(ast.unparse(assignments["maximum"]), "24 + 2048 * (16 + 54)")
         self.assertIn("os.O_NOFOLLOW", worker_text)
         self.assertIn("root_info.st_uid != 0", worker_text)
         self.assertIn("stat.S_IMODE(root_info.st_mode) != 448", worker_text)
@@ -730,7 +731,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
                               "_redact_public": lambda value, *, limit: value.decode()[:limit]
                               if isinstance(value, bytes) else str(value)[:limit],
                               "PACKET_CAPTURE_SOURCES": {"/tmp/fwrouter-packet-evidence/tcp.pcap": "tcp"},
-                              "PACKET_CAPTURE_LIMIT": 512, "os": os, "stat": stat})
+                              "PACKET_CAPTURE_LIMIT": 2048, "os": os, "stat": stat})
             result = namespace["_docker_copy_capture"](
                 "docker", "fixed-container", "/tmp/fwrouter-packet-evidence/tcp.pcap", destination, env={})
             self.assertTrue(result["copied"])
@@ -796,6 +797,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             FakeServer((fixture.DNS_UPSTREAM_IP, 53), tcp=True),
             FakeServer((fixture.DNS_VPN_SERVICE_VIP, fixture.HTTP_PORT), tcp=True),
             FakeServer((fixture.DNS_VPN_SERVICE_VIP, fixture.UDP_ECHO_PORT), tcp=False),
+            FakeServer(("127.0.0.1", fixture.ENDPOINT_TLS_DECOY_PORT), tcp=True),
         )
         control = servers[1]
         control.role_servers = servers
@@ -885,7 +887,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         launcher_tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
         generators = {node.name: node for node in launcher_tree.body if isinstance(node, ast.FunctionDef)
                       and node.name in {"packet_capture_start_code", "packet_capture_stop_code"}}
-        namespace = {}
+        namespace = {"PACKET_CAPTURE_LIMIT": 2048}
         for name, node in generators.items():
             exec(compile(ast.Module(body=[node], type_ignores=[]), str(LAUNCHER), "exec"), namespace)
         start = namespace["packet_capture_start_code"]()
@@ -922,7 +924,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "tcp": {"snaplen": 54, "filter": "(tcp and dst host 203.0.113.53 and dst port 9080) or "
                                                   "(tcp and dst host 198.51.100.77 and dst port 9080) or "
                                                   "(tcp and dst host 10.250.240.2 and dst port 9080) or "
-                                                  "(tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302)) or "
+                                                  "(tcp and dst host 198.18.240.2 and (dst port 5301 or dst port 5302 or dst port 5303)) or "
                                                   "(tcp and dst host 1.1.1.1 and dst port 53)"},
             "udp": {"snaplen": 42, "filter": "(udp and dst host 203.0.113.53 and "
                                                   "(dst port 9081 or dst port 5353)) or "
@@ -990,6 +992,63 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn("libpcap0.8=1.10.3-1", dockerfile)
         self.assertIn('receipt["packet_capture_runtime"] = capture_result',
                       LAUNCHER.read_text(encoding="utf-8"))
+
+    def test_packet_capture_budget_is_bounded_and_saturation_blocks_acceptance(self):
+        worker_path = ROOT / "tests" / "acceptance" / "packet_capture_worker.py"
+        worker_tree = ast.parse(worker_path.read_text(encoding="utf-8"))
+        worker_limit = next(node.value for node in worker_tree.body if isinstance(node, ast.Assign)
+                            and any(isinstance(target, ast.Name) and target.id == "PACKET_LIMIT"
+                                    for target in node.targets))
+        launcher_tree = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
+        launcher_limit = next(node.value for node in launcher_tree.body if isinstance(node, ast.Assign)
+                              and any(isinstance(target, ast.Name) and target.id == "PACKET_CAPTURE_LIMIT"
+                                      for target in node.targets))
+        packet_tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))
+        packet_functions = {node.name: node for node in packet_tree.body if isinstance(node, ast.FunctionDef)}
+        parser_limit = next(node.value for node in packet_tree.body if isinstance(node, ast.Assign)
+                            and any(isinstance(target, ast.Name) and target.id == "CAPTURE_LIMIT"
+                                    for target in node.targets))
+        self.assertEqual((ast.literal_eval(worker_limit), ast.literal_eval(launcher_limit),
+                          ast.literal_eval(parser_limit)), (2048, 2048, 2048))
+        maximum_combined_bytes = (24 + 2048 * (16 + 54)) + (24 + 2048 * (16 + 42))
+        self.assertEqual(maximum_combined_bytes, 262192)
+        self.assertLess(maximum_combined_bytes, 257 * 1024)
+
+        generator_namespace = {"PACKET_CAPTURE_LIMIT": 2048}
+        for name in ("packet_capture_start_code", "packet_capture_stop_code"):
+            node = next(item for item in launcher_tree.body
+                        if isinstance(item, ast.FunctionDef) and item.name == name)
+            exec(compile(ast.Module(body=[node], type_ignores=[]), str(LAUNCHER), "exec"),
+                 generator_namespace)
+        start_code = generator_namespace["packet_capture_start_code"]()
+        stop_code = generator_namespace["packet_capture_stop_code"]()
+        self.assertIn('"packet_limit_per_capture":2048', start_code)
+        self.assertIn('row.get("packet_limit")!=2048', start_code)
+        self.assertIn("<=2048", stop_code)
+        self.assertIn("24+2048*(16+snaplen)", stop_code)
+
+        helper = packet_functions["_capture_budget_exhausted"]
+        namespace = {"CAPTURE_LIMIT": 2048}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(PACKET_TEST), "exec"), namespace)
+        exhausted = namespace["_capture_budget_exhausted"]
+        self.assertFalse(exhausted({"tcp": 2047}))
+        self.assertTrue(exhausted({"tcp": 2048}))
+        self.assertTrue(exhausted({"tcp": 2048, "udp": 2047}))
+        packet_counts_source = ast.get_source_segment(PACKET_TEST.read_text(encoding="utf-8"),
+                                                       packet_functions["_packet_counts"])
+        self.assertLess(packet_counts_source.index("_capture_budget_exhausted(record_counts)"),
+                        packet_counts_source.index("return {**tcp, **udp}"))
+        self.assertIn("packet capture budget exhausted before complete dataplane acceptance",
+                      packet_counts_source)
+        wait_source = ast.get_source_segment(PACKET_TEST.read_text(encoding="utf-8"),
+                                             packet_functions["_wait_packet_counts"])
+        self.assertIn("if predicate(current):", wait_source)
+        self.assertIn("timeout_seconds: float = 3.0", wait_source)
+
+        validate = ast.get_source_segment(PACKET_TEST.read_text(encoding="utf-8"),
+                                          packet_functions["_pcap_counts"])
+        self.assertIn("records > CAPTURE_LIMIT", validate)
+        self.assertIn("record_counts[capture_name] = records", validate)
 
     def test_packet_application_scenario_requires_real_core_counter_deltas_and_header_only_flows(self):
         source = PACKET_TEST.read_text(encoding="utf-8")
@@ -1240,7 +1299,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "DNS_VPN_SERVICE_VIP": "198.51.100.77",
             "DNS_BYPASS_NEGATIVE_IP": "8.8.8.8",
             "SERVICE_VIP": "203.0.113.53", "PROTECTED_VIP": "10.250.240.2",
-            "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
+            "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302, "ENDPOINT_XRAY_REALITY_PORT": 5303,
             "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
             "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_CONTROL_PORT": 8082,
             "DNS_NAME": "probe.fwrouter.test", "DNS_NEGATIVE_NAME": "missing.fwrouter.test",
@@ -1540,7 +1599,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "DNS_BYPASS_NEGATIVE_IP": "8.8.8.8", "LEAK_DNS_TARGET": "127.0.0.11",
             "LEAK_RESERVED_TARGET": "192.0.2.1", "LEAK_RESERVED_PORT": 9,
             "CLIENT_CONTROL_PORT": 8081, "ENDPOINT_XRAY_PORT": 5301,
-            "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
+            "ENDPOINT_XRAY_SELECTOR_PORT": 5302, "ENDPOINT_XRAY_REALITY_PORT": 5303,
             "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081, "DNS_PORT": 5353,
             "PROTECTED_UDP_PORT": 9081,
             "_redact": lambda value: str(value),
@@ -1567,10 +1626,10 @@ class NetworkFixtureContractTests(unittest.TestCase):
         self.assertIn(
             "add rule inet fwrouter_packet_fixture input ip saddr { 10.240.0.2, 198.18.240.1, "
             "198.18.240.2, 203.0.113.53, 198.51.100.77, 10.250.240.2 } ip daddr 198.18.240.2 "
-            "tcp dport { 5301, 5302, 8082 } accept", endpoint_rules)
+            "tcp dport { 5301, 5302, 5303, 8082 } accept", endpoint_rules)
         self.assertIn(
             "add rule inet fwrouter_packet_fixture output ip daddr 198.18.240.2 "
-            "tcp dport { 5301, 5302, 8082 } accept", endpoint_rules)
+            "tcp dport { 5301, 5302, 5303, 8082 } accept", endpoint_rules)
 
     def test_dns53_flow_failure_receipt_is_fixed_and_projects_before_502(self):
         fixture_tree = _tree()
@@ -1891,17 +1950,19 @@ class NetworkFixtureContractTests(unittest.TestCase):
         config_node = next(node for node in tree.body
                            if isinstance(node, ast.FunctionDef) and node.name == "_expected_xray_config")
         namespace = {"Any": object, "ENDPOINT_WAN_IP": "198.18.240.2",
-                     "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302,
+                     "ENDPOINT_XRAY_PORT": 5301, "ENDPOINT_XRAY_SELECTOR_PORT": 5302, "ENDPOINT_XRAY_REALITY_PORT": 5303,
                      "XRAY_ID": "88c7ce2a-465e-4e72-9c56-2a9e2fc84a51",
                      "XRAY_SELECTOR_ID": "e27bc911-23fb-4d12-8d51-bb1b9cb2cd08",
                      "SERVICE_VIP": "203.0.113.53", "DNS_VPN_SERVICE_VIP": "198.51.100.77"}
+        fixture = _fixture_module()
+        namespace.update({key: getattr(fixture, key) for key in ("ENDPOINT_TLS_DECOY_PORT", "XRAY_REALITY_ID", "XRAY_REALITY_PRIVATE_KEY", "XRAY_REALITY_SHORT_ID", "XRAY_REALITY_SERVER_NAME")})
         exec(compile(ast.Module(body=[config_node], type_ignores=[]), str(FIXTURE), "exec"), namespace)
         observed = namespace["_expected_xray_config"]()
-        self.assertEqual([row["port"] for row in observed["inbounds"]], [5301, 5302])
+        self.assertEqual([row["port"] for row in observed["inbounds"]], [5301, 5302, 5303])
         self.assertEqual([row["tag"] for row in observed["inbounds"]],
-                         ["fixture-vless-a", "fixture-vless-b"])
+                         ["fixture-vless-a", "fixture-vless-b", "fixture-vless-reality"])
         self.assertEqual([row["settings"]["clients"][0]["id"] for row in observed["inbounds"]],
-                         [namespace["XRAY_ID"], namespace["XRAY_SELECTOR_ID"]])
+                         [namespace["XRAY_ID"], namespace["XRAY_SELECTOR_ID"], namespace["XRAY_REALITY_ID"]])
         self.assertEqual([row["tag"] for row in observed["outbounds"]],
                          ["fixture-egress-a", "fixture-egress-b"])
         self.assertEqual([row["sendThrough"] for row in observed["outbounds"]],
@@ -1910,6 +1971,20 @@ class NetworkFixtureContractTests(unittest.TestCase):
             {"type": "field", "inboundTag": ["fixture-vless-a"], "outboundTag": "fixture-egress-a"},
             {"type": "field", "inboundTag": ["fixture-vless-b"], "outboundTag": "fixture-egress-b"},
         ])
+        reality = observed["inbounds"][2]["streamSettings"]
+        self.assertEqual(reality["security"], "reality")
+        self.assertEqual(reality["realitySettings"]["dest"], "127.0.0.1:9443")
+        self.assertEqual(reality["realitySettings"]["serverNames"], ["reality.test"])
+        self.assertEqual(reality["realitySettings"]["privateKey"], fixture.XRAY_REALITY_PRIVATE_KEY)
+        self.assertEqual(reality["realitySettings"]["shortIds"], [fixture.XRAY_REALITY_SHORT_ID])
+        tls_source = _function_source("_create_tls_decoy_material")
+        self.assertIn('"/usr/bin/openssl"', tls_source)
+        self.assertIn('timeout=10.0', tls_source)
+        self.assertIn('os.chmod(key_path, 0o600', tls_source)
+        self.assertIn('os.getuid()', tls_source)
+        self.assertNotIn("_create_tls_decoy_material()", start)
+        serve = _function_source("_serve")
+        self.assertLess(serve.index("_create_tls_decoy_material()"), serve.index("_start_xray(profile)"))
         self.assertIn("_assert_xray_config(config)", start)
         self.assertIn("os.O_EXCL | os.O_NOFOLLOW", start)
         self.assertIn('"run", "-test", "-config"', start)
@@ -2317,6 +2392,18 @@ class NetworkFixtureContractTests(unittest.TestCase):
                                             "/health", payload)
                 fixture._EndpointHandler.do_POST(handler)
                 self.assertEqual(handler.response[0], 400)
+
+        probe = FakeHealthHandler((fixture.SERVICE_VIP, fixture.HTTP_PORT), "/probe")
+        probe.client_address = (fixture.SERVICE_VIP, 12345)
+        fixture._EndpointHandler.do_HEAD(probe)
+        self.assertEqual((200, None), probe.response)
+        self.assertIn(("Content-Length", "0"), probe.headers_out)
+        self.assertEqual(1, fixture._OBS.snapshot()["counts"]["http"])
+        self.assertEqual(fixture.SERVICE_VIP, fixture._OBS.snapshot()["last_peers"]["http"])
+        control = FakeHealthHandler((fixture.ENDPOINT_WAN_IP, fixture.ENDPOINT_CONTROL_PORT), "/probe")
+        fixture._EndpointHandler.do_HEAD(control)
+        self.assertEqual((404, None), control.response)
+        self.assertEqual(1, fixture._OBS.snapshot()["counts"]["http"])
 
         self.assertIn('self.path == "/generate_204"', _method_source("_EndpointHandler", "do_GET"))
         self.assertIn('self.path == "/generate_204"', _method_source("_EndpointHandler", "do_HEAD"))

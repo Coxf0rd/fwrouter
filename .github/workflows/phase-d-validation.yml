@@ -2,7 +2,7 @@ name: Phase D branch validation (temporary)
 
 on:
   push:
-    branches: [stage/test-architecture-ci-stabilization]
+    branches: [stage/test-architecture-ci-stabilization, fix/api-runtime-health-scale-stability]
 
 permissions:
   contents: read
@@ -50,6 +50,8 @@ jobs:
               "ci:validate-unit-fixtures": "unit-fixtures",
               "ci:validate-unit-residual": "unit-residual",
               "ci:validate-unit-acceptance-tail": "unit-acceptance-tail",
+              "ci:validate-identities": "identity-diagnostic",
+              "ci:validate-final-fixes": "final-regressions-diagnostic",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
           selected = [stage for marker, stage in markers.items() if marker in message]
@@ -152,7 +154,7 @@ jobs:
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
       - name: Check full Phase D delta syntax and whitespace from fixed checkpoint
         env:
-          PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345
+          PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
@@ -200,6 +202,213 @@ jobs:
             > "$RUNNER_TEMP/phase-d-preflight/network-fixture-contract.log" 2>&1
           python tests/gates/test_smoke_contract.py \
             > "$RUNNER_TEMP/phase-d-preflight/smoke-contract.log" 2>&1
+      - name: Run subscription identity L1 subset through the manifest gate
+        if: needs.select-stage.outputs.stage == 'identity-diagnostic'
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/phase-d-identities"
+          mkdir -p "$root"
+          python tests/gates/gate.py subset-plan --domain test-infrastructure --level L1 \
+            --output "$root/subscription-l1-plan.json" > "$root/subscription-l1-plan.log"
+          set +e
+          python tests/gates/gate.py run --plan "$root/subscription-l1-plan.json" \
+            --manual-subset --output "$root/subscription-l1-report.json" \
+            > "$root/subscription-l1-run.raw" 2>&1
+          result=$?
+          set -e
+          python3 - "$root/subscription-l1-run.raw" "$root/subscription-l1-run.log" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tests/gates")
+          from gate import redact_failure_output
+          output = redact_failure_output(Path(sys.argv[1]).read_text(encoding="utf-8"))[-65536:]
+          Path(sys.argv[2]).write_text(output, encoding="utf-8")
+          print(output)
+          PY
+          rm -f "$root/subscription-l1-run.raw"
+          exit "$result"
+      - name: Run identity migration L3 regression nodes in the isolated gate
+        if: needs.select-stage.outputs.stage == 'identity-diagnostic'
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/phase-d-identities"
+          mkdir -p "$root"
+          result=0
+          python tests/gates/run_exact_nodes.py \
+            --junit "$root/migration-l3.xml" \
+            --report "$root/migration-l3-report.json" \
+            --log "$root/migration-l3.log" \
+            tests/test_db_migrations.py::test_database_upgrade_cli_is_explicit_backed_up_and_idempotent \
+            tests/test_db_migrations.py::test_database_upgrade_cli_refuses_schema_24_structural_drift_without_backup \
+            tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade \
+            tests/test_db_migrations.py::test_subscription_identity_migration_preserves_references_and_membership \
+            tests/test_xray_vpn_auto_lifecycle.py::test_reviewed_profile_identity_mapping_preserves_credentials_without_publishing \
+            tests/test_xray_vpn_auto_lifecycle.py::test_unmapped_inventory_replacement_does_not_inherit_or_publish_identity \
+            tests/test_subscription_refresh_outcomes.py::test_staged_profile_verification_runs_outside_writer_guard \
+            tests/test_subscription_refresh_outcomes.py::test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for_rollback \
+            tests/test_xray.py::test_generation_rollback_refuses_unsafe_mihomo_preimage_before_any_active_write \
+            tests/test_xray.py::test_rollback_mihomo_preimage_requires_policy_and_native_validation \
+            tests/test_xray.py::test_rollback_mihomo_preimage_rejects_reachable_nested_direct \
+            tests/test_xray.py::test_rollback_mihomo_preimage_rejects_nested_group_cycle \
+            tests/test_xray.py::test_owned_restore_revision_change_during_native_validation_prevents_active_mutations \
+            'tests/test_xray.py::test_owned_restore_revalidates_after_reload_before_database_restore[snapshot]' \
+            'tests/test_xray.py::test_owned_restore_revalidates_after_reload_before_database_restore[fence]' || result=$?
+          if [ "$result" -eq 0 ]; then
+            python tests/gates/run_exact_nodes.py \
+              --junit "$root/startup-publication.xml" \
+              --report "$root/startup-publication-report.json" \
+              --log "$root/startup-publication.log" \
+              tests/test_xray.py::test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged \
+              tests/test_xray.py::test_vpn_auto_stage_exception_compensates_new_identity_intent \
+              tests/test_xray.py::test_vpn_auto_source_fence_change_preserves_unverified_identity_intent \
+              tests/test_xray.py::test_vpn_auto_external_reference_blocks_identity_compensation \
+              'tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[success]' \
+              'tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[receipt_failure]' \
+              'tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[readback_failure]' \
+              tests/test_bootstrap.py::test_startup_vpn_auto_reconcile_promotes_profiles_after_final_mihomo \
+              'tests/test_bootstrap.py::test_startup_consumes_completed_staged_publication_without_duplicate_mihomo_or_promotion[pending-cas-cleared]' \
+              'tests/test_bootstrap.py::test_startup_consumes_completed_staged_publication_without_duplicate_mihomo_or_promotion[pending-cas-refused]' \
+              'tests/test_bootstrap.py::test_startup_staged_completion_predicate_rejects_unproven_or_malformed_receipt[not-ok]' \
+              'tests/test_bootstrap.py::test_startup_staged_completion_predicate_rejects_unproven_or_malformed_receipt[not-success]' \
+              'tests/test_bootstrap.py::test_startup_staged_completion_predicate_rejects_unproven_or_malformed_receipt[bool-schema]' \
+              'tests/test_bootstrap.py::test_startup_staged_completion_predicate_rejects_unproven_or_malformed_receipt[bool-count]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[legacy-no-receipt]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[unsupported-schema]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[nonliteral-complete]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[missing-final-proof]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[failed-final-proof]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[invalid-promotion-count]' \
+              'tests/test_bootstrap.py::test_startup_legacy_or_malformed_staged_receipt_uses_full_native_fallback[missing-snapshot-result]' \
+              tests/test_bootstrap.py::test_startup_native_staged_failure_does_not_skip_or_repeat_publication \
+              tests/test_xray.py::test_staged_generation_finalizer_returns_success_and_closes_checkpoint_last \
+              tests/test_xray.py::test_staged_generation_finalizer_emits_completion_only_after_durable_checkpoint_closure \
+              tests/test_xray.py::test_staged_generation_finalizer_keeps_checkpoint_on_publication_failure \
+              tests/test_xray.py::test_staged_generation_finalizer_requires_udp_receipt_before_publication \
+              'tests/test_xray.py::test_staged_generation_finalizer_does_not_return_completion_when_checkpoint_closure_fails[unlink]' \
+              'tests/test_xray.py::test_staged_generation_finalizer_does_not_return_completion_when_checkpoint_closure_fails[directory_fsync]' \
+              tests/test_xray.py::test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publication || result=$?
+          fi
+          if [ "$result" -eq 0 ]; then
+            python tests/gates/gate.py subset-plan --domain xray --level L3 \
+              --output "$root/xray-l3-plan.json" > "$root/xray-l3-plan.log"
+            set +e
+            python tests/gates/gate.py run --plan "$root/xray-l3-plan.json" \
+              --manual-subset --output "$root/xray-l3-report.json" \
+              > "$root/xray-l3-run.raw" 2>&1
+            result=$?
+            set -e
+            python3 - "$root/xray-l3-run.raw" "$root/xray-l3-run.log" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tests/gates")
+          from gate import redact_failure_output
+          output = redact_failure_output(Path(sys.argv[1]).read_text(encoding="utf-8"))[-65536:]
+          Path(sys.argv[2]).write_text(output, encoding="utf-8")
+          print(output)
+          PY
+            rm -f "$root/xray-l3-run.raw"
+          fi
+          if [ "$result" -eq 0 ]; then
+            python tests/gates/gate.py subset-plan --domain mihomo --level L3 \
+              --output "$root/mihomo-l3-plan.json" > "$root/mihomo-l3-plan.log"
+            set +e
+            python tests/gates/gate.py run --plan "$root/mihomo-l3-plan.json" \
+              --manual-subset --output "$root/mihomo-l3-report.json" \
+              > "$root/mihomo-l3-run.raw" 2>&1
+            result=$?
+            set -e
+            python3 - "$root/mihomo-l3-run.raw" "$root/mihomo-l3-run.log" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tests/gates")
+          from gate import redact_failure_output
+          output = redact_failure_output(Path(sys.argv[1]).read_text(encoding="utf-8"))[-65536:]
+          Path(sys.argv[2]).write_text(output, encoding="utf-8")
+          print(output)
+          PY
+            rm -f "$root/mihomo-l3-run.raw"
+          fi
+          exit "$result"
+      - name: Run final deletion and verified-reentry unit regressions
+        if: needs.select-stage.outputs.stage == 'final-regressions-diagnostic'
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/phase-d-preflight"
+          mkdir -p "$root"
+          python tests/gates/run_exact_nodes.py \
+            --junit "$root/final-regressions-unit.xml" \
+            --report "$root/final-regressions-unit-report.json" \
+            --log "$root/final-regressions-unit.log" \
+            tests/test_xray.py::test_disabled_subscription_profile_hard_delete_preserves_other_account \
+            tests/test_xray.py::test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mismatch \
+            tests/test_xray.py::test_subscription_profile_delete_reconcile_failure_does_not_revoke_identity_credentials \
+            tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade \
+            tests/test_provider_recovery.py::test_verified_reentry_prepare_skips_reconcile_only_with_installed_policy_and_current_intent \
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[False]" \
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[None]" \
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[true]" \
+            tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_routing_parity_even_with_installed_policy \
+            tests/test_provider_recovery.py::test_mihomo_reentry_ready_accepts_native_policy_and_matching_routing \
+            tests/test_provider_recovery.py::test_verified_reentry_prepare_reconciles_before_probe_and_preserves_direct_on_failure \
+            tests/test_provider_recovery.py::test_verified_reentry_prepare_reconcile_precedes_probe_and_allows_only_incarnation_change \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[active_target_id]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[binding]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[credential_fingerprint]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[desired_mode]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[eligible]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[exclusive]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[path_key]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pending]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pool]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[selection_fence]" \
+            tests/test_provider_recovery.py::test_verified_reentry_accepts_only_exact_owned_native_revision_receipt \
+            tests/test_provider_recovery.py::test_verified_reentry_rejects_unreceipted_runtime_incarnation_change \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[foreign-job]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[foreign-operation]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[revision-jump]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[native-proof-false]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[publication-false]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[active-hash-mismatch]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[runtime-mismatch]" \
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[unrelated-binding-change]" \
+            tests/test_subscription_refresh_outcomes.py::test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails \
+            tests/test_provider_recovery.py::test_verified_reentry_accepts_reconcile_with_native_policy_when_fast_status_is_conservative \
+            tests/test_provider_recovery.py::test_verified_reentry_rejects_reconcile_without_native_policy_proof \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-selection_revision]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-exclusive]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-incarnation]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-binding]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-selection_revision]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-exclusive]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-incarnation]" \
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-binding]"
+      - name: Retain sanitized identity qualification evidence
+        if: always() && needs.select-stage.outputs.stage == 'identity-diagnostic'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phase-d-identity-l1-l3-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phase-d-identities/subscription-l1-plan.json
+            ${{ runner.temp }}/phase-d-identities/subscription-l1-plan.log
+            ${{ runner.temp }}/phase-d-identities/subscription-l1-report.json
+            ${{ runner.temp }}/phase-d-identities/subscription-l1-run.log
+            ${{ runner.temp }}/phase-d-identities/migration-l3.xml
+            ${{ runner.temp }}/phase-d-identities/migration-l3-report.json
+            ${{ runner.temp }}/phase-d-identities/migration-l3.log
+            ${{ runner.temp }}/phase-d-identities/startup-publication.xml
+            ${{ runner.temp }}/phase-d-identities/startup-publication-report.json
+            ${{ runner.temp }}/phase-d-identities/startup-publication.log
+            ${{ runner.temp }}/phase-d-identities/xray-l3-plan.json
+            ${{ runner.temp }}/phase-d-identities/xray-l3-plan.log
+            ${{ runner.temp }}/phase-d-identities/xray-l3-report.json
+            ${{ runner.temp }}/phase-d-identities/xray-l3-run.log
+            ${{ runner.temp }}/phase-d-identities/mihomo-l3-plan.json
+            ${{ runner.temp }}/phase-d-identities/mihomo-l3-plan.log
+            ${{ runner.temp }}/phase-d-identities/mihomo-l3-report.json
+            ${{ runner.temp }}/phase-d-identities/mihomo-l3-run.log
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
       - name: Run qualified source-manifest regression before native profiles
         if: >-
           needs.select-stage.outputs.stage == 'qualified' ||
@@ -452,6 +661,8 @@ jobs:
        needs.select-stage.outputs.stage == 'kernel-preflight' ||
        needs.select-stage.outputs.stage == 'kernel-recovery-diagnostic' ||
        needs.select-stage.outputs.stage == 'packet-diagnostic' ||
+       needs.select-stage.outputs.stage == 'identity-diagnostic' ||
+       needs.select-stage.outputs.stage == 'final-regressions-diagnostic' ||
        needs.select-stage.outputs.stage == 'targets')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -469,7 +680,7 @@ jobs:
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
       - name: Bind diagnostic to fixed source and complete Phase D plan
         env:
-          PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345
+          PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
@@ -488,6 +699,7 @@ jobs:
           cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" \
             "$RUNNER_TEMP/phase-diagnostic-runtime-inputs.json"
       - name: Run the fixed application/native diagnostic or kernel preflight
+        if: needs.select-stage.outputs.stage != 'identity-diagnostic'
         env:
           VALIDATION_STAGE: ${{ needs.select-stage.outputs.stage }}
         run: |
@@ -503,6 +715,7 @@ jobs:
           if [[ "$VALIDATION_STAGE" == kernel-preflight ]]; then suite=kernel-preflight; fi
           if [[ "$VALIDATION_STAGE" == kernel-recovery-diagnostic ]]; then suite=kernel-recovery-diagnostic; fi
           if [[ "$VALIDATION_STAGE" == packet-diagnostic ]]; then suite=packet-diagnostic; fi
+          if [[ "$VALIDATION_STAGE" == final-regressions-diagnostic ]]; then suite=final-regressions-diagnostic; fi
           log="$RUNNER_TEMP/phase-diagnostic-xray.log"
           set +e
           /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
@@ -521,6 +734,127 @@ jobs:
           PY
           printf 'Acceptance launcher exit status: %s\n' "$launcher_status"
           exit "$launcher_status"
+      - name: Run reviewed identity migration and two cold startup scale receipts
+        if: needs.select-stage.outputs.stage == 'identity-diagnostic'
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/phase-d-identities"
+          mkdir -p "$root"
+          run_launcher() {
+            local suite="$1" log="$2" attempt_dir="${3:-}"
+            local result=0
+            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
+              > "$log" 2>&1 || result=$?
+            python3 - "$log" <<'PY'
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "tests/acceptance")
+          from launcher import _redact_public
+          print(_redact_public(Path(sys.argv[1]).read_bytes(), limit=65536))
+          PY
+            if [ "$result" -eq 0 ] && [ -n "$attempt_dir" ]; then
+              python3 - "$suite" "$attempt_dir" "$RUNNER_TEMP" <<'PY'
+          import json, shutil, sys
+          from pathlib import Path
+          suite, output, runner_temp = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+          prior = set()
+          for receipt in output.parent.glob("startup-attempt-*/hosted-acceptance-report.json"):
+              try:
+                  prior.add(json.loads(receipt.read_text(encoding="utf-8")).get("suite_nonce"))
+              except (OSError, json.JSONDecodeError):
+                  pass
+          candidates = []
+          for receipt in runner_temp.glob("fwrouter-acceptance-*-artifacts/hosted-acceptance-report.json"):
+              try:
+                  row = json.loads(receipt.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  continue
+              if row.get("suite") == suite and row.get("suite_nonce") not in prior:
+                  candidates.append((receipt.stat().st_mtime_ns, receipt, row))
+          if not candidates:
+              raise SystemExit("new startup suite receipt was not found")
+          _mtime, receipt, row = max(candidates, key=lambda item: item[0])
+          output.mkdir(parents=True, exist_ok=False)
+          for name in ("hosted-acceptance-report.json", "runtime-scale-metrics.json",
+                       "application-acceptance.xml", "application-acceptance-receipt.json"):
+              source = receipt.parent / name
+              if not source.is_file() or source.is_symlink():
+                  raise SystemExit(f"startup receipt artifact is missing or unsafe: {name}")
+              shutil.copyfile(source, output / name)
+          (output / "attempt.json").write_text(json.dumps({
+              "suite": row.get("suite"), "suite_nonce": row.get("suite_nonce"),
+              "source_revision": row.get("source_revision"), "plan_digest": row.get("plan_digest"),
+              "artifact_source": str(receipt.parent.name),
+          }, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          PY
+            fi
+            return "$result"
+          }
+          run_launcher identity-diagnostic "$root/identity-migration.log"
+          run_launcher runtime-scale-diagnostic "$root/startup-attempt-1.log" "$root/startup-attempt-1"
+          run_launcher runtime-scale-diagnostic "$root/startup-attempt-2.log" "$root/startup-attempt-2"
+          python3 - "$root" <<'PY'
+          import json, sys
+          from pathlib import Path
+          import os
+          root = Path(sys.argv[1])
+          scale = []
+          errors = []
+          for attempt_dir in sorted(root.glob("startup-attempt-[12]")):
+              path = attempt_dir / "hosted-acceptance-report.json"
+              try:
+                  row = json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  errors.append(f"invalid receipt: {path.name}")
+                  continue
+              if row.get("suite") != "runtime-scale-diagnostic":
+                  continue
+              if row.get("status") != "passed":
+                  errors.append(f"runtime scale hosted receipt is not passed: {path.name}")
+              if row.get("source_revision") != __import__("subprocess").check_output(
+                      ["git", "rev-parse", "HEAD"], text=True).strip():
+                  errors.append(f"runtime scale source revision mismatch: {path.name}")
+              if row.get("plan_digest") != os.environ.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST"):
+                  errors.append(f"runtime scale plan digest mismatch: {path.name}")
+              if not row.get("suite_nonce"):
+                  errors.append(f"runtime scale suite nonce missing: {path.name}")
+              metrics_path = attempt_dir / "runtime-scale-metrics.json"
+              try:
+                  metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  errors.append(f"startup metrics missing or invalid: {metrics_path.name}")
+                  continue
+              value = metrics.get("startup_wall_seconds")
+              if not isinstance(value, (int, float)) or isinstance(value, bool):
+                  errors.append(f"startup wall time missing: {metrics_path.name}")
+              elif value >= 45:
+                  errors.append(f"startup exceeded hard 45 second budget: {metrics_path.name}")
+              scale.append({"attempt": len(scale) + 1, "suite_nonce": row.get("suite_nonce"),
+                            "source_revision": row.get("source_revision"),
+                            "plan_digest": row.get("plan_digest"),
+                            "startup_wall_seconds": value,
+                            "engineering_margin_40s": value < 40 if isinstance(value, (int, float)) else False})
+          if len(scale) != 2:
+              errors.append(f"expected two independent cold startup receipts; found {len(scale)}")
+          if len({item.get("suite_nonce") for item in scale}) != len(scale):
+              errors.append("cold startup receipts do not have distinct run nonces")
+          margin_demonstrated = len(scale) == 2 and all(
+              isinstance(item["startup_wall_seconds"], (int, float))
+              and item["startup_wall_seconds"] < 40 for item in scale)
+          result = {"schema": "fwrouter-startup-scale-repeat/v1",
+                    "status": "failed" if errors else "passed",
+                    "hard_budget_seconds": 45,
+                    "engineering_margin_goal_seconds": 40,
+                    "engineering_margin_status": "demonstrated" if margin_demonstrated else "not_demonstrated",
+                    "startup_margin_claim": "at_least_5_seconds" if margin_demonstrated else "none",
+                    "source_commit": __import__("subprocess").check_output(
+                        ["git", "rev-parse", "HEAD"], text=True).strip(),
+                    "attempts": scale, "errors": errors}
+          (root / "startup-repeat-validation.json").write_text(
+              json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(result, sort_keys=True))
+          raise SystemExit(bool(errors))
+          PY
       - name: Validate the strict application/native smoke receipt
         if: success() && needs.select-stage.outputs.stage == 'minimal'
         env:
@@ -595,6 +929,7 @@ jobs:
         with:
           name: phase-d-xray-diagnostic-${{ github.sha }}
           path: |
+            ${{ runner.temp }}/phase-d-identities/**
             ${{ runner.temp }}/phase-d-diagnostic-plan-copy.json
             ${{ runner.temp }}/phase-diagnostic-*.log
             ${{ runner.temp }}/phase-diagnostic-runtime-inputs.json
@@ -751,7 +1086,7 @@ jobs:
           compression-level: 3
 
   full-affected-functional:
-    name: Full affected L0-L5 and functional 37 + packet 1 bundle
+    name: Full affected L0-L5 and functional 38 + packet 2-node bundle
     needs: [select-stage, qualified-native]
     if: >-
       needs.qualified-native.result == 'success' &&

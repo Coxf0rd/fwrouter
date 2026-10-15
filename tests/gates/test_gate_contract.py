@@ -7,8 +7,10 @@ import importlib.util
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import tempfile
+import textwrap
 import unittest
 import zipfile
 from contextlib import redirect_stdout
@@ -49,6 +51,7 @@ class GateContractTests(unittest.TestCase):
         paths = {row["path"] for row in self.manifest["test_files"]}
         self.assertEqual({
             "tests/gates/test_network_fixture_contract.py",
+            "tests/gates/test_subscription_identity_contract.py",
             "tests/acceptance/test_dependency_image_contract.py",
             "tests/acceptance/test_consume_dependency_image_contract.py",
         }, gate.STDLIB_CONTRACT_PATHS - {
@@ -62,6 +65,312 @@ class GateContractTests(unittest.TestCase):
     def test_unknown_changed_path_fails_closed(self) -> None:
         with self.assertRaises(gate.GateError):
             gate.domain_for_path("unmapped/binary.blob", self.manifest)
+
+    def test_targeted_marker_fails_required_ci_immediately_after_checkout(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        checkout = workflow.index("uses: actions/checkout@")
+        guard = workflow.index("- name: Stop targeted qualification before full required CI")
+        python_setup = workflow.index("uses: actions/setup-python@")
+        block = workflow[guard:python_setup]
+        self.assertLess(checkout, guard)
+        self.assertLess(guard, python_setup)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", block)
+        self.assertIn("github.event.pull_request.head.ref == 'fix/api-runtime-health-scale-stability'", block)
+        self.assertIn(
+            "git log -1 --format=%B | grep -Eq -- 'ci:validate-(identities|final-fixes|packet)'",
+            block,
+        )
+        self.assertIn(
+            "Targeted qualification requested; full required CI NOT RUN. Normal final push required.",
+            block,
+        )
+        self.assertIn("exit 1", block)
+        self.assertNotIn("continue-on-error", block)
+
+        script = textwrap.dedent(block.split("        run: |", 1)[1].split("\n      - ", 1)[0])
+        with tempfile.TemporaryDirectory(prefix="fwrouter-targeted-marker-") as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Gate Contract"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "gate-contract@example.invalid"],
+                           cwd=repo, check=True)
+            (repo / "receipt.txt").write_text("targeted\n", encoding="utf-8")
+            subprocess.run(["git", "add", "receipt.txt"], cwd=repo, check=True)
+            for marker in ("ci:validate-identities", "ci:validate-final-fixes", "ci:validate-packet"):
+                with self.subTest(marker=marker):
+                    subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", marker],
+                                   cwd=repo, check=True)
+                    targeted = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=repo,
+                                              text=True, capture_output=True, check=False)
+                    self.assertEqual(1, targeted.returncode)
+                    self.assertIn(
+                        "Targeted qualification requested; full required CI NOT RUN. Normal final push required.",
+                        targeted.stderr,
+                    )
+                    subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", "final source"],
+                                   cwd=repo, check=True)
+                    ordinary = subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=repo,
+                                              text=True, capture_output=True, check=False)
+                    self.assertEqual(0, ordinary.returncode, ordinary.stderr)
+
+    def test_main_and_trusted_final_pr_use_mandatory_all_plan_policy(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        self.assertIn("name: Affected L0-L5 with hosted profiles", workflow)
+        self.assertIn("github.event_name == 'pull_request'", workflow)
+        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}", workflow)
+        self.assertIn("&& [ \"$PR_HEAD_REPO\" = \"$GITHUB_REPOSITORY\" ]", workflow)
+        self.assertIn("grep -Fq -- 'ci:full-acceptance'", workflow)
+        self.assertIn("PLAN_ARGS+=(--mandatory-all)", workflow)
+        self.assertIn("python tests/gates/gate.py plan \"${PLAN_ARGS[@]}\"", workflow)
+        self.assertIn("PLAN_ARGS=(--base \"$BASE\" --include-native --output \"$PLAN\")", workflow)
+
+        start = workflow.index("          PLAN_ARGS=(--base")
+        end = workflow.index("          python tests/gates/gate.py plan ", start)
+        policy = workflow[start:end]
+        with tempfile.TemporaryDirectory(prefix="fwrouter-mandatory-event-policy-") as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Gate Contract"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "gate-contract@example.invalid"],
+                           cwd=repo, check=True)
+            (repo / "event.txt").write_text("event policy\n", encoding="utf-8")
+            subprocess.run(["git", "add", "event.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "--quiet", "-m", "ci:full-acceptance"], cwd=repo, check=True)
+
+            cases = (
+                ("push", "refs/heads/main", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "true"),
+                ("pull_request", "refs/pull/8/merge", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "true"),
+                ("pull_request", "refs/pull/8/merge", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", False, "false"),
+                ("pull_request", "refs/pull/8/merge", "fork/fwrouter", "Coxf0rd/fwrouter", True, "false"),
+                ("push", "refs/heads/feature", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "false"),
+            )
+            for event, ref, head_repo, repository, marker, expected in cases:
+                with self.subTest(event=event, ref=ref, head_repo=head_repo):
+                    subprocess.run(
+                        ["git", "commit", "--quiet", "--allow-empty", "-m",
+                         "ci:full-acceptance" if marker else "ordinary commit"],
+                        cwd=repo, check=True,
+                    )
+                    output_path = repo / "github-output.txt"
+                    env = {
+                        **os.environ,
+                        "EVENT_NAME": event,
+                        "BASE": "base-commit",
+                        "GITHUB_REF": ref,
+                        "PR_HEAD_REPO": head_repo,
+                        "GITHUB_REPOSITORY": repository,
+                        "PLAN": str(repo / "plan.json"),
+                        "GITHUB_OUTPUT": str(output_path),
+                    }
+                    output_path.write_text("", encoding="utf-8")
+                    completed = subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c", policy], cwd=repo,
+                        env=env, text=True, capture_output=True, check=False,
+                    )
+                    self.assertEqual(0, completed.returncode, completed.stderr)
+                    self.assertEqual(f"mandatory_all={expected}\n", output_path.read_text())
+
+    def test_mandatory_all_selects_every_safe_suite_and_rejects_omission(self) -> None:
+        changed = "backend/fwrouter_api/services/bootstrap.py"
+        safe = {
+            row["path"] for row in self.manifest["test_files"]
+            if row["primary_level"] in {"L1", "L2", "L3", "L4"} and not row.get("destructive")
+        }
+        l5_anchors = set(self.manifest["policies"]["L5"]["anchors"])
+        staging = {
+            row["path"] for row in self.manifest["test_files"]
+            if row["primary_level"] == "L7" or row.get("destructive")
+        }
+        with mock.patch.object(gate, "git", return_value="c" * 40), \
+             mock.patch.object(gate, "changed_paths", return_value=[changed]):
+            plan = gate.make_mandatory_suite_plan("b" * 40, self.manifest, [changed])
+            gate.ensure_plan(plan, self.manifest)
+
+            self.assertTrue(plan["mandatory_suite_required"])
+            self.assertFalse(plan["full_suite_required"])
+            self.assertTrue(plan["include_native"])
+            self.assertEqual(safe, set(plan["selected_files"]))
+            self.assertTrue(l5_anchors <= set(plan["selected_files"]))
+            self.assertEqual(staging, set(plan["optional_suites"]))
+            self.assertEqual(staging, set(plan["deferred_staging_suites"]))
+            self.assertNotIn("L7", plan["required_levels"])
+            self.assertEqual({"L0", "L1", "L2", "L3", "L4"}, set(plan["required_levels"]))
+
+            omitted = copy.deepcopy(plan)
+            omitted["selected_files"].pop()
+            omitted["plan_digest"] = gate.canonical_digest(
+                {key: value for key, value in omitted.items() if key != "plan_digest"})
+            with self.assertRaisesRegex(gate.GateError, "deterministic complete safe-suite selection"):
+                gate.ensure_plan(omitted, self.manifest)
+
+            wrong_paths = copy.deepcopy(plan)
+            wrong_paths["changed_paths"] = ["backend/fwrouter_api/services/other.py"]
+            wrong_paths["plan_digest"] = gate.canonical_digest(
+                {key: value for key, value in wrong_paths.items() if key != "plan_digest"})
+            with self.assertRaisesRegex(gate.GateError, "actual immutable base..HEAD diff"):
+                gate.ensure_plan(wrong_paths, self.manifest)
+
+            no_native = copy.deepcopy(plan)
+            no_native["include_native"] = False
+            no_native["plan_digest"] = gate.canonical_digest(
+                {key: value for key, value in no_native.items() if key != "plan_digest"})
+            with self.assertRaisesRegex(gate.GateError, "include-native L0-L5"):
+                gate.ensure_plan(no_native, self.manifest)
+
+    def test_ordinary_affected_plan_remains_affected_and_not_mandatory(self) -> None:
+        changed = "backend/fwrouter_api/services/bootstrap.py"
+        with mock.patch.object(gate, "git", return_value="c" * 40), \
+             mock.patch.object(gate, "changed_paths", return_value=[changed]):
+            plan = gate.make_plan("b" * 40, self.manifest, [changed], include_native=True)
+            gate.ensure_plan(plan, self.manifest)
+        self.assertFalse(plan["mandatory_suite_required"])
+        self.assertFalse(plan["full_suite_required"])
+        self.assertLess(len(plan["selected_files"]), len([
+            row for row in self.manifest["test_files"]
+            if row["primary_level"] in {"L1", "L2", "L3", "L4"} and not row.get("destructive")
+        ]))
+
+    def test_identity_diagnostic_uses_available_main_base_without_rebasing_legacy_stages(self) -> None:
+        workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
+        identity_base = (
+            "PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || "
+            "needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || "
+            "needs.select-stage.outputs.stage == 'packet-diagnostic') && "
+            "'1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || "
+            "'6bdf37e9c73b5728b8d50e971f34d848610eb345' }}"
+        )
+        self.assertEqual(2, workflow.count(identity_base))
+        self.assertEqual(1, workflow.count(
+            "PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345"))
+        identity_step = workflow.split("Run subscription identity L1 subset", 1)[0]
+        self.assertIn("git cat-file -e \"$PHASE_D_BASE_SHA^{commit}\"", identity_step)
+        self.assertIn('git diff --check "$PHASE_D_BASE_SHA...HEAD"', identity_step)
+        self.assertIn('python tests/gates/gate.py plan --base "$PHASE_D_BASE_SHA"', workflow)
+
+        selector = workflow.split("markers = {", 1)[1].split("\n          }", 1)[0]
+        self.assertEqual(1, selector.count('"ci:validate-packet": "packet-diagnostic"'))
+        self.assertEqual(1, selector.count('"ci:validate-final-fixes": "final-regressions-diagnostic"'))
+
+    def test_final_regressions_diagnostic_is_fixed_four_node_kernel_suite(self) -> None:
+        launcher_path = gate.ROOT / "tests/acceptance/launcher.py"
+        spec = importlib.util.spec_from_file_location("fwrouter_final_regressions_launcher", launcher_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        suite = "final-regressions-diagnostic"
+        expected = {
+            "tests/application_acceptance/test_database_application.py::"
+            "test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state",
+            *launcher._RECOVERY_DIAGNOSTIC_NODEIDS,
+            "tests/application_acceptance/test_browser_locale.py::"
+            "test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
+        }
+        self.assertEqual(expected, launcher.expected_acceptance_nodeids(suite))
+        self.assertEqual(expected, set(launcher._FINAL_REGRESSIONS_DIAGNOSTIC_NODEIDS))
+        self.assertIn(suite, launcher._DIAGNOSTIC_SUITES)
+        self.assertIn(suite, launcher._KERNEL_DATAPLANE_SUITES)
+        self.assertNotIn(suite, launcher._KERNEL_SUITES)
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids(f"{suite}-arbitrary")
+
+        import ast
+        launcher_tree = ast.parse(launcher_path.read_text(encoding="utf-8"), filename=str(launcher_path))
+        suite_choices = [
+            ast.literal_eval(keyword.value)
+            for node in ast.walk(launcher_tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--suite"
+            for keyword in node.keywords if keyword.arg == "choices"
+        ]
+        self.assertEqual(1, len(suite_choices))
+        self.assertIn(suite, suite_choices[0])
+        self.assertEqual(4, len(expected))
+
+        scenarios = json.loads((gate.ROOT / "tests/acceptance/scenarios.json").read_text())
+        catalog = {row["nodeid"]: row for row in scenarios["scenarios"]}
+        self.assertTrue(expected <= set(catalog))
+        self.assertTrue(all(catalog[nodeid]["suite"] == "functional"
+                            and catalog[nodeid]["level"] == "L3" for nodeid in expected))
+
+        workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
+        self.assertIn('"ci:validate-final-fixes": "final-regressions-diagnostic"', workflow)
+        self.assertIn("needs.select-stage.outputs.stage == 'final-regressions-diagnostic'", workflow)
+        self.assertIn(
+            'if [[ "$VALIDATION_STAGE" == final-regressions-diagnostic ]]; then suite=final-regressions-diagnostic; fi',
+            workflow,
+        )
+        self.assertIn('PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage ==', workflow)
+
+        deletion_step = workflow.split(
+            "- name: Run final deletion and verified-reentry unit regressions", 1,
+        )[1].split("\n      - name:", 1)[0]
+        deletion_nodeids = {
+            "tests/test_xray.py::test_disabled_subscription_profile_hard_delete_preserves_other_account",
+            "tests/test_xray.py::test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mismatch",
+            "tests/test_xray.py::test_subscription_profile_delete_reconcile_failure_does_not_revoke_identity_credentials",
+            "tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_skips_reconcile_only_with_installed_policy_and_current_intent",
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[False]",
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[None]",
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[true]",
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_routing_parity_even_with_installed_policy",
+            "tests/test_provider_recovery.py::test_mihomo_reentry_ready_accepts_native_policy_and_matching_routing",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_reconciles_before_probe_and_preserves_direct_on_failure",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_reconcile_precedes_probe_and_allows_only_incarnation_change",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[active_target_id]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[binding]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[credential_fingerprint]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[desired_mode]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[eligible]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[exclusive]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[path_key]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pending]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[pool]",
+            "tests/test_provider_recovery.py::test_verified_reentry_prepare_refuses_to_rebase_changed_fences[selection_fence]",
+            "tests/test_provider_recovery.py::test_verified_reentry_accepts_only_exact_owned_native_revision_receipt",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unreceipted_runtime_incarnation_change",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[foreign-job]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[foreign-operation]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[revision-jump]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[native-proof-false]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[publication-false]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[active-hash-mismatch]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[runtime-mismatch]",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_unowned_or_unrelated_context_change[unrelated-binding-change]",
+            "tests/test_subscription_refresh_outcomes.py::test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails",
+            "tests/test_provider_recovery.py::test_verified_reentry_accepts_reconcile_with_native_policy_when_fast_status_is_conservative",
+            "tests/test_provider_recovery.py::test_verified_reentry_rejects_reconcile_without_native_policy_proof",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-selection_revision]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-exclusive]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-incarnation]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[pre-binding]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-selection_revision]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-exclusive]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-incarnation]",
+            "tests/test_provider_recovery.py::test_real_reentry_orchestration_defers_after_probe_fence_change[post-binding]",
+        }
+        self.assertIn("needs.select-stage.outputs.stage == 'final-regressions-diagnostic'", deletion_step)
+        self.assertIn("tests/gates/run_exact_nodes.py", deletion_step)
+        observed_deletion_nodeids = set()
+        for line in deletion_step.splitlines():
+            tokens = shlex.split(line.strip().rstrip("\\").strip())
+            if tokens and tokens[0].startswith("tests/"):
+                self.assertEqual(1, len(tokens), "each exact node ID must be one shell argument")
+                observed_deletion_nodeids.add(tokens[0])
+        self.assertEqual(deletion_nodeids, observed_deletion_nodeids)
+        self.assertEqual(43, len(deletion_nodeids))
+        self.assertIn('--junit "$root/final-regressions-unit.xml"', deletion_step)
+        self.assertIn('--report "$root/final-regressions-unit-report.json"', deletion_step)
+        self.assertIn('--log "$root/final-regressions-unit.log"', deletion_step)
+        exact_runner = (gate.ROOT / "tests/gates/run_exact_nodes.py").read_text(encoding="utf-8")
+        self.assertIn('counts["skipped"] == 0', exact_runner)
+        self.assertIn('report["junit_sanitized"]', exact_runner)
 
     def test_changed_python_f821_checks_only_changed_python_and_selects_one_rule(self) -> None:
         relative = str(Path(__file__).relative_to(gate.ROOT))
@@ -252,6 +561,10 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("- name: Run exact hosted functional profile bundle", workflow)
         self.assertIn('if: always()\n        env:\n          AFFECTED_OUTCOME:', workflow)
         self.assertIn('--unit-failure-report --unit-exit-code "$unit_exit"', workflow)
+        self.assertIn('"ci:validate-identities": "identity-diagnostic"', workflow)
+        self.assertIn("identity-diagnostic", workflow)
+        full_bundle = workflow.split("  full-affected-functional:", 1)[1].split("    runs-on:", 1)[0]
+        self.assertNotIn("identity-diagnostic", full_bundle)
 
     def test_main_push_smoke_reuses_ordinary_or_runs_one_exact_native_diagnostic(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
@@ -468,9 +781,9 @@ class GateContractTests(unittest.TestCase):
         spec.loader.exec_module(module)
         partitions = module.hosted_partition_nodeids()
         self.assertEqual({"functional-ordinary", "provider-cohort", "packet-diagnostic"}, set(partitions))
-        self.assertEqual((26, 11, 1), tuple(len(partitions[key]) for key in
+        self.assertEqual((27, 11, 2), tuple(len(partitions[key]) for key in
                                              ("functional-ordinary", "provider-cohort", "packet-diagnostic")))
-        self.assertEqual(38, len(set().union(*partitions.values())))
+        self.assertEqual(40, len(set().union(*partitions.values())))
         self.assertFalse(partitions["functional-ordinary"] & partitions["provider-cohort"])
         self.assertFalse(partitions["packet-diagnostic"] & set().union(
             partitions["functional-ordinary"], partitions["provider-cohort"]))
@@ -723,6 +1036,10 @@ class GateContractTests(unittest.TestCase):
         path = gate.PACKET_EXECUTION_PATH
         row = next(item for item in self.manifest["test_files"] if item["path"] == path)
         self.assertEqual("hosted-kernel-packet", row["execution_profile"])
+        scale_path = gate.PACKET_SCALE_EXECUTION_PATH
+        scale_row = next(item for item in self.manifest["test_files"] if item["path"] == scale_path)
+        self.assertEqual("application-runtime-scale", scale_row["id"])
+        self.assertEqual("hosted-kernel-packet", scale_row["execution_profile"])
         # Exercise the runner's manual-subset contract with a manifest containing
         # only this row. A normal affected plan intentionally expands its domain,
         # which is outside this focused dispatch contract.
@@ -756,7 +1073,8 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual(["hosted-kernel-packet"], plan["required_execution_profiles"])
 
         widened = copy.deepcopy(self.manifest)
-        unrelated = next(item for item in widened["test_files"] if item["path"] != path)
+        unrelated = next(item for item in widened["test_files"]
+                         if item["path"] not in {path, scale_path})
         unrelated["execution_profile"] = "hosted-kernel-packet"
         with self.assertRaisesRegex(gate.GateError, "reserved for the exact opt-in L3 packet suite"):
             gate.validate_manifest(widened)
@@ -809,7 +1127,8 @@ class GateContractTests(unittest.TestCase):
                       if row["domain"] == "application-acceptance"]
         self.assertTrue(acceptance)
         packet_rows = [row for row in acceptance if row.get("execution_profile") == gate.PACKET_EXECUTION_PROFILE]
-        self.assertEqual([gate.PACKET_EXECUTION_PATH], [row["path"] for row in packet_rows])
+        self.assertEqual({gate.PACKET_EXECUTION_PATH, gate.PACKET_SCALE_EXECUTION_PATH},
+                         {row["path"] for row in packet_rows})
         self.assertTrue(all(row.get("opt_in") is True and row.get("native") is True
                             and row.get("execution_profile") in {"hosted-isolated-compose",
                                                                   gate.PACKET_EXECUTION_PROFILE}

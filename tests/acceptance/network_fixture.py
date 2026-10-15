@@ -16,6 +16,7 @@ import selectors
 import signal
 import socket
 import socketserver
+import ssl
 import stat
 import subprocess
 import sys
@@ -54,6 +55,8 @@ SERVICE_VIP = "203.0.113.53"
 PROTECTED_VIP = "10.250.240.2"
 ENDPOINT_XRAY_PORT = 5301
 ENDPOINT_XRAY_SELECTOR_PORT = 5302
+ENDPOINT_XRAY_REALITY_PORT = 5303
+ENDPOINT_TLS_DECOY_PORT = 9443
 HTTP_PORT = 9080
 UDP_ECHO_PORT = 9081
 DNS_PORT = 5353
@@ -63,6 +66,11 @@ ENDPOINT_CONTROL_PORT = 8082
 XRAY_PATH = Path("/opt/fwrouter-test/bin/xray")
 XRAY_ID = "88c7ce2a-465e-4e72-9c56-2a9e2fc84a51"
 XRAY_SELECTOR_ID = "e27bc911-23fb-4d12-8d51-bb1b9cb2cd08"
+XRAY_REALITY_ID = "bcb65ef9-8d8c-4ba8-8f7f-1b57a6af9470"
+XRAY_REALITY_PRIVATE_KEY = "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo"
+XRAY_REALITY_PUBLIC_KEY = "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+XRAY_REALITY_SHORT_ID = "0123456789abcdef"
+XRAY_REALITY_SERVER_NAME = "reality.test"
 DNS_NAME = "probe.fwrouter.test"
 DNS_NEGATIVE_NAME = "missing.fwrouter.test"
 DNS_IP = SERVICE_VIP
@@ -282,6 +290,7 @@ def _validate_owned_context(role: str, profile: dict[str, Any]) -> dict[str, Any
 _OWNED_ROOT_CREATED = False
 _OWNED_MARKER_CREATED = False
 _XRAY_CONFIG_CREATED = False
+_TLS_MATERIAL_CREATED = False
 
 
 def _bootstrap_owned_root() -> None:
@@ -305,10 +314,14 @@ def _bootstrap_owned_root() -> None:
 
 
 def _cleanup_owned_root() -> None:
-    global _OWNED_ROOT_CREATED, _OWNED_MARKER_CREATED, _XRAY_CONFIG_CREATED
+    global _OWNED_ROOT_CREATED, _OWNED_MARKER_CREATED, _XRAY_CONFIG_CREATED, _TLS_MATERIAL_CREATED
     if _XRAY_CONFIG_CREATED:
         (OWNED_ROOT / "xray-endpoint.json").unlink(missing_ok=True)
         _XRAY_CONFIG_CREATED = False
+    if _TLS_MATERIAL_CREATED:
+        (OWNED_ROOT / "reality-decoy-key.pem").unlink(missing_ok=True)
+        (OWNED_ROOT / "reality-decoy-cert.pem").unlink(missing_ok=True)
+        _TLS_MATERIAL_CREATED = False
     if _OWNED_MARKER_CREATED:
         (OWNED_ROOT / OWNED_MARKER).unlink(missing_ok=True)
         _OWNED_MARKER_CREATED = False
@@ -497,7 +510,7 @@ def _install_guard(role: str) -> None:
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ct state established,related accept')
         input_rules.extend((
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {ENDPOINT_WAN_IP} '
-            f'tcp dport {{ {ENDPOINT_XRAY_PORT}, {ENDPOINT_XRAY_SELECTOR_PORT}, {ENDPOINT_CONTROL_PORT} }} accept',
+            f'tcp dport {{ {ENDPOINT_XRAY_PORT}, {ENDPOINT_XRAY_SELECTOR_PORT}, {ENDPOINT_XRAY_REALITY_PORT}, {ENDPOINT_CONTROL_PORT} }} accept',
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {SERVICE_VIP} '
             f'tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ip daddr {SERVICE_VIP} '
@@ -514,7 +527,7 @@ def _install_guard(role: str) -> None:
         output_rules.extend((
             f'add rule inet {TABLE_NAME} output ip daddr {allowed_sources} ct state established,related accept',
             f'add rule inet {TABLE_NAME} output ip daddr {ENDPOINT_WAN_IP} '
-            f'tcp dport {{ {ENDPOINT_XRAY_PORT}, {ENDPOINT_XRAY_SELECTOR_PORT}, {ENDPOINT_CONTROL_PORT} }} accept',
+            f'tcp dport {{ {ENDPOINT_XRAY_PORT}, {ENDPOINT_XRAY_SELECTOR_PORT}, {ENDPOINT_XRAY_REALITY_PORT}, {ENDPOINT_CONTROL_PORT} }} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} tcp dport {HTTP_PORT} accept',
             f'add rule inet {TABLE_NAME} output ip daddr {SERVICE_VIP} '
             f'udp dport {{ {UDP_ECHO_PORT}, {DNS_PORT} }} accept',
@@ -579,6 +592,19 @@ def _expected_xray_config() -> dict[str, Any]:
                     "clients": [{"id": XRAY_SELECTOR_ID, "level": 0}], "decryption": "none",
                 }, "streamSettings": {"network": "tcp"},
             },
+            {
+                "listen": ENDPOINT_WAN_IP, "port": ENDPOINT_XRAY_REALITY_PORT, "protocol": "vless",
+                "tag": "fixture-vless-reality", "settings": {
+                    "clients": [{"id": XRAY_REALITY_ID, "level": 0}], "decryption": "none",
+                }, "streamSettings": {
+                    "network": "tcp", "security": "reality", "realitySettings": {
+                        "show": False, "dest": f"127.0.0.1:{ENDPOINT_TLS_DECOY_PORT}", "xver": 0,
+                        "serverNames": [XRAY_REALITY_SERVER_NAME],
+                        "privateKey": XRAY_REALITY_PRIVATE_KEY,
+                        "shortIds": [XRAY_REALITY_SHORT_ID],
+                    },
+                },
+            },
         ],
         "outbounds": [
             {"protocol": "freedom", "tag": "fixture-egress-a", "sendThrough": SERVICE_VIP},
@@ -595,6 +621,39 @@ def _assert_xray_config(config: dict[str, Any]) -> None:
     """Reject config drift that could add listeners, users, or external egress."""
     if config != _expected_xray_config():
         raise FixtureError("endpoint Xray routing rules are not permitted")
+
+
+def _create_tls_decoy_material() -> tuple[Path, Path]:
+    """Create ephemeral, owned TLS material for the local Reality handshake target."""
+    global _TLS_MATERIAL_CREATED
+    key_path = OWNED_ROOT / "reality-decoy-key.pem"
+    cert_path = OWNED_ROOT / "reality-decoy-cert.pem"
+    if key_path.exists() or key_path.is_symlink() or cert_path.exists() or cert_path.is_symlink():
+        raise FixtureError("owned Reality TLS decoy material already exists")
+    _TLS_MATERIAL_CREATED = True
+    result = _run_fixed((
+        "/usr/bin/openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
+        "ec_paramgen_curve:prime256v1", "-nodes", "-days", "1", "-keyout", str(key_path),
+        "-out", str(cert_path), "-subj", "/CN=reality.test", "-addext",
+        "subjectAltName=DNS:reality.test", "-addext", "extendedKeyUsage=serverAuth",
+    ), timeout=10.0)
+    if result.returncode != 0:
+        raise FixtureError("bounded OpenSSL command could not create the local Reality TLS decoy")
+    try:
+        key_info = key_path.lstat()
+        cert_info = cert_path.lstat()
+        if not stat.S_ISREG(key_info.st_mode) or not stat.S_ISREG(cert_info.st_mode):
+            raise FixtureError("generated Reality TLS decoy material is not regular files")
+        os.chmod(key_path, 0o600, follow_symlinks=False)
+        os.chmod(cert_path, 0o644, follow_symlinks=False)
+        key_info = key_path.lstat()
+        cert_info = cert_path.lstat()
+        if (key_info.st_uid != os.getuid() or key_info.st_mode & 0o777 != 0o600
+                or cert_info.st_uid != os.getuid() or cert_info.st_mode & 0o777 != 0o644):
+            raise FixtureError("generated Reality TLS decoy material has unsafe ownership or mode")
+        return key_path, cert_path
+    except OSError as exc:
+        raise FixtureError("generated Reality TLS decoy material is incomplete") from exc
 
 
 class _Observations:
@@ -823,6 +882,14 @@ class _EndpointHandler(_QuietHandler):
     def do_HEAD(self) -> None:
         if self.server.server_address == (SERVICE_VIP, HTTP_PORT) and self.path == "/generate_204":
             self._send_generate_204()
+        elif self.server.server_address == (SERVICE_VIP, HTTP_PORT) and self.path == "/probe":
+            # Pinned Mihomo URLTest performs HEAD, not GET. Record the real
+            # incoming peer without writing a response body for HEAD.
+            _OBS.record("http", self.client_address[0])
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
         else:
             self.send_response(404)
             self.send_header("Content-Length", "0")
@@ -998,6 +1065,21 @@ class _BoundedHTTPServer(http.server.ThreadingHTTPServer):
             super().process_request_thread(request, client_address)
         finally:
             self._slots.release()
+
+
+class _BoundedTLSHTTPServer(_BoundedHTTPServer):
+    def __init__(self, server_address: tuple[str, int], handler: type[http.server.BaseHTTPRequestHandler],
+                 context: ssl.SSLContext) -> None:
+        self._tls_context = context
+        super().__init__(server_address, handler)
+
+    def get_request(self) -> tuple[ssl.SSLSocket, Any]:
+        request, address = super().get_request()
+        try:
+            return self._tls_context.wrap_socket(request, server_side=True), address
+        except ssl.SSLError:
+            request.close()
+            raise
 
 
 class _BoundedUDPServer(socketserver.UDPServer):
@@ -1587,6 +1669,8 @@ def _endpoint_status(control_server: Any, runtime: _XrayRuntime | None) -> dict[
     sockets = {
         "xray_tcp_5301": _tcp_listener_present(ENDPOINT_WAN_IP, ENDPOINT_XRAY_PORT),
         "xray_tcp_5302": _tcp_listener_present(ENDPOINT_WAN_IP, ENDPOINT_XRAY_SELECTOR_PORT),
+        "xray_tcp_5303": _tcp_listener_present(ENDPOINT_WAN_IP, ENDPOINT_XRAY_REALITY_PORT),
+        "tls_decoy_tcp_9443": _tcp_listener_present("127.0.0.1", ENDPOINT_TLS_DECOY_PORT),
         "http_tcp_9080": bool(servers and _server_socket_ready(servers[0], SERVICE_VIP, HTTP_PORT, tcp=True)),
         "control_tcp_8082": _server_socket_ready(control_server, ENDPOINT_WAN_IP,
                                                    ENDPOINT_CONTROL_PORT, tcp=True),
@@ -1614,6 +1698,9 @@ def _endpoint_status(control_server: Any, runtime: _XrayRuntime | None) -> dict[
 
 def _serve(role: str, profile: dict[str, Any]) -> None:
     if role == "endpoint":
+        # The decoy belongs to the endpoint role, not the restartable Xray
+        # process. Availability fault/restart must preserve its owned material.
+        _create_tls_decoy_material()
         runtime = _start_xray(profile)
         servers: list[Any] = []
         serving: list[Any] = []
@@ -1628,17 +1715,29 @@ def _serve(role: str, profile: dict[str, Any]) -> None:
             servers.append(_BoundedDnsTCPServer((DNS_UPSTREAM_IP, 53), _DnsUpstreamTCPHandler))
             servers.append(_BoundedHTTPServer((DNS_VPN_SERVICE_VIP, HTTP_PORT), _EndpointHandler))
             servers.append(_BoundedUDPServer((DNS_VPN_SERVICE_VIP, UDP_ECHO_PORT), _UDPEchoHandler))
+            tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            tls_context.minimum_version = ssl.TLSVersion.TLSv1_3
+            tls_context.maximum_version = ssl.TLSVersion.TLSv1_3
+            tls_context.load_cert_chain(
+                str(OWNED_ROOT / "reality-decoy-cert.pem"),
+                str(OWNED_ROOT / "reality-decoy-key.pem"),
+            )
+            servers.append(_BoundedTLSHTTPServer(
+                ("127.0.0.1", ENDPOINT_TLS_DECOY_PORT), _EndpointHandler, tls_context,
+            ))
             servers[1].xray_runtime = runtime
             servers[1].role_servers = tuple(servers)
             servers[1].xray_lock = threading.Lock()
             deadline = time.monotonic() + READINESS_TIMEOUT
             _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_XRAY_PORT, deadline, runtime)
             _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_XRAY_SELECTOR_PORT, deadline, runtime)
+            _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_XRAY_REALITY_PORT, deadline, runtime)
             for server in servers:
                 thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
                 thread.start()
                 serving.append(server)
             _wait_tcp(ENDPOINT_WAN_IP, ENDPOINT_CONTROL_PORT, deadline, runtime)
+            _wait_tcp("127.0.0.1", ENDPOINT_TLS_DECOY_PORT, deadline, runtime)
             _wait_tcp(SERVICE_VIP, HTTP_PORT, deadline, runtime)
             _wait_tcp(DNS_VPN_SERVICE_VIP, HTTP_PORT, deadline, runtime)
             servers[1].xray_profile = profile

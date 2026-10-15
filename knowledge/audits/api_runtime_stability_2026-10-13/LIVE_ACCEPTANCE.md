@@ -1,0 +1,86 @@
+# API runtime stabilization — controlled feature-source live acceptance
+
+## Decision — 2026-10-14
+
+**BLOCKED; production control plane remains stopped.** User authorized a backend/docs deployment from qualified feature source before final PR readiness. Exact deployed source is `4ffd6865341a49c3d4693ecfdd86fcb664b6d9b8`, branch `fix/api-runtime-health-scale-stability`; main remains `1b302e9`. This is not a merge or a main deployment. No host/UI/native image installation, reboot, CD, Rescue/SSH/Tailscale modification or unrelated service restart.
+
+## Hosted evidence
+
+[PR run38472054455](https://github.com/Coxf0rd/fwrouter/actions/runs/38472054455) SUCCESS:1439 routine PASS, qualified native26+1 PASS, ordinary26 PASS, Provider11 PASS, packet/scale2 PASS, no failure/skip in executed suites. Aggregate eligible and owned cleanup confirmed. L6/L7 and Debian host qualification are not included.
+
+Scale generated23515102 bytes /199273 top-level rules /99627 VPN guards,78 synthetic native identities retained. Full bootstrap/recovery/Xray/DNS receipt successful. Startup30.0161s; four six-client waves all HTTP200, maximum2.3812s; API process VmHWM892128KiB (not aggregate native memory); completed shutdown0.2137s. This fixture retains78 identities but empty subscription-profile reconciliation does **not** rebuild78 real managed profiles. The live failure exposes that important qualification boundary.
+
+## Backup and rollout
+
+Protected recovery set `/root/fwrouter-recovery/api-stability-20261013T202715Z`: online DB integrityok/FK0; archives fully readable;434 pre-deployment installed files matcha4a7a33; private runtime/Xray/.env snapshots and source exports retained. Fresh pre-activation DB backup and watched native config/guard hash recheck passed. Native78 users and server-side Rescue preservation confirmed. External Rescue remains prior user-confirmed manual PASS, not a newly observed external session.
+
+Standard exact-commit Git export installer `--deploy --component backend --component docs` exited0.436 installed backend files match4ffd686, `.env`/native config/readiness guard unchanged at copy verification. No untracked/raw evidence entered the export. Host scope excluded.
+
+Only API started through its existing systemd preflight. Dependent workers/timers stayed held. Existing preflight includes sysctl handling; it was not bypassed/replaced. API did not reach readiness within120s; sampler stopped it through systemd. Observed maximum RSS751428KiB (~734MiB), versus prior6056568KiB (~5.78GiB). Activation+stop took140.38s: readiness120s FAIL plus existing20s stop timeout. API MainPID0/failed afterwards. This is neither startup success nor graceful shutdown acceptance. No unsafe old generator restored.
+
+## Partial Xray generation — critical unresolved gate
+
+After failed activation native count remains78, but UUID set changes:8 removed/8 added,70 unchanged; all70 common email/account projections unchanged. Seven changed entries in each direction are managed subscription email entries; one is another generated entry. Do not publish identities. Native UUID set equals the78 expected candidate identities in the actual checkpoint, whose phase is `xray_applied`. Final publication did not complete. Desired/applied Core row still selective/clean and DB integrity/FK pass; that alone cannot prove Xray generation consistency.
+
+This establishes a partially applied generation and a preservation failure against the original native identity baseline. It does **not** prove DB corruption or actual user disconnect, which were not measured, and does not yet establish why candidate derivation changed those UUIDs. The live startup bottleneck remains unattributed: no production phase instrumentation; attempted read-only py-spy dump failed because the archived diagnostic executable lacks execute permission, and no live stack was obtained. Do not assign the120s solely to YAML, hashing, Docker or networking.
+
+No further activation, native reload or guessed restore was attempted after this new critical uncertainty. A checkpoint-owned recovery may be appropriate, but must verify artifact integrity, current incarnation/config hashes, source/DB compatibility and identity intent before changing native state. Old pre-a4 generator with implicit DIRECT remains inadmissible. The backed-up a4 code is a fail-closed containment baseline, not a proven stable control-plane rollback.
+
+## Safe preservation observations after stop
+
+| Check | Result |
+|---|---|
+| Backend provenance / copy / guard | PASS |
+| API120s readiness | FAIL |
+| API systemd20s stop | FAIL / timed out |
+| Original native UUID preservation | FAIL:8 replacements |
+| Native candidate/checkpoint parity | PASS for observed candidate; final publication NOT COMPLETE |
+| DB integrity/FK | PASS |
+| DIRECT HTTPS | HTTP200,0.349567s |
+| Native vpn-global HTTPS delay | HTTP200,235ms; not all client-flow acceptance |
+| Current vpn-auto | Native member present, not DIRECT/REJECT; target not changed by test |
+| Router local DNS | fwrouter.lan→192.168.0.1 |
+| DNS/BIND/Rescue/SSH/Tailscale services | Active, unchanged configuration |
+| Xray native count |78; count alone does not establish preservation |
+| Full UI/admin/save, steady15min, DHCP client renew, DNS leaks | NOT RUN |
+| Restore dependent timers/workers | NOT RUN; stay held |
+| Full live rollback/host/reboot/L7 | NOT RUN |
+
+No negative outage/fail-closed experiments or manual nft edits were executed. Successful native network probes are positive limited-scope observations, not Production Acceptance.
+
+## Required next work
+
+1. Read-only reconcile the8 changed candidate identities against pre-start DB/native projections and generation-derived UUID contracts; establish whether they are intended migration or a defect and which bindings must be retained.
+2. Admit a checkpoint-owned safe recovery to the preserved native baseline if required, keeping Core ownership/CAS/incarnation/native proof; no raw config overwrite or insecure code rollback.
+3. Extend isolated hosted scale fixture with actual nonempty subscription accounts/profile nodes matching production cardinality. Current empty-profile case cannot qualify this live path.
+4. Add bounded real generation timing/stack evidence and diagnose live-equivalent startup plus cancellation/recovery at partial apply. Improve proven source cause through PR8/required checks; do not raise limits to hide failure.
+5. Once qualified, repeat controlled backend activation and full live acceptance, then restore exactly the previously active dependent units only after readiness/native stability. User merge remains separate.
+
+Overall Production Acceptance BLOCKED. CI milestone CLOSED; CD DEFERRED; Operational Performance Fixes not started. Raw evidence protected locally; no secrets or client IDs in this report.
+
+
+## Read-only diagnostic clarification — 2026-10-14
+
+This updates the unresolved causal questions above without changing the failed live receipt. Production remains installed at4ffd686, with API/dependent units held. No activation, UUID restoration, native reload, rollback or configuration mutation is performed in this diagnostic phase.
+
+Protected historical/current subscription metadata establishes the exact upstream delta: the canonical JSON profile has10→13 outbounds, with the original7 VLESS members unchanged and3 additional VLESS members before the unchanged service suffix. All other root fields are equal. Parser `_servers_from_json_profile` hashes the entire canonical profile; logical topology uses that server ID as its profile key. The changed inventory was persisted before activation. Seven public credentials derive deterministically from unchanged profile tokens plus the changed server ID; the eighth is the replacement internal vpn-auto credential. This is not random rotation, a URI-path formatting defect, or a new PR8 UUID algorithm. Seventy identities are unchanged. Seven published credentials remain absent from native; actual authentication attempts/disconnections were not observed.
+
+Checkpoint xray_applied records the new native candidate, while active Mihomo already matches the final candidate. Selection revision and Mihomo incarnation differ from the durable checkpoint; Xray incarnation matches. Direct stale resume/restore is inadmissible. New source persists the missing transition digest and rejects unproved/foreign transition bytes before writes. That fix cannot retrofit proof into the existing production marker.
+
+Committed-projection fallback first requires binding/mode identity parity and valid published snapshots, then bindings-artifact parity and mounted/native configuration checks. The observed DB/native8-identity difference independently fails its later config-identity equality predicate; the first actual refusal has not been executed or established. Do not claim a specific first refusal from configuration counts alone.
+
+Recovery remains NOT RUN. Preserve the original78 credentials in a fresh owned transaction, qualify full bindings/public/native state, keep current unrelated Core intent and fail-closed, and choose an authoritative continuity mapping for the changed7→10-member profile. A frozen last-good profile and a qualified new-profile migration are distinct recovery options; neither is authorized or executed on production here. Host/name/primary-endpoint aliasing is insufficient. PR8's measured performance/native gates and a durable identity-continuity decision remain prerequisites to a separately authorized live recovery. See REPORT.md for actual hosted run receipts.
+
+
+## Hosted diagnosis checkpoint — 38548698209
+
+ca1cd8a source passes actual PR affected CI:1451 routine,26+1 qualified native,26 ordinary,11 Provider,2 packet/scale; no FAIL/SKIP. Real nonempty fixture includes82 pre-existing native identities and70 nodes for7 accounts. Startup44.8415s, process HWM908944KiB,24 HTTP200 concurrent reads (max2.2285s; health max0.0118s), observed cleanup0.2639s. Native identities exactly preserved;82 bindings/7 snapshots verified; real Reality HEAD count and VPN peer source observed. This is one strict PASS with only0.1585s startup margin, repeat pending. It is container/kernel evidence, not live production or host-systemd acceptance.
+
+Production still holds the failed4ffd686 activation and partially applied78-client generation; no identities restored, no API/dependents started. Current durable mapping proposal remains NOT IMPLEMENTED, Legacy checkpoint restore/resume is inadmissible. Full Live Acceptance remains BLOCKED and any later activation/recovery needs separate authorization.
+
+
+## Repeat hosted PASS; live state still blocked
+
+47d64e2 run38551736466 repeats the identical application/test/workflow source from ca1cd8a: all1451 routine/26+1 qualified/26 ordinary/11 Provider/2 packet-scale PASS, no FAIL/SKIP.82 unchanged native identities,82 bindings,7 verified snapshots and actual Reality HEAD VPN-source evidence. Startup28.1711s, peak947256KiB,24 HTTP200 reads/max1.5216s, cleanup0.2136s. Together with38548698209 this qualifies the isolated nonempty performance/native scenario twice, with28.17–44.84s variance.
+
+No production update or recovery follows from these receipts. Original78/native/public mismatch, stale checkpoint and the required durable identity-contract decision remain open; API/dependents remain held. Production Live Acceptance BLOCKED.

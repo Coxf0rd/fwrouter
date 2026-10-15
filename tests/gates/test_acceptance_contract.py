@@ -3,8 +3,11 @@ from __future__ import annotations
 import importlib.util
 import ast
 import builtins
+import copy
 import hashlib
 import json
+import math
+import os
 import re
 import tarfile
 import tempfile
@@ -15,16 +18,18 @@ import stat
 import sys
 import socket
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 from unittest import mock
 import io
 from pathlib import Path
+from typing import Any
 import xml.etree.ElementTree as ET
 from types import ModuleType, SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from application_acceptance.xray_support import parse_inbound_users_reply
 from application_acceptance.joined_support import ProviderHttpTestBridge
+from application_acceptance.diagnostics import encode_safe_reentry_native_record
 sys.path.insert(0, str(Path(__file__).parents[1] / "acceptance"))
 import qualified_child
 import qualified_xray_docker
@@ -56,9 +61,284 @@ assert NATIVE_SPEC and NATIVE_SPEC.loader
 native_runner = importlib.util.module_from_spec(NATIVE_SPEC)
 NATIVE_SPEC.loader.exec_module(native_runner)
 WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+APPLICATION_ACCEPTANCE_CONFTEST = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
+APPLICATION_ACCEPTANCE_WORKER = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+
+
+def _extract_health_readiness_predicate():
+    """Load the pure acceptance predicate without importing the app or pytest fixtures."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_health_response_is_ready"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace: dict[str, Any] = {}
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_CONFTEST), "exec"), namespace)
+    return namespace["_health_response_is_ready"]
+
+
+def _extract_startup_phase_parser():
+    """Load the small parser without importing pytest fixtures or FWRouter modules."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_startup_phase_diagnostics"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {"Path": Path, "os": os, "json": json, "math": math}
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_CONFTEST), "exec"), namespace)
+    return namespace["_startup_phase_diagnostics"]
+
+
+def _extract_bootstrap_phase_summary():
+    """Load the nested redacted projection without importing the application worker."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+    build_app = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_app"
+    )
+    function = next(
+        node for node in ast.walk(build_app)
+        if isinstance(node, ast.FunctionDef) and node.name == "phase_summary"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {"Any": Any, "re": re}
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+    return namespace["phase_summary"]
+
+
+def _extract_worker_candidate_fingerprint(state_root: Path):
+    """Load the worker's bounded file fingerprint without importing FWRouter."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+    build_app = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_app"
+    )
+    function = next(
+        node for node in ast.walk(build_app)
+        if isinstance(node, ast.FunctionDef) and node.name == "candidate_fingerprint"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {
+        "Any": Any, "Path": Path, "stat": stat, "os": os,
+        "hashlib": hashlib, "state": state_root,
+    }
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+    return namespace["candidate_fingerprint"]
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_reentry_native_diagnostic_is_redacted_and_size_bounded(self):
+        secret_url = "http://probe-user:probe-pass@vpn-secret.test/private"
+        secret_uuid = "11111111-2222-4333-8444-555555555555"
+        secret_config = "proxies:\n  - uuid: " + secret_uuid
+        payload = {
+            "schema": "fwrouter-acceptance-reentry-native-proof/v1",
+            "operation": 3,
+            "sequence": 99,
+            "phase": "core_apply",
+            "runtime_running": True,
+            "proof": {"wiring_proven": False, "unexpected_raw_value": secret_url},
+            "proof_fields_present": ["wiring_proven", "unexpected_raw_value"],
+            "selector_readback": {
+                "vpn_auto_exists": True,
+                "vpn_auto_selected_sha256": "a" * 64,
+                "raw_selector": secret_uuid,
+            },
+            "native_selected_probe_history": {"present": True, "alive": False, "history": secret_url},
+            "active_config_sha256": "b" * 64,
+            "runtime_incarnation_sha256": "c" * 64,
+            "receipt": {"present": True, "active_config_hash": secret_config},
+            "raw_url": secret_url,
+            "raw_uuid": secret_uuid,
+            "raw_config": secret_config,
+        }
+
+        encoded = encode_safe_reentry_native_record(payload, max_bytes=1024)
+        self.assertIsNotNone(encoded)
+        assert encoded is not None
+        self.assertLessEqual(len(encoded.encode("utf-8")), 1024)
+        self.assertNotIn(secret_url, encoded)
+        self.assertNotIn(secret_uuid, encoded)
+        self.assertNotIn(secret_config, encoded)
+        decoded = json.loads(encoded)
+        self.assertEqual({"wiring_proven": False}, decoded["proof"])
+        self.assertEqual(["wiring_proven"], decoded["proof_fields_present"])
+        self.assertNotIn("raw_selector", decoded["selector_readback"])
+        self.assertNotIn("raw_url", decoded)
+        self.assertIsNone(encode_safe_reentry_native_record(payload, max_bytes=1))
+
+    def test_startup_readiness_uses_strict_health_and_xray_is_a_separate_bounded_readback(self):
+        ready = _extract_health_readiness_predicate()
+        healthy = {
+            "ok": True,
+            "data": {
+                "service": "fwrouter-api", "status": "healthy",
+                "database": {"status": "healthy", "schema": {"ok": True}},
+            },
+        }
+        self.assertTrue(ready(200, healthy))
+        self.assertFalse(ready(503, healthy))
+        for invalid in (
+            {},
+            {**healthy, "ok": False},
+            {"ok": True, "data": {**healthy["data"], "service": "other"}},
+            {"ok": True, "data": {**healthy["data"], "status": "starting"}},
+            {"ok": True, "data": {**healthy["data"], "database": {"status": "failed", "schema": {"ok": True}}}},
+            {"ok": True, "data": {**healthy["data"], "database": {"status": "healthy", "schema": {"ok": False}}}},
+        ):
+            self.assertFalse(ready(200, invalid), invalid)
+        self.assertFalse(ready(200, None))
+
+        fixture_source = APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8")
+        fixture_tree = ast.parse(fixture_source)
+        acceptance_stack = next(
+            node for node in fixture_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "acceptance_stack"
+        )
+        start_worker = next(
+            node for node in ast.walk(acceptance_stack)
+            if isinstance(node, ast.FunctionDef) and node.name == "start_worker"
+        )
+        start_source = ast.get_source_segment(fixture_source, start_worker) or ""
+        self.assertIn('base + "/health"', start_source)
+        self.assertIn("_health_response_is_ready(code, payload)", start_source)
+        self.assertIn("timeout=min(0.5, remaining)", start_source)
+        self.assertIn('"path": "/health"', start_source)
+        self.assertNotIn('base + "/xray"', start_source)
+
+        scale_source = (Path(__file__).parents[1] / "application_acceptance" / "test_runtime_scale.py").read_text(
+            encoding="utf-8")
+        scale_tree = ast.parse(scale_source)
+        scale_case = next(
+            node for node in scale_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
+        )
+        scale_case_source = ast.get_source_segment(scale_source, scale_case) or ""
+        self.assertIn('http_json(api + "/xray", timeout=20.0)', scale_case_source)
+        self.assertIn('metrics["startup_readiness_probe"]', scale_case_source)
+        self.assertIn('"native_loaded_client_count": len(loaded_after_readback)', scale_case_source)
+        self.assertIn("len(loaded_after_readback) == SCALE_NATIVE_CLIENT_COUNT", scale_case_source)
+
+    def test_worker_candidate_fingerprint_is_bounded_owned_and_path_redacted(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-candidate-fingerprint-") as temp:
+            root = Path(temp) / "state"
+            root.mkdir()
+            candidate = root / "mihomo-candidate.yaml"
+            candidate.write_bytes(b"synthetic-candidate-content")
+            fingerprint = _extract_worker_candidate_fingerprint(root)
+            result = fingerprint(candidate)
+            self.assertEqual(candidate.name, result["candidate"])
+            self.assertEqual(candidate.stat().st_size, result["bytes"])
+            self.assertEqual(hashlib.sha256(candidate.read_bytes()).hexdigest(), result["sha256"])
+            self.assertNotIn(str(root), json.dumps(result))
+            self.assertIsNone(fingerprint(Path(temp) / "outside.yaml"))
+            linked = root / "linked-candidate.yaml"
+            linked.symlink_to(candidate)
+            self.assertIsNone(fingerprint(linked))
+
+    def test_bootstrap_projection_exposes_only_the_staged_native_proof_needed_by_scale_gate(self):
+        project = _extract_bootstrap_phase_summary()
+        source = {
+            "ok": True,
+            "status": "success",
+            "inventory_authority": "persisted_success",
+            "staged_publication_receipt": {
+                "schema": 1, "staged_native_publication_complete": True,
+                "client_uuid": "UUID_SENTINEL",
+            },
+            "generation_apply": {
+                "final_mihomo": {"ok": True, "config": "RAW_CONFIG_SENTINEL"},
+                "public_snapshots_changed": True,
+                "xray": {"client_uuid": "UUID_SENTINEL"},
+            },
+            "public_profile_promote": {"profiles_count": 7, "nodes_count": 70,
+                                        "client_uuid": "UUID_SENTINEL"},
+            "final_mihomo_reconcile": {
+                "ok": True, "skipped": True,
+                "reason": "staged_publication_native_proof_complete",
+                "details": "RAW_DETAILS_SENTINEL",
+            },
+            "raw_subscription": "RAW_SUBSCRIPTION_SENTINEL",
+        }
+        result = project(source)
+        self.assertTrue(result["ok"])
+        self.assertEqual("success", result["status"])
+        self.assertEqual("persisted_success", result["inventory_authority"])
+        self.assertEqual({"schema": 1, "staged_native_publication_complete": True},
+                         result["staged_publication_receipt"])
+        self.assertEqual({"final_mihomo": {"ok": True}, "public_snapshots_changed": True},
+                         result["generation_apply"])
+        self.assertEqual({"profiles_count": 7, "nodes_count": 70}, result["public_profile_promote"])
+        self.assertEqual({"ok": True, "skipped": True,
+                          "reason": "staged_publication_native_proof_complete"},
+                         result["final_mihomo_reconcile"])
+        encoded = json.dumps(result)
+        for sentinel in ("UUID_SENTINEL", "RAW_CONFIG_SENTINEL", "RAW_DETAILS_SENTINEL",
+                         "RAW_SUBSCRIPTION_SENTINEL"):
+            self.assertNotIn(sentinel, encoded)
+
+    def test_bootstrap_projection_does_not_promote_malformed_proof_or_counts_to_success(self):
+        project = _extract_bootstrap_phase_summary()
+        malformed = {
+            "ok": True,
+            "status": "success",
+            "staged_publication_receipt": {"schema": True, "staged_native_publication_complete": "true"},
+            "generation_apply": {
+                "final_mihomo": {"ok": "true"}, "public_snapshots_changed": 1,
+            },
+            "public_profile_promote": {"profiles_count": True, "nodes_count": -1},
+            "final_mihomo_reconcile": {"ok": True, "skipped": True, "reason": "untrusted reason"},
+        }
+        result = project(malformed)
+        self.assertTrue(result["ok"])
+        self.assertNotIn("staged_publication_receipt", result)
+        self.assertNotIn("generation_apply", result)
+        self.assertNotIn("public_profile_promote", result)
+        self.assertEqual({"ok": True, "skipped": True}, result["final_mihomo_reconcile"])
+
+    def test_startup_phase_diagnostic_parser_reads_only_a_bounded_tail(self):
+        parser = _extract_startup_phase_parser()
+        prefix = b"FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
+        old_event = prefix + b'{"phase":"old_phase","event":"exit","seconds":9.0}\n'
+        recent_event = prefix + b'{"phase":"recover_xray","event":"exit","seconds":1.25,"cpu_seconds":0.5}\n'
+        with tempfile.TemporaryDirectory(prefix="fwrouter-startup-phase-parser-") as temp:
+            log = Path(temp) / "worker.log"
+            log.write_bytes(old_event + b"x" * (16 * 1024 - 1) + b"\n" + recent_event)
+            result = parser(log)
+        self.assertEqual("parsed", result["status"])
+        self.assertLessEqual(result["tail_bytes"], 16 * 1024)
+        self.assertEqual(["recover_xray"], [item["phase"] for item in result["events"]])
+        self.assertNotIn("old_phase", result["totals"])
+        self.assertEqual({"calls": 1, "wall_seconds": 1.25, "cpu_seconds": 0.5},
+                         result["totals"]["recover_xray"])
+
+    def test_startup_phase_diagnostic_parser_rejects_malformed_timings_and_drops_untrusted_fields(self):
+        parser = _extract_startup_phase_parser()
+        prefix = b"FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
+        lines = [
+            prefix + b"[]\n",
+            prefix + b'{"phase":"unsafe phase","event":"exit","seconds":1}\n',
+            prefix + b'{"phase":"bad_float","event":"exit","seconds":NaN,"cpu_seconds":Infinity,"token":"TOKEN_SENTINEL"}\n',
+            prefix + b'{"phase":"negative","event":"exit","seconds":-1,"cpu_seconds":-2}\n',
+            prefix + b'{"phase":"safe_phase","event":"exit","seconds":1.5,"cpu_seconds":0.25,"authorization":"TOKEN_SENTINEL"}\n',
+        ]
+        with tempfile.TemporaryDirectory(prefix="fwrouter-startup-phase-parser-invalid-") as temp:
+            log = Path(temp) / "worker.log"
+            log.write_bytes(b"".join(lines))
+            result = parser(log)
+        self.assertEqual(["bad_float", "negative", "safe_phase"],
+                         [item["phase"] for item in result["events"]])
+        self.assertEqual({"calls": 0, "wall_seconds": 0.0, "cpu_seconds": 0.0},
+                         result["totals"]["bad_float"])
+        self.assertEqual({"calls": 0, "wall_seconds": 0.0, "cpu_seconds": 0.0},
+                         result["totals"]["negative"])
+        self.assertEqual({"calls": 1, "wall_seconds": 1.5, "cpu_seconds": 0.25},
+                         result["totals"]["safe_phase"])
+        self.assertNotIn("TOKEN_SENTINEL", json.dumps(result))
+
     def test_routine_unit_failure_report_is_bound_bounded_and_never_eligible(self):
         path = "backend/tests/test_apply_pipeline.py"
         manifest = aggregate_hosted.gate.load_manifest()
@@ -266,13 +546,13 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((26, 11, 1), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((27, 11, 2), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
         with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
             launcher.expected_acceptance_nodeids("functional")
-        self.assertEqual(38, len(ordinary | provider | packet))
+        self.assertEqual(40, len(ordinary | provider | packet))
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(
                 [{"nodeid": nodeid, "status": "passed",
@@ -968,8 +1248,6 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('else "/opt/fwrouter-test/bin:/usr/bin:/bin"', conftest)
 
     def test_owned_worker_rewrites_only_copied_logical_health_check_groups(self):
-        from application_acceptance import worker
-
         original = [
             {"name": "fallback-group", "type": "fallback", "url": "https://www.gstatic.com/generate_204",
              "proxies": ["member-a"]},
@@ -978,7 +1256,16 @@ class AcceptanceContractTests(unittest.TestCase):
             {"name": "selector", "type": "select", "proxies": ["member-a", "member-b"]},
         ]
         probe_url = "http://127.0.0.1:52044/generate_204"
-        observed = worker._owned_logical_health_check_groups(original, probe_url)
+        worker_tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"), filename=str(WORKER_PATH))
+        helper_node = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_owned_logical_health_check_groups"
+        )
+        helper_namespace = {"copy": copy, "urlsplit": urlsplit, "Any": Any}
+        exec(compile(ast.Module(body=[helper_node], type_ignores=[]), str(WORKER_PATH), "exec"), helper_namespace)
+        owned_groups = helper_namespace["_owned_logical_health_check_groups"]
+
+        observed = owned_groups(original, probe_url)
         self.assertEqual(probe_url, observed[0]["url"])
         self.assertEqual(probe_url, observed[1]["url"])
         self.assertEqual(original[2], observed[2])
@@ -995,10 +1282,10 @@ class AcceptanceContractTests(unittest.TestCase):
             "http://user@127.0.0.1:52044/generate_204",
         ):
             with self.subTest(probe_url=unsafe), self.assertRaises(RuntimeError):
-                worker._owned_logical_health_check_groups(original, unsafe)
+                owned_groups(original, unsafe)
         packet_profile = {"profile": "hosted-kernel-packet"}
         packet_url = "http://203.0.113.53:9080/generate_204"
-        packet_groups = worker._owned_logical_health_check_groups(
+        packet_groups = owned_groups(
             original, packet_url, profile=packet_profile)
         self.assertEqual(packet_url, packet_groups[0]["url"])
         self.assertEqual(packet_url, packet_groups[1]["url"])
@@ -1010,16 +1297,16 @@ class AcceptanceContractTests(unittest.TestCase):
             "http://203.0.113.53:9080/generate_204?url=http://127.0.0.1",
         ):
             with self.subTest(packet_probe_url=unsafe), self.assertRaises(RuntimeError):
-                worker._owned_logical_health_check_groups(original, unsafe, profile=packet_profile)
+                owned_groups(original, unsafe, profile=packet_profile)
         with self.assertRaises(RuntimeError):
-            worker._owned_logical_health_check_groups(original, packet_url)
+            owned_groups(original, packet_url)
         dataplane_profile = {
             "profile": "hosted-kernel-dataplane",
             "mihomo_handoff": {"address": "172.18.0.1", "subnet": "172.18.0.0/24",
                                "gateway": "172.18.0.254"},
         }
         internal_url = "http://172.18.0.1:49152/generate_204"
-        internal_groups = worker._owned_logical_health_check_groups(
+        internal_groups = owned_groups(
             original, internal_url, profile=dataplane_profile, expected_probe_port=49152)
         self.assertEqual(internal_url, internal_groups[0]["url"])
         for unsafe in (
@@ -1029,16 +1316,75 @@ class AcceptanceContractTests(unittest.TestCase):
             "http://172.18.0.1:49152/generate_204?target=127.0.0.1",
         ):
             with self.subTest(dataplane_probe_url=unsafe), self.assertRaises(RuntimeError):
-                worker._owned_logical_health_check_groups(
+                owned_groups(
                     original, unsafe, profile=dataplane_profile, expected_probe_port=49152)
         with self.assertRaises(RuntimeError):
-            worker._owned_logical_health_check_groups(
+            owned_groups(
                 original, internal_url, profile=dataplane_profile, expected_probe_port=49153)
-        normal_groups = worker._owned_logical_health_check_groups(original, probe_url)
+        normal_groups = owned_groups(original, probe_url)
         self.assertEqual(probe_url, normal_groups[0]["url"])
         source = WORKER_PATH.read_text(encoding="utf-8")
-        self.assertIn("mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge", source)
-        self.assertIn("generated = original_logical_profile_groups()", source)
+        worker_tree = ast.parse(source, filename=str(WORKER_PATH))
+        bind_function = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_bind_acceptance_mihomo"
+        )
+        wrapper_node = next(
+            node for node in bind_function.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "generated_logical_profile_group_on_owned_bridge"
+        )
+        def generated_factory(runtime_name, members, runtime_policy="fallback"):
+            return {
+                "name": runtime_name,
+                "type": runtime_policy,
+                "proxies": [member["name"] for member in members],
+                "url": "https://www.gstatic.com/generate_204",
+                "interval": 300,
+            }
+
+        factory_namespace = {
+            "original_generated_logical_profile_group": generated_factory,
+            "_owned_logical_health_check_groups": owned_groups,
+            "owned_probe_url": internal_url,
+            "acceptance_profile": dataplane_profile,
+            "owned_probe_port": 49152,
+            "Any": Any,
+        }
+        exec(compile(ast.Module(body=[wrapper_node], type_ignores=[]), str(WORKER_PATH), "exec"), factory_namespace)
+        wrapped_factory = factory_namespace["generated_logical_profile_group_on_owned_bridge"]
+        active_group = wrapped_factory("active-profile", [{"name": "active-member"}])
+        inactive_group = wrapped_factory("inactive-profile", [{"name": "inactive-member"}])
+        self.assertEqual(internal_url, active_group["url"])
+        self.assertEqual(internal_url, inactive_group["url"])
+        self.assertEqual(["active-member"], active_group["proxies"])
+        self.assertEqual(["inactive-member"], inactive_group["proxies"])
+        with self.assertRaises(RuntimeError):
+            owned_groups([generated_factory("wrong-endpoint", [{"name": "member"}])],
+                         "http://172.18.0.2:49152/generate_204",
+                         profile=dataplane_profile, expected_probe_port=49152)
+
+        service_path = WORKER_PATH.parents[2] / "backend/fwrouter_api/services/mihomo_config_proxies.py"
+        service_tree = ast.parse(service_path.read_text(encoding="utf-8"), filename=str(service_path))
+        for function_name in ("_logical_profile_groups", "_known_inactive_logical_profile_groups"):
+            function_node = next(
+                node for node in service_tree.body
+                if isinstance(node, ast.FunctionDef) and node.name == function_name
+            )
+            factory_calls = [
+                node for node in ast.walk(function_node)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "_generated_logical_profile_group"
+            ]
+            self.assertTrue(factory_calls, function_name)
+        self.assertIn(
+            "mihomo_config_proxies._generated_logical_profile_group = generated_logical_profile_group_on_owned_bridge",
+            source,
+        )
+        self.assertNotIn(
+            "mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge",
+            source,
+        )
 
     def test_owned_core_candidate_rpc_is_profile_gated_and_delegates_to_core_selector(self):
         from application_acceptance import worker
@@ -3443,7 +3789,8 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual("NOTRUN", receipt["status"])
 
     def test_junit_requires_exact_suite_node_ids_without_skips_or_duplicates(self):
-        for suite in ("functional-ordinary", "recovery", "reentry-diagnostic"):
+        for suite in ("functional-ordinary", "recovery", "reentry-diagnostic",
+                      "identity-diagnostic", "runtime-scale-diagnostic"):
             with self.subTest(suite=suite), tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-junit-") as temp:
                 expected = launcher.expected_acceptance_nodeids(suite)
                 root = ET.Element("testsuite")
@@ -3501,7 +3848,8 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual([("functional-ordinary", "recovery", "xray-diagnostic", "provider-diagnostic",
                            "browser-diagnostic", "provider-cohort", "fence-diagnostic", "target-diagnostic",
                            "recovery-diagnostic", "reentry-diagnostic", "kernel-preflight",
-                           "kernel-recovery-diagnostic", "packet-diagnostic")], suite_choices)
+                           "kernel-recovery-diagnostic", "packet-diagnostic", "identity-diagnostic",
+                           "runtime-scale-diagnostic", "final-regressions-diagnostic")], suite_choices)
         suite_defaults = [
             ast.literal_eval(keyword.value)
             for node in ast.walk(tree)
@@ -3652,6 +4000,8 @@ class AcceptanceContractTests(unittest.TestCase):
             "test_live_global_mode_classifies_normal_and_degraded_selective_defaults",
             "test_live_global_mode_keeps_conflicting_selective_defaults_ambiguous",
             "test_live_global_mode_does_not_infer_default_from_selective_marker_alone",
+            "test_applied_nft_markers_detect_stale_reserved_lan_ingress_rules",
+            "test_applied_nft_markers_ignore_current_lan_and_unrelated_rescue_comments",
         }, test_functions)
         source = ast.get_source_segment(test_source, next(
             node for node in tree.body if isinstance(node, ast.FunctionDef)
@@ -3669,22 +4019,30 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertFalse(registered[0]["native"])
         self.assertEqual("none", registered[0]["network"])
 
-    def test_packet_diagnostic_is_one_fixed_l3_node_and_is_registered(self):
+    def test_packet_diagnostic_nodes_are_fixed_and_registered(self):
         nodeid = (
             "tests/application_acceptance/test_packet_dataplane.py::"
             "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"
         )
-        self.assertEqual({nodeid}, launcher.expected_acceptance_nodeids("packet-diagnostic"))
+        scale_nodeid = (
+            "tests/application_acceptance/test_runtime_scale.py::"
+            "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
+        )
+        self.assertEqual({nodeid, scale_nodeid}, launcher.expected_acceptance_nodeids("packet-diagnostic"))
         with self.assertRaises(launcher.NotRun):
             launcher.expected_acceptance_nodeids("packet-diagnostic-extra")
-        failed = [{"nodeid": nodeid, "status": "failed",
-                   "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}}]
-        launcher.validate_suite_node_receipt(failed, "packet-diagnostic", [nodeid])
-        skipped = [dict(failed[0], status="skipped")]
+        expected_nodes = {nodeid, scale_nodeid}
+        failed = [
+            {"nodeid": nodeid, "status": "failed",
+             "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}},
+            {"nodeid": scale_nodeid, "status": "passed",
+             "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}},
+        ]
+        launcher.validate_suite_node_receipt(failed, "packet-diagnostic", sorted(expected_nodes))
+        skipped = [dict(row, status="skipped") if row["nodeid"] == scale_nodeid else row for row in failed]
         with self.assertRaises(launcher.NotRun):
-            launcher.validate_suite_node_receipt(skipped, "packet-diagnostic", [nodeid])
-        row = next(item for item in launcher.expected_acceptance_nodeids("packet-diagnostic"))
-        self.assertEqual(nodeid, row)
+            launcher.validate_suite_node_receipt(skipped, "packet-diagnostic", sorted(expected_nodes))
+        self.assertEqual(expected_nodes, launcher.expected_acceptance_nodeids("packet-diagnostic"))
         packet_source = (Path(__file__).parents[1] / "application_acceptance" / "test_packet_dataplane.py").read_text(
             encoding="utf-8")
         packet_tree = ast.parse(packet_source)
@@ -3701,6 +4059,74 @@ class AcceptanceContractTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('"ci:validate-packet": "packet-diagnostic"', workflow)
         self.assertIn('if [[ "$VALIDATION_STAGE" == packet-diagnostic ]]; then suite=packet-diagnostic; fi', workflow)
+
+    def test_identity_and_runtime_scale_diagnostics_have_separate_fixed_nodes(self):
+        identity = (
+            "tests/application_acceptance/test_xray_generation.py::"
+            "test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery"
+        )
+        scale = (
+            "tests/application_acceptance/test_runtime_scale.py::"
+            "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
+        )
+        self.assertEqual({identity}, launcher.expected_acceptance_nodeids("identity-diagnostic"))
+        self.assertEqual({scale}, launcher.expected_acceptance_nodeids("runtime-scale-diagnostic"))
+        self.assertIn(identity, launcher.expected_acceptance_nodeids("functional-ordinary"))
+        with self.assertRaises(launcher.NotRun):
+            launcher.expected_acceptance_nodeids("identity-diagnostic-extra")
+        source = LAUNCHER_PATH.read_text(encoding="utf-8")
+        self.assertIn('_IDENTITY_DIAGNOSTIC_NODEIDS = (', source)
+        self.assertIn('_RUNTIME_SCALE_DIAGNOSTIC_NODEIDS = (', source)
+        self.assertIn('packet_mode = suite in {_PACKET_DIAGNOSTIC_SUITE, _RUNTIME_SCALE_DIAGNOSTIC_SUITE}', source)
+        self.assertIn('_RUNTIME_SCALE_DIAGNOSTIC_SUITE}', source)
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn('"ci:validate-identities": "identity-diagnostic"', workflow)
+        self.assertIn("Run identity migration L3 regression nodes in the isolated gate", workflow)
+        self.assertIn("python tests/gates/gate.py subset-plan --domain xray --level L3", workflow)
+        self.assertIn("tests/gates/gate.py run --plan \"$root/xray-l3-plan.json\"", workflow)
+        self.assertIn("Retain sanitized identity qualification evidence", workflow)
+        for artifact in (
+            "subscription-l1-report.json", "subscription-l1-run.log", "migration-l3.xml",
+            "migration-l3-report.json", "migration-l3.log", "xray-l3-plan.json",
+            "xray-l3-report.json", "xray-l3-run.log",
+        ):
+            self.assertIn(f"phase-d-identities/{artifact}", workflow)
+        evidence_start = workflow.index("Retain sanitized identity qualification evidence")
+        evidence_end = workflow.find("      - name:", evidence_start)
+        evidence_step = workflow[evidence_start:] if evidence_end < 0 else workflow[evidence_start:evidence_end]
+        self.assertIn("if: always() && needs.select-stage.outputs.stage == 'identity-diagnostic'", evidence_step)
+        self.assertNotIn("fwrouter-acceptance-", evidence_step)
+        self.assertNotIn("phase-d-identities/**", evidence_step)
+        exact_runner = (Path(__file__).parents[1] / "gates" / "run_exact_nodes.py").read_text(
+            encoding="utf-8")
+        self.assertIn("gate.redact_failure_output(output)", exact_runner)
+        self.assertIn("gate.sanitize_junit_artifact(", exact_runner)
+        self.assertIn(
+            "tests/test_db_migrations.py::test_database_upgrade_cli_is_explicit_backed_up_and_idempotent",
+            workflow,
+        )
+        self.assertIn(
+            "tests/test_db_migrations.py::test_database_upgrade_cli_refuses_schema_24_structural_drift_without_backup",
+            workflow,
+        )
+        self.assertIn(
+            "tests/test_subscription_refresh_outcomes.py::test_staged_profile_verification_runs_outside_writer_guard",
+            workflow,
+        )
+        self.assertIn(
+            "tests/test_subscription_refresh_outcomes.py::test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for_rollback",
+            workflow,
+        )
+        self.assertIn("Run reviewed identity migration and two cold startup scale receipts", workflow)
+        self.assertIn('run_launcher runtime-scale-diagnostic "$root/startup-attempt-1.log"', workflow)
+        self.assertIn('run_launcher runtime-scale-diagnostic "$root/startup-attempt-2.log"', workflow)
+        self.assertIn('output.mkdir(parents=True, exist_ok=False)', workflow)
+        self.assertIn('"runtime-scale-metrics.json"', workflow)
+        self.assertIn('"hard_budget_seconds": 45', workflow)
+        self.assertIn('"engineering_margin_goal_seconds": 40', workflow)
+        self.assertIn('"engineering_margin_status": "demonstrated" if margin_demonstrated else "not_demonstrated"', workflow)
+        self.assertIn('"startup_margin_claim": "at_least_5_seconds" if margin_demonstrated else "none"', workflow)
 
     def test_dns53_junit_projection_is_compact_and_excludes_duplicate_or_raw_proofs(self):
         packet_path = Path(__file__).parents[1] / "application_acceptance" / "test_packet_dataplane.py"
@@ -4224,7 +4650,8 @@ class AcceptanceContractTests(unittest.TestCase):
         fake_data = ModuleType("fwrouter_api.services.dataplane_global")
         fake_data._read_effective_rules_artifact_uncached = lambda: uncached_artifact
         fake_rules = ModuleType("fwrouter_api.services.rules")
-        fake_rules.get_manual_rules_texts = lambda: {"effective_json_path": str(reader_path)}
+        fake_rules.get_rules_state = lambda: {"effective_json_path": str(reader_path)}
+        fake_rules.get_manual_rules_texts = mock.Mock(side_effect=AssertionError("diagnostic export adds artifact decode"))
         fake_services = ModuleType("fwrouter_api.services")
         fake_services.__path__ = []
         fake_services.dataplane_global = fake_data
@@ -4265,6 +4692,7 @@ class AcceptanceContractTests(unittest.TestCase):
             "cached_presence_matches_reader_result": True,
         })
         self.assertIs(fake_cache._CACHE[cache_key], cached_none)
+        fake_rules.get_manual_rules_texts.assert_not_called()
 
         reader_error = OSError("fixture reader error")
         reader_calls.clear()
@@ -4608,7 +5036,7 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertFalse(launcher.valid_image_measurements(malformed))
         self.assertNotIn("peak", " ".join(measurements["docker_root_samples"]))
 
-    def test_provider_cohort_is_the_fixed_prior_member_delay_failures(self):
+    def test_kernel_provider_cohort_remains_exact_without_startup_scale(self):
         expected = {
             "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
             "tests/application_acceptance/test_core_provider_mihomo.py::test_core_subscription_provider_discovery_exclusive_intent_and_real_mihomo_child",
@@ -4833,6 +5261,45 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIsNotNone(acceptance_profile._qualification_error(dict(facts, hostname="minisk")))
         self.assertIsNotNone(acceptance_profile._qualification_error(dict(facts, uid=0)))
         self.assertIsNotNone(acceptance_profile._qualification_error(dict(facts, gid=0)))
+
+    def test_success_diagnostics_retain_only_first_and_exact_emergency_reentry(self):
+        conftest_path = APPLICATION_ACCEPTANCE_CONFTEST
+        tree = ast.parse(conftest_path.read_text(encoding="utf-8"), filename=str(conftest_path))
+        critical_definition = next(
+            node for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name)
+                    and target.id == "_CRITICAL_SUCCESS_DIAGNOSTIC_NODEIDS"
+                    for target in node.targets)
+        )
+        retention_helper = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_retain_acceptance_diagnostic"
+        )
+        acceptance_stack = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "acceptance_stack"
+        )
+        self.assertEqual(1, sum(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "_retain_acceptance_diagnostic"
+            for node in ast.walk(acceptance_stack)
+        ))
+        self.assertFalse(any(isinstance(node, (ast.Import, ast.ImportFrom))
+                             for node in ast.walk(retention_helper)))
+        namespace = {}
+        exec(compile(ast.Module(body=[critical_definition, retention_helper], type_ignores=[]),
+                     str(conftest_path), "exec"), namespace)
+        retain = namespace["_retain_acceptance_diagnostic"]
+        critical_nodeid = (
+            "tests/application_acceptance/test_core_provider_mihomo.py::"
+            "test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct"
+        )
+        self.assertEqual({critical_nodeid}, namespace["_CRITICAL_SUCCESS_DIAGNOSTIC_NODEIDS"])
+        self.assertTrue(retain("first-success", failed=False, has_records=False))
+        self.assertTrue(retain("failed-node", failed=True, has_records=True))
+        self.assertTrue(retain(critical_nodeid, failed=False, has_records=True))
+        self.assertFalse(retain("ordinary-later-success", failed=False, has_records=True))
 
     def test_kernel_dataplane_profile_has_exact_root_capability_namespace_and_receipt_scope(self):
         facts = {"uid": 0, "gid": 0, "cap_eff": 1 << 12, "netns_matches_pid1": True,
@@ -5370,6 +5837,100 @@ class AcceptanceContractTests(unittest.TestCase):
                              for name in imported_names))
         self.assertNotIn("fwrouter_api", launcher.sys.modules)
         self.assertNotIn("fastapi", launcher.sys.modules)
+
+
+    def test_worker_lifespan_releases_native_fixtures_before_completion_marker(self):
+        import asyncio
+        from contextlib import asynccontextmanager
+
+        source = (launcher.ROOT / "tests/application_acceptance/worker.py").read_text()
+        tree = ast.parse(source)
+        observed = next(node for node in ast.walk(tree)
+                        if isinstance(node, ast.AsyncFunctionDef) and node.name == "observed_lifespan")
+        for fail in (False, True):
+            events = []
+
+            @asynccontextmanager
+            async def original(_application):
+                try:
+                    yield "actual-lifespan-state"
+                finally:
+                    events.append("application_cleanup")
+
+            namespace = {
+                "asynccontextmanager": asynccontextmanager, "original_lifespan": original,
+                "threading": SimpleNamespace(enumerate=lambda: []),
+                "cleanup_native_fixtures": lambda: events.append("native_cleanup"),
+                "print": lambda message, **_kwargs: events.append(message),
+            }
+            exec(compile(ast.Module(body=[observed], type_ignores=[]), "worker-lifespan-contract", "exec"), namespace)
+
+            async def exercise():
+                async with namespace["observed_lifespan"](object()) as state:
+                    self.assertEqual("actual-lifespan-state", state)
+                    if fail:
+                        raise ValueError("intentional application exception")
+
+            if fail:
+                with self.assertRaisesRegex(ValueError, "intentional application exception"):
+                    asyncio.run(exercise())
+                self.assertEqual(["application_cleanup", "native_cleanup"], events)
+            else:
+                asyncio.run(exercise())
+                self.assertEqual(["application_cleanup", "native_cleanup",
+                                  "FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE"], events)
+
+
+class BindingOriginDiagnosticContract(unittest.TestCase):
+    def test_bounded_summary_never_exports_identity_or_arbitrary_metadata(self):
+        from application_acceptance.xray_support import binding_identity_summary
+        expected = {("owned-id", "owned-email")}
+        rows = [{"client_uuid": "owned-id", "client_email": "owned-email"}] * 2
+        rows += [{"subject_id": f"private-subject-{i}", "client_uuid": f"private-uuid-{i}",
+                  "client_email": f"private-email-{i}"} for i in range(6)]
+        result = binding_identity_summary(rows, expected, lambda key: {
+            "subject_type": "private-type", "subject_role": "private-role", "is_active": 1,
+            "metadata_json": "private-token"})
+        self.assertEqual(8, result["row_count"])
+        self.assertEqual(1, result["duplicate_count"])
+        self.assertEqual(6, result["unexpected_count"])
+        self.assertEqual(4, len(result["unexpected_origins"]))
+        self.assertNotIn("private", json.dumps(result))
+        self.assertEqual(0, result["missing_count"])
+
+
+class ScaleInboundOwnershipContract(unittest.TestCase):
+    def helper(self):
+        source = Path(__file__).parents[1] / "application_acceptance" / "test_runtime_scale.py"
+        tree = ast.parse(source.read_text())
+        node = next(item for item in tree.body if isinstance(item, ast.FunctionDef)
+                    and item.name == "_scale_xray_config_with_managed_clients")
+        namespace = {"json": json, "Any": object}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), namespace)
+        return namespace[node.name]
+
+    def test_scale_owns_exact_clients_and_preserves_api(self):
+        fixture = Path(__file__).parents[1] / "application_acceptance" / "fixtures" / "xray.initial.json"
+        original = json.loads(fixture.read_text())
+        before = json.dumps(original, sort_keys=True)
+        clients = [{"id": "test-owned-client", "email": "owned@example.invalid"}]
+        result = self.helper()(original, clients)
+        self.assertEqual(before, json.dumps(original, sort_keys=True))
+        self.assertEqual(["fwrouter-api", "vless-ws"], [row["tag"] for row in result["inbounds"]])
+        self.assertEqual(clients, result["inbounds"][1]["settings"]["clients"])
+        self.assertEqual(original["inbounds"][0], result["inbounds"][0])
+        self.assertFalse(any(row.get("inboundTag") == ["acceptance-provider-upstream"]
+                             for row in result["routing"]["rules"]))
+        clients[0]["id"] = "mutated-input"
+        self.assertEqual("test-owned-client", result["inbounds"][1]["settings"]["clients"][0]["id"])
+
+    def test_unexpected_client_inbound_is_refused(self):
+        fixture = Path(__file__).parents[1] / "application_acceptance" / "fixtures" / "xray.initial.json"
+        config = json.loads(fixture.read_text())
+        config["inbounds"].append({"tag": "unexpected", "settings": {"clients": [{"id": "unowned"}]}})
+        with self.assertRaisesRegex(AssertionError, "unexpected client-bearing"):
+            self.helper()(config, [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

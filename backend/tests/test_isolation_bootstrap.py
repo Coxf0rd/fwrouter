@@ -4,7 +4,9 @@ import hashlib
 import os
 import socket
 import sqlite3
+import stat
 import subprocess
+import tempfile
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +29,28 @@ def test_bootstrap_uses_owned_state_and_disables_deployed_dotenv() -> None:
     assert Settings().paths.run_dir.resolve() == (current_state / "run").resolve()
     assert not path_is_protected(current_state / "fwrouter.db")
     assert not path_is_protected(current_state / "run" / "xray-writer.lock")
+
+
+def test_bootstrap_allows_private_owned_temp_descriptor_without_fchmod(tmp_path: Path) -> None:
+    descriptor, raw_path = tempfile.mkstemp(prefix="private-candidate-", dir=tmp_path)
+    candidate = Path(raw_path)
+    try:
+        info = os.fstat(descriptor)
+        assert stat.S_ISREG(info.st_mode)
+        assert stat.S_IMODE(info.st_mode) == 0o600
+        payload = b"private candidate bytes\n"
+        assert os.write(descriptor, payload) == len(payload)
+        os.fsync(descriptor)
+        assert candidate.read_bytes() == payload
+    finally:
+        os.close(descriptor)
+        candidate.unlink(missing_ok=True)
+
+    outside_path = Path("/tmp") / f"fwrouter-unowned-write-{os.getpid()}"
+    with pytest.raises(PermissionError, match="outside owned state"):
+        isolation_bootstrap._deny_unsafe_python_capabilities(
+            "open", (str(outside_path), "w", os.O_WRONLY | os.O_CREAT),
+        )
 
 
 def test_bootstrap_denies_production_paths_processes_and_network() -> None:

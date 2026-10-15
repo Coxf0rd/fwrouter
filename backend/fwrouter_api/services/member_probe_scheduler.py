@@ -58,5 +58,6 @@ def stop_member_probe_scheduler(*, timeout_seconds: float = 2.0) -> bool:
         _MEMBER_PROBE_STOP_EVENT.set()
         _MEMBER_PROBE_THREAD.join(timeout=timeout_seconds)
         stopped = not _MEMBER_PROBE_THREAD.is_alive()
-        _MEMBER_PROBE_THREAD = None
+        if stopped:
+            _MEMBER_PROBE_THREAD = None
         return stopped

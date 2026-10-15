@@ -223,7 +223,7 @@ def _capture_mihomo_reconcile_checkpoint(
 
 def _config_has_failclosed_udp_policy(config_text: str) -> bool:
     try:
-        loaded = yaml.safe_load(config_text) or {}
+        loaded = yaml.load(config_text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
     except yaml.YAMLError:
         return False
     if not isinstance(loaded, dict):
@@ -259,7 +259,7 @@ def _config_has_mandatory_vpn_routes(
     config_text: str, *, routing: dict[str, Any] | None = None,
 ) -> bool:
     try:
-        loaded = yaml.safe_load(config_text) or {}
+        loaded = yaml.load(config_text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
     except yaml.YAMLError:
         return True
     if not isinstance(loaded, dict):
@@ -833,6 +833,8 @@ def reconcile_mihomo_runtime(
     runtime_incarnation_after = str(recovery_checkpoint.get("runtime_incarnation_after") or "")
     publication_owned = False
     publication_revalidation_failed = False
+    native_proof: dict[str, Any] = {}
+    receipt_written = False
     if verified:
         with xray_writer_guard(timeout_seconds=30.0):
             publication_owned = _selection_publication_still_owned(
@@ -875,6 +877,7 @@ def reconcile_mihomo_runtime(
         )
     result = {
         "ok": verified,
+        "operation_id": operation_id,
         "stage": ("generation_publication_revalidation" if publication_revalidation_failed else
                   ("verification" if verification is not None and not verification.get("ok") else None)),
         "error_code": "MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION" if publication_revalidation_failed else None,
@@ -895,12 +898,30 @@ def reconcile_mihomo_runtime(
             candidate_rules_count=int(candidate_summary.get("rules_count") or 0),
         ),
     }
+    if verified and publication_owned and receipt_written and input_fingerprint is not None:
+        # This receipt identifies the exact selection-fence revision advanced by
+        # this reconcile operation, after native proof and fingerprint publication.
+        # Consumers may acknowledge only this operation-owned CAS transition;
+        # they must continue rejecting any other changed selection context.
+        result["reentry_generation_fence"] = {
+            "schema": "mihomo-reentry-generation-fence/v1",
+            "operation_id": operation_id,
+            "job_id": job_id,
+            "before_revision": expected_selection_revision,
+            "selection_revision": recovery_expected_revision,
+            "runtime_incarnation": runtime_incarnation_after,
+            "active_config_hash": prepared_candidate_hash,
+            "native_proof_verified": native_proof.get("ok") is True,
+            "publication_verified": True,
+        }
+    log_result = {key: value for key, value in result.items()
+                  if key not in {"operation_id", "reentry_generation_fence"}}
     config._write_mihomo_reconcile_logs(
         ok=bool(result["ok"]),
         event_type="mihomo_reconciled" if result["ok"] else "mihomo_reconcile_failed",
         operational_level="info" if result["ok"] else "warning",
         technical_level="info" if result["ok"] else "warning",
         message="Mihomo runtime reconciled." if result["ok"] else "Mihomo runtime reconcile failed after promote/restart.",
-        details=result,
+        details=log_result,
     )
     return result

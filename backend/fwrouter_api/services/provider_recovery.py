@@ -214,6 +214,192 @@ def _recovery_context_matches(controller: Any, snapshot: dict[str, Any], *,
     return str(state.get("path_key") or "") == snapshot["path_key"]
 
 
+def _mihomo_reentry_policy_installed() -> bool:
+    """Require strict native proof that the VPN UDP fail-closed policy is installed."""
+    try:
+        from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
+        health = DEFAULT_MIHOMO_ADAPTER.health()
+        if not isinstance(health.details, dict):
+            return False
+        udp_policy = health.details.get("vpn_udp_policy")
+        return isinstance(udp_policy, dict) and udp_policy.get("policy_installed") is True
+    except Exception:
+        return False
+
+
+def _mihomo_reentry_runtime_ready(routing: dict[str, Any]) -> bool:
+    """Use native policy proof and the conservative routing check to skip reconcile."""
+    if not _mihomo_reentry_policy_installed():
+        return False
+    try:
+        from fwrouter_api.services.apply_orchestrator import mihomo_runtime_satisfies_routing
+        return bool(mihomo_runtime_satisfies_routing(routing).get("ok"))
+    except Exception:
+        return False
+
+
+def _reentry_generation_fence_matches(
+    before: dict[str, Any], after: dict[str, Any], reconciled: dict[str, Any], *, expected_job_id: str,
+) -> bool:
+    """Validate the exact CAS revision receipt returned by this native reconcile."""
+    receipt = reconciled.get("reentry_generation_fence")
+    if not isinstance(receipt, dict):
+        return False
+    before_fence = before.get("selection_fence")
+    after_fence = after.get("selection_fence")
+    if not isinstance(before_fence, dict) or not isinstance(after_fence, dict):
+        return False
+    before_revision = before_fence.get("revision")
+    after_revision = after_fence.get("revision")
+    if type(before_revision) is not int or type(after_revision) is not int:
+        return False
+    operation_id = reconciled.get("operation_id")
+    if not isinstance(operation_id, str) or not operation_id or len(operation_id) > 64:
+        return False
+    active_hash = receipt.get("active_config_hash")
+    if (receipt.get("schema") != "mihomo-reentry-generation-fence/v1"
+            or receipt.get("operation_id") != operation_id
+            or not expected_job_id
+            or receipt.get("job_id") != expected_job_id
+            or reconciled.get("job_id") != expected_job_id
+            or type(receipt.get("before_revision")) is not int
+            or receipt.get("before_revision") != before_revision
+            or type(receipt.get("selection_revision")) is not int
+            or receipt.get("selection_revision") != after_revision
+            or after_revision != before_revision + 1
+            or receipt.get("runtime_incarnation") != after.get("runtime_incarnation")
+            or receipt.get("native_proof_verified") is not True
+            or receipt.get("publication_verified") is not True
+            or not isinstance(active_hash, str)
+            or len(active_hash) != 64
+            or any(char not in "0123456789abcdef" for char in active_hash)):
+        return False
+    try:
+        from fwrouter_api.services import mihomo_reconcile
+        active_path = mihomo_reconcile.config._resolved_base_config_path()
+        if mihomo_reconcile._file_hash(active_path) != active_hash:
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _same_reentry_context_after_reconcile(
+    before: dict[str, Any], after: dict[str, Any], reconciled: dict[str, Any], *, expected_job_id: str,
+) -> bool:
+    """Allow only runtime replacement and an explicitly receipted owned CAS revision."""
+    keys = set(before) | set(after)
+    keys.discard("runtime_incarnation")
+    before_fence = before.get("selection_fence")
+    after_fence = after.get("selection_fence")
+    revision_changed = (
+        isinstance(before_fence, dict) and isinstance(after_fence, dict)
+        and before_fence.get("revision") != after_fence.get("revision")
+    )
+    incarnation_changed = before.get("runtime_incarnation") != after.get("runtime_incarnation")
+    if revision_changed or incarnation_changed:
+        if not _reentry_generation_fence_matches(
+            before, after, reconciled, expected_job_id=expected_job_id,
+        ):
+            return False
+        left_fence = {key: value for key, value in before_fence.items() if key != "revision"}
+        right_fence = {key: value for key, value in after_fence.items() if key != "revision"}
+        if left_fence != right_fence:
+            return False
+        keys.discard("selection_fence")
+    elif not isinstance(before_fence, dict) or not isinstance(after_fence, dict):
+        return False
+    return all(before.get(key) == after.get(key) for key in keys)
+
+
+def _prepare_verified_reentry_runtime(controller: Any, pending: dict[str, Any]) -> dict[str, Any]:
+    """Prepare verified Mihomo policy while Emergency Direct still owns routing.
+
+    The recovery snapshot used for the later network probe is captured only
+    after any reconcile, since a native restart legitimately changes the
+    runtime incarnation. Any owned selection revision transition must carry
+    the reconcile's exact CAS/native-publication receipt; other provider,
+    intent and incident fences may never be rebased across preparation.
+    """
+    before = _capture_recovery_context(controller, pending)
+    if before is None:
+        return {"ok": False, "error_code": "provider_recovery_fence_unavailable"}
+
+    from fwrouter_api.services import apply_orchestrator as apply
+    routing = apply.get_routing_snapshot()
+    if str(routing.get("desired_mode") or "") != str(before.get("desired_mode") or ""):
+        return {"ok": False, "error_code": "provider_recovery_stale"}
+
+    if _mihomo_reentry_runtime_ready(routing):
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard(timeout_seconds=5.0):
+            if (_recovery_context_matches(controller, before)
+                    and _mihomo_reentry_runtime_ready(routing)):
+                return {"ok": True, "snapshot": before, "prepared": False}
+
+    from fwrouter_api.services.apply_orchestrator_constants import LOCK_APPLY
+    from fwrouter_api.services.jobs import (
+        JobLockConflictError,
+        create_job,
+        mark_job_failed,
+        mark_job_running,
+        mark_job_success,
+    )
+    try:
+        job = create_job(
+            "provider_reentry_mihomo_prepare",
+            lock_key=LOCK_APPLY,
+            requested_by="watchdog.provider_recovery",
+            input_data={"reentry": True},
+        )
+    except JobLockConflictError:
+        return {"ok": False, "error_code": "provider_recovery_writer_busy"}
+
+    job_id = str(job["job_id"])
+    mark_job_running(job_id)
+    try:
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard(timeout_seconds=5.0):
+            if not _recovery_context_matches(controller, before):
+                result = {"ok": False, "error_code": "provider_recovery_stale"}
+            else:
+                from fwrouter_api.services.apply_orchestrator_handler_common import _reconcile_vpn_runtime_for_apply
+
+                reconciled = _reconcile_vpn_runtime_for_apply(routing, job_id=job_id)
+                if not isinstance(reconciled, dict) or not reconciled.get("ok"):
+                    result = {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_FAILED"}
+                else:
+                    after = _capture_recovery_context(controller, pending)
+                    if (after is None
+                            or not _same_reentry_context_after_reconcile(
+                                before, after, reconciled, expected_job_id=job_id,
+                            )
+                            or not after.get("runtime_incarnation")
+                            or not _mihomo_reentry_policy_installed()):
+                        result = {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_UNVERIFIED"}
+                    elif not _recovery_context_matches(controller, after):
+                        result = {"ok": False, "error_code": "provider_recovery_stale"}
+                    else:
+                        result = {"ok": True, "snapshot": after, "prepared": True}
+
+        if result.get("ok"):
+            mark_job_success(job_id, result={"prepared": True})
+        else:
+            mark_job_failed(
+                job_id,
+                error_code=str(result.get("error_code") or "MIHOMO_REENTRY_PREPARE_FAILED"),
+                error_message="Mihomo VPN policy could not be verified for provider re-entry.",
+            )
+        return result
+    except Exception:
+        mark_job_failed(
+            job_id,
+            error_code="MIHOMO_REENTRY_PREPARE_FAILED",
+            error_message="Mihomo VPN policy preparation failed.",
+        )
+        return {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_FAILED"}
+
+
 def _provider_down_evidence_is_fresh(observed_at: float, *, now: float | None = None) -> bool:
     current = time.time() if now is None else float(now)
     age = current - float(observed_at)
@@ -543,6 +729,18 @@ def _try_verified_reentry(controller: Any, *, timeout_ms: int, reason: str) -> d
         if snapshot is None:
             return {"ok": False, "status": "emergency_direct", "action": "none",
                     "effective_override": "emergency_direct", "error_code": "provider_recovery_fence_unavailable"}
+
+    # Prepare native VPN policy only after any required Direct repair and before
+    # taking the final fence used by probe, claim and apply.
+    prepared = _prepare_verified_reentry_runtime(controller, pending)
+    if not prepared.get("ok"):
+        return {"ok": False, "status": "emergency_direct", "action": "none",
+                "effective_override": "emergency_direct",
+                "error_code": str(prepared.get("error_code") or "MIHOMO_REENTRY_PREPARE_FAILED")}
+    snapshot = prepared.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return {"ok": False, "status": "emergency_direct", "action": "none",
+                "effective_override": "emergency_direct", "error_code": "provider_recovery_fence_unavailable"}
 
     # The preflight is a potentially slow network/runtime probe and always runs
     # before entering the shared writer guard.

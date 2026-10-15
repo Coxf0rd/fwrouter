@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Callable
 from typing import Any
 
-from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, MihomoRuntimeState
+import httpx
+
+from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.services.modules import managed_runtime_operation_blocked
 
 
@@ -110,33 +112,36 @@ def wait_for_mihomo_controller(
 
     deadline = time.monotonic() + timeout_seconds
     attempts = 0
-    last_health: dict[str, Any] | None = None
+    last_readiness: dict[str, Any] | None = None
 
     while time.monotonic() < deadline:
         attempts += 1
         if heartbeat is not None:
             heartbeat()
-        health = DEFAULT_MIHOMO_ADAPTER.health()
-        last_health = {
-            "runtime_state": health.runtime_state.value,
-            "active_server_id": health.active_server_id,
-            "message": health.message,
-            "details": health.details,
-        }
-        if health.runtime_state == MihomoRuntimeState.RUNNING:
+        request_timeout = max(0.1, min(DEFAULT_MIHOMO_ADAPTER.timeout_seconds, deadline - time.monotonic()))
+        try:
+            readiness = DEFAULT_MIHOMO_ADAPTER.controller_ready(timeout_seconds=request_timeout)
+            last_readiness = {"ok": bool(readiness.get("ok")), "version": readiness.get("version")}
+        except (httpx.HTTPError, OSError, ValueError, subprocess.SubprocessError) as exc:
+            last_readiness = {"ok": False, "error_type": type(exc).__name__}
+        if last_readiness.get("ok"):
             return {
                 "ok": True,
                 "attempts": attempts,
                 "timeout_seconds": timeout_seconds,
-                "health": last_health,
+                "readiness": last_readiness,
+                "policy_proven": False,
             }
-        time.sleep(poll_interval_seconds)
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(poll_interval_seconds, remaining))
 
     return {
         "ok": False,
         "attempts": attempts,
         "timeout_seconds": timeout_seconds,
-        "health": last_health,
+        "readiness": last_readiness,
+        "policy_proven": False,
         "error_code": "MIHOMO_CONTROLLER_NOT_READY",
         "error_message": "Mihomo controller did not become reachable after container restart.",
     }

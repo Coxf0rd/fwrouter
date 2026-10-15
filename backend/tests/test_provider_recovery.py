@@ -10,6 +10,8 @@ from fwrouter_api.services import provider_managed, provider_recovery
 from fwrouter_api.services.routing_manifest import build_dataplane_manifest_from_state
 from fwrouter_api.services.dataplane_nft_render import render_owned_table_candidate
 
+_REAL_PREPARE_VERIFIED_REENTRY_RUNTIME = provider_recovery._prepare_verified_reentry_runtime
+
 
 def _install_pending_state(monkeypatch, pending=None):
     state = {"pending": pending}
@@ -48,6 +50,13 @@ def _install_pending_state(monkeypatch, pending=None):
     monkeypatch.setattr(provider_recovery, "_cas_pending", cas)
     monkeypatch.setattr(provider_recovery, "_capture_recovery_context", capture)
     monkeypatch.setattr(provider_recovery, "_recovery_context_matches", matches)
+    # Most state-machine tests isolate recovery fencing from the native
+    # preparation contract; dedicated tests below exercise the real helper.
+    def prepared_context(controller, value):
+        snapshot = provider_recovery._capture_recovery_context(controller, value)
+        return ({"ok": True, "snapshot": snapshot, "prepared": False} if snapshot is not None
+                else {"ok": False, "error_code": "provider_recovery_fence_unavailable"})
+    monkeypatch.setattr(provider_recovery, "_prepare_verified_reentry_runtime", prepared_context)
     monkeypatch.setattr(provider_recovery, "_automatic_member_switch_allowed", lambda _source: True)
     def complete(expected):
         from fwrouter_api.services.watchdog_failure_state import reset_traffic_failure_candidate
@@ -441,64 +450,98 @@ def test_emergency_direct_manifest_and_nft_candidate_preserve_intent_and_block_d
 
 
 def test_emergency_xray_mode_directives_follow_projected_policy_without_unblocking_disabled(
-    monkeypatch,
+    monkeypatch, isolated_host_observations,
 ):
     _install_pending_state(monkeypatch, {"provider_managed": True, "emergency_direct": True})
-    connection = sqlite3.connect(":memory:")
-    connection.row_factory = sqlite3.Row
-    connection.execute(
-        "CREATE TABLE subjects (subject_id TEXT, desired_mode TEXT, implementation_kind TEXT, subject_type TEXT, subject_role TEXT, is_active INTEGER, is_deleted INTEGER, metadata_json TEXT)"
-    )
-    connection.executemany(
-        "INSERT INTO subjects VALUES (?, ?, 'xray', 'explicit_external_client', 'vless_client', 1, 0, ?) ",
-        [
-            ("explicit:enabled", "enabled", json.dumps({"detail": {"client_id": "enabled-id", "client_uuid": "enabled-uuid", "email": "enabled@example.test", "enabled": True}})),
-            ("explicit:disabled", "disabled", json.dumps({"detail": {"client_id": "disabled-id", "client_uuid": "disabled-uuid", "email": "disabled@example.test", "enabled": True}})),
-        ],
-    )
-    connection.commit()
-
-    @contextmanager
-    def session():
-        yield connection
-
-    monkeypatch.setattr("fwrouter_api.services.xray_bindings.db_session", session)
-    monkeypatch.setattr("fwrouter_api.services.scoped_egress._load_explicit_client_runtime_bindings", lambda *_args, **_kwargs: {})
     from fwrouter_api.services import subject_policy, xray_bindings
+    from fwrouter_api.services.subject_inventory import SubjectInventoryRecord, _upsert_subject
 
-    def projected(subject_id):
-        desired = "disabled" if subject_id.endswith("disabled") else "enabled"
-        return subject_policy.enrich_subject_with_effective_state(
-            {
-                "subject_id": subject_id,
-                "subject_type": "explicit_external_client",
-                "implementation_kind": "xray",
-                "subject_role": "vless_client",
-                "desired_mode": desired,
-                "is_active": True,
-                "display_name": subject_id,
-                "user_override": None,
-                "server_override": None,
+    for subject_id, desired_mode in (
+        ("explicit:enabled", "enabled"),
+        ("explicit:disabled", "disabled"),
+        ("explicit:direct", "direct"),
+        ("explicit:selective", "selective"),
+    ):
+        _upsert_subject(SubjectInventoryRecord(
+            subject_id=subject_id,
+            subject_type="explicit_external_client",
+            stable_key=subject_id,
+            display_name=subject_id,
+            desired_mode=desired_mode,
+            runtime_state="active",
+            is_active=True,
+            alias=None,
+            metadata={"source": "xray_adapter", "provider": "xray"},
+            detail={
+                "client_id": f"{subject_id}-id",
+                "client_uuid": f"{subject_id}-uuid",
+                "email": f"{subject_id}@example.test",
+                "enabled": True,
             },
-            routing={"desired_mode": "vpn", "applied_mode": "vpn", "server_mode": "auto", "active_auto_server_id": "logical-provider", "applied_fixed_server_id": None, "desired_fixed_server_id": None},
-            user_override=None,
-            server_override=None,
-            runtime_enforcement={"supported_modes": {"vpn": True}},
-            bypass_state={"enabled": False},
-        )
+            implementation_kind="xray",
+        ))
 
-    monkeypatch.setattr(subject_policy, "get_subject_with_effective_state", projected)
-    try:
-        directives = xray_bindings.collect_xray_client_mode_directives()
-    finally:
-        connection.close()
+    snapshots = {
+        "routing": {"desired_mode": "vpn", "applied_mode": "vpn", "server_mode": "auto",
+                    "active_auto_server_id": "logical-provider", "applied_fixed_server_id": None,
+                    "desired_fixed_server_id": None},
+        "bypass": {"enabled": False},
+    }
+    reads = {"routing": 0, "bypass": 0}
+    default_calls = []
+    preflight_calls = []
+    actual_default = subject_policy._default_subject_runtime_enforcement
+    actual_preflight = subject_policy.build_global_preflight
 
-    by_id = {item["subject_id"]: item for item in directives}
+    def read_routing():
+        reads["routing"] += 1
+        return dict(snapshots["routing"])
+
+    def read_bypass():
+        reads["bypass"] += 1
+        return dict(snapshots["bypass"])
+
+    def observe_preflight(**kwargs):
+        preflight_calls.append(dict(kwargs))
+        return actual_preflight(**kwargs)
+
+    def observe_default(**kwargs):
+        result = actual_default(**kwargs)
+        default_calls.append((dict(kwargs), result))
+        return result
+
+    monkeypatch.setattr(subject_policy, "get_routing_snapshot", read_routing)
+    monkeypatch.setattr(subject_policy, "get_core_bypass_state", read_bypass)
+    monkeypatch.setattr(subject_policy, "build_global_preflight", observe_preflight)
+    monkeypatch.setattr(subject_policy, "_default_subject_runtime_enforcement", observe_default)
+
+    first = xray_bindings.collect_xray_client_mode_directives()
+    by_id = {item["subject_id"]: item for item in first}
     assert by_id["explicit:enabled"]["desired_mode"] == "enabled"
     assert by_id["explicit:enabled"]["effective_mode"] == "direct"
     assert by_id["explicit:enabled"]["mode_support_state"] == "legacy_supported_direct"
     assert by_id["explicit:disabled"]["effective_mode"] == "disabled"
     assert by_id["explicit:disabled"]["mode_support_state"] == "supported"
+    assert by_id["explicit:direct"]["effective_mode"] == "direct"
+    assert by_id["explicit:selective"]["effective_mode"] == "direct"
+    assert reads == {"routing": 1, "bypass": 1}
+    assert len(default_calls) == len(preflight_calls) == 1
+    assert default_calls[0][1]["bypass_active"] is False
+
+    snapshots["routing"] = {
+        **snapshots["routing"], "desired_mode": "direct", "applied_mode": "direct",
+        "active_auto_server_id": None,
+    }
+    snapshots["bypass"] = {"enabled": True}
+    second = xray_bindings.collect_xray_client_mode_directives()
+    assert {item["subject_id"]: item["effective_mode"] for item in second} == {
+        subject_id: item["effective_mode"] for subject_id, item in by_id.items()
+    }
+    assert reads == {"routing": 2, "bypass": 2}
+    assert len(default_calls) == len(preflight_calls) == 2
+    assert preflight_calls[0]["routing"]["desired_mode"] == "vpn"
+    assert preflight_calls[1]["routing"]["desired_mode"] == "direct"
+    assert default_calls[1][1]["bypass_active"] is True
 
 
 def test_failed_emergency_apply_retains_unconfirmed_override_and_does_not_claim_direct(monkeypatch):
@@ -1277,6 +1320,9 @@ def test_real_reentry_orchestration_defers_after_probe_fence_change(monkeypatch,
                "source_ref": source_ref, "binding_revision": binding["binding_revision"],
                "logical_server_id": "logical-provider", "path_key": "lan"}
     assert watchdog_failure_state.compare_and_set_recovery_pending(None, pending)
+    # This orchestration test exercises real DB fences and probe interleavings;
+    # native Mihomo readiness is covered by isolated targeted acceptance.
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: True)
 
     incarnation = {"value": "runtime-a"}
     monkeypatch.setattr(provider_recovery, "_runtime_incarnation", lambda: incarnation["value"])
@@ -1323,6 +1369,385 @@ def test_real_reentry_orchestration_defers_after_probe_fence_change(monkeypatch,
     assert current.get("phase") != "verified_vpn_recovered"
     assert result.get("fallback_verified") is None
     get_settings.cache_clear()
+
+
+def _reentry_prepare_context(pending, *, incarnation="runtime-a"):
+    return {
+        "pending": dict(pending), "selection_fence": {"revision": 12}, "pool": "pool-signature",
+        "desired_mode": "vpn", "exclusive": "", "binding": ("source-provider", 7, "stealthsurf"),
+        "eligible": True, "credential_fingerprint": "credential-fingerprint",
+        "runtime_incarnation": incarnation, "active_target_id": "logical-provider", "path_key": "lan",
+    }
+
+
+def _install_reentry_prepare_job_mocks(monkeypatch, events):
+    from fwrouter_api.services import jobs
+
+    monkeypatch.setattr(jobs, "create_job", lambda *args, **kwargs: events.append(("create_job", args, kwargs)) or {"job_id": "prepare-job"})
+    monkeypatch.setattr(jobs, "mark_job_running", lambda job_id: events.append(("running", job_id)))
+    monkeypatch.setattr(jobs, "mark_job_success", lambda job_id, **kwargs: events.append(("success", job_id, kwargs)))
+    monkeypatch.setattr(jobs, "mark_job_failed", lambda job_id, **kwargs: events.append(("failed", job_id, kwargs)))
+
+
+def test_verified_reentry_prepare_skips_reconcile_only_with_installed_policy_and_current_intent(monkeypatch):
+    pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
+               "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
+    _install_pending_state(monkeypatch, pending)
+    snapshot = _reentry_prepare_context(pending)
+    monkeypatch.setattr(provider_recovery, "_capture_recovery_context", lambda *_args: snapshot)
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: True)
+    from fwrouter_api.services import apply_orchestrator
+    monkeypatch.setattr(apply_orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
+    events = []
+    _install_reentry_prepare_job_mocks(monkeypatch, events)
+    from fwrouter_api.services import apply_orchestrator_handler_common
+    monkeypatch.setattr(apply_orchestrator_handler_common, "_reconcile_vpn_runtime_for_apply",
+                        lambda *_args, **_kwargs: pytest.fail("valid installed receipt must not reconcile"))
+
+    result = _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME(_RecoveryController([]), pending)
+
+    assert result == {"ok": True, "snapshot": snapshot, "prepared": False}
+    assert events == []
+
+
+@pytest.mark.parametrize("policy_installed", [False, "true", None])
+def test_mihomo_reentry_ready_requires_native_policy_installed_boolean(monkeypatch, policy_installed):
+    from types import SimpleNamespace
+    from fwrouter_api.adapters import mihomo
+    from fwrouter_api.services import apply_orchestrator
+    monkeypatch.setattr(mihomo, "DEFAULT_MIHOMO_ADAPTER", SimpleNamespace(
+        health=lambda: SimpleNamespace(details={"vpn_udp_policy": {"policy_installed": policy_installed}}),
+    ))
+    monkeypatch.setattr(apply_orchestrator, "mihomo_runtime_satisfies_routing", lambda _routing: {"ok": True})
+
+    assert provider_recovery._mihomo_reentry_policy_installed() is False
+    assert provider_recovery._mihomo_reentry_runtime_ready({"desired_mode": "vpn"}) is False
+
+
+def test_mihomo_reentry_ready_requires_routing_parity_even_with_installed_policy(monkeypatch):
+    from types import SimpleNamespace
+    from fwrouter_api.adapters import mihomo
+    from fwrouter_api.services import apply_orchestrator
+    monkeypatch.setattr(mihomo, "DEFAULT_MIHOMO_ADAPTER", SimpleNamespace(
+        health=lambda: SimpleNamespace(details={"vpn_udp_policy": {"policy_installed": True}}),
+    ))
+    monkeypatch.setattr(apply_orchestrator, "mihomo_runtime_satisfies_routing", lambda _routing: {"ok": False})
+
+    assert provider_recovery._mihomo_reentry_policy_installed() is True
+    assert provider_recovery._mihomo_reentry_runtime_ready({"desired_mode": "vpn"}) is False
+
+
+def test_mihomo_reentry_ready_accepts_native_policy_and_matching_routing(monkeypatch):
+    from types import SimpleNamespace
+    from fwrouter_api.adapters import mihomo
+    from fwrouter_api.services import apply_orchestrator
+    monkeypatch.setattr(mihomo, "DEFAULT_MIHOMO_ADAPTER", SimpleNamespace(
+        health=lambda: SimpleNamespace(details={"vpn_udp_policy": {"policy_installed": True}}),
+    ))
+    monkeypatch.setattr(apply_orchestrator, "mihomo_runtime_satisfies_routing", lambda _routing: {"ok": True})
+
+    assert provider_recovery._mihomo_reentry_policy_installed() is True
+    assert provider_recovery._mihomo_reentry_runtime_ready({"desired_mode": "vpn"}) is True
+
+
+def test_verified_reentry_prepare_reconciles_before_probe_and_preserves_direct_on_failure(monkeypatch):
+    pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
+               "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
+    state = _install_pending_state(monkeypatch, pending)
+    monkeypatch.setattr(provider_recovery, "_prepare_verified_reentry_runtime",
+                        _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME)
+    snapshots = iter([
+        _reentry_prepare_context(pending),  # original state-machine preflight snapshot
+        _reentry_prepare_context(pending),  # prepare start
+    ])
+    monkeypatch.setattr(provider_recovery, "_capture_recovery_context", lambda *_args: next(snapshots))
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: False)
+    from fwrouter_api.services import apply_orchestrator, apply_orchestrator_handler_common
+    monkeypatch.setattr(apply_orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
+    events = []
+    _install_reentry_prepare_job_mocks(monkeypatch, events)
+    monkeypatch.setattr(apply_orchestrator_handler_common, "_reconcile_vpn_runtime_for_apply",
+                        lambda _routing, *, job_id: events.append(("reconcile", job_id)) or {"ok": False})
+    controller = _RecoveryController([])
+    apply_calls = []
+    monkeypatch.setattr(provider_recovery, "_apply_override", lambda *, reentry: apply_calls.append(reentry) or {"ok": True})
+
+    result = provider_recovery.try_verified_reentry(controller, timeout_ms=3000, reason="prepare-failure")
+
+    assert result["status"] == "emergency_direct"
+    assert result["error_code"] == "MIHOMO_REENTRY_PREPARE_FAILED"
+    assert result["effective_override"] == "emergency_direct"
+    assert state["pending"] == pending
+    assert not [call for call in controller.calls if call[0] == "probe"]
+    assert apply_calls == []
+    assert any(event[0] == "reconcile" for event in events)
+
+
+def test_verified_reentry_prepare_reconcile_precedes_probe_and_allows_only_incarnation_change(monkeypatch):
+    pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
+               "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
+    _install_pending_state(monkeypatch, pending)
+    monkeypatch.setattr(provider_recovery, "_prepare_verified_reentry_runtime",
+                        _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME)
+    before = _reentry_prepare_context(pending)
+    before["selection_fence"] = {"revision": 12, "owner": "vpn-auto"}
+    after = {**before, "runtime_incarnation": "runtime-b",
+             "selection_fence": {"revision": 13, "owner": "vpn-auto"}}
+    snapshots = iter([_reentry_prepare_context(pending), before, after])
+    monkeypatch.setattr(provider_recovery, "_capture_recovery_context", lambda *_args: next(snapshots))
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_args, **_kwargs: True)
+    readiness = iter([False, True])
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: next(readiness))
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_policy_installed", lambda: True)
+    from fwrouter_api.adapters import xray_common
+    from fwrouter_api.services import apply_orchestrator, apply_orchestrator_handler_common
+    guard = {"depth": 0}
+    @contextmanager
+    def tracked_writer_guard(*_args, **_kwargs):
+        guard["depth"] += 1
+        try:
+            yield
+        finally:
+            guard["depth"] -= 1
+    monkeypatch.setattr(xray_common, "xray_writer_guard", tracked_writer_guard)
+    monkeypatch.setattr(xray_common, "xray_writer_guard_is_held", lambda: guard["depth"] > 0)
+    monkeypatch.setattr(apply_orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
+    events = []
+    _install_reentry_prepare_job_mocks(monkeypatch, events)
+    receipt = _reentry_generation_receipt(before, after)
+    def reconcile(_routing, *, job_id):
+        assert xray_common.xray_writer_guard_is_held()
+        events.append(("reconcile", job_id))
+        return {"ok": True, "job_id": job_id, "operation_id": "owned-operation",
+                "reentry_generation_fence": {**receipt, "job_id": job_id}}
+    monkeypatch.setattr(apply_orchestrator_handler_common, "_reconcile_vpn_runtime_for_apply", reconcile)
+    from fwrouter_api.services import mihomo_reconcile
+    monkeypatch.setattr(mihomo_reconcile.config, "_resolved_base_config_path", lambda: "/isolated/mihomo.yaml")
+    monkeypatch.setattr(mihomo_reconcile, "_file_hash", lambda _path: "a" * 64)
+    controller = _RecoveryController([{"ok": False}])
+    original_probe = controller.probe
+    def probe(**kwargs):
+        assert not xray_common.xray_writer_guard_is_held()
+        events.append(("probe",))
+        return original_probe(**kwargs)
+    monkeypatch.setattr(controller, "probe", probe)
+    monkeypatch.setattr(provider_recovery, "_apply_override", lambda **_kwargs: pytest.fail("failed preflight must not apply VPN"))
+
+    result = provider_recovery.try_verified_reentry(controller, timeout_ms=3000, reason="prepare-order")
+
+    assert result["status"] == "emergency_direct"
+    assert [event[0] for event in events if event[0] in {"reconcile", "probe"}] == ["reconcile", "probe"]
+
+
+def _reentry_generation_receipt(before, after, *, job_id="prepare-job", **overrides):
+    receipt = {
+        "schema": "mihomo-reentry-generation-fence/v1",
+        "operation_id": "owned-operation",
+        "job_id": job_id,
+        "before_revision": before["selection_fence"]["revision"],
+        "selection_revision": after["selection_fence"]["revision"],
+        "runtime_incarnation": after["runtime_incarnation"],
+        "active_config_hash": "a" * 64,
+        "native_proof_verified": True,
+        "publication_verified": True,
+    }
+    receipt.update(overrides)
+    return receipt
+
+
+def _run_reentry_prepare_with_owned_revision(monkeypatch, *, receipt_overrides=None, changed_field=None):
+    pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
+               "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
+    _install_pending_state(monkeypatch, pending)
+    monkeypatch.setattr(provider_recovery, "_prepare_verified_reentry_runtime",
+                        _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME)
+    before = _reentry_prepare_context(pending)
+    before["selection_fence"] = {"revision": 12, "owner": "vpn-auto"}
+    after = {**before, "runtime_incarnation": "runtime-b",
+             "selection_fence": {"revision": 13, "owner": "vpn-auto"}}
+    if changed_field == "binding":
+        after["binding"] = ("source-provider", 8, "stealthsurf")
+    receipt = _reentry_generation_receipt(before, after, **(receipt_overrides or {}))
+    snapshots = iter([before, after])
+    monkeypatch.setattr(provider_recovery, "_capture_recovery_context", lambda *_args: next(snapshots))
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_args, **_kwargs: True)
+    readiness = iter([False, True])
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: next(readiness))
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_policy_installed", lambda: True)
+    from fwrouter_api.services import apply_orchestrator, apply_orchestrator_handler_common, mihomo_reconcile
+    monkeypatch.setattr(apply_orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
+    monkeypatch.setattr(mihomo_reconcile.config, "_resolved_base_config_path", lambda: "/isolated/mihomo.yaml")
+    monkeypatch.setattr(mihomo_reconcile, "_file_hash", lambda _path: "a" * 64)
+    events = []
+    _install_reentry_prepare_job_mocks(monkeypatch, events)
+    result = {
+        "ok": True, "job_id": "prepare-job", "operation_id": "owned-operation",
+        "reentry_generation_fence": receipt,
+    }
+    monkeypatch.setattr(apply_orchestrator_handler_common, "_reconcile_vpn_runtime_for_apply",
+                        lambda *_args, **_kwargs: result)
+    return provider_recovery._prepare_verified_reentry_runtime(_RecoveryController([]), pending), events, after
+
+
+def test_verified_reentry_accepts_only_exact_owned_native_revision_receipt(monkeypatch):
+    result, events, after = _run_reentry_prepare_with_owned_revision(monkeypatch)
+
+    assert result == {"ok": True, "snapshot": after, "prepared": True}
+    assert any(event[0] == "success" for event in events)
+
+
+def test_verified_reentry_accepts_reconcile_with_native_policy_when_fast_status_is_conservative(monkeypatch):
+    pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
+               "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
+    _install_pending_state(monkeypatch, pending)
+    monkeypatch.setattr(provider_recovery, "_prepare_verified_reentry_runtime",
+                        _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME)
+    before = _reentry_prepare_context(pending)
+    # Reconcile confirms unchanged native inputs; the conservative selector
+    # parity check can remain false even though native fail-closed policy is proven.
+    snapshots = iter([before, before])
+    monkeypatch.setattr(provider_recovery, "_capture_recovery_context", lambda *_args: next(snapshots))
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: False)
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_policy_installed", lambda: True)
+    from fwrouter_api.services import apply_orchestrator, apply_orchestrator_handler_common
+    monkeypatch.setattr(apply_orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
+    events = []
+    _install_reentry_prepare_job_mocks(monkeypatch, events)
+    monkeypatch.setattr(apply_orchestrator_handler_common, "_reconcile_vpn_runtime_for_apply",
+                        lambda *_args, **_kwargs: {"ok": True, "job_id": "prepare-job"})
+
+    result = _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME(_RecoveryController([]), pending)
+
+    assert result == {"ok": True, "snapshot": before, "prepared": True}
+    assert any(event[0] == "success" for event in events)
+
+
+def test_verified_reentry_rejects_reconcile_without_native_policy_proof(monkeypatch):
+    pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
+               "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
+    _install_pending_state(monkeypatch, pending)
+    monkeypatch.setattr(provider_recovery, "_prepare_verified_reentry_runtime",
+                        _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME)
+    before = _reentry_prepare_context(pending)
+    snapshots = iter([before, before])
+    monkeypatch.setattr(provider_recovery, "_capture_recovery_context", lambda *_args: next(snapshots))
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: False)
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_policy_installed", lambda: False)
+    from fwrouter_api.services import apply_orchestrator, apply_orchestrator_handler_common
+    monkeypatch.setattr(apply_orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
+    events = []
+    _install_reentry_prepare_job_mocks(monkeypatch, events)
+    monkeypatch.setattr(apply_orchestrator_handler_common, "_reconcile_vpn_runtime_for_apply",
+                        lambda *_args, **_kwargs: {"ok": True, "job_id": "prepare-job"})
+
+    result = _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME(_RecoveryController([]), pending)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "MIHOMO_REENTRY_PREPARE_UNVERIFIED"
+    assert any(event[0] == "failed" for event in events)
+
+
+def test_verified_reentry_rejects_unreceipted_runtime_incarnation_change(monkeypatch):
+    pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
+               "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
+    _install_pending_state(monkeypatch, pending)
+    monkeypatch.setattr(provider_recovery, "_prepare_verified_reentry_runtime",
+                        _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME)
+    before = _reentry_prepare_context(pending)
+    after = {**before, "runtime_incarnation": "runtime-b"}
+    snapshots = iter([before, after])
+    monkeypatch.setattr(provider_recovery, "_capture_recovery_context", lambda *_args: next(snapshots))
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_args, **_kwargs: True)
+    readiness = iter([False, True])
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: next(readiness))
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_policy_installed", lambda: True)
+    from fwrouter_api.services import apply_orchestrator, apply_orchestrator_handler_common
+    monkeypatch.setattr(apply_orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
+    events = []
+    _install_reentry_prepare_job_mocks(monkeypatch, events)
+    monkeypatch.setattr(apply_orchestrator_handler_common, "_reconcile_vpn_runtime_for_apply",
+                        lambda *_args, **_kwargs: {"ok": True, "job_id": "prepare-job"})
+
+    result = provider_recovery._prepare_verified_reentry_runtime(_RecoveryController([]), pending)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "MIHOMO_REENTRY_PREPARE_UNVERIFIED"
+
+
+@pytest.mark.parametrize("receipt_overrides,changed_field", [
+    ({"job_id": "foreign-job"}, None),
+    ({"operation_id": "foreign-operation"}, None),
+    ({"selection_revision": 14}, None),
+    ({"native_proof_verified": False}, None),
+    ({"publication_verified": False}, None),
+    ({"active_config_hash": "b" * 64}, None),
+    ({"runtime_incarnation": "foreign-runtime"}, None),
+    ({}, "binding"),
+], ids=["foreign-job", "foreign-operation", "revision-jump", "native-proof-false", "publication-false",
+       "active-hash-mismatch", "runtime-mismatch", "unrelated-binding-change"])
+def test_verified_reentry_rejects_unowned_or_unrelated_context_change(
+    monkeypatch, receipt_overrides, changed_field,
+):
+    result, events, _after = _run_reentry_prepare_with_owned_revision(
+        monkeypatch, receipt_overrides=receipt_overrides, changed_field=changed_field,
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "MIHOMO_REENTRY_PREPARE_UNVERIFIED"
+    assert any(event[0] == "failed" for event in events)
+
+
+@pytest.mark.parametrize("changed_field", [
+    "pending", "selection_fence", "pool", "desired_mode", "exclusive", "binding", "eligible",
+    "credential_fingerprint", "active_target_id", "path_key",
+])
+def test_verified_reentry_prepare_refuses_to_rebase_changed_fences(monkeypatch, changed_field):
+    pending = {"provider_managed": True, "emergency_direct": True, "phase": "emergency_direct",
+               "logical_server_id": "logical-provider", "source_ref": "source-provider", "binding_revision": 7}
+    _install_pending_state(monkeypatch, pending)
+    before = _reentry_prepare_context(pending)
+    after = {**before, "runtime_incarnation": "runtime-b"}
+    if changed_field == "pending":
+        after[changed_field] = {**pending, "phase": "newer-operation"}
+    elif changed_field == "selection_fence":
+        after[changed_field] = {"revision": 13}
+    elif changed_field == "binding":
+        after[changed_field] = ("source-provider", 8, "stealthsurf")
+    elif changed_field == "active_target_id":
+        after[changed_field] = "other-target"
+    elif changed_field == "path_key":
+        after[changed_field] = "other-path"
+    elif changed_field == "pool":
+        after[changed_field] = "different-pool"
+    elif changed_field == "desired_mode":
+        after[changed_field] = "direct"
+    elif changed_field == "exclusive":
+        after[changed_field] = "other-source"
+    elif changed_field == "eligible":
+        after[changed_field] = False
+    else:
+        after[changed_field] = "different-credential-fingerprint"
+    snapshots = iter([before, after])
+    monkeypatch.setattr(provider_recovery, "_capture_recovery_context", lambda *_args: next(snapshots))
+    monkeypatch.setattr(provider_recovery, "_recovery_context_matches", lambda *_args, **_kwargs: True)
+    readiness = iter([False, True])
+    monkeypatch.setattr(provider_recovery, "_mihomo_reentry_runtime_ready", lambda _routing: next(readiness))
+    from fwrouter_api.services import apply_orchestrator, apply_orchestrator_handler_common
+    monkeypatch.setattr(apply_orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
+    events = []
+    _install_reentry_prepare_job_mocks(monkeypatch, events)
+    monkeypatch.setattr(apply_orchestrator_handler_common, "_reconcile_vpn_runtime_for_apply",
+                        lambda *_args, **_kwargs: {"ok": True})
+
+    result = _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME(_RecoveryController([]), pending)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "MIHOMO_REENTRY_PREPARE_UNVERIFIED"
+    assert any(event[0] == "failed" for event in events)
 
 
 @pytest.mark.parametrize("competing_revision", [False, True])

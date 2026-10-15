@@ -40,7 +40,7 @@ CAPTURE_ROOT = Path("/tmp/fwrouter-packet-evidence")
 TCP_CAPTURE_PATH = CAPTURE_ROOT / "tcp.pcap"
 UDP_CAPTURE_PATH = CAPTURE_ROOT / "udp.pcap"
 CAPTURE_SUMMARY_PATH = CAPTURE_ROOT / "appboundedpacket-summary.json"
-CAPTURE_LIMIT = 512
+CAPTURE_LIMIT = 2048
 TCP_SNAPLEN = 54
 UDP_SNAPLEN = 42
 NEGATIVE_CAPTURE_DRAIN_SECONDS = 1.0
@@ -522,7 +522,8 @@ def _refresh_packet_capability(stack: dict[str, Any], api: str, bridge: Any, sou
 
 
 def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
-                 expected_ports: set[int]) -> dict[tuple[str, str, str, int], int]:
+                 expected_ports: set[int], *, record_counts: dict[str, int] | None = None,
+                 capture_name: str | None = None) -> dict[tuple[str, str, str, int], int]:
     """Read only fixed IPv4 headers from a launcher-owned bounded live pcap."""
     try:
         root_info = CAPTURE_ROOT.lstat()
@@ -607,12 +608,25 @@ def _pcap_counts(path: Path, expected_snaplen: int, expected_protocol: int,
         counts[(src, dst, "tcp" if protocol == 6 else "udp", dst_port)] = (
             counts.get((src, dst, "tcp" if protocol == 6 else "udp", dst_port), 0) + 1
         )
+    if record_counts is not None and capture_name is not None:
+        record_counts[capture_name] = records
     return counts
 
 
+def _capture_budget_exhausted(record_counts: dict[str, int]) -> bool:
+    """A full bounded capture cannot support a complete dataplane acceptance."""
+    return any(type(count) is int and count >= CAPTURE_LIMIT for count in record_counts.values())
+
+
 def _packet_counts() -> dict[tuple[str, str, str, int], int]:
-    tcp = _pcap_counts(TCP_CAPTURE_PATH, TCP_SNAPLEN, 6, {53, 5301, ENDPOINT_SELECTOR_PORT, 9080})
-    udp = _pcap_counts(UDP_CAPTURE_PATH, UDP_SNAPLEN, 17, {53, 9081, 5353})
+    record_counts: dict[str, int] = {}
+    tcp = _pcap_counts(TCP_CAPTURE_PATH, TCP_SNAPLEN, 6,
+                       {53, 5301, ENDPOINT_SELECTOR_PORT, 9080},
+                       record_counts=record_counts, capture_name="tcp")
+    udp = _pcap_counts(UDP_CAPTURE_PATH, UDP_SNAPLEN, 17, {53, 9081, 5353},
+                       record_counts=record_counts, capture_name="udp")
+    if _capture_budget_exhausted(record_counts):
+        raise AssertionError("packet capture budget exhausted before complete dataplane acceptance")
     return {**tcp, **udp}
 
 
@@ -1913,7 +1927,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
     label = diagnostic.get("phase")
     if label not in {"direct-before-vpn", "vpn", "vpn-supported-udp", "vpn-unknown-udp",
                      "vpn-unsupported-udp", "vpn-endpoint-unavailable", "vpn-empty-pool",
-                     "vpn-empty-pool-native",
+                     "vpn-empty-pool-native", "stale-rescue-lan-cleanup",
                      "provider-recovery-confirmations",
                      "provider-recovery-confirmation-1", "dns53-manual-apply", "dns53-status-read", "dns53-native-daemon",
                      "provider-reentry",
@@ -3082,6 +3096,49 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
         os.fsync(stream.fileno())
 
 
+def _qualify_stale_rescue_lan_cleanup(api: str, stack: dict[str, Any], record_property: Any) -> None:
+    """Seed historical owned drift only in the already-qualified router namespace."""
+    assert stack["profile"].get("profile") == "hosted-kernel-packet"
+    from fwrouter_api.services.dataplane_live import applied_nft_markers_match_live
+    from fwrouter_api.core.config import get_settings
+
+    def nft(*args: str, script: str | None = None) -> str:
+        result = subprocess.run(
+            ("/usr/sbin/nft", *args), input=script.encode("ascii") if script else None,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3, check=False,
+        )
+        assert result.returncode == 0 and len(result.stdout) < MAX_CORE_NFT_JSON and len(result.stderr) < 4096, {
+            "rescue_drift_nft_exit": result.returncode,
+        }
+        return result.stdout.decode("utf-8")
+
+    fixture_table = "fwrouter_rescue_fixture"
+    nft("-f", "-", script=(
+        f"add table ip {fixture_table}\n"
+        f"add chain ip {fixture_table} prerouting {{ type nat hook prerouting priority -101; policy accept; }}\n"
+        f'add rule ip {fixture_table} prerouting iifname "rescue0" udp dport 53 dnat to 10.254.254.1:53\n'
+    ))
+    try:
+        rescue_before = nft("list", "table", "ip", fixture_table)
+        nft("-f", "-", script=(
+            'add rule inet fwrouter_v2 prerouting iifname "rescue0" meta nfproto ipv6 reject with icmpv6 type admin-prohibited comment "block IPv6 from LAN ingress rescue0"\n'
+            'add rule inet fwrouter_v2 prerouting iifname "rescue0" meta l4proto { tcp, udp } th dport 53 accept comment "allow LAN DNS capture before VPN classify rescue0"\n'
+        ))
+        applied = get_settings().paths.generated_dir / "dataplane" / "applied.nft"
+        before = applied_nft_markers_match_live(applied)
+        assert before.get("ok") is False and before.get("stale_lan_role_markers_count") == 2, before
+        _apply_global_mode(api, "direct", stack=stack, record_property=record_property)
+        after = applied_nft_markers_match_live(applied)
+        assert after.get("ok") is True and after.get("stale_lan_role_markers_count") == 0, after
+        assert nft("list", "table", "ip", fixture_table) == rescue_before
+        _record_phase_diagnostic(record_property, {
+            "phase": "stale-rescue-lan-cleanup", "stale_before": 2, "stale_after": 0,
+            "core_apply_verified": True, "independent_rescue_nat_unchanged": True,
+        })
+    finally:
+        nft("delete", "table", "ip", fixture_table)
+
+
 @pytest.mark.packet
 def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks(
         acceptance_stack, record_property):
@@ -3101,6 +3158,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert endpoint_ready.get("ready") is True and endpoint_ready.get("role") == "endpoint"
     assert endpoint_ready.get("sockets") == {
         "xray_tcp_5301": True, "xray_tcp_5302": True,
+        "xray_tcp_5303": True, "tls_decoy_tcp_9443": True,
         "http_tcp_9080": True, "control_tcp_8082": True,
         "udp_echo_9081": True, "dns_udp_5353": True,
         "protected_tcp_9080": True, "protected_udp_9081": True,
@@ -3171,6 +3229,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
 
     _set_health_available(True)
     _apply_global_mode(api, "direct", stack=stack, record_property=record_property)
+    _qualify_stale_rescue_lan_cleanup(api, stack, record_property)
     _assert_packet_runtime(stack, mode="direct", policy_required=False)
     capture_baseline = _packet_counts()
     core_before_direct = _core_counter_snapshot()

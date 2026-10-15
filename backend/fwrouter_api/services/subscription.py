@@ -987,9 +987,28 @@ def _upsert_subscription_servers(
             if subscription_state_fingerprint(current_state) != expected_subscription_state_fingerprint:
                 raise RuntimeError("SUBSCRIPTION_STATE_SNAPSHOT_STALE")
         pool_before = selection_pool_signature(connection)
+        prior_memberships_by_source: dict[str, set[str]] = {}
+        for source_url in source_map:
+            source_id = _source_id(source_url)
+            prior_memberships_by_source[source_id] = {
+                str(row["server_id"]) for row in connection.execute(
+                    "SELECT server_id FROM subscription_server_memberships WHERE source_id=? AND is_active=1",
+                    (source_id,),
+                )
+            }
         persist_provider_inventory_handoffs(connection, provider_handoffs)
         preference_transfer_count = 0
         for server in servers:
+            prior = connection.execute(
+                "SELECT raw_json FROM servers WHERE server_id=?", (server.server_id,)
+            ).fetchone()
+            if prior:
+                try:
+                    prior_raw = _json_loads(prior["raw_json"])
+                except (TypeError, ValueError):
+                    prior_raw = {}
+                if isinstance(prior_raw, dict) and prior_raw.get("_fwrouter_identity_migration_required") is True:
+                    server.raw["_fwrouter_identity_migration_required"] = True
             connection.execute(
                 """
                 INSERT INTO servers (
@@ -1038,6 +1057,7 @@ def _upsert_subscription_servers(
 
         removed_membership_count = 0
         legacy_membership_deactivated_count = 0
+        removed_membership_ids_by_source: dict[str, set[str]] = {}
         if source_map:
             for source_url, source_servers in source_map.items():
                 source_id = _source_id(source_url)
@@ -1075,6 +1095,13 @@ def _upsert_subscription_servers(
                     )
                 if source_seen_ids:
                     placeholders = ", ".join("?" for _ in source_seen_ids)
+                    removed_membership_ids_by_source[source_id] = {
+                        str(row["server_id"]) for row in connection.execute(
+                            f"SELECT server_id FROM subscription_server_memberships WHERE source_id=? "
+                            f"AND is_active=1 AND server_id NOT IN ({placeholders})",
+                            (source_id, *tuple(sorted(source_seen_ids))),
+                        )
+                    }
                     removed_membership_count += connection.execute(
                         f"""
                         UPDATE subscription_server_memberships
@@ -1087,6 +1114,12 @@ def _upsert_subscription_servers(
                         (source_id, *tuple(sorted(source_seen_ids))),
                     ).rowcount
                 else:
+                    removed_membership_ids_by_source[source_id] = {
+                        str(row["server_id"]) for row in connection.execute(
+                            "SELECT server_id FROM subscription_server_memberships WHERE source_id=? AND is_active=1",
+                            (source_id,),
+                        )
+                    }
                     removed_membership_count += connection.execute(
                         """
                         UPDATE subscription_server_memberships
@@ -1186,6 +1219,15 @@ def _upsert_subscription_servers(
         # active_auto_server_id is persistent selection intent. Runtime-safe
         # transition is performed by the existing selector after apply.
         stale_active_auto_cleared_count = 0
+
+        if source_map:
+            from fwrouter_api.services.subscription_node_identity import inherit_profile_growth
+            introduced = {
+                _source_id(source_url): {str(server.server_id) for server in source_servers}
+                - prior_memberships_by_source.get(_source_id(source_url), set())
+                for source_url, source_servers in source_map.items()
+            }
+            inherit_profile_growth(connection, servers, removed_membership_ids_by_source, introduced)
 
         active_count = connection.execute(
             "SELECT COUNT(*) FROM servers WHERE inventory_state = 'active'"

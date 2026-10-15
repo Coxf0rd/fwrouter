@@ -18,7 +18,7 @@ from fwrouter_api.services.external_source_observations import (
     external_source_observation_cache_key,
     read_external_source_observations,
 )
-from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+from fwrouter_api.services.live_probe_cache import get_live_probe_cache, get_readonly_mihomo_health
 from fwrouter_api.services.modules import fetch_modules
 from fwrouter_api.services.rules_state_metadata import list_rules_metadata
 from fwrouter_api.services.rules_state_store import get_rules_state
@@ -68,9 +68,11 @@ def adapter_health_model_snapshot(health: Any) -> dict[str, Any]:
     }
 
 
-def mihomo_health_model_snapshot() -> Any:
+def mihomo_health_model_snapshot(*, force_refresh: bool = False) -> Any:
     try:
-        return mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER.health()
+        if force_refresh:
+            return mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER.health()
+        return get_readonly_mihomo_health(mihomo_adapter_module.DEFAULT_MIHOMO_ADAPTER)
     except Exception as exc:
         return mihomo_adapter_module.MihomoHealth(
             runtime_state=mihomo_adapter_module.MihomoRuntimeState.FAILED,
@@ -269,7 +271,11 @@ class StateSnapshot:
     def mihomo_health_model(self) -> Any:
         return self._probe(
             "mihomo_health_model",
-            mihomo_health_model_snapshot,
+            (lambda: mihomo_health_model_snapshot(force_refresh=True))
+            if self.force_refresh else mihomo_health_model_snapshot,
+            # The adapter snapshot already owns the cross-request TTL. Do not
+            # extend its age by retaining it in a second completed-value cache.
+            ttl_seconds=0.0,
         )
 
     def xray_health(self) -> dict[str, Any]:

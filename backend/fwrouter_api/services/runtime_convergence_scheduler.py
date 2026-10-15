@@ -76,5 +76,6 @@ def stop_runtime_convergence_scheduler(*, timeout_seconds: float = 2.0) -> bool:
         _RUNTIME_CONVERGENCE_STOP_EVENT.set()
         _RUNTIME_CONVERGENCE_THREAD.join(timeout=timeout_seconds)
         stopped = not _RUNTIME_CONVERGENCE_THREAD.is_alive()
-        _RUNTIME_CONVERGENCE_THREAD = None
+        if stopped:
+            _RUNTIME_CONVERGENCE_THREAD = None
         return stopped

@@ -683,18 +683,33 @@ def build_subscription_nodes(
     account_name = str(resolved["account"]["display_name"] or resolved["account"]["slug"])
     client_name = str(resolved["client"]["display_name"] or token)
     nodes: list[dict[str, Any]] = []
-    for server in _subscription_servers():
+    from fwrouter_api.services.subscription_node_identity import (
+        credentials_for_scope, origin_server_id_for_server,
+    )
+    servers = _subscription_servers()
+    with db_session() as connection:
+        retained = credentials_for_scope(connection, "subscription:" + token)
+        origins = {str(server["server_id"]): origin_server_id_for_server(
+            connection, str(server["server_id"])
+        ) for server in servers}
+    for server in servers:
         server_id = str(server["server_id"])
         server_name = str(server["server_name"] or server_id)
+        credential = retained.get(server_id)
+        if credential and credential["revoked"]:
+            continue
+        origin_server_id = origins.get(server_id, server_id)
+        client_uuid = credential["client_uuid"] if credential else _subscription_uuid(token, origin_server_id)
+        client_email = credential["client_email"] if credential else _subscription_email(token, origin_server_id)
         nodes.append(
             {
                 "subscription_token": token,
                 "server_id": server_id,
                 "server_name": server_name,
-                "client_uuid": _subscription_uuid(token, server_id),
-                "client_email": _subscription_email(token, server_id),
+                "client_uuid": client_uuid,
+                "client_email": client_email,
                 "uri": build_xray_vless_uri(
-                    client_uuid=_subscription_uuid(token, server_id),
+                    client_uuid=client_uuid,
                     label=server_name,
                     public_host=public_host,
                     public_port=public_port,
@@ -969,8 +984,9 @@ def promote_runtime_verified_subscription_nodes(
 
 def filter_runtime_exportable_subscription_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not _xray_module_enabled():
-        return nodes
+        return _filter_revoked_subscription_nodes(nodes)
 
+    nodes = _filter_revoked_subscription_nodes(nodes)
     exportable_clients = _load_xray_runtime_exportable_clients()
     exportable: list[dict[str, Any]] = []
     for node in nodes:
@@ -988,6 +1004,30 @@ def filter_runtime_exportable_subscription_nodes(nodes: list[dict[str, Any]]) ->
             continue
         exportable.append(node)
     return exportable
+
+
+def _filter_revoked_subscription_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    tokens = {str(node.get("subscription_token") or "") for node in nodes
+              if str(node.get("subscription_token") or "")}
+    if not tokens:
+        return nodes
+    with db_session() as connection:
+        revoked = {
+            (str(row["scope"]), str(row["server_id"]), str(row["client_uuid"]), str(row["client_email"]))
+            for row in connection.execute(
+                """SELECT c.scope, a.server_id, c.client_uuid, c.client_email
+                   FROM subscription_node_credentials c
+                   JOIN subscription_node_aliases a ON a.identity_id=c.identity_id
+                   WHERE c.revoked=1 AND c.scope IN (%s)"""
+                % ",".join("?" for _ in tokens),
+                tuple("subscription:" + token for token in sorted(tokens)),
+            )
+        }
+    return [node for node in nodes if (
+        "subscription:" + str(node.get("subscription_token") or ""),
+        str(node.get("server_id") or ""), str(node.get("client_uuid") or ""),
+        str(node.get("client_email") or ""),
+    ) not in revoked]
 
 
 def list_desired_subscription_xray_clients(token_or_slug: str | None = None) -> list[dict[str, Any]]:
@@ -1168,6 +1208,10 @@ def render_subscription_profile(
                 public_path=public_path,
             )
         )
+    # The runtime path can expose a client that was revoked after the last
+    # native reconciliation. Apply the durable tombstone check to every path
+    # before rendering or returning the profile.
+    nodes = _filter_revoked_subscription_nodes(nodes)
     detected_format = str(resolved["detected_format"])
     if detected_format == "happ":
         rendered = render_happ_subscription(resolved, nodes)

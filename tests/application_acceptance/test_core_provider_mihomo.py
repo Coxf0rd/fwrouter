@@ -55,7 +55,7 @@ def _enable_owned_mihomo_runtime_state() -> None:
         )
 
 
-def _record_owned_probe_boundary(record_property, label: str, summary: dict) -> None:
+def _record_owned_probe_boundary(record_property, label: str, summary: dict) -> dict:
     """Persist bounded, URL-free probe intent and local header-write timestamps."""
     events = summary.get("recent_events") if isinstance(summary.get("recent_events"), list) else []
     safe_events = []
@@ -125,6 +125,7 @@ def _record_owned_probe_boundary(record_property, label: str, summary: dict) -> 
     if len(encoded.encode("utf-8")) > 2048:
         raise AssertionError("bounded probe summary exceeded JUnit evidence limit")
     record_property(f"owned_probe_{label}", encoded)
+    return bounded
 
 
 def _record_native_delay_request(record_property, label: str, evidence: dict | None) -> None:
@@ -319,7 +320,7 @@ def test_provider_disabled_and_unknown_source_do_not_call_provider_or_patch(acce
     assert bridge.snapshot_calls() == [], "unknown source discovery and mutation must not call the provider API"
 
 
-def test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct(acceptance_stack):
+def test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct(acceptance_stack, record_property):
     stack = acceptance_stack
     api, bridge = stack["api"], stack["provider_bridge"]
     _enable_owned_mihomo_runtime_state()
@@ -452,8 +453,43 @@ def test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_
     # Restore the owned VLESS→Xray→HTTP health destination and require a
     # verified reentry on the same provider member before Direct is cleared.
     bridge.set_probe_available(True)
+    probe_before = _record_owned_probe_boundary(
+        record_property, "reentry_available_before", bridge.snapshot_probe_summary(),
+    )
     code, restored = http_json(f"{api}/__acceptance/provider/reentry", method="POST",
                                payload={"timeout_ms": 2000}, timeout=90)
+    probe_after = _record_owned_probe_boundary(
+        record_property, "reentry_available_after", bridge.snapshot_probe_summary(),
+    )
+    status_before = probe_before.get("response_status_counts", {})
+    status_after = probe_after.get("response_status_counts", {})
+    statuses = sorted(set(status_before) | set(status_after))
+    event_count_before = probe_before.get("event_count", 0)
+    event_count_after = probe_after.get("event_count", 0)
+    response_count_before = probe_before.get("response_count", 0)
+    response_count_after = probe_after.get("response_count", 0)
+    request_count_before = probe_before.get("request_count", 0)
+    request_count_after = probe_after.get("request_count", 0)
+    safe_probe_delta = {
+        "schema": "fwrouter-acceptance-reentry-probe-delta/v1",
+        "endpoint_available_for_attempt": True,
+        "request_delta": max(0, request_count_after - request_count_before),
+        "response_delta": max(0, response_count_after - response_count_before),
+        "status_delta": {
+            status: max(0, status_after.get(status, 0) - status_before.get(status, 0))
+            for status in statuses if max(0, status_after.get(status, 0) - status_before.get(status, 0)) > 0
+        },
+        "event_delta": max(0, event_count_after - event_count_before),
+        "transport_closed_delta": max(
+            0, probe_after.get("transport_closed_count", 0) - probe_before.get("transport_closed_count", 0),
+        ),
+        "recent_events_after": probe_after.get("recent_events", [])[-8:],
+        "header_write_error_counts_after": probe_after.get("header_write_error_counts", {}),
+    }
+    encoded_probe_delta = json.dumps(safe_probe_delta, sort_keys=True, separators=(",", ":"))
+    assert len(encoded_probe_delta.encode("utf-8")) <= 2048
+    record_property("reentry_available_probe_delta", encoded_probe_delta)
+    print("FWROUTER_ACCEPTANCE_REENTRY_PROBE " + encoded_probe_delta, flush=True)
     assert code == 200 and restored.get("ok") is True, restored
     assert restored.get("effective_override") in {None, ""}, restored
     assert bridge.snapshot_calls() == [], "native reentry validation must not call the provider API"

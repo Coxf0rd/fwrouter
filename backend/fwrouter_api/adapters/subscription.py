@@ -567,6 +567,8 @@ def _servers_from_json_profile(payload: Any) -> tuple[list[SubscriptionServer], 
             })
             continue
         identity = _canonical_json(profile)
+        from fwrouter_api.services.subscription_node_identity import profile_provenance
+        proxy["_fwrouter_profile_provenance"] = profile_provenance(profile)
         if identity in seen_identities:
             diagnostics.append({"index": index, "category": "duplicate_exact", "reason": "exact_duplicate_entry"})
             continue

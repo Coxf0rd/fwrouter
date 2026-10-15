@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import os
+from time import monotonic
 from uuid import uuid4
 import uvicorn
 from fastapi import FastAPI
@@ -23,7 +24,10 @@ from fwrouter_api.services.active_observation_scheduler import (
     start_active_observation_scheduler,
     stop_active_observation_scheduler,
 )
-from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async
+from fwrouter_api.services.runtime_prewarm import (
+    prime_runtime_read_models_async, stop_runtime_read_models_prewarm,
+    resume_runtime_read_models_prewarm,
+)
 from fwrouter_api.services.runtime_convergence_scheduler import (
     start_runtime_convergence_scheduler,
     stop_runtime_convergence_scheduler,
@@ -89,33 +93,49 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        if startup_tasks_enabled:
-            bootstrap_backend()
-            # Installer-side database upgrades may run without the service's
-            # EnvironmentFile paths. Re-scrub configured logs on every API
-            # startup so an already-current schema cannot skip secret cleanup.
-            paths = get_settings().paths
-            scrub_jsonl_files([paths.operational_log_dir, paths.technical_log_dir])
-            register_extended_handlers(get_default_job_manager())
-            start_maintenance_scheduler()
-            start_member_probe_scheduler()
-            start_active_observation_scheduler()
-            start_subject_inventory_scheduler()
-            start_external_collector_scheduler()
-            start_runtime_convergence_scheduler()
-            start_watchdog_scheduler()
-            prime_runtime_read_models_async(include_global_profiles=False)
         try:
+            if startup_tasks_enabled:
+                bootstrap_backend()
+                # Installer-side database upgrades may run without the service's
+                # EnvironmentFile paths. Re-scrub configured logs on every API
+                # startup so an already-current schema cannot skip secret cleanup.
+                paths = get_settings().paths
+                scrub_jsonl_files([paths.operational_log_dir, paths.technical_log_dir])
+                register_extended_handlers(get_default_job_manager())
+                start_maintenance_scheduler()
+                start_member_probe_scheduler()
+                start_active_observation_scheduler()
+                start_subject_inventory_scheduler()
+                start_external_collector_scheduler()
+                start_runtime_convergence_scheduler()
+                start_watchdog_scheduler()
+                if resume_runtime_read_models_prewarm():
+                    prime_runtime_read_models_async(include_global_profiles=False)
             yield
         finally:
+            # Signal every application-owned background worker first. Runtime
+            # mutations can start prewarm and job workers even when startup
+            # schedulers are disabled.
             if startup_tasks_enabled:
-                stop_maintenance_scheduler()
-                stop_member_probe_scheduler()
-                stop_active_observation_scheduler()
-                stop_subject_inventory_scheduler()
-                stop_external_collector_scheduler()
-                stop_runtime_convergence_scheduler()
-                stop_watchdog_scheduler()
+                scheduler_stops = (
+                    stop_maintenance_scheduler, stop_member_probe_scheduler,
+                    stop_active_observation_scheduler, stop_subject_inventory_scheduler,
+                    stop_external_collector_scheduler, stop_runtime_convergence_scheduler,
+                    stop_watchdog_scheduler,
+                )
+                for stop in scheduler_stops:
+                    stop(timeout_seconds=0.0)
+            else:
+                scheduler_stops = ()
+            stop_runtime_read_models_prewarm(timeout_seconds=0.0)
+
+            deadline = monotonic() + 14.0
+            for stop in scheduler_stops:
+                stop(timeout_seconds=max(0.0, deadline - monotonic()))
+            stop_runtime_read_models_prewarm(timeout_seconds=max(0.0, deadline - monotonic()))
+            get_default_job_manager().wait_for_idle(
+                timeout_seconds=max(0.0, deadline - monotonic()),
+            )
 
     app = FastAPI(
         title=settings.app_name,

@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+from fwrouter_api.services.network_contract import reserved_interface_role
 
 
 _NFT_CHAIN_MARKER_DIRECT = 'goto fwrouter_direct comment "global direct v1"'
@@ -16,6 +17,10 @@ _NFT_CHAIN_MARKER_SELECTIVE = 'comment "selective default '
 _NFT_CHAIN_MARKER_CORE_BYPASS = 'fwrouter core bypass'
 _MIHOMO_ACTIVE_CONFIG_PATH = "/var/lib/fwrouter-v2/generated/mihomo/config.yaml"
 _COMMENT_PATTERN = re.compile(r'comment "([^"]+)"')
+_LAN_ROLE_MARKER_PATTERNS = (
+    re.compile(r"^block IPv6 from LAN ingress (?P<interface>[^ ]+)$"),
+    re.compile(r"^allow LAN DNS capture before VPN classify (?P<interface>[^ ]+)$"),
+)
 
 
 def _read_live_table() -> dict[str, Any]:
@@ -69,6 +74,22 @@ def _critical_comments_from_nft_text(nft_text: str) -> list[str]:
     )
 
 
+def _stale_lan_role_markers_from_nft_text(nft_text: str) -> list[str]:
+    """Find owned LAN ingress markers that now belong to a reserved role."""
+
+    stale: set[str] = set()
+    for comment in _COMMENT_PATTERN.findall(nft_text):
+        for pattern in _LAN_ROLE_MARKER_PATTERNS:
+            match = pattern.fullmatch(comment)
+            if match is None:
+                continue
+            interface = match.group("interface")
+            if reserved_interface_role(interface) is not None:
+                stale.add(comment)
+            break
+    return sorted(stale)
+
+
 def applied_nft_markers_match_live(applied_nft_path: str | Path | None) -> dict[str, Any]:
     """Return whether live nft contains the critical markers from applied.nft."""
 
@@ -112,20 +133,30 @@ def applied_nft_markers_match_live(applied_nft_path: str | Path | None) -> dict[
 
     raw_live = str(live.get("raw_table") or "")
     missing = [marker for marker in expected_markers if marker not in raw_live]
+    stale_lan_role_markers = _stale_lan_role_markers_from_nft_text(raw_live)
+    drift_detected = bool(missing or stale_lan_role_markers)
     return {
-        "ok": not missing,
+        "ok": not drift_detected,
         "checked": True,
-        "reason": None if not missing else "live_table_missing_applied_markers",
+        "reason": (
+            "live_table_has_stale_lan_role_markers"
+            if stale_lan_role_markers
+            else "live_table_missing_applied_markers"
+            if missing
+            else None
+        ),
         "expected_markers_count": len(expected_markers),
         "missing_markers_count": len(missing),
         "missing_markers": missing[:50],
+        "stale_lan_role_markers_count": len(stale_lan_role_markers),
+        "stale_lan_role_markers": stale_lan_role_markers[:50],
     }
 
 
 def _load_mihomo_selective_default() -> str | None:
     try:
         with open(_MIHOMO_ACTIVE_CONFIG_PATH, "r", encoding="utf-8") as handle:
-            config = yaml.safe_load(handle) or {}
+            config = yaml.load(handle, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
     except (FileNotFoundError, OSError, yaml.YAMLError):
         return None
 

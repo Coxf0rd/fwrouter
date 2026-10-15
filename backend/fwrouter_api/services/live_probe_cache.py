@@ -8,6 +8,19 @@ from typing import Any, Callable
 _CACHE_LOCK = Lock()
 _CACHE: dict[str, tuple[float, Any]] = {}
 _INFLIGHT: dict[str, tuple[Event, dict[str, Any]]] = {}
+_READONLY_MIHOMO_HEALTH_CACHE_KEY = "dataplane_global.mihomo_health"
+
+
+def get_readonly_mihomo_health(adapter: Any, *, loader: Callable[[], Any] | None = None) -> Any:
+    """Return a short-lived, coalesced Mihomo health snapshot for read-only callers."""
+    adapter_identity = (
+        f"{type(adapter).__module__}.{type(adapter).__qualname__}.{id(adapter):x}"
+    )
+    return get_live_probe_cache(
+        f"{_READONLY_MIHOMO_HEALTH_CACHE_KEY}.{adapter_identity}",
+        ttl_seconds=2.0,
+        loader=loader if loader is not None else adapter.health,
+    )
 
 
 def get_live_probe_cache(

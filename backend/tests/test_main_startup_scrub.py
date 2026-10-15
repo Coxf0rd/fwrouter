@@ -70,7 +70,10 @@ def test_v21_startup_scrubs_configured_jsonl_before_schedulers(
         "register_extended_handlers",
         lambda _manager: sequence.append("register_handlers"),
     )
-    monkeypatch.setattr(main, "get_default_job_manager", lambda: object())
+    monkeypatch.setattr(main, "get_default_job_manager",
+                        lambda: SimpleNamespace(wait_for_idle=lambda **_kwargs: True))
+    monkeypatch.setattr(main, "resume_runtime_read_models_prewarm", lambda: True)
+    monkeypatch.setattr(main, "stop_runtime_read_models_prewarm", lambda **_kwargs: True)
 
     for name in (
         "start_maintenance_scheduler",
@@ -91,7 +94,7 @@ def test_v21_startup_scrubs_configured_jsonl_before_schedulers(
         "stop_runtime_convergence_scheduler",
         "stop_watchdog_scheduler",
     ):
-        monkeypatch.setattr(main, name, lambda: None)
+        monkeypatch.setattr(main, name, lambda **_kwargs: None)
     monkeypatch.setattr(
         main,
         "prime_runtime_read_models_async",

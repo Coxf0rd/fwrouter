@@ -571,6 +571,10 @@ def test_staged_generation_finalizer_returns_success_and_closes_checkpoint_last(
     assert publication_order == ["receipt", "public_profile"]
     assert result["generation_apply"]["public_snapshots_changed"] is True
     assert not checkpoint.exists()
+    assert result["staged_publication_receipt"] == {
+        "schema": 1,
+        "staged_native_publication_complete": True,
+    }
     with db_session() as connection:
         snapshot = connection.execute(
             "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),
@@ -624,6 +628,7 @@ def test_staged_generation_finalizer_requires_udp_receipt_before_publication(mon
 
     assert result["ok"] is False
     assert result["error_code"] == "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED"
+    assert "staged_publication_receipt" not in result
     assert checkpoint.exists()
     assert promoted == []
     with db_session() as connection:
@@ -631,6 +636,89 @@ def test_staged_generation_finalizer_requires_udp_receipt_before_publication(mon
             "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),
         ).fetchone()
     assert snapshot is None
+
+
+def test_staged_generation_finalizer_emits_completion_only_after_durable_checkpoint_closure(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="generation-test", token="generation-test")
+    pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        xray_subscription_service,
+        "_publish_xray_generation_mihomo_udp_receipt",
+        lambda **_kwargs: True,
+    )
+    real_fsync_directory = xray_subscription_service._fsync_directory
+    observed_checkpoint_closed_at_fsync: list[bool] = []
+
+    def observe_checkpoint_closure(path: Path) -> None:
+        observed_checkpoint_closed_at_fsync.append(not checkpoint.exists())
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(xray_subscription_service, "_fsync_directory", observe_checkpoint_closure)
+    result = xray_subscription_service._finalize_xray_profile_publication(
+        pending,
+        {"ok": True, "operation_id": "generation-test",
+         "selection_revision": json.loads(checkpoint.read_text())["selection_revision"]},
+    )
+
+    assert observed_checkpoint_closed_at_fsync
+    assert observed_checkpoint_closed_at_fsync[-1] is True
+    assert not checkpoint.exists()
+    assert result["staged_publication_receipt"] == {
+        "schema": 1,
+        "staged_native_publication_complete": True,
+    }
+
+
+@pytest.mark.parametrize("failure", ["unlink", "directory_fsync"])
+def test_staged_generation_finalizer_does_not_return_completion_when_checkpoint_closure_fails(
+    monkeypatch, tmp_path: Path, failure: str,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="generation-test", token="generation-test")
+    pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        xray_subscription_service,
+        "_publish_xray_generation_mihomo_udp_receipt",
+        lambda **_kwargs: True,
+    )
+    if failure == "unlink":
+        original_unlink = Path.unlink
+
+        def fail_checkpoint_unlink(path: Path, *args, **kwargs) -> None:
+            if path == checkpoint:
+                raise OSError("injected checkpoint unlink failure")
+            original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_checkpoint_unlink)
+    else:
+        real_fsync_directory = xray_subscription_service._fsync_directory
+
+        def fail_final_directory_fsync(path: Path) -> None:
+            # Earlier fsyncs persist the postimage/checkpoint and must succeed.
+            # Fail only the durability barrier after the checkpoint unlink.
+            if not checkpoint.exists():
+                raise OSError("injected checkpoint directory fsync failure")
+            real_fsync_directory(path)
+
+        monkeypatch.setattr(
+            xray_subscription_service,
+            "_fsync_directory",
+            fail_final_directory_fsync,
+        )
+
+    with pytest.raises(OSError, match="injected checkpoint"):
+        xray_subscription_service._finalize_xray_profile_publication(
+            pending,
+            {"ok": True, "operation_id": "generation-test",
+             "selection_revision": json.loads(checkpoint.read_text())["selection_revision"]},
+        )
+
+    assert checkpoint.exists() is (failure == "unlink")
 
 
 @pytest.mark.parametrize(
@@ -851,6 +939,7 @@ def test_staged_generation_finalizer_rejects_wrong_loaded_users_before_publicati
     assert result["ok"] is False
     assert result["error_code"] == "XRAY_GENERATION_RUNTIME_READBACK_FAILED"
     assert checkpoint.exists()
+    assert "staged_publication_receipt" not in result
     with db_session() as connection:
         snapshot = connection.execute(
             "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),
@@ -955,7 +1044,10 @@ def _run_profile_candidate_validation_case(
     native_result: dict[str, object] | None = None,
     mutate_candidate: bool = False,
     image_id: str | None = "sha256:" + "a" * 64,
+    input_context_changes: bool = False,
 ):
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
     from types import SimpleNamespace
     from fwrouter_api.services import subscription_pipeline
 
@@ -964,6 +1056,9 @@ def _run_profile_candidate_validation_case(
     config_path.write_text("{}\n", encoding="utf-8")
     native_calls: list[str] = []
     local_calls: list[str] = []
+    input_context = {"hash": "a" * 64}
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint",
+                        lambda: dict(input_context))
 
     class Adapter:
         def __init__(self):
@@ -986,6 +1081,8 @@ def _run_profile_candidate_validation_case(
 
     def validate_native(candidate_path, *, image_reference=None):
         native_calls.append(str(candidate_path))
+        if input_context_changes and Path(candidate_path).name == "mihomo-transition.candidate.yaml":
+            input_context["hash"] = "b" * 64
         assert image_reference == image_id
         if mutate_candidate:
             Path(candidate_path).write_text("changed\n", encoding="utf-8")
@@ -2214,6 +2311,7 @@ def test_subscription_profile_reconcile_is_idempotent(monkeypatch, tmp_path: Pat
 def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
     monkeypatch, tmp_path: Path, rollback_failure: str, isolated_host_observations,
 ) -> None:
+    """Component rollback contract; hosted native acceptance covers real readback."""
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -2245,6 +2343,14 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
         good_snapshots = [dict(row) for row in connection.execute(
             "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots ORDER BY token"
         ).fetchall()]
+        good_identity_rows = {
+            table: [dict(row) for row in connection.execute(f'SELECT * FROM "{table}" ORDER BY 1, 2')]
+            for table in (
+                "subscription_node_identities",
+                "subscription_node_aliases",
+                "subscription_node_credentials",
+            )
+        }
 
     _seed_subscription_identity(slug="new-generation", token="new-generation")
     publish_rollback_receipt = xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt
@@ -2257,6 +2363,18 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
     monkeypatch.setattr(
         xray_subscription_service, "_publish_xray_generation_rollback_mihomo_udp_receipt",
         rollback_receipt,
+    )
+    checkpoint_phases_at_recovery: list[str] = []
+    restore_checkpoint = xray_subscription_service._restore_xray_generation_checkpoint
+
+    def observe_checkpoint_at_recovery(adapter_arg, checkpoint_path_arg):
+        checkpoint_phases_at_recovery.append(
+            str(json.loads(Path(checkpoint_path_arg).read_text(encoding="utf-8")).get("phase") or "")
+        )
+        return restore_checkpoint(adapter_arg, checkpoint_path_arg)
+
+    monkeypatch.setattr(
+        xray_subscription_service, "_restore_xray_generation_checkpoint", observe_checkpoint_at_recovery,
     )
     apply_candidate = xray_subscription_service._apply_staged_mihomo_candidate
     def fail_final_candidate(candidate_path: str, expected_sha256: str):
@@ -2276,6 +2394,27 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
 
     assert failed["ok"] is False
     assert failed["stage"] == "mihomo_final_apply"
+    assert "xray_applied" in checkpoint_phases_at_recovery
+    # A checkpoint-admitted generation owns its durable credential intent even
+    # when native apply later rolls back. Those credentials are the recovery
+    # identity source; compensating them here would make resume ambiguous.
+    with db_session() as connection:
+        identity_rows_after_failure = {
+            table: [dict(row) for row in connection.execute(f'SELECT * FROM "{table}" ORDER BY 1, 2')]
+            for table in (
+                "subscription_node_identities",
+                "subscription_node_aliases",
+                "subscription_node_credentials",
+            )
+        }
+    assert identity_rows_after_failure != good_identity_rows
+    for table, rows in good_identity_rows.items():
+        after = identity_rows_after_failure[table]
+        assert all(row in after for row in rows), table
+    assert any(
+        row["scope"] == "subscription:new-generation"
+        for row in identity_rows_after_failure["subscription_node_credentials"]
+    )
     assert config_path.read_bytes() == good_config
     assert bindings_path.read_bytes() == good_bindings
     with db_session() as connection:
@@ -2432,6 +2571,188 @@ def test_stale_generation_checkpoint_declines_before_artifact_write_or_reload(mo
     assert reloads == []
 
 
+def _rollback_mihomo_config(routing: dict[str, object], *, unsafe_direct: bool = False) -> dict[str, object]:
+    import fwrouter_api.services.mihomo_config_rules as rules_service
+    from fwrouter_api.services.mihomo_config_paths import FULL_VPN_RULE_NAME, TRANSPARENT_TPROXY_RULE_NAME
+
+    rules, policy = rules_service._build_mihomo_config_with_source(routing)
+    auto_targets = ["test-proxy"] if unsafe_direct else ["test-proxy", "REJECT"]
+    global_targets = ["vpn-auto", "REJECT"]
+    if unsafe_direct:
+        auto_targets = ["DIRECT"]
+    return {
+        "rules": rules,
+        "sub-rules": {
+            FULL_VPN_RULE_NAME: policy["full_vpn_rules"],
+            TRANSPARENT_TPROXY_RULE_NAME: policy["transparent_rules"],
+        },
+        "proxy-groups": [
+            {"name": "vpn-auto", "type": "select", "proxies": auto_targets},
+            {"name": "vpn-global", "type": "select", "proxies": global_targets},
+        ],
+        "proxies": [{"name": "test-proxy", "type": "socks5", "server": "127.0.0.1", "port": 19080}],
+    }
+
+
+def _rollback_routing_snapshot() -> dict[str, object]:
+    from fwrouter_api.services.server_state import ensure_routing_global_state
+
+    ensure_routing_global_state()
+    routing = xray_subscription_service._capture_generation_auto_selection().get("routing")
+    assert isinstance(routing, dict), "rollback policy fixture requires persisted routing state"
+    return routing
+
+
+def test_generation_rollback_refuses_unsafe_mihomo_preimage_before_any_active_write(monkeypatch, tmp_path: Path) -> None:
+    """Identity parity does not authorize restoring a DIRECT fail-open checkpoint."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _rollback_routing_snapshot()
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    from fwrouter_api.services import mihomo_config, subscription_pipeline
+    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
+
+    xray_path, _ = _xray_paths()
+    _write_xray_config(xray_path, [])
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    mihomo_path.parent.mkdir(parents=True, exist_ok=True)
+    mihomo_path.write_text("active-current-mihomo", encoding="utf-8")
+    bindings_path = _xray_bindings_path()
+    bindings_path.parent.mkdir(parents=True, exist_ok=True)
+    bindings_path.write_text(json.dumps({"bindings": [], "client_modes": [], "handoff_listeners": []}), encoding="utf-8")
+    checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=adapter, generation_id="unsafe-mihomo-preimage", tokens=set(), phase="prepared",
+        source_fingerprint=xray_subscription_service._generation_source_fingerprint(),
+        staged_generation={"native_validation": {"xray": {"expected_client_identities": []}}},
+        managed_email_prefixes=["sub-"],
+    )
+    data = json.loads(checkpoint.read_text(encoding="utf-8"))
+    data["supersession"] = {"rollback_preimage_projection_matches": True}
+    unsafe = _rollback_mihomo_config(data["auto_selection_before"]["routing"], unsafe_direct=True)
+    unsafe_text = __import__("yaml").safe_dump(unsafe, sort_keys=False)
+    data["artifacts"]["mihomo_config"]["text"] = base64.b64encode(unsafe_text.encode()).decode("ascii")
+    checkpoint.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+    checkpoint.chmod(0o600)
+
+    before = {
+        "xray": xray_path.read_bytes(), "mihomo": mihomo_path.read_bytes(),
+        "bindings": bindings_path.read_bytes(), "checkpoint": checkpoint.read_bytes(),
+    }
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    with db_session() as connection:
+        revision_before = read_selection_revision(connection)
+    validator_calls: list[str] = []
+    monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config",
+                        lambda **kwargs: validator_calls.append(str(kwargs.get("candidate_path"))) or {"ok": True})
+    reloads: list[bool] = []
+    monkeypatch.setattr(adapter, "reload", lambda: reloads.append(True))
+
+    result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result == {
+        "ok": False, "recovered": "stale_checkpoint_declined", "reason": "mihomo_preimage_policy_unproven",
+    }
+    assert validator_calls == [], "unsafe policy must be refused before native activation validation"
+    assert reloads == []
+    assert xray_path.read_bytes() == before["xray"]
+    assert mihomo_path.read_bytes() == before["mihomo"]
+    assert bindings_path.read_bytes() == before["bindings"]
+    assert checkpoint.read_bytes() == before["checkpoint"]
+    with db_session() as connection:
+        assert read_selection_revision(connection) == revision_before
+
+
+def test_rollback_mihomo_preimage_requires_policy_and_native_validation(monkeypatch, tmp_path: Path) -> None:
+    """Component contract only: the offline native validator transport is mocked explicitly."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import mihomo_config, subscription_pipeline
+
+    routing = _rollback_routing_snapshot()
+    candidate_parent = Path(mihomo_config._resolved_base_config_path()).parent
+    candidate_parent.mkdir(parents=True, exist_ok=True)
+    safe_config = _rollback_mihomo_config(routing)
+    proxy_names = [f"validated-proxy-{index}" for index in range(70)]
+    safe_config["proxy-groups"][0]["proxies"] = [*proxy_names, "REJECT"]
+    safe_config["proxies"] = [
+        {"name": name, "type": "socks5", "server": "127.0.0.1", "port": 19080 + index}
+        for index, name in enumerate(proxy_names)
+    ]
+    safe_config["proxy-groups"].append({"name": "custom-direct-exception", "type": "select", "proxies": ["DIRECT"]})
+    encoded = base64.b64encode(__import__("yaml").safe_dump(safe_config, sort_keys=False).encode()).decode("ascii")
+    observed: list[Path] = []
+
+    def validate_private_candidate(*, candidate_path: str, **_kwargs):
+        candidate_path = Path(candidate_path)
+        observed.append(candidate_path)
+        assert candidate_path.is_file()
+        assert candidate_path.stat().st_mode & 0o777 == 0o600
+        assert candidate_path.parent == Path(mihomo_config._resolved_base_config_path()).parent
+        parsed = __import__("yaml").safe_load(candidate_path.read_text(encoding="utf-8"))
+        assert len(parsed["proxy-groups"][0]["proxies"]) == 71
+        assert parsed["proxy-groups"][0]["proxies"][-1] == "REJECT"
+        assert "DIRECT" not in parsed["proxy-groups"][0]["proxies"]
+        return {"ok": True, "returncode": 0}
+
+    monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config", validate_private_candidate)
+    result = xray_subscription_service._validate_rollback_mihomo_preimage(encoded, routing_snapshot=routing)
+    assert result["ok"] is True, f"safe preimage validation refused: {str(result.get('reason') or 'unknown')[:96]}"
+    assert result["sha256"] == hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+    assert observed and all(not path.exists() for path in observed), "private validation candidate is cleaned"
+
+
+def test_rollback_mihomo_preimage_rejects_reachable_nested_direct(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import subscription_pipeline
+
+    routing = _rollback_routing_snapshot()
+    unsafe = _rollback_mihomo_config(routing)
+    unsafe["proxy-groups"] = [
+        {"name": "vpn-auto", "type": "select", "proxies": ["nested-vpn", "REJECT"]},
+        {"name": "nested-vpn", "type": "select", "proxies": ["DIRECT", "REJECT"]},
+        {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "REJECT"]},
+    ]
+    encoded = base64.b64encode(__import__("yaml").safe_dump(unsafe, sort_keys=False).encode()).decode("ascii")
+    calls: list[str] = []
+    monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config",
+                        lambda **kwargs: calls.append(str(kwargs.get("candidate_path"))) or {"ok": True})
+
+    result = xray_subscription_service._validate_rollback_mihomo_preimage(encoded, routing_snapshot=routing)
+
+    assert result == {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+    assert calls == [], "reachable DIRECT is refused before native candidate activation"
+
+
+def test_rollback_mihomo_preimage_rejects_nested_group_cycle(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import subscription_pipeline
+
+    routing = _rollback_routing_snapshot()
+    cyclic = _rollback_mihomo_config(routing)
+    cyclic["proxy-groups"] = [
+        {"name": "vpn-auto", "type": "select", "proxies": ["nested-a", "REJECT"]},
+        {"name": "nested-a", "type": "select", "proxies": ["nested-b"]},
+        {"name": "nested-b", "type": "select", "proxies": ["nested-a"]},
+        {"name": "vpn-global", "type": "select", "proxies": ["vpn-auto", "REJECT"]},
+    ]
+    encoded = base64.b64encode(__import__("yaml").safe_dump(cyclic, sort_keys=False).encode()).decode("ascii")
+    calls: list[str] = []
+    monkeypatch.setattr(subscription_pipeline, "validate_mihomo_candidate_config",
+                        lambda **kwargs: calls.append(str(kwargs.get("candidate_path"))) or {"ok": True})
+
+    result = xray_subscription_service._validate_rollback_mihomo_preimage(encoded, routing_snapshot=routing)
+
+    assert result == {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
+    assert calls == [], "cyclic mandatory routing is refused before native candidate validation"
+
+
+
+
 def test_owned_restore_revision_change_during_native_validation_prevents_active_mutations(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -2445,7 +2766,8 @@ def test_owned_restore_revision_change_during_native_validation_prevents_active_
     _write_xray_config(config_path, [])
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
     mihomo_path.parent.mkdir(parents=True, exist_ok=True)
-    mihomo_path.write_text("current-mihomo", encoding="utf-8")
+    safe_preimage = _rollback_mihomo_config(_rollback_routing_snapshot())
+    mihomo_path.write_text(__import__("yaml").safe_dump(safe_preimage, sort_keys=False), encoding="utf-8")
     bindings_path = _xray_bindings_path()
     bindings_path.parent.mkdir(parents=True, exist_ok=True)
     bindings_path.write_text(json.dumps({"bindings": [], "client_modes": [], "handoff_listeners": []}), encoding="utf-8")
@@ -2475,7 +2797,9 @@ def test_owned_restore_revision_change_during_native_validation_prevents_active_
     result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
 
     assert result["ok"] is False
-    assert result["reason"] == "selection_fence_changed"
+    assert result.get("reason") == "selection_fence_changed", (
+        f"rollback stopped at unexpected bounded reason={str(result.get('reason') or 'missing')[:96]}"
+    )
     assert config_path.read_bytes() == active_before["xray"]
     assert mihomo_path.read_bytes() == active_before["mihomo"]
     assert bindings_path.read_bytes() == active_before["bindings"]
@@ -2498,7 +2822,8 @@ def test_owned_restore_revalidates_after_reload_before_database_restore(monkeypa
     _write_xray_config(config_path, [])
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
     mihomo_path.parent.mkdir(parents=True, exist_ok=True)
-    mihomo_path.write_text("current-mihomo", encoding="utf-8")
+    safe_preimage = _rollback_mihomo_config(_rollback_routing_snapshot())
+    mihomo_path.write_text(__import__("yaml").safe_dump(safe_preimage, sort_keys=False), encoding="utf-8")
     bindings_path = _xray_bindings_path()
     bindings_path.parent.mkdir(parents=True, exist_ok=True)
     bindings_path.write_text(json.dumps({"bindings": [], "client_modes": [], "handoff_listeners": []}), encoding="utf-8")
@@ -2532,10 +2857,56 @@ def test_owned_restore_revalidates_after_reload_before_database_restore(monkeypa
         return result
 
     monkeypatch.setattr(adapter, "reload", reload_then_external_drift)
+    from fwrouter_api.services import mihomo_runtime as mihomo_runtime_service
+    original_restart = mihomo_runtime_service.restart_mihomo_container
+    restart_receipts: list[dict[str, object]] = []
+
+    def record_fenced_restart(**kwargs):
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+        before_incarnation = mihomo_runtime_service.get_mihomo_runtime_incarnation()
+        with db_session() as connection:
+            revision_before = read_selection_revision(connection)
+        restart_result = original_restart(**kwargs)
+        after_incarnation = mihomo_runtime_service.get_mihomo_runtime_incarnation()
+        restart_receipts.append({
+            "request": {
+                key: kwargs.get(key)
+                for key in ("action", "selection_fenced", "expected_selection_revision")
+            },
+            "revision_before": revision_before,
+            "before_incarnation": before_incarnation,
+            "result": restart_result,
+            "after_incarnation": after_incarnation,
+        })
+        return restart_result
+
+    monkeypatch.setattr(mihomo_runtime_service, "restart_mihomo_container", record_fenced_restart)
     result = xray_subscription_service._restore_xray_generation_checkpoint(adapter, checkpoint)
 
     assert result["ok"] is False
-    assert result["derived_rows_restored"] is False
+    assert result.get("reason") is None, (
+        f"rollback declined before post-reload ownership check: {str(result.get('reason') or 'missing')[:96]}"
+    )
+    assert result.get("xray_reload") is True
+    assert result.get("mihomo_restart") is (drift == "snapshot")
+    assert result.get("derived_rows_restored") is False
+    assert len(restart_receipts) == 1
+    restart_receipt = restart_receipts[0]
+    request = restart_receipt["request"]
+    assert request["action"] == "force_recreate"
+    assert request["selection_fenced"] is True
+    assert request["expected_selection_revision"] == initial_revision + 1
+    if drift == "snapshot":
+        assert restart_receipt["revision_before"] == request["expected_selection_revision"]
+        assert restart_receipt["result"] == {"ok": True, "action": "test"}
+        assert restart_receipt["after_incarnation"] != restart_receipt["before_incarnation"]
+    else:
+        assert restart_receipt["revision_before"] > request["expected_selection_revision"]
+        assert restart_receipt["result"] == {
+            "ok": False, "action": "test", "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT",
+        }
+        assert restart_receipt["after_incarnation"] == restart_receipt["before_incarnation"]
     assert checkpoint.exists()
     with db_session() as connection:
         current_snapshot = connection.execute(
@@ -2632,6 +3003,7 @@ def test_subscription_profile_reconcile_does_not_resurrect_disabled_clients(monk
 
 
 def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeypatch, tmp_path: Path) -> None:
+    """Component boundary test: candidate rejection must compensate only owned intent."""
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     _patch_runtime(monkeypatch)
@@ -2640,6 +3012,31 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
         lambda: [],
     )
     _enable_xray_module()
+    _seed_subscription_identity(slug="identity-atomic", token="identity-atomic")
+    _seed_server("identity-atomic-node")
+    # Keep one durable VPN-auto mapping from before this rejected generation.
+    # The invocation may create mappings for the new subscription scope, but
+    # compensation must remove only those invocation-owned rows.
+    from fwrouter_api.services.subscription_node_identity import register_node, retain_credentials
+    from fwrouter_api.services.xray_subscription_service import VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
+    with xray_writer_guard():
+        with db_session() as connection:
+            auto_identity = register_node(connection, VIRTUAL_XRAY_VPN_AUTO_SERVER_ID)
+            retained_auto = retain_credentials(
+                connection,
+                scope="vpn-auto",
+                server_id=VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+                client_uuid="11111111-1111-4111-8111-111111111111",
+                client_email=xray_subscription_service._vpn_auto_xray_client_email(
+                    VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+                ),
+            )
+            assert retained_auto["client_uuid"] == "11111111-1111-4111-8111-111111111111"
+    with db_session() as connection:
+        retained_auto_before = dict(connection.execute(
+            "SELECT * FROM subscription_node_credentials WHERE scope='vpn-auto' AND identity_id=?",
+            (auto_identity,),
+        ).fetchone())
     config_path, _ = _xray_paths()
     _write_xray_config(config_path, [{"id": "old-runtime", "email": "vpn-auto-old@fwrouter.local"}])
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
@@ -2647,21 +3044,203 @@ def test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged(monkeyp
     before_db = _database_snapshot()
     before_config = config_path.read_bytes()
     staged_inputs: dict[str, object] = {}
+    stage_calls = 0
 
     def reject_stage(**kwargs):
+        nonlocal stage_calls
+        stage_calls += 1
         staged_inputs.update(kwargs)
         return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_CANDIDATE_INVALID"}
 
     monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", reject_stage)
-    result = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
+    for _attempt in range(2):
+        result = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
 
-    assert result["ok"] is False
-    assert result["error_code"] == "MIHOMO_CANDIDATE_INVALID"
+        assert result["ok"] is False
+        safe_failure = {
+            key: result.get(key)
+            for key in ("stage", "error_code", "compensation_reason")
+        }
+        assert stage_calls == _attempt + 1, safe_failure
+        assert result["error_code"] == "MIHOMO_CANDIDATE_INVALID", safe_failure
+        after_db = _database_snapshot()
+        assert before_db == after_db, database_table_diff(before_db, after_db)
+        with db_session() as connection:
+            retained_auto_after = dict(connection.execute(
+                "SELECT * FROM subscription_node_credentials WHERE scope='vpn-auto' AND identity_id=?",
+                (auto_identity,),
+            ).fetchone())
+        assert retained_auto_after == retained_auto_before
+
     clients = staged_inputs["desired_clients"]
-    assert any(str(client["email"]).startswith("vpn-auto-") for client in clients)
+    assert any(
+        client["email"] == xray_subscription_service._vpn_auto_xray_client_email(
+            VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+        )
+        and client["client_uuid"] == "11111111-1111-4111-8111-111111111111"
+        for client in clients
+    )
     assert before_config == config_path.read_bytes()
+
+
+def test_vpn_auto_stage_exception_compensates_new_identity_intent(monkeypatch, tmp_path: Path) -> None:
+    """Component boundary test for an exception before checkpoint admission."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="exception", token="exception")
+    _seed_server("exception-node")
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "old-runtime", "email": "vpn-auto-old@fwrouter.local"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    before_db = _database_snapshot()
+    before_config = config_path.read_bytes()
+    # Isolate this compensation test from planner behavior, which has separate
+    # coverage; the actual durable credential preparation and cleanup remain real.
+    monkeypatch.setattr(
+        xray_subscription_service, "_prospective_profile_bindings",
+        lambda *_args, **_kwargs: ([], [], []),
+    )
+    stage_calls = 0
+
+    def raise_during_stage(**_kwargs):
+        nonlocal stage_calls
+        stage_calls += 1
+        raise RuntimeError("test-only candidate validation exception")
+
+    monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", raise_during_stage)
+    failed = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
+
+    assert failed["ok"] is False
+    assert stage_calls == 1, {
+        key: failed.get(key) for key in ("stage", "error_code", "compensation_reason")
+    }
+    assert failed["stage"] == "native_candidate_validation"
+    assert failed["error_code"] == "XRAY_GENERATION_CANDIDATE_VALIDATION_FAILED"
+    assert _database_snapshot() == before_db
+    assert config_path.read_bytes() == before_config
+
+
+def test_vpn_auto_source_fence_change_preserves_unverified_identity_intent(monkeypatch, tmp_path: Path) -> None:
+    """Component identity-compensation test with planner isolated at its boundary."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="source-fence", token="source-fence")
+    _seed_server("source-fence-node")
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "old-runtime", "email": "vpn-auto-old@fwrouter.local"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    before_db = _database_snapshot()
+    # This test owns the compensation/source-fence contract. The real planner
+    # is covered separately; keeping it out prevents unrelated malformed
+    # synthetic server projections from stopping execution before injection.
+    monkeypatch.setattr(
+        xray_subscription_service, "_prospective_profile_bindings",
+        lambda *_args, **_kwargs: ([], [], []),
+    )
+    stage_calls = 0
+
+    def invalidate_source_fence(**_kwargs):
+        nonlocal stage_calls
+        stage_calls += 1
+        with db_session() as connection:
+            connection.execute(
+                "UPDATE servers SET raw_json=? WHERE server_id=?",
+                (json.dumps({"test_source_revision": "changed"}), "source-fence-node"),
+            )
+        return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_CANDIDATE_INVALID"}
+
+    monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", invalidate_source_fence)
+    failed = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
+
+    assert failed["ok"] is False
+    safe_failure = {
+        key: failed.get(key)
+        for key in ("stage", "error_code", "compensation_reason")
+    }
+    assert stage_calls == 1, safe_failure
+    assert failed["error_code"] == "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED", safe_failure
+    assert failed["compensation_reason"] == "source_fingerprint_changed", safe_failure
     after_db = _database_snapshot()
-    assert before_db == after_db, database_table_diff(before_db, after_db)
+    assert after_db != before_db
+    with db_session() as connection:
+        durable = [dict(row) for row in connection.execute(
+            "SELECT c.scope, c.client_uuid, c.client_email FROM subscription_node_credentials c "
+            "JOIN subscription_node_aliases a ON a.identity_id=c.identity_id "
+            "WHERE a.server_id=? ORDER BY c.scope",
+            ("source-fence-node",),
+        )]
+    assert durable
+    assert any(row["scope"] == "subscription:source-fence" for row in durable)
+
+
+def test_vpn_auto_external_reference_blocks_identity_compensation(monkeypatch, tmp_path: Path) -> None:
+    """Component identity-compensation test with planner isolated at its boundary."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _patch_runtime(monkeypatch)
+    _enable_xray_module()
+    _seed_subscription_identity(slug="ownership", token="ownership")
+    _seed_server("ownership-node")
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    # Exercise real credential preparation and compensation while leaving
+    # unrelated binding-planner semantics to their own component/native tests.
+    monkeypatch.setattr(
+        xray_subscription_service, "_prospective_profile_bindings",
+        lambda *_args, **_kwargs: ([], [], []),
+    )
+    stage_calls = 0
+
+    def publish_external_reference(**_kwargs):
+        nonlocal stage_calls
+        stage_calls += 1
+        with db_session() as connection:
+            credential = connection.execute(
+                "SELECT a.server_id, c.client_uuid, c.client_email FROM subscription_node_aliases a "
+                "JOIN subscription_node_credentials c ON c.identity_id=a.identity_id "
+                "WHERE a.server_id=? AND c.scope=?",
+                ("ownership-node", "subscription:ownership"),
+            ).fetchone()
+            assert credential is not None
+            connection.execute(
+                "INSERT INTO subscription_profile_snapshots (token, nodes_json, runtime_verified_at, updated_at) "
+                "VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+                ("ownership", json.dumps([dict(credential)])),
+            )
+        return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_CANDIDATE_INVALID"}
+
+    monkeypatch.setattr(xray_subscription_service, "_stage_profile_native_candidates", publish_external_reference)
+    failed = xray_service.reconcile_xray_vpn_auto_subscription(requested_by="pytest")
+
+    assert failed["ok"] is False
+    safe_failure = {
+        key: failed.get(key)
+        for key in ("stage", "error_code", "compensation_reason")
+    }
+    assert stage_calls == 1, safe_failure
+    assert failed["error_code"] == "XRAY_IDENTITY_INTENT_COMPENSATION_UNVERIFIED", safe_failure
+    assert failed["compensation_reason"] == "identity_snapshot_reference_exists", safe_failure
+    with db_session() as connection:
+        credential = connection.execute(
+            "SELECT c.client_uuid, c.client_email FROM subscription_node_aliases a "
+            "JOIN subscription_node_credentials c ON c.identity_id=a.identity_id "
+            "WHERE a.server_id=? AND c.scope=?",
+            ("ownership-node", "subscription:ownership"),
+        ).fetchone()
+        snapshot = connection.execute(
+            "SELECT nodes_json FROM subscription_profile_snapshots WHERE token=?", ("ownership",),
+        ).fetchone()
+    assert credential is not None
+    assert snapshot is not None
+    assert json.loads(snapshot["nodes_json"])[0]["client_uuid"] == credential["client_uuid"]
 
 
 def test_public_subscription_profile_is_read_only_and_exportable_only(monkeypatch, tmp_path: Path) -> None:
@@ -3593,6 +4172,18 @@ def test_disabled_subscription_profile_hard_delete_preserves_other_account(monke
         connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (92, 'other-profile', 1)")
         connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (92, 'other-profile-token', 1)")
         connection.execute("INSERT INTO subscription_profile_snapshots (token, nodes_json) VALUES ('other-profile-token', '[]')")
+        from fwrouter_api.services.subscription_node_identity import register_node, retain_credentials
+
+        identity_id = register_node(connection, "server-identity")
+        retain_credentials(connection, scope="subscription:disabled-target", server_id="server-identity",
+                           client_uuid="00000000-0000-4000-8000-000000000091",
+                           client_email="deleted-scope@example.test")
+        retain_credentials(connection, scope="vpn-auto", server_id="server-identity",
+                           client_uuid="00000000-0000-4000-8000-000000000092",
+                           client_email="unrelated-auto@example.test")
+        retain_credentials(connection, scope="subscription:other-profile-token", server_id="server-identity",
+                           client_uuid="00000000-0000-4000-8000-000000000093",
+                           client_email="other-scope@example.test")
     monkeypatch.setattr(xray_subscription_service, "_sync_xray_inventory", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(xray_subscription_service, "reconcile_xray_subscription_profile_nodes", lambda **_kwargs: {"ok": True, "nodes_count": 0})
     result = xray_subscription_service.delete_xray_subscription_profile(
@@ -3600,6 +4191,11 @@ def test_disabled_subscription_profile_hard_delete_preserves_other_account(monke
     )
     assert result["ok"] is True
     assert result["stage"] == "completed"
+    replay = xray_subscription_service.delete_xray_subscription_profile(
+        "disabled-target", account_id=91, requested_by="pytest",
+    )
+    assert replay["ok"] is False
+    assert replay["stage"] == "resolve_account"
     serialized = json.dumps(result).lower()
     assert "disabled-target" not in serialized
     with db_session() as connection:
@@ -3608,6 +4204,46 @@ def test_disabled_subscription_profile_hard_delete_preserves_other_account(monke
         assert connection.execute("SELECT 1 FROM subscription_profile_snapshots WHERE token = 'disabled-target'").fetchone() is None
         assert connection.execute("SELECT 1 FROM subscription_accounts WHERE account_id = 92").fetchone() is not None
         assert connection.execute("SELECT 1 FROM subscription_profile_snapshots WHERE token = 'other-profile-token'").fetchone() is not None
+        deleted_credential = connection.execute(
+            "SELECT client_uuid, revoked, epoch FROM subscription_node_credentials "
+            "WHERE scope='subscription:disabled-target' AND identity_id=?", (identity_id,),
+        ).fetchone()
+        history = connection.execute(
+            "SELECT client_uuid, scope, identity_id, epoch FROM subscription_node_credential_history "
+            "WHERE scope='subscription:disabled-target' AND identity_id=?", (identity_id,),
+        ).fetchall()
+        assert deleted_credential is not None
+        assert deleted_credential["client_uuid"] == "00000000-0000-4000-8000-000000000091"
+        assert deleted_credential["revoked"] == 1
+        assert deleted_credential["epoch"] == 2
+        assert len(history) == 1
+        assert history[0]["client_uuid"] == "00000000-0000-4000-8000-000000000091"
+        assert connection.execute(
+            "SELECT revoked FROM subscription_node_credentials WHERE scope='vpn-auto' AND identity_id=?",
+            (identity_id,),
+        ).fetchone()["revoked"] == 0
+        assert connection.execute(
+            "SELECT revoked FROM subscription_node_credentials "
+            "WHERE scope='subscription:other-profile-token' AND identity_id=?", (identity_id,),
+        ).fetchone()["revoked"] == 0
+        assert connection.execute(
+            "SELECT epoch FROM subscription_node_credentials "
+            "WHERE scope='subscription:disabled-target' AND identity_id=?", (identity_id,),
+        ).fetchone()["epoch"] == 2
+
+    # The public legacy creator may re-create the same slug/token. Its durable
+    # tombstone must keep the retired server identity out of the new profile.
+    from fwrouter_api.services.subscription_profiles import build_subscription_nodes, ensure_subscription_identity
+
+    _seed_server("server-identity")
+    recreated = ensure_subscription_identity("disabled-target")
+    assert recreated["ok"] is True
+    assert recreated["client"]["token"] == "disabled-target"
+    recreated_nodes = build_subscription_nodes(recreated)
+    assert "00000000-0000-4000-8000-000000000091" not in {
+        str(node.get("client_uuid") or "") for node in recreated_nodes
+    }
+    assert "server-identity" not in {str(node.get("server_id") or "") for node in recreated_nodes}
 
 
 def test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mismatch(monkeypatch, tmp_path: Path) -> None:
@@ -3617,6 +4253,12 @@ def test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mi
         connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (96, 'rollback-profile', 1)")
         connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (96, 'rollback-profile', 1)")
         connection.execute("INSERT INTO subscription_profile_snapshots (token, nodes_json) VALUES ('rollback-profile', '[]')")
+        from fwrouter_api.services.subscription_node_identity import register_node, retain_credentials
+
+        identity_id = register_node(connection, "rollback-server")
+        retain_credentials(connection, scope="subscription:rollback-profile", server_id="rollback-server",
+                           client_uuid="00000000-0000-4000-8000-000000000096",
+                           client_email="rollback-profile@example.test")
     monkeypatch.setattr(xray_subscription_service, "_sync_xray_inventory", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: type("Adapter", (), {"list_clients": lambda _self: []})())
     monkeypatch.setattr(xray_subscription_service, "reconcile_xray_subscription_profile_nodes", lambda **_kwargs: {"ok": True, "nodes_count": 0})
@@ -3636,9 +4278,58 @@ def test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mi
         account = connection.execute("SELECT account_id, enabled FROM subscription_accounts WHERE account_id = 96").fetchone()
         child = connection.execute("SELECT token, enabled FROM subscription_clients WHERE account_id = 96").fetchone()
         snapshot = connection.execute("SELECT token FROM subscription_profile_snapshots WHERE token = 'rollback-profile'").fetchone()
+        credential = connection.execute(
+            "SELECT revoked, epoch FROM subscription_node_credentials "
+            "WHERE scope='subscription:rollback-profile' AND identity_id=?", (identity_id,),
+        ).fetchone()
+        history = connection.execute(
+            "SELECT 1 FROM subscription_node_credential_history WHERE identity_id=?", (identity_id,),
+        ).fetchone()
     assert account is not None and account["enabled"] == 0
     assert child is not None and child["enabled"] == 0
     assert snapshot is not None
+    assert credential is not None and credential["revoked"] == 0 and credential["epoch"] == 1
+    assert history is None
+
+
+def test_subscription_profile_delete_reconcile_failure_does_not_revoke_identity_credentials(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute("INSERT INTO subscription_accounts (account_id, slug, enabled) VALUES (97, 'failed-profile', 1)")
+        connection.execute("INSERT INTO subscription_clients (account_id, token, enabled) VALUES (97, 'failed-profile', 1)")
+        from fwrouter_api.services.subscription_node_identity import register_node, retain_credentials
+
+        identity_id = register_node(connection, "failed-server")
+        retain_credentials(connection, scope="subscription:failed-profile", server_id="failed-server",
+                           client_uuid="00000000-0000-4000-8000-000000000097",
+                           client_email="failed-profile@example.test")
+    monkeypatch.setattr(xray_subscription_service, "_sync_xray_inventory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: type("Adapter", (), {"list_clients": lambda _self: []})())
+    monkeypatch.setattr(
+        xray_subscription_service, "reconcile_xray_subscription_profile_nodes",
+        lambda **_kwargs: {"ok": False, "error_code": "TEST_NATIVE_APPLY_FAILED"},
+    )
+
+    result = xray_subscription_service.delete_xray_subscription_profile(
+        "failed-profile", account_id=97, requested_by="pytest",
+    )
+    assert result["ok"] is False
+    assert result["stage"] == "reconcile_subscription_profile_delete"
+    with db_session() as connection:
+        account = connection.execute("SELECT enabled FROM subscription_accounts WHERE account_id=97").fetchone()
+        credential = connection.execute(
+            "SELECT revoked, epoch FROM subscription_node_credentials "
+            "WHERE scope='subscription:failed-profile' AND identity_id=?", (identity_id,),
+        ).fetchone()
+        history = connection.execute(
+            "SELECT 1 FROM subscription_node_credential_history WHERE identity_id=?", (identity_id,),
+        ).fetchone()
+    assert account is not None and account["enabled"] == 0
+    assert credential is not None and credential["revoked"] == 0 and credential["epoch"] == 1
+    assert history is None
 
 
 def test_subscription_profile_delete_preserves_database_rows_when_materialize_fails(monkeypatch, tmp_path: Path) -> None:

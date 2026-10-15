@@ -9,6 +9,7 @@ import json
 import os
 import re
 import socket
+import stat
 import sys
 import threading
 import time
@@ -22,6 +23,7 @@ def _clean_environment() -> None:
     keep = {
         "PATH", "LANG", "LC_ALL", "TZ", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE",
         "FWROUTER_STATE_DIR", "FWROUTER_ENVIRONMENT", "FWROUTER_STARTUP_TASKS_ENABLED",
+        "FWROUTER_STARTUP_RECOVERY_ENABLED",
         "FWROUTER_ACCEPTANCE_RPC_SOCKET", "FWROUTER_ACCEPTANCE_PROFILE",
         "FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL",
         "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL", "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT",
@@ -33,7 +35,8 @@ def _clean_environment() -> None:
     os.environ.clear()
     os.environ.update(clean)
     os.environ["FWROUTER_ENVIRONMENT"] = "test"
-    os.environ["FWROUTER_STARTUP_TASKS_ENABLED"] = "0"
+    os.environ.setdefault("FWROUTER_STARTUP_TASKS_ENABLED", "0")
+    os.environ.setdefault("FWROUTER_STARTUP_RECOVERY_ENABLED", "0")
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 
@@ -64,7 +67,10 @@ def _packet_dns_effective_artifact_observation() -> dict[str, Any]:
 
         uncached_value = dataplane_global._read_effective_rules_artifact_uncached()
         try:
-            state = rules.get_manual_rules_texts()
+            # Only the writer path is needed. The text/export read-model also
+            # decodes the full artifact and reads every rules text file, adding
+            # diagnostic work inside the measured startup path.
+            state = rules.get_rules_state()
             writer_path = Path(state["effective_json_path"]).resolve(strict=False)
             settings = get_settings()
             reader_paths = (
@@ -1522,7 +1528,11 @@ def _install_acceptance_recovery_apply_observer() -> None:
 
     from fwrouter_api.routes import selector as selector_route
     from fwrouter_api.services import apply_orchestrator as apply
+    from fwrouter_api.services import apply_orchestrator_handler_common
     from fwrouter_api.services import provider_recovery
+    from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+    from tests.application_acceptance.diagnostics import encode_safe_reentry_native_record
 
     lock = threading.Lock()
     local = threading.local()
@@ -1541,7 +1551,8 @@ def _install_acceptance_recovery_apply_observer() -> None:
         result: dict[str, Any] = {}
         for key in ("ok", "outcome", "status", "stage", "dataplane_capability", "enforcement_level",
                     "action", "effective_override", "applied", "runtime_verified",
-                    "traffic_enforcement_guaranteed", "selection_outcome", "candidates_count"):
+                    "traffic_enforcement_guaranteed", "selection_outcome", "candidates_count",
+                    "reconcile_reason"):
             item = value.get(key)
             if isinstance(item, bool) or (type(item) is int and 0 <= item <= 10000):
                 result[key] = item
@@ -1549,6 +1560,53 @@ def _install_acceptance_recovery_apply_observer() -> None:
                 char.isascii() and (char.isalnum() or char in "_.- ") for char in item
             ):
                 result[key] = item
+        receipt = value.get("reentry_generation_fence")
+        if isinstance(receipt, dict):
+            result["reentry_generation_fence"] = {
+                "schema_valid": receipt.get("schema") == "mihomo-reentry-generation-fence/v1",
+                "operation_id_matches": bool(value.get("operation_id")
+                                              and receipt.get("operation_id") == value.get("operation_id")),
+                "job_id_matches": bool(value.get("job_id")
+                                        and receipt.get("job_id") == value.get("job_id")),
+                "before_revision": receipt.get("before_revision")
+                if type(receipt.get("before_revision")) is int and 0 <= receipt["before_revision"] <= 1_000_000_000 else None,
+                "selection_revision": receipt.get("selection_revision")
+                if type(receipt.get("selection_revision")) is int and 0 <= receipt["selection_revision"] <= 1_000_000_000 else None,
+                "runtime_incarnation_present": bool(receipt.get("runtime_incarnation")),
+                "active_config_hash_present": isinstance(receipt.get("active_config_hash"), str)
+                and len(receipt["active_config_hash"]) == 64,
+                "native_proof_verified": receipt.get("native_proof_verified") is True,
+                "publication_verified": receipt.get("publication_verified") is True,
+            }
+        for key in (
+            "selector_ok", "selector_native_membership_ok", "transparent_ok", "metadata_ok",
+            "vpn_egress_ready", "runtime_running", "policy_installed", "wiring_proven",
+            "native_top_level_rules_match", "selector_membership_matches", "guarded_rules_match",
+            "expected_auto_matches_native_now", "expected_auto_matches_selected_target",
+            "native_now_matches_selected_target", "expected_auto_server_present",
+            "native_now_present", "selected_target_present",
+        ):
+            item = value.get(key)
+            if isinstance(item, bool):
+                result[key] = item
+        reason = valid_code(value.get("reason"))
+        if reason:
+            result["reason"] = reason
+        for key in ("before_revision", "after_revision", "context_capture_count"):
+            item = value.get(key)
+            if type(item) is int and 0 <= item <= 1_000_000_000:
+                result[key] = item
+        changed_fields = value.get("changed_fields")
+        if isinstance(changed_fields, list):
+            allowed_context_fields = {
+                "pending", "selection_fence.revision", "selection_fence.owner", "pool",
+                "desired_mode", "exclusive", "binding", "eligible", "credential_fingerprint",
+                "runtime_incarnation", "active_target_id", "path_key",
+            }
+            result["changed_fields"] = [
+                item for item in changed_fields[:16]
+                if isinstance(item, str) and item in allowed_context_fields
+            ]
         code = valid_code(value.get("error_code"))
         if code:
             result["error_code"] = code
@@ -1636,6 +1694,18 @@ def _install_acceptance_recovery_apply_observer() -> None:
             result["on_demand"] = {**counts, "results": statuses}
         if "selected_member_id" in value:
             result["selected_member_present"] = bool(value.get("selected_member_id"))
+        native_proof = value.get("native_udp_policy_proof")
+        if isinstance(native_proof, dict):
+            safe_proof: dict[str, Any] = {}
+            for key in ("ok", "native_top_level_rules_match", "selector_membership_matches", "guarded_rules_match"):
+                if isinstance(native_proof.get(key), bool):
+                    safe_proof[key] = native_proof[key]
+            for key in ("stage", "reason", "error_code"):
+                item = valid_code(native_proof.get(key))
+                if item:
+                    safe_proof[key] = item
+            if safe_proof:
+                result["native_udp_policy_proof"] = safe_proof
         supported_modes = value.get("supported_modes")
         if isinstance(supported_modes, dict) and type(supported_modes.get("vpn")) is bool:
             result["vpn_supported"] = supported_modes["vpn"]
@@ -1688,6 +1758,30 @@ def _install_acceptance_recovery_apply_observer() -> None:
         except Exception:
             pass
 
+    def context_revision(value: Any) -> int | None:
+        if not isinstance(value, dict):
+            return None
+        fence = value.get("selection_fence")
+        revision = fence.get("revision") if isinstance(fence, dict) else None
+        return revision if type(revision) is int and 0 <= revision <= 1_000_000_000 else None
+
+    def context_changed_fields(before: Any, after: Any) -> list[str]:
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return ["context_unavailable"]
+        fields: list[str] = []
+        for key in sorted(set(before) | set(after)):
+            if key == "selection_fence":
+                left = before.get(key) if isinstance(before.get(key), dict) else {}
+                right = after.get(key) if isinstance(after.get(key), dict) else {}
+                for child in sorted(set(left) | set(right)):
+                    if left.get(child) != right.get(child):
+                        fields.append(f"selection_fence.{child}"[:96])
+            elif before.get(key) != after.get(key):
+                fields.append(key[:96])
+            if len(fields) >= 16:
+                break
+        return fields
+
     def next_operation() -> int:
         with lock:
             state["next_operation"] += 1
@@ -1699,6 +1793,296 @@ def _install_acceptance_recovery_apply_observer() -> None:
     original_apply_under_policy = provider_recovery._apply_override_under_policy
     original_selector_call = selector_route.select_vpn_auto_server
     original_core_apply = apply._run_pipeline_for_state
+    original_reconcile_vpn_runtime_for_apply = apply_orchestrator_handler_common._reconcile_vpn_runtime_for_apply
+    original_mihomo_health = MihomoHttpAdapter.health
+    original_mihomo_proxies = MihomoHttpAdapter._proxies
+    original_active_config_hash = mihomo_reconcile_fingerprint.active_config_hash
+    original_runtime_incarnation = mihomo_reconcile_fingerprint._current_runtime_incarnation
+    original_load_reconcile_state = mihomo_reconcile_fingerprint._load_state
+    original_capture_recovery_context = provider_recovery._capture_recovery_context
+    original_mihomo_runtime_satisfies_routing = apply.mihomo_runtime_satisfies_routing
+    original_mihomo_reentry_runtime_ready = provider_recovery._mihomo_reentry_runtime_ready
+    original_mihomo_reentry_policy_installed = provider_recovery._mihomo_reentry_policy_installed
+
+    def safe_digest(value: Any) -> str | None:
+        if not isinstance(value, str) or not value:
+            return None
+        return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()
+
+    def safe_sample(proxy: Any, owned_probe_url: str | None) -> dict[str, Any]:
+        if not isinstance(proxy, dict) or not owned_probe_url:
+            return {"present": False, "alive": None, "latest_delay_ms": None,
+                    "history_age_ms": None, "history_fresh_5s": False}
+        extra = proxy.get("extra") if isinstance(proxy.get("extra"), dict) else {}
+        sample = extra.get(owned_probe_url)
+        if not isinstance(sample, dict):
+            return {"present": False, "alive": None, "latest_delay_ms": None,
+                    "history_age_ms": None, "history_fresh_5s": False}
+        history = sample.get("history") if isinstance(sample.get("history"), list) else []
+        latest = history[-1] if history and isinstance(history[-1], dict) else {}
+        delay = latest.get("delay")
+        delay_ms = delay if type(delay) is int and 0 <= delay <= 65535 else None
+        age_ms = None
+        raw_time = latest.get("time")
+        if isinstance(raw_time, str) and len(raw_time) <= 64:
+            try:
+                from datetime import datetime, timezone
+                parsed = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    age = int((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() * 1000)
+                    if abs(age) <= 31_536_000_000:
+                        age_ms = age
+            except (OverflowError, TypeError, ValueError):
+                pass
+        return {
+            "present": True,
+            "alive": sample.get("alive") if type(sample.get("alive")) is bool else None,
+            "latest_delay_ms": delay_ms,
+            "history_age_ms": age_ms,
+            "history_fresh_5s": type(age_ms) is int and 0 <= age_ms <= 5000,
+        }
+
+    def capture_native_reentry_snapshot(adapter: Any, health: Any, proxies: Any) -> None:
+        """Keep a short ring of native proof snapshots, including final verification."""
+        if getattr(local, "operation", None) != 3 or getattr(local, "phase", None) != "core_apply":
+            return
+        snapshots = getattr(local, "native_snapshots", None)
+        if not isinstance(snapshots, list):
+            snapshots = []
+            local.native_snapshots = snapshots
+        sequence = getattr(local, "native_sequence", 0) + 1
+        local.native_sequence = sequence
+        details = health.details if isinstance(getattr(health, "details", None), dict) else {}
+        policy = details.get("vpn_udp_policy") if isinstance(details.get("vpn_udp_policy"), dict) else {}
+        selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
+        runtime_state = getattr(health, "runtime_state", "")
+        runtime_state = getattr(runtime_state, "value", runtime_state)
+        by_name = proxies if isinstance(proxies, dict) else {}
+        vpn_auto = by_name.get("vpn-auto") if isinstance(by_name.get("vpn-auto"), dict) else {}
+        vpn_global = by_name.get("vpn-global") if isinstance(by_name.get("vpn-global"), dict) else {}
+        selected_auto = vpn_auto.get("now") if isinstance(vpn_auto.get("now"), str) else None
+        selected_global = vpn_global.get("now") if isinstance(vpn_global.get("now"), str) else None
+        target_proxy = by_name.get(selected_auto) if selected_auto else None
+        if not isinstance(target_proxy, dict):
+            target_proxy = vpn_auto
+        probe_url = os.environ.get("FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL")
+        config_sha = safe_digest(getattr(local, "reentry_active_config_hash", None))
+        runtime_sha = safe_digest(getattr(local, "reentry_runtime_incarnation", None))
+        revision = None
+        try:
+            from fwrouter_api.db.connection import db_session
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+            with db_session() as connection:
+                revision = read_selection_revision(connection)
+        except Exception:
+            pass
+        policy_keys = (
+            "policy_installed", "wiring_proven", "native_top_level_rules_match",
+            "selector_membership_matches", "guarded_rules_match", "reconcile_receipt_matches",
+        )
+        receipt = getattr(local, "reentry_receipt", None)
+        snapshot = {
+            "schema": "fwrouter-acceptance-reentry-native-proof/v1",
+            "operation": 3,
+            "sequence": sequence,
+            "phase": "core_apply",
+            "runtime_running": str(runtime_state) == "running",
+            "proof": {key: policy[key] for key in policy_keys if type(policy.get(key)) is bool},
+            "proof_fields_present": sorted(key for key in policy_keys if key in policy),
+            "selector_readback": {
+                "vpn_auto_exists": selectors.get("vpn_auto_exists") is True,
+                "vpn_global_exists": selectors.get("vpn_global_exists") is True,
+                "vpn_global_has_vpn_auto": selectors.get("vpn_global_has_vpn_auto") is True,
+                "vpn_global_now_is_vpn_auto": selectors.get("vpn_global_now") == "vpn-auto",
+                "vpn_auto_selected_sha256": safe_digest(selected_auto),
+                "vpn_global_selected_sha256": safe_digest(selected_global),
+                "vpn_auto_targets_count": min(selectors.get("vpn_auto_targets_count", 0), 10000)
+                if type(selectors.get("vpn_auto_targets_count")) is int else 0,
+                "vpn_auto_now_in_targets": (
+                    selectors.get("vpn_auto_now") in selectors.get("vpn_auto_targets", [])
+                    if isinstance(selectors.get("vpn_auto_targets"), list) else False
+                ),
+            },
+            "native_selected_probe_history": safe_sample(target_proxy, probe_url),
+            "active_config_sha256": config_sha,
+            "runtime_incarnation_sha256": runtime_sha,
+            "receipt": receipt,
+            "selection_revision": revision if type(revision) is int and 0 <= revision <= 2**63 - 1 else None,
+        }
+        snapshots.append(snapshot)
+        del snapshots[:-4]
+
+    def flush_native_reentry_snapshots() -> None:
+        snapshots = getattr(local, "native_snapshots", [])
+        for snapshot in snapshots[-4:]:
+            encoded = encode_safe_reentry_native_record(snapshot, max_bytes=3500)
+            if encoded is not None:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_REENTRY_NATIVE " + encoded + "\n")
+        if snapshots:
+            sys.stderr.flush()
+
+    def observed_mihomo_proxies(self: Any, *args: Any, **kwargs: Any) -> Any:
+        result = original_mihomo_proxies(self, *args, **kwargs)
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.native_proxies = result
+        return result
+
+    def observed_mihomo_health(self: Any, *args: Any, **kwargs: Any) -> Any:
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.native_proxies = {}
+            local.reentry_active_config_hash = None
+            local.reentry_runtime_incarnation = None
+            local.reentry_receipt = None
+            local.reentry_receipt_raw = {}
+            local.native_snapshots = []
+            local.native_sequence = 0
+        result = original_mihomo_health(self, *args, **kwargs)
+        if (getattr(local, "operation", None) == 3
+                and getattr(local, "phase", None) in {"reentry_readiness", "reentry_policy_postcondition"}):
+            details = result.details if isinstance(getattr(result, "details", None), dict) else {}
+            policy = details.get("vpn_udp_policy") if isinstance(details.get("vpn_udp_policy"), dict) else {}
+            selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
+            expected_auto = getattr(local, "reentry_expected_auto", "")
+            runtime_state = getattr(result, "runtime_state", "")
+            runtime_state = getattr(runtime_state, "value", runtime_state)
+            record("mihomo_reentry_native_health", operation=3, result={
+                "runtime_running": str(runtime_state) == "running",
+                "policy_installed": policy.get("policy_installed") is True,
+                "wiring_proven": policy.get("wiring_proven") is True,
+                "native_top_level_rules_match": policy.get("native_top_level_rules_match") is True,
+                "selector_membership_matches": policy.get("selector_membership_matches") is True,
+                "guarded_rules_match": policy.get("guarded_rules_match") is True,
+                "expected_auto_server_present": bool(expected_auto),
+                "native_now_present": bool(selectors.get("vpn_auto_now")),
+                "selected_target_present": bool(selectors.get("vpn_auto_selected_target")),
+                "expected_auto_matches_native_now": bool(
+                    expected_auto and selectors.get("vpn_auto_now") == expected_auto
+                ),
+                "expected_auto_matches_selected_target": bool(
+                    expected_auto and selectors.get("vpn_auto_selected_target") == expected_auto
+                ),
+                "native_now_matches_selected_target": bool(
+                    selectors.get("vpn_auto_now")
+                    and selectors.get("vpn_auto_now") == selectors.get("vpn_auto_selected_target")
+                ),
+            })
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            capture_native_reentry_snapshot(self, result, getattr(local, "native_proxies", {}))
+        return result
+
+    def observed_mihomo_runtime_satisfies_routing(routing: Any = None) -> Any:
+        result = original_mihomo_runtime_satisfies_routing(routing)
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "reentry_readiness":
+            value = result if isinstance(result, dict) else {}
+            expected_auto = str(routing.get("active_auto_server_id") or "").strip() if isinstance(routing, dict) else ""
+            native_now = value.get("vpn_auto_now")
+            selected_target = value.get("vpn_auto_selected_target")
+            record("mihomo_reentry_routing_readback", operation=3, result={
+                "ok": value.get("ok") is True,
+                "reason": value.get("reason"),
+                "runtime_state": value.get("runtime_state"),
+                "selector_ok": value.get("selector_ok") is True,
+                "selector_native_membership_ok": value.get("selector_native_membership_ok") is True,
+                "transparent_ok": value.get("transparent_ok") is True,
+                "metadata_ok": value.get("metadata_ok") is True,
+                "vpn_egress_ready": value.get("vpn_egress_ready") is True,
+                "expected_auto_server_present": bool(expected_auto),
+                "native_now_present": bool(native_now),
+                "selected_target_present": bool(selected_target),
+                "expected_auto_matches_native_now": bool(expected_auto and native_now == expected_auto),
+                "expected_auto_matches_selected_target": bool(expected_auto and selected_target == expected_auto),
+                "native_now_matches_selected_target": bool(native_now and native_now == selected_target),
+            })
+        return result
+
+    def observed_mihomo_reentry_runtime_ready(routing: Any) -> bool:
+        operation = getattr(local, "operation", None)
+        if operation != 3:
+            return original_mihomo_reentry_runtime_ready(routing)
+        previous_phase = getattr(local, "phase", None)
+        local.phase = "reentry_readiness"
+        local.reentry_expected_auto = (
+            str(routing.get("active_auto_server_id") or "").strip()
+            if isinstance(routing, dict) else ""
+        )
+        try:
+            ready = original_mihomo_reentry_runtime_ready(routing)
+            record("mihomo_reentry_readiness_result", operation=3, result={"ok": bool(ready)})
+            return ready
+        finally:
+            local.phase = previous_phase
+            local.reentry_expected_auto = ""
+
+    def observed_mihomo_reentry_policy_installed() -> bool:
+        operation = getattr(local, "operation", None)
+        if operation != 3:
+            return original_mihomo_reentry_policy_installed()
+        previous_phase = getattr(local, "phase", None)
+        check_phase = (
+            "mihomo_reentry_native_policy_fastpath"
+            if previous_phase == "reentry_readiness"
+            else "mihomo_reentry_native_policy_postcondition"
+        )
+        if previous_phase not in {"reentry_readiness", "reentry_policy_postcondition"}:
+            local.phase = "reentry_policy_postcondition"
+        try:
+            installed = original_mihomo_reentry_policy_installed()
+            record(check_phase, operation=3, result={"policy_installed": installed is True})
+            return installed
+        finally:
+            local.phase = previous_phase
+
+    def observed_active_config_hash() -> str | None:
+        value = original_active_config_hash()
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.reentry_active_config_hash = value
+            receipt = getattr(local, "reentry_receipt", None)
+            if isinstance(receipt, dict):
+                receipt["active_config_matches"] = bool(
+                    value and getattr(local, "reentry_receipt_raw", {}).get("active_config_hash") == value
+                )
+        return value
+
+    def observed_runtime_incarnation() -> str | None:
+        value = original_runtime_incarnation()
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.reentry_runtime_incarnation = value
+            receipt = getattr(local, "reentry_receipt", None)
+            if isinstance(receipt, dict):
+                receipt["runtime_incarnation_matches"] = bool(
+                    value and getattr(local, "reentry_receipt_raw", {}).get("runtime_incarnation") == value
+                )
+        return value
+
+    def observed_reconcile_state() -> dict[str, Any] | None:
+        loaded = original_load_reconcile_state()
+        if getattr(local, "operation", None) == 3 and getattr(local, "phase", None) == "core_apply":
+            local.reentry_receipt_raw = loaded if isinstance(loaded, dict) else {}
+            local.reentry_receipt = {
+                "present": isinstance(loaded, dict),
+                "active_config_matches": False,
+                "runtime_incarnation_matches": False,
+                "udp_policy_version_matches": (
+                    loaded.get("udp_policy_version") == mihomo_reconcile_fingerprint.UDP_POLICY_RECEIPT_VERSION
+                    if isinstance(loaded, dict) else False
+                ),
+                "native_top_level_rules_match": loaded.get("native_top_level_rules_match") is True
+                if isinstance(loaded, dict) else False,
+                "native_selector_membership_match": loaded.get("native_selector_membership_match") is True
+                if isinstance(loaded, dict) else False,
+                "subrule_config_guard_match": loaded.get("subrule_config_guard_match") is True
+                if isinstance(loaded, dict) else False,
+            }
+        return loaded
+
+    MihomoHttpAdapter._proxies = observed_mihomo_proxies
+    MihomoHttpAdapter.health = observed_mihomo_health
+    apply.mihomo_runtime_satisfies_routing = observed_mihomo_runtime_satisfies_routing
+    provider_recovery._mihomo_reentry_runtime_ready = observed_mihomo_reentry_runtime_ready
+    provider_recovery._mihomo_reentry_policy_installed = observed_mihomo_reentry_policy_installed
+    mihomo_reconcile_fingerprint.active_config_hash = observed_active_config_hash
+    mihomo_reconcile_fingerprint._current_runtime_incarnation = observed_runtime_incarnation
+    mihomo_reconcile_fingerprint._load_state = observed_reconcile_state
 
     def observed_enter(*args: Any, **kwargs: Any) -> Any:
         prior = getattr(local, "operation", None)
@@ -1721,6 +2105,8 @@ def _install_acceptance_recovery_apply_observer() -> None:
         prior = getattr(local, "operation", None)
         operation = next_operation()
         local.operation = operation
+        if operation == 3:
+            local.reentry_contexts = []
         record("provider_reentry_enter", operation=operation)
         try:
             result = original_reentry(*args, **kwargs)
@@ -1730,9 +2116,28 @@ def _install_acceptance_recovery_apply_observer() -> None:
             raise
         else:
             record("provider_reentry_result", operation=operation, result=result)
+            contexts = getattr(local, "reentry_contexts", []) if operation == 3 else []
+            if len(contexts) >= 3:
+                before, after = contexts[-2], contexts[-1]
+                record("mihomo_reentry_context_diff", operation=operation, result={
+                    "context_capture_count": len(contexts),
+                    "before_revision": context_revision(before),
+                    "after_revision": context_revision(after),
+                    "changed_fields": context_changed_fields(before, after),
+                })
             return result
         finally:
+            if operation == 3:
+                local.reentry_contexts = []
             local.operation = prior
+
+    def observed_capture_recovery_context(*args: Any, **kwargs: Any) -> Any:
+        snapshot = original_capture_recovery_context(*args, **kwargs)
+        if getattr(local, "operation", None) == 3 and isinstance(snapshot, dict):
+            contexts = getattr(local, "reentry_contexts", None)
+            if isinstance(contexts, list) and len(contexts) < 8:
+                contexts.append(snapshot)
+        return snapshot
 
     def observed_apply(*args: Any, **kwargs: Any) -> Any:
         operation = getattr(local, "operation", None)
@@ -1795,13 +2200,36 @@ def _install_acceptance_recovery_apply_observer() -> None:
         operation = getattr(local, "operation", None)
         if operation is None:
             return original_core_apply(*args, **kwargs)
+        previous_phase = getattr(local, "phase", None)
+        local.phase = "core_apply"
         try:
             result = original_core_apply(*args, **kwargs)
         except Exception as exc:
             record("core_apply_exception", operation=operation,
                    exception_type=type(exc).__name__)
             raise
+        finally:
+            flush_native_reentry_snapshots()
+            local.phase = previous_phase
         record("core_apply_result", operation=operation, result=result)
+        return result
+
+    def observed_reentry_mihomo_reconcile(routing: Any, *, job_id: str) -> Any:
+        operation = getattr(local, "operation", None)
+        if operation != 3:
+            return original_reconcile_vpn_runtime_for_apply(routing, job_id=job_id)
+        record("mihomo_reentry_prepare_enter", operation=operation)
+        previous_phase = getattr(local, "phase", None)
+        local.phase = "reentry_prepare"
+        try:
+            result = original_reconcile_vpn_runtime_for_apply(routing, job_id=job_id)
+        except Exception as exc:
+            record("mihomo_reentry_prepare_exception", operation=operation,
+                   exception_type=type(exc).__name__)
+            raise
+        finally:
+            local.phase = previous_phase
+        record("mihomo_reentry_prepare_result", operation=operation, result=result)
         return result
 
     provider_recovery.enter_emergency_direct = observed_enter
@@ -1810,6 +2238,8 @@ def _install_acceptance_recovery_apply_observer() -> None:
     provider_recovery._apply_override_under_policy = observed_apply_under_policy
     selector_route.select_vpn_auto_server = observed_selector_call
     apply._run_pipeline_for_state = observed_core_apply
+    apply_orchestrator_handler_common._reconcile_vpn_runtime_for_apply = observed_reentry_mihomo_reconcile
+    provider_recovery._capture_recovery_context = observed_capture_recovery_context
 
 
 def _install_acceptance_xray_generation_rollback_observer() -> None:
@@ -2555,6 +2985,13 @@ def build_app(socket_path: Path):
         acceptance_profile, _ = load_profile(Path(os.environ.get("FWROUTER_ACCEPTANCE_PROFILE", "")))
     except (OSError, ProfileError) as exc:
         raise RuntimeError("acceptance worker profile qualification failed") from exc
+    if os.environ.get("FWROUTER_STARTUP_RECOVERY_ENABLED") not in {"0", "1"}:
+        raise RuntimeError("invalid acceptance startup recovery flag")
+    if os.environ.get("FWROUTER_STARTUP_RECOVERY_ENABLED") == "1" and (
+        acceptance_profile.get("profile") != "hosted-kernel-packet"
+        or os.environ.get("FWROUTER_STARTUP_TASKS_ENABLED") != "1"
+    ):
+        raise RuntimeError("startup recovery is not authorized outside qualified kernel worker")
 
     # Import settings before any facade module, and prevent BaseSettings from
     # consulting the deployed absolute dotenv path in a worker process.
@@ -2593,7 +3030,327 @@ def build_app(socket_path: Path):
     register_extended_handlers(get_default_job_manager())
 
     from fwrouter_api.main import create_app
-    app = create_app(enable_startup_tasks=False)
+    from fwrouter_api import main as application_main
+    bootstrap_observation: dict[str, Any] = {
+        "schema": "fwrouter-runtime-bootstrap-observation/v1", "worker_pid": os.getpid(),
+        "recovery_enabled": False, "foundation_ok": False, "completed": False,
+    }
+    original_bootstrap = application_main.bootstrap_backend
+    import faulthandler
+    import signal
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
+    from fwrouter_api.services import bootstrap as bootstrap_service
+    from fwrouter_api.services import mihomo_config, subscription_pipeline
+    from fwrouter_api.services import apply_orchestrator, mihomo_reconcile
+    from fwrouter_api.services import xray_subscription_service
+
+    bootstrap_diagnostic_lock = threading.Lock()
+    bootstrap_diagnostic_active = False
+    bootstrap_diagnostic_counts: dict[str, int] = {}
+    bootstrap_diagnostic_limit = 8
+
+    def candidate_fingerprint(candidate_value: Any) -> dict[str, Any] | None:
+        if not isinstance(candidate_value, (str, Path)):
+            return None
+        candidate_path = Path(candidate_value)
+        try:
+            info = candidate_path.lstat()
+            resolved = candidate_path.resolve(strict=True)
+            resolved.relative_to(state.resolve(strict=True))
+            if (stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != os.getuid()):
+                return None
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(resolved, flags)
+            with os.fdopen(descriptor, "rb") as stream:
+                opened_info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(opened_info.st_mode) or opened_info.st_uid != os.getuid()
+                        or opened_info.st_size > 64 * 1024 * 1024):
+                    return None
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return {
+                "candidate": resolved.name,
+                "bytes": opened_info.st_size,
+                "sha256": digest.hexdigest(),
+            }
+        except (OSError, RuntimeError, ValueError):
+            return None
+
+    def observe_xray_generation_phase(name: str, original: Any) -> Any:
+        def observed(*args: Any, **kwargs: Any) -> Any:
+            nonlocal bootstrap_diagnostic_active
+            if not bootstrap_diagnostic_active:
+                return original(*args, **kwargs)
+            with bootstrap_diagnostic_lock:
+                count = min(bootstrap_diagnostic_counts.get(name, 0) + 1, 10_000)
+                bootstrap_diagnostic_counts[name] = count
+                bootstrap_observation["phase_call_counts"] = dict(bootstrap_diagnostic_counts)
+                record_phase = count <= bootstrap_diagnostic_limit
+            if not record_phase:
+                return original(*args, **kwargs)
+            result: Any = None
+            candidate_validation = name in {
+                "mihomo_config.validate_candidate", "subscription_pipeline.validate_candidate",
+            }
+            candidate_value = kwargs.get("candidate_path")
+            if candidate_validation and candidate_value is None and name == "subscription_pipeline.validate_candidate":
+                candidate_value = args[0] if args else None
+            fingerprint_wall_before = time.monotonic()
+            fingerprint_cpu_before = time.process_time()
+            candidate_before = candidate_fingerprint(candidate_value) if candidate_validation else None
+            fingerprint_before_wall = time.monotonic() - fingerprint_wall_before
+            fingerprint_before_cpu = time.process_time() - fingerprint_cpu_before
+            started = time.monotonic()
+            cpu_started = time.process_time()
+            prefix = "FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
+            print(prefix + json.dumps({"phase": name, "event": "enter", "call": count}), flush=True)
+            try:
+                result = original(*args, **kwargs)
+                if name == "_prospective_profile_bindings":
+                    from .xray_support import binding_identity_summary
+                    from fwrouter_api.db.connection import db_session
+                    config_path = state / "xray" / "config.json"
+                    if config_path.stat().st_size > 4 * 1024 * 1024:
+                        raise RuntimeError("qualified diagnostic config exceeds size bound")
+                    config = json.loads(config_path.read_text())
+                    inbound = next(item for item in config["inbounds"] if item.get("tag") == "vless-ws")
+                    expected = {(str(item["id"]), str(item["email"]))
+                                for item in inbound["settings"]["clients"]}
+                    with db_session() as connection:
+                        def origin_lookup(subject_id):
+                            row = connection.execute(
+                                "SELECT subject_type,subject_role,is_active,is_deleted FROM subjects WHERE subject_id=?",
+                                (subject_id,),
+                            ).fetchone()
+                            return dict(row) if row is not None else {}
+                        summary = binding_identity_summary(result[0], expected, origin_lookup)
+                    bootstrap_observation["prospective_binding_identity_parity"] = summary
+                    print("FWROUTER_ACCEPTANCE_BINDING_IDENTITY_PARITY " + json.dumps(summary), flush=True)
+                elif name == "_stage_profile_native_candidates" and isinstance(result, dict):
+                    native = result.get("native_validation")
+                    safe: dict[str, Any] = {"ok": result.get("ok") is True}
+                    if isinstance(native, dict):
+                        for phase in ("transition", "final"):
+                            candidate = native.get(phase)
+                            if not isinstance(candidate, dict):
+                                continue
+                            candidate_digest = candidate.get("candidate_sha256")
+                            validation = candidate.get("validation")
+                            if not isinstance(candidate_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", candidate_digest):
+                                continue
+                            validation = validation if isinstance(validation, dict) else {}
+                            safe[phase] = {
+                                "candidate_sha256": candidate_digest,
+                                "validation_ok": validation.get("ok") is True,
+                                "candidate_write_reused": validation.get("candidate_write_reused") is True,
+                                "native_validation_reused": validation.get("native_validation_reused") is True,
+                            }
+                        transition = safe.get("transition")
+                        final = safe.get("final")
+                        if isinstance(transition, dict) and isinstance(final, dict):
+                            safe["candidate_hashes_match"] = (
+                                transition["candidate_sha256"] == final["candidate_sha256"]
+                            )
+                    bootstrap_observation["staged_native_candidate_diagnostics"] = safe
+                    print("FWROUTER_ACCEPTANCE_STAGED_NATIVE_CANDIDATES " + json.dumps(safe), flush=True)
+                return result
+            finally:
+                elapsed = round(time.monotonic() - started, 4)
+                cpu_elapsed = round(time.process_time() - cpu_started, 4)
+                with bootstrap_diagnostic_lock:
+                    timings = bootstrap_observation.setdefault("phase_timings", {})
+                    timings.setdefault(name, []).append(elapsed)
+                    cpu_timings = bootstrap_observation.setdefault("phase_cpu_timings", {})
+                    cpu_timings.setdefault(name, []).append(cpu_elapsed)
+                if candidate_validation:
+                    fingerprint_after_wall = time.monotonic()
+                    fingerprint_after_cpu = time.process_time()
+                    candidate_after = candidate_fingerprint(candidate_value)
+                    fingerprint_after_cpu = time.process_time() - fingerprint_after_cpu
+                    fingerprint_after_wall = time.monotonic() - fingerprint_after_wall
+                    validation_summary: dict[str, Any] = {
+                        "phase": name,
+                        "role": "native" if name == "subscription_pipeline.validate_candidate" else "local",
+                        "elapsed_seconds": elapsed,
+                        "cpu_seconds": cpu_elapsed,
+                        "diagnostic_fingerprint_seconds": round(
+                            fingerprint_before_wall + fingerprint_after_wall, 4,
+                        ),
+                        "diagnostic_fingerprint_cpu_seconds": round(
+                            fingerprint_before_cpu + fingerprint_after_cpu, 4,
+                        ),
+                        "candidate_before": candidate_before,
+                        "candidate_after": candidate_after,
+                    }
+                    if isinstance(result, dict):
+                        if type(result.get("ok")) is bool:
+                            validation_summary["ok"] = result["ok"]
+                        if type(result.get("returncode")) is int and -1 <= result["returncode"] <= 255:
+                            validation_summary["returncode"] = result["returncode"]
+                        error_code = result.get("error_code")
+                        if isinstance(error_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", error_code):
+                            validation_summary["error_code"] = error_code
+                    elif result is None:
+                        validation_summary["result"] = "raised"
+                    with bootstrap_diagnostic_lock:
+                        validation_rows = bootstrap_observation.setdefault("candidate_validation_timings", [])
+                        if len(validation_rows) < 16:
+                            validation_rows.append(validation_summary)
+                    print("FWROUTER_ACCEPTANCE_CANDIDATE_VALIDATION " + json.dumps(validation_summary), flush=True)
+                print(prefix + json.dumps({
+                    "phase": name, "event": "exit", "call": count,
+                    "seconds": elapsed, "cpu_seconds": cpu_elapsed,
+                }), flush=True)
+        return observed
+
+    for phase in (
+        "_prospective_profile_bindings",
+        "_stage_profile_native_candidates",
+        "_apply_staged_mihomo_candidate",
+        "_write_xray_generation_checkpoint",
+        "_restore_xray_generation_checkpoint",
+        "_finalize_xray_profile_publication",
+        "_publish_mihomo_udp_receipt_with_owner",
+    ):
+        setattr(
+            xray_subscription_service,
+            phase,
+            observe_xray_generation_phase(phase, getattr(xray_subscription_service, phase)),
+        )
+    from fwrouter_api.services import subject_policy
+    for module, attribute, phase in (
+        (subject_policy, "_default_subject_runtime_enforcement", "subject_policy.default_enforcement"),
+        (mihomo_config, "write_mihomo_candidate_config", "mihomo_config.write_candidate"),
+        (mihomo_config, "validate_mihomo_candidate_config", "mihomo_config.validate_candidate"),
+        (subscription_pipeline, "validate_mihomo_candidate_config", "subscription_pipeline.validate_candidate"),
+    ):
+        setattr(module, attribute, observe_xray_generation_phase(phase, getattr(module, attribute)))
+
+    def observe_phase(name, original):
+        def observed(*args, **kwargs):
+            if not bootstrap_diagnostic_active:
+                return original(*args, **kwargs)
+            started = time.monotonic()
+            cpu_started = time.process_time()
+            print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
+                "phase": name, "event": "enter",
+            }), flush=True)
+            try:
+                return original(*args, **kwargs)
+            finally:
+                elapsed = round(time.monotonic() - started, 4)
+                cpu_elapsed = round(time.process_time() - cpu_started, 4)
+                with bootstrap_diagnostic_lock:
+                    bootstrap_observation.setdefault("phase_timings", {}).setdefault(name, []).append(elapsed)
+                    bootstrap_observation.setdefault("phase_cpu_timings", {}).setdefault(name, []).append(cpu_elapsed)
+                print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
+                    "phase": name, "event": "exit", "seconds": elapsed,
+                    "cpu_seconds": cpu_elapsed,
+                }), flush=True)
+        return observed
+
+    for phase in ("recover_startup_live_routing_from_persisted_mode", "recover_startup_mihomo_selector",
+                  "recover_startup_intended_routing", "recover_startup_scoped_subject_routing",
+                  "recover_startup_xray_subscription_profiles", "_run_startup_dnsmasq_reconcile_step"):
+        setattr(bootstrap_service, phase, observe_phase(phase, getattr(bootstrap_service, phase)))
+    for module, attribute, phase in (
+        (bootstrap_service, "_read_startup_dataplane_payload", "startup.read_dataplane_payload"),
+        (bootstrap_service, "_wait_for_startup_vpn_dataplane_ready", "startup.wait_vpn_dataplane_ready"),
+        (apply_orchestrator, "apply_global_mode_immediately", "startup.apply_global_mode_immediately"),
+        (mihomo_reconcile, "promote_mihomo_candidate_config", "startup.promote_mihomo_candidate_config"),
+    ):
+        setattr(module, attribute, observe_phase(phase, getattr(module, attribute)))
+
+    def phase_summary(value: Any) -> dict[str, Any]:
+        value = value if isinstance(value, dict) else {}
+        summary = {key: value[key] for key in (
+            "ok", "restored", "changed", "skipped", "recovered", "recovery_required", "recovery_skipped",
+            "mode_matches", "reapply_required", "reapplied", "runtime_state_repaired", "classify_probe_ok",
+        ) if type(value.get(key)) is bool}
+        for key in ("persisted_scoped_subjects_count", "missing_scoped_subjects_count"):
+            if type(value.get(key)) is int and value[key] >= 0:
+                summary[key] = value[key]
+        if value.get("inventory_authority") == "persisted_success":
+            summary["inventory_authority"] = "persisted_success"
+        status = value.get("status")
+        if status in {"success", "failed", "skipped", "noop", "unchanged", "disabled", "not_applicable", "blocked"}:
+            summary["status"] = status
+        error_code = value.get("error_code")
+        if isinstance(error_code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", error_code):
+            summary["error_code"] = error_code
+        for key in ("recovery", "apply_result"):
+            nested = value.get(key)
+            if isinstance(nested, dict):
+                summary[key] = {field: nested[field] for field in ("ok", "error_code")
+                                if type(nested.get(field)) is bool or (
+                                    field == "error_code" and isinstance(nested.get(field), str)
+                                    and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", nested[field]))}
+        receipt = value.get("staged_publication_receipt")
+        if (isinstance(receipt, dict) and type(receipt.get("schema")) is int
+                and receipt.get("schema") == 1
+                and receipt.get("staged_native_publication_complete") is True):
+            summary["staged_publication_receipt"] = {
+                "schema": 1, "staged_native_publication_complete": True,
+            }
+        generation_apply = value.get("generation_apply")
+        if isinstance(generation_apply, dict):
+            generation_summary: dict[str, Any] = {}
+            final_mihomo = generation_apply.get("final_mihomo")
+            if isinstance(final_mihomo, dict) and type(final_mihomo.get("ok")) is bool:
+                generation_summary["final_mihomo"] = {"ok": final_mihomo["ok"]}
+            if type(generation_apply.get("public_snapshots_changed")) is bool:
+                generation_summary["public_snapshots_changed"] = generation_apply["public_snapshots_changed"]
+            if generation_summary:
+                summary["generation_apply"] = generation_summary
+        promotion = value.get("public_profile_promote")
+        if isinstance(promotion, dict):
+            promotion_summary = {
+                key: promotion[key] for key in ("profiles_count", "nodes_count")
+                if type(promotion.get(key)) is int and promotion[key] >= 0
+            }
+            if promotion_summary:
+                summary["public_profile_promote"] = promotion_summary
+        final_reconcile = value.get("final_mihomo_reconcile")
+        if isinstance(final_reconcile, dict):
+            reconcile_summary = {
+                key: final_reconcile[key] for key in ("ok", "skipped")
+                if type(final_reconcile.get(key)) is bool
+            }
+            if final_reconcile.get("reason") == "staged_publication_native_proof_complete":
+                reconcile_summary["reason"] = "staged_publication_native_proof_complete"
+            if reconcile_summary:
+                summary["final_mihomo_reconcile"] = reconcile_summary
+        return summary
+
+    def observed_bootstrap() -> dict[str, Any]:
+        nonlocal bootstrap_diagnostic_active
+        bootstrap_diagnostic_active = True
+        try:
+            result = original_bootstrap()
+        finally:
+            bootstrap_diagnostic_active = False
+        bootstrap_observation.update({
+            "completed": True,
+            "recovery_enabled": result.get("startup_recovery_enabled") is True,
+            "foundation_ok": (result.get("database_schema") or {}).get("ok") is True,
+            "live_recovery": {key: phase_summary(value) for key, value in
+                              (result.get("startup_live_recovery") or {}).items() if key in {"live_routing", "selector"}},
+            "apply_reconcile": {key: phase_summary(value) for key, value in
+                                (result.get("startup_apply_reconcile") or {}).items() if key in {
+                                    "intended_routing", "scoped_subject_routing", "xray_subscription_profiles", "dnsmasq_reconcile"}},
+        })
+        if acceptance_profile.get("profile") == "hosted-kernel-packet" and result.get("startup_recovery_enabled") is True:
+            dns_fixture = _packet_dnsmasq_fixture(state, acceptance_profile)
+            bootstrap_observation["dns_fixture"] = {key: dns_fixture.get(key) is True for key in (
+                "configured", "daemon_running", "daemon_uid_matches",
+            )}
+        return result
+
+    application_main.bootstrap_backend = observed_bootstrap
+    app = create_app(enable_startup_tasks=os.environ.get("FWROUTER_STARTUP_TASKS_ENABLED") == "1")
+    app.add_api_route("/api/v2/__acceptance/bootstrap/report", lambda: dict(bootstrap_observation), methods=["GET"])
     _bind_xray_checkpoint_barrier(socket_path, state)
     mihomo_adapter = _bind_acceptance_mihomo(socket_path, state)
     _install_acceptance_mihomo_fence_observer()
@@ -2651,6 +3408,16 @@ def build_app(socket_path: Path):
 
     def recover_xray_generation(payload: dict[str, Any]) -> dict[str, Any]:
         from fwrouter_api.services.xray_subscription_service import reconcile_xray_subscription_profile_nodes
+        if payload.get("direct_checkpoint") is True:
+            from fwrouter_api.services.xray_subscription_service import (
+                _recover_checkpoint_from_current_projection,
+                _xray_generation_checkpoint_path,
+                _xray_adapter,
+            )
+            adapter = _xray_adapter()
+            return _recover_checkpoint_from_current_projection(
+                adapter, _xray_generation_checkpoint_path(adapter),
+            )
         options: dict[str, Any] = {}
         if payload.get("verify_selection") is True:
             from fwrouter_api.services.xray_subscription_service import (
@@ -2693,10 +3460,187 @@ def build_app(socket_path: Path):
             requested_by="hosted-acceptance-recovery",
             token_or_slug=str(payload.get("token") or "") or None,
             materialize=True,
+            include_vpn_auto=payload.get("include_vpn_auto") is True,
             **options,
         )
 
     app.add_api_route("/api/v2/__acceptance/xray/reconcile", recover_xray_generation, methods=["POST"])
+
+    def arm_prepared_checkpoint_failure() -> dict[str, Any]:
+        """Fail once after the real prepared checkpoint write has returned."""
+        failure_flag = state / "run" / "fail-after-prepared-checkpoint-once"
+        descriptor = os.open(
+            failure_flag,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.close(descriptor)
+        return {"ok": True, "armed": True}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/checkpoint-failure/arm",
+        arm_prepared_checkpoint_failure,
+        methods=["POST"],
+    )
+
+    def refresh_identity_fixture_profile(payload: dict[str, Any]) -> dict[str, Any]:
+        """Run the real subscription inventory upsert for a synthetic JSON profile."""
+        if set(payload) != {"profile"} or not isinstance(payload.get("profile"), dict):
+            return {"ok": False, "error_code": "IDENTITY_FIXTURE_PROFILE_INVALID"}
+        import json as _json
+        from fwrouter_api.adapters.subscription import parse_subscription_payload
+        from fwrouter_api.services.subscription import _upsert_subscription_servers
+        parsed = parse_subscription_payload(_json.dumps(payload["profile"], sort_keys=True))
+        if not parsed.servers:
+            return {"ok": False, "error_code": "IDENTITY_FIXTURE_PROFILE_UNSUPPORTED"}
+        source_url = "https://identity.acceptance.invalid/subscription"
+        servers = parsed.servers
+        result = _upsert_subscription_servers(
+            servers, servers_by_url={source_url: servers},
+        )
+        return {
+            "ok": bool(result.get("ok", True)),
+            "server_ids": [str(server.server_id) for server in servers],
+            "refreshed_count": len(servers),
+        }
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/identity-refresh",
+        refresh_identity_fixture_profile,
+        methods=["POST"],
+    )
+
+    def identity_manifest_context() -> dict[str, Any]:
+        """Return only revision and digest needed to author a private test manifest."""
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.services.subscription_node_identity import canonical_digest
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+        with db_session() as connection:
+            pairs = []
+            for row in connection.execute(
+                "SELECT json_extract(metadata_json, '$.detail.email') AS email, "
+                "COALESCE(json_extract(metadata_json, '$.detail.client_uuid'), "
+                "json_extract(metadata_json, '$.detail.client_id')) AS client_uuid "
+                "FROM subjects WHERE implementation_kind='xray' AND is_deleted=0 AND is_active=1"
+            ):
+                if row["email"] and row["client_uuid"]:
+                    pairs.append((str(row["client_uuid"]), str(row["email"])))
+            return {
+                "ok": True,
+                "selection_revision": read_selection_revision(connection),
+                "identity_digest": canonical_digest(sorted(pairs)),
+            }
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/identity-context",
+        identity_manifest_context,
+        methods=["GET"],
+    )
+
+    def revoke_identity_fixture_credential(payload: dict[str, Any]) -> dict[str, Any]:
+        """Tombstone one fixed synthetic public credential through the real service helper."""
+        expected_scope = "subscription:identity-public-0@acceptance.invalid"
+        expected_server = str(payload.get("server_id") or "")
+        if set(payload) != {"server_id"} or not expected_server.startswith("sub:"):
+            return {"ok": False, "error_code": "IDENTITY_FIXTURE_REVOCATION_INVALID"}
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        from fwrouter_api.services.subscription_node_identity import revoke_credentials
+        with xray_writer_guard(timeout_seconds=30.0):
+            with db_session() as connection:
+                row = connection.execute(
+                    "SELECT identity_id FROM subscription_node_aliases WHERE server_id=?",
+                    (expected_server,),
+                ).fetchone()
+                if row is None:
+                    return {"ok": False, "error_code": "IDENTITY_FIXTURE_CREDENTIAL_UNAVAILABLE"}
+                credential = connection.execute(
+                    "SELECT epoch FROM subscription_node_credentials WHERE scope=? AND identity_id=?",
+                    (expected_scope, row["identity_id"]),
+                ).fetchone()
+                if credential is None:
+                    return {"ok": False, "error_code": "IDENTITY_FIXTURE_CREDENTIAL_UNAVAILABLE"}
+                result = revoke_credentials(
+                    connection, scope=expected_scope, identity_id=str(row["identity_id"]),
+                    expected_epoch=int(credential["epoch"]),
+                )
+        return {"ok": True, "revoked": result.get("revoked") == 1,
+                "epoch": result.get("epoch")}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/identity-revoke",
+        revoke_identity_fixture_credential,
+        methods=["POST"],
+    )
+
+    def run_identity_cli(payload: dict[str, Any]) -> dict[str, Any]:
+        """Exercise the protected CLI in this fixture's patched, owned runtime."""
+        import contextlib
+        import io
+        import json as _json
+        import os as _os
+        from fwrouter_api.cli import main as cli_main
+        action = payload.get("action")
+        if action in {"dry-run", "apply"}:
+            manifest = payload.get("manifest")
+            if not isinstance(manifest, dict):
+                return {"ok": False, "error_code": "IDENTITY_MANIFEST_INVALID"}
+            path = state / "run" / "identity-migration-manifest.json"
+            raw = _json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            descriptor = _os.open(path, _os.O_WRONLY | _os.O_CREAT | _os.O_EXCL | _os.O_CLOEXEC, 0o600)
+            try:
+                with _os.fdopen(descriptor, "wb", closefd=False) as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    _os.fsync(stream.fileno())
+            finally:
+                _os.close(descriptor)
+            try:
+                argv = ["xray", "identity-migration", "--manifest", str(path)]
+                if action == "apply":
+                    plan = payload.get("expected_plan_sha256")
+                    if not isinstance(plan, str):
+                        return {"ok": False, "error_code": "IDENTITY_MIGRATION_PLAN_DIGEST_REQUIRED"}
+                    argv += ["--apply", "--expected-plan-sha256", plan]
+                output, errors = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    exit_code = cli_main(argv)
+                try:
+                    receipt = _json.loads(output.getvalue())
+                except ValueError:
+                    return {"ok": False, "error_code": "IDENTITY_CLI_RECEIPT_INVALID", "exit_code": exit_code}
+                return {"ok": exit_code == 0 and receipt.get("ok") is True,
+                        "exit_code": exit_code, "stderr_empty": not errors.getvalue(),
+                        "receipt": receipt}
+            finally:
+                path.unlink(missing_ok=True)
+        if action == "supersede":
+            checkpoint_sha = payload.get("checkpoint_sha256")
+            plan_sha = payload.get("migration_plan_sha256")
+            if not isinstance(checkpoint_sha, str) or not isinstance(plan_sha, str):
+                return {"ok": False, "error_code": "XRAY_SUPERSESSION_PROOF_REQUIRED"}
+            output, errors = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                exit_code = cli_main([
+                    "xray", "generation", "supersede",
+                    "--checkpoint-sha256", checkpoint_sha,
+                    "--migration-plan-sha256", plan_sha,
+                    "--apply",
+                ])
+            try:
+                receipt = _json.loads(output.getvalue())
+            except ValueError:
+                return {"ok": False, "error_code": "XRAY_SUPERSESSION_RECEIPT_INVALID", "exit_code": exit_code}
+            return {"ok": exit_code == 0 and receipt.get("ok") is True,
+                    "exit_code": exit_code, "stderr_empty": not errors.getvalue(),
+                    "receipt": receipt}
+        return {"ok": False, "error_code": "IDENTITY_CLI_ACTION_INVALID"}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/identity-cli",
+        run_identity_cli,
+        methods=["POST"],
+    )
 
     def wait_for_acceptance_job(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         timeout_seconds = payload.get("timeout_seconds", 75)
@@ -2990,18 +3934,36 @@ def build_app(socket_path: Path):
         app.add_api_route("/api/v2/__acceptance/dns53/configure", configure_packet_dns53, methods=["POST"])
         app.add_api_route("/api/v2/__acceptance/dns53/status", packet_dns53_status, methods=["GET"])
         app.add_api_route("/api/v2/__acceptance/dns53/stop", stop_packet_dns53, methods=["POST"])
+        if os.environ.get("FWROUTER_STARTUP_RECOVERY_ENABLED") == "1":
+            _packet_dnsmasq_fixture(state, acceptance_profile)
     return app
 
 
 def _bind_xray_checkpoint_barrier(socket_path: Path, state: Path) -> None:
-    """Expose a barrier after the checkpoint directory fsync has completed."""
+    """Expose post-write barriers and one-shot durable-checkpoint fault injection."""
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
             or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
         raise RuntimeError("Xray checkpoint barriers require the qualified test worker")
     from fwrouter_api.services import xray_subscription_service
 
     real_fsync_directory = xray_subscription_service._fsync_directory
+    original_write_checkpoint = xray_subscription_service._write_xray_generation_checkpoint
     checkpoint_path = state / "xray" / ".generation" / "generation-checkpoint.json"
+    fail_after_prepared_write = state / "run" / "fail-after-prepared-checkpoint-once"
+
+    def write_checkpoint_then_inject(*args: Any, **kwargs: Any) -> Any:
+        result = original_write_checkpoint(*args, **kwargs)
+        try:
+            value = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            should_fail = value.get("phase") == "prepared" and fail_after_prepared_write.is_file()
+        except (OSError, ValueError, TypeError):
+            should_fail = False
+        if should_fail:
+            fail_after_prepared_write.unlink(missing_ok=True)
+            raise RuntimeError("ACCEPTANCE_PREPARED_CHECKPOINT_POSTWRITE_FAILURE")
+        return result
+
+    xray_subscription_service._write_xray_generation_checkpoint = write_checkpoint_then_inject
 
     def fsync_directory_with_checkpoint_barrier(path: Path) -> None:
         real_fsync_directory(path)
@@ -3049,7 +4011,7 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
             or parsed_provider_endpoint.query or parsed_provider_endpoint.fragment):
         raise RuntimeError("acceptance Mihomo probe target must be the owned loopback provider bridge")
 
-    original_logical_profile_groups = mihomo_config_proxies._logical_profile_groups
+    original_generated_logical_profile_group = mihomo_config_proxies._generated_logical_profile_group
     if packet_profile:
         owned_probe_url = "http://203.0.113.53:9080/generate_204"
     elif profile_mode == "hosted-kernel-dataplane":
@@ -3063,13 +4025,15 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
     else:
         owned_probe_url = f"{provider_endpoint}/generate_204"
 
-    def logical_profile_groups_on_owned_bridge() -> list[dict[str, Any]]:
-        generated = original_logical_profile_groups()
+    def generated_logical_profile_group_on_owned_bridge(
+        runtime_name: str, members: list[dict[str, Any]], *args: Any, **kwargs: Any,
+    ) -> dict[str, Any]:
+        generated = original_generated_logical_profile_group(runtime_name, members, *args, **kwargs)
         return _owned_logical_health_check_groups(
-            generated, owned_probe_url, profile=acceptance_profile,
-            expected_probe_port=owned_probe_port)
+            [generated], owned_probe_url, profile=acceptance_profile,
+            expected_probe_port=owned_probe_port)[0]
 
-    mihomo_config_proxies._logical_profile_groups = logical_profile_groups_on_owned_bridge
+    mihomo_config_proxies._generated_logical_profile_group = generated_logical_profile_group_on_owned_bridge
 
     member_diagnostic_state = {"used": False}
     member_diagnostic_lock = threading.Lock()
@@ -3265,10 +4229,177 @@ def _bind_acceptance_mihomo(socket_path: Path, state: Path):
     mihomo_runtime._run_compose_command = process_command
     mihomo_runtime.get_mihomo_runtime_incarnation = process_incarnation
 
+    graph_diagnostic_state = {"records": 0}
+    graph_diagnostic_lock = threading.Lock()
+
+    def record_candidate_graph_failure(candidate: Path, *, stderr: str = "") -> None:
+        """Emit bounded name-hash-only context before a rejected candidate is discarded."""
+        with graph_diagnostic_lock:
+            if graph_diagnostic_state["records"] >= 1:
+                return
+            graph_diagnostic_state["records"] += 1
+
+        def digest(value: Any) -> str:
+            return hashlib.sha256(str(value or "").encode("utf-8", "replace")).hexdigest()[:16]
+
+        def summarize_config(path: Path) -> dict[str, Any]:
+            import yaml
+            root = Path(os.environ["FWROUTER_APPLICATION_ACCEPTANCE_ROOT"]).resolve()
+            try:
+                resolved = path.resolve(strict=True)
+                if not resolved.is_relative_to(root) or resolved.stat().st_size > 8 * 1024 * 1024:
+                    return {"available": False, "reason": "outside_or_oversized"}
+                value = yaml.load(resolved.read_text(encoding="utf-8"), Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+            except Exception:
+                return {"available": False, "reason": "unreadable_or_invalid"}
+            if not isinstance(value, dict):
+                return {"available": False, "reason": "not_mapping"}
+            proxies = value.get("proxies") if isinstance(value.get("proxies"), list) else []
+            groups = value.get("proxy-groups") if isinstance(value.get("proxy-groups"), list) else []
+            proxy_names = {str(item.get("name")) for item in proxies if isinstance(item, dict) and item.get("name")}
+            group_names = {str(item.get("name")) for item in groups if isinstance(item, dict) and item.get("name")}
+            graph = []
+            missing = []
+            for group in groups[:24]:
+                if not isinstance(group, dict) or not isinstance(group.get("name"), str):
+                    continue
+                members = group.get("proxies") if isinstance(group.get("proxies"), list) else []
+                member_names = [str(item) for item in members[:48]]
+                unresolved = [name for name in member_names if name not in proxy_names | group_names | {"DIRECT", "REJECT", "PASS", "COMPATIBLE"}]
+                missing.extend(unresolved)
+                graph.append({
+                    "group_name_sha256": digest(group["name"]),
+                    "group_type": str(group.get("type") or "")[:32],
+                    "shape_sha256": hashlib.sha256(json.dumps(group, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest(),
+                    "member_count": len(members),
+                    "member_name_sha256": [digest(name) for name in member_names],
+                    "missing_member_sha256": [digest(name) for name in unresolved],
+                })
+            return {
+                "available": True, "proxy_count": len(proxies), "group_count": len(groups),
+                "proxy_name_sha256": sorted(digest(item.get("name")) for item in proxies[:128] if isinstance(item, dict) and item.get("name")),
+                "groups": graph, "missing_member_sha256": sorted({digest(name) for name in missing}),
+                "groups_truncated": len(groups) > 24,
+                "group_members_truncated": any(len(group.get("member_name_sha256") or []) >= 48 for group in graph),
+                "proxies_truncated": len(proxies) > 128,
+            }
+
+        record: dict[str, Any] = {
+            "schema": "fwrouter-acceptance-mihomo-candidate-graph/v1",
+            "event": "native_candidate_validation_failed",
+            "native_error_present": bool(stderr),
+            "candidate": summarize_config(candidate),
+        }
+        try:
+            from fwrouter_api.services import mihomo_config
+            active = Path(mihomo_config._resolved_base_config_path())
+            record["active_base"] = summarize_config(active)
+        except Exception:
+            record["active_base"] = {"available": False, "reason": "source_unavailable"}
+        try:
+            from fwrouter_api.db.connection import db_session
+            from fwrouter_api.services.mihomo_config_proxies import _logical_profile_members, _generated_logical_profile_group
+            inactive_rows: list[dict[str, Any]] = []
+            inventory_counts = {"active": 0, "missing": 0, "deleted": 0, "other": 0}
+            with db_session() as connection:
+                rows = connection.execute(
+                    "SELECT server_id, server_name, raw_json, inventory_state FROM servers ORDER BY server_id LIMIT 1000"
+                ).fetchall()
+                for row in rows:
+                    state_name = str(row["inventory_state"] or "other")
+                    inventory_counts[state_name if state_name in inventory_counts else "other"] += 1
+                    if state_name == "active" or len(inactive_rows) >= 20:
+                        continue
+                    try:
+                        raw = json.loads(row["raw_json"] or "{}")
+                    except (TypeError, ValueError):
+                        continue
+                    topology = raw.get("_fwrouter_topology") if isinstance(raw, dict) else None
+                    if not isinstance(topology, dict) or topology.get("kind") != "logical_profile":
+                        continue
+                    runtime_name = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or row["server_name"] or "").strip()
+                    members = _logical_profile_members(raw, logical_runtime_name=runtime_name) if runtime_name else []
+                    expected_group = _generated_logical_profile_group(runtime_name, members) if members else None
+                    member_names = [str(item.get("name") or "") for item in members]
+                    inactive_rows.append({
+                        "server_id_sha256": digest(row["server_id"]),
+                        "runtime_group_name_sha256": digest(runtime_name),
+                        "inventory_state": state_name,
+                        "runtime_policy": str(topology.get("runtime_policy") or "fallback")[:32],
+                        "topology_member_count": len((topology.get("endpoints") or []) if isinstance(topology.get("endpoints"), list) else []),
+                        "relational_member_count": len(members),
+                        "member_name_sha256": sorted(digest(name) for name in member_names),
+                        "generated_shape_sha256": hashlib.sha256(json.dumps(expected_group, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest() if expected_group else None,
+                    })
+            record["persisted_profile_ownership"] = {
+                "inventory_counts": inventory_counts, "inactive_logical_profiles": inactive_rows,
+                "rows_truncated": len(rows) >= 1000 or len(inactive_rows) >= 20,
+            }
+        except Exception as exc:
+            record["persisted_profile_ownership"] = {"available": False, "exception_type": type(exc).__name__[:64]}
+        try:
+            from fwrouter_api.services.mihomo_config_inbounds import _collect_xray_handoff_assignments
+            assignments = _collect_xray_handoff_assignments()
+            record["required_handoff_targets"] = [{
+                "selected_server_id_sha256": digest(item.get("selected_server_id")),
+                "proxy_name_sha256": digest(item.get("proxy")),
+                "listener_name_sha256": digest(item.get("listener_name")),
+                "client_count": len(item.get("client_emails") or []),
+            } for item in assignments[:20] if isinstance(item, dict)]
+            record["required_handoff_targets_truncated"] = len(assignments) > 20
+        except Exception as exc:
+            record["required_handoff_targets"] = []
+            record["handoff_source_exception_type"] = type(exc).__name__[:64]
+        try:
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded.encode("utf-8")) > 12 * 1024:
+                compact = {
+                    "schema": record["schema"], "event": record["event"],
+                    "diagnostic_truncated": True,
+                    "candidate_graph_sha256": hashlib.sha256(encoded.encode()).hexdigest(),
+                    "candidate": {key: record["candidate"].get(key) for key in ("available", "proxy_count", "group_count", "missing_member_sha256")},
+                    "active_base": {key: record["active_base"].get(key) for key in ("available", "proxy_count", "group_count", "missing_member_sha256")},
+                    "inventory_counts": record.get("persisted_profile_ownership", {}).get("inventory_counts"),
+                    "inactive_profile_count": len(record.get("persisted_profile_ownership", {}).get("inactive_logical_profiles", [])),
+                    "handoff_target_count": len(record.get("required_handoff_targets", [])),
+                }
+                record = compact
+                encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if len(encoded.encode("utf-8")) <= 12 * 1024:
+                root = Path(os.environ["FWROUTER_APPLICATION_ACCEPTANCE_ROOT"]).resolve()
+                state_dir = Path(os.environ["FWROUTER_STATE_DIR"]).resolve()
+                if not state_dir.is_relative_to(root):
+                    raise RuntimeError("candidate graph receipt state path is outside acceptance root")
+                output = state_dir / "run" / "mihomo-candidate-graph.json"
+                output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(output, flags, 0o600)
+                try:
+                    os.fchmod(descriptor, 0o600)
+                    payload = (encoded + "\n").encode("utf-8")
+                    offset = 0
+                    while offset < len(payload):
+                        written = os.write(descriptor, payload[offset:])
+                        if written <= 0:
+                            raise OSError("short write while persisting candidate graph receipt")
+                        offset += written
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        except Exception as exc:
+            try:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_CANDIDATE_GRAPH_WRITE_FAILED "
+                                 + type(exc).__name__[:64] + "\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+
     def validate_candidate(candidate_path: str | None = None, *, image_reference: str | None = None) -> dict[str, Any]:
         path = str(candidate_path or default_candidate)
         reply = _rpc_call(socket_path, "mihomo_test_config", {"path": path})
         details = reply.get("details") if isinstance(reply.get("details"), dict) else {}
+        if not reply.get("ok"):
+            record_candidate_graph_failure(Path(path), stderr=str(details.get("stderr") or ""))
         return {"ok": bool(reply.get("ok")), "returncode": 0 if reply.get("ok") else 1,
                 "stdout_tail": str(details.get("stdout") or "")[-1000:],
                 "stderr_tail": str(details.get("stderr") or "")[-1000:],
@@ -3326,19 +4457,37 @@ def main() -> None:
         _install_packet_handoff_loopback_alias(profile)
         if profile.get("profile") == "hosted-kernel-packet" else None
     )
+    def cleanup_native_fixtures() -> None:
+        if profile.get("profile") == "hosted-kernel-packet" and _PACKET_DNSMASQ_STATE:
+            _packet_dnsmasq_fixture(Path(os.environ["FWROUTER_STATE_DIR"]), profile, stop=True)
+        if remove_handoff_alias is not None:
+            remove_handoff_alias()
+
     try:
         app = build_app(socket_path)
+        from contextlib import asynccontextmanager
+        original_lifespan = app.router.lifespan_context
+
+        @asynccontextmanager
+        async def observed_lifespan(application):
+            try:
+                async with original_lifespan(application) as lifespan_state:
+                    yield lifespan_state
+                if any(thread.is_alive() and thread.name.startswith("fwrouter-")
+                       for thread in threading.enumerate()):
+                    raise RuntimeError("owned application worker survived lifespan cleanup")
+            finally:
+                # Uvicorn can terminate itself before the outer Python finally.
+                cleanup_native_fixtures()
+            # Uvicorn 0.34 re-raises the captured SIGTERM after clean shutdown.
+            # This marker is emitted only after actual application cleanup.
+            print("FWROUTER_ACCEPTANCE_LIFESPAN_SHUTDOWN_COMPLETE", flush=True)
+
+        app.router.lifespan_context = observed_lifespan
         import uvicorn
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
     finally:
-        if profile.get("profile") == "hosted-kernel-packet" and _PACKET_DNSMASQ_STATE:
-            try:
-                _packet_dnsmasq_fixture(Path(os.environ["FWROUTER_STATE_DIR"]), profile, stop=True)
-            except Exception:
-                sys.stderr.write("FWROUTER_ACCEPTANCE_DNS53_CLEANUP_FAILED\n")
-                sys.stderr.flush()
-        if remove_handoff_alias is not None:
-            remove_handoff_alias()
+        cleanup_native_fixtures()
 
 
 if __name__ == "__main__":

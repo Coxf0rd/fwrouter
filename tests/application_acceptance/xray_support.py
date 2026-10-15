@@ -10,6 +10,35 @@ from pathlib import Path
 from .http_support import http_json
 
 
+def binding_identity_summary(bindings: list[dict], expected: set[tuple[str, str]], origin_lookup) -> dict:
+    """Return bounded identity diagnostics without credentials or arbitrary metadata."""
+    pairs = [(str(row.get("client_uuid") or row.get("client_id") or ""),
+              str(row.get("client_email") or "")) for row in bindings]
+    unique = set(pairs)
+    origins = []
+    for row, pair in zip(bindings, pairs):
+        if pair in expected or len(origins) >= 4:
+            continue
+        origin = origin_lookup(row.get("subject_id")) or {}
+        email = pair[1]
+        origins.append({
+            "subject_type": origin.get("subject_type") if origin.get("subject_type") in
+                {"explicit_external_client", "core_module", "service", "lan_client", "tailscale_client"} else "other",
+            "subject_role": origin.get("subject_role") if origin.get("subject_role") in
+                {"vless_client", "module", "service", "lan_client", "tailscale_client"} else "other",
+            "is_active": bool(origin.get("is_active")), "is_deleted": bool(origin.get("is_deleted")),
+            "is_auxiliary_upstream_email": email == "acceptance-provider-upstream",
+            "is_internal_auto_email": email.startswith("vpn-auto-"),
+            "is_subscription_email": email.startswith("sub-"),
+            "is_fixed_scale_email": email.startswith("acceptance-scale-fixed-"),
+            "has_selected_server": bool(row.get("selected_server_id")),
+        })
+    return {"row_count": len(pairs), "unique_count": len(unique),
+            "duplicate_count": len(pairs) - len(unique),
+            "missing_count": len(expected - unique), "unexpected_count": len(unique - expected),
+            "unexpected_origins": origins}
+
+
 def await_job(api: str, response: dict, *, timeout: float = 75) -> dict:
     data = response.get("data") if isinstance(response.get("data"), dict) else {}
     job = data.get("job") if isinstance(data.get("job"), dict) else {}
