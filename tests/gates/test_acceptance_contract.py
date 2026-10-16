@@ -546,13 +546,13 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((27, 11, 2), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((28, 11, 2), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
         with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
             launcher.expected_acceptance_nodeids("functional")
-        self.assertEqual(40, len(ordinary | provider | packet))
+        self.assertEqual(41, len(ordinary | provider | packet))
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(
                 [{"nodeid": nodeid, "status": "passed",

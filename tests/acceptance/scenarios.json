@@ -200,6 +200,12 @@
       "contract": "A reload fault remains failed while desired bytes and loaded bytes stay distinguishable."
     },
     {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry",
+      "suite": "functional",
+      "level": "L3",
+      "contract": "A persisted but un-staged inventory cannot be admitted by startup reconciliation."
+    },
+    {
       "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery",
       "suite": "functional",
       "level": "L3",
