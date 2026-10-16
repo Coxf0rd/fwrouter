@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 import base64
+import errno
 import hashlib
 import json
 import re
@@ -207,6 +208,38 @@ def _safe_url_metadata(url: str) -> dict[str, Any]:
         "path_present": bool(parsed.path),
         "query_present": bool(parsed.query),
     }
+
+
+def _safe_http_error_details(exc: httpx.HTTPError) -> tuple[str, dict[str, int]]:
+    """Return bounded transport metadata without retaining exception text or URLs."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = int(exc.response.status_code)
+        return "http_status", {"http_status": status}
+
+    errno_kind = {
+        errno.ECONNRESET: "connection_reset",
+        errno.ECONNREFUSED: "connection_refused",
+        errno.ETIMEDOUT: "timeout",
+        errno.ENETUNREACH: "network_unreachable",
+        errno.EHOSTUNREACH: "network_unreachable",
+    }
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if isinstance(current, OSError) and type(current.errno) is int:
+            kind = errno_kind.get(current.errno)
+            if kind:
+                return kind, {"transport_errno": current.errno}
+        current = current.__cause__ or current.__context__
+
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout", {}
+    if isinstance(exc, httpx.TransportError):
+        return "transport_error", {}
+    return "request_error", {}
 
 
 def _base_fetch_metadata(
@@ -872,13 +905,16 @@ class HttpMihomoSubscriptionAdapter(SubscriptionAdapter):
                 response.raise_for_status()
                 body = response.text
         except httpx.HTTPError as exc:
+            transport_kind, transport_details = _safe_http_error_details(exc)
             return SubscriptionFetchResult(
                 ok=False,
                 error_code="SUBSCRIPTION_DOWNLOAD_FAILED",
-                error_message=str(exc),
+                error_message=f"Subscription download failed ({transport_kind}).",
                 metadata={
                     "source": _safe_url_metadata(normalized_url),
                     "request_profile": profile.name,
+                    "transport_kind": transport_kind,
+                    **transport_details,
                 },
             )
 

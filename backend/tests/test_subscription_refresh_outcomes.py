@@ -78,14 +78,23 @@ def test_terminal_partial_event_is_warning_with_typed_source_errors(monkeypatch)
         "outcome": "partial",
         "runtime_verified": True,
         "intent_saved": True,
-        "last_good_retained": False,
-        "source_outcomes": [{"source_ref": "src:" + "a" * 64, "outcome": "failed", "error_code": "FETCH", "error_message": "provider unavailable", "retained": False}],
+        "last_good_retained": True,
+        "source_outcomes": [{
+            "source_ref": "src:" + "a" * 64,
+            "outcome": "failed",
+            "error_code": "SUBSCRIPTION_DOWNLOAD_FAILED",
+            "error_message": "Subscription download failed (connection_reset).",
+            "retained": True,
+        }],
     })
     assert len(events) == 1
     assert events[0]["event_type"] == "subscription_refresh_partial"
     assert events[0]["level"] == "warning"
     assert events[0]["details"]["runtime_verified"] is True
-    assert events[0]["details"]["source_outcomes"][0]["error_code"] == "FETCH"
+    source = events[0]["details"]["source_outcomes"][0]
+    assert source["error_code"] == "SUBSCRIPTION_DOWNLOAD_FAILED"
+    assert source["error_message"] == "Subscription download failed (connection_reset)."
+    assert source["retained"] is True
 
 
 def test_subscription_terminal_events_are_registered_and_localized() -> None:
@@ -107,7 +116,12 @@ def test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails(mon
     base = tmp_path / "active.yaml"
     candidate = tmp_path / "candidate.yaml"
     last_good = tmp_path / "last-good"
-    base.write_text("config: last-good\n", encoding="utf-8")
+    base.write_text(
+        "proxies:\n"
+        "  - name: alpha\n    type: socks5\n    server: 192.0.2.10\n    port: 1080\n"
+        "  - name: beta\n    type: socks5\n    server: 192.0.2.20\n    port: 1080\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(config, "_resolved_base_config_path", lambda: str(base))
     monkeypatch.setattr(config, "_resolved_candidate_config_path", lambda: str(candidate))
     monkeypatch.setattr(config, "_resolved_last_good_mihomo_dir", lambda: last_good)
@@ -117,7 +131,12 @@ def test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails(mon
     monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: next(identities))
     monkeypatch.setattr(mihomo_reconcile, "mihomo_input_unchanged", lambda _fingerprint: False)
     def write_candidate(*_args, **_kwargs):
-        candidate.write_text("config: candidate\n", encoding="utf-8")
+        candidate.write_text(
+            "proxies:\n"
+            "  - name: alpha\n    type: socks5\n    server: 192.0.2.11\n    port: 1080\n"
+            "  - name: beta\n    type: socks5\n    server: 192.0.2.21\n    port: 1080\n",
+            encoding="utf-8",
+        )
         return {"candidate_path": str(candidate), "rules_count": 0}
     monkeypatch.setattr(config, "write_mihomo_candidate_config", write_candidate)
     monkeypatch.setattr(config, "validate_mihomo_candidate_config", lambda *_args, **_kwargs: {"ok": True})
@@ -138,7 +157,9 @@ def test_mihomo_reconcile_rolls_back_when_postapply_selection_readback_fails(mon
     assert result["last_good_retained"] is True
     assert result["verification_callback_result"]["error_code"] == "READBACK_MISMATCH"
     assert "reentry_generation_fence" not in result
-    assert base.read_text(encoding="utf-8") == "config: last-good\n"
+    restored = base.read_text(encoding="utf-8")
+    assert "192.0.2.10" in restored
+    assert "192.0.2.20" in restored
     assert restarts == ["force_recreate"]
 
 
