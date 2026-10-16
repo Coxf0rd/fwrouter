@@ -4352,6 +4352,7 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
         pending_publication = {
             "checkpoint_path": str(checkpoint_path),
             "adapter": adapter,
+            "inventory_admission": _inventory_admission,
             "subscription_nodes": subscription_nodes,
             "affected_profile_tokens": affected_profile_tokens,
             "materialize": materialize,

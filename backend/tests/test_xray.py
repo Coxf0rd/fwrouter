@@ -418,6 +418,129 @@ def test_public_wrapper_deferred_staged_generation_finalizes_and_is_idempotent(m
     )
 
 
+def test_staged_publication_promotes_the_exact_claimed_inventory_generation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
+    checkpoint.unlink()
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.adapters.subscription import SubscriptionServer
+    from fwrouter_api.services import subscription
+
+    source_url = "http://127.0.0.1:9/staged-publication"
+    server = SubscriptionServer(
+        server_id="staged-publication-node",
+        server_name="Staged publication node",
+        provider_name="subscription",
+        country_code=None,
+        region=None,
+        raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        protocol="vless",
+        host="127.0.0.1",
+        port=443,
+        raw_identity="staged-publication-identity",
+        parser_format="fixture",
+        source_format="test",
+        runtime_name="staged-publication-node",
+    )
+    subscription._upsert_subscription_servers(
+        [server], servers_by_url={source_url: [server]},
+    )
+    with xray_writer_guard():
+        admission = subscription._claim_subscription_inventory_admission()
+    assert admission is not None
+
+    def verify_selection():
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+        checkpoint_state = json.loads(
+            xray_subscription_service._xray_generation_checkpoint_path(adapter).read_text()
+        )
+        with db_session() as connection:
+            revision = read_selection_revision(connection)
+        return {
+            "ok": revision == checkpoint_state["selection_revision"],
+            "operation_id": checkpoint_state["generation_id"],
+            "selection_revision": revision,
+        }
+
+    result = xray_subscription_service._reconcile_xray_subscription_profile_nodes_guarded(
+        requested_by="pytest-staged-inventory-publication",
+        include_vpn_auto=True,
+        verification_callback=verify_selection,
+        _inventory_admission=admission,
+        _defer_selection_verification=False,
+    )
+
+    generation = subscription.get_subscription_native_generation_state()
+    assert result["ok"] is True, result
+    assert result["inventory_generation_promotion"]["ok"] is True
+    assert generation["status"] == "verified"
+    assert generation["candidate_digest"] == admission.digest
+    assert generation["verified_digest"] == admission.digest
+    assert generation["candidate_revision"] == admission.revision
+    assert generation["verified_revision"] == admission.revision
+    assert not xray_subscription_service._xray_generation_checkpoint_path(adapter).exists()
+
+
+def test_staged_publication_refuses_stale_inventory_admission_without_promotion(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
+    checkpoint.unlink()
+
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.adapters.subscription import SubscriptionServer
+    from fwrouter_api.services import subscription
+
+    source_url = "http://127.0.0.1:9/stale-staged-publication"
+
+    def server(server_id: str) -> SubscriptionServer:
+        return SubscriptionServer(
+            server_id=server_id,
+            server_name=server_id,
+            provider_name="subscription",
+            country_code=None,
+            region=None,
+            raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+            protocol="vless",
+            host="127.0.0.1",
+            port=443,
+            raw_identity=f"identity-{server_id}",
+            parser_format="fixture",
+            source_format="test",
+            runtime_name=server_id,
+        )
+
+    subscription._upsert_subscription_servers(
+        [server("stale-admission-first")],
+        servers_by_url={source_url: [server("stale-admission-first")]},
+    )
+    with xray_writer_guard():
+        stale_admission = subscription._claim_subscription_inventory_admission()
+    assert stale_admission is not None
+
+    subscription._upsert_subscription_servers(
+        [server("stale-admission-second")],
+        servers_by_url={source_url: [server("stale-admission-second")]},
+    )
+
+    result = xray_subscription_service.reconcile_xray_subscription_profile_nodes(
+        requested_by="pytest-stale-staged-inventory-publication",
+        include_vpn_auto=True,
+        _inventory_admission=stale_admission,
+    )
+    generation = subscription.get_subscription_native_generation_state()
+
+    assert result["ok"] is False
+    assert result["stage"] == "inventory_generation_admission"
+    assert result["error_code"] == "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED"
+    assert generation["status"] == "pending"
+    assert generation["candidate_revision"] > stale_admission.revision
+    assert generation["verified_digest"] is None
+    assert xray_subscription_service._xray_generation_checkpoint_path(adapter).exists() is False
+
+
 def test_current_recovery_rejects_persisted_public_node_with_wrong_server(monkeypatch, tmp_path: Path) -> None:
     adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
     previous_calls = list(adapter._runner.calls)

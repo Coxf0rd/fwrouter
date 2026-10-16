@@ -268,6 +268,48 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
     """A persisted but un-staged inventory cannot be admitted by startup reconciliation."""
     stack = acceptance_stack
     state, native = stack["state"], stack["native"]
+
+    # Keep this generation/recovery scenario independent of external VPN
+    # reachability. Establish the supported public routing intent before any
+    # native baselines or reload counters are captured: direct traffic remains
+    # the applied global policy, while fixed server selection without a target
+    # explicitly skips post-refresh VPN auto-selection.
+    for routing_payload in (
+        {"mode": "direct", "requested_by": "hosted-acceptance", "run_now": True},
+        {"server_mode": "fixed", "requested_by": "hosted-acceptance", "run_now": True},
+    ):
+        code, response = http_json(
+            f"{stack['api']}/routing/global", method="POST", payload=routing_payload,
+        )
+        assert code == 200 and response.get("ok") is True, {
+            "status": code, "ok": response.get("ok"),
+            "error_code": (response.get("error") or {}).get("code")
+            if isinstance(response.get("error"), dict) else None,
+        }
+        job = await_job(stack["api"], response)
+        assert job.get("status") == "success", job
+
+    def assert_generation_routing(api: str) -> None:
+        code, response = http_json(f"{api}/routing/global")
+        assert code == 200 and response.get("ok") is True, {
+            "status": code, "ok": response.get("ok"),
+        }
+        routing = ((response.get("data") or {}).get("routing") or {})
+        assert routing.get("desired_mode") == "direct", routing
+        assert routing.get("applied_mode") == "direct", routing
+        assert routing.get("server_mode") == "fixed", routing
+        assert routing.get("desired_fixed_server_id") is None, routing
+        assert routing.get("applied_fixed_server_id") is None, routing
+
+    def assert_no_fixed_target_auto_select(result: dict) -> None:
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        auto_select = data.get("auto_select")
+        assert isinstance(auto_select, dict), {
+            "data_keys": sorted(data), "auto_select_type": type(auto_select).__name__,
+        }
+        assert auto_select.get("status") == "skipped_no_fixed_target", auto_select
+
+    assert_generation_routing(stack["api"])
     active_xray = state / "xray" / "config.json"
     active_mihomo = state / "generated" / "mihomo" / "config.yaml"
 
@@ -286,6 +328,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
     inbound["settings"]["clients"] = baseline_clients
     active_xray.write_text(json.dumps(xray_config, ensure_ascii=False, sort_keys=True), encoding="utf-8")
     native.restart_xray_child()
+    assert_native_matches_active(native, active_xray)
     baseline_pairs = {(str(row["id"]), str(row["email"])) for row in baseline_clients}
     baseline_fingerprint = hashlib.sha256(
         json.dumps(sorted(baseline_pairs), separators=(",", ":")).encode()
@@ -342,6 +385,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
             "error_code": (initial.get("error") or {}).get("code")
             if isinstance(initial.get("error"), dict) else None,
         }
+        assert_no_fixed_target_auto_select(initial)
         applied = generation_state(stack["api"])
         assert applied.get("status") == "verified"
         assert applied.get("candidate_digest") == applied.get("verified_digest")
@@ -383,6 +427,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert native.reload_calls == reloads_before_failure
         assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
         assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert_native_matches_active(native, active_xray)
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
 
@@ -391,6 +436,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         old_worker.wait(timeout=5)
         restarted_worker, restarted_api = stack["start_worker"]()
         stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert_generation_routing(restarted_api)
         assert generation_state(restarted_api) == pending
         recovery_code, recovery = http_json(
             f"{restarted_api}/__acceptance/xray/startup-generation-recovery",
@@ -407,9 +453,10 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert native.reload_calls == reloads_before_failure
         assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
         assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
-        assert_mihomo_launch_matches_active(native, active_mihomo)
 
         # Re-fetch the same synthetic source through the normal public import
         # and native publication path. The pending candidate is admitted only
@@ -420,6 +467,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
             "error_code": (retried.get("error") or {}).get("code")
             if isinstance(retried.get("error"), dict) else None,
         }
+        assert_no_fixed_target_auto_select(retried)
         verified = generation_state(restarted_api)
         assert verified.get("status") == "verified"
         assert verified.get("candidate_digest") == verified.get("verified_digest")
