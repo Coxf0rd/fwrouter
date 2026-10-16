@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 import yaml
@@ -26,6 +27,7 @@ from fwrouter_api.services.mihomo_reconcile_fingerprint import (
     write_mihomo_reconcile_fingerprint_state,
 )
 from fwrouter_api.services import mihomo_reconcile_fingerprint as mihomo_reconcile_fingerprint_service
+from fwrouter_api.services import mihomo_config_status as mihomo_config_status_service
 from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
 from fwrouter_api.adapters.xray_common import xray_writer_guard
 
@@ -54,6 +56,152 @@ def _write_effective_rules(path: Path, payload: dict) -> None:
 def _enable_vpn_module() -> None:
     with db_session() as connection:
         connection.execute("UPDATE modules SET desired_state = 'enabled' WHERE module_name = 'vpn'")
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value", "missing"),
+    [
+        ("resolved_selective_default", "vpn", False),
+        ("final_match_rule", "MATCH,vpn-global", False),
+        ("transparent_final_match_rule", "MATCH,DIRECT", False),
+        ("resolved_selective_default", None, True),
+        ("final_match_rule", None, True),
+        ("transparent_final_match_rule", None, True),
+    ],
+)
+def test_mihomo_runtime_rejects_scalar_metadata_mismatch_before_loading_rules_or_native_health(
+    monkeypatch,
+    tmp_path: Path,
+    field: str,
+    bad_value: str | None,
+    missing: bool,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    routing = {
+        "desired_mode": "vpn",
+        "applied_mode": "vpn",
+        "selective_default": "direct",
+        "server_mode": "auto",
+    }
+    metadata = {
+        "resolved_selective_default": "direct",
+        "final_match_rule": "MATCH,DIRECT",
+        "transparent_final_match_rule": "MATCH,vpn-global",
+    }
+    if missing:
+        del metadata[field]
+    else:
+        metadata[field] = bad_value
+    monkeypatch.setattr(mihomo_config_status_service, "_scan_fwrouter_config_metadata", lambda _path: metadata)
+
+    def unexpected(_path):
+        raise AssertionError("metadata mismatch must reject before loading the full YAML")
+
+    monkeypatch.setattr(mihomo_config_status_service, "_safe_load_yaml", unexpected)
+    monkeypatch.setattr(
+        mihomo_config_status_service,
+        "_build_mihomo_config_with_source",
+        lambda _routing: (_ for _ in ()).throw(AssertionError("metadata mismatch must not rebuild 200k rules")),
+    )
+    monkeypatch.setattr(
+        mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
+        "health",
+        lambda: (_ for _ in ()).throw(AssertionError("rejected metadata must not call native health")),
+    )
+
+    result = mihomo_config_status_service.mihomo_runtime_satisfies_routing(routing)
+
+    assert result == {
+        "ok": False,
+        "reason": "fwrouter_metadata_mismatch",
+        "metadata": metadata,
+        "expected": {
+            "resolved_selective_default": "direct",
+            "final_match_rule": "MATCH,DIRECT",
+            "transparent_final_match_rule": "MATCH,vpn-global",
+            "transparent_udp_policy_ok": None,
+            "full_vpn_udp_policy_ok": None,
+        },
+    }
+
+
+def test_mihomo_runtime_matching_scalar_metadata_keeps_policy_and_native_checks(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    routing = {
+        "desired_mode": "vpn",
+        "applied_mode": "vpn",
+        "selective_default": "direct",
+        "server_mode": "auto",
+    }
+    transparent_rules = ["MATCH,vpn-global", "NETWORK,udp,REJECT"]
+    full_vpn_rules = ["MATCH,vpn-global", "NETWORK,udp,REJECT"]
+    metadata = {
+        "resolved_selective_default": "direct",
+        "final_match_rule": "MATCH,DIRECT",
+        "transparent_final_match_rule": "MATCH,vpn-global",
+    }
+    config = {
+        "sub-rules": {
+            "fwrouter-transparent": transparent_rules,
+            "fwrouter-full-vpn": full_vpn_rules,
+        },
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "REJECT"]},
+        ],
+    }
+    health_calls: list[bool] = []
+    monkeypatch.setattr(mihomo_config_status_service, "_scan_fwrouter_config_metadata", lambda _path: metadata)
+    monkeypatch.setattr(mihomo_config_status_service, "_safe_load_yaml", lambda _path: config)
+    monkeypatch.setattr(
+        mihomo_config_status_service,
+        "_build_mihomo_config_with_source",
+        lambda _routing: ([], {
+            "transparent_rules": transparent_rules,
+            "full_vpn_rules": full_vpn_rules,
+        }),
+    )
+    monkeypatch.setattr(
+        mihomo_config_status_service,
+        "_ensure_selector_groups",
+        lambda active: active["proxy-groups"],
+    )
+    monkeypatch.setattr(
+        mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
+        "health",
+        lambda: health_calls.append(True) or SimpleNamespace(
+            runtime_state="running",
+            active_server_id=None,
+            details={
+                "selectors": {
+                    "vpn_global_exists": True,
+                    "vpn_global_has_vpn_auto": True,
+                    "vpn_global_now": "vpn-auto",
+                    "vpn_auto_targets": ["REJECT"],
+                    "vpn_auto_now": "REJECT",
+                    "vpn_global_targets": ["vpn-auto", "REJECT"],
+                    "subject_selector_targets": {},
+                },
+                "config": {"fwrouter_contours": {"transparent_vpn": {
+                    "transparent_tcp_ready": True,
+                    "transparent_udp_ready": True,
+                    "transparent_tcp_listener_socket_present": True,
+                    "transparent_udp_listener_socket_present": True,
+                }}},
+            },
+        ),
+    )
+
+    result = mihomo_config_status_service.mihomo_runtime_satisfies_routing(routing)
+
+    assert result["ok"] is True
+    assert result["metadata_ok"] is True
+    assert result["selector_native_membership_ok"] is True
+    assert result["transparent_ok"] is True
+    assert health_calls == [True]
 
 
 def _seed_runtime_proxy_server(
