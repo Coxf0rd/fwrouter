@@ -729,13 +729,14 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         connection.close()
 
     code, baseline = http_json(
-        f"{stack['api']}/__acceptance/xray/reconcile", method="POST",
-        payload={"include_vpn_auto": True}, timeout=75,
+        f"{stack['api']}/__acceptance/xray/publish-pending-inventory", method="POST",
+        payload={"include_vpn_auto": True}, timeout=90,
     )
     assert code == 200 and baseline.get("ok") is True, {
         "status": code, "ok": baseline.get("ok"), "stage": baseline.get("stage"),
         "error_code": baseline.get("error_code"),
     }
+    assert baseline.get("native_generation_verified") is True
     assert_native_matches_active(native, active_path)
     baseline_pairs = set(loaded_identities(native))
     affected = {

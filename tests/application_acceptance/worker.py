@@ -3581,6 +3581,66 @@ def build_app(socket_path: Path):
         methods=["POST"],
     )
 
+    def publish_pending_subscription_inventory(payload: dict[str, Any]) -> dict[str, Any]:
+        """Admit a synthetic candidate only through the real native publication path."""
+        if (
+            set(payload) - {"include_vpn_auto"}
+            or ("include_vpn_auto" in payload and type(payload["include_vpn_auto"]) is not bool)
+        ):
+            return {"ok": False, "error_code": "ACCEPTANCE_INVENTORY_PUBLICATION_OPTIONS_INVALID"}
+
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        from fwrouter_api.services.subscription import (
+            _claim_subscription_inventory_admission,
+            get_subscription_native_generation_state,
+        )
+        from fwrouter_api.services.xray_subscription_service import reconcile_xray_subscription_profile_nodes
+
+        # Keep admission issuance short. The real reconcile owns its own writer
+        # guard and native readback path; the opaque capability fences the exact
+        # candidate digest/revision if another writer wins before it begins.
+        with xray_writer_guard(timeout_seconds=30.0):
+            admission = _claim_subscription_inventory_admission()
+        if admission is None:
+            return {"ok": False, "error_code": "ACCEPTANCE_PENDING_INVENTORY_REQUIRED"}
+
+        result = reconcile_xray_subscription_profile_nodes(
+            requested_by="hosted-acceptance-inventory-publication",
+            include_vpn_auto=payload.get("include_vpn_auto", False),
+            _inventory_admission=admission,
+        )
+        state = get_subscription_native_generation_state()
+        promotion = result.get("inventory_generation_promotion") if isinstance(result, dict) else None
+        generation_verified = bool(
+            isinstance(state, dict)
+            and state.get("status") == "verified"
+            and state.get("candidate_digest") == state.get("verified_digest")
+            and state.get("candidate_revision") == state.get("verified_revision")
+            and isinstance(promotion, dict)
+            and promotion.get("ok") is True
+            and promotion.get("digest") == state.get("candidate_digest")
+            and promotion.get("revision") == state.get("candidate_revision")
+        )
+        ok = bool(isinstance(result, dict) and result.get("ok") is True and generation_verified)
+        return {
+            "ok": ok,
+            "status": str(result.get("status") or "failed") if isinstance(result, dict) else "failed",
+            "stage": str(result.get("stage") or "") if isinstance(result, dict) else "",
+            "error_code": str(result.get("error_code") or "") if isinstance(result, dict) else "",
+            "native_generation_verified": generation_verified,
+            "generation": state,
+            "promotion": {
+                "ok": promotion.get("ok") is True,
+                "revision": promotion.get("revision"),
+            } if isinstance(promotion, dict) else {"ok": False},
+        }
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/publish-pending-inventory",
+        publish_pending_subscription_inventory,
+        methods=["POST"],
+    )
+
     def identity_manifest_context() -> dict[str, Any]:
         """Return only revision and digest needed to author a private test manifest."""
         from fwrouter_api.db.connection import db_session

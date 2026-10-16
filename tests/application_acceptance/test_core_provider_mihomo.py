@@ -617,8 +617,18 @@ def test_provider_handoff_rejects_stale_selection_after_real_selector_wins_probe
         [ordinary], servers_by_url={ordinary_url: [ordinary]},
     )
     assert inventory["seen_count"] == 1, inventory
+    code, publication = http_json(
+        f"{api}/__acceptance/xray/publish-pending-inventory", method="POST", payload={}, timeout=90,
+    )
+    assert code == 200 and publication.get("ok") is True, {
+        "status": code, "error_code": publication.get("error_code"),
+        "stage": publication.get("stage"),
+        "native_generation_verified": publication.get("native_generation_verified"),
+    }
+    assert publication.get("native_generation_verified") is True
 
-    # Build the native candidate pool through the normal Core preference path,
+    # Build the native candidate pool through verified inventory publication and
+    # the normal Core preference path,
     # then establish the provider incumbent through the owned worker RPC, which
     # calls the real Core selector's explicit candidate filter. The public
     # selector endpoint has no target filter and correctly ranks successful

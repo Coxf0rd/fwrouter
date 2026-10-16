@@ -3534,6 +3534,15 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         [ordinary_server], servers_by_url={selector_source_url: [ordinary_server]},
     )
     assert inventory.get("seen_count") == 1
+    code, publication = http_json(
+        f"{api}/__acceptance/xray/publish-pending-inventory", method="POST", payload={}, timeout=90,
+    )
+    assert code == 200 and publication.get("ok") is True, {
+        "status": code, "error_code": publication.get("error_code"),
+        "stage": publication.get("stage"),
+        "native_generation_verified": publication.get("native_generation_verified"),
+    }
+    assert publication.get("native_generation_verified") is True
     code, ordinary_preference = http_json(
         f"{api}/servers/{ordinary_server.server_id}/preferences", method="PATCH",
         payload={"vpn_auto": True, "vpn_auto_priority": 1, "reconcile_mihomo": True,
