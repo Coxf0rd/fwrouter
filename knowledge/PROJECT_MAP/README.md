@@ -1,5 +1,12 @@
 # Project Map
 
+## Operational Packages2/3 implementation — current source checkpoint 2026-10-16
+
+PR15 remains DRAFT. Package2 source was qualified at526221c by fullCI38826004751 (1679/0/0), but user explicitly authorized actual Package3 implementation afterward; closure-by-DEFER was corrected. Package3 now implements no-change JSONL output elimination with mandatory full scan and source-drift checks, and existing-helper/chunked Xray subject+override projections. Independent Package3 QA105PASS. Changed-file scrub CPU and batch transient-memory overhead are explicitly measured in the [implementation report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/PACKAGE3_IMPLEMENTATION.md). Conditional chmod and unsupported extra native/I/O candidates remain DEFERRED.
+
+PR14 was user-merged as2d53daf while implementation was underway. Its newer roadmap/history are retained; feature branch integrates that main without rewriting history. Final combined-head full required PRCI is pending. Package2/3 are not deployed; production remains3f96e1e. Core/native proof,CAS/fencing,durable identities,SQLite durability,fail-closed and unrelated services are unchanged. No deployment,Stage5 or blanket Operational milestone closure follows from this source checkpoint.
+
+
 ## Current checkpoint — 2026-10-16
 
 Production3f96e1e; PR11/12/13 merged, Package1 ACCEPTED bounded source/CI/deploy/live scope, CI milestone CLOSED. API/Gateway/workers/timers and78 originals preserved; no new OOM in recorded windows. Current Operational milestone remains OPEN: Package2 Cache Lifecycle PLANNED, Package3 DB/Native/I/O CONDITIONAL, no implementation approval. [Active roadmap](../ROADMAP.md), [decisions](DECISIONS/ROADMAP_DECISION_REGISTER_2026-10-15.md), [legacy register and reconciliation](../audits/operational_roadmap_legacy_2026-10-16/REPORT.md).

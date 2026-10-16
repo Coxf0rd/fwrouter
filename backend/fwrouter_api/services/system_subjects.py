@@ -163,8 +163,23 @@ def ensure_builtin_system_subjects() -> list[str]:
                     END,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE subject_id = ?
+                  AND (
+                      subject_role IS NOT ?
+                      OR implementation_kind IS NOT ?
+                      OR desired_mode IS NOT 'direct'
+                      OR (
+                          apply_state IS NOT 'pending'
+                          AND (applied_mode IS NOT 'direct' OR apply_state IS NOT 'clean')
+                      )
+                  )
                 """,
-                (_subject_role(item["subject_type"]), item["subject_type"], item["subject_id"]),
+                (
+                    _subject_role(item["subject_type"]),
+                    item["subject_type"],
+                    item["subject_id"],
+                    _subject_role(item["subject_type"]),
+                    item["subject_type"],
+                ),
             )
 
             if bool(row["is_deleted"]):
@@ -193,6 +208,10 @@ def _upsert_system_detail(connection: Any, item: dict[str, Any]) -> None:
     assignments = ", ".join(
         f"{column} = excluded.{column}" for column in item["detail_columns"].keys()
     )
+    changed_detail = " OR ".join(
+        f"{item['detail_table']}.{column} IS NOT excluded.{column}"
+        for column in item["detail_columns"]
+    )
     values = [item["subject_id"]]
     for column in item["detail_columns"].keys():
         value = item["detail_columns"][column]
@@ -209,6 +228,7 @@ def _upsert_system_detail(connection: Any, item: dict[str, Any]) -> None:
         ON CONFLICT(subject_id) DO UPDATE SET
             {assignments},
             updated_at = CURRENT_TIMESTAMP
+        WHERE {changed_detail}
         """,
         tuple(values),
     )

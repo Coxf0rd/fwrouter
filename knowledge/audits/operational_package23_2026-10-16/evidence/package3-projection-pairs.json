@@ -1,0 +1,111 @@
+{
+  "baseline_both_collectors": {
+    "counts_per_pair": [
+      {
+        "connections": 4002,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 4002
+      },
+      {
+        "connections": 4002,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 4002
+      },
+      {
+        "connections": 4002,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 4002
+      },
+      {
+        "connections": 4002,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 4002
+      },
+      {
+        "connections": 4002,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 4002
+      }
+    ],
+    "cpu_ms": {
+      "max": 4986.864497999999,
+      "median": 4510.989268000001,
+      "min": 4403.233721
+    },
+    "wall_ms": {
+      "max": 4993.078005965799,
+      "median": 4513.162818970159,
+      "min": 4405.03021213226
+    }
+  },
+  "baseline_source_sha256": "b4f5c6125a9a745c43b3d423184427bccd785332f1d628c795e950b61d47b4dd",
+  "candidate_both_collectors": {
+    "counts_per_pair": [
+      {
+        "connections": 6,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 6
+      },
+      {
+        "connections": 6,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 6
+      },
+      {
+        "connections": 6,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 6
+      },
+      {
+        "connections": 6,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 6
+      },
+      {
+        "connections": 6,
+        "emergency_override_calls": 1000,
+        "other_sql": 0,
+        "selects": 6
+      }
+    ],
+    "cpu_ms": {
+      "max": 74.88693900000065,
+      "median": 64.08429700000084,
+      "min": 62.09676799999997
+    },
+    "wall_ms": {
+      "max": 74.89812304265797,
+      "median": 64.10635216161609,
+      "min": 62.09743581712246
+    }
+  },
+  "candidate_source_sha256": "45d6700be82920c0fc584fdc75e7485c67a51f8c4a6f92323ccea2a01354e97b",
+  "equivalence": {
+    "both_collectors_match_after_normalizing_only_applied_at": true
+  },
+  "fixture": {
+    "active_server_override_rows_with_null_target": 50,
+    "active_user_overrides": 50,
+    "bindings_emitted": 450,
+    "directives_emitted": 50,
+    "eligible_xray_subjects": 500,
+    "state_root": "/root/fwrouter-recovery/package23-20261016/pkg3-projection/both-final-state-2"
+  },
+  "measurement_boundary": {
+    "environment": "env -i; Settings dotenv disabled before instantiation",
+    "fixture_only": true,
+    "native_or_network_calls": 0,
+    "network_namespace": "unshare --net",
+    "runs": "five interleaved untraced paired repeats"
+  },
+  "source_head": "526221cf00099b58ac145d957bb2feefb9c819ad"
+}

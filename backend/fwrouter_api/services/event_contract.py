@@ -174,8 +174,37 @@ def sanitize_value(value: Any, *, key: Any = None) -> Any:
     return value
 
 
+def _scrub_jsonl_line(line: str) -> tuple[str, bool, bool]:
+    if not line.strip():
+        return line, False, False
+    try:
+        original = json.loads(line)
+        safe = sanitize_value(original)
+        encoded = json.dumps(safe, ensure_ascii=False, sort_keys=True)
+        parsed = True
+    except (json.JSONDecodeError, TypeError):
+        encoded = json.dumps(sanitize_string(line.rstrip("\r\n")), ensure_ascii=False)
+        parsed = False
+    return encoded + "\n", encoded != line.rstrip("\r\n"), parsed
+
+
+def _scrub_snapshot(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        stat.S_IMODE(info.st_mode),
+    )
+
+
 def scrub_jsonl_files(paths: list[Path]) -> dict[str, int]:
-    """Atomically sanitize existing JSONL files, preserving one record per line."""
+    """Sanitize every candidate and atomically rewrite files that need redaction.
+
+    Changed files are reread from the same descriptor. Detected concurrent changes
+    abort before replacement; callers should run this before starting appenders.
+    """
     rewritten = 0
     records = 0
     candidates: list[Path] = []
@@ -186,38 +215,63 @@ def scrub_jsonl_files(paths: list[Path]) -> dict[str, int]:
             candidates.append(path)
     for path in candidates:
         temporary_path: str | None = None
-        changed = False
-        mode = stat.S_IMODE(path.stat().st_mode)
         try:
             with path.open("r", encoding="utf-8", errors="replace") as source:
+                initial_snapshot = os.fstat(source.fileno())
+                signature = _scrub_snapshot(initial_snapshot)
+                mode = stat.S_IMODE(initial_snapshot.st_mode)
+                changed = False
+                scanned_digest = hashlib.sha256()
+                for line in source:
+                    scanned_digest.update(line.encode("utf-8"))
+                    _output, line_changed, parsed = _scrub_jsonl_line(line)
+                    changed = changed or line_changed
+                    records += int(parsed)
+
+                after_scan = os.fstat(source.fileno())
+                current_path = path.stat()
+                if (
+                    _scrub_snapshot(after_scan) != signature
+                    or _scrub_snapshot(current_path) != signature
+                ):
+                    raise OSError(f"JSONL changed during scrub: {path}")
+                if not changed:
+                    continue
+
+                source.seek(0)
+                if (
+                    _scrub_snapshot(os.fstat(source.fileno())) != signature
+                    or _scrub_snapshot(path.stat()) != signature
+                ):
+                    raise OSError(f"JSONL changed during scrub: {path}")
+                rewritten_digest = hashlib.sha256()
                 with tempfile.NamedTemporaryFile(
                     mode="w", encoding="utf-8", dir=path.parent,
                     prefix=f".{path.name}.", suffix=".scrub.tmp", delete=False,
                 ) as target:
                     temporary_path = target.name
                     for line in source:
-                        if not line.strip():
-                            target.write(line)
-                            continue
-                        try:
-                            original = json.loads(line)
-                            safe = sanitize_value(original)
-                            encoded = json.dumps(safe, ensure_ascii=False, sort_keys=True)
-                            records += 1
-                        except (json.JSONDecodeError, TypeError):
-                            encoded = json.dumps(sanitize_string(line.rstrip("\r\n")), ensure_ascii=False)
-                        target.write(encoded + "\n")
-                        changed = changed or encoded != line.rstrip("\r\n")
+                        rewritten_digest.update(line.encode("utf-8"))
+                        output, _line_changed, _parsed = _scrub_jsonl_line(line)
+                        target.write(output)
+                    after_rewrite = os.fstat(source.fileno())
+                    current_path = path.stat()
+                    if (
+                        rewritten_digest.digest() != scanned_digest.digest()
+                        or _scrub_snapshot(after_rewrite) != signature
+                        or _scrub_snapshot(current_path) != signature
+                    ):
+                        raise OSError(f"JSONL changed during scrub: {path}")
                     target.flush()
                     os.fsync(target.fileno())
-            if changed:
-                os.chmod(temporary_path, mode)
-                os.replace(temporary_path, path)
-                temporary_path = None
-                rewritten += 1
-            else:
-                os.unlink(temporary_path)
-                temporary_path = None
+
+            os.chmod(temporary_path, mode)
+            current_path = path.stat()
+            if _scrub_snapshot(current_path) != signature:
+                raise OSError(f"JSONL changed during scrub: {path}")
+            os.replace(temporary_path, path)
+            temporary_path = None
+            rewritten += 1
         finally:
             if temporary_path and os.path.exists(temporary_path):
                 os.unlink(temporary_path)

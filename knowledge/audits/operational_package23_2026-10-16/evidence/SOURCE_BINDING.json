@@ -1,0 +1,62 @@
+{
+  "base_head": "8827a7623489a74bed36ebcc40c615298c2b29ee",
+  "qa_finding": "P2 adapter owner retained outside cache byte estimate",
+  "owner_red": {
+    "result": "1 failed",
+    "log_sha256": "7684aee5be74f811de913e6b61f42d556228cf2a5e77bb5649efd5eea6d26ab7",
+    "junit_sha256": "a4ee9fe53902b800179d6e34e580dc16aa8e77db9e94d4d2b8653810ca664392"
+  },
+  "owner_green": {
+    "result": "105 passed in 5.24s",
+    "log_sha256": "a8e530fdc2af6b45e6a74aaf2056979ed6496096dcdbfd97c0908d689516fb84",
+    "junit_sha256": "b750b2f944b8edca10c48ae41930ba9aab9cd2775ce01713ee501d042f841d7e"
+  },
+  "source_sha256": {
+    "backend/fwrouter_api/services/live_probe_cache.py": "74d4866f9465df9d72ab3bf4cac63a562dc62fb4ae2f3f3cfb4fdc181f81740a",
+    "backend/tests/test_probe_cache_lifecycle.py": "6e17fd58b67497b0ce71ee126a7465573200193174b2806761d6b5e1ab7988a1"
+  },
+  "diff_check": "PASS",
+  "production_or_live_mutation": "none",
+  "id_reuse_hardening": "deferred; adapter key restored to origin/main type and id semantics",
+  "base": "3f96e1e73be0e0fc25208a406ecc9ff259f6480f",
+  "full_PR_CI": "PENDING exact final HEAD",
+  "production": "UNCHANGED",
+  "historical_first_full_CI": "38822958169 FAIL: unchanged forced snapshot test; preserved",
+  "benchmark_sha256": "484d496e6ab3928662b0742a0f511219f057b3ddf33e2c69df444657e6209fe5",
+  "independent_QA": {
+    "status": "PASSED",
+    "targeted": "105 passed in 5.15s",
+    "report_sha256": "0a12df5b2d5ee8f6f49ab192e4deb41719affd7f7229dd359bfdb28f8a6571f5"
+  },
+  "package3": {
+    "source_sha256": {
+      "backend/fwrouter_api/services/event_contract.py": "b61d665070bf0b80b799e47613c04c2de0173dad4e929d2d773e715a40e2ad0c",
+      "backend/tests/test_event_contract.py": "f95345bdee28c9ade84607bfc2557f6ca550e9e51239b25f9f6081134987f0e5",
+      "backend/fwrouter_api/services/xray_bindings.py": "45d6700be82920c0fc584fdc75e7485c67a51f8c4a6f92323ccea2a01354e97b",
+      "backend/tests/test_xray_bindings_projection.py": "ad9361dc2b30ea445e5c444fded323f466cf23a95eb2fb080c8f6205d85c2bf4"
+    },
+    "independent_QA": "PASSED",
+    "combined_targeted": "105 passed in 10.49s",
+    "qa_report_sha256": "517fd1e6edb54a1630260c7e0532571625c92d042b12b748aaf1b8a8eb793793",
+    "writer_targeted": {
+      "scrub": 16,
+      "xray_projection": 5
+    },
+    "full_required_CI": "PENDING new exact HEAD",
+    "production": "UNCHANGED",
+    "test_first_evidence": "private pkg3-scrub FIRST_RED; pkg3-projection red.log and chunk-red.log; expanded baseline replays labeled separately",
+    "bootstrap_noop_correction": {
+      "source_sha256": {
+        "backend/fwrouter_api/services/system_subjects.py": "9492db27da72da051306a307dcea08dd10ea788bd55687bad49ef69e2ad5de32",
+        "backend/tests/test_bootstrap.py": "61e6573f699ae527954fc46bb8528dcc6585d639ab4975b4e22c26ffd0f36551"
+      },
+      "root_cause": "unconditional unchanged built-in subject/detail timestamp UPDATE exposed by second boundary",
+      "writer_targeted": "55 passed in 4.23s",
+      "main_failure_run": 38829503900,
+      "independent_QA": "PASSED:71 tests in8.63s; bootstrap/system_subjects/scoped_egress/db_migrations",
+      "existing_migration_test": "unchanged",
+      "no_op_total_changes": 0,
+      "qa_report_sha256": "90439d9fca02f14ec20cc8500650324df1ca106392be8d9ba1876fe5549975c7"
+    }
+  }
+}
