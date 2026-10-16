@@ -918,10 +918,49 @@ def _install_acceptance_live_mode_probe_observer() -> None:
     apply_service.probe_live_global_mode = observed_probe
 
 
+_XRAY_GENERATION_RECOVERY_REASONS = frozenset({
+    "selection_fence_changed", "runtime_incarnation_changed", "mihomo_transition_digest_unavailable",
+    "active_mihomo_generation_changed", "artifact_target_mismatch", "active_mihomo_unavailable",
+    "mihomo_preimage_unavailable", "mihomo_preimage_invalid", "mihomo_preimage_policy_unproven",
+    "mihomo_preimage_native_invalid", "xray_preimage_unavailable", "xray_preimage_invalid",
+    "xray_runtime_ownership_changed", "xray_runtime_identity_changed", "xray_runtime_readback_unavailable",
+    "xray_preimage_api_unsafe", "xray_preimage_bindings_unavailable", "xray_preimage_native_invalid",
+    "subscription_snapshot_changed", "generation_source_changed", "generation_projection_changed",
+    "selection_provenance_changed", "selection_runtime_unconfirmed", "runtime_ownership_changed",
+    "runtime_readback_unavailable", "inventory_generation_not_bound", "checkpoint_phase_not_recoverable",
+    "recovery_attempt_mismatch", "recovery_attempt_phase_unknown", "inventory_checkpoint_binding_mismatch",
+    "inventory_generation_unverified", "supersession_current_candidate_unowned", "committed_projection_mismatch",
+    "bindings_artifact_mismatch", "mounted_config_mismatch", "checkpoint_selection_intent_missing",
+    "handoff_listener_unready", "api_listener_unsafe", "config_identity_mismatch", "native_candidate_invalid",
+    "supersession_candidate_rebuild_mismatch", "recovery_backup_mismatch", "recovery_backup_missing",
+    "ambiguous_prior_prepare", "ambiguous_prior_reload", "inventory_mihomo_checkpoint_mismatch",
+    "inventory_native_receipt_unconfirmed", "inventory_generation_promotion_unconfirmed",
+    "preapply_revalidation_failed", "xray_reload_failed", "runtime_revalidation_failed",
+    "loaded_identity_mismatch", "runtime_projection_readback_failed", "auto_target_unverified",
+    "preterminal_revalidation_failed", "terminal_revalidation_failed", "supersession_preimage_unproven",
+})
+_XRAY_GENERATION_SELECTION_ERRORS = frozenset({
+    "SELECTION_BASELINE_UNAVAILABLE", "SELECTION_BASELINE_UNSELECTED", "SELECTION_RESTORE_READBACK_UNCONFIRMED",
+    "SELECTION_DIRECT_INTENT_UNPROVEN", "SELECTION_DIRECT_FENCE_UNPROVEN",
+    "SELECTION_DIRECT_NATIVE_READBACK_UNREADY", "SELECTION_DIRECT_APPLIED_MANIFEST_UNPROVEN",
+    "SELECTION_DIRECT_NATIVE_POLICY_UNPROVEN", "SELECTION_DIRECT_NATIVE_READBACK_FAILED",
+})
+_XRAY_GENERATION_CHECKPOINT_PHASES = frozenset({
+    "prepared", "transition_applied", "xray_applied", "runtime_applied", "inventory_synced",
+    "bindings_written", "projections_cleaned", "selection_verified", "snapshots_published",
+    "restore_started", "restore_failed",
+})
+
+
 def _bounded_inventory_generation_recovery(value: Any) -> dict[str, Any] | None:
     """Expose only fixed recovery proof fields to the synthetic acceptance API."""
     if not isinstance(value, dict):
         return None
+    nested = value.get("generation_recovery")
+    if not isinstance(nested, dict) and value.get("stage") == "generation_recovery":
+        nested = value.get("details")
+    if isinstance(nested, dict):
+        value = nested
     allowed_outcomes = {
         "current_projection_unproven", "current_projection_verified",
         "no_generation_checkpoint", "restore_failed", "restored_last_good",
@@ -933,6 +972,22 @@ def _bounded_inventory_generation_recovery(value: Any) -> dict[str, Any] | None:
     recovered = value.get("recovered")
     if isinstance(recovered, str) and recovered in allowed_outcomes:
         summary["recovered"] = recovered
+    reason = value.get("reason")
+    if isinstance(reason, str) and reason in _XRAY_GENERATION_RECOVERY_REASONS:
+        summary["reason"] = reason
+    selection_error_code = value.get("selection_error_code")
+    if isinstance(selection_error_code, str) and selection_error_code in _XRAY_GENERATION_SELECTION_ERRORS:
+        summary["selection_error_code"] = selection_error_code
+    checkpoint_facts = value.get("checkpoint_facts")
+    if isinstance(checkpoint_facts, dict):
+        phase = checkpoint_facts.get("checkpoint_phase")
+        facts = {
+            "checkpoint_phase": phase if isinstance(phase, str) and phase in _XRAY_GENERATION_CHECKPOINT_PHASES else "unknown",
+        }
+        for key in ("checkpoint_selection_fence_matches", "checkpoint_inventory_binding_matches"):
+            if type(checkpoint_facts.get(key)) is bool:
+                facts[key] = checkpoint_facts[key]
+        summary["checkpoint_facts"] = facts
     mihomo_proof = value.get("mihomo_preimage_proof")
     if isinstance(mihomo_proof, dict):
         projected = {
@@ -950,6 +1005,80 @@ def _bounded_inventory_generation_recovery(value: Any) -> dict[str, Any] | None:
         if type(value.get(key)) is bool:
             summary[key] = value[key]
     return summary or None
+
+
+def _bounded_generation_checkpoint_facts(
+    checkpoint: Any, inventory_state: Any, selection_fence: Any,
+) -> dict[str, Any]:
+    """Project checkpoint ownership into a closed phase and comparison booleans."""
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    inventory_state = inventory_state if isinstance(inventory_state, dict) else {}
+    selection_fence = selection_fence if isinstance(selection_fence, dict) else {}
+    phase = checkpoint.get("phase")
+    binding = checkpoint.get("subscription_inventory_generation")
+    if not isinstance(binding, dict):
+        binding = {}
+    state = inventory_state.get("status")
+    if state == "empty":
+        inventory_matches = binding.get("digest") is None and binding.get("revision") is None
+    elif state in {"pending", "verified"}:
+        inventory_matches = (
+            binding.get("digest") == inventory_state.get("candidate_digest")
+            and type(binding.get("revision")) is int
+            and binding.get("revision") == inventory_state.get("candidate_revision")
+        )
+    else:
+        inventory_matches = False
+    checkpoint_revision = checkpoint.get("selection_revision")
+    return {
+        "checkpoint_phase": phase if isinstance(phase, str) and phase in _XRAY_GENERATION_CHECKPOINT_PHASES else "unknown",
+        "checkpoint_selection_fence_matches": (
+            type(checkpoint_revision) is int and checkpoint_revision == selection_fence.get("revision")
+        ),
+        "checkpoint_inventory_binding_matches": bool(inventory_matches),
+    }
+
+
+def _read_bounded_generation_checkpoint_facts(checkpoint_path: Any) -> dict[str, Any]:
+    """Read only bounded, owned checkpoint metadata and return boolean comparisons."""
+    fallback = {
+        "checkpoint_phase": "unknown",
+        "checkpoint_selection_fence_matches": False,
+        "checkpoint_inventory_binding_matches": False,
+    }
+    try:
+        path = Path(checkpoint_path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_size < 0 or info.st_size > 1024 * 1024):
+                return fallback
+            chunks: list[bytes] = []
+            remaining = 1024 * 1024 + 1
+            while remaining:
+                chunk = os.read(fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            encoded = b"".join(chunks)
+            if len(encoded) > 1024 * 1024:
+                return fallback
+            checkpoint = json.loads(encoded.decode("utf-8"))
+        finally:
+            os.close(fd)
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+        with db_session() as connection:
+            fence = read_selection_fence(connection)
+        return _bounded_generation_checkpoint_facts(
+            checkpoint, get_subscription_native_generation_state(), fence,
+        )
+    except Exception:
+        return fallback
 
 
 def _install_acceptance_preflight_observer() -> None:
@@ -2358,6 +2487,8 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
         return facts
 
     original_restore = xray_subscription_service._restore_xray_generation_checkpoint
+    original_current_projection_recovery = xray_subscription_service._recover_checkpoint_from_current_projection
+    original_selection_readback = xray_subscription_service._verify_generation_recovery_selection_readback
     original_rollback_receipt = xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt
     original_publish = xray_subscription_service._publish_mihomo_udp_receipt_with_owner
     original_native_proof = mihomo_reconcile._native_udp_policy_proof
@@ -2381,6 +2512,9 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
             recovered = result.get("recovered")
             if recovered in {"restored_last_good", "restore_failed", "stale_checkpoint_declined"}:
                 summary["recovered"] = recovered
+            reason = result.get("reason")
+            if isinstance(reason, str) and reason in _XRAY_GENERATION_RECOVERY_REASONS:
+                summary["reason"] = reason
             error_code = result.get("error_code")
             if error_code == "MIHOMO_UDP_POLICY_ROLLBACK_RECEIPT_UNCONFIRMED":
                 summary["error_code"] = error_code
@@ -2395,6 +2529,31 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
                         nested["reason"] = reason
                     summary[key] = nested
         emit("restore_result", summary)
+        return result
+
+    def observed_selection_readback(selection: Any) -> Any:
+        result = original_selection_readback(selection)
+        if getattr(local, "current_projection_recovery", False) and isinstance(result, dict):
+            error_code = result.get("error_code")
+            if isinstance(error_code, str) and error_code in _XRAY_GENERATION_SELECTION_ERRORS:
+                local.selection_error_code = error_code
+        return result
+
+    def observed_current_projection_recovery(adapter: Any, checkpoint_path: Any) -> Any:
+        prior_recovering = getattr(local, "current_projection_recovery", False)
+        prior_error = getattr(local, "selection_error_code", None)
+        local.current_projection_recovery = True
+        local.selection_error_code = None
+        try:
+            result = original_current_projection_recovery(adapter, checkpoint_path)
+        finally:
+            observed_selection_error = getattr(local, "selection_error_code", None)
+            local.current_projection_recovery = prior_recovering
+            local.selection_error_code = prior_error
+        if (isinstance(observed_selection_error, str)
+                and observed_selection_error in _XRAY_GENERATION_SELECTION_ERRORS):
+            if isinstance(result, dict):
+                result = {**result, "selection_error_code": observed_selection_error}
         return result
 
     def observed_publish(*, expected_mihomo_runtime: str, expected_mihomo_sha: str,
@@ -2474,6 +2633,8 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
         return result
 
     xray_subscription_service._restore_xray_generation_checkpoint = observed_restore
+    xray_subscription_service._recover_checkpoint_from_current_projection = observed_current_projection_recovery
+    xray_subscription_service._verify_generation_recovery_selection_readback = observed_selection_readback
     xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt = observed_rollback_receipt
     xray_subscription_service._publish_mihomo_udp_receipt_with_owner = observed_publish
     mihomo_reconcile._native_udp_policy_proof = observed_native_proof
@@ -3667,9 +3828,22 @@ def build_app(socket_path: Path):
                 "revision": promotion.get("revision"),
             } if isinstance(promotion, dict) else {"ok": False},
         }
-        recovery = _bounded_inventory_generation_recovery(
-            result.get("generation_recovery") if isinstance(result, dict) else None,
-        )
+        recovery_value = None
+        if isinstance(result, dict):
+            recovery_value = result.get("generation_recovery")
+            if not isinstance(recovery_value, dict) and result.get("stage") == "generation_recovery":
+                recovery_value = result.get("details")
+        if isinstance(recovery_value, dict):
+            from fwrouter_api.services.xray_subscription_service import (
+                _xray_adapter, _xray_generation_checkpoint_path,
+            )
+            recovery_value = {
+                **recovery_value,
+                "checkpoint_facts": _read_bounded_generation_checkpoint_facts(
+                    _xray_generation_checkpoint_path(_xray_adapter()),
+                ),
+            }
+        recovery = _bounded_inventory_generation_recovery(recovery_value)
         if recovery is not None:
             response["generation_recovery"] = recovery
         return response

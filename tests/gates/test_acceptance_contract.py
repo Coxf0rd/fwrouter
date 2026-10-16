@@ -136,10 +136,32 @@ def _extract_bounded_inventory_generation_recovery():
         if isinstance(node, ast.FunctionDef)
         and node.name == "_bounded_inventory_generation_recovery"
     )
-    module = ast.Module(body=[function], type_ignores=[])
-    namespace = {"Any": Any}
+    constants = [node for node in tree.body if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id in {
+            "_XRAY_GENERATION_RECOVERY_REASONS", "_XRAY_GENERATION_SELECTION_ERRORS",
+            "_XRAY_GENERATION_CHECKPOINT_PHASES",
+        } for target in node.targets
+    )]
+    module = ast.Module(body=[*constants, function], type_ignores=[])
+    namespace = {"Any": Any, "frozenset": frozenset}
     exec(compile(module, str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
     return namespace["_bounded_inventory_generation_recovery"]
+
+
+def _extract_bounded_generation_checkpoint_facts():
+    tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_bounded_generation_checkpoint_facts"
+    )
+    constants = [node for node in tree.body if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id == "_XRAY_GENERATION_CHECKPOINT_PHASES"
+        for target in node.targets
+    )]
+    namespace = {"Any": Any, "frozenset": frozenset}
+    exec(compile(ast.Module(body=[*constants, function], type_ignores=[]), str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+    return namespace["_bounded_generation_checkpoint_facts"]
 
 
 class AcceptanceContractTests(unittest.TestCase):
@@ -178,7 +200,6 @@ class AcceptanceContractTests(unittest.TestCase):
         for secret in ("private-operation-id", "/private/state", "UUID_SENTINEL",
                        "RAW_CONFIG_SENTINEL", "SECRET_SENTINEL"):
             self.assertNotIn(secret, encoded)
-
         malformed = project({
             "ok": False,
             "recovered": "unexpected-outcome",
@@ -189,6 +210,86 @@ class AcceptanceContractTests(unittest.TestCase):
             "mihomo_restart": 1,
         })
         self.assertEqual({"ok": False, "xray_runtime_readback": {"ok": False}}, malformed)
+
+    def test_failed_inventory_publication_projects_bounded_recovery_reason(self):
+        project = _extract_bounded_inventory_generation_recovery()
+        for reason in (
+            "ambiguous_prior_prepare", "ambiguous_prior_reload", "inventory_mihomo_checkpoint_mismatch",
+            "inventory_native_receipt_unconfirmed", "inventory_generation_promotion_unconfirmed",
+        ):
+            with self.subTest(reason=reason):
+                source = {
+                    "ok": False,
+                    "stage": "generation_recovery",
+                    "error_code": "XRAY_GENERATION_RECOVERY_FAILED",
+                    "details": {
+                        "ok": False,
+                        "recovered": "stale_checkpoint_declined",
+                        "reason": reason,
+                        "checkpoint_path": "/private/state/generation-checkpoint.json",
+                        "selection_revision": 9931,
+                        "candidate_digest": "DIGEST_SENTINEL",
+                        "client_uuid": "UUID_SENTINEL",
+                        "exception": "token=SECRET_SENTINEL",
+                    },
+                }
+                expected = {
+                    "ok": False,
+                    "recovered": "stale_checkpoint_declined",
+                    "reason": reason,
+                }
+                projected = project(source)
+                self.assertEqual(expected, projected)
+                encoded = json.dumps(projected)
+                for secret in ("/private/state", "9931", "DIGEST_SENTINEL", "UUID_SENTINEL", "SECRET_SENTINEL"):
+                    self.assertNotIn(secret, encoded)
+        unknown = project({
+            "ok": False, "stage": "generation_recovery",
+            "details": {"ok": False, "reason": "token=DO_NOT_EXPOSE"},
+        })
+        self.assertEqual({"ok": False}, unknown)
+
+    def test_checkpoint_recovery_facts_expose_only_closed_state_and_boolean_fences(self):
+        worker_source = APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(APPLICATION_ACCEPTANCE_WORKER))
+        observer = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_install_acceptance_xray_generation_rollback_observer"
+        )
+        observer_source = ast.get_source_segment(worker_source, observer) or ""
+        self.assertIn("_recover_checkpoint_from_current_projection", observer_source)
+        self.assertIn("selection_error_code", observer_source)
+        for forbidden in ("checkpoint_path\":", "candidate_digest\":", "selection_revision\":",
+                          "client_uuid\":", "str(exc)"):
+            self.assertNotIn(forbidden, observer_source)
+        route = next(
+            node for node in ast.walk(worker_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "publish_pending_subscription_inventory"
+        )
+        route_source = ast.get_source_segment(worker_source, route) or ""
+        for required in ("_read_bounded_generation_checkpoint_facts", "checkpoint_facts"):
+            self.assertIn(required, route_source)
+
+    def test_checkpoint_facts_compare_fences_without_exposing_values(self):
+        project = _extract_bounded_generation_checkpoint_facts()
+        checkpoint = {
+            "phase": "xray_applied", "selection_revision": 18,
+            "subscription_inventory_generation": {"digest": "DIGEST_SENTINEL", "revision": 7},
+            "client_uuid": "UUID_SENTINEL", "artifact_path": "/private/state/config.json",
+        }
+        inventory = {"status": "pending", "candidate_digest": "DIGEST_SENTINEL", "candidate_revision": 7}
+        fence = {"revision": 19, "decision_id": "PRIVATE_DECISION"}
+        result = project(checkpoint, inventory, fence)
+        self.assertEqual({
+            "checkpoint_phase": "xray_applied",
+            "checkpoint_selection_fence_matches": False,
+            "checkpoint_inventory_binding_matches": True,
+        }, result)
+        self.assertNotIn("DIGEST_SENTINEL", json.dumps(result))
+        self.assertNotIn("UUID_SENTINEL", json.dumps(result))
+        self.assertNotIn("PRIVATE_DECISION", json.dumps(result))
+        self.assertNotIn("/private/state", json.dumps(result))
 
     def test_reentry_native_diagnostic_is_redacted_and_size_bounded(self):
         secret_url = "http://probe-user:probe-pass@vpn-secret.test/private"
@@ -4345,6 +4446,17 @@ class AcceptanceContractTests(unittest.TestCase):
                           '"expected_mihomo_runtime":', '"checkpoint_path":'):
             self.assertNotIn(forbidden, observer_source)
         self.assertIn('acceptance_profile.get("profile") == "hosted-kernel-packet"', worker_source)
+        for required in ("_recover_checkpoint_from_current_projection", "selection_error_code"):
+            self.assertIn(required, observer_source)
+        checkpoint_helper = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_read_bounded_generation_checkpoint_facts"
+        )
+        checkpoint_source = ast.get_source_segment(worker_source, checkpoint_helper) or ""
+        for required in ("O_NOFOLLOW", "os.geteuid()", "1024 * 1024", "checkpoint_phase",
+                         "checkpoint_selection_fence_matches", "checkpoint_inventory_binding_matches"):
+            self.assertIn(required, checkpoint_source)
         install_calls = [node for node in ast.walk(worker_tree)
                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                          and node.func.id == "_install_acceptance_xray_generation_rollback_observer"]
