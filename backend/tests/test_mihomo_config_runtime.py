@@ -1029,6 +1029,43 @@ def test_semantic_config_comparison_rejects_ambiguous_missing_and_oversized_yaml
     assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is False
 
 
+@pytest.mark.parametrize(
+    "aliased_yaml",
+    [
+        "shared: &value repeated\nfirst: *value\nsecond: *value\n",
+        "shared: &value [one, two]\nfirst: *value\nsecond: *value\n",
+        "cycle: &value [*value]\n",
+    ],
+    ids=["scalar-alias", "sequence-alias", "cycle"],
+)
+def test_semantic_config_comparison_rejects_yaml_aliases_before_construction(
+    monkeypatch,
+    tmp_path: Path,
+    aliased_yaml: str,
+) -> None:
+    active = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    active.write_text(aliased_yaml, encoding="utf-8")
+    candidate.write_text("plain: repeated\n", encoding="utf-8")
+
+    def _must_not_run(*args, **kwargs):
+        pytest.fail("alias-rejected YAML must not be constructed or compared")
+
+    monkeypatch.setattr(mihomo_reconcile_service.yaml, "load", _must_not_run)
+    monkeypatch.setattr(mihomo_config_service, "_configs_equal", _must_not_run)
+
+    assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is False
+
+
+def test_semantic_config_comparison_allows_independent_equal_scalars(tmp_path: Path) -> None:
+    active = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    active.write_text("first: repeated\nsecond: repeated\n", encoding="utf-8")
+    candidate.write_text("first: repeated\nsecond: repeated\n", encoding="utf-8")
+
+    assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is True
+
+
 def test_reconcile_mihomo_runtime_skips_candidate_generation_when_inputs_unchanged(
     monkeypatch,
     tmp_path: Path,

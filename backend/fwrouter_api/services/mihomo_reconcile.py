@@ -72,21 +72,27 @@ MAX_SEMANTIC_CONFIG_BYTES = 1024 * 1024
 def _yaml_tree_is_unambiguous(
     node: Any,
     ancestors: set[int] | None = None,
+    seen: set[int] | None = None,
     budget: list[int] | None = None,
     depth: int = 0,
 ) -> bool:
-    """Reject YAML constructs whose parsed meaning is ambiguous for comparison."""
+    """Reject YAML constructs whose parsed meaning or expansion is unsafe to compare."""
     if node is None:
         return True
     active = ancestors if ancestors is not None else set()
+    visited = seen if seen is not None else set()
     visits = budget if budget is not None else [0]
     visits[0] += 1
     if visits[0] > MAX_SEMANTIC_YAML_NODES or depth > MAX_SEMANTIC_YAML_DEPTH:
         return False
     identity = id(node)
-    if identity in active:
+    # YAML aliases share node identities. Reject all aliases (including cycles)
+    # before construction, since expanding an acyclic alias can multiply memory
+    # exponentially even when the source text and node count are small.
+    if identity in active or identity in visited:
         return False
     active.add(identity)
+    visited.add(identity)
     try:
         if isinstance(node, MappingNode):
             keys: set[str] = set()
@@ -94,16 +100,16 @@ def _yaml_tree_is_unambiguous(
                 if not isinstance(key_node, ScalarNode) or key_node.tag != "tag:yaml.org,2002:str":
                     return False
                 if key_node.value in keys or not _yaml_tree_is_unambiguous(
-                    value_node, active, visits, depth + 1,
+                    value_node, active, visited, visits, depth + 1,
                 ):
                     return False
                 keys.add(key_node.value)
-                if not _yaml_tree_is_unambiguous(key_node, active, visits, depth + 1):
+                if not _yaml_tree_is_unambiguous(key_node, active, visited, visits, depth + 1):
                     return False
             return True
         if isinstance(node, SequenceNode):
             return all(
-                _yaml_tree_is_unambiguous(item, active, visits, depth + 1)
+                _yaml_tree_is_unambiguous(item, active, visited, visits, depth + 1)
                 for item in node.value
             )
         return isinstance(node, ScalarNode)
