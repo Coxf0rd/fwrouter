@@ -1834,7 +1834,8 @@ def _capture_generation_auto_selection() -> dict[str, Any]:
     from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_fence
     with db_session() as connection:
         routing = connection.execute(
-            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, updated_at FROM routing_global_state WHERE id = 1"
+            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, "
+            "desired_mode, applied_mode, apply_state, updated_at FROM routing_global_state WHERE id = 1"
         ).fetchone()
         provenance = connection.execute(
             "SELECT value_json, updated_at FROM settings WHERE key = 'routing.auto_selection_provenance'"
@@ -2064,6 +2065,135 @@ def _verify_generation_selection_readback(selection: dict[str, Any] | None) -> d
         "effective_target": observed or None,
         "error_code": None if ok else "SELECTION_RESTORE_READBACK_UNCONFIRMED",
     }
+
+
+def _verify_generation_recovery_selection_readback(selection: dict[str, Any] | None) -> dict[str, Any]:
+    """Verify selection readback, including an explicitly committed global-DIRECT intent.
+
+    Recovery may legitimately run with no selected VPN target while global DIRECT is
+    applied. That case is accepted only when the checkpoint captured the exact DIRECT
+    intent/fence and fresh native dataplane readback proves the same mode. Older
+    checkpoints lacking the intent fields remain unprovable and fail closed.
+    """
+    ordinary = _verify_generation_selection_readback(selection)
+    if ordinary.get("ok") is True:
+        return ordinary
+    if ordinary.get("error_code") != "SELECTION_BASELINE_UNSELECTED":
+        return ordinary
+
+    captured = selection if isinstance(selection, dict) else {}
+    captured_routing = captured.get("routing") if isinstance(captured.get("routing"), dict) else {}
+    captured_mode = str(captured_routing.get("desired_mode") or "").strip().lower()
+    if (
+        captured_mode != "direct"
+        or str(captured_routing.get("applied_mode") or "").strip().lower() != "direct"
+        or str(captured_routing.get("apply_state") or "").strip().lower() != "clean"
+    ):
+        return {"ok": False, "error_code": "SELECTION_DIRECT_INTENT_UNPROVEN"}
+
+    try:
+        from fwrouter_api.services.servers import get_routing_global_state
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+        current_routing = get_routing_global_state(expire_ttl=False) or {}
+        current_fence = _current_xray_projection_snapshot().get("fence") or {}
+        expected_routing = {
+            key: captured_routing.get(key)
+            for key in (
+                "server_mode", "desired_fixed_server_id", "applied_fixed_server_id",
+                "active_auto_server_id", "desired_mode", "applied_mode", "apply_state",
+            )
+        }
+        observed_routing = {key: current_routing.get(key) for key in expected_routing}
+        with db_session() as connection:
+            durable_fence = read_selection_fence(connection)
+        no_vpn_target = not any(
+            str(value or "").strip()
+            for value in (
+                captured_routing.get("desired_fixed_server_id"),
+                captured_routing.get("applied_fixed_server_id"),
+                captured_routing.get("active_auto_server_id"),
+                current_routing.get("desired_fixed_server_id"),
+                current_routing.get("applied_fixed_server_id"),
+                current_routing.get("active_auto_server_id"),
+                current_fence.get("active_server_id"),
+                current_fence.get("provenance_server_id"),
+                durable_fence.get("active_server_id"),
+                durable_fence.get("provenance_server_id"),
+            )
+        )
+        checkpoint_decision = captured.get("selection_decision_id")
+        if (
+            observed_routing != expected_routing
+            or type(captured.get("selection_revision")) is not int
+            or captured.get("selection_revision") != current_fence.get("revision")
+            or captured.get("selection_revision") != durable_fence.get("revision")
+            or "selection_decision_id" not in captured
+            or checkpoint_decision != current_fence.get("decision_id")
+            or checkpoint_decision != durable_fence.get("decision_id")
+            or (checkpoint_decision is None and not no_vpn_target)
+            or (checkpoint_decision is not None and not str(checkpoint_decision).strip())
+        ):
+            return {"ok": False, "error_code": "SELECTION_DIRECT_FENCE_UNPROVEN"}
+
+        # Use the existing live dataplane/enforcement readbacks. Refresh their
+        # existing short-lived probe keys so stale cached state cannot verify a
+        # checkpoint after restart.
+        from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
+        from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+
+        payload = dataplane_status._read_live_dataplane_payload()
+        if not dataplane_status._live_owned_table_ready(payload):
+            return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_READBACK_UNREADY"}
+        manifest = get_live_probe_cache(
+            "dataplane_global.applied_manifest", ttl_seconds=5.0,
+            loader=dataplane_global._read_applied_manifest_uncached, force_refresh=True,
+        )
+        get_live_probe_cache(
+            "dataplane_live.global_mode", ttl_seconds=2.0,
+            loader=dataplane_live._probe_live_global_mode_uncached, force_refresh=True,
+        )
+        manifest_routing = manifest.get("routing_global_state") if isinstance(manifest, dict) else None
+        if not isinstance(manifest_routing, dict) or any(
+            str(manifest_routing.get(key) or "").strip().lower() != "direct"
+            for key in ("desired_mode", "applied_mode")
+        ):
+            return {"ok": False, "error_code": "SELECTION_DIRECT_APPLIED_MANIFEST_UNPROVEN"}
+        proof = dataplane_status.build_runtime_enforcement_state(live_payload=payload)
+        if (
+            not isinstance(proof, dict)
+            or proof.get("enforcement_level") != "global_direct_enforced"
+            or proof.get("traffic_enforcement_guaranteed") is not True
+            or proof.get("active_mode_matches_intent") is not True
+            or str(proof.get("live_global_mode") or "").strip().lower() != "direct"
+        ):
+            return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_POLICY_UNPROVEN"}
+        return {
+            "ok": True,
+            "mode": "direct",
+            "logical_server_id": None,
+            "native_enforcement_level": proof["enforcement_level"],
+        }
+    except Exception:
+        return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_READBACK_FAILED"}
+
+
+def _checkpoint_selection_for_recovery(
+    checkpoint: dict[str, Any], current_selection: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Use checkpoint-bound intent when current Core has no VPN target selected."""
+    routing = current_selection.get("routing") if isinstance(current_selection.get("routing"), dict) else {}
+    mode = str(routing.get("server_mode") or "auto").strip().lower()
+    target = (
+        routing.get("desired_fixed_server_id") or routing.get("applied_fixed_server_id")
+        if mode == "fixed" else routing.get("active_auto_server_id")
+    )
+    if str(target or "").strip():
+        return current_selection
+    checkpoint_selection = checkpoint.get("auto_selection_after")
+    if not isinstance(checkpoint_selection, dict):
+        checkpoint_selection = checkpoint.get("auto_selection_before")
+    return checkpoint_selection if isinstance(checkpoint_selection, dict) else None
 
 
 def _generation_recovery_attempt_path(checkpoint_path: Path, checkpoint_digest: str) -> Path:
@@ -2459,7 +2589,11 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
         mihomo_incarnation = get_mihomo_runtime_incarnation()
         source_fingerprint = _generation_source_fingerprint()
         projection_fingerprint = _current_projection_fingerprint(projection)
-        selection = _capture_generation_auto_selection()
+        current_selection = _capture_generation_auto_selection()
+        selection = _checkpoint_selection_for_recovery(checkpoint, current_selection)
+        if not isinstance(selection, dict):
+            return {"ok": False, "recovered": "current_projection_unproven",
+                    "reason": "checkpoint_selection_intent_missing"}
         from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
         from fwrouter_api.services.xray_bindings import get_xray_handoff_listeners
         handoffs = get_xray_handoff_listeners(bindings)
@@ -2570,8 +2704,11 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
 
         def core_selection_stable() -> bool:
             try:
-                if not _verify_generation_selection_readback(selection).get("ok"):
+                selection_proof = _verify_generation_recovery_selection_readback(selection)
+                if not selection_proof.get("ok"):
                     return False
+                if selection_proof.get("mode") == "direct":
+                    return True
                 if str((selection.get("routing") or {}).get("server_mode") or "auto").lower() == "auto":
                     from fwrouter_api.services.selector import get_vpn_auto_state
                     auto_state = get_vpn_auto_state(read_only=True)
@@ -2608,7 +2745,7 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
             return {"ok": False, "recovered": "current_projection_unproven", "reason": "loaded_identity_mismatch"}
         bindings_readback = _verify_active_config_bindings(bindings, expected_client_identities=expected)
         modes_readback = _verify_active_config_client_modes(modes)
-        selection_readback = _verify_generation_selection_readback(selection)
+        selection_readback = _verify_generation_recovery_selection_readback(selection)
         if not bindings_readback.get("ok") or not modes_readback.get("ok") or not selection_readback.get("ok"):
             return {"ok": False, "recovered": "current_projection_unproven", "reason": "runtime_projection_readback_failed"}
         if not core_selection_stable():
