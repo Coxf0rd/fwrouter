@@ -3,19 +3,21 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.artifacts import atomic_write_json
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
     VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
 )
-from fwrouter_api.services.subjects import get_subject
-import fwrouter_api.services.subject_policy as subject_policy_service
+from fwrouter_api.services.subjects import _load_subject_details, _row_to_subject
 from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
 from fwrouter_api.services.xray_runtime_state import (
     _load_server_config_for_xray_binding,
     _xray_bindings_path,
 )
+
+_XRAY_PROJECTION_BATCH_SIZE = 500
 
 
 def _utc_timestamp() -> str:
@@ -71,6 +73,31 @@ def _email_matches_prefix(email: Any, prefixes: tuple[str, ...]) -> bool:
     return isinstance(email, str) and any(email.lower().startswith(prefix) for prefix in prefixes)
 
 
+def _load_xray_subject_projections(rows: list[Any]) -> tuple[
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+]:
+    """Project selected subject rows and active overrides with bounded DB reads."""
+    projected = [_row_to_subject(row) for row in rows]
+    user_overrides: dict[str, dict[str, Any]] = {}
+    server_overrides: dict[str, dict[str, Any]] = {}
+    for offset in range(0, len(projected), _XRAY_PROJECTION_BATCH_SIZE):
+        batch = projected[offset : offset + _XRAY_PROJECTION_BATCH_SIZE]
+        details = _load_subject_details(batch)
+        for subject in batch:
+            subject["detail"] = details.get(str(subject["subject_id"]))
+
+        subject_ids = [str(subject["subject_id"]) for subject in batch]
+        user_overrides.update(subject_policy_service._load_active_user_overrides(subject_ids))
+        server_overrides.update(subject_policy_service._load_active_server_overrides(subject_ids))
+    return (
+        {str(subject["subject_id"]): subject for subject in projected},
+        user_overrides,
+        server_overrides,
+    )
+
+
 def collect_xray_runtime_bindings(
     *, exclude_client_email_prefixes: tuple[str, ...] | list[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -83,7 +110,7 @@ def collect_xray_runtime_bindings(
     with db_session() as connection:
         rows = connection.execute(
             f"""
-            SELECT s.subject_id, {email_projection} AS client_email
+            SELECT s.*, {email_projection} AS client_email
             FROM subjects AS s
             WHERE s.implementation_kind = 'xray'
               AND COALESCE(json_extract(s.metadata_json, '$.detail.enabled'), 1) = 1
@@ -103,15 +130,18 @@ def collect_xray_runtime_bindings(
     routing = subject_policy_service.get_routing_snapshot()
     runtime_enforcement = subject_policy_service.build_runtime_enforcement_state()
     bypass_state = subject_policy_service.get_core_bypass_state()
+    subjects_by_id, user_overrides, server_overrides = _load_xray_subject_projections(rows)
     bindings: list[dict[str, Any]] = []
     for row in rows:
         subject_id = str(row["subject_id"])
-        subject = get_subject(subject_id)
+        subject = subjects_by_id.get(subject_id)
         if not isinstance(subject, dict):
             continue
         subject = subject_policy_service.enrich_subject_with_effective_state(
             subject,
             routing=routing,
+            user_override=user_overrides.get(subject_id),
+            server_override=server_overrides.get(subject_id),
             runtime_enforcement=runtime_enforcement,
             bypass_state=bypass_state,
         )
@@ -130,7 +160,7 @@ def collect_xray_client_mode_directives(
     with db_session() as connection:
         rows = connection.execute(
             """
-            SELECT subject_id, desired_mode,
+            SELECT *,
                    json_extract(metadata_json, '$.detail.client_id') AS client_id,
                    json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid,
                    json_extract(metadata_json, '$.detail.email') AS client_email
@@ -154,14 +184,18 @@ def collect_xray_client_mode_directives(
         routing=routing,
         bypass_state=bypass_state,
     )
+    subjects_by_id, user_overrides, server_overrides = _load_xray_subject_projections(rows)
     directives = []
     for row in rows:
         mode = str(row["desired_mode"] or "enabled").strip().lower()
-        subject = get_subject(str(row["subject_id"]))
+        subject_id = str(row["subject_id"])
+        subject = subjects_by_id.get(subject_id)
         projected = (
             subject_policy_service.enrich_subject_with_effective_state(
                 subject,
                 routing=routing,
+                user_override=user_overrides.get(subject_id),
+                server_override=server_overrides.get(subject_id),
                 runtime_enforcement=runtime_enforcement,
                 bypass_state=bypass_state,
             )

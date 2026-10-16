@@ -1,6 +1,18 @@
 # Package3 resource I/O disposition
 
-Date: 2026-10-16. Scope: deep-audit candidates C3/C4 and related resource-I/O candidates. The source tree was restored to branch HEAD (`3f96e1e73be0e0fc25208a406ecc9ff259f6480f`) for owned paths. No tests, commits, pushes, CI, production operations, database changes, or event scrub changes were performed. `event_contract.py` was not edited. Pilot code and its temporary tests were removed after measurement; scripts and receipts remain in this directory.
+## Current implementation and remaining dispositions — 2026-10-16
+
+Package3 is implemented locally in the existing PR15, independent combined QA PASSED (105 tests,10.49s), pending final exact-HEAD full CI. The user corrected a short-lived closure-by-DEFER decision; that closure is superseded, not implementation evidence. Production remains unchanged. The earlier chmod pilot below is preserved as historical evidence.
+
+- **C3 IMPLEMENTED:** full security scan remains; unchanged JSONL creates no temporary output and performs no output fsync. Changed files use a second pass, source digest/signature checks, preserved mode, fsync and atomic replacement. Detected concurrent mutation aborts safely. Startup precedes application schedulers; no absolute exclusion of arbitrary external writers is claimed.
+- **Operation-owned subject/override projections IMPLEMENTED:** both existing Xray binding collectors reuse existing batch helpers, in chunks of at most500 IDs. Exact selectors/order/exclusion remain, each invocation rereads, no global or cross-call cache. Native readback, emergency checks, credentials and publication/fencing owners remain untouched. This is an optional module optimization, not a Core dependency on Xray.
+- **C4 conditional chmod DEFER:** prior overlapping marginal pilot remains rejected; no SQLite connection-factory change.
+- **PRAGMA/WAL/synchronous/transactions/fsync guarantees NO CHANGE.** No durable state buffering or weaker durability.
+- **Additional native readback/projection reuse and SSD wear claims DEFER:** these are not prerequisites for accepting the two implemented improvements and are not represented as implemented.
+
+Source and measurements: [implementation report](PACKAGE3_IMPLEMENTATION.md). Closure requires the final combined-source qualification; merge/main CI/deploy/live remain separate gates.
+
+Historical pilot checkpoint, 2026-10-16. Scope: deep-audit candidates C3/C4 before the implementation continuation. The source tree was restored to branch HEAD (`3f96e1e73be0e0fc25208a406ecc9ff259f6480f`) for owned paths. No tests, commits, pushes, CI, production operations, database changes, or event scrub changes were performed. `event_contract.py` was not edited. Pilot code and its temporary tests were removed after measurement; scripts and receipts remain in this directory.
 
 ## Matched C4 measurement
 
@@ -15,7 +27,7 @@ The approximately 2.4% median difference favors the pilot, while ranges overlap 
 
 The preliminary pair is retained in `baseline.json` and `candidate.json`; five-run distributions are in `baseline-repeated.json` and `candidate-repeated.json`. `baseline_connection.py` is the frozen source copy and `bench_runner.py` is the matched harness. `baseline.py` records the first pair harness.
 
-## Candidate dispositions
+## Historical pre-implementation candidate dispositions
 
 - **C3 — startup JSONL scrub temp output: DEFER.** The deep audit measured 10,000 canonical synthetic records / 1.03 MB and one fsync per unchanged-file pass. Avoiding unchanged temp output still requires the complete security scan. A bounded no-temp strategy that preserves the current behavior under concurrent append/replacement, malformed text, file mode drift, late changes, write failures, and atomic replacement has no established snapshot contract in this scope. No `event_contract.py` edits.
 - **C4 — conditional DB/parent/WAL/SHM permission repair: DEFER.** The pilot reduced same-mode chmod calls but added the same number of stat calls and showed only a small, overlapping synthetic time difference. Wrong-mode, concurrent-create, and sidecar tests were drafted but not retained because there is no shipped implementation and no test run.

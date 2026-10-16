@@ -27,5 +27,23 @@
     "status": "PASSED",
     "targeted": "105 passed in 5.15s",
     "report_sha256": "0a12df5b2d5ee8f6f49ab192e4deb41719affd7f7229dd359bfdb28f8a6571f5"
+  },
+  "package3": {
+    "source_sha256": {
+      "backend/fwrouter_api/services/event_contract.py": "b61d665070bf0b80b799e47613c04c2de0173dad4e929d2d773e715a40e2ad0c",
+      "backend/tests/test_event_contract.py": "f95345bdee28c9ade84607bfc2557f6ca550e9e51239b25f9f6081134987f0e5",
+      "backend/fwrouter_api/services/xray_bindings.py": "45d6700be82920c0fc584fdc75e7485c67a51f8c4a6f92323ccea2a01354e97b",
+      "backend/tests/test_xray_bindings_projection.py": "ad9361dc2b30ea445e5c444fded323f466cf23a95eb2fb080c8f6205d85c2bf4"
+    },
+    "independent_QA": "PASSED",
+    "combined_targeted": "105 passed in 10.49s",
+    "qa_report_sha256": "517fd1e6edb54a1630260c7e0532571625c92d042b12b748aaf1b8a8eb793793",
+    "writer_targeted": {
+      "scrub": 16,
+      "xray_projection": 5
+    },
+    "full_required_CI": "PENDING new exact HEAD",
+    "production": "UNCHANGED",
+    "test_first_evidence": "private pkg3-scrub FIRST_RED; pkg3-projection red.log and chunk-red.log; expanded baseline replays labeled separately"
   }
 }

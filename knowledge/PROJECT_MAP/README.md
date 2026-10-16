@@ -1,6 +1,13 @@
 # Project Map
 
+## Package3 implementation continuation — 2026-10-16
+
+OPEN / IN PROGRESS. The user explicitly corrected closure-by-DEFER and authorized actual Package3 implementation in the same PR15. Prior pilot measurements and deferrals below are historical candidate decisions, not completion. HEAD526221c / fullCI38826004751 (1679/0/0) qualifies Package2 and the earlier disposition only; it does not qualify forthcoming Package3 source. Test-first regressions, matched synthetic measurements, independent QA and final combined-head required CI are mandatory. Production remains unchanged; no automatic deployment or Stage5.
+
+
 ## Operational Packages 2/3 source checkpoint — 2026-10-16
+
+Package3 implementation now includes full-scan/no-output unchanged JSONL and chunked operation-owned Xray subject/override projections. IndependentQA105PASS; final combinedHEAD fullCI pending. Earlier blanketDEFER only describes prior candidate history. No production changes or native/durability/fencing relaxation.
 
 User authorized Package2 and conditionalPackage3 together. Branch `perf/operational-package2-3` from main3f96e1e implements bounded cache lifecycle and exact external-observation connection invalidation; final corrective targeted105/105 and independentQA105/105 PASS; first fullCI38822958169 failed unchanged snapshot reuse and is preserved as failed history. Corrective finalHEAD full required PRCI pending. Package3 conditionalchmod pilot DEFERRED after overlapping measurement ranges; scrub/native/DB/I/O changes DEFERRED pending safety/cost proof; PRAGMA/WAL/fsync/transactions unchanged. No production mutation,merge or Stage5. Package2 acceptance remains source/CI/deploy/live-separated. See [Package2/3 report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/REPORT.md). PR14 roadmap reconciliation remains separately OPEN; retain its newer decisions and history.
 

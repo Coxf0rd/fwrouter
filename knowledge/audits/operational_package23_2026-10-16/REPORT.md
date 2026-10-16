@@ -1,8 +1,13 @@
 # Operational Performance Packages 2 and 3
 
+## Package3 implementation continuation — 2026-10-16
+
+OPEN / IN PROGRESS. The user explicitly corrected closure-by-DEFER and authorized actual Package3 implementation in the same PR15. Prior pilot measurements and deferrals below are historical candidate decisions, not completion. HEAD526221c / fullCI38826004751 (1679/0/0) qualifies Package2 and the earlier disposition only; it does not qualify forthcoming Package3 source. Test-first regressions, matched synthetic measurements, independent QA and final combined-head required CI are mandatory. Production remains unchanged; no automatic deployment or Stage5.
+
+
 ## Scope and result
 
-Base main3f96e1e. User authorized both packages as one source/testing task. Package2 cache lifecycle implemented; Package3 explicitly evaluated and DEFERRED where practical benefit or a safe concurrent-output contract is missing. No forced optimization to produce source changes. Production remains deployed3f96e1e, unchanged in this task. PR14 documentation reconciliation is separately OPEN; it is preserved, not agent-merged or replaced. This report uses the newer canonical plan; older source-mirror checkpoints do not override current decisions.
+Base main3f96e1e. User authorized both packages as one source/testing task. Package2 cache lifecycle implemented; Package3 now implements no-change JSONL output elimination and measured operation-owned Xray subject/override batching. Other candidates retain explicit DEFER decisions. See [Package3 implementation](PACKAGE3_IMPLEMENTATION.md). No forced optimization to produce source changes. Production remains deployed3f96e1e, unchanged in this task. PR14 documentation reconciliation is separately OPEN; it is preserved, not agent-merged or replaced. This report uses the newer canonical plan; older source-mirror checkpoints do not override current decisions.
 
 ## Root causes and design
 
@@ -35,9 +40,9 @@ The first full PR run [38822958169](https://github.com/Coxf0rd/fwrouter/actions/
 
 The tradeoff is bounded cache retention versus additional admission/hit CPU. No RSS/SSD/whole-production CPU saving is inferred. Tracemalloc/net/peak figures are operation diagnostics; matched raw ranges are preserved. Loader/native computation cost is not removed, no timeout/memory limit raised. Larger over-budget graphs may reload more frequently; applicable native/full CI must qualify supported workloads before Ready.
 
-## Package3 decisions
+## Package3 pilot history and implemented continuation
 
-[Full disposition/method](PACKAGE3_DISPOSITION.md). A conditional permission-repair pilot was measured then removed from source. Five500-session repeats: baseline median103.99ms wall/103.96CPU, range101.92–107.03ms; pilot101.45/101.43ms,range100.17–102.50ms. Chmod2500→0 but stat2000→4500; allocation4298→4302B. Overlapping ranges and preliminary small-run slowdown (~13%) do not establish practical production benefit or kernel/physicalSSD saving. Parent/DB modes remained0700/0600; no production measurements were used. Final connection.py is exact base, no helper tests retained for an unshipped implementation.
+[Current disposition and historical method](PACKAGE3_DISPOSITION.md). C3 and per-operation Xray projection batching are now implemented in the continuation; earlier blanket deferrals below are superseded for these two candidates only. A conditional permission-repair pilot was measured then removed from source. Five500-session repeats: baseline median103.99ms wall/103.96CPU, range101.92–107.03ms; pilot101.45/101.43ms,range100.17–102.50ms. Chmod2500→0 but stat2000→4500; allocation4298→4302B. Overlapping ranges and preliminary small-run slowdown (~13%) do not establish practical production benefit or kernel/physicalSSD saving. Parent/DB modes remained0700/0600; no production measurements were used. Final connection.py is exact base, no helper tests retained for an unshipped implementation.
 
 | Candidate | Decision and reason |
 |---|---|

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
+
 import pytest
 
 from fwrouter_api.db.connection import db_session
@@ -13,7 +15,9 @@ from fwrouter_api.services.event_contract import (
     reset_event_context,
     sanitize_value,
     set_event_context,
+    scrub_jsonl_files,
 )
+from fwrouter_api.services import event_contract
 from fwrouter_api.services.logs import (
     list_technical_logs,
     write_operational_log,
@@ -171,3 +175,212 @@ def test_typed_operational_category_is_independent_of_event_type_text() -> None:
         event_code="core.routing.probe_outcome.changed", message="typed",
     )
     assert event.details["event_category"] == "operational"
+
+
+def test_scrub_scans_unchanged_jsonl_without_creating_temporary_output(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "events.jsonl"
+    lines = [
+        json.dumps(
+            {"event_id": f"event-{index}", "details": {"server_id": f"s-{index}"}},
+            sort_keys=True,
+        )
+        for index in range(4)
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    before = path.stat()
+    scanned: list[object] = []
+    actual_sanitize = event_contract.sanitize_value
+
+    def record_full_scan(value, *, key=None):
+        if isinstance(value, dict) and "event_id" in value:
+            scanned.append(value)
+        return actual_sanitize(value, key=key)
+
+    def unexpected_temp(*_args, **_kwargs):
+        raise AssertionError("unchanged JSONL must not create a temporary output")
+
+    def unexpected_fsync(*_args, **_kwargs):
+        raise AssertionError("unchanged JSONL must not fsync temporary output")
+
+    monkeypatch.setattr(event_contract, "sanitize_value", record_full_scan)
+    monkeypatch.setattr(event_contract.tempfile, "NamedTemporaryFile", unexpected_temp)
+    monkeypatch.setattr(event_contract.os, "fsync", unexpected_fsync)
+
+    result = scrub_jsonl_files([path])
+
+    after = path.stat()
+    assert result == {"files_rewritten": 0, "records_scanned": 4}
+    assert len(scanned) == 4
+    assert (after.st_ino, after.st_mode, after.st_mtime_ns) == (
+        before.st_ino, before.st_mode, before.st_mtime_ns
+    )
+
+
+def test_scrub_changed_jsonl_keeps_mode_malformed_lines_and_atomic_failure_contract(
+    monkeypatch, tmp_path
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(
+        b'{"event_id":"event-1","details":{"password":"secret"}}\n'
+        b'not-json token=secret\r\n \t\r\n\r\n'
+    )
+    path.chmod(0o640)
+    original = path.read_bytes()
+    actual_fsync = event_contract.os.fsync
+    actual_replace = event_contract.os.replace
+
+    def failed_fsync(_fd):
+        raise OSError("synthetic fsync failure")
+
+    monkeypatch.setattr(event_contract.os, "fsync", failed_fsync)
+    with pytest.raises(OSError, match="synthetic fsync failure"):
+        scrub_jsonl_files([path])
+    assert path.read_bytes() == original
+    assert (path.stat().st_mode & 0o777) == 0o640
+    assert list(tmp_path.glob("*.scrub.tmp")) == []
+    monkeypatch.setattr(event_contract.os, "fsync", actual_fsync)
+
+    def failed_replace(source, destination):
+        assert Path(source).parent == path.parent
+        assert Path(destination) == path
+        raise OSError("synthetic replace failure")
+
+    monkeypatch.setattr(event_contract.os, "replace", failed_replace)
+    with pytest.raises(OSError, match="synthetic replace failure"):
+        scrub_jsonl_files([path])
+    assert path.read_bytes() == original
+    assert (path.stat().st_mode & 0o777) == 0o640
+    assert list(tmp_path.glob("*.scrub.tmp")) == []
+    monkeypatch.setattr(event_contract.os, "replace", actual_replace)
+
+    result = scrub_jsonl_files([path])
+    rendered = path.read_text(encoding="utf-8")
+    records = rendered.splitlines()
+    assert result == {"files_rewritten": 1, "records_scanned": 1}
+    assert json.loads(records[0])["details"]["password"] == "[REDACTED]"
+    assert json.loads(records[1]) == "not-json token=[REDACTED]"
+    assert records[2] == " \t"
+    assert records[3] == ""
+    assert (path.stat().st_mode & 0o777) == 0o640
+    assert list(tmp_path.glob("*.scrub.tmp")) == []
+
+
+@pytest.mark.parametrize("mutation", ["append", "replace"])
+def test_scrub_does_not_overwrite_jsonl_changed_between_scan_and_rewrite(
+    monkeypatch, tmp_path, mutation: str
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"event_id":"event-1","details":{"password":"secret"}}\n'
+        '{"event_id":"event-2","details":{"password":"secret"}}\n',
+        encoding="utf-8",
+    )
+    replacement_bytes = b'{"event_id":"replacement","details":{"token":"new-secret"}}\n'
+    actual_sanitize = event_contract.sanitize_value
+    calls = 0
+
+    def mutate_during_rewrite(value, *, key=None):
+        nonlocal calls
+        if isinstance(value, dict) and "event_id" in value:
+            calls += 1
+        if calls == 2:
+            if mutation == "append":
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write('{"event_id":"late-append"}\n')
+            else:
+                replacement = tmp_path / "replacement.jsonl"
+                replacement.write_bytes(replacement_bytes)
+                event_contract.os.replace(replacement, path)
+        return actual_sanitize(value, key=key)
+
+    monkeypatch.setattr(event_contract, "sanitize_value", mutate_during_rewrite)
+    with pytest.raises(OSError, match="changed during scrub"):
+        scrub_jsonl_files([path])
+
+    if mutation == "append":
+        assert "late-append" in path.read_text(encoding="utf-8")
+        assert "[REDACTED]" not in path.read_text(encoding="utf-8")
+    else:
+        assert path.read_bytes() == replacement_bytes
+    assert list(tmp_path.glob("*.scrub.tmp")) == []
+
+
+@pytest.mark.parametrize("mutation", ["append", "replace"])
+def test_scrub_rejects_mutation_between_scan_and_atomic_rewrite(
+    monkeypatch, tmp_path, mutation: str
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"event_id":"event-1","details":{"password":"secret"}}\n',
+        encoding="utf-8",
+    )
+    replacement_bytes = b'{"event_id":"replacement","details":{"token":"new-secret"}}\n'
+    actual_temp = event_contract.tempfile.NamedTemporaryFile
+    scanned = False
+    actual_sanitize = event_contract.sanitize_value
+
+    def mark_scanned(value, *, key=None):
+        nonlocal scanned
+        scanned = True
+        return actual_sanitize(value, key=key)
+
+    def mutate_before_rewrite(*args, **kwargs):
+        if scanned:
+            if mutation == "append":
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write('{"event_id":"late-append"}\n')
+            else:
+                replacement = tmp_path / "replacement.jsonl"
+                replacement.write_bytes(replacement_bytes)
+                event_contract.os.replace(replacement, path)
+        return actual_temp(*args, **kwargs)
+
+    monkeypatch.setattr(event_contract, "sanitize_value", mark_scanned)
+    monkeypatch.setattr(event_contract.tempfile, "NamedTemporaryFile", mutate_before_rewrite)
+    with pytest.raises(OSError, match="changed during scrub"):
+        scrub_jsonl_files([path])
+
+    if mutation == "append":
+        assert "late-append" in path.read_text(encoding="utf-8")
+    else:
+        assert path.read_bytes() == replacement_bytes
+    assert list(tmp_path.glob("*.scrub.tmp")) == []
+
+
+@pytest.mark.parametrize("mutation", ["append", "mode"])
+def test_scrub_rechecks_source_state_after_temp_fsync_before_replace(
+    monkeypatch, tmp_path, mutation: str
+) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        '{"event_id":"event-1","details":{"password":"secret"}}\n',
+        encoding="utf-8",
+    )
+    path.chmod(0o640)
+    actual_fsync = event_contract.os.fsync
+    changed = False
+
+    def mutate_at_fsync(fd: int) -> None:
+        nonlocal changed
+        if not changed:
+            changed = True
+            if mutation == "append":
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write('{"event_id":"late-append"}\n')
+            else:
+                path.chmod(0o600)
+        actual_fsync(fd)
+
+    monkeypatch.setattr(event_contract.os, "fsync", mutate_at_fsync)
+    with pytest.raises(OSError, match="changed during scrub"):
+        scrub_jsonl_files([path])
+
+    if mutation == "append":
+        assert "late-append" in path.read_text(encoding="utf-8")
+        assert (path.stat().st_mode & 0o777) == 0o640
+    else:
+        assert (path.stat().st_mode & 0o777) == 0o600
+        assert "password" in path.read_text(encoding="utf-8")
+    assert list(tmp_path.glob("*.scrub.tmp")) == []

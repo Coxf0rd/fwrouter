@@ -1,0 +1,16 @@
+{
+  "500": {
+    "baseline": {
+      "connections": 4002,
+      "current_delta_bytes": 513312,
+      "peak_bytes": 755954,
+      "selects": 4002
+    },
+    "candidate": {
+      "connections": 6,
+      "current_delta_bytes": 526034,
+      "peak_bytes": 2242242,
+      "selects": 6
+    }
+  }
+}
