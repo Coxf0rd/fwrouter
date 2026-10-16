@@ -3352,6 +3352,8 @@ def build_app(socket_path: Path):
     app = create_app(enable_startup_tasks=os.environ.get("FWROUTER_STARTUP_TASKS_ENABLED") == "1")
     app.add_api_route("/api/v2/__acceptance/bootstrap/report", lambda: dict(bootstrap_observation), methods=["GET"])
     _bind_xray_checkpoint_barrier(socket_path, state)
+    _bind_xray_pre_native_stage_failure(state)
+    _bind_xray_inventory_promotion_failure(state)
     mihomo_adapter = _bind_acceptance_mihomo(socket_path, state)
     _install_acceptance_mihomo_fence_observer()
     _install_acceptance_provider_verification_observer()
@@ -3414,10 +3416,12 @@ def build_app(socket_path: Path):
                 _xray_generation_checkpoint_path,
                 _xray_adapter,
             )
-            adapter = _xray_adapter()
-            return _recover_checkpoint_from_current_projection(
-                adapter, _xray_generation_checkpoint_path(adapter),
-            )
+            from fwrouter_api.adapters.xray_common import xray_writer_guard
+            with xray_writer_guard(timeout_seconds=30.0):
+                adapter = _xray_adapter()
+                return _recover_checkpoint_from_current_projection(
+                    adapter, _xray_generation_checkpoint_path(adapter),
+                )
         options: dict[str, Any] = {}
         if payload.get("verify_selection") is True:
             from fwrouter_api.services.xray_subscription_service import (
@@ -3480,6 +3484,73 @@ def build_app(socket_path: Path):
     app.add_api_route(
         "/api/v2/__acceptance/xray/checkpoint-failure/arm",
         arm_prepared_checkpoint_failure,
+        methods=["POST"],
+    )
+
+    def arm_pre_native_stage_failure() -> dict[str, Any]:
+        """Inject one controlled failure before any Xray/Mihomo candidate staging."""
+        failure_flag = state / "run" / "fail-before-native-stage-once"
+        descriptor = os.open(
+            failure_flag,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.close(descriptor)
+        return {"ok": True, "armed": True}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/pre-native-stage-failure/arm",
+        arm_pre_native_stage_failure,
+        methods=["POST"],
+    )
+
+    def arm_inventory_promotion_failure() -> dict[str, Any]:
+        """Fail once after native publication, immediately before inventory promotion."""
+        failure_flag = state / "run" / "fail-before-inventory-promotion-once"
+        descriptor = os.open(
+            failure_flag,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.close(descriptor)
+        return {"ok": True, "armed": True}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/inventory-promotion-failure/arm",
+        arm_inventory_promotion_failure,
+        methods=["POST"],
+    )
+
+    def subscription_native_generation_state() -> dict[str, Any]:
+        """Expose only the non-secret digest/revision lifecycle diagnostic to this test."""
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+
+        return {"ok": True, "state": get_subscription_native_generation_state()}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/subscription/native-generation",
+        subscription_native_generation_state,
+        methods=["GET"],
+    )
+
+    def recover_startup_xray_subscription_generation() -> dict[str, Any]:
+        """Run only the real Xray profile startup recovery under its normal guard."""
+        from fwrouter_api.services.bootstrap import recover_startup_xray_subscription_profiles
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+
+        result = recover_startup_xray_subscription_profiles()
+        return {
+            "ok": result.get("ok") is True,
+            "status": str(result.get("status") or ""),
+            "stage": str(result.get("stage") or ""),
+            "error_code": str(result.get("error_code") or ""),
+            "inventory_authority": str(result.get("inventory_authority") or ""),
+            "native_generation": get_subscription_native_generation_state(),
+        }
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/startup-generation-recovery",
+        recover_startup_xray_subscription_generation,
         methods=["POST"],
     )
 
@@ -3979,6 +4050,63 @@ def _bind_xray_checkpoint_barrier(socket_path: Path, state: Path) -> None:
             _rpc_call(socket_path, "generation_checkpoint", {"phase": phase})
 
     xray_subscription_service._fsync_directory = fsync_directory_with_checkpoint_barrier
+
+
+def _bind_xray_pre_native_stage_failure(state: Path) -> None:
+    """Install a one-shot, suite-owned failure before native candidate staging."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("pre-native-stage fault injection requires the qualified test worker")
+
+    from fwrouter_api.services import xray_subscription_service
+
+    original_stage = xray_subscription_service._stage_profile_native_candidates
+    failure_flag = state / "run" / "fail-before-native-stage-once"
+
+    def stage_with_one_shot_failure(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            descriptor = os.open(failure_flag, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return original_stage(*args, **kwargs)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size != 0:
+                raise RuntimeError("acceptance pre-native-stage fault marker is not an owned empty file")
+        finally:
+            os.close(descriptor)
+        os.unlink(failure_flag)
+        return {
+            "ok": False,
+            "stage": "acceptance_pre_native_stage",
+            "error_code": "ACCEPTANCE_PRE_NATIVE_STAGE_FAILURE",
+        }
+
+    xray_subscription_service._stage_profile_native_candidates = stage_with_one_shot_failure
+
+
+def _bind_xray_inventory_promotion_failure(state: Path) -> None:
+    """Inject one test-owned failure after native proof but before marker promotion."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("inventory promotion fault injection requires the qualified test worker")
+
+    from fwrouter_api.services import subscription
+
+    original_promote = subscription._promote_subscription_inventory_generation
+    failure_flag = state / "run" / "fail-before-inventory-promotion-once"
+
+    def promote_with_one_shot_failure(admission: Any) -> dict[str, Any]:
+        try:
+            info = failure_flag.lstat()
+        except FileNotFoundError:
+            return original_promote(admission)
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.getuid() or info.st_size != 0):
+            raise RuntimeError("acceptance inventory-promotion marker is not an owned empty file")
+        failure_flag.unlink()
+        return {"ok": False, "reason": "acceptance_inventory_promotion_failure"}
+
+    subscription._promote_subscription_inventory_generation = promote_with_one_shot_failure
 
 
 def _bind_acceptance_mihomo(socket_path: Path, state: Path):

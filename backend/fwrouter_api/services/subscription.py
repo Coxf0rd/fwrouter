@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+from dataclasses import dataclass
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from urllib.parse import urlparse
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.event_contract import sanitize_string, sanitize_value
 from fwrouter_api.services.events import create_event_context, safe_human_label, write_audit_event
-from fwrouter_api.adapters.xray_common import xray_writer_guarded
+from fwrouter_api.adapters.xray_common import xray_writer_guarded, xray_writer_guard_is_held
 
 
 ALLOWED_SCHEMES = {"http", "https"}
@@ -25,6 +26,349 @@ PLACEHOLDER_HOSTS = {
     "localhost",
 }
 _SUBSCRIPTION_URI = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+", re.IGNORECASE)
+SUBSCRIPTION_NATIVE_GENERATION_KEY = "subscriptions.native_generation.v1"
+_SUBSCRIPTION_ADMISSION_ISSUER = object()
+
+
+@dataclass(frozen=True)
+class _SubscriptionInventoryAdmission:
+    """Opaque in-process capability for one guarded inventory generation."""
+
+    digest: str
+    revision: int
+    issuer: object
+
+
+class SubscriptionInventoryGenerationBlocked(RuntimeError):
+    def __init__(self, result: dict[str, Any]) -> None:
+        self.result = result
+        super().__init__(str(result.get("reason") or "subscription_inventory_generation_blocked"))
+
+
+def _subscription_inventory_digest(connection: Any) -> tuple[str, int]:
+    """Hash only durable subscription-owned inventory and source memberships."""
+    servers = [
+        tuple(row)
+        for row in connection.execute(
+            """SELECT server_id, server_name, provider_name, country_code, region,
+                      raw_json, inventory_state
+               FROM servers
+               WHERE COALESCE(provider_name, '') = 'subscription'
+                  OR server_id IN (
+                      SELECT server_id FROM subscription_server_memberships WHERE is_active=1
+                  )
+               ORDER BY server_id"""
+        ).fetchall()
+    ]
+    memberships = [
+        tuple(row)
+        for row in connection.execute(
+            """SELECT source_id, server_id, entry_identity_hash, parser_format, is_active
+               FROM subscription_server_memberships
+               ORDER BY source_id, server_id"""
+        ).fetchall()
+    ]
+    payload = json.dumps(
+        {"servers": servers, "memberships": memberships},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest(), len(servers)
+
+
+def _validated_subscription_generation_marker(
+    value: Any,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate the self-contained generation/proof tuple before it can be reused."""
+    try:
+        marker = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, "generation_marker_invalid"
+    if (
+        not isinstance(marker, dict)
+        or type(marker.get("schema")) is not int
+        or marker.get("schema") != 1
+    ):
+        return None, "generation_marker_invalid"
+    status = marker.get("status")
+    if not isinstance(status, str) or status not in {"pending", "verified"}:
+        return None, "generation_marker_invalid"
+
+    digest_pattern = r"[0-9a-f]{64}"
+    candidate_digest = marker.get("candidate_digest")
+    if (
+        not isinstance(candidate_digest, str)
+        or re.fullmatch(digest_pattern, candidate_digest) is None
+    ):
+        return None, "generation_digest_invalid"
+    candidate_revision = marker.get("candidate_revision")
+    if type(candidate_revision) is not int or candidate_revision < 1:
+        return None, "generation_revision_invalid"
+
+    verified_digest = marker.get("verified_digest")
+    verified_revision = marker.get("verified_revision")
+    if verified_digest is None and verified_revision is None:
+        if status == "verified":
+            return None, "verified_generation_proof_mismatch"
+    elif (
+        not isinstance(verified_digest, str)
+        or re.fullmatch(digest_pattern, verified_digest) is None
+        or type(verified_revision) is not int
+        or verified_revision < 1
+    ):
+        return None, "verified_generation_proof_mismatch"
+    elif status == "verified":
+        if verified_digest != candidate_digest or verified_revision != candidate_revision:
+            return None, "verified_generation_proof_mismatch"
+    elif verified_digest == candidate_digest or verified_revision >= candidate_revision:
+        # A pending candidate may retain an older verified generation, but it
+        # cannot claim that proof for itself or for a future revision.
+        return None, "verified_generation_proof_mismatch"
+    return marker, None
+
+
+def _read_subscription_native_generation(connection: Any) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT value_json FROM settings WHERE key=?",
+        (SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+    ).fetchone()
+    current_digest, inventory_count = _subscription_inventory_digest(connection)
+    if row is None:
+        return {
+            "schema": 1,
+            "status": "empty" if inventory_count == 0 else "unknown",
+            "candidate_digest": None,
+            "candidate_revision": None,
+            "verified_digest": None,
+            "verified_revision": None,
+            "reason": None if inventory_count == 0 else "verified_generation_missing",
+            "inventory_digest": current_digest,
+            "inventory_count": inventory_count,
+        }
+    marker, invalid_reason = _validated_subscription_generation_marker(row["value_json"])
+    if marker is None:
+        marker = {}
+    status = str(marker.get("status") or "unknown")
+    reason = str(marker.get("reason") or "") or invalid_reason
+    candidate_digest = marker.get("candidate_digest")
+    candidate_revision = marker.get("candidate_revision")
+    verified_digest = marker.get("verified_digest")
+    verified_revision = marker.get("verified_revision")
+    if invalid_reason is not None:
+        status, reason = "unknown", invalid_reason
+    elif candidate_digest != current_digest:
+        status, reason = "unknown", "inventory_digest_mismatch"
+    return {
+        "schema": 1,
+        "status": status,
+        "candidate_digest": candidate_digest if isinstance(candidate_digest, str) else None,
+        "candidate_revision": candidate_revision if type(candidate_revision) is int else None,
+        "verified_digest": verified_digest if isinstance(verified_digest, str) else None,
+        "verified_revision": verified_revision if type(verified_revision) is int else None,
+        "reason": reason,
+        "inventory_digest": current_digest,
+        "inventory_count": inventory_count,
+    }
+
+
+def get_subscription_native_generation_state() -> dict[str, Any]:
+    """Return redacted generation diagnostics; never expose inventory material."""
+    with db_session() as connection:
+        state = _read_subscription_native_generation(connection)
+    return {key: state[key] for key in (
+        "schema", "status", "candidate_digest", "candidate_revision",
+        "verified_digest", "verified_revision", "reason", "inventory_count",
+    )}
+
+
+def _write_subscription_inventory_candidate(connection: Any) -> None:
+    current_digest, inventory_count = _subscription_inventory_digest(connection)
+    row = connection.execute(
+        "SELECT value_json FROM settings WHERE key=?",
+        (SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+    ).fetchone()
+    try:
+        raw_prior = json.loads(row["value_json"]) if row else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raw_prior = None
+    prior, _invalid_reason = _validated_subscription_generation_marker(raw_prior)
+    # A well-typed counter remains a fencing high-water mark even if the proof
+    # tuple is malformed. It can advance, but never authorizes reusing proof.
+    high_water = None
+    if (
+        isinstance(raw_prior, dict)
+        and type(raw_prior.get("schema")) is int
+        and raw_prior.get("schema") == 1
+        and type(raw_prior.get("candidate_revision")) is int
+        and raw_prior["candidate_revision"] > 0
+    ):
+        high_water = raw_prior["candidate_revision"]
+    if row is not None and high_water is None:
+        # With no trustworthy counter, resetting to revision 1 could recreate
+        # an old in-process capability. Keep the marker unadmittable instead.
+        marker = {
+            "schema": 1,
+            "status": "unknown",
+            "candidate_digest": current_digest,
+            "candidate_revision": None,
+            "verified_digest": None,
+            "verified_revision": None,
+            "reason": "generation_revision_high_water_unavailable",
+            "inventory_count": inventory_count,
+        }
+        connection.execute(
+            """INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=CURRENT_TIMESTAMP""",
+            (SUBSCRIPTION_NATIVE_GENERATION_KEY, json.dumps(marker, sort_keys=True, separators=(",", ":"))),
+        )
+        return
+    next_revision = (high_water or 0) + 1
+    verified_digest = prior.get("verified_digest") if prior is not None else None
+    verified_revision = prior.get("verified_revision") if prior is not None else None
+    # Returning exactly to a previously proven inventory is safe to admit; all
+    # other changed snapshots remain pending until the normal pipeline proves
+    # and promotes them.
+    verified = bool(prior is not None and verified_digest and verified_digest == current_digest)
+    marker = {
+        "schema": 1,
+        "status": "verified" if verified else "pending",
+        "candidate_digest": current_digest,
+        "candidate_revision": next_revision,
+        "verified_digest": current_digest if verified else verified_digest,
+        "verified_revision": next_revision if verified else verified_revision,
+        "reason": None if verified else "inventory_changed_requires_native_publication",
+        "inventory_count": inventory_count,
+    }
+    connection.execute(
+        """INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=CURRENT_TIMESTAMP""",
+        (SUBSCRIPTION_NATIVE_GENERATION_KEY, json.dumps(marker, sort_keys=True, separators=(",", ":"))),
+    )
+
+
+def _subscription_inventory_generation_gate(
+    admission: Any = None, *, require_writer_guard: bool = False,
+) -> dict[str, Any]:
+    with db_session() as connection:
+        state = _read_subscription_native_generation(connection)
+    if state["status"] == "empty":
+        return {"ok": True, "status": "empty", "reason": None}
+    if state["status"] == "verified":
+        if admission is None:
+            return {"ok": True, "status": "verified", "reason": None,
+                    "candidate_digest": state["candidate_digest"],
+                    "candidate_revision": state["candidate_revision"]}
+        # A claimed candidate must still own the exact revision it was issued
+        # for, even if another operation has since verified a newer revision.
+        if (
+            isinstance(admission, _SubscriptionInventoryAdmission)
+            and admission.issuer is _SUBSCRIPTION_ADMISSION_ISSUER
+            and (not require_writer_guard or xray_writer_guard_is_held())
+            and admission.digest == state["candidate_digest"]
+            and admission.revision == state["candidate_revision"]
+        ):
+            return {"ok": True, "status": "verified_admitted", "reason": None,
+                    "candidate_digest": state["candidate_digest"],
+                    "candidate_revision": state["candidate_revision"]}
+        return {"ok": False, "status": "verified", "reason": "inventory_generation_stale",
+                "candidate_digest": state["candidate_digest"],
+                "candidate_revision": state["candidate_revision"],
+                "last_good_retained": True}
+    valid_capability = bool(
+        isinstance(admission, _SubscriptionInventoryAdmission)
+        and admission.issuer is _SUBSCRIPTION_ADMISSION_ISSUER
+        and (not require_writer_guard or xray_writer_guard_is_held())
+        and state["status"] == "pending"
+        and admission.digest == state["candidate_digest"]
+        and admission.revision == state["candidate_revision"]
+    )
+    if valid_capability:
+        return {"ok": True, "status": "pending_admitted", "reason": None,
+                "candidate_digest": state["candidate_digest"],
+                "candidate_revision": state["candidate_revision"]}
+    return {"ok": False, "status": state["status"],
+            "reason": (
+                "inventory_generation_stale"
+                if admission is not None and state["status"] == "pending"
+                else state["reason"] or "verified_generation_missing"
+            ),
+            "candidate_digest": state["candidate_digest"],
+            "candidate_revision": state["candidate_revision"],
+            "last_good_retained": True}
+
+
+def _claim_subscription_inventory_admission() -> _SubscriptionInventoryAdmission | None:
+    if not xray_writer_guard_is_held():
+        raise RuntimeError("SUBSCRIPTION_INVENTORY_ADMISSION_REQUIRES_WRITER_GUARD")
+    with db_session() as connection:
+        state = _read_subscription_native_generation(connection)
+    if state["status"] == "verified" or state["status"] == "empty":
+        return None
+    if state["status"] != "pending" or type(state["candidate_revision"]) is not int:
+        raise SubscriptionInventoryGenerationBlocked({
+            "ok": False, "status": "pending", "stage": "inventory_generation_admission",
+            "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+            "reason": state["reason"] or "verified_generation_missing",
+            "last_good_retained": True,
+        })
+    return _SubscriptionInventoryAdmission(
+        digest=str(state["candidate_digest"]),
+        revision=int(state["candidate_revision"]),
+        issuer=_SUBSCRIPTION_ADMISSION_ISSUER,
+    )
+
+
+def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]:
+    if (
+        not isinstance(admission, _SubscriptionInventoryAdmission)
+        or admission.issuer is not _SUBSCRIPTION_ADMISSION_ISSUER
+        or not xray_writer_guard_is_held()
+    ):
+        return {"ok": False, "reason": "inventory_generation_admission_missing"}
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+        current_mihomo_input_fingerprint, mihomo_input_unchanged,
+        mihomo_udp_policy_receipt_matches,
+    )
+    try:
+        fingerprint = current_mihomo_input_fingerprint()
+    except Exception:
+        return {"ok": False, "reason": "native_input_fingerprint_unavailable"}
+    if not mihomo_udp_policy_receipt_matches() or not mihomo_input_unchanged(fingerprint):
+        return {"ok": False, "reason": "native_receipt_unverified"}
+    with db_session() as connection:
+        current = _read_subscription_native_generation(connection)
+        if (
+            current["status"] == "verified"
+            and current["candidate_digest"] == admission.digest
+            and current["candidate_revision"] == admission.revision
+            and current["verified_digest"] == admission.digest
+            and current["verified_revision"] == admission.revision
+        ):
+            return {"ok": True, "digest": admission.digest, "revision": admission.revision,
+                    "already_promoted": True}
+        if (
+            current["status"] != "pending"
+            or current["candidate_digest"] != admission.digest
+            or current["candidate_revision"] != admission.revision
+            or current["inventory_digest"] != admission.digest
+        ):
+            return {"ok": False, "reason": "inventory_generation_stale"}
+        marker = {
+            "schema": 1,
+            "status": "verified",
+            "candidate_digest": admission.digest,
+            "candidate_revision": admission.revision,
+            "verified_digest": admission.digest,
+            "verified_revision": admission.revision,
+            "reason": None,
+            "inventory_count": current["inventory_count"],
+        }
+        connection.execute(
+            "UPDATE settings SET value_json=?, updated_at=CURRENT_TIMESTAMP WHERE key=?",
+            (json.dumps(marker, sort_keys=True, separators=(",", ":")), SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+    return {"ok": True, "digest": admission.digest, "revision": admission.revision}
 
 
 def redact_subscription_public_value(value: Any) -> Any:
@@ -1261,6 +1605,9 @@ def _upsert_subscription_servers(
             advance_selection_revision(connection)
         from fwrouter_api.services.provider_managed import adopt_provider_inventory_revision
         adopt_provider_inventory_revision(connection)
+        # Persist the native-generation admission marker in the same SQLite
+        # transaction as the inventory and source-membership mutation.
+        _write_subscription_inventory_candidate(connection)
 
     return {
         "seen_count": len(seen_ids),

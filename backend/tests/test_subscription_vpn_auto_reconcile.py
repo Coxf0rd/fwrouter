@@ -121,7 +121,7 @@ def test_already_current_successful_refresh_still_reconciles_vpn_auto(monkeypatc
     monkeypatch.setattr(
         subscription_pipeline,
         "_reconcile_xray_after_authoritative_inventory_refresh",
-        lambda prepared: calls.append("vpn-auto")
+        lambda prepared, **_kwargs: calls.append("vpn-auto")
         or (
             {"ok": True, "status": "success", "created_count": 0, "deleted_count": 1},
             {"ok": True, "status": "success", "nodes_count": 1},
@@ -183,7 +183,7 @@ def test_managed_xray_generation_runs_before_readback_and_reports_generation_cha
     monkeypatch.setattr(
         subscription_pipeline,
         "_reconcile_xray_after_authoritative_inventory_refresh",
-        lambda _prepared, *, verification_callback=None: events.append("generation") or (
+        lambda _prepared, *, verification_callback=None, inventory_admission=None: events.append("generation") or (
             {"ok": True, "status": "success", "created_count": 0, "deleted_count": 0},
             {
                 "ok": True,
@@ -231,7 +231,7 @@ def test_managed_xray_generation_failure_skips_followup_mihomo_apply(monkeypatch
     monkeypatch.setattr(
         subscription_pipeline,
         "_reconcile_xray_after_authoritative_inventory_refresh",
-        lambda _prepared, *, verification_callback=None: (
+        lambda _prepared, *, verification_callback=None, inventory_admission=None: (
             {"ok": False, "error_code": "XRAY_GENERATION_CANDIDATE_INVALID"},
             {"ok": False, "status": "failed", "error_code": "XRAY_GENERATION_CANDIDATE_INVALID"},
         ),

@@ -301,7 +301,15 @@ def _seed_current_generation_for_recovery(monkeypatch, tmp_path: Path, *, extra_
     assert applied["ok"] is True, applied
     checkpoint = xray_subscription_service._xray_generation_checkpoint_path(adapter)
     checkpoint.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    checkpoint.write_text(json.dumps({"generation_id": "isolated-real-projection", "phase": "restore_failed"}), encoding="utf-8")
+    mihomo_config_path = Path(mihomo_config_service._resolved_base_config_path())
+    checkpoint.write_text(json.dumps({
+        "generation_id": "isolated-real-projection",
+        "phase": "restore_failed",
+        "subscription_inventory_generation": xray_subscription_service._current_inventory_generation_binding(),
+        "staged_generation": {
+            "mihomo_final_sha256": hashlib.sha256(mihomo_config_path.read_bytes()).hexdigest(),
+        },
+    }), encoding="utf-8")
     checkpoint.chmod(0o600)
     return adapter, checkpoint
 
@@ -1555,6 +1563,9 @@ class _SuccessfulDataplaneAdapter:
 
 def _patch_runtime(monkeypatch) -> None:
     import fwrouter_api.adapters.mihomo as mihomo_adapter_module
+    # Component profiles must not inspect host interfaces. Native/network
+    # observation belongs to the qualified isolated acceptance profile.
+    monkeypatch.setattr("fwrouter_api.services.dnsmasq._discover_router_dns_bindings", lambda: [])
     adapter = _SuccessfulDataplaneAdapter()
     monkeypatch.setattr(apply_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
     monkeypatch.setattr(runtime_service, "DEFAULT_DATAPLANE_ADAPTER", adapter)
@@ -2430,7 +2441,7 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
         xray_subscription_service, "_restore_xray_generation_checkpoint", observe_checkpoint_at_recovery,
     )
     apply_candidate = xray_subscription_service._apply_staged_mihomo_candidate
-    def fail_final_candidate(candidate_path: str, expected_sha256: str):
+    def fail_final_candidate(candidate_path: str, expected_sha256: str, **kwargs):
         if "final" in Path(candidate_path).name:
             if rollback_failure == "readback_failure":
                 from fwrouter_api.adapters import mihomo as mihomo_adapter_module
@@ -2440,7 +2451,7 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
                     lambda *_args, **_kwargs: False,
                 )
             return {"ok": False, "stage": "test_failure", "error_code": "INJECTED_FINAL_APPLY_FAILURE"}
-        return apply_candidate(candidate_path, expected_sha256)
+        return apply_candidate(candidate_path, expected_sha256, **kwargs)
     monkeypatch.setattr(xray_subscription_service, "_apply_staged_mihomo_candidate", fail_final_candidate)
 
     failed = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
@@ -5372,6 +5383,7 @@ def test_materialize_xray_bindings_reconciles_stale_inactive_override_status(mon
 def test_runtime_summary_integration(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    monkeypatch.setattr("fwrouter_api.services.dnsmasq._discover_router_dns_bindings", lambda: [])
     config_path, _ = _xray_paths()
     _write_xray_config(config_path, [{"id": "uuid-runtime", "email": "runtime@example.test"}])
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
@@ -5388,6 +5400,7 @@ def test_runtime_summary_integration(monkeypatch, tmp_path: Path) -> None:
 def test_xray_effective_state_for_enabled_subject(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    monkeypatch.setattr("fwrouter_api.services.dnsmasq._discover_router_dns_bindings", lambda: [])
     config_path, _ = _xray_paths()
     _write_xray_config(config_path, [{"id": "uuid-enabled", "email": "enabled@example.test"}])
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())
@@ -5732,6 +5745,7 @@ def test_xray_user_override_is_forbidden(monkeypatch, tmp_path: Path) -> None:
 def test_list_subjects_with_effective_state_includes_xray(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    monkeypatch.setattr("fwrouter_api.services.dnsmasq._discover_router_dns_bindings", lambda: [])
     config_path, _ = _xray_paths()
     _write_xray_config(config_path, [{"id": "uuid-list", "email": "list@example.test"}])
     adapter = _build_adapter(tmp_path, runner=_FakeRunner())

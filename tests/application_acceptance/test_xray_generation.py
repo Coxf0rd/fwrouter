@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import http.server
+import json
 import os
 import re
 import sqlite3
 import stat
 import threading
-from queue import Queue
 from pathlib import Path
+from queue import Queue
 from uuid import NAMESPACE_DNS, uuid5
 
 import yaml
@@ -16,18 +17,63 @@ import yaml
 from .http_support import http_json
 from .xray_support import (
     active_identities,
+    assert_applied_bindings,
     assert_mihomo_launch_matches_active,
     assert_native_matches_active,
     await_job,
     loaded_identities,
     read_subscription_rows,
-    assert_applied_bindings,
 )
 
 
 _PROVIDER_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
 _PROVIDER_WORKER_LOG_MAX_FILES = 16
 _PROVIDER_WORKER_LOG_MAX_APPEND_BYTES = 64 * 1024
+
+
+class _SyntheticSubscriptionSource:
+    """Serve a mutable synthetic profile on a suite-owned loopback socket."""
+
+    def __init__(self, payload: dict) -> None:
+        self._lock = threading.Lock()
+        self._body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        source = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path != "/synthetic-subscription":
+                    self.send_error(404)
+                    return
+                with source._lock:
+                    body = source._body
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt: str, *args) -> None:
+                return
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server.daemon_threads = False
+        self._server.block_on_close = True
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True,
+        )
+        self._thread.start()
+        self.url = f"http://127.0.0.1:{self._server.server_port}/synthetic-subscription"
+
+    def replace(self, payload: dict) -> None:
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        with self._lock:
+            self._body = body
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=3)
+        assert not self._thread.is_alive(), "synthetic subscription source did not stop"
 
 
 def _snapshot_provider_worker_logs(root):
@@ -89,6 +135,44 @@ def _provider_worker_records_since(root, snapshot):
             if isinstance(record, dict):
                 records.append(record)
     return records
+
+
+def _synthetic_vless_profile(*, short_id_suffix: str, include_third_member: bool) -> dict:
+    def outbound(index: int) -> dict:
+        return {
+            "tag": f"synthetic-member-{index}",
+            "protocol": "vless",
+            "settings": {"vnext": [{
+                "address": f"synthetic-member-{index}.example.invalid",
+                "port": 443,
+                "users": [{
+                    "id": str(uuid5(NAMESPACE_DNS, f"pending-generation-member-{index}")),
+                    "encryption": "none",
+                    "flow": "xtls-rprx-vision",
+                }],
+            }]},
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": f"synthetic-member-{index}.example.invalid",
+                    "publicKey": "CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "shortId": f"{index + 1:02x}" * 8 if not short_id_suffix else f"{index + 1:02x}{short_id_suffix}",
+                    "fingerprint": "chrome",
+                },
+            },
+        }
+
+    count = 3 if include_third_member else 2
+    return {
+        "remarks": "acceptance-pending-generation-profile",
+        "outbounds": [outbound(index) for index in range(count)] + [
+            {"tag": "direct", "protocol": "freedom"},
+            {"tag": "reject", "protocol": "blackhole"},
+            {"tag": "dns", "protocol": "dns"},
+        ],
+        "routing": {"rules": [{"type": "field", "outboundTag": "direct"}]},
+    }
 
 
 def test_email_client_generation_persists_and_matches_native_after_worker_restart(acceptance_stack):
@@ -178,6 +262,315 @@ def test_email_generation_reload_failure_keeps_desired_candidate_and_last_good_l
     }
     assert loaded_identities(stack["native"]) == before_loaded, "failed generation changed actual HandlerService identities"
     assert (token_uuid(job), "reload-failure@acceptance.invalid") not in set(loaded_identities(stack["native"])), job
+
+
+def test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry(acceptance_stack):
+    """A persisted but un-staged inventory cannot be admitted by startup reconciliation."""
+    stack = acceptance_stack
+    state, native = stack["state"], stack["native"]
+    active_xray = state / "xray" / "config.json"
+    active_mihomo = state / "generated" / "mihomo" / "config.yaml"
+
+    # Seed an exact, isolated 78-identity native baseline. These deterministic
+    # fixtures are local to this acceptance worker and never sourced from prod.
+    xray_config = json.loads(active_xray.read_text(encoding="utf-8"))
+    inbound = next(item for item in xray_config["inbounds"] if item.get("tag") == "vless-ws")
+    baseline_clients = [
+        {
+            "id": str(uuid5(NAMESPACE_DNS, f"pending-inventory-preserved-{index}")),
+            "email": f"pending-inventory-preserved-{index}@acceptance.invalid",
+            "level": 0,
+        }
+        for index in range(78)
+    ]
+    inbound["settings"]["clients"] = baseline_clients
+    active_xray.write_text(json.dumps(xray_config, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    native.restart_xray_child()
+    baseline_pairs = {(str(row["id"]), str(row["email"])) for row in baseline_clients}
+    baseline_fingerprint = hashlib.sha256(
+        json.dumps(sorted(baseline_pairs), separators=(",", ":")).encode()
+    ).hexdigest()
+    assert set(loaded_identities(native)) == baseline_pairs
+    assert len(loaded_identities(native)) == 78
+
+    def profile(*, changed_short_ids: bool, add_member: bool) -> dict:
+        suffix = "a1b2c3d4e5f607" if changed_short_ids else ""
+        return _synthetic_vless_profile(short_id_suffix=suffix, include_third_member=add_member)
+
+    def import_source(url: str) -> dict:
+        code, result = http_json(
+            f"{stack['api']}/subscription", method="POST",
+            payload={"urls": [url], "requested_by": "hosted-acceptance-synthetic"},
+            timeout=90,
+        )
+        assert code == 200, {"status": code, "ok": result.get("ok"), "error": result.get("error")}
+        return result
+
+    def generation_state(api: str) -> dict:
+        code, result = http_json(f"{api}/__acceptance/subscription/native-generation")
+        assert code == 200 and result.get("ok") is True, {
+            "status": code, "ok": result.get("ok"), "error_code": result.get("error_code"),
+        }
+        value = result.get("state")
+        assert isinstance(value, dict), result
+        return value
+
+    def logical_profile_group(config: dict) -> dict:
+        groups = [
+            item for item in config.get("proxy-groups", [])
+            if isinstance(item, dict)
+            and item.get("type") == "fallback"
+            and item.get("url") == "https://www.gstatic.com/generate_204"
+        ]
+        assert len(groups) == 1, {"logical_group_count": len(groups)}
+        return groups[0]
+
+    def last_good_mihomo_snapshot() -> dict[str, str]:
+        directory = state / "last-good" / "mihomo"
+        if not directory.is_dir():
+            return {}
+        return {
+            item.name: hashlib.sha256(item.read_bytes()).hexdigest()
+            for item in sorted(directory.iterdir()) if item.is_file() and not item.is_symlink()
+        }
+
+    source = _SyntheticSubscriptionSource(profile(changed_short_ids=False, add_member=False))
+    try:
+        initial = import_source(source.url)
+        assert initial.get("ok") is True, {
+            "ok": initial.get("ok"),
+            "error_code": (initial.get("error") or {}).get("code")
+            if isinstance(initial.get("error"), dict) else None,
+        }
+        applied = generation_state(stack["api"])
+        assert applied.get("status") == "verified"
+        assert applied.get("candidate_digest") == applied.get("verified_digest")
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        mihomo_before = active_mihomo.read_bytes()
+        xray_before = active_xray.read_bytes()
+        config_a = yaml.safe_load(mihomo_before)
+        group_a = logical_profile_group(config_a)
+        members_a = {str(item) for item in group_a.get("proxies", [])}
+        assert len(members_a) == 2
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        last_good_before_failure = last_good_mihomo_snapshot()
+        mihomo_incarnation = (native.mihomo_process.pid, native.mihomo_started_at)
+        reloads_before_failure = native.reload_calls
+
+        source.replace(profile(changed_short_ids=True, add_member=True))
+        armed_code, armed = http_json(
+            f"{stack['api']}/__acceptance/xray/pre-native-stage-failure/arm", method="POST",
+        )
+        assert armed_code == 200 and armed.get("armed") is True, {
+            "status": armed_code, "ok": armed.get("ok"),
+        }
+        failed = import_source(source.url)
+        assert failed.get("ok") is False, {
+            "ok": failed.get("ok"),
+            "applied": (failed.get("data") or {}).get("applied")
+            if isinstance(failed.get("data"), dict) else None,
+        }
+        pending = generation_state(stack["api"])
+        assert pending.get("status") == "pending"
+        assert pending.get("candidate_digest") and pending.get("verified_digest")
+        assert pending.get("candidate_digest") != pending.get("verified_digest")
+        assert type(pending.get("candidate_revision")) is int
+        assert type(pending.get("verified_revision")) is int
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
+        assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        old_worker = stack["worker"]
+        old_worker.terminate()
+        old_worker.wait(timeout=5)
+        restarted_worker, restarted_api = stack["start_worker"]()
+        stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert generation_state(restarted_api) == pending
+        recovery_code, recovery = http_json(
+            f"{restarted_api}/__acceptance/xray/startup-generation-recovery",
+            method="POST", timeout=75,
+        )
+        assert recovery_code == 200 and recovery.get("ok") is False, {
+            "status": recovery_code, "ok": recovery.get("ok"),
+            "status_name": recovery.get("status"), "error_code": recovery.get("error_code"),
+        }
+        assert recovery.get("native_generation", {}).get("status") == "pending"
+        assert generation_state(restarted_api) == pending
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
+        assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+
+        # Re-fetch the same synthetic source through the normal public import
+        # and native publication path. The pending candidate is admitted only
+        # by this fresh, fenced operation.
+        retried = import_source(source.url)
+        assert retried.get("ok") is True, {
+            "ok": retried.get("ok"),
+            "error_code": (retried.get("error") or {}).get("code")
+            if isinstance(retried.get("error"), dict) else None,
+        }
+        verified = generation_state(restarted_api)
+        assert verified.get("status") == "verified"
+        assert verified.get("candidate_digest") == verified.get("verified_digest")
+        assert verified.get("verified_digest") == pending.get("candidate_digest")
+        config_b = yaml.safe_load(active_mihomo.read_bytes())
+        group_b = logical_profile_group(config_b)
+        members_b = {str(item) for item in group_b.get("proxies", [])}
+        assert len(members_b) == 3
+        assert members_b != members_a and members_a - members_b and members_b - members_a
+        proxies = {
+            str(item.get("name") or ""): item
+            for item in config_b.get("proxies", []) if isinstance(item, dict)
+        }
+        assert members_b <= set(proxies)
+        observed_short_ids = {
+            str((proxy.get("reality-opts") or {}).get("short-id") or "")
+            for name, proxy in proxies.items() if name in members_b
+        }
+        expected_short_ids = {
+            f"{index + 1:02x}a1b2c3d4e5f607" for index in range(3)
+        }
+        assert expected_short_ids <= observed_short_ids, {
+            "expected_count": len(expected_short_ids),
+            "observed_count": len(observed_short_ids),
+        }
+        final_identities = loaded_identities(native)
+        assert set(final_identities) >= baseline_pairs
+        assert sum(1 for pair in final_identities if pair in baseline_pairs) == 78
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert hashlib.sha256(json.dumps(sorted(baseline_pairs), separators=(",", ":")).encode()).hexdigest() == baseline_fingerprint
+
+        # Exercise a crash-window after real native apply/readback and profile
+        # publication, but before the durable inventory marker is promoted.
+        before_checkpoint_mihomo = active_mihomo.read_bytes()
+        source.replace(_synthetic_vless_profile(
+            short_id_suffix="cafe1234567890", include_third_member=True,
+        ))
+        armed_code, armed = http_json(
+            f"{restarted_api}/__acceptance/xray/inventory-promotion-failure/arm", method="POST",
+        )
+        assert armed_code == 200 and armed.get("armed") is True, {
+            "status": armed_code, "ok": armed.get("ok"),
+        }
+        promotion_failed = import_source(source.url)
+        assert promotion_failed.get("ok") is False, {
+            "ok": promotion_failed.get("ok"),
+            "stage": (promotion_failed.get("data") or {}).get("stage")
+            if isinstance(promotion_failed.get("data"), dict) else None,
+        }
+        checkpoint_path = state / "xray" / ".generation" / "generation-checkpoint.json"
+        assert checkpoint_path.is_file(), "promotion failure closed the native generation checkpoint"
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        pending_after_apply = generation_state(restarted_api)
+        binding = checkpoint.get("subscription_inventory_generation")
+        assert pending_after_apply.get("status") == "pending"
+        assert isinstance(binding, dict)
+        assert binding.get("digest") == pending_after_apply.get("candidate_digest")
+        assert binding.get("revision") == pending_after_apply.get("candidate_revision")
+        assert type(binding.get("revision")) is int
+        assert checkpoint.get("phase") == "snapshots_published", checkpoint.get("phase")
+        assert active_mihomo.read_bytes() != before_checkpoint_mihomo
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        old_worker = stack["worker"]
+        old_worker.terminate()
+        old_worker.wait(timeout=5)
+        restarted_worker, restarted_api = stack["start_worker"]()
+        stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert generation_state(restarted_api).get("status") == "pending"
+        recovery_reloads = native.reload_calls
+        recovery_incarnation = (native.mihomo_process.pid, native.mihomo_started_at)
+        checkpoint_recovery_code, checkpoint_recovery = http_json(
+            f"{restarted_api}/__acceptance/xray/reconcile",
+            method="POST", payload={"direct_checkpoint": True}, timeout=75,
+        )
+        assert checkpoint_recovery_code == 200 and checkpoint_recovery.get("ok") is True, {
+            "status": checkpoint_recovery_code,
+            "ok": checkpoint_recovery.get("ok"),
+            "recovered": checkpoint_recovery.get("recovered"),
+            "reason": checkpoint_recovery.get("reason"),
+        }
+        recovered_generation = generation_state(restarted_api)
+        assert recovered_generation.get("status") == "verified"
+        assert recovered_generation.get("candidate_digest") == recovered_generation.get("verified_digest")
+        assert recovered_generation.get("candidate_digest") == pending_after_apply.get("candidate_digest")
+        assert not checkpoint_path.exists(), "freshly proven recovery left the generation checkpoint open"
+        assert native.reload_calls == recovery_reloads, "checkpoint recovery redundantly reapplied native generation"
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == recovery_incarnation
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # A newer persisted candidate invalidates the checkpoint's bound
+        # digest/revision. Recovery must decline without touching native state.
+        source.replace(_synthetic_vless_profile(
+            short_id_suffix="babe9876543210", include_third_member=True,
+        ))
+        armed_code, armed = http_json(
+            f"{restarted_api}/__acceptance/xray/inventory-promotion-failure/arm", method="POST",
+        )
+        assert armed_code == 200 and armed.get("armed") is True, {
+            "status": armed_code, "ok": armed.get("ok"),
+        }
+        stale_candidate_apply = import_source(source.url)
+        assert stale_candidate_apply.get("ok") is False
+        assert checkpoint_path.is_file()
+        stale_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        stale_native_xray = active_xray.read_bytes()
+        stale_native_mihomo = active_mihomo.read_bytes()
+        stale_reload_count = native.reload_calls
+        stale_incarnation = (native.mihomo_process.pid, native.mihomo_started_at)
+        stale_binding = stale_checkpoint.get("subscription_inventory_generation")
+        stale_pending = generation_state(restarted_api)
+        assert isinstance(stale_binding, dict) and stale_binding.get("digest") == stale_pending.get("candidate_digest")
+
+        refresh_code, refreshed = http_json(
+            f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
+            payload={"profile": _synthetic_vless_profile(
+                short_id_suffix="deadbeef001122", include_third_member=True,
+            )},
+        )
+        assert refresh_code == 200 and refreshed.get("ok") is True, {
+            "status": refresh_code, "ok": refreshed.get("ok"),
+            "error_code": refreshed.get("error_code"),
+        }
+        superseding_inventory = generation_state(restarted_api)
+        assert superseding_inventory.get("candidate_digest") != stale_binding.get("digest")
+        stale_recovery_code, stale_recovery = http_json(
+            f"{restarted_api}/__acceptance/xray/reconcile",
+            method="POST", payload={"direct_checkpoint": True}, timeout=75,
+        )
+        assert stale_recovery_code == 200 and stale_recovery.get("ok") is False, {
+            "status": stale_recovery_code,
+            "ok": stale_recovery.get("ok"),
+            "recovered": stale_recovery.get("recovered"),
+            "reason": stale_recovery.get("reason"),
+        }
+        assert checkpoint_path.is_file(), "stale checkpoint was discarded instead of retained for diagnosis"
+        assert active_xray.read_bytes() == stale_native_xray
+        assert active_mihomo.read_bytes() == stale_native_mihomo
+        assert native.reload_calls == stale_reload_count
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == stale_incarnation
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+    finally:
+        source.close()
 
 
 def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery(acceptance_stack):

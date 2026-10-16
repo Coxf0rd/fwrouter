@@ -451,7 +451,14 @@ def test_stale_checkpoint_uses_current_intent_recovery_before_normal_generation(
     monkeypatch, tmp_path: Path, phase, restore_declines,
 ):
     adapter, checkpoint = _setup(monkeypatch, tmp_path)
-    checkpoint.write_text(json.dumps({"generation_id": "old-gen", "phase": phase}), encoding="utf-8")
+    checkpoint.write_text(json.dumps({
+        "generation_id": "old-gen",
+        "phase": phase,
+        # This fixture intentionally models a checkpoint bound to a clean,
+        # truly empty inventory. Unbound legacy checkpoints must not adopt
+        # current projection state after the generation-admission change.
+        "subscription_inventory_generation": {"digest": None, "revision": None},
+    }), encoding="utf-8")
     monkeypatch.setattr(service, "_xray_adapter", lambda: adapter)
     calls = {"restore": 0, "current": 0}
     def restore(*_args):

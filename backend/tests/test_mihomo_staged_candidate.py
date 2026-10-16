@@ -5,6 +5,34 @@ from pathlib import Path
 from fwrouter_api.services import mihomo_config
 
 
+def _prepare_manual_candidate_promotion(monkeypatch, tmp_path: Path):
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+
+    candidate = tmp_path / "state" / "generated" / "mihomo" / "config.next.yaml"
+    base = tmp_path / "state" / "generated" / "mihomo" / "config.yaml"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("candidate generation B\n", encoding="utf-8")
+    base.write_text("active generation A\n", encoding="utf-8")
+    monkeypatch.setattr(mihomo_reconcile.config, "_resolved_candidate_config_path", lambda: str(candidate))
+    monkeypatch.setattr(mihomo_reconcile.config, "_resolved_base_config_path", lambda: str(base))
+    monkeypatch.setattr(mihomo_reconcile.config, "managed_runtime_operation_blocked", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mihomo_reconcile.config, "write_technical_log", lambda **_kwargs: None)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_resolved_candidate_config_path", lambda: candidate)
+    current = {"fingerprint": {"hash": "b" * 64, "payload": {}}}
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+        lambda _routing=None: current["fingerprint"],
+    )
+    monkeypatch.setattr(
+        mihomo_reconcile, "current_mihomo_input_fingerprint",
+        lambda _routing=None: current["fingerprint"],
+    )
+    assert mihomo_reconcile_fingerprint.record_candidate_provenance(
+        candidate_path=candidate, fingerprint=current["fingerprint"],
+    )
+    return mihomo_reconcile, current, candidate, base
+
+
 def test_staged_candidate_writer_uses_only_explicit_path_and_handoff_assignments(monkeypatch, tmp_path: Path) -> None:
     staged_path = tmp_path / "staged" / "config.yaml"
     active_candidate = tmp_path / "active" / "config.next.yaml"
@@ -96,3 +124,67 @@ def test_candidate_validator_reads_explicit_candidate_path(monkeypatch, tmp_path
 
     assert result["ok"] is True
     assert observed == [str(candidate_path)]
+
+
+def test_manual_candidate_promotion_rejects_stale_input_provenance(monkeypatch, tmp_path: Path) -> None:
+    reconcile, current, _candidate, base = _prepare_manual_candidate_promotion(monkeypatch, tmp_path)
+    base_before = base.read_bytes()
+    current["fingerprint"] = {"hash": "a" * 64, "payload": {}}
+
+    result = reconcile.promote_mihomo_candidate_config()
+
+    assert result["ok"] is False
+    assert result["error_code"] == "MIHOMO_CANDIDATE_PROVENANCE_UNVERIFIED"
+    assert base.read_bytes() == base_before
+
+
+def test_manual_candidate_promotion_accepts_current_provenance(monkeypatch, tmp_path: Path) -> None:
+    reconcile, _current, candidate, base = _prepare_manual_candidate_promotion(monkeypatch, tmp_path)
+
+    result = reconcile.promote_mihomo_candidate_config()
+
+    assert result["ok"] is True
+    assert base.read_bytes() == candidate.read_bytes()
+
+
+def test_staged_candidate_rejects_changed_inputs_even_with_inventory_admission(monkeypatch, tmp_path: Path) -> None:
+    import hashlib
+
+    from fwrouter_api.services import mihomo_reconcile_fingerprint, xray_subscription_service
+
+    staged = tmp_path / "staged" / "config.yaml"
+    staged.parent.mkdir()
+    staged.write_bytes(b"staged validated generation")
+    base = tmp_path / "active" / "config.yaml"
+    candidate = tmp_path / "active" / "config.next.yaml"
+    captured = {"hash": "b" * 64, "payload": {}}
+    calls = {"promote": 0, "restart": 0}
+
+    monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: str(base))
+    monkeypatch.setattr(mihomo_config, "_resolved_candidate_config_path", lambda: str(candidate))
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+        lambda *_args, **_kwargs: {"hash": "a" * 64, "payload": {}},
+    )
+    monkeypatch.setattr(
+        mihomo_config, "promote_mihomo_candidate_config",
+        lambda **_kwargs: calls.__setitem__("promote", calls["promote"] + 1) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_runtime.restart_mihomo_container",
+        lambda **_kwargs: calls.__setitem__("restart", calls["restart"] + 1) or {"ok": True},
+    )
+    admission = object()
+
+    result = xray_subscription_service._apply_staged_mihomo_candidate(
+        str(staged), hashlib.sha256(staged.read_bytes()).hexdigest(),
+        inventory_admission=admission,
+        candidate_input_fingerprint=captured,
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "candidate_provenance"
+    assert result["error_code"] == "MIHOMO_CANDIDATE_PROVENANCE_UNVERIFIED"
+    assert result["last_good_retained"] is True
+    assert calls == {"promote": 0, "restart": 0}
+    assert not candidate.exists()
