@@ -510,7 +510,9 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert recovered_generation.get("candidate_digest") == recovered_generation.get("verified_digest")
         assert recovered_generation.get("candidate_digest") == pending_after_apply.get("candidate_digest")
         assert not checkpoint_path.exists(), "freshly proven recovery left the generation checkpoint open"
-        assert native.reload_calls == recovery_reloads, "checkpoint recovery redundantly reapplied native generation"
+        assert native.reload_calls == recovery_reloads + 1, (
+            "checkpoint recovery must reload the owned Xray projection once for fresh native proof"
+        )
         assert (native.mihomo_process.pid, native.mihomo_started_at) == recovery_incarnation
         assert_native_matches_active(native, active_xray)
         assert_mihomo_launch_matches_active(native, active_mihomo)
