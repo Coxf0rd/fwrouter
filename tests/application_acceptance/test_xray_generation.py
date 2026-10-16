@@ -477,18 +477,15 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         reloads_before_failure = native.reload_calls
 
         source.replace(profile(changed_short_ids=True, add_member=True))
-        armed_code, armed = http_json(
-            f"{stack['api']}/__acceptance/xray/pre-native-stage-failure/arm", method="POST",
-        )
-        assert armed_code == 200 and armed.get("armed") is True, {
-            "status": armed_code, "ok": armed.get("ok"),
-        }
-        failed = import_source(source.url)
-        assert failed.get("ok") is False, {
-            "ok": failed.get("ok"),
-            "applied": (failed.get("data") or {}).get("applied")
-            if isinstance(failed.get("data"), dict) else None,
-        }
+        # The first observation persists B but must stop at the reviewed
+        # identity-migration boundary. It is not the injected native-stage
+        # failure below; assert the distinct reason so the one-shot hook cannot
+        # be accidentally consumed by an earlier lifecycle guard.
+        identity_blocked = import_source(source.url)
+        identity_error = identity_blocked.get("error")
+        assert identity_blocked.get("ok") is False
+        assert (identity_error or {}).get("code") == "XRAY_VPN_AUTO_RECONCILE_EXCEPTION"
+        assert (identity_error or {}).get("message") == "IDENTITY_MIGRATION_REQUIRED"
         pending = generation_state(stack["api"])
         assert pending.get("status") == "pending"
         assert pending.get("candidate_digest") and pending.get("verified_digest")
@@ -536,7 +533,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         # restart, then use the existing exact-context identity review flow;
         # it must not write native state or claim the inventory verified.
         assert not (state / "xray" / ".generation" / "generation-checkpoint.json").exists(), (
-            "pre-native staging failure unexpectedly created a generation checkpoint"
+            "pre-stage identity-migration refusal unexpectedly created a generation checkpoint"
         )
         context_code, context = http_json(
             f"{restarted_api}/__acceptance/xray/identity-context",
@@ -600,6 +597,70 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
 
+        # Now the reviewed candidate can reach the native staging boundary.
+        # The one-shot fault must be consumed there, and report its own exact
+        # error rather than inheriting the earlier identity guard failure.
+        armed_code, armed = http_json(
+            f"{restarted_api}/__acceptance/xray/pre-native-stage-failure/arm", method="POST",
+        )
+        assert armed_code == 200 and armed.get("ok") is True and armed.get("armed") is True, {
+            "status": armed_code, "ok": armed.get("ok"),
+        }
+        stage_failed = import_source(source.url)
+        stage_data = stage_failed.get("data") if isinstance(stage_failed.get("data"), dict) else {}
+        stage_apply = stage_data.get("refresh") if isinstance(stage_data.get("refresh"), dict) else {}
+        stage_error = stage_apply.get("error") if isinstance(stage_apply.get("error"), dict) else {}
+        stage_reconcile = stage_apply.get("reconcile") if isinstance(stage_apply.get("reconcile"), dict) else {}
+        assert stage_failed.get("ok") is False
+        assert stage_error.get("code") == "ACCEPTANCE_PRE_NATIVE_STAGE_FAILURE"
+        assert stage_reconcile.get("error_code") == "ACCEPTANCE_PRE_NATIVE_STAGE_FAILURE"
+        assert not (state / "run" / "fail-before-native-stage-once").exists(), (
+            "pre-native-stage fault hook was not consumed at the staging boundary"
+        )
+        assert not (state / "xray" / ".generation" / "generation-checkpoint.json").exists(), (
+            "pre-native-stage failure unexpectedly created a generation checkpoint"
+        )
+        pending_after_stage_failure = generation_state(restarted_api)
+        assert pending_after_stage_failure.get("status") == "pending"
+        assert pending_after_stage_failure.get("candidate_digest") != pending_after_stage_failure.get("verified_digest")
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
+        assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # A real native-stage failure remains pending across a worker restart;
+        # automatic startup reconciliation must decline without changing native.
+        old_worker = stack["worker"]
+        old_worker.terminate()
+        old_worker.wait(timeout=5)
+        restarted_worker, restarted_api = stack["start_worker"]()
+        stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert generation_state(restarted_api) == pending_after_stage_failure
+        recovery_code, recovery = http_json(
+            f"{restarted_api}/__acceptance/xray/startup-generation-recovery",
+            method="POST", timeout=75,
+        )
+        assert recovery_code == 200 and recovery.get("ok") is False, {
+            "status": recovery_code, "ok": recovery.get("ok"),
+            "status_name": recovery.get("status"), "error_code": recovery.get("error_code"),
+        }
+        assert recovery.get("native_generation", {}).get("status") == "pending"
+        assert generation_state(restarted_api) == pending_after_stage_failure
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
+        assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
         # Re-fetch the same synthetic source through the normal public import
         # and native publication path after the reviewed identity transition.
         # The explicit review authorizes the identity continuity; this fresh
@@ -614,7 +675,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         verified = generation_state(restarted_api)
         assert verified.get("status") == "verified"
         assert verified.get("candidate_digest") == verified.get("verified_digest")
-        assert verified.get("verified_digest") == reviewed_pending.get("candidate_digest")
+        assert verified.get("verified_digest") == pending_after_stage_failure.get("candidate_digest")
         runtime_name_b = active_profile_runtime_name()
         config_b = yaml.safe_load(active_mihomo.read_bytes())
         group_b = logical_profile_group(config_b, runtime_name_b, owned_probe_url)
