@@ -671,6 +671,11 @@ def test_identical_candidate_copy_retains_both_validations_and_rejects_changed_c
         assert result["error_code"] == "MIHOMO_STAGE_CANDIDATE_COPY_MISMATCH"
         assert len(local_calls) == 1 and len(native_calls) == 1
         return
+    if case == "changed-inputs":
+        assert result["ok"] is False
+        assert result["error_code"] == "MIHOMO_STAGE_INPUTS_CHANGED_AFTER_VALIDATION"
+        assert len(local_calls) == 1 and len(native_calls) == 1
+        return
     assert result["ok"] is True
     assert len(local_calls) == 2 and len(native_calls) == 2
     transition = result["native_validation"]["transition"]

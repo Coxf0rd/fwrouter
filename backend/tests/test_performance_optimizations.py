@@ -319,7 +319,7 @@ def test_subscription_timings_are_stage_specific_and_technical_log_is_compact(mo
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     technical: list[dict] = []
-    monkeypatch.setattr(subscription_pipeline, "reconcile_mihomo_runtime", lambda *, verification_callback=None: {
+    monkeypatch.setattr(subscription_pipeline, "reconcile_mihomo_runtime", lambda *, verification_callback=None, _inventory_admission=None: {
         "ok": True,
         "reconcile_action": "none",
         "reconcile_reason": "unchanged_config",

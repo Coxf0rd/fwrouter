@@ -322,6 +322,7 @@ def test_authoritative_subscription_bypass_clears_only_after_final_profile_promo
     marked = _mark()
     full_success = {
         "ok": True,
+        "runtime_verified": True,
         "xray_vpn_auto_reconcile": {"ok": True, "status": "success"},
         "xray_profile_reconcile": {"ok": True, "status": "success"},
         "final_mihomo_reconcile": {"ok": True},
@@ -330,18 +331,18 @@ def test_authoritative_subscription_bypass_clears_only_after_final_profile_promo
     monkeypatch.setattr(
         subscription_pipeline,
         "_apply_prepared_subscription_refresh_under_xray_guard",
-        lambda _: dict(full_success),
+        lambda _prepared, *, inventory_admission=None: dict(full_success),
     )
     result = subscription_pipeline.apply_prepared_subscription_refresh({"ok": True})
     assert result["pending_revision_cleared"] is True
     assert get_xray_vpn_auto_pending_state()["status"] == "applied"
 
     next_revision = _mark("provider-final-failure")
-    failed = {**full_success, "final_mihomo_reconcile": {"ok": False}}
+    failed = {**full_success, "ok": False, "final_mihomo_reconcile": {"ok": False}}
     monkeypatch.setattr(
         subscription_pipeline,
         "_apply_prepared_subscription_refresh_under_xray_guard",
-        lambda _: dict(failed),
+        lambda _prepared, *, inventory_admission=None: dict(failed),
     )
     result = subscription_pipeline.apply_prepared_subscription_refresh({"ok": True})
     assert "pending_revision_cleared" not in result
