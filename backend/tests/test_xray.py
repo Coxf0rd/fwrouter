@@ -541,6 +541,113 @@ def test_staged_publication_refuses_stale_inventory_admission_without_promotion(
     assert xray_subscription_service._xray_generation_checkpoint_path(adapter).exists() is False
 
 
+def test_explicit_migration_supersession_admits_pending_inventory_for_fresh_generation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
+    from fwrouter_api.adapters.subscription import SubscriptionServer
+    from fwrouter_api.services import subscription
+
+    source_url = "http://127.0.0.1:9/migration-supersession"
+    server = SubscriptionServer(
+        server_id="migration-supersession-node",
+        server_name="Migration supersession node",
+        provider_name="subscription",
+        country_code=None,
+        region=None,
+        raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        protocol="vless",
+        host="127.0.0.1",
+        port=443,
+        raw_identity="migration-supersession-identity",
+        parser_format="fixture",
+        source_format="test",
+        runtime_name="migration-supersession-node",
+    )
+    subscription._upsert_subscription_servers(
+        [server], servers_by_url={source_url: [server]},
+    )
+    pending_generation = subscription.get_subscription_native_generation_state()
+    assert pending_generation["status"] == "pending"
+
+    old_checkpoint = checkpoint.read_bytes()
+    checkpoint.unlink()
+    reloads_before_denials = adapter._runner.reload_count
+    claims = []
+    real_claim = subscription._claim_subscription_inventory_admission
+
+    def tracked_claim():
+        admission = real_claim()
+        claims.append(admission)
+        return admission
+
+    monkeypatch.setattr(subscription, "_claim_subscription_inventory_admission", tracked_claim)
+    generic = xray_subscription_service.reconcile_xray_subscription_profile_nodes(
+        requested_by="pytest-unqualified-pending-inventory", include_vpn_auto=True,
+    )
+    assert generic["ok"] is False
+    assert generic["error_code"] == "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED"
+    assert claims == []
+    assert adapter._runner.reload_count == reloads_before_denials
+    assert not checkpoint.exists()
+
+    checkpoint.write_bytes(old_checkpoint)
+    checkpoint.chmod(0o600)
+    checkpoint_sha256 = hashlib.sha256(old_checkpoint).hexdigest()
+    plan_sha256 = "a" * 64
+    monkeypatch.setattr(
+        xray_subscription_service, "_identity_migration_ledger_matches",
+        lambda **_kwargs: 1,
+    )
+    wrong_sha = ("0" if checkpoint_sha256[0] != "0" else "1") + checkpoint_sha256[1:]
+    stale = xray_subscription_service.reconcile_xray_subscription_profile_nodes(
+        requested_by="pytest-stale-migration-supersession",
+        include_vpn_auto=True,
+        _supersede_checkpoint_sha256=wrong_sha,
+        _migration_plan_sha256=plan_sha256,
+    )
+    assert stale["ok"] is False
+    assert stale["error_code"] == "XRAY_SUPERSESSION_CHECKPOINT_STALE"
+    assert claims == []
+    assert adapter._runner.reload_count == reloads_before_denials
+    assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == checkpoint_sha256
+
+    def verify_selection(*, operation_id: str, expected_selection_revision: int):
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+        with db_session() as connection:
+            revision = read_selection_revision(connection)
+        return {
+            "ok": revision == expected_selection_revision,
+            "operation_id": operation_id,
+            "selection_revision": revision,
+        }
+
+    result = xray_subscription_service.reconcile_xray_subscription_profile_nodes(
+        requested_by="pytest-reviewed-migration-supersession",
+        include_vpn_auto=True,
+        verification_callback=verify_selection,
+        _supersede_checkpoint_sha256=checkpoint_sha256,
+        _migration_plan_sha256=plan_sha256,
+    )
+
+    verified_generation = subscription.get_subscription_native_generation_state()
+    assert result["ok"] is True, result
+    assert len(claims) == 1
+    assert claims[0].digest == pending_generation["candidate_digest"]
+    assert claims[0].revision == pending_generation["candidate_revision"]
+    assert result["inventory_generation_promotion"]["ok"] is True
+    assert verified_generation["status"] == "verified"
+    assert verified_generation["candidate_digest"] == pending_generation["candidate_digest"]
+    assert verified_generation["verified_digest"] == pending_generation["candidate_digest"]
+    assert verified_generation["candidate_revision"] == pending_generation["candidate_revision"]
+    assert verified_generation["verified_revision"] == pending_generation["candidate_revision"]
+    assert not xray_subscription_service._xray_generation_checkpoint_path(adapter).exists()
+    archived = (checkpoint.parent / "checkpoint-archive"
+                / f"generation-checkpoint-{checkpoint_sha256}.json")
+    assert archived.is_file()
+
+
 def test_current_recovery_rejects_persisted_public_node_with_wrong_server(monkeypatch, tmp_path: Path) -> None:
     adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
     previous_calls = list(adapter._runner.calls)

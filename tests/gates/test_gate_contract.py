@@ -1003,7 +1003,7 @@ class GateContractTests(unittest.TestCase):
 
     def test_provider_cohort_profile_binding_is_exact_and_does_not_elevate_file_plans(self) -> None:
         bindings = self.manifest["node_execution_profiles"]
-        self.assertEqual(11, len(bindings))
+        self.assertEqual(12, len(bindings))
         self.assertEqual(gate.PROVIDER_COHORT_NODEIDS, {row["nodeid"] for row in bindings})
         self.assertTrue(all(row["suite"] == "provider-cohort"
                             and row["execution_profile"] == "hosted-kernel-dataplane"
@@ -1019,7 +1019,7 @@ class GateContractTests(unittest.TestCase):
 
         missing = copy.deepcopy(self.manifest)
         missing["node_execution_profiles"].pop()
-        with self.assertRaisesRegex(gate.GateError, "exact 11 provider-cohort"):
+        with self.assertRaisesRegex(gate.GateError, "exact 12 provider-cohort"):
             gate.validate_manifest(missing)
         wrong_profile = copy.deepcopy(self.manifest)
         wrong_profile["node_execution_profiles"][0]["execution_profile"] = "hosted-kernel-packet"

@@ -3860,7 +3860,19 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             "nodes_count": 0,
         }
 
-    from fwrouter_api.services.subscription import _subscription_inventory_generation_gate
+    from fwrouter_api.services.subscription import (
+        SubscriptionInventoryGenerationBlocked,
+        _claim_subscription_inventory_admission,
+        _subscription_inventory_generation_gate,
+    )
+    if supersession is not None and _inventory_admission is None:
+        try:
+            # Exact checkpoint and migration-plan proofs were checked above.
+            # Only this explicit fresh-generation path may claim the current
+            # pending candidate; generic startup/reconcile remains fail-closed.
+            _inventory_admission = _claim_subscription_inventory_admission()
+        except SubscriptionInventoryGenerationBlocked as exc:
+            return exc.result
     inventory_gate = _subscription_inventory_generation_gate(
         _inventory_admission, require_writer_guard=True,
     )

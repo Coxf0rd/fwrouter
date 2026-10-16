@@ -5512,7 +5512,7 @@
       "timeout_seconds": 30
     }
   ],
-  "version": "2026.10.15.1",
+  "version": "2026.10.17.1",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
@@ -5566,6 +5566,11 @@
     },
     {
       "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+      "execution_profile": "hosted-kernel-dataplane",
+      "suite": "provider-cohort"
+    },
+    {
+      "nodeid": "tests/application_acceptance/test_xray_generation.py::test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry",
       "execution_profile": "hosted-kernel-dataplane",
       "suite": "provider-cohort"
     }

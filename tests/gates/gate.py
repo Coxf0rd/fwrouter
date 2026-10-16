@@ -51,6 +51,7 @@ PROVIDER_COHORT_NODEIDS = {
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
     "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
     "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+    "tests/application_acceptance/test_xray_generation.py::test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry",
 }
 ROUTINE_PROFILE_CARVEOUTS = {
     ("backend/tests/test_xray.py", "test_legacy_subscription_get_is_read_only"),
@@ -219,7 +220,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError("node execution profiles are reserved for exact hosted provider-cohort nodes")
         node_profile_ids.add(nodeid)
     if node_profile_ids != PROVIDER_COHORT_NODEIDS:
-        raise GateError("manifest must bind the exact 11 provider-cohort nodes to hosted-kernel-dataplane")
+        raise GateError("manifest must bind the exact 12 provider-cohort nodes to hosted-kernel-dataplane")
     overrides = manifest.get("node_overrides", [])
     if not isinstance(overrides, list):
         raise GateError("node_overrides must be a list")
