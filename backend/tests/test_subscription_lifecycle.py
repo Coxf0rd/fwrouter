@@ -385,6 +385,73 @@ def test_subscription_fetch_diagnostics_do_not_include_credentials(monkeypatch) 
     assert secret_key not in diagnostics
 
 
+def test_subscription_connection_reset_has_typed_redacted_error(monkeypatch) -> None:
+    token = "private-query-token"
+
+    class _ResetClient(_FakeHttpClient):
+        def get(self, url: str) -> httpx.Response:
+            error = httpx.ConnectError(
+                f"connection reset while requesting https://user:password@example.test/sub?token={token}"
+            )
+            error.__cause__ = OSError(104, "Connection reset by peer")
+            raise error
+
+    monkeypatch.setattr(subscription_adapter_module.httpx, "Client", _ResetClient)
+    result = HttpMihomoSubscriptionAdapter().fetch_with_profile(
+        f"https://user:password@example.test/sub?token={token}"
+    )
+
+    assert result.ok is False
+    assert result.error_code == "SUBSCRIPTION_DOWNLOAD_FAILED"
+    assert result.error_message == "Subscription download failed (connection_reset)."
+    assert result.metadata["transport_kind"] == "connection_reset"
+    assert result.metadata["transport_errno"] == 104
+    diagnostics = json.dumps({"message": result.error_message, "metadata": result.metadata})
+    assert token not in diagnostics
+    assert "password" not in diagnostics
+    assert "user:" not in diagnostics
+
+
+def test_subscription_timeout_tls_and_http_status_failures_are_redacted_without_retry(monkeypatch) -> None:
+    request_url = "https://user:password@example.test/sub?token=private-token"
+    request = httpx.Request("GET", request_url)
+    cases = [
+        (httpx.ConnectTimeout(f"timeout for {request_url}", request=request), "timeout", {}),
+        (httpx.ConnectError(f"TLS failure for {request_url}", request=request), "transport_error", {}),
+        (
+            httpx.HTTPStatusError(
+                f"429 for {request_url}", request=request,
+                response=httpx.Response(429, request=request),
+            ),
+            "http_status",
+            {"http_status": 429},
+        ),
+    ]
+
+    for error, expected_kind, expected_details in cases:
+        calls: list[str] = []
+
+        class _FailingClient(_FakeHttpClient):
+            def get(self, url: str) -> httpx.Response:
+                calls.append(url)
+                raise error
+
+        monkeypatch.setattr(subscription_adapter_module.httpx, "Client", _FailingClient)
+        result = HttpMihomoSubscriptionAdapter().fetch_with_profile(request_url)
+        diagnostics = json.dumps({"message": result.error_message, "metadata": result.metadata})
+
+        assert result.ok is False
+        assert result.error_code == "SUBSCRIPTION_DOWNLOAD_FAILED"
+        assert result.error_message == f"Subscription download failed ({expected_kind})."
+        assert result.metadata["transport_kind"] == expected_kind
+        for key, value in expected_details.items():
+            assert result.metadata[key] == value
+        assert calls == [request_url]
+        assert "private-token" not in diagnostics
+        assert "password" not in diagnostics
+        assert "user:" not in diagnostics
+
+
 def test_subscription_parse_base64_uri_subscription() -> None:
     uri = "vless://uuid-a@one.example:443?type=tcp&security=reality#alpha"
     import base64

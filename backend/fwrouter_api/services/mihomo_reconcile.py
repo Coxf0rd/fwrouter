@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import filecmp
 import inspect
+import math
 import os
 import shutil
 import yaml
 from uuid import uuid4
 from pathlib import Path
 from typing import Any
+from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 from fwrouter_api.services import mihomo_config as config
 from fwrouter_api.services.artifacts import atomic_write_text
@@ -60,6 +62,106 @@ def _build_config_status_summary(
         "base_rules_count": base_rules_count,
         "candidate_rules_count": candidate_rules_count,
     }
+
+
+MAX_SEMANTIC_YAML_NODES = 100_000
+MAX_SEMANTIC_YAML_DEPTH = 100
+MAX_SEMANTIC_CONFIG_BYTES = 1024 * 1024
+
+
+def _yaml_tree_is_unambiguous(
+    node: Any,
+    ancestors: set[int] | None = None,
+    seen: set[int] | None = None,
+    budget: list[int] | None = None,
+    depth: int = 0,
+) -> bool:
+    """Reject YAML constructs whose parsed meaning or expansion is unsafe to compare."""
+    if node is None:
+        return True
+    active = ancestors if ancestors is not None else set()
+    visited = seen if seen is not None else set()
+    visits = budget if budget is not None else [0]
+    visits[0] += 1
+    if visits[0] > MAX_SEMANTIC_YAML_NODES or depth > MAX_SEMANTIC_YAML_DEPTH:
+        return False
+    identity = id(node)
+    # YAML aliases share node identities. Reject all aliases (including cycles)
+    # before construction, since expanding an acyclic alias can multiply memory
+    # exponentially even when the source text and node count are small.
+    if identity in active or identity in visited:
+        return False
+    active.add(identity)
+    visited.add(identity)
+    try:
+        if isinstance(node, MappingNode):
+            keys: set[str] = set()
+            for key_node, value_node in node.value:
+                if not isinstance(key_node, ScalarNode) or key_node.tag != "tag:yaml.org,2002:str":
+                    return False
+                if key_node.value in keys or not _yaml_tree_is_unambiguous(
+                    value_node, active, visited, visits, depth + 1,
+                ):
+                    return False
+                keys.add(key_node.value)
+                if not _yaml_tree_is_unambiguous(key_node, active, visited, visits, depth + 1):
+                    return False
+            return True
+        if isinstance(node, SequenceNode):
+            return all(
+                _yaml_tree_is_unambiguous(item, active, visited, visits, depth + 1)
+                for item in node.value
+            )
+        return isinstance(node, ScalarNode)
+    finally:
+        active.remove(identity)
+
+
+def _yaml_value_is_json_safe(value: Any) -> bool:
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, list):
+        return all(_yaml_value_is_json_safe(item) for item in value)
+    if isinstance(value, dict):
+        return all(
+            isinstance(key, str) and _yaml_value_is_json_safe(item)
+            for key, item in value.items()
+        )
+    return False
+
+
+def _semantic_config_files_equal(active_path: str, candidate_path: str) -> bool:
+    """Compare only bounded, unambiguous YAML; every uncertain case falls back to apply."""
+    from fwrouter_api.services.mihomo_config_paths import MAX_BASE_CONFIG_BYTES
+
+    parsed: list[dict[str, Any]] = []
+    loader_base = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+    for path in (active_path, candidate_path):
+        try:
+            size_before = os.path.getsize(path)
+            if size_before > min(MAX_BASE_CONFIG_BYTES, MAX_SEMANTIC_CONFIG_BYTES):
+                return False
+            with open(path, "rb") as handle:
+                raw = handle.read(min(MAX_BASE_CONFIG_BYTES, MAX_SEMANTIC_CONFIG_BYTES) + 1)
+            if len(raw) > min(MAX_BASE_CONFIG_BYTES, MAX_SEMANTIC_CONFIG_BYTES):
+                return False
+            text = raw.decode("utf-8")
+            yaml_root = yaml.compose(text, Loader=loader_base)
+            if not _yaml_tree_is_unambiguous(yaml_root):
+                return False
+            del yaml_root
+            value = yaml.load(text, Loader=loader_base)
+            if not isinstance(value, dict) or not _yaml_value_is_json_safe(value):
+                return False
+            parsed.append(value)
+        except (OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError, RecursionError):
+            return False
+    try:
+        return config._configs_equal(parsed[0], parsed[1])
+    except (TypeError, ValueError):
+        return False
 
 
 def promote_mihomo_candidate_config(
@@ -653,6 +755,8 @@ def reconcile_mihomo_runtime(
             files_match = filecmp.cmp(base_path, candidate_path, shallow=False)
         except OSError:
             files_match = False
+        if not files_match:
+            files_match = _semantic_config_files_equal(base_path, candidate_path)
     else:
         try:
             status = config.get_mihomo_config_status(include_config=True)

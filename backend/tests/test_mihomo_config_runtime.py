@@ -880,13 +880,20 @@ def test_build_mihomo_config_uses_direct_transparent_subrule_fallback_when_selec
     assert config["rules"][-1] == "MATCH,DIRECT"
 
 
-def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch, tmp_path: Path) -> None:
+def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    format_only_candidate: bool,
+    native_proof_ok: bool,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._mihomo_incarnation", lambda: "pytest-runtime")
     monkeypatch.setattr(mihomo_reconcile_fingerprint_service, "_current_runtime_incarnation", lambda: "pytest-runtime")
-    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._native_udp_policy_proof", lambda: {
-        "ok": True, "native_top_level_rules_match": True,
+    native_proof_calls: list[bool] = []
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._native_udp_policy_proof", lambda: native_proof_calls.append(True) or {
+        "ok": native_proof_ok, "native_top_level_rules_match": True,
         "selector_membership_matches": True, "guarded_rules_match": True,
     })
     monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
@@ -915,7 +922,13 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch
         "candidate_rules_count": len(candidate_config.get("rules") or []),
     })
     def _fake_write_mihomo_candidate_config(routing=None):
-        _write_yaml(candidate_path, candidate_config)
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_text = (
+            yaml.safe_dump(candidate_config, sort_keys=True, indent=4)
+            if format_only_candidate
+            else yaml.safe_dump(candidate_config, sort_keys=False)
+        )
+        candidate_path.write_text(candidate_text, encoding="utf-8")
         return {
             "candidate_path": str(candidate_path),
             "rules": candidate_config["rules"],
@@ -944,14 +957,113 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(monkeypatch
 
     result = mihomo_config_service.reconcile_mihomo_runtime({"selective_default": "direct"})
 
-    assert result["ok"] is True
-    assert result["reconcile_action"] == "none"
-    assert result["reconcile_reason"] == "unchanged_config"
-    assert "config" not in (result["candidate"] or {})
-    assert result["candidate"]["rules_count"] == len(candidate_config["rules"])
-    assert "base_config" not in (result["config"] or {})
-    assert "candidate_config" not in (result["config"] or {})
+    if native_proof_ok:
+        assert result["ok"] is True
+        assert result["reconcile_action"] == "none"
+        assert result["reconcile_reason"] == "unchanged_config"
+        assert "config" not in (result["candidate"] or {})
+        assert result["candidate"]["rules_count"] == len(candidate_config["rules"])
+        assert "base_config" not in (result["config"] or {})
+        assert "candidate_config" not in (result["config"] or {})
+    else:
+        assert result["ok"] is False
+        assert result["stage"] == "native_udp_policy_readback"
+        assert result["reconcile_reason"] == "native_policy_or_fence_unconfirmed"
     assert restart_calls == []
+    assert native_proof_calls
+
+
+def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # Preserve the historical exact-byte scenario and node ID used by CI.
+    _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=False,
+        native_proof_ok=True,
+    )
+
+
+@pytest.mark.parametrize("format_only_candidate", [False, True])
+@pytest.mark.parametrize("native_proof_ok", [True, False])
+def test_reconcile_mihomo_runtime_skips_restart_for_semantically_unchanged_config(
+    monkeypatch,
+    tmp_path: Path,
+    format_only_candidate: bool,
+    native_proof_ok: bool,
+) -> None:
+    _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=format_only_candidate,
+        native_proof_ok=native_proof_ok,
+    )
+
+
+def test_semantic_config_comparison_rejects_ambiguous_missing_and_oversized_yaml(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    active.write_text("mode: rule\nmode: global\n", encoding="utf-8")
+    candidate.write_text("mode: global\n", encoding="utf-8")
+    assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is False
+
+    active.write_text("mode: [unterminated\n", encoding="utf-8")
+    assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is False
+
+    active.write_text("mode: global\n", encoding="utf-8")
+    missing = tmp_path / "missing.yaml"
+    assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(missing)) is False
+
+    active.write_text(
+        "".join(f"key-{index}: value\n" for index in range(50_050)),
+        encoding="utf-8",
+    )
+    assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is False
+
+    with active.open("wb") as stream:
+        stream.truncate(20 * 1024 * 1024)
+    assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is False
+
+
+@pytest.mark.parametrize(
+    "aliased_yaml",
+    [
+        "shared: &value repeated\nfirst: *value\nsecond: *value\n",
+        "shared: &value [one, two]\nfirst: *value\nsecond: *value\n",
+        "cycle: &value [*value]\n",
+    ],
+    ids=["scalar-alias", "sequence-alias", "cycle"],
+)
+def test_semantic_config_comparison_rejects_yaml_aliases_before_construction(
+    monkeypatch,
+    tmp_path: Path,
+    aliased_yaml: str,
+) -> None:
+    active = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    active.write_text(aliased_yaml, encoding="utf-8")
+    candidate.write_text("plain: repeated\n", encoding="utf-8")
+
+    def _must_not_run(*args, **kwargs):
+        pytest.fail("alias-rejected YAML must not be constructed or compared")
+
+    monkeypatch.setattr(mihomo_reconcile_service.yaml, "load", _must_not_run)
+    monkeypatch.setattr(mihomo_config_service, "_configs_equal", _must_not_run)
+
+    assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is False
+
+
+def test_semantic_config_comparison_allows_independent_equal_scalars(tmp_path: Path) -> None:
+    active = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    active.write_text("first: repeated\nsecond: repeated\n", encoding="utf-8")
+    candidate.write_text("first: repeated\nsecond: repeated\n", encoding="utf-8")
+
+    assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is True
 
 
 def test_reconcile_mihomo_runtime_skips_candidate_generation_when_inputs_unchanged(
