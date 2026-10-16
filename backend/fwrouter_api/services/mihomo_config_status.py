@@ -116,6 +116,28 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
     expected_final_match_rule = _build_fallback_rule(routing_dict)
     expected_transparent_final_match_rule = _build_transparent_fallback_rule(routing_dict)
     expected_selective_default = _resolved_selective_default(routing_dict)
+    expected_metadata = {
+        "resolved_selective_default": expected_selective_default,
+        "final_match_rule": expected_final_match_rule,
+        "transparent_final_match_rule": expected_transparent_final_match_rule,
+    }
+    if any(metadata.get(key) != value for key, value in expected_metadata.items()):
+        # Missing or stale scalar metadata already proves that this config
+        # cannot satisfy FWRouter's current routing contract. Avoid parsing a
+        # potentially very large rules document and rebuilding its policy just
+        # to reach the same fail-closed result. UDP policy checks are deliberately
+        # left unknown here; they have not been computed on this fast-fail path.
+        return {
+            "ok": False,
+            "reason": "fwrouter_metadata_mismatch",
+            "metadata": metadata,
+            "expected": {
+                **expected_metadata,
+                "transparent_udp_policy_ok": None,
+                "full_vpn_udp_policy_ok": None,
+            },
+        }
+
     active_config = _safe_load_yaml(base_path)
     active_subrules = active_config.get("sub-rules") if isinstance(active_config, dict) else None
     active_subrules = active_subrules if isinstance(active_subrules, dict) else {}
@@ -129,22 +151,14 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
         == expected_policy.get("full_vpn_rules")
     )
 
-    metadata_ok = (
-        metadata.get("resolved_selective_default") == expected_selective_default
-        and metadata.get("final_match_rule") == expected_final_match_rule
-        and metadata.get("transparent_final_match_rule") == expected_transparent_final_match_rule
-        and transparent_udp_policy_ok
-        and full_vpn_udp_policy_ok
-    )
+    metadata_ok = transparent_udp_policy_ok and full_vpn_udp_policy_ok
     if not metadata_ok:
         return {
             "ok": False,
             "reason": "fwrouter_metadata_mismatch",
             "metadata": metadata,
             "expected": {
-                "resolved_selective_default": expected_selective_default,
-                "final_match_rule": expected_final_match_rule,
-                "transparent_final_match_rule": expected_transparent_final_match_rule,
+                **expected_metadata,
                 "transparent_udp_policy_ok": transparent_udp_policy_ok,
                 "full_vpn_udp_policy_ok": full_vpn_udp_policy_ok,
             },
