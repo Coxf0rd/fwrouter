@@ -880,10 +880,12 @@ def test_build_mihomo_config_uses_direct_transparent_subrule_fallback_when_selec
     assert config["rules"][-1] == "MATCH,DIRECT"
 
 
-@pytest.mark.parametrize("format_only_candidate", [False, True])
-@pytest.mark.parametrize("native_proof_ok", [True, False])
-def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
-    monkeypatch, tmp_path: Path, format_only_candidate: bool, native_proof_ok: bool,
+def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    format_only_candidate: bool,
+    native_proof_ok: bool,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -969,6 +971,35 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         assert result["reconcile_reason"] == "native_policy_or_fence_unconfirmed"
     assert restart_calls == []
     assert native_proof_calls
+
+
+def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # Preserve the historical exact-byte scenario and node ID used by CI.
+    _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=False,
+        native_proof_ok=True,
+    )
+
+
+@pytest.mark.parametrize("format_only_candidate", [False, True])
+@pytest.mark.parametrize("native_proof_ok", [True, False])
+def test_reconcile_mihomo_runtime_skips_restart_for_semantically_unchanged_config(
+    monkeypatch,
+    tmp_path: Path,
+    format_only_candidate: bool,
+    native_proof_ok: bool,
+) -> None:
+    _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=format_only_candidate,
+        native_proof_ok=native_proof_ok,
+    )
 
 
 def test_semantic_config_comparison_rejects_ambiguous_missing_and_oversized_yaml(
