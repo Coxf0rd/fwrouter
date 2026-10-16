@@ -915,8 +915,41 @@ def _install_acceptance_live_mode_probe_observer() -> None:
             print("FWROUTER_ACCEPTANCE_LIVE_MODE_PROBE " + json.dumps(
                 receipt, sort_keys=True, separators=(",", ":")), flush=True)
         return result
-
     apply_service.probe_live_global_mode = observed_probe
+
+
+def _bounded_inventory_generation_recovery(value: Any) -> dict[str, Any] | None:
+    """Expose only fixed recovery proof fields to the synthetic acceptance API."""
+    if not isinstance(value, dict):
+        return None
+    allowed_outcomes = {
+        "current_projection_unproven", "current_projection_verified",
+        "no_generation_checkpoint", "restore_failed", "restored_last_good",
+        "stale_checkpoint_declined",
+    }
+    summary: dict[str, Any] = {}
+    if type(value.get("ok")) is bool:
+        summary["ok"] = value["ok"]
+    recovered = value.get("recovered")
+    if isinstance(recovered, str) and recovered in allowed_outcomes:
+        summary["recovered"] = recovered
+    mihomo_proof = value.get("mihomo_preimage_proof")
+    if isinstance(mihomo_proof, dict):
+        projected = {
+            key: mihomo_proof[key]
+            for key in ("ok", "policy_verified", "native_config_validated")
+            if type(mihomo_proof.get(key)) is bool
+        }
+        if projected:
+            summary["mihomo_preimage_proof"] = projected
+    for key in ("xray_runtime_readback", "mihomo_runtime_readback"):
+        readback = value.get(key)
+        if isinstance(readback, dict) and type(readback.get("ok")) is bool:
+            summary[key] = {"ok": readback["ok"]}
+    for key in ("xray_reload", "mihomo_restart", "derived_rows_restored"):
+        if type(value.get(key)) is bool:
+            summary[key] = value[key]
+    return summary or None
 
 
 def _install_acceptance_preflight_observer() -> None:
@@ -3622,7 +3655,7 @@ def build_app(socket_path: Path):
             and promotion.get("revision") == state.get("candidate_revision")
         )
         ok = bool(isinstance(result, dict) and result.get("ok") is True and generation_verified)
-        return {
+        response = {
             "ok": ok,
             "status": str(result.get("status") or "failed") if isinstance(result, dict) else "failed",
             "stage": str(result.get("stage") or "") if isinstance(result, dict) else "",
@@ -3634,6 +3667,12 @@ def build_app(socket_path: Path):
                 "revision": promotion.get("revision"),
             } if isinstance(promotion, dict) else {"ok": False},
         }
+        recovery = _bounded_inventory_generation_recovery(
+            result.get("generation_recovery") if isinstance(result, dict) else None,
+        )
+        if recovery is not None:
+            response["generation_recovery"] = recovery
+        return response
 
     app.add_api_route(
         "/api/v2/__acceptance/xray/publish-pending-inventory",

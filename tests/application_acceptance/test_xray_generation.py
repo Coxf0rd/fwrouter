@@ -10,6 +10,7 @@ import stat
 import threading
 from pathlib import Path
 from queue import Queue
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_DNS, uuid5
 
 import yaml
@@ -358,15 +359,59 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert isinstance(value, dict), result
         return value
 
-    def logical_profile_group(config: dict) -> dict:
+    def active_profile_runtime_name() -> str:
+        # Read only this acceptance worker's synthetic database. This avoids
+        # depending on API DTO redaction/shape for internal runtime metadata.
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            rows = connection.execute(
+                "SELECT raw_json FROM servers WHERE server_name=? AND inventory_state='active'",
+                ("acceptance-pending-generation-profile",),
+            ).fetchall()
+        finally:
+            connection.close()
+        matches = []
+        for row in rows:
+            raw = json.loads(row[0])
+            topology = raw.get("_fwrouter_topology") if isinstance(raw, dict) else None
+            if isinstance(topology, dict) and topology.get("kind") == "logical_profile":
+                name = str(raw.get("_fwrouter_runtime_name") or "").strip()
+                if name:
+                    matches.append(name)
+        assert len(matches) == 1, {"owned_logical_profile_count": len(matches)}
+        return matches[0]
+
+    def logical_profile_group(config: dict, runtime_name: str, expected_probe_url: str) -> dict:
         groups = [
             item for item in config.get("proxy-groups", [])
-            if isinstance(item, dict)
-            and item.get("type") == "fallback"
-            and item.get("url") == "https://www.gstatic.com/generate_204"
+            if isinstance(item, dict) and item.get("name") == runtime_name
         ]
-        assert len(groups) == 1, {"logical_group_count": len(groups)}
-        return groups[0]
+        assert len(groups) == 1, {"owned_logical_group_count": len(groups)}
+        group = groups[0]
+        assert group.get("type") == "fallback"
+        probe = urlsplit(str(group.get("url") or ""))
+        expected_probe = urlsplit(expected_probe_url)
+        assert (expected_probe.scheme == "http" and expected_probe.hostname is not None
+                and expected_probe.port is not None and expected_probe.path == "/generate_204"
+                and not expected_probe.username and not expected_probe.password
+                and not expected_probe.query and not expected_probe.fragment), {
+            "expected_probe_is_owned": False,
+        }
+        assert probe == expected_probe, {"probe_matches_owned_stack_endpoint": probe == expected_probe}
+        return group
+
+    def expected_logical_probe_url() -> str:
+        profile = stack.get("profile")
+        assert isinstance(profile, dict)
+        if profile.get("profile") == "hosted-kernel-packet":
+            return "http://203.0.113.53:9080/generate_204"
+        if profile.get("profile") == "hosted-kernel-dataplane":
+            probe_url = stack.get("mihomo_probe_url")
+            assert isinstance(probe_url, str) and probe_url
+            return probe_url
+        bridge = stack.get("provider_bridge")
+        assert bridge is not None
+        return f"{bridge.base_url}/generate_204"
 
     def last_good_mihomo_snapshot() -> dict[str, str]:
         directory = state / "last-good" / "mihomo"
@@ -392,10 +437,12 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
 
+        runtime_name_a = active_profile_runtime_name()
+        owned_probe_url = expected_logical_probe_url()
         mihomo_before = active_mihomo.read_bytes()
         xray_before = active_xray.read_bytes()
         config_a = yaml.safe_load(mihomo_before)
-        group_a = logical_profile_group(config_a)
+        group_a = logical_profile_group(config_a, runtime_name_a, owned_probe_url)
         members_a = {str(item) for item in group_a.get("proxies", [])}
         assert len(members_a) == 2
         assert_mihomo_launch_matches_active(native, active_mihomo)
@@ -472,8 +519,9 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert verified.get("status") == "verified"
         assert verified.get("candidate_digest") == verified.get("verified_digest")
         assert verified.get("verified_digest") == pending.get("candidate_digest")
+        runtime_name_b = active_profile_runtime_name()
         config_b = yaml.safe_load(active_mihomo.read_bytes())
-        group_b = logical_profile_group(config_b)
+        group_b = logical_profile_group(config_b, runtime_name_b, owned_probe_url)
         members_b = {str(item) for item in group_b.get("proxies", [])}
         assert len(members_b) == 3
         assert members_b != members_a and members_a - members_b and members_b - members_a
@@ -1026,6 +1074,38 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         }
         return int(result.get("exit_code", 1)), result.get("receipt", {})
 
+    def reconcile_after_identity_refresh(api: str) -> dict:
+        code, generation_response = http_json(
+            f"{api}/__acceptance/subscription/native-generation",
+        )
+        assert code == 200 and generation_response.get("ok") is True, {
+            "status": code,
+            "error_code": generation_response.get("error_code"),
+        }
+        inventory = generation_response.get("state")
+        assert isinstance(inventory, dict)
+        if inventory.get("status") == "pending":
+            code, result = http_json(
+                f"{api}/__acceptance/xray/publish-pending-inventory", method="POST",
+                payload={"include_vpn_auto": True}, timeout=75,
+            )
+            assert code == 200 and result.get("ok") is True, {
+                "status": code, "ok": result.get("ok"), "stage": result.get("stage"),
+                "error_code": result.get("error_code"),
+                "native_generation_verified": result.get("native_generation_verified"),
+            }
+            assert result.get("native_generation_verified") is True
+            return result
+        code, result = http_json(
+            f"{api}/__acceptance/xray/reconcile", method="POST",
+            payload={"include_vpn_auto": True}, timeout=75,
+        )
+        assert code == 200 and result.get("ok") is True, {
+            "status": code, "ok": result.get("ok"), "stage": result.get("stage"),
+            "error_code": result.get("error_code"),
+        }
+        return result
+
     reloads_before_intent = native.reload_calls
     active_before_intent = active_path.read_bytes()
     dry_code, dry = cli({"action": "dry-run", "manifest": manifest})
@@ -1202,14 +1282,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         payload={"profile": new_profile},
     )
     assert code == 200 and repeated_refresh.get("ok") is True and repeated_refresh.get("server_ids") == [new_id]
-    code, recovered = http_json(
-        f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
-        payload={"include_vpn_auto": True}, timeout=75,
-    )
-    assert code == 200 and recovered.get("ok") is True, {
-        "status": code, "ok": recovered.get("ok"), "stage": recovered.get("stage"),
-        "error_code": recovered.get("error_code"),
-    }
+    reconcile_after_identity_refresh(restarted_api)
     assert_native_matches_active(native, active_path)
     loaded_after_restart = set(loaded_identities(native))
     assert len(loaded_after_restart) == 78 and identity_fingerprint(loaded_after_restart) == identity_fingerprint(unaffected | affected), {
@@ -1267,7 +1340,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     def reconcile_with_candidate_integrity_fault() -> None:
         try:
             reconcile_result.put(("result", http_json(
-                f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
+                f"{restarted_api}/__acceptance/xray/publish-pending-inventory", method="POST",
                 payload={"include_vpn_auto": True}, timeout=110,
             )), timeout=2)
         except Exception as exc:
@@ -1365,6 +1438,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         "status": fault_code, "ok": fault.get("ok"), "stage": fault.get("stage"),
         "error_code": fault.get("error_code"),
     }
+    assert fault.get("native_generation_verified") is False
     assert fault.get("stage") == "mihomo_final_apply"
     assert fault.get("error_code") == "XRAY_GENERATION_FINAL_APPLY_FAILED"
     recovery = fault.get("generation_recovery")
@@ -1408,14 +1482,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     )
     assert code == 200 and recovered_refresh.get("ok") is True
     assert recovered_refresh.get("server_ids") == [grown_id]
-    code, recovered_after_fault = http_json(
-        f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
-        payload={"include_vpn_auto": True}, timeout=75,
-    )
-    assert code == 200 and recovered_after_fault.get("ok") is True, {
-        "status": code, "ok": recovered_after_fault.get("ok"),
-        "stage": recovered_after_fault.get("stage"), "error_code": recovered_after_fault.get("error_code"),
-    }
+    reconcile_after_identity_refresh(restarted_api)
     assert_native_matches_active(native, active_path)
     assert_mihomo_launch_matches_active(native, mihomo_active_path)
     loaded_after_fault_restart = set(loaded_identities(native))
@@ -1460,14 +1527,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     )
     assert code == 200 and post_revoke_refresh.get("ok") is True
     assert post_revoke_refresh.get("server_ids") == [grown_id]
-    code, post_revoke_reconcile = http_json(
-        f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
-        payload={"include_vpn_auto": True}, timeout=75,
-    )
-    assert code == 200 and post_revoke_reconcile.get("ok") is True, {
-        "status": code, "ok": post_revoke_reconcile.get("ok"),
-        "stage": post_revoke_reconcile.get("stage"), "error_code": post_revoke_reconcile.get("error_code"),
-    }
+    reconcile_after_identity_refresh(restarted_api)
     loaded_after_revocation = set(loaded_identities(native))
     expected_after_revocation = (unaffected | affected) - {(revoked_uuid, revoked_email)}
     assert len(loaded_after_revocation) == 77 and identity_fingerprint(loaded_after_revocation) == identity_fingerprint(expected_after_revocation), {

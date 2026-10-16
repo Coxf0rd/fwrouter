@@ -128,7 +128,68 @@ def _extract_worker_candidate_fingerprint(state_root: Path):
     return namespace["candidate_fingerprint"]
 
 
+def _extract_bounded_inventory_generation_recovery():
+    """Load the fixed-field projection without importing the application worker."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_bounded_inventory_generation_recovery"
+    )
+    module = ast.Module(body=[function], type_ignores=[])
+    namespace = {"Any": Any}
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+    return namespace["_bounded_inventory_generation_recovery"]
+
+
 class AcceptanceContractTests(unittest.TestCase):
+    def test_inventory_recovery_projection_is_fixed_redacted_and_preserves_false_proof(self):
+        project = _extract_bounded_inventory_generation_recovery()
+        source = {
+            "ok": True,
+            "recovered": "restored_last_good",
+            "operation_id": "private-operation-id",
+            "mihomo_preimage_proof": {
+                "ok": True, "policy_verified": False, "native_config_validated": True,
+                "config_path": "/private/state/config.yaml",
+            },
+            "xray_reload": True,
+            "mihomo_restart": True,
+            "derived_rows_restored": True,
+            "xray_runtime_readback": {"ok": True, "client_uuid": "UUID_SENTINEL"},
+            "mihomo_runtime_readback": {"ok": True, "config": "RAW_CONFIG_SENTINEL"},
+            "private_path": "/private/state/checkpoint.json",
+            "private_message": "token=SECRET_SENTINEL",
+        }
+        result = project(source)
+        self.assertEqual({
+            "ok": True,
+            "recovered": "restored_last_good",
+            "mihomo_preimage_proof": {
+                "ok": True, "policy_verified": False, "native_config_validated": True,
+            },
+            "xray_runtime_readback": {"ok": True},
+            "mihomo_runtime_readback": {"ok": True},
+            "xray_reload": True,
+            "mihomo_restart": True,
+            "derived_rows_restored": True,
+        }, result)
+        encoded = json.dumps(result)
+        for secret in ("private-operation-id", "/private/state", "UUID_SENTINEL",
+                       "RAW_CONFIG_SENTINEL", "SECRET_SENTINEL"):
+            self.assertNotIn(secret, encoded)
+
+        malformed = project({
+            "ok": False,
+            "recovered": "unexpected-outcome",
+            "mihomo_preimage_proof": {
+                "ok": "true", "policy_verified": 1, "native_config_validated": None,
+            },
+            "xray_runtime_readback": {"ok": False, "raw": "private"},
+            "mihomo_restart": 1,
+        })
+        self.assertEqual({"ok": False, "xray_runtime_readback": {"ok": False}}, malformed)
+
     def test_reentry_native_diagnostic_is_redacted_and_size_bounded(self):
         secret_url = "http://probe-user:probe-pass@vpn-secret.test/private"
         secret_uuid = "11111111-2222-4333-8444-555555555555"
