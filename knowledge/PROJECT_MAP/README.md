@@ -1,26 +1,19 @@
 # Project Map
 
-## Package3 implementation continuation — 2026-10-16
+## Operational Packages2/3 implementation — current source checkpoint 2026-10-16
 
-OPEN / IN PROGRESS. The user explicitly corrected closure-by-DEFER and authorized actual Package3 implementation in the same PR15. Prior pilot measurements and deferrals below are historical candidate decisions, not completion. HEAD526221c / fullCI38826004751 (1679/0/0) qualifies Package2 and the earlier disposition only; it does not qualify forthcoming Package3 source. Test-first regressions, matched synthetic measurements, independent QA and final combined-head required CI are mandatory. Production remains unchanged; no automatic deployment or Stage5.
+PR15 remains DRAFT. Package2 source was qualified at526221c by fullCI38826004751 (1679/0/0), but user explicitly authorized actual Package3 implementation afterward; closure-by-DEFER was corrected. Package3 now implements no-change JSONL output elimination with mandatory full scan and source-drift checks, and existing-helper/chunked Xray subject+override projections. Independent Package3 QA105PASS. Changed-file scrub CPU and batch transient-memory overhead are explicitly measured in the [implementation report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/PACKAGE3_IMPLEMENTATION.md). Conditional chmod and unsupported extra native/I/O candidates remain DEFERRED.
+
+PR14 was user-merged as2d53daf while implementation was underway. Its newer roadmap/history are retained; feature branch integrates that main without rewriting history. Final combined-head full required PRCI is pending. Package2/3 are not deployed; production remains3f96e1e. Core/native proof,CAS/fencing,durable identities,SQLite durability,fail-closed and unrelated services are unchanged. No deployment,Stage5 or blanket Operational milestone closure follows from this source checkpoint.
 
 
-## Operational Packages 2/3 source checkpoint — 2026-10-16
+## Current checkpoint — 2026-10-16
 
-Package3 implementation now includes full-scan/no-output unchanged JSONL and chunked operation-owned Xray subject/override projections. IndependentQA105PASS; final combinedHEAD fullCI pending. Earlier blanketDEFER only describes prior candidate history. No production changes or native/durability/fencing relaxation.
+Production3f96e1e; PR11/12/13 merged, Package1 ACCEPTED bounded source/CI/deploy/live scope, CI milestone CLOSED. API/Gateway/workers/timers and78 originals preserved; no new OOM in recorded windows. Current Operational milestone remains OPEN: Package2 Cache Lifecycle PLANNED, Package3 DB/Native/I/O CONDITIONAL, no implementation approval. [Active roadmap](../ROADMAP.md), [decisions](DECISIONS/ROADMAP_DECISION_REGISTER_2026-10-15.md), [legacy register and reconciliation](../audits/operational_roadmap_legacy_2026-10-16/REPORT.md).
 
-User authorized Package2 and conditionalPackage3 together. Branch `perf/operational-package2-3` from main3f96e1e implements bounded cache lifecycle and exact external-observation connection invalidation; final corrective targeted105/105 and independentQA105/105 PASS; first fullCI38822958169 failed unchanged snapshot reuse and is preserved as failed history. Corrective finalHEAD full required PRCI pending. Package3 conditionalchmod pilot DEFERRED after overlapping measurement ranges; scrub/native/DB/I/O changes DEFERRED pending safety/cost proof; PRAGMA/WAL/fsync/transactions unchanged. No production mutation,merge or Stage5. Package2 acceptance remains source/CI/deploy/live-separated. See [Package2/3 report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/REPORT.md). PR14 roadmap reconciliation remains separately OPEN; retain its newer decisions and history.
+After80min same API PID,6/6 fresh health PASS; RSS≈1.22–1.31GiB,HWM≈1.45GiB,OOM0. No continuous hour-long soak or leak causality claim. External Client E2E and full Debian host/reboot/rollback remain NOT RUN; full release acceptance BLOCKED on separate applicable gates; CD DEFERRED. Stage5 unopened, Stage8→7→Post-Extraction sequence unchanged. No production/config/source edits in this documentation task.
 
-## Package1 source checkpoint — 2026-10-16
-
-Current main/production baselinebaafbf2; Package1 branch implements configured-read and immutable sanitizer CPU work only, with85 targeted tests passing. [Package1 report](../audits/operational_package1_2026-10-16/REPORT.md) includes reproducible synthetic baselines, CPU/allocation ranges, source ownership and final PR-CI gate. Full required CI pending; no source deployment or Package2. Existing dated checkpoints below retain history and are superseded only within these explicit boundaries.
-
-## Current checkpoint — 2026-10-15
-
-The CI milestone is CLOSED following actual squash/main validation (PR5, main run38363962787). PR8 merged as dabf9f4; PR10 merged/deployed as ffe506e. Production remains ffe506e with the original78 identities restored and API/Gateway recovered. PR11 isolation/redaction fixes are source-only, not deployed: Synthetic Functional Acceptance PASS, Production State Acceptance PARTIAL, controlled external E2E NOT RUN, overall Production Acceptance BLOCKED. These are recorded receipts, not new live probes. Earlier dated checkpoints below are historical where superseded; they do not reopen CI or describe the current held/recovery state.
-
-Use the [active roadmap](../ROADMAP.md) and [decision register](DECISIONS/ROADMAP_DECISION_REGISTER_2026-10-15.md) for priorities, dependencies and remaining evidence. Operational Performance requires a fresh audit after PR8/10/11 before replaying old optimization packages. Full Debian host/systemd/reboot and positive external E2E remain separate unqualified gates. No implementation or production action is authorized by this documentation reconciliation.
-
+Exact previous checkpoints are retained in [history](../history/operational_reconciliation_2026-10-16/PROJECT_MAP_BEFORE.md). Historical source-only/open/PAUSED notices are not current active statuses.
 
 This is the technical project map for development and AI agents. User-facing guides live one level above in `/knowledge`.
 

@@ -1,70 +1,32 @@
-# FWRouter engineering roadmap mirror
+# FWRouter — active roadmap
 
-## Package3 implementation continuation — 2026-10-16
+## Operational Packages2/3 implementation — current source checkpoint 2026-10-16
 
-OPEN / IN PROGRESS. The user explicitly corrected closure-by-DEFER and authorized actual Package3 implementation in the same PR15. Prior pilot measurements and deferrals below are historical candidate decisions, not completion. HEAD526221c / fullCI38826004751 (1679/0/0) qualifies Package2 and the earlier disposition only; it does not qualify forthcoming Package3 source. Test-first regressions, matched synthetic measurements, independent QA and final combined-head required CI are mandatory. Production remains unchanged; no automatic deployment or Stage5.
+PR15 remains DRAFT. Package2 source was qualified at526221c by fullCI38826004751 (1679/0/0), but user explicitly authorized actual Package3 implementation afterward; closure-by-DEFER was corrected. Package3 now implements no-change JSONL output elimination with mandatory full scan and source-drift checks, and existing-helper/chunked Xray subject+override projections. Independent Package3 QA105PASS. Changed-file scrub CPU and batch transient-memory overhead are explicitly measured in the [implementation report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/PACKAGE3_IMPLEMENTATION.md). Conditional chmod and unsupported extra native/I/O candidates remain DEFERRED.
 
-
-## Operational Packages 2/3 source checkpoint — 2026-10-16
-
-Package3 implementation now includes full-scan/no-output unchanged JSONL and chunked operation-owned Xray subject/override projections. IndependentQA105PASS; final combinedHEAD fullCI pending. Earlier blanketDEFER only describes prior candidate history. No production changes or native/durability/fencing relaxation.
-
-User authorized Package2 and conditionalPackage3 together. Branch `perf/operational-package2-3` from main3f96e1e implements bounded cache lifecycle and exact external-observation connection invalidation; final corrective targeted105/105 and independentQA105/105 PASS; first fullCI38822958169 failed unchanged snapshot reuse and is preserved as failed history. Corrective finalHEAD full required PRCI pending. Package3 conditionalchmod pilot DEFERRED after overlapping measurement ranges; scrub/native/DB/I/O changes DEFERRED pending safety/cost proof; PRAGMA/WAL/fsync/transactions unchanged. No production mutation,merge or Stage5. Package2 acceptance remains source/CI/deploy/live-separated. See [Package2/3 report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/REPORT.md). PR14 roadmap reconciliation remains separately OPEN; retain its newer decisions and history.
-
-## Operational Package 1 source checkpoint — 2026-10-16
-
-Package1 is authorized and implemented from current main `baafbf209331da763d95bae40c32e4176b158e4d` on `perf/operational-package1-configured-reads-sanitizer`. Scope: configured-read line materialization/absence guards and immutable sanitizer key normalization only. Targeted85/85 passed; final full safe required PR CI is pending and must pass at the exact final HEAD before Ready for user Squash and Merge. No deployment/live acceptance is inferred; no agent merge. See [Package1 source/measurement report](audits/operational_package1_2026-10-16/REPORT.md).
-
-The measured22.7 MB early-header component wall median is195.985→45.708 ms and traced peak34,453,245→1,466 B; missing-section262.841→35.080 ms. The late-header fallback preserves original C split allocation semantics, and the small-case ranges overlap. Synthetic sanitizer600-record CPU reductions are72.3%/60.4%; identical output digests and security canaries verified. These are component results, not production savings. No persistent configured cache, SQLite/batching/I/O/scrub-file changes, native-proof/interval/timeout/resource-limit changes or Package2 work is included.
-
-Production remains the separately accepted bounded `baafbf2` rollout with original78 preserved; CI milestone CLOSED, CD DEFERRED, external Client E2E/full Debian host/release gates still separate NOT RUN/BLOCKED. Prior correction/PR11-open/PAUSED rows below are dated history and do not override this authorization/source checkpoint or prove a deployment. Existing rollout/resource pending sync patches are preserved unchanged; their publication needs deliberate reconciliation with this newer notice, not blind application. The old operational branch6004400 is preserved, not replayed. Stage5 and later milestones remain unopened.
-
-## Current correction checkpoint — 2026-10-16
-
-PR11 was merged as ccc576c. Actual main CI38767801965 FAILED the concurrent startup-scale load: worker exit-9/RemoteDisconnected. Rollout stopped at preflight, before production copy/restart; production remainsffe506e, original78 preserved. Diagnostic38777720255 proved a2GiB cgroup OOM kill. The corrective branch fixes large HTTPX controller-body lifetime; targeted38779324831 passed migration and two cold scale attempts with unchanged limits. Final required PR/main qualification is still required. See [correction report](audits/startup_scale_concurrent_disconnect_2026-10-16/REPORT.md). Earlier PR11 OPEN/source-qualified entries below are historical checkpoints, superseded by this dated notice; no milestone or deployment has been accepted from the targeted result.
-
-Public upstream credential investigation/rotation is outside this rollout by user instruction; no value is published or rotated. Preserve a final Git-history/credential exposure check under pre-public-release cleanup. Fixture replacement does not revoke historical disclosure. Stage9/10 host and positive controlled external E2E gates remain separate and NOT RUN; Operational Performance does not resume automatically.
+PR14 was user-merged as2d53daf while implementation was underway. Its newer roadmap/history are retained; feature branch integrates that main without rewriting history. Final combined-head full required PRCI is pending. Package2/3 are not deployed; production remains3f96e1e. Core/native proof,CAS/fencing,durable identities,SQLite durability,fail-closed and unrelated services are unchanged. No deployment,Stage5 or blanket Operational milestone closure follows from this source checkpoint.
 
 
-## Authority, current state and evidence — reconciled 2026-10-15
+Canonical: `/решения/roadmap/fwrouter/ROADMAP.md`. Relative links are resolved from the Git mirror `knowledge/ROADMAP.md`.
 
-The owner-local `/решения/roadmap/fwrouter/ROADMAP.md` is canonical; `knowledge/ROADMAP.md` publishes its reviewed English active plan. Their active plan is synchronized; titles and link roots identify their locations. Different historical checkpoints are retained in each tree's [exact pre-reconciliation snapshot](history/ROADMAP_PRE_2026-10-15_DECISION_RECONCILIATION.md), not silently merged or discarded. Snapshot links retain original location context. [History index](history/README.md) preserves earlier decisions and evidence. Historical reports are not rewritten.
+## Current state — reconciled 2026-10-16
 
-The [decision register](PROJECT_MAP/DECISIONS/ROADMAP_DECISION_REGISTER_2026-10-15.md) records approved requirements, owning milestones, priority, dependencies, entry and exit evidence. It is navigation for this roadmap, not a second backlog. Source, Tests, Commit/PR, Deploy and Live are separate gates; PLANNED does not mean implemented. This reconciliation changes documentation only.
+PR11 ccc576c, PR12 baafbf2 and PR13 3f96e1e are MERGED. Production is exact `3f96e1e73be0e0fc25208a406ecc9ff259f6480f`; Package1 ACCEPTED in bounded deployed/live scope. CI milestone CLOSED; CD DEFERRED. API/Gateway/workers/timers active,78 original identities and27 protected host files retained; Core/native parity,DNS/Rescue/Tailscale and observed fail-closed state preserved. [Current evidence and risks](audits/operational_roadmap_legacy_2026-10-16/REPORT.md).
 
-| Area | Current accepted checkpoint / boundary |
-|---|---|
-| CI Phases A/B | COMPLETED |
-| CI Phase C | COMPLETED in agreed scope |
-| CI Phases D/E / overall | ACCEPTED / CLOSED after actual PR5 squash and main-event verification; no reopening from future coverage |
-| PR8 | MERGED as `dabf9f4`; main run [38699377108](https://github.com/Coxf0rd/fwrouter/actions/runs/38699377108):1623 PASS/0 FAIL/0 SKIP; startup/identity continuity fixes, not a production acceptance receipt |
-| PR10 | MERGED as `ffe506e`; main run [38738895199](https://github.com/Coxf0rd/fwrouter/actions/runs/38738895199):1642 PASS/0 FAIL/0 SKIP; accepted PR tree63f9819 matches squash tree |
-| PR11 | OPEN, source fixes qualified at564f715 by [38754323327](https://github.com/Coxf0rd/fwrouter/actions/runs/38754323327):1643 PASS/0 FAIL/0 SKIP. Documentation follow-up requires full required CI at its new HEAD; user alone merges |
-| Production deployed version | `ffe506e`, backend/docs; PR11 changes NOT DEPLOYED |
-| Original Xray identities |78/78 restored and verified in native/config; no new rotation authorized |
-| Synthetic Functional Acceptance | PASS in qualified native/application/browser/kernel/packet scope |
-| Production State Acceptance | PARTIAL; scoped functional/state checks passed, source security fixes not yet rolled out |
-| Controlled External E2E | NOT RUN fresh; no designated authorized available upstream. Unavailability alone is not a FWRouter defect or remote DOWN |
-| Overall Production Acceptance | BLOCKED; see immediate stabilization gate below |
-| Operational Performance Fixes | PAUSED/BLOCKED pending re-audit and applicable acceptance |
-| CD | DEFERRED; merge never authorizes deployment |
+Production rollout47/47 health over460.034s,CPU27.589% of one core,RSS673.54→727.16MiB,max917.91MiB,health p50/p95/max5.098/272.4/718.239ms,newOOM0. Follow-up at API age4816s: samePID,6/6 healthy,RSS≈1.22–1.31GiB,HWM≈1.45GiB,cgroup memory.current≈1.51GiB,OOM counters0. Follow-up endpoints/lifetime counters are not an hour-long continuous soak; increased retained memory is an open observation, not a proven leak or Package1 causality. No critical regression proven; long-term resource risk stays explicit.
 
-CI closure evidence: [PR5](https://github.com/Coxf0rd/fwrouter/pull/5), squash `ef46147`, actual main run [38363962787](https://github.com/Coxf0rd/fwrouter/actions/runs/38363962787)1429/0/0; [Phase E report](audits/test_architecture_phase_e_2026-10-13/REPORT.md) and [pre-merge handoff](audits/test_architecture_phase_e_2026-10-13/FINAL_HANDOFF.md) retain their original dated scope. L6/L7 and complete Debian host/systemd/reboot parity are separate gates, not implied by that closure. Later individually run regression evidence does not make all release gates accepted.
+Synthetic Functional PASS and Production State PASS only in performed scope. External Client E2E NOT RUN; complete Debian Host/reboot/rollback NOT RUN (Stage9), full release/overall Production Acceptance remains BLOCKED on separate applicable release/client gates. No retrospective gate waiver. Public upstream credential overlap remains UNKNOWN origin with separate approved plan; final exposure/rotation disposition remains pre-public-release, no value published or rotation performed.
 
-### Immediate production stabilization and exposure disposition
+## Historical checkpoint preservation
 
-P0, OPEN/BLOCKED; this is the current recovery/safety follow-up, not a new numbered stage. [PR11](https://github.com/Coxf0rd/fwrouter/pull/11) removes ambient-proxy routing from loopback smoke, raw subscription-path logging from Gateway, and production-overlapping fixture literals. A public fixture UUID matches production upstream credentials (249 inventory rows,26 active/generated entries); it is **not** one of the original78 Xray inbound identities. Origin/ownership is **UNKNOWN**. Removing the fixture does not revoke possible historical disclosure. Only a targeted rotation **plan** is approved; rotation has NOT RUN. Four subscription tokens were also observed in restricted local Gateway logs; unauthorized access/export is not proven. Never publish the values or raw evidence.
-
-Entry: source review/full required PR CI, user Squash and Merge, real main CI; then a separately authorized exact-commit deployment/recovery plan. Gateway is host-owned: backend-only deploy does not install its fix. Preserve the existing live readiness guard and protected host files; do not perform an indiscriminate host update. Keep safe backups, compatible recovery target and independent Rescue; the unsafe old implicit-DIRECT generator is not a valid rollback target. Full Debian PID1/systemd rollback remains separately unqualified, not proved by file restore or containers.
-
-Exit: deployed source proven; identity/state preservation, API/Gateway/workers/timers and applicable safe live checks confirmed; Gateway logging fixed in live; exposure ownership and targeted rotation/revocation decision recorded under separate approval; applicable controlled E2E proved or explicit unresolved release disposition. No forced refresh of personal sources, automatic identity rotation, destructive production test or safety-contract relaxation for PASS. Use [isolation/live qualification report](audits/test_isolation_live_acceptance_2026-10-15/REPORT.md), [PR8 recovery report](audits/production_update_xray_recovery_2026-10-15/REPORT.md) and recorded user-authorized live evidence; documentation creates no rollout authority.
+Exact pre-reconciliation [canonical](history/operational_reconciliation_2026-10-16/CANONICAL_BEFORE.md) and [mirror](history/operational_reconciliation_2026-10-16/MIRROR_BEFORE.md) preserve pending-CI/PAUSED/held-rollout wording and links as dated history. Current state above and the active functional plan below supersede those statuses only within stated evidence. Pending patches are preserved byte-for-byte and manually reconciled, not applied in succession. Historical reports/snapshots are unchanged.
 
 ## Active execution order
 
-Keep the existing sequence. Current recovery/stabilization must be resolved before implementing old optimization packages; read-only preparation does not grant implementation authority.
+Keep the existing sequence. Package1 is accepted in bounded source/CI/deployment/live scope. Remaining Operational packages require separate authorization; this documentation does not start them.
 
 1. **Test Architecture & CI Stabilization — CLOSED.** Preserve accepted scope and real event evidence.
-2. **Operational Performance Fixes — PAUSED/BLOCKED.** Re-audit current merged code after PR8/PR10/PR11 before resuming; preserve old branch6004400 as evidence, not a package to replay blindly.
+2. **Operational Performance Fixes — IN PROGRESS; Package1 ACCEPTED in bounded scope.** Current-code audits complete within declared limits. Package2 PLANNED, Package3 CONDITIONAL; neither authorized for implementation. Preserve6004400; new packages are not historical package numbers.
 3. **Stage 5 — Configuration and Persistence Contracts.** After accepted Operational Performance Fixes.
 4. **Database Architecture & Integrity Audit.** After supported config/persistence contracts.
 5. **Evidence-based Database fixes.** Only proven audit findings.
@@ -116,17 +78,20 @@ CI → PR review/required checks → user Squash and Merge → actual main verif
 
 Use [Test Architecture contract](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md): affected L0/L1/L2 plus necessary L3/L4, L5 for shared contracts; full required PR safe scope at final promotion and every main push; L6 scheduled/manual/policy only; L7 qualified disposable/release only. Report exact Source/Tests/Commit/Deploy/Live receipts and PASS/FAIL/SKIP/NOT RUN/BLOCKED, never classify missing work as PASS.
 
-## Operational Performance Fixes — mandatory current-code re-audit
+## Operational Performance Fixes — remaining packages
 
-P1, PLANNED entry audit; implementation PAUSED/BLOCKED. Stage4/4B's bounded accepted results remain closed, documented in [completion report](audits/stage4b_completion_2026-10-07/REPORT.md) and history. Preserve `stage/operational-performance-fixes` at6004400 and its package1/2 evidence; package3 remains conditional/unimplemented. Do not copy stale optimizations or incompatible generators from that branch into current main.
+P1, IN PROGRESS. Package1 ACCEPTED in confirmed source/CI/deployment/bounded-live scope. [Package1 source report](audits/operational_package1_2026-10-16/REPORT.md), [deployment handoff](audits/operational_package1_production_2026-10-16/FINAL_HANDOFF.md) and [current reconciliation/legacy register](audits/operational_roadmap_legacy_2026-10-16/REPORT.md). Historical branch `stage/operational-performance-fixes@6004400` remains evidence only; its packages1/2/3 do not identify this current sequence. No cherry-pick/replay.
 
-Entry: after PR11 is merged, pin actual current main incorporating PR8/PR10/PR11; compare branch-only changes with current implementation and identify superseded fixes. Source-only read audit may precede live measurement. Before implementation, complete production stabilization/applicable safety gates and obtain an approved comparable workload, resource envelope and measurement method. Do not reuse old timings as a current bottleneck or silently waive required application/native CRUD/restart/recovery acceptance. Dangerous cases remain qualified isolated release gates, never production injection.
+| Current package | Status / priority / owner | Entry and dependencies | Completion and evidence |
+|---|---|---|---|
+|1 CPU / configured reads / sanitizer|ACCEPTED bounded scope; Operational,P1|PR13 merged3f96e1e, exact mainCI38804147992|1660/0/0; deployed442 backend files,78 identities,27 protected files and native/Core state preserved;47/47 health over460s,6/6 parallel reads,noOOM. Synthetic196→45.7ms and34.45MB→1.5KB; sanitizer CPU−60–87%; not measured production savings |
+|2 Cache Lifecycle|PLANNED; Operational,P1; separate user approval required|Fresh unchanged synthetic baseline; inventory per-owner key cardinality/value bytes, source revision/incarnation and connection scope; no automatic implementation|Bound entry count/retained bytes, expired-entry release, bounded eviction and TTL; revision-aware invalidation, concurrent leader/follower/error behavior, multi-module/connection independence, changed/deleted configs, restart reconstruction; same native proof/CAS/fences. Matched CPU/RAM/time before/after, targeted and full required CI/native/recovery scope |
+|3 DB / Native / I/O|CONDITIONAL; Operational,P1/P2|Package2 decision plus operation-owner cost evidence; each candidate root cause, effect and safety review|Explicit IMPLEMENT / DEFER / NOT REQUIRED per repeated chmod/PRAGMA, DB/native projections/readback, scrub/temp copies, redundant SSD writes/config generation and expensive health models. Preserve SQLite durability/WAL/fsync/transaction and last-good; no generic writer queue/cache replacing proof. Measure actual per-owner CPU/SQL/fsync/I/O separately from block/NAND writes |
+|Long-term Resource Stability|CONDITIONAL observation; Operational,P1|Approved low-overhead natural-load plan; no stress or forced refresh|RSS/PSS/cgroup/cache cardinality, CPU peaks,daily jobs,SSD writes and health-tail attribution. Record execute/defer disposition and window. No memory-leak/SSD-wear claim from snapshots; unrun long-soak remains NOT RUN |
 
-Measure CPU time and wakeups/timer/job/prewarm work; RSS/HWM/RAM/cache bounds; API/native latency and repeated reads/builds; disk I/O, IOPS, SQLite transactions/WAL/fsync; actual block-device/SSD writes, storage growth and write amplification. Distinguish application bytes, kernel/block writes and device/NAND/endurance counters; host writes are not automatically NAND writes. State tool availability, sampling/window, device model, background workloads and attribution limits. Quantify retained log/backup/temp churn and SSD endurance impact where supported; unknown values remain unmeasured, not zero. Do not add a parallel telemetry collector to FWRouter.
+Package2 is ready for separate design/implementation authorization, not started. Old deep-audit A/B/C labels are historical candidate groupings: C1/C2→currentPackage1; C5→Package2; C3/C4/C6/C7 and evidence-backed others→conditionalPackage3. Startup scrub I/O was explicitly excluded from Package1. Single-flight follower deadlines require a reviewed failure/publication contract, not a silent cache optimization.
 
-Investigate bounded RAM caching/coalescing only for safely reconstructible data when repeated durable writes are demonstrated. Specify owner, size/TTL, source generation/revision/incarnation key, invalidation, restart/recovery behavior and memory/CPU tradeoff. Durable intent, credentials, CAS/fencing state and recovery checkpoints cannot move to volatile-only storage without separately reviewed evidence of equivalent atomicity, durability and recovery guarantees. Preserve native proof/readback and last-good on every relevant boundary.
-
-Exit: reconciled remaining-defect list; each proposed fix has comparable before/after wall/CPU/RAM/disk/SSD measurements, correctness and isolation/native/recovery receipts, declared unmeasured dimensions and safe rollback. Verify package-level full staging acceptance at the actual candidate before declaring Operational ACCEPTED, then proceed to Stage5. Unknown historical causation is not a fix ticket without reproduction.
+Closure requires: acceptedPackage1; Package2 decision and applicable acceptance; explicit Package3 IMPLEMENT/DEFER/NOT REQUIRED; disposition of performance-relevant legacy candidates in the single Stage6-owned register; residual CPU/RAM/SSD risks evaluated; actual comparable baseline/results; applicable staging/native/fullCI and recovery evidence; no functional/security regressions. Optional long-term work needs explicit execute/defer disposition. NOT RUN is never PASS. Only then Stage5 opens. No new stages or parallel cleanup backlog.
 
 ### Timeouts & Thresholds Audit — PLANNED, before limit changes
 
@@ -139,7 +104,7 @@ P1, owned by the same Operational re-audit, coordinated with Stage5 lifecycle an
 |120 seconds|Source systemd `TimeoutStartSec` operational API start budget; distinguish unit/readiness scripts and historical installed versions |
 |20 seconds|Source systemd `TimeoutStopSec` operational stop budget; not a benchmark target or permission to cancel durable writers |
 
-Sources: `tests/application_acceptance/test_runtime_scale.py`, its conftest and `host/systemd/fwrouter-api.service`; these are source facts, not a new inspection of installed unit limits. Exit: reviewed threshold register with provenance, measured p50/p95/tail/headroom, environment sensitivity, timeout/error/cleanup behavior and change justification. Preserve truthful unready/failed state and bounded shutdown; never increase a timeout solely to hide a regression. The40s advisory remains unmet at the prior PR11 result;45s passed with limited headroom. No new universal SLA is invented.
+Sources: `tests/application_acceptance/test_runtime_scale.py`, its conftest and `host/systemd/fwrouter-api.service`; these are source facts, not a new inspection of installed unit limits. Exit: reviewed threshold register with provenance, measured p50/p95/tail/headroom, environment sensitivity, timeout/error/cleanup behavior and change justification. Preserve truthful unready/failed state and bounded shutdown; never increase a timeout solely to hide a regression. Latest Package1 hosted startup40.1817s passes45s hard ceiling but misses40s advisory by0.1817s; live journal startup26.104s is a different workload/environment. Historical PR11 values remain in evidence. No new universal SLA is invented.
 
 ## Stage 5 — Configuration and Persistence Contracts
 
@@ -167,6 +132,9 @@ Entry: supported config inventory, deterministic owned fixtures, isolation admis
 P1, PLANNED after Stage5. Inventory tables/relations, canonical versus derived/cache data, constraints/indexes/scans, orphan/stale rows, transactions/WAL/fsync/CAS, growth/write contention and supported migrations/rollback. Entry: accepted persistence/ownership contracts and representative isolated data. Exit: measured findings, integrity/migration/compatibility evidence and prioritized proven fixes. Keep Core/runtime/network/selector/recovery/Health/provider ownership out of database triggers. Do not implement future traffic analytics schema in advance.
 
 ## Stage 6 / 6A — cleanup and measured execution
+
+The [single legacy candidate register](audits/operational_roadmap_legacy_2026-10-16/LEGACY_REGISTER.md) owns SAFE TO REMOVE / NEEDS MIGRATION / KEEP / UNKNOWN decisions. Classification alone never authorizes deletion. Operational may propose narrow measured early packages; schema/config contracts remain Stage5/Database Audit, module authority remains Stage8→7, physical cleanup Stage6. Optional adapters are not obsolete because absent from one installation. Each removal needs reachability/history/upgrade/recovery review and applicable regression/native evidence.
+
 
 P2, PLANNED after Stage5 and evidence-based DB fixes. Stage6 removes only proven obsolete/unsafe compatibility and data handling; verify supported consumers first. Stage6A consumes the single Operational/Stage4 resource-efficiency backlog, rather than inventing another performance program. Exit requires affected correctness/security/native evidence and measured benefit; no speculative cleanup or optimization.
 
@@ -269,4 +237,4 @@ Each open item requires current-code reproduction/contract evidence, an owner an
 
 ## Reconciliation changelog
 
-2026-10-15: preserved exact canonical/mirror pre-edit histories; reconciled current CI/production/source states; distributed resource/threshold/orchestration/reference-study agreements into existing milestones; retained Stage8→7→Post-Extraction and Stage5–10 order; corrected stale held-API/restoration-pending pointers in the project map; no historical report edits, runtime/test/workflow behavior changes or secret publication. The reviewed mirror is committed/pushed and full required PR CI verified before the matching canonical active body is published; a concurrent canonical change blocks replacement rather than being overwritten.
+2026-10-16: synchronized canonical/Git active plan; archived exact divergent inputs; accepted bounded deployedPackage1, distinguished currentPackage2/3 from6004400; linked single Stage6-owned legacy register and explicit remaining closure gates. Runtime/config/security unchanged.

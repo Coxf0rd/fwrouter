@@ -1,0 +1,63 @@
+{
+  "utc": "2026-10-15T22:26:03Z",
+  "source": "3f96e1e73be0e0fc25208a406ecc9ff259f6480f",
+  "verified_backend_files": 442,
+  "identities_exact": 78,
+  "protected_unchanged": 27,
+  "api_age_seconds": 4816.277092000004,
+  "same_pid_as_deploy": true,
+  "health_samples": [
+    {
+      "pid": "1772364",
+      "healthy": true,
+      "latency_ms": 22.504976019263268,
+      "VmHWM": 1521072,
+      "VmRSS": 1281732
+    },
+    {
+      "pid": "1772364",
+      "healthy": true,
+      "latency_ms": 533.4552829153836,
+      "VmHWM": 1521072,
+      "VmRSS": 1371152
+    },
+    {
+      "pid": "1772364",
+      "healthy": true,
+      "latency_ms": 47.05707496032119,
+      "VmHWM": 1521072,
+      "VmRSS": 1281724
+    },
+    {
+      "pid": "1772364",
+      "healthy": true,
+      "latency_ms": 4.780537914484739,
+      "VmHWM": 1521072,
+      "VmRSS": 1281724
+    },
+    {
+      "pid": "1772364",
+      "healthy": true,
+      "latency_ms": 1.9998799543827772,
+      "VmHWM": 1521072,
+      "VmRSS": 1281724
+    },
+    {
+      "pid": "1772364",
+      "healthy": true,
+      "latency_ms": 4.473463864997029,
+      "VmHWM": 1521072,
+      "VmRSS": 1281724
+    }
+  ],
+  "memory_events": {
+    "low": "0",
+    "high": "0",
+    "max": "0",
+    "oom": "0",
+    "oom_kill": "0",
+    "oom_group_kill": "0"
+  },
+  "memory_current_bytes": 1623875584,
+  "continuous_hour_soak": "NOT RUN: endpoint and lifetime-counter verification only"
+}
