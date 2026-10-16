@@ -61,11 +61,13 @@ def _install_fixture(source: Path, target: Path) -> None:
 
 
 def _run(tmp_path: Path, command: str, systemd: FakeSystemd, *, api_healthy: bool = True,
-         allow_timer_catchup: bool = False) -> dict[str, object]:
+         allow_timer_catchup: bool = False, install_target: bool = True) -> dict[str, object]:
     args = [command, "--state-dir", str(tmp_path / "rollout-state")]
     if allow_timer_catchup:
         args.append("--allow-timer-catchup")
     source, target = _paths(tmp_path)
+    if install_target and not target.exists():
+        _install_fixture(source, target)
     def private_test_state(path: Path) -> Path:
         if path.is_symlink():
             raise lifecycle.LifecycleError("state directory path contains a symlink")
@@ -270,7 +272,6 @@ def test_incomplete_backend_export_never_restores_dependents(tmp_path: Path) -> 
     _run(tmp_path, "stop", systemd)
     systemd.active.add("fwrouter-api.service")
     source, target = _paths(tmp_path)
-    target.mkdir()
     (target / "module.py").write_text("stale source\n", encoding="utf-8")
     calls_before = len(systemd.calls)
 
@@ -355,6 +356,34 @@ def test_lifecycle_instructions_never_select_the_host_component() -> None:
     assert "--deploy --component backend" in section
     assert "--component host" not in section
     assert "trusted-clean-fwrouter-source" in section
+
+
+def test_stop_rejects_installed_extra_before_checkpoint_or_systemd_stop(tmp_path: Path) -> None:
+    gateway = "fwrouter-xray-sub-gateway.service"
+    systemd = FakeSystemd({"fwrouter-api.service", gateway})
+    source, target = _paths(tmp_path)
+    _install_fixture(source, target)
+    cache_file = target / ".ruff_cache" / "content" / "stale.py"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text("STALE_CACHE_ENTRY = True\n", encoding="utf-8")
+
+    with pytest.raises(lifecycle.LifecycleError, match="extra files"):
+        _run(tmp_path, "stop", systemd)
+    assert not systemd.calls
+    assert "fwrouter-api.service" in systemd.active
+    assert gateway in systemd.active
+    assert not (tmp_path / "rollout-state" / "pending.json").exists()
+
+
+def test_stop_allows_existing_backend_files_with_old_content(tmp_path: Path) -> None:
+    systemd = FakeSystemd({"fwrouter-api.service", "fwrouter-xray-sub-gateway.service"})
+    source, target = _paths(tmp_path)
+    target.mkdir()
+    (target / "module.py").write_text("PREVIOUS_VERSION = True\n", encoding="utf-8")
+
+    result = _run(tmp_path, "stop", systemd, install_target=False)
+    assert result["status"] == "stopped"
+    assert "fwrouter-api.service" not in systemd.active
 
 
 def test_stop_never_interrupts_a_job_racing_with_timer_shutdown(tmp_path: Path) -> None:

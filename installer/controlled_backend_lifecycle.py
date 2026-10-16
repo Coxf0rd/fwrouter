@@ -140,6 +140,47 @@ def _backend_manifest(root: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def _backend_paths(root: Path) -> set[str]:
+    if root.is_symlink() or not root.is_dir():
+        raise LifecycleError("installed backend export must be a regular directory")
+    paths: set[str] = set()
+    total_bytes = 0
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        base = Path(directory)
+        relative_dir = PurePosixPath(base.relative_to(root).as_posix())
+        kept_dirs: list[str] = []
+        for name in dirs:
+            relative = relative_dir / name
+            if _excluded(relative):
+                continue
+            if (base / name).is_symlink():
+                raise LifecycleError("installed backend export contains an extra symlink")
+            kept_dirs.append(name)
+        dirs[:] = sorted(kept_dirs)
+        for name in files:
+            relative = relative_dir / name
+            if _excluded(relative):
+                continue
+            try:
+                info = (base / name).lstat()
+            except OSError as exc:
+                raise LifecycleError("cannot inspect installed backend export") from exc
+            if not stat.S_ISREG(info.st_mode):
+                raise LifecycleError("installed backend export contains an extra symlink or special file")
+            paths.add(relative.as_posix())
+            total_bytes += info.st_size
+            if len(paths) > MAX_MANIFEST_FILES or total_bytes > MAX_MANIFEST_BYTES:
+                raise LifecycleError("installed backend path inventory exceeds the configured bound")
+    return paths
+
+
+def _preflight_export(source_manifest: list[dict[str, Any]]) -> None:
+    expected = {entry["path"] for entry in source_manifest}
+    extras = _backend_paths(TARGET_BACKEND) - expected
+    if extras:
+        raise LifecycleError("installed backend export contains extra files; stop was not started")
+
+
 def _manifest_digest(entries: list[dict[str, Any]]) -> str:
     return _sha256(_canonical_json(entries))
 
@@ -361,13 +402,14 @@ def _wait_gateway_listener() -> None:
 
 def _stop(state_dir: Path) -> dict[str, Any]:
     checkpoint_path = state_dir / "pending.json"
+    backend_manifest = _backend_manifest(SOURCE_BACKEND)
+    _preflight_export(backend_manifest)
     checkpoint: dict[str, Any] | None = None
     if checkpoint_path.exists():
         old = _read_checkpoint(checkpoint_path)
         if old["status"] == "pending":
             checkpoint = old
-            source_manifest = _backend_manifest(SOURCE_BACKEND)
-            if _manifest_digest(source_manifest) != checkpoint["backend_manifest_sha256"]:
+            if _manifest_digest(backend_manifest) != checkpoint["backend_manifest_sha256"]:
                 raise LifecycleError("source identity changed since rollout stop")
     if checkpoint is None:
         active = {unit: _is_active(unit) for unit in (*RESTORE_ORDER, *TRANSIENT_JOBS, API_UNIT)}
@@ -376,7 +418,6 @@ def _stop(state_dir: Path) -> dict[str, Any]:
         running_jobs = [unit for unit in TRANSIENT_JOBS if active.get(unit)]
         if running_jobs:
             raise LifecycleError("finish active one-shot jobs before rollout stop")
-        backend_manifest = _backend_manifest(SOURCE_BACKEND)
         checkpoint = {
             "schema": SCHEMA,
             "operation_id": str(uuid.uuid4()),
