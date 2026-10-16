@@ -44,6 +44,19 @@
     },
     "full_required_CI": "PENDING new exact HEAD",
     "production": "UNCHANGED",
-    "test_first_evidence": "private pkg3-scrub FIRST_RED; pkg3-projection red.log and chunk-red.log; expanded baseline replays labeled separately"
+    "test_first_evidence": "private pkg3-scrub FIRST_RED; pkg3-projection red.log and chunk-red.log; expanded baseline replays labeled separately",
+    "bootstrap_noop_correction": {
+      "source_sha256": {
+        "backend/fwrouter_api/services/system_subjects.py": "9492db27da72da051306a307dcea08dd10ea788bd55687bad49ef69e2ad5de32",
+        "backend/tests/test_bootstrap.py": "61e6573f699ae527954fc46bb8528dcc6585d639ab4975b4e22c26ffd0f36551"
+      },
+      "root_cause": "unconditional unchanged built-in subject/detail timestamp UPDATE exposed by second boundary",
+      "writer_targeted": "55 passed in 4.23s",
+      "main_failure_run": 38829503900,
+      "independent_QA": "PASSED:71 tests in8.63s; bootstrap/system_subjects/scoped_egress/db_migrations",
+      "existing_migration_test": "unchanged",
+      "no_op_total_changes": 0,
+      "qa_report_sha256": "90439d9fca02f14ec20cc8500650324df1ca106392be8d9ba1876fe5549975c7"
+    }
   }
 }

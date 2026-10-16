@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,8 @@ from fwrouter_api.services.bootstrap import (
 )
 from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.subjects import get_subject, list_subjects
+from fwrouter_api.services import system_subjects
+from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects
 
 
 def _enable_isolated_intended_mode_recovery(monkeypatch) -> None:
@@ -98,6 +101,184 @@ def test_bootstrap_normalizes_legacy_tailscale_subjects(monkeypatch, tmp_path: P
     assert subject["subject_type"] == "external_network_client"
     assert subject["stored_subject_type"] == "external_network_client"
     assert subject["implementation_kind"] == "tailscale"
+
+
+def test_bootstrap_preserves_builtin_timestamps_when_rows_are_already_canonical(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    _stub_bootstrap_recovery(monkeypatch)
+    initialize_database()
+
+    first_bootstrap = bootstrap_backend()
+    assert first_bootstrap["database_schema"]["ok"] is True
+
+    sentinel = "2001-02-03 04:05:06"
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE subjects SET updated_at = ?
+            WHERE subject_id IN ('fwrouter:global', 'host:ssh')
+            """,
+            (sentinel,),
+        )
+        connection.execute("UPDATE subject_fwrouter SET updated_at = ?", (sentinel,))
+        connection.execute("UPDATE subject_host SET updated_at = ?", (sentinel,))
+        connection.execute(
+            "INSERT INTO subject_server_overrides (subject_id, selected_server_id) "
+            "VALUES ('fwrouter:global', NULL)"
+        )
+        before_subjects = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT subject_id, subject_role, implementation_kind, desired_mode,
+                       applied_mode, apply_state, updated_at
+                FROM subjects
+                WHERE subject_id IN ('fwrouter:global', 'host:ssh')
+                ORDER BY subject_id
+                """
+            ).fetchall()
+        ]
+        before_details = {
+            "subject_fwrouter": dict(
+                connection.execute("SELECT * FROM subject_fwrouter").fetchone()
+            ),
+            "subject_host": dict(connection.execute("SELECT * FROM subject_host").fetchone()),
+        }
+
+    second_bootstrap = bootstrap_backend()
+    assert second_bootstrap["database_schema"]["ok"] is True
+
+    with db_session() as connection:
+        after_subjects = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT subject_id, subject_role, implementation_kind, desired_mode,
+                       applied_mode, apply_state, updated_at
+                FROM subjects
+                WHERE subject_id IN ('fwrouter:global', 'host:ssh')
+                ORDER BY subject_id
+                """
+            ).fetchall()
+        ]
+        after_details = {
+            "subject_fwrouter": dict(
+                connection.execute("SELECT * FROM subject_fwrouter").fetchone()
+            ),
+            "subject_host": dict(connection.execute("SELECT * FROM subject_host").fetchone()),
+        }
+        remaining_overrides = connection.execute(
+            "SELECT COUNT(*) FROM subject_server_overrides WHERE subject_id = 'fwrouter:global'"
+        ).fetchone()[0]
+
+    assert after_subjects == before_subjects
+    assert after_details == before_details
+    assert remaining_overrides == 0
+
+    row_changes: list[int] = []
+    original_db_session = system_subjects.db_session
+
+    @contextmanager
+    def tracked_db_session():
+        with original_db_session() as connection:
+            before_changes = connection.total_changes
+            yield connection
+            row_changes.append(connection.total_changes - before_changes)
+
+    monkeypatch.setattr(system_subjects, "db_session", tracked_db_session)
+    ensure_builtin_system_subjects()
+    assert row_changes == [0]
+    monkeypatch.setattr(system_subjects, "db_session", original_db_session)
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE subjects
+            SET subject_role = 'unknown', implementation_kind = 'unknown',
+                desired_mode = 'vpn', applied_mode = 'selective', apply_state = 'pending',
+                updated_at = ?
+            WHERE subject_id = 'fwrouter:global'
+            """,
+            (sentinel,),
+        )
+        connection.execute(
+            """
+            UPDATE subjects
+            SET is_deleted = 1, is_active = 0, runtime_state = 'stopped',
+                deleted_at = ?, updated_at = ?
+            WHERE subject_id = 'host:ssh'
+            """,
+            (sentinel, sentinel),
+        )
+        connection.execute(
+            "UPDATE subject_fwrouter SET source_json = NULL, updated_at = ?",
+            (sentinel,),
+        )
+        connection.execute(
+            "UPDATE subject_host SET systemd_unit = NULL, updated_at = ?",
+            (sentinel,),
+        )
+
+    ensure_builtin_system_subjects()
+
+    with db_session() as connection:
+        global_subject = connection.execute(
+            """
+            SELECT subject_role, implementation_kind, desired_mode, applied_mode,
+                   apply_state, updated_at
+            FROM subjects WHERE subject_id = 'fwrouter:global'
+            """
+        ).fetchone()
+        host_subject = connection.execute(
+            """
+            SELECT is_deleted, is_active, runtime_state, deleted_at, updated_at
+            FROM subjects WHERE subject_id = 'host:ssh'
+            """
+        ).fetchone()
+        fwrouter_detail = connection.execute(
+            """
+            SELECT source_json, updated_at FROM subject_fwrouter
+            WHERE subject_id = 'fwrouter:global'
+            """
+        ).fetchone()
+        host_detail = connection.execute(
+            "SELECT systemd_unit, updated_at FROM subject_host WHERE subject_id = 'host:ssh'"
+        ).fetchone()
+
+    assert {
+        key: global_subject[key]
+        for key in (
+            "subject_role", "implementation_kind", "desired_mode", "applied_mode", "apply_state",
+        )
+    } == {
+        "subject_role": "router_core",
+        "implementation_kind": "fwrouter",
+        "desired_mode": "direct",
+        "applied_mode": "selective",
+        "apply_state": "pending",
+    }
+    assert global_subject["updated_at"] != sentinel
+    assert {
+        key: host_subject[key]
+        for key in ("is_deleted", "is_active", "runtime_state", "deleted_at")
+    } == {
+        "is_deleted": 0,
+        "is_active": 1,
+        "runtime_state": "running",
+        "deleted_at": None,
+    }
+    assert host_subject["updated_at"] != sentinel
+    assert {"source_json": fwrouter_detail["source_json"]} == {
+        "source_json": '{"source": "system_subjects"}',
+    }
+    assert fwrouter_detail["updated_at"] != sentinel
+    assert {"systemd_unit": host_detail["systemd_unit"]} == {
+        "systemd_unit": "ssh.service",
+    }
+    assert host_detail["updated_at"] != sentinel
 
 
 def test_list_subjects_accepts_tailscale_alias_filter(monkeypatch, tmp_path: Path) -> None:
