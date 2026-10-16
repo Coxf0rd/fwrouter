@@ -76,6 +76,60 @@ def test_inventory_upsert_atomically_records_pending_candidate() -> None:
     assert subscription._subscription_inventory_generation_gate()["ok"] is False
 
 
+def test_reviewed_migration_forces_pending_without_emitting_conflicting_verified_proof() -> None:
+    _seed_inventory("synthetic-reviewed-migration")
+    with db_session() as connection:
+        subscription._write_subscription_inventory_candidate(connection)
+        digest, count = subscription._subscription_inventory_digest(connection)
+        connection.execute(
+            """UPDATE settings SET value_json=? WHERE key=?""",
+            (json.dumps({
+                "schema": 1, "status": "verified", "candidate_digest": digest,
+                "candidate_revision": 4, "verified_digest": digest,
+                "verified_revision": 4, "reason": None, "inventory_count": count,
+            }, sort_keys=True, separators=(",", ":")),
+             subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+
+    with db_session() as connection:
+        subscription._write_subscription_inventory_candidate(connection, force_pending=True)
+
+    state = subscription.get_subscription_native_generation_state()
+    assert state["status"] == "pending"
+    assert state["candidate_revision"] == 5
+    assert state["candidate_digest"] == digest
+    # The migration intent requires fresh native proof even when the inventory
+    # bytes return to an older digest; that same-digest proof cannot be carried
+    # as a distinct last-good generation in this marker schema.
+    assert state["verified_digest"] is None
+    assert state["verified_revision"] is None
+
+
+def test_reviewed_migration_preserves_a_distinct_last_good_proof() -> None:
+    _seed_inventory("synthetic-reviewed-migration-last-good")
+    with db_session() as connection:
+        digest, count = subscription._subscription_inventory_digest(connection)
+        connection.execute(
+            """INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)""",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY, json.dumps({
+                "schema": 1, "status": "pending", "candidate_digest": digest,
+                "candidate_revision": 4, "verified_digest": "a" * 64,
+                "verified_revision": 3, "reason": "inventory_changed_requires_native_publication",
+                "inventory_count": count,
+            }, sort_keys=True, separators=(",", ":"))),
+        )
+
+    with db_session() as connection:
+        subscription._write_subscription_inventory_candidate(connection, force_pending=True)
+
+    state = subscription.get_subscription_native_generation_state()
+    assert state["status"] == "pending"
+    assert state["candidate_revision"] == 5
+    assert state["candidate_digest"] == digest
+    assert state["verified_digest"] == "a" * 64
+    assert state["verified_revision"] == 3
+
+
 def test_failed_candidate_marker_write_rolls_back_inventory_transaction(monkeypatch) -> None:
     server = SubscriptionServer(
         server_id="synthetic-rollback",

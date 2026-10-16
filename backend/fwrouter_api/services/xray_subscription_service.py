@@ -561,6 +561,7 @@ def migrate_subscription_profile_identities(
             "ON a.account_id=c.account_id WHERE c.enabled=1 AND a.enabled=1 ORDER BY c.token"
         )]
         changed = 0
+        inventory_changed = False
         for item in mappings:
             old_id = str(item["old_server_id"])
             origin_id = origin_server_id_for_server(connection, old_id)
@@ -605,9 +606,13 @@ def migrate_subscription_profile_identities(
             )
             target_raw.pop("_fwrouter_identity_migration_required", None)
             target_raw["_fwrouter_profile_provenance"] = expected_provenance
+            target_raw_json = json.dumps(
+                target_raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            )
+            inventory_changed = inventory_changed or target_raw_json != str(target_row["raw_json"] or "")
             connection.execute(
                 "UPDATE servers SET raw_json=? WHERE server_id=? AND inventory_state='active'",
-                (json.dumps(target_raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")), target_id),
+                (target_raw_json, target_id),
             )
             changed += int(prior is None)
         revision = current_revision
@@ -615,6 +620,13 @@ def migrate_subscription_profile_identities(
             revision = advance_selection_revision(connection, expected_revision=current_revision)
             if revision is None:
                 raise IdentityConflict("IDENTITY_MIGRATION_SELECTION_STALE")
+        if apply and inventory_changed:
+            # The reviewed migration changes exact raw_json bytes covered by
+            # the inventory digest. Advance its admission marker in this same
+            # transaction, but never treat the new generation as applied.
+            from fwrouter_api.services.subscription import _write_subscription_inventory_candidate
+
+            _write_subscription_inventory_candidate(connection, force_pending=True)
         if not apply:
             connection.rollback()
     return {"ok": True, "status": "applied" if apply else "dry_run",

@@ -182,7 +182,9 @@ def get_subscription_native_generation_state() -> dict[str, Any]:
     )}
 
 
-def _write_subscription_inventory_candidate(connection: Any) -> None:
+def _write_subscription_inventory_candidate(
+    connection: Any, *, force_pending: bool = False,
+) -> None:
     current_digest, inventory_count = _subscription_inventory_digest(connection)
     row = connection.execute(
         "SELECT value_json FROM settings WHERE key=?",
@@ -229,7 +231,16 @@ def _write_subscription_inventory_candidate(connection: Any) -> None:
     # Returning exactly to a previously proven inventory is safe to admit; all
     # other changed snapshots remain pending until the normal pipeline proves
     # and promotes them.
-    verified = bool(prior is not None and verified_digest and verified_digest == current_digest)
+    verified = bool(
+        not force_pending and prior is not None
+        and verified_digest and verified_digest == current_digest
+    )
+    if force_pending and verified_digest == current_digest:
+        # A reviewed migration requires a new native publication even if its
+        # resulting inventory digest equals an older proven digest. The marker
+        # schema cannot represent that as both pending and same-digest last-good.
+        verified_digest = None
+        verified_revision = None
     marker = {
         "schema": 1,
         "status": "verified" if verified else "pending",
