@@ -341,6 +341,32 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         suffix = "a1b2c3d4e5f607" if changed_short_ids else ""
         return _synthetic_vless_profile(short_id_suffix=suffix, include_third_member=add_member)
 
+    def add_profile_member(value: dict, index: int) -> dict:
+        """Create strict ordered growth while preserving every existing outbound."""
+        grown = json.loads(json.dumps(value))
+        prior = next(
+            item for item in grown["outbounds"]
+            if isinstance(item, dict) and item.get("tag") == "synthetic-member-2"
+        )
+        added = json.loads(json.dumps(prior))
+        added["tag"] = f"synthetic-member-{index}"
+        vnext = added["settings"]["vnext"][0]
+        vnext["address"] = f"synthetic-member-{index}.example.invalid"
+        vnext["users"][0]["id"] = str(uuid5(NAMESPACE_DNS, f"pending-generation-member-{index}"))
+        reality = added["streamSettings"]["realitySettings"]
+        reality["serverName"] = f"synthetic-member-{index}.example.invalid"
+        reality["shortId"] = f"{index + 1:02x}" * 8
+        service_index = next(
+            index for index, outbound in enumerate(grown["outbounds"])
+            if isinstance(outbound, dict) and outbound.get("protocol") in {"freedom", "blackhole", "dns"}
+        )
+        grown["outbounds"].insert(service_index, added)
+        return grown
+
+    def content_id(value: dict) -> str:
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        return "sub:" + hashlib.sha256(raw).hexdigest()
+
     def import_source(url: str) -> dict:
         code, result = http_json(
             f"{stack['api']}/subscription", method="POST",
@@ -505,9 +531,79 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
 
+        # A changed Reality short-id is a transport-identity change, not
+        # compatible profile growth. Keep the failed candidate fenced across
+        # restart, then use the existing exact-context identity review flow;
+        # it must not write native state or claim the inventory verified.
+        assert not (state / "xray" / ".generation" / "generation-checkpoint.json").exists(), (
+            "pre-native staging failure unexpectedly created a generation checkpoint"
+        )
+        context_code, context = http_json(
+            f"{restarted_api}/__acceptance/xray/identity-context",
+        )
+        assert context_code == 200 and context.get("ok") is True
+        old_server_id = content_id(profile(changed_short_ids=False, add_member=False))
+        new_profile = profile(changed_short_ids=True, add_member=True)
+        new_server_id = content_id(new_profile)
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            identity_row = connection.execute(
+                "SELECT i.revision FROM subscription_node_aliases a "
+                "JOIN subscription_node_identities i ON i.identity_id=a.identity_id "
+                "WHERE a.server_id=?", (old_server_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        assert identity_row is not None, "synthetic source identity was not durably registered"
+        manifest = {
+            "version": 1,
+            "expected_selection_revision": context["selection_revision"],
+            "expected_identity_digest": context["identity_digest"],
+            "mappings": [{
+                "old_server_id": old_server_id,
+                "new_server_id": new_server_id,
+                "expected_identity_revision": int(identity_row[0]),
+                "old_profile": profile(changed_short_ids=False, add_member=False),
+                "new_profile": new_profile,
+            }],
+        }
+
+        def identity_cli(payload: dict) -> dict:
+            code, result = http_json(
+                f"{restarted_api}/__acceptance/xray/identity-cli", method="POST",
+                payload=payload, timeout=90,
+            )
+            assert code == 200 and result.get("stderr_empty") is True, {
+                "status": code, "ok": result.get("ok"), "error_code": result.get("error_code"),
+            }
+            assert result.get("ok") is True, {
+                "exit_code": result.get("exit_code"),
+                "error_code": (result.get("receipt") or {}).get("error_code"),
+            }
+            return result.get("receipt") or {}
+
+        dry = identity_cli({"action": "dry-run", "manifest": manifest})
+        assert dry.get("fresh_generation_required") is True
+        assert dry.get("native_applied") is False and dry.get("changed_count") == 1
+        apply = identity_cli({
+            "action": "apply", "manifest": manifest,
+            "expected_plan_sha256": dry.get("plan_sha256"),
+        })
+        assert apply.get("fresh_generation_required") is True
+        assert apply.get("native_applied") is False and apply.get("changed_count") == 1
+        reviewed_pending = generation_state(restarted_api)
+        assert reviewed_pending.get("status") == "pending"
+        assert reviewed_pending.get("candidate_digest") != reviewed_pending.get("verified_digest")
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
         # Re-fetch the same synthetic source through the normal public import
-        # and native publication path. The pending candidate is admitted only
-        # by this fresh, fenced operation.
+        # and native publication path after the reviewed identity transition.
+        # The explicit review authorizes the identity continuity; this fresh
+        # operation still has to prove the candidate through native readback.
         retried = import_source(source.url)
         assert retried.get("ok") is True, {
             "ok": retried.get("ok"),
@@ -518,7 +614,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         verified = generation_state(restarted_api)
         assert verified.get("status") == "verified"
         assert verified.get("candidate_digest") == verified.get("verified_digest")
-        assert verified.get("verified_digest") == pending.get("candidate_digest")
+        assert verified.get("verified_digest") == reviewed_pending.get("candidate_digest")
         runtime_name_b = active_profile_runtime_name()
         config_b = yaml.safe_load(active_mihomo.read_bytes())
         group_b = logical_profile_group(config_b, runtime_name_b, owned_probe_url)
@@ -551,9 +647,8 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         # Exercise a crash-window after real native apply/readback and profile
         # publication, but before the durable inventory marker is promoted.
         before_checkpoint_mihomo = active_mihomo.read_bytes()
-        source.replace(_synthetic_vless_profile(
-            short_id_suffix="cafe1234567890", include_third_member=True,
-        ))
+        profile_c = add_profile_member(new_profile, 3)
+        source.replace(profile_c)
         armed_code, armed = http_json(
             f"{restarted_api}/__acceptance/xray/inventory-promotion-failure/arm", method="POST",
         )
@@ -617,9 +712,8 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
 
         # A newer persisted candidate invalidates the checkpoint's bound
         # digest/revision. Recovery must decline without touching native state.
-        source.replace(_synthetic_vless_profile(
-            short_id_suffix="babe9876543210", include_third_member=True,
-        ))
+        profile_d = add_profile_member(profile_c, 4)
+        source.replace(profile_d)
         armed_code, armed = http_json(
             f"{restarted_api}/__acceptance/xray/inventory-promotion-failure/arm", method="POST",
         )
@@ -640,9 +734,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
 
         refresh_code, refreshed = http_json(
             f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
-            payload={"profile": _synthetic_vless_profile(
-                short_id_suffix="deadbeef001122", include_third_member=True,
-            )},
+            payload={"profile": add_profile_member(profile_d, 5)},
         )
         assert refresh_code == 200 and refreshed.get("ok") is True, {
             "status": refresh_code, "ok": refreshed.get("ok"),
