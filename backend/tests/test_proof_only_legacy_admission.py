@@ -15,6 +15,135 @@ from fwrouter_api.services import subscription, xray_subscription_service
 CONFIRMATION = "PROOF_ONLY_LEGACY_ADMISSION"
 
 
+def test_synthetic_vpn_enable_requires_only_owned_loopback_source_before_public_call(monkeypatch, tmp_path):
+    """The acceptance lifecycle helper must reject any non-owned refresh input before API mutation."""
+    import sqlite3
+
+    tests_root = Path(__file__).resolve().parents[2] / "tests"
+    monkeypatch.syspath_prepend(str(tests_root))
+    from application_acceptance import xray_support
+
+    database = tmp_path / "fwrouter.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            "CREATE TABLE subscription_state (id INTEGER PRIMARY KEY, url TEXT, metadata_json TEXT);"
+            "CREATE TABLE provider_bindings (source_ref TEXT, enabled INTEGER);"
+        )
+        connection.execute(
+            "INSERT INTO subscription_state(id, url, metadata_json) VALUES(1, ?, ?)",
+            ("http://127.0.0.1:49001/synthetic-subscription", json.dumps({
+                "subscriptions": {"items": [{
+                    "url": "http://127.0.0.1:49001/synthetic-subscription", "enabled": True,
+                }]},
+            })),
+        )
+
+    calls = []
+    monkeypatch.setattr(xray_support, "http_json", lambda *args, **kwargs: calls.append((args, kwargs)))
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE subscription_state SET url=?, metadata_json=? WHERE id=1",
+            ("http://198.51.100.9/profile", json.dumps({"subscriptions": {"items": [{
+                "url": "http://198.51.100.9/profile", "enabled": True,
+            }]}})),
+        )
+    with pytest.raises(AssertionError, match="not limited"):
+        xray_support.enable_vpn_from_synthetic_subscription(
+            "http://127.0.0.1:9000/api/v2", tmp_path, "http://127.0.0.1:49001/synthetic-subscription",
+        )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE subscription_state SET url=?, metadata_json=? WHERE id=1",
+            ("http://127.0.0.1:49001/synthetic-subscription", json.dumps({
+                "subscriptions": {"items": [
+                    {"url": "http://127.0.0.1:49001/synthetic-subscription", "enabled": True},
+                    {"url": "http://198.51.100.9/disabled-profile", "enabled": False},
+                ]},
+            })),
+        )
+    with pytest.raises(AssertionError, match="not limited"):
+        xray_support.enable_vpn_from_synthetic_subscription(
+            "http://127.0.0.1:9000/api/v2", tmp_path, "http://127.0.0.1:49001/synthetic-subscription",
+        )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE subscription_state SET url=?, metadata_json=? WHERE id=1",
+            ("http://127.0.0.1:49001/synthetic-subscription", json.dumps({
+                "subscriptions": {"items": [{
+                    "url": "http://127.0.0.1:49001/synthetic-subscription", "enabled": True,
+                }]},
+            })),
+        )
+        connection.execute("INSERT INTO provider_bindings(source_ref, enabled) VALUES('synthetic', 1)")
+    with pytest.raises(AssertionError, match="enabled provider binding"):
+        xray_support.enable_vpn_from_synthetic_subscription(
+            "http://127.0.0.1:9000/api/v2", tmp_path, "http://127.0.0.1:49001/synthetic-subscription",
+        )
+    with sqlite3.connect(database) as connection:
+        connection.execute("DELETE FROM provider_bindings")
+    with pytest.raises(AssertionError, match="owned loopback worker"):
+        xray_support.enable_vpn_from_synthetic_subscription(
+            "https://api.example.invalid/api/v2", tmp_path,
+            "http://127.0.0.1:49001/synthetic-subscription",
+        )
+    assert calls == []
+
+
+def test_synthetic_vpn_enable_uses_public_managed_module_lifecycle(monkeypatch, tmp_path):
+    """The native cohort enables its real `vpn` owner through the public API, never direct DB writes."""
+    import sqlite3
+
+    tests_root = Path(__file__).resolve().parents[2] / "tests"
+    monkeypatch.syspath_prepend(str(tests_root))
+    from application_acceptance import xray_support
+
+    database = tmp_path / "fwrouter.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            "CREATE TABLE subscription_state (id INTEGER PRIMARY KEY, url TEXT, metadata_json TEXT);"
+            "CREATE TABLE provider_bindings (source_ref TEXT, enabled INTEGER);"
+        )
+        connection.execute(
+            "INSERT INTO subscription_state(id, url, metadata_json) VALUES(1, ?, ?)",
+            ("http://127.0.0.1:49001/synthetic-subscription", json.dumps({
+                "subscriptions": {"items": [{
+                    "url": "http://127.0.0.1:49001/synthetic-subscription", "enabled": True,
+                }]},
+            })),
+        )
+
+    responses = [
+        (200, {"ok": True, "data": {"module": {
+            "module_name": "vpn", "desired_state": "disabled", "lifecycle_mode": "managed",
+        }}}),
+        (200, {"ok": True, "data": {"job": {"job_id": "synthetic-job"}}}),
+        (200, {"ok": True, "data": {"module": {
+            "module_name": "vpn", "desired_state": "enabled", "lifecycle_mode": "managed",
+            "runtime_state": "running", "apply_state": "clean",
+        }}}),
+    ]
+    calls = []
+
+    def fake_http_json(url, **kwargs):
+        calls.append((url, kwargs))
+        return responses.pop(0)
+
+    def fake_await_job(api, response, **kwargs):
+        assert response.get("data", {}).get("job", {}).get("job_id") == "synthetic-job"
+        assert kwargs == {}
+        return {"status": "success"}
+
+    monkeypatch.setattr(xray_support, "http_json", fake_http_json)
+    monkeypatch.setattr(xray_support, "await_job", fake_await_job)
+    xray_support.enable_vpn_from_synthetic_subscription(
+        "http://127.0.0.1:9000/api/v2", tmp_path, "http://127.0.0.1:49001/synthetic-subscription",
+    )
+    assert [url.rsplit("/api/v2", 1)[-1] for url, _ in calls] == [
+        "/modules/vpn", "/modules/vpn/desired-state", "/modules/vpn",
+    ]
+    assert not responses
+
+
 def _seed_legacy_inventory() -> str:
     with db_session() as connection:
         connection.execute(

@@ -25,6 +25,7 @@ from .xray_support import (
     assert_mihomo_launch_matches_active,
     assert_native_matches_active,
     await_job,
+    enable_vpn_from_synthetic_subscription,
     loaded_identities,
     native_config_bytes,
     read_subscription_rows,
@@ -557,6 +558,16 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
             "error_code": (initial.get("error") or {}).get("code")
             if isinstance(initial.get("error"), dict) else None,
         }
+        # The harness globally keeps VPN disabled so unrelated tests preserve
+        # blocked-egress semantics. This admission contract specifically
+        # requires a managed native owner, so establish it through the normal
+        # public lifecycle using only the saved suite-owned loopback source.
+        enable_vpn_from_synthetic_subscription(stack["api"], state, source.url)
+        assert_generation_routing(stack["api"])
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        enabled_pairs = set(loaded_identities(native))
+        assert enabled_pairs >= baseline_pairs and sum(pair in baseline_pairs for pair in enabled_pairs) == 78
         assert_no_fixed_target_auto_select(initial)
         applied = generation_state(stack["api"])
         assert applied.get("status") == "verified"
