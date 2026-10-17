@@ -760,6 +760,7 @@ def test_legacy_admission_checkpoint_is_explicit_and_generic_recovery_never_muta
 
     assert result["ok"] is False
     assert checkpoint.is_file()
+    assert subscription.get_subscription_native_generation_state()["status"] == "unknown"
     recovery = xray_subscription_service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
     assert recovery["ok"] is False
     assert recovery.get("reason") == "proof_only_operation_requires_explicit_resume"
@@ -773,10 +774,16 @@ def test_proof_only_admission_promotes_only_after_fresh_proof_and_is_idempotent(
     monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: adapter)
     monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
     proof_order: list[str] = []
+    receipt_generation_states: list[str] = []
     monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof",
                         lambda *_args, **_kwargs: proof_order.append("proof") or _positive_synthetic_proof())
     monkeypatch.setattr(xray_subscription_service, "_publish_legacy_admission_mihomo_receipt",
-                        lambda proof, operation_id: proof_order.append("receipt") is None)
+                        lambda proof, operation_id: (
+                            proof_order.append("receipt") is None
+                            and receipt_generation_states.append(
+                                subscription.get_subscription_native_generation_state()["status"]
+                            ) is None
+                        ))
     monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _admission: True)
     from fwrouter_api.services import mihomo_reconcile_fingerprint
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
@@ -795,7 +802,8 @@ def test_proof_only_admission_promotes_only_after_fresh_proof_and_is_idempotent(
     assert state["candidate_digest"] == digest
     assert state["verified_digest"] == digest
     assert state["candidate_revision"] == 1
-    assert proof_order == ["proof", "receipt"]
+    assert proof_order == ["proof", "proof", "receipt"]
+    assert receipt_generation_states == ["pending"]
     assert not checkpoint.exists()
     from fwrouter_api.adapters import xray_common
     monkeypatch.setattr(xray_common, "_default_xray_config_path", lambda: str(tmp_path / "xray.json"))
@@ -808,7 +816,140 @@ def test_proof_only_admission_promotes_only_after_fresh_proof_and_is_idempotent(
     )
     assert repeated["ok"] is True
     assert repeated["already_admitted"] is True
+    assert proof_order[-2:] == ["proof", "receipt"]
+    assert receipt_generation_states[-1] == "verified"
     assert subscription.get_subscription_native_generation_state()["candidate_revision"] == 1
+
+
+def test_legacy_admission_reproves_after_pending_marker_before_real_receipt_promotion(monkeypatch, tmp_path):
+    """A real Mihomo input fingerprint must include the newly-published generation marker."""
+    digest = _seed_legacy_inventory()
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
+
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+    from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+
+    active_config = Path(_resolved_base_config_path())
+    active_config.parent.mkdir(parents=True, exist_ok=True)
+    active_config.write_bytes(b"synthetic active Mihomo config\n")
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint, "_current_runtime_incarnation",
+        lambda: "synthetic-mihomo-runtime-incarnation",
+    )
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", lambda: {
+        "ok": True, "native_top_level_rules_match": True,
+        "selector_membership_matches": True, "guarded_rules_match": True,
+    })
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: True)
+
+    collected_fingerprints = []
+
+    def native_boundary_proof(*_args, **_kwargs):
+        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+        collected_fingerprints.append(fingerprint["hash"])
+        proof = _positive_synthetic_proof()
+        proof["mihomo_fingerprint_hash"] = fingerprint["hash"]
+        proof["mihomo_config_sha256"] = mihomo_reconcile_fingerprint.active_config_hash()
+        proof["mihomo_runtime_incarnation"] = "synthetic-mihomo-runtime-incarnation"
+        return proof
+
+    monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof", native_boundary_proof)
+
+    result = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION,
+    )
+
+    assert result["ok"] is True, result
+    assert result["status"] == "verified"
+    assert len(collected_fingerprints) == 2
+    assert collected_fingerprints[0] != collected_fingerprints[1]
+    assert subscription.get_subscription_native_generation_state()["status"] == "verified"
+    final_fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+    assert final_fingerprint["hash"] == collected_fingerprints[-1]
+    assert mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches() is True
+    assert mihomo_reconcile_fingerprint.mihomo_input_unchanged(final_fingerprint) is True
+    assert not checkpoint.exists()
+
+
+def test_legacy_admission_post_marker_proof_failure_resumes_without_premature_receipt(monkeypatch, tmp_path):
+    """A failed post-marker proof stays pending and can resume with a fresh real receipt."""
+    digest = _seed_legacy_inventory()
+    from fwrouter_api.adapters import xray_common
+    xray_config = tmp_path / "xray" / "config.json"
+    xray_config.parent.mkdir()
+    monkeypatch.setattr(xray_common, "_default_xray_config_path", lambda: str(xray_config))
+    checkpoint = xray_config.parent / ".generation" / "generation-checkpoint.json"
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
+
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+    from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+
+    active_config = Path(_resolved_base_config_path())
+    active_config.parent.mkdir(parents=True, exist_ok=True)
+    active_config.write_bytes(b"synthetic active Mihomo config\n")
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint, "_current_runtime_incarnation",
+        lambda: "synthetic-mihomo-runtime-incarnation",
+    )
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", lambda: {
+        "ok": True, "native_top_level_rules_match": True,
+        "selector_membership_matches": True, "guarded_rules_match": True,
+    })
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: True)
+
+    proof_calls = 0
+
+    def native_boundary_proof(*_args, **_kwargs):
+        nonlocal proof_calls
+        proof_calls += 1
+        if proof_calls == 2:
+            return {"ok": False, "reason": "synthetic_post_marker_native_proof_failure"}
+        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+        proof = _positive_synthetic_proof()
+        proof["mihomo_fingerprint_hash"] = fingerprint["hash"]
+        proof["mihomo_config_sha256"] = mihomo_reconcile_fingerprint.active_config_hash()
+        proof["mihomo_runtime_incarnation"] = "synthetic-mihomo-runtime-incarnation"
+        return proof
+
+    monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof", native_boundary_proof)
+    first = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION,
+    )
+    state = subscription.get_subscription_native_generation_state()
+    assert first["ok"] is False
+    assert first["reason"] == "synthetic_post_marker_native_proof_failure"
+    assert state["status"] == "pending"
+    assert state["candidate_digest"] == digest
+    assert state["candidate_revision"] == 1
+    assert checkpoint.is_file()
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "proof_complete"
+    assert not mihomo_reconcile_fingerprint._state_path().exists()
+    plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission()
+    assert plan["action"] == "resume_proof_only"
+
+    def resumed_native_boundary_proof(*_args, **_kwargs):
+        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+        proof = _positive_synthetic_proof()
+        proof["mihomo_fingerprint_hash"] = fingerprint["hash"]
+        proof["mihomo_config_sha256"] = mihomo_reconcile_fingerprint.active_config_hash()
+        proof["mihomo_runtime_incarnation"] = "synthetic-mihomo-runtime-incarnation"
+        return proof
+
+    monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof",
+                        resumed_native_boundary_proof)
+    resumed = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION,
+    )
+    assert resumed["ok"] is True, resumed
+    assert resumed["status"] == "verified"
+    assert subscription.get_subscription_native_generation_state()["candidate_revision"] == 1
+    final_fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+    assert mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches() is True
+    assert mihomo_reconcile_fingerprint.mihomo_input_unchanged(final_fingerprint) is True
+    assert not checkpoint.exists()
 
 
 def test_proof_only_admission_never_publishes_when_fences_drift_after_readback(monkeypatch, tmp_path):
@@ -839,7 +980,9 @@ def test_proof_only_admission_never_publishes_when_fences_drift_after_readback(m
 
     assert result["ok"] is False
     assert result["reason"] == "legacy_admission_fence_changed", {"result": result, "receipts": receipts}
-    assert receipts == [True]
+    # The initial proof is deliberately not published as a receipt. A legacy
+    # admission must finish its post-marker proof before binding native state.
+    assert receipts == []
     assert subscription.get_subscription_native_generation_state()["status"] == "pending"
     checkpoint_state = json.loads(checkpoint.read_text(encoding="utf-8"))
     assert checkpoint_state["operation_mode"] == "proof_only_legacy_admission"

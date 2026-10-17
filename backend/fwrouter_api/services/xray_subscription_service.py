@@ -2665,58 +2665,84 @@ def admit_legacy_subscription_inventory(
                     checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
                 )
             assert checkpoint is not None
-            proof = _collect_legacy_inventory_native_proof(
-                adapter, expected_digest=expected_digest,
-                source_fingerprint=source_fingerprint, checkpoint_path=checkpoint_path,
-            )
             required_truths = (
                 "xray_config_match", "xray_loaded_users_match", "xray_bindings_match",
                 "xray_modes_match", "core_selection_match", "mihomo_candidate_match",
                 "mihomo_native_policy_match", "core_native_policy_match",
             )
-            if proof.get("ok") is not True or any(proof.get(key) is not True for key in required_truths):
-                reason = proof.get("reason") if isinstance(proof.get("reason"), str) else "native_proof_incomplete"
-                return {"ok": False, "status": "blocked", "reason": reason,
+
+            def collect_current_proof() -> tuple[dict[str, Any] | None, str | None]:
+                current_proof = _collect_legacy_inventory_native_proof(
+                    adapter, expected_digest=expected_digest,
+                    source_fingerprint=source_fingerprint, checkpoint_path=checkpoint_path,
+                )
+                if (current_proof.get("ok") is not True
+                        or any(current_proof.get(key) is not True for key in required_truths)):
+                    reason = current_proof.get("reason")
+                    return None, reason if isinstance(reason, str) else "native_proof_incomplete"
+                if current_proof.get("source_fingerprint") != source_fingerprint:
+                    return None, "legacy_admission_fence_changed"
+                current_selection = _capture_generation_auto_selection()
+                if (current_selection.get("selection_revision") != checkpoint.get("selection_revision")
+                        or current_selection.get("selection_decision_id") != checkpoint.get("selection_decision_id")):
+                    return None, "selection_fence_changed"
+                with db_session() as connection:
+                    current_inventory_digest, current_inventory_count = _subscription_inventory_digest(connection)
+                    current_source_fingerprint = _legacy_admission_source_fingerprint(connection)
+                    core_unavailable = _legacy_admission_core_unavailable_reason(connection)
+                    current_core_runtime_fingerprint = _legacy_admission_core_runtime_fingerprint(connection)
+                    current_generation = _read_subscription_native_generation(connection)
+                if (current_inventory_digest != expected_digest or current_inventory_count <= 0
+                        or current_source_fingerprint != source_fingerprint or core_unavailable is not None
+                        or current_core_runtime_fingerprint != current_proof.get("core_runtime_fingerprint")):
+                    return None, "legacy_admission_fence_changed"
+                generation_status = current_generation.get("status")
+                if generation_status == "unknown":
+                    if (current_generation.get("reason") != "verified_generation_missing"
+                            or current_generation.get("candidate_revision") is not None
+                            or checkpoint.get("candidate_revision") != 1):
+                        return None, "inventory_generation_stale"
+                elif generation_status in {"pending", "verified"}:
+                    if (current_generation.get("candidate_digest") != expected_digest
+                            or current_generation.get("candidate_revision")
+                            != checkpoint.get("candidate_revision")):
+                        return None, "inventory_generation_stale"
+                else:
+                    return None, "inventory_generation_stale"
+                return current_proof, None
+
+            def record_proof_complete(current_proof: dict[str, Any]) -> None:
+                # This phase means a fresh native proof was collected. It does
+                # not mean that a receipt or verified generation was published.
+                checkpoint.update({
+                    "phase": "proof_complete",
+                    "proof_summary": {key: True for key in required_truths},
+                    "xray_runtime_incarnation": current_proof["xray_runtime_incarnation"],
+                    "mihomo_runtime_incarnation": current_proof["mihomo_runtime_incarnation"],
+                    "xray_config_sha256": current_proof["xray_config_sha256"],
+                    "mihomo_config_sha256": current_proof["mihomo_config_sha256"],
+                    "mihomo_fingerprint_hash": current_proof["mihomo_fingerprint_hash"],
+                })
+                _atomic_write_private_checkpoint(
+                    checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+                )
+
+            proof, proof_error = collect_current_proof()
+            if proof is None:
+                return {"ok": False, "status": "blocked", "reason": proof_error or "native_proof_incomplete",
                         "last_good_retained": True}
-            if proof.get("source_fingerprint") != source_fingerprint:
-                return {"ok": False, "status": "blocked", "reason": "legacy_admission_fence_changed",
-                        "last_good_retained": True}
-            current_selection = _capture_generation_auto_selection()
-            if (current_selection.get("selection_revision") != checkpoint.get("selection_revision")
-                    or current_selection.get("selection_decision_id") != checkpoint.get("selection_decision_id")):
-                return {"ok": False, "status": "blocked", "reason": "selection_fence_changed",
-                        "last_good_retained": True}
-            with db_session() as connection:
-                current_inventory_digest, current_inventory_count = _subscription_inventory_digest(connection)
-                current_source_fingerprint = _legacy_admission_source_fingerprint(connection)
-                core_unavailable = _legacy_admission_core_unavailable_reason(connection)
-                current_core_runtime_fingerprint = _legacy_admission_core_runtime_fingerprint(connection)
-            if (current_inventory_digest != expected_digest or current_inventory_count <= 0
-                    or current_source_fingerprint != source_fingerprint or core_unavailable is not None
-                    or current_core_runtime_fingerprint != proof.get("core_runtime_fingerprint")):
-                return {"ok": False, "status": "blocked", "reason": "legacy_admission_fence_changed",
-                        "last_good_retained": True}
-            if not _publish_legacy_admission_mihomo_receipt(proof, str(checkpoint["operation_id"])):
-                return {"ok": False, "status": "blocked", "reason": "native_receipt_unverified",
-                        "last_good_retained": True}
-            checkpoint.update({
-                "phase": "proof_complete",
-                "proof_summary": {key: True for key in required_truths},
-                "xray_runtime_incarnation": proof["xray_runtime_incarnation"],
-                "mihomo_runtime_incarnation": proof["mihomo_runtime_incarnation"],
-                "xray_config_sha256": proof["xray_config_sha256"],
-                "mihomo_config_sha256": proof["mihomo_config_sha256"],
-                "mihomo_fingerprint_hash": proof["mihomo_fingerprint_hash"],
-            })
-            _atomic_write_private_checkpoint(
-                checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
-            )
+            # Keep this checkpoint resumable across the marker-write crash
+            # window. A resume always gathers fresh proof before receipt/promotion.
+            record_proof_complete(proof)
 
             # Close the missing-marker crash window by publishing a pending
             # generation only after proof, under the same immediate SQLite
             # transaction that verifies every durable source and selection
             # fence. Existing verified exact-generation retries do not bump it.
             if state.get("status") == "verified":
+                if not _publish_legacy_admission_mihomo_receipt(proof, str(checkpoint["operation_id"])):
+                    return {"ok": False, "status": "blocked", "reason": "native_receipt_unverified",
+                            "last_good_retained": True}
                 already_admitted = _AdmissionFenceView(
                     proof_only_source_fingerprint=source_fingerprint,
                     proof_only_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
@@ -2778,6 +2804,17 @@ def admit_legacy_subscription_inventory(
                         _atomic_write_private_checkpoint(
                             checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
                         )
+                    # Subsequent capability/receipt work belongs to the
+                    # pending generation, not the stale pre-marker snapshot.
+                    state = current
+                # Publishing the generation marker changes Mihomo's input
+                # fingerprint. Re-prove that exact pending generation before
+                # writing a receipt, so promotion consumes the same fence.
+                proof, proof_error = collect_current_proof()
+                if proof is None:
+                    return {"ok": False, "status": "blocked", "reason": proof_error or "native_proof_incomplete",
+                            "last_good_retained": True}
+                record_proof_complete(proof)
             admission = _claim_subscription_inventory_admission()
             if admission is None:
                 return {"ok": False, "status": "blocked", "reason": "inventory_generation_admission_missing",
@@ -2799,6 +2836,9 @@ def admit_legacy_subscription_inventory(
                 proof_only_core_enforcement_level=str(proof["core_dataplane_proof"]["enforcement_level"]),
                 proof_only_core_live_mode=str(proof["core_dataplane_proof"]["live_global_mode"]),
             )
+            if not _publish_legacy_admission_mihomo_receipt(proof, str(checkpoint["operation_id"])):
+                return {"ok": False, "status": "blocked", "reason": "native_receipt_unverified",
+                        "last_good_retained": True}
             promoted = _promote_subscription_inventory_generation(admission)
             if not promoted.get("ok"):
                 return {"ok": False, "status": "blocked", "reason": promoted.get("reason") or "inventory_promotion_failed",
