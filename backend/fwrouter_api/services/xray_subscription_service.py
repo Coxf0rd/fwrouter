@@ -2777,7 +2777,8 @@ def admit_legacy_subscription_inventory(
                 checkpoint_path.unlink(missing_ok=True)
                 _fsync_directory(checkpoint_path.parent)
                 return {"ok": True, "status": "verified", "already_admitted": True,
-                        "digest": expected_digest, "revision": state["candidate_revision"]}
+                        "digest": expected_digest, "revision": state["candidate_revision"],
+                        "proof_receipt_written": True}
             if state.get("status") == "unknown":
                 with db_session() as connection:
                     connection.execute("BEGIN IMMEDIATE")
@@ -2850,7 +2851,8 @@ def admit_legacy_subscription_inventory(
             checkpoint_path.unlink(missing_ok=True)
             _fsync_directory(checkpoint_path.parent)
             return {"ok": True, "status": "verified", "digest": expected_digest,
-                    "revision": promoted.get("revision", admission.revision), "already_admitted": False}
+                    "revision": promoted.get("revision", admission.revision), "already_admitted": False,
+                    "proof_receipt_written": True}
     except Exception as exc:
         name = type(exc).__name__
         safe_name = name if name.isascii() and name.isalnum() and name.endswith(("Error", "Exception")) else "admission_error"

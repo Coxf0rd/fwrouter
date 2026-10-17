@@ -798,6 +798,7 @@ def test_proof_only_admission_promotes_only_after_fresh_proof_and_is_idempotent(
     state = subscription.get_subscription_native_generation_state()
     assert result["ok"] is True, result
     assert result["status"] == "verified"
+    assert result["proof_receipt_written"] is True
     assert state["status"] == "verified"
     assert state["candidate_digest"] == digest
     assert state["verified_digest"] == digest
@@ -816,13 +817,16 @@ def test_proof_only_admission_promotes_only_after_fresh_proof_and_is_idempotent(
     )
     assert repeated["ok"] is True
     assert repeated["already_admitted"] is True
+    assert repeated["proof_receipt_written"] is True
     assert proof_order[-2:] == ["proof", "receipt"]
     assert receipt_generation_states[-1] == "verified"
     assert subscription.get_subscription_native_generation_state()["candidate_revision"] == 1
 
 
-def test_legacy_admission_reproves_after_pending_marker_before_real_receipt_promotion(monkeypatch, tmp_path):
-    """A real Mihomo input fingerprint must include the newly-published generation marker."""
+def test_legacy_admission_reproves_after_pending_marker_and_resumes_receipt_close_crash(
+    monkeypatch, tmp_path, capsys,
+):
+    """Exercise real DB/receipt/promotion/CLI across marker change and checkpoint-close retry."""
     digest = _seed_legacy_inventory()
     checkpoint = tmp_path / "generation-checkpoint.json"
     monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
@@ -857,12 +861,31 @@ def test_legacy_admission_reproves_after_pending_marker_before_real_receipt_prom
 
     monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof", native_boundary_proof)
 
-    result = xray_subscription_service.admit_legacy_subscription_inventory(
-        expected_digest=digest, operator_confirmation=CONFIRMATION,
-    )
+    from fwrouter_api import cli
+    args = [
+        "xray", "generation", "admit-legacy", "--expected-inventory-digest", digest,
+        "--confirm", CONFIRMATION,
+    ]
+    original_checkpoint_write = xray_subscription_service._atomic_write_private_checkpoint
 
-    assert result["ok"] is True, result
-    assert result["status"] == "verified"
+    def interrupt_checkpoint_close(path, text):
+        if json.loads(text).get("phase") == "verified":
+            raise OSError("synthetic checkpoint close interruption")
+        original_checkpoint_write(path, text)
+
+    monkeypatch.setattr(
+        xray_subscription_service, "_atomic_write_private_checkpoint", interrupt_checkpoint_close,
+    )
+    result_code = cli.main(args)
+    result = json.loads(capsys.readouterr().out)
+
+    # The initial unknown→pending→verified DB lifecycle and real receipt write
+    # completed, but checkpoint closure was interrupted. Do not claim accepted
+    # success until an explicit retry re-proves and closes that checkpoint.
+    assert result_code == 1
+    assert result["ok"] is False, result
+    assert result["status"] == "blocked"
+    assert result.get("proof_receipt_written") is not True
     assert len(collected_fingerprints) == 2
     assert collected_fingerprints[0] != collected_fingerprints[1]
     assert subscription.get_subscription_native_generation_state()["status"] == "verified"
@@ -870,7 +893,35 @@ def test_legacy_admission_reproves_after_pending_marker_before_real_receipt_prom
     assert final_fingerprint["hash"] == collected_fingerprints[-1]
     assert mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches() is True
     assert mihomo_reconcile_fingerprint.mihomo_input_unchanged(final_fingerprint) is True
+    assert checkpoint.is_file()
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["phase"] == "proof_complete"
+
+    # The explicit retry re-proves the already-verified generation and closes
+    # the same operation without advancing its revision.
+    generation_before_retry = subscription.get_subscription_native_generation_state()
+    monkeypatch.setattr(
+        xray_subscription_service, "_atomic_write_private_checkpoint", original_checkpoint_write,
+    )
+    resumed_code = cli.main(args)
+    resumed = json.loads(capsys.readouterr().out)
+    assert resumed_code == 0
+    assert resumed["ok"] is True
+    assert resumed["status"] == "verified"
+    assert resumed["already_admitted"] is True
+    assert resumed["proof_receipt_written"] is True
+    assert subscription.get_subscription_native_generation_state() == generation_before_retry
+    assert mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches() is True
+    assert mihomo_reconcile_fingerprint.mihomo_input_unchanged(final_fingerprint) is True
     assert not checkpoint.exists()
+
+    # A clean repeat stays idempotent and still reports the proof result.
+    repeated_code = cli.main(args)
+    repeated = json.loads(capsys.readouterr().out)
+    assert repeated_code == 0
+    assert repeated["ok"] is True
+    assert repeated["already_admitted"] is True
+    assert repeated["proof_receipt_written"] is True
+    assert subscription.get_subscription_native_generation_state() == generation_before_retry
 
 
 def test_legacy_admission_post_marker_proof_failure_resumes_without_premature_receipt(monkeypatch, tmp_path):
@@ -921,6 +972,7 @@ def test_legacy_admission_post_marker_proof_failure_resumes_without_premature_re
     state = subscription.get_subscription_native_generation_state()
     assert first["ok"] is False
     assert first["reason"] == "synthetic_post_marker_native_proof_failure"
+    assert first.get("proof_receipt_written") is not True
     assert state["status"] == "pending"
     assert state["candidate_digest"] == digest
     assert state["candidate_revision"] == 1
@@ -945,6 +997,7 @@ def test_legacy_admission_post_marker_proof_failure_resumes_without_premature_re
     )
     assert resumed["ok"] is True, resumed
     assert resumed["status"] == "verified"
+    assert resumed["proof_receipt_written"] is True
     assert subscription.get_subscription_native_generation_state()["candidate_revision"] == 1
     final_fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
     assert mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches() is True
@@ -1902,6 +1955,7 @@ def test_failed_promotion_resume_requires_same_explicit_operation(monkeypatch, t
         expected_digest=digest, operator_confirmation=CONFIRMATION,
     )
     assert first["ok"] is False
+    assert first.get("proof_receipt_written") is not True
     assert subscription.get_subscription_native_generation_state()["status"] == "pending"
     assert checkpoint.is_file()
     generic = xray_subscription_service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
@@ -1949,6 +2003,38 @@ def test_admission_cli_requires_explicit_digest_and_confirmation(monkeypatch, ca
     result = cli.main(["xray", "generation", "admit-legacy"])
     assert result == 2
     assert json.loads(capsys.readouterr().out)["error_code"] == "ADMISSION_CONFIRMATION_REQUIRED"
+
+
+def test_admission_cli_reports_receipt_only_for_successful_verified_result(monkeypatch, capsys):
+    from fwrouter_api import cli
+
+    monkeypatch.setattr(
+        xray_subscription_service, "admit_legacy_subscription_inventory",
+        lambda **_kwargs: {
+            "ok": True, "status": "verified", "digest": "a" * 64,
+            "revision": 1, "already_admitted": False, "proof_receipt_written": True,
+        },
+    )
+    args = [
+        "xray", "generation", "admit-legacy", "--expected-inventory-digest", "a" * 64,
+        "--confirm", CONFIRMATION,
+    ]
+    result = cli.main(args)
+    output = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert output["proof_receipt_written"] is True
+
+    monkeypatch.setattr(
+        xray_subscription_service, "admit_legacy_subscription_inventory",
+        lambda **_kwargs: {
+            "ok": False, "status": "blocked", "reason": "native_receipt_unverified",
+            "proof_receipt_written": True,
+        },
+    )
+    result = cli.main(args)
+    output = json.loads(capsys.readouterr().out)
+    assert result == 1
+    assert output.get("proof_receipt_written") is not True
 
 
 def test_exact_large_mihomo_candidate_match_skips_semantic_yaml_parse(tmp_path, monkeypatch):
@@ -2092,6 +2178,7 @@ def test_proof_only_checkpoint_closes_verified_commit_after_restart_window(monke
     )
     assert repeated["ok"] is True
     assert repeated["already_admitted"] is True
+    assert repeated["proof_receipt_written"] is True
     assert not checkpoint.exists()
 
 

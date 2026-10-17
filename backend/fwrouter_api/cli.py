@@ -228,8 +228,14 @@ def _run_legacy_inventory_admission(args: argparse.Namespace) -> int:
             expected_digest=args.expected_inventory_digest,
             operator_confirmation=args.confirm,
         )
-        safe_keys = {"ok", "status", "reason", "digest", "revision", "already_admitted", "last_good_retained"}
+        safe_keys = {
+            "ok", "status", "reason", "digest", "revision", "already_admitted",
+            "last_good_retained",
+        }
         output = {key: result[key] for key in safe_keys if key in result}
+        if (result.get("ok") is True and result.get("status") == "verified"
+                and result.get("proof_receipt_written") is True):
+            output["proof_receipt_written"] = True
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))
         return 0 if output.get("ok") is True else 1
     except Exception as exc:

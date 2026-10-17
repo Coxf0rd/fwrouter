@@ -1334,6 +1334,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         repeat_code, repeated_admission = admit_legacy_inventory(restarted_api)
         assert repeat_code == 200 and repeated_admission.get("ok") is True
         assert repeated_admission.get("already_admitted") is True
+        assert repeated_admission.get("proof_receipt_written") is True
         assert repeated_admission.get("mutation_attempts") == {
             "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
             "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0,
