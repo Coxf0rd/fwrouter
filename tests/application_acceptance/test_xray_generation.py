@@ -792,6 +792,43 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         stale_binding = stale_checkpoint.get("subscription_inventory_generation")
         stale_pending = generation_state(restarted_api)
         assert isinstance(stale_binding, dict) and stale_binding.get("digest") == stale_pending.get("candidate_digest")
+        stale_checkpoint_bytes = checkpoint_path.read_bytes()
+
+        blocked_code, blocked_refresh = http_json(
+            f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
+            payload={"profile": add_profile_member(profile_d, 5)},
+        )
+        assert blocked_code == 200 and blocked_refresh.get("ok") is False, {
+            "status": blocked_code, "ok": blocked_refresh.get("ok"),
+            "error_code": blocked_refresh.get("error_code"),
+        }
+        assert blocked_refresh.get("error_code") == "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"
+        assert blocked_refresh.get("last_good_retained") is True
+        assert generation_state(restarted_api) == stale_pending
+        assert checkpoint_path.read_bytes() == stale_checkpoint_bytes
+        assert active_xray.read_bytes() == stale_native_xray
+        assert active_mihomo.read_bytes() == stale_native_mihomo
+        assert native.reload_calls == stale_reload_count
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == stale_incarnation
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # Resolve D through the owner while its durable checkpoint still matches.
+        # Only after fresh native proof and promotion may ordinary refresh E run.
+        recovery_code, recovered_d = http_json(
+            f"{restarted_api}/__acceptance/xray/reconcile",
+            method="POST", payload={"direct_checkpoint": True}, timeout=75,
+        )
+        assert recovery_code == 200 and recovered_d.get("ok") is True, {
+            "status": recovery_code, "ok": recovered_d.get("ok"),
+            "recovered": recovered_d.get("recovered"), "reason": recovered_d.get("reason"),
+        }
+        assert not checkpoint_path.exists()
+        verified_d = generation_state(restarted_api)
+        assert verified_d.get("status") == "verified"
+        assert verified_d.get("candidate_digest") == stale_binding.get("digest")
+        assert verified_d.get("verified_digest") == stale_binding.get("digest")
+        assert_native_matches_active(native, active_xray)
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
 
         refresh_code, refreshed = http_json(
             f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
@@ -801,23 +838,22 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
             "status": refresh_code, "ok": refreshed.get("ok"),
             "error_code": refreshed.get("error_code"),
         }
-        superseding_inventory = generation_state(restarted_api)
-        assert superseding_inventory.get("candidate_digest") != stale_binding.get("digest")
-        stale_recovery_code, stale_recovery = http_json(
-            f"{restarted_api}/__acceptance/xray/reconcile",
-            method="POST", payload={"direct_checkpoint": True}, timeout=75,
+        candidate_e = generation_state(restarted_api)
+        assert candidate_e.get("status") == "pending"
+        assert candidate_e.get("candidate_digest") != verified_d.get("candidate_digest")
+        publish_code, published_e = http_json(
+            f"{restarted_api}/__acceptance/xray/publish-pending-inventory",
+            method="POST", payload={"include_vpn_auto": True}, timeout=75,
         )
-        assert stale_recovery_code == 200 and stale_recovery.get("ok") is False, {
-            "status": stale_recovery_code,
-            "ok": stale_recovery.get("ok"),
-            "recovered": stale_recovery.get("recovered"),
-            "reason": stale_recovery.get("reason"),
+        assert publish_code == 200 and published_e.get("ok") is True, {
+            "status": publish_code, "ok": published_e.get("ok"),
+            "error_code": published_e.get("error_code"),
         }
-        assert checkpoint_path.is_file(), "stale checkpoint was discarded instead of retained for diagnosis"
-        assert active_xray.read_bytes() == stale_native_xray
-        assert active_mihomo.read_bytes() == stale_native_mihomo
-        assert native.reload_calls == stale_reload_count
-        assert (native.mihomo_process.pid, native.mihomo_started_at) == stale_incarnation
+        verified_e = generation_state(restarted_api)
+        assert verified_e.get("status") == "verified"
+        assert verified_e.get("candidate_digest") == candidate_e.get("candidate_digest")
+        assert verified_e.get("verified_digest") == candidate_e.get("candidate_digest")
+        assert_native_matches_active(native, active_xray)
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
     finally:
@@ -1128,7 +1164,38 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         "loaded_count": len(loaded_after_restart), "loaded_sha256": identity_fingerprint(loaded_after_restart),
         "expected_count": len(baseline_pairs), "expected_sha256": identity_fingerprint(baseline_pairs),
     }
+    inventory_code, inventory_response = http_json(
+        f"{restarted_api}/__acceptance/subscription/native-generation",
+    )
+    assert inventory_code == 200 and inventory_response.get("ok") is True, {
+        "status": inventory_code, "error_code": inventory_response.get("error_code"),
+    }
+    verified_inventory = inventory_response.get("state")
+    assert isinstance(verified_inventory, dict)
+    checkpoint_binding = checkpoint_data.get("subscription_inventory_generation")
+    assert (verified_inventory.get("status") == "verified"
+            and isinstance(checkpoint_binding, dict)
+            and checkpoint_binding.get("digest") == verified_inventory.get("candidate_digest")
+            and checkpoint_binding.get("digest") == verified_inventory.get("verified_digest")
+            and checkpoint_binding.get("revision") == verified_inventory.get("candidate_revision")
+            and checkpoint_binding.get("revision") == verified_inventory.get("verified_revision")), {
+        "inventory_status": verified_inventory.get("status"),
+        "checkpoint_inventory_bound": isinstance(checkpoint_binding, dict),
+        "candidate_revision": verified_inventory.get("candidate_revision"),
+        "verified_revision": verified_inventory.get("verified_revision"),
+    }
 
+    # Resolve the still-bound checkpoint through the production recovery owner
+    # before allowing the ordinary identity refresh to persist a new candidate.
+    recovery_code, recovered_checkpoint = http_json(
+        f"{restarted_api}/__acceptance/xray/subscription-refresh-preflight",
+        method="POST", timeout=75,
+    )
+    assert recovery_code == 200 and recovered_checkpoint.get("ok") is True, {
+        "status": recovery_code, "error_code": recovered_checkpoint.get("error_code"),
+        "stage": recovered_checkpoint.get("stage"),
+    }
+    assert not checkpoint.exists()
     connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
     try:
         connection.execute(
@@ -1286,6 +1353,20 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         assert current_raw.get("_fwrouter_identity_migration_required") is True
     finally:
         connection.close()
+
+    # Reconstruct the exact pre-upgrade durable state that carried an older
+    # unresolved checkpoint. The owned worker is stopped while this synthetic
+    # state-directory snapshot is restored; this is fixture construction, not
+    # a supported current-version ordinary inventory write.
+    prior_worker = stack["worker"]
+    prior_worker.terminate()
+    prior_worker.wait(timeout=5)
+    checkpoint.write_bytes(old_checkpoint_bytes)
+    checkpoint.chmod(0o600)
+    restarted_worker, restarted_api = stack["start_worker"]()
+    stack["worker"], stack["api"] = restarted_worker, restarted_api
+    assert checkpoint.is_file() and hashlib.sha256(checkpoint.read_bytes()).hexdigest() == old_checkpoint_sha
+
     assert native.reload_calls == reloads_before_intent
     apply_code, applied = cli({
         "action": "apply", "manifest": manifest,

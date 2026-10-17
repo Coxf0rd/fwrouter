@@ -324,12 +324,101 @@ def test_current_recovery_uses_real_sql_bindings_modes_and_virtual_public_alias(
         "virtual:xray:vpn-auto" in row["nodes_json"]
         for row in projection["published_snapshots"]
     )
-
     result = xray_subscription_service._recover_checkpoint_from_current_projection(adapter, checkpoint)
 
     assert result["ok"] is True, result
     assert result["loaded_identity_count"] == len(projection["identities"])
     assert not checkpoint.exists()
+
+
+def test_checkpoint_bound_inventory_blocks_new_write_then_owner_recovery_allows_fresh_publish(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
+    from fwrouter_api.adapters.subscription import SubscriptionServer
+    from fwrouter_api.services import subscription
+
+    server = SubscriptionServer(
+        server_id="recovery-before-new-inventory", server_name="Recovery before new inventory",
+        provider_name="subscription", country_code=None,
+        raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        protocol="vless", host="127.0.0.1", port=443,
+        raw_identity="recovery-before-new-inventory", parser_format="fixture", source_format="test",
+        runtime_name="recovery-before-new-inventory",
+    )
+    source = "http://127.0.0.1:9/recovery-before-new-inventory"
+    before = subscription.get_subscription_native_generation_state()
+    reloads = adapter._runner.reload_count
+
+    with pytest.raises(subscription.SubscriptionInventoryGenerationBlocked):
+        subscription._upsert_subscription_servers([server], servers_by_url={source: [server]})
+    assert subscription.get_subscription_native_generation_state() == before
+    assert adapter._runner.reload_count == reloads
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM servers WHERE server_id=?", (server.server_id,),
+        ).fetchone() is None
+
+    recovery = xray_subscription_service.recover_xray_generation_checkpoint_before_inventory_refresh()
+    assert recovery.get("ok") is True, recovery
+    assert not checkpoint.exists()
+    assert subscription.get_subscription_native_generation_state() == before
+
+    subscription._upsert_subscription_servers([server], servers_by_url={source: [server]})
+    pending = subscription.get_subscription_native_generation_state()
+    assert pending["status"] == "pending"
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    with xray_writer_guard():
+        admission = subscription._claim_subscription_inventory_admission()
+    assert admission is not None
+    published = xray_subscription_service.reconcile_xray_subscription_profile_nodes(
+        requested_by="pytest-recovered-checkpoint-new-inventory", include_vpn_auto=True,
+        _inventory_admission=admission,
+    )
+    verified = subscription.get_subscription_native_generation_state()
+    assert published.get("ok") is True, published
+    assert published.get("inventory_generation_promotion", {}).get("ok") is True
+    assert published.get("generation_apply", {}).get("xray", {}).get("stage") == "applied"
+    assert published.get("staged_publication_receipt", {}).get("staged_native_publication_complete") is True
+    assert verified["status"] == "verified"
+    assert verified["candidate_digest"] == pending["candidate_digest"]
+    assert verified["verified_digest"] == pending["candidate_digest"]
+    assert adapter._runner.reload_count > reloads
+    assert not checkpoint.exists()
+
+
+@pytest.mark.parametrize("module_state", [
+    ("disabled", "managed"),
+    ("enabled", "external"),
+])
+def test_reconcile_does_not_recover_checkpoint_for_unmanaged_xray(
+    monkeypatch, tmp_path: Path, module_state: tuple[str, str],
+) -> None:
+    adapter, checkpoint = _seed_current_generation_for_recovery(monkeypatch, tmp_path)
+    from fwrouter_api.services import subscription
+
+    checkpoint_bytes = checkpoint.read_bytes()
+    inventory_before = subscription.get_subscription_native_generation_state()
+    native_calls_before = list(adapter._runner.calls)
+    reloads_before = adapter._runner.reload_count
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state=?, lifecycle_mode=? WHERE module_name='xray'",
+            module_state,
+        )
+
+    result = xray_subscription_service.reconcile_xray_subscription_profile_nodes(
+        requested_by="pytest-unmanaged-checkpoint-recovery", include_vpn_auto=True,
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert result["stage"] == "lifecycle"
+    assert result["error_code"] == "XRAY_GENERATION_RECOVERY_REQUIRES_MANAGED_RUNTIME"
+    assert checkpoint.read_bytes() == checkpoint_bytes
+    assert adapter._runner.calls == native_calls_before
+    assert adapter._runner.reload_count == reloads_before
+    assert subscription.get_subscription_native_generation_state() == inventory_before
 
 
 def test_current_recovery_accepts_reordered_persisted_handoff_associations(monkeypatch, tmp_path: Path) -> None:
@@ -548,6 +637,12 @@ def test_explicit_migration_supersession_admits_pending_inventory_for_fresh_gene
     from fwrouter_api.adapters.subscription import SubscriptionServer
     from fwrouter_api.services import subscription
 
+    # Capture a durable pre-guard checkpoint, then recover it through the
+    # production owner before admitting a new inventory candidate. Reinstalling
+    # these exact bytes below models an upgrade snapshot already written by an
+    # older release; it is not an ordinary current-version writer operation.
+    old_checkpoint = checkpoint.read_bytes()
+    checkpoint_sha256 = hashlib.sha256(old_checkpoint).hexdigest()
     source_url = "http://127.0.0.1:9/migration-supersession"
     server = SubscriptionServer(
         server_id="migration-supersession-node",
@@ -564,14 +659,32 @@ def test_explicit_migration_supersession_admits_pending_inventory_for_fresh_gene
         source_format="test",
         runtime_name="migration-supersession-node",
     )
+    before_block = subscription.get_subscription_native_generation_state()
+    reloads_before_block = adapter._runner.reload_count
+    with pytest.raises(subscription.SubscriptionInventoryGenerationBlocked):
+        subscription._upsert_subscription_servers(
+            [server], servers_by_url={source_url: [server]},
+        )
+    assert subscription.get_subscription_native_generation_state() == before_block
+    assert adapter._runner.reload_count == reloads_before_block
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM servers WHERE server_id='migration-supersession-node'",
+        ).fetchone() is None
+
+    recovered = xray_subscription_service.recover_xray_generation_checkpoint_before_inventory_refresh()
+    assert recovered.get("ok") is True, recovered
+    assert not checkpoint.exists()
     subscription._upsert_subscription_servers(
         [server], servers_by_url={source_url: [server]},
     )
     pending_generation = subscription.get_subscription_native_generation_state()
     assert pending_generation["status"] == "pending"
-
-    old_checkpoint = checkpoint.read_bytes()
-    checkpoint.unlink()
+    # Historical durable state fixture: the old unresolved checkpoint was
+    # persisted before the candidate refresh and is restored only while this
+    # isolated test owns the synthetic state directory.
+    checkpoint.write_bytes(old_checkpoint)
+    checkpoint.chmod(0o600)
     reloads_before_denials = adapter._runner.reload_count
     claims = []
     real_claim = subscription._claim_subscription_inventory_admission
@@ -586,14 +699,10 @@ def test_explicit_migration_supersession_admits_pending_inventory_for_fresh_gene
         requested_by="pytest-unqualified-pending-inventory", include_vpn_auto=True,
     )
     assert generic["ok"] is False
-    assert generic["error_code"] == "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED"
+    assert generic["error_code"] == "XRAY_GENERATION_INVENTORY_ADMISSION_REQUIRED", generic
     assert claims == []
     assert adapter._runner.reload_count == reloads_before_denials
-    assert not checkpoint.exists()
-
-    checkpoint.write_bytes(old_checkpoint)
-    checkpoint.chmod(0o600)
-    checkpoint_sha256 = hashlib.sha256(old_checkpoint).hexdigest()
+    assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == checkpoint_sha256
     plan_sha256 = "a" * 64
     monkeypatch.setattr(
         xray_subscription_service, "_identity_migration_ledger_matches",

@@ -45,6 +45,12 @@ class SubscriptionInventoryGenerationBlocked(RuntimeError):
         super().__init__(str(result.get("reason") or "subscription_inventory_generation_blocked"))
 
 
+def _subscription_inventory_checkpoint_write_gate() -> dict[str, Any]:
+    """Check the Xray generation owner fence without performing native work."""
+    from fwrouter_api.services.xray_subscription_service import subscription_inventory_checkpoint_write_gate
+    return subscription_inventory_checkpoint_write_gate()
+
+
 def _subscription_inventory_digest(connection: Any) -> tuple[str, int]:
     """Hash only durable subscription-owned inventory and source memberships."""
     servers = [
@@ -1065,6 +1071,12 @@ def delete_subscription_source_intent(
     normalized_ref = str(source_ref or "").strip()
     if not normalized_ref.startswith("src:") or len(normalized_ref) != 68:
         return {"ok": False, "error_code": "SUBSCRIPTION_SOURCE_REF_INVALID", "message": "Subscription source reference is invalid."}
+    from fwrouter_api.services.xray_subscription_service import recover_xray_generation_checkpoint_before_inventory_refresh
+    recovery = recover_xray_generation_checkpoint_before_inventory_refresh()
+    if not recovery.get("ok"):
+        return {"ok": False,
+                "error_code": str(recovery.get("error_code") or "XRAY_GENERATION_RECOVERY_FAILED"),
+                "message": "A verified Xray generation recovery is required before subscription changes."}
     state = get_subscription_state()
     metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
     sources = _subscription_sources(metadata)
@@ -1128,6 +1140,11 @@ def delete_subscription_source_intent(
     next_metadata["subscriptions"] = next_registry
     from fwrouter_api.adapters.xray_common import xray_writer_guard
     with xray_writer_guard(timeout_seconds=5.0):
+        checkpoint_gate = _subscription_inventory_checkpoint_write_gate()
+        if not checkpoint_gate.get("ok"):
+            return {"ok": False,
+                    "error_code": str(checkpoint_gate.get("error_code") or "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"),
+                    "message": "A verified Xray generation recovery is required before subscription changes."}
         with db_session() as connection:
             current_fence = read_selection_fence(connection)
             if (current_fence["revision"] != expected_fence["revision"]
@@ -1314,6 +1331,17 @@ def _upsert_subscription_servers(
 
     seen_ids = {server.server_id for server in servers}
     source_map = servers_by_url or {}
+
+    checkpoint_gate = _subscription_inventory_checkpoint_write_gate()
+    if not checkpoint_gate.get("ok"):
+        raise SubscriptionInventoryGenerationBlocked({
+            "ok": False,
+            "status": "pending",
+            "stage": "generation_recovery",
+            "error_code": str(checkpoint_gate.get("error_code") or "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"),
+            "reason": "verified_generation_recovery_required",
+            "last_good_retained": True,
+        })
 
     with db_session() as connection:
         from fwrouter_api.services.vpn_auto_selection_state import (

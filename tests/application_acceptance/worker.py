@@ -3912,6 +3912,17 @@ def build_app(socket_path: Path):
 
     app.add_api_route("/api/v2/__acceptance/xray/reconcile", recover_xray_generation, methods=["POST"])
 
+    def recover_xray_generation_before_subscription_refresh() -> dict[str, Any]:
+        """Exercise the production owner preflight used before inventory fetch."""
+        from fwrouter_api.services.xray_subscription_service import recover_xray_generation_checkpoint_before_inventory_refresh
+        return recover_xray_generation_checkpoint_before_inventory_refresh()
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/subscription-refresh-preflight",
+        recover_xray_generation_before_subscription_refresh,
+        methods=["POST"],
+    )
+
     def arm_prepared_checkpoint_failure() -> dict[str, Any]:
         """Fail once after the real prepared checkpoint write has returned."""
         failure_flag = state / "run" / "fail-after-prepared-checkpoint-once"
@@ -4002,15 +4013,26 @@ def build_app(socket_path: Path):
             return {"ok": False, "error_code": "IDENTITY_FIXTURE_PROFILE_INVALID"}
         import json as _json
         from fwrouter_api.adapters.subscription import parse_subscription_payload
-        from fwrouter_api.services.subscription import _upsert_subscription_servers
+        from fwrouter_api.services.subscription import (
+            SubscriptionInventoryGenerationBlocked,
+            _upsert_subscription_servers,
+        )
         parsed = parse_subscription_payload(_json.dumps(payload["profile"], sort_keys=True))
         if not parsed.servers:
             return {"ok": False, "error_code": "IDENTITY_FIXTURE_PROFILE_UNSUPPORTED"}
         source_url = "https://identity.acceptance.invalid/subscription"
         servers = parsed.servers
-        result = _upsert_subscription_servers(
-            servers, servers_by_url={source_url: servers},
-        )
+        try:
+            result = _upsert_subscription_servers(
+                servers, servers_by_url={source_url: servers},
+            )
+        except SubscriptionInventoryGenerationBlocked as exc:
+            return {
+                "ok": False,
+                "error_code": str(exc.result.get("error_code") or "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"),
+                "stage": str(exc.result.get("stage") or "generation_recovery"),
+                "last_good_retained": exc.result.get("last_good_retained") is True,
+            }
         return {
             "ok": bool(result.get("ok", True)),
             "server_ids": [str(server.server_id) for server in servers],

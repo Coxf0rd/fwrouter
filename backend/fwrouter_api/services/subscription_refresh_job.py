@@ -279,7 +279,8 @@ def _run_subscription_source_delete_job(job: dict[str, Any]) -> dict[str, Any]:
 
     from fwrouter_api.adapters.xray_common import xray_writer_guard
     from fwrouter_api.services.subscription import (
-        _upsert_subscription_servers, get_subscription_state, subscription_state_fingerprint,
+        SubscriptionInventoryGenerationBlocked, _upsert_subscription_servers,
+        get_subscription_state, subscription_state_fingerprint,
     )
     from fwrouter_api.services.jobs import update_job_running_result
     from fwrouter_api.services.vpn_auto_exclusive import get_vpn_auto_exclusive_source_ref
@@ -325,11 +326,24 @@ def _run_subscription_source_delete_job(job: dict[str, Any]) -> dict[str, Any]:
             remaining_servers_by_url[url] = parsed_servers
         for server in parsed_servers:
             remaining_servers.setdefault(server.server_id, server)
-    inventory = _upsert_subscription_servers(
-        list(remaining_servers.values()), servers_by_url=remaining_servers_by_url,
-        expected_selection_revision=intent.get("selection_revision"),
-        expected_subscription_state_fingerprint=state_fingerprint,
-    )
+    try:
+        inventory = _upsert_subscription_servers(
+            list(remaining_servers.values()), servers_by_url=remaining_servers_by_url,
+            expected_selection_revision=intent.get("selection_revision"),
+            expected_subscription_state_fingerprint=state_fingerprint,
+        )
+    except SubscriptionInventoryGenerationBlocked as exc:
+        blocked = exc.result
+        return _source_delete_failure(
+            job_id=job_id, source_ref=source_ref, stage="inventory",
+            code=str(blocked.get("error_code") or "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"),
+            message=(
+                "The source intent was removed, but a concurrent Xray generation checkpoint "
+                "must be verified before inventory reconciliation. The prior verified runtime "
+                "remains active and reconciliation is pending."
+            ),
+            result={"intent_deleted": True, "inventory_error": blocked.get("error_code")},
+        )
     refresh_result = {
         "ok": True, "stage": "source_deleted", "state": get_subscription_state(),
         "inventory": inventory, "source": {"source_ref": source_ref, "deleted": True},

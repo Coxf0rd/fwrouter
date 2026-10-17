@@ -3500,6 +3500,117 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "phase": "vpn-after-reentry", "vless_endpoint_packets": reentry_flow,
         "direct_client_leaks": reentry_direct_leaks,
     }
+    # A failed provider-health refresh may leave a checkpoint-bound pending
+    # inventory after Emergency Direct recovery. Resolve that owned generation
+    # through the existing proof-based recovery path before this fixture adds
+    # an unrelated inventory candidate below. The low-level upsert intentionally
+    # bypasses refresh admission, so it must not stale the checkpoint fence.
+    checkpoint_path = stack["state"] / "xray" / ".generation" / "generation-checkpoint.json"
+    code, pending_generation = http_json(f"{api}/__acceptance/subscription/native-generation")
+    assert code == 200 and pending_generation.get("ok") is True
+    pending_state = pending_generation.get("state") or {}
+    assert checkpoint_path.is_file() and pending_state.get("status") == "pending", {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "checkpoint_present": checkpoint_path.is_file(),
+        "inventory_status": pending_state.get("status"),
+        "inventory_reason": pending_state.get("reason"),
+    }
+    identity_code, identity_before_recovery = http_json(f"{api}/__acceptance/xray/identity-context")
+    assert identity_code == 200 and identity_before_recovery.get("ok") is True
+    identity_digest_before = identity_before_recovery.get("identity_digest")
+    assert (
+        isinstance(identity_digest_before, str)
+        and len(identity_digest_before) == 64
+        and all(char in "0123456789abcdef" for char in identity_digest_before)
+    ), {"phase": "provider-reentry-checkpoint-recovery", "identity_digest_available": False}
+    pending_digest = pending_state.get("candidate_digest")
+    pending_revision = pending_state.get("candidate_revision")
+    assert (
+        isinstance(pending_digest, str)
+        and len(pending_digest) == 64
+        and all(char in "0123456789abcdef" for char in pending_digest)
+        and type(pending_revision) is int
+    ), {"phase": "provider-reentry-checkpoint-recovery", "pending_generation_bound": False}
+    code, checkpoint_recovery = http_json(
+        f"{api}/__acceptance/xray/subscription-refresh-preflight", method="POST",
+        payload={}, timeout=90,
+    )
+    assert code == 200 and checkpoint_recovery.get("ok") is True, {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "status": code,
+        "recovered": checkpoint_recovery.get("recovered"),
+        "reason": checkpoint_recovery.get("reason"),
+    }
+    assert checkpoint_recovery.get("recovered") == "current_projection_verified", {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "recovered": checkpoint_recovery.get("recovered"),
+    }
+    loaded_identity_count = checkpoint_recovery.get("loaded_identity_count")
+    assert type(loaded_identity_count) is int and loaded_identity_count > 0, {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "loaded_identity_count": checkpoint_recovery.get("loaded_identity_count"),
+    }
+    assert (
+        type(checkpoint_recovery.get("bindings_verified")) is int
+        and checkpoint_recovery["bindings_verified"] > 0
+        and type(checkpoint_recovery.get("modes_verified")) is int
+    ), {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "bindings_verified": checkpoint_recovery.get("bindings_verified"),
+        "modes_verified": checkpoint_recovery.get("modes_verified"),
+    }
+    assert not checkpoint_path.exists(), {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "checkpoint_closed": not checkpoint_path.exists(),
+    }
+    code, verified_generation = http_json(f"{api}/__acceptance/subscription/native-generation")
+    verified_state = verified_generation.get("state") or {}
+    assert code == 200 and verified_generation.get("ok") is True
+    assert (
+        verified_state.get("status") == "verified"
+        and verified_state.get("candidate_digest") == pending_digest == verified_state.get("verified_digest")
+        and verified_state.get("candidate_revision") == pending_revision == verified_state.get("verified_revision")
+    ), {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "inventory_status": verified_state.get("status"),
+        "candidate_revision": verified_state.get("candidate_revision"),
+        "verified_revision": verified_state.get("verified_revision"),
+        "candidate_digest_matches": verified_state.get("candidate_digest") == verified_state.get("verified_digest"),
+    }
+    identity_code, identity_after_recovery = http_json(f"{api}/__acceptance/xray/identity-context")
+    assert (
+        identity_code == 200
+        and identity_after_recovery.get("ok") is True
+        and identity_after_recovery.get("identity_digest") == identity_digest_before
+    ), {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "identity_context_status": identity_code,
+        "identity_digest_preserved": (
+            identity_after_recovery.get("identity_digest") == identity_before_recovery.get("identity_digest")
+        ),
+    }
+    recovery_routing_code, recovery_routing = http_json(f"{api}/routing/global")
+    assert (
+        recovery_routing_code == 200
+        and recovery_routing.get("data", {}).get("routing", {}).get("desired_mode") == "vpn"
+        and recovery_routing.get("data", {}).get("routing", {}).get("applied_mode") == "vpn"
+        and recovery_routing.get("data", {}).get("runtime_enforcement", {}).get("live_global_mode") == "vpn"
+    ), {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "routing_status": recovery_routing_code,
+        "routing_mode": (recovery_routing.get("data", {}).get("routing") or {}).get("applied_mode"),
+        "live_global_mode": (recovery_routing.get("data", {}).get("runtime_enforcement") or {}).get("live_global_mode"),
+    }
+    _record_phase_diagnostic(record_property, {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "checkpoint_recovered": checkpoint_recovery.get("recovered") == "current_projection_verified",
+        "loaded_identity_count": checkpoint_recovery.get("loaded_identity_count"),
+        "bindings_verified": checkpoint_recovery.get("bindings_verified"),
+        "modes_verified": checkpoint_recovery.get("modes_verified"),
+        "inventory_verified": verified_state.get("status") == "verified",
+        "routing_mode": (recovery_routing.get("data", {}).get("routing") or {}).get("applied_mode"),
+        "live_global_mode": (recovery_routing.get("data", {}).get("runtime_enforcement") or {}).get("live_global_mode"),
+    })
     dns53_phase = _probe_dns53_policy_phase(stack, source_ref, record_property)
     assert_mihomo_launch_matches_active(native, stack["state"] / "generated" / "mihomo" / "config.yaml")
     final_binding = binding_for(source_ref)

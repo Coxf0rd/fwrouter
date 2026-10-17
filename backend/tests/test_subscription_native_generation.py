@@ -76,6 +76,273 @@ def test_inventory_upsert_atomically_records_pending_candidate() -> None:
     assert subscription._subscription_inventory_generation_gate()["ok"] is False
 
 
+def test_inventory_upsert_refuses_unresolved_checkpoint_before_database_mutation(monkeypatch) -> None:
+    from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+    from fwrouter_api.services.subscription import SubscriptionInventoryGenerationBlocked
+
+    guard_observations: list[bool] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.subscription_inventory_checkpoint_write_gate",
+        lambda: guard_observations.append(xray_writer_guard_is_held()) or {
+            "ok": False, "error_code": "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED",
+        },
+    )
+    before = subscription.get_subscription_native_generation_state()
+    server = SubscriptionServer(
+        server_id="blocked-candidate", server_name="Blocked", provider_name="subscription",
+        raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        raw_identity="synthetic-blocked-candidate", parser_format="fixture", source_format="test",
+    )
+
+    with pytest.raises(SubscriptionInventoryGenerationBlocked) as blocked:
+        subscription._upsert_subscription_servers(
+            [server], servers_by_url={"http://127.0.0.1:9/synthetic": [server]},
+        )
+
+    assert guard_observations == [True]
+    assert blocked.value.result["error_code"] == "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"
+    assert blocked.value.result["last_good_retained"] is True
+    assert subscription.get_subscription_native_generation_state() == before
+    with db_session() as connection:
+        assert connection.execute("SELECT 1 FROM servers WHERE server_id='blocked-candidate'").fetchone() is None
+
+
+def _write_test_checkpoint(path, *, binding: dict | None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": 1,
+        "phase": "prepared",
+        "subscription_inventory_generation": binding,
+    }), encoding="utf-8")
+
+
+def _verified_test_inventory(*, status: str = "verified") -> tuple[str, int, int]:
+    _seed_inventory("synthetic-checkpoint-bound")
+    with db_session() as connection:
+        subscription._write_subscription_inventory_candidate(connection)
+        digest, count = subscription._subscription_inventory_digest(connection)
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            (json.dumps({
+                "schema": 1, "status": status, "candidate_digest": digest,
+                "candidate_revision": 1,
+                "verified_digest": digest if status == "verified" else None,
+                "verified_revision": 1 if status == "verified" else None,
+                "reason": None if status == "verified" else "synthetic_pending",
+                "inventory_count": count,
+            }, sort_keys=True, separators=(",", ":")),
+             subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+    return digest, count, 1
+
+
+def test_verified_bound_checkpoint_refuses_discovery_until_recovery(monkeypatch, tmp_path) -> None:
+    from fwrouter_api.services import xray_subscription_service
+
+    digest, _count, revision = _verified_test_inventory()
+    checkpoint_path = tmp_path / "generation-checkpoint.json"
+    _write_test_checkpoint(checkpoint_path, binding={"digest": digest, "revision": revision})
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint_path)
+    server = SubscriptionServer(
+        server_id="synthetic-next-candidate", server_name="Synthetic next",
+        provider_name="subscription", raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        raw_identity="synthetic-next-identity", parser_format="fixture", source_format="test",
+    )
+
+    before = subscription.get_subscription_native_generation_state()
+    with pytest.raises(subscription.SubscriptionInventoryGenerationBlocked):
+        subscription._upsert_subscription_servers(
+            [server], servers_by_url={"http://127.0.0.1:9/synthetic": [server]},
+        )
+
+    assert subscription.get_subscription_native_generation_state() == before
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM servers WHERE server_id='synthetic-next-candidate'"
+        ).fetchone() is None
+    assert digest and revision == 1
+
+
+def test_clean_empty_bound_checkpoint_refuses_discovery_until_recovery(monkeypatch, tmp_path) -> None:
+    from fwrouter_api.services import xray_subscription_service
+
+    checkpoint_path = tmp_path / "generation-checkpoint.json"
+    _write_test_checkpoint(checkpoint_path, binding={"digest": None, "revision": None})
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint_path)
+    assert subscription.get_subscription_native_generation_state()["status"] == "empty"
+    server = SubscriptionServer(
+        server_id="synthetic-from-empty", server_name="Synthetic from empty",
+        provider_name="subscription", raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        raw_identity="synthetic-from-empty-identity", parser_format="fixture", source_format="test",
+    )
+
+    before = subscription.get_subscription_native_generation_state()
+    with pytest.raises(subscription.SubscriptionInventoryGenerationBlocked):
+        subscription._upsert_subscription_servers(
+            [server], servers_by_url={"http://127.0.0.1:9/synthetic": [server]},
+        )
+
+    assert subscription.get_subscription_native_generation_state() == before
+    assert before["status"] == "empty"
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM servers WHERE server_id='synthetic-from-empty'"
+        ).fetchone() is None
+
+
+@pytest.mark.parametrize("checkpoint_binding", [
+    {"digest": "f" * 64, "revision": 1},
+    {"digest": "not-a-digest", "revision": 1},
+    None,
+])
+def test_unverified_or_malformed_checkpoint_cannot_admit_inventory_write(
+    monkeypatch, tmp_path, checkpoint_binding,
+) -> None:
+    from fwrouter_api.services import xray_subscription_service
+    from fwrouter_api.services.subscription import SubscriptionInventoryGenerationBlocked
+
+    digest, _count, revision = _verified_test_inventory()
+    checkpoint_path = tmp_path / "generation-checkpoint.json"
+    _write_test_checkpoint(checkpoint_path, binding=checkpoint_binding)
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint_path)
+    before = subscription.get_subscription_native_generation_state()
+    server = SubscriptionServer(
+        server_id="synthetic-blocked-by-checkpoint", server_name="Synthetic blocked",
+        provider_name="subscription", raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        raw_identity="synthetic-blocked-identity", parser_format="fixture", source_format="test",
+    )
+
+    with pytest.raises(SubscriptionInventoryGenerationBlocked):
+        subscription._upsert_subscription_servers(
+            [server], servers_by_url={"http://127.0.0.1:9/synthetic": [server]},
+        )
+
+    assert subscription.get_subscription_native_generation_state() == before
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM servers WHERE server_id='synthetic-blocked-by-checkpoint'"
+        ).fetchone() is None
+    assert digest and revision == 1
+
+
+def test_pending_bound_checkpoint_refuses_inventory_write(monkeypatch, tmp_path) -> None:
+    from fwrouter_api.services import xray_subscription_service
+    from fwrouter_api.services.subscription import SubscriptionInventoryGenerationBlocked
+
+    digest, _count, revision = _verified_test_inventory(status="pending")
+    checkpoint_path = tmp_path / "generation-checkpoint.json"
+    _write_test_checkpoint(checkpoint_path, binding={"digest": digest, "revision": revision})
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint_path)
+    before = subscription.get_subscription_native_generation_state()
+    server = SubscriptionServer(
+        server_id="synthetic-pending-checkpoint", server_name="Synthetic pending",
+        provider_name="subscription", raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        raw_identity="synthetic-pending-identity", parser_format="fixture", source_format="test",
+    )
+
+    with pytest.raises(SubscriptionInventoryGenerationBlocked):
+        subscription._upsert_subscription_servers(
+            [server], servers_by_url={"http://127.0.0.1:9/synthetic": [server]},
+        )
+
+    assert subscription.get_subscription_native_generation_state() == before
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM servers WHERE server_id='synthetic-pending-checkpoint'"
+        ).fetchone() is None
+
+
+def test_unknown_inventory_marker_with_checkpoint_refuses_inventory_write(monkeypatch, tmp_path) -> None:
+    from fwrouter_api.services import xray_subscription_service
+    from fwrouter_api.services.subscription import SubscriptionInventoryGenerationBlocked
+
+    digest, _count, revision = _verified_test_inventory()
+    checkpoint_path = tmp_path / "generation-checkpoint.json"
+    _write_test_checkpoint(checkpoint_path, binding={"digest": digest, "revision": revision})
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint_path)
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            ("{malformed", subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+    before = subscription.get_subscription_native_generation_state()
+    assert before["status"] == "unknown"
+    server = SubscriptionServer(
+        server_id="synthetic-unknown-checkpoint", server_name="Synthetic unknown",
+        provider_name="subscription", raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        raw_identity="synthetic-unknown-identity", parser_format="fixture", source_format="test",
+    )
+
+    with pytest.raises(SubscriptionInventoryGenerationBlocked):
+        subscription._upsert_subscription_servers(
+            [server], servers_by_url={"http://127.0.0.1:9/synthetic": [server]},
+        )
+
+    assert subscription.get_subscription_native_generation_state() == before
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM servers WHERE server_id='synthetic-unknown-checkpoint'"
+        ).fetchone() is None
+
+
+def test_nonempty_unknown_inventory_cannot_use_empty_checkpoint_binding(monkeypatch, tmp_path) -> None:
+    from fwrouter_api.services import xray_subscription_service
+    from fwrouter_api.services.subscription import SubscriptionInventoryGenerationBlocked
+
+    _seed_inventory("synthetic-nonempty-unknown")
+    checkpoint_path = tmp_path / "generation-checkpoint.json"
+    _write_test_checkpoint(checkpoint_path, binding={"digest": None, "revision": None})
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint_path)
+    before = subscription.get_subscription_native_generation_state()
+    assert before["status"] == "unknown"
+    server = SubscriptionServer(
+        server_id="synthetic-unverified-inventory", server_name="Synthetic unverified",
+        provider_name="subscription", raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        raw_identity="synthetic-unverified-identity", parser_format="fixture", source_format="test",
+    )
+
+    with pytest.raises(SubscriptionInventoryGenerationBlocked):
+        subscription._upsert_subscription_servers(
+            [server], servers_by_url={"http://127.0.0.1:9/synthetic": [server]},
+        )
+
+    assert subscription.get_subscription_native_generation_state() == before
+
+
+def test_malformed_checkpoint_refuses_inventory_write_without_mutation(monkeypatch, tmp_path) -> None:
+    from fwrouter_api.services import xray_subscription_service
+    from fwrouter_api.services.subscription import SubscriptionInventoryGenerationBlocked
+
+    _verified_test_inventory()
+    checkpoint_path = tmp_path / "generation-checkpoint.json"
+    checkpoint_path.write_text("{malformed", encoding="utf-8")
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint_path)
+    before = subscription.get_subscription_native_generation_state()
+    server = SubscriptionServer(
+        server_id="synthetic-malformed-checkpoint", server_name="Synthetic malformed",
+        provider_name="subscription", raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        raw_identity="synthetic-malformed-identity", parser_format="fixture", source_format="test",
+    )
+
+    with pytest.raises(SubscriptionInventoryGenerationBlocked):
+        subscription._upsert_subscription_servers(
+            [server], servers_by_url={"http://127.0.0.1:9/synthetic": [server]},
+        )
+
+    assert subscription.get_subscription_native_generation_state() == before
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM servers WHERE server_id='synthetic-malformed-checkpoint'"
+        ).fetchone() is None
+
+
 def test_reviewed_migration_forces_pending_without_emitting_conflicting_verified_proof() -> None:
     _seed_inventory("synthetic-reviewed-migration")
     with db_session() as connection:

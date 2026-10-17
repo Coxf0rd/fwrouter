@@ -66,7 +66,7 @@ _GENERATION_RECOVERY_REASONS = frozenset({
     "preterminal_revalidation_failed", "recovery_attempt_mismatch",
     "recovery_attempt_phase_unknown", "recovery_backup_mismatch", "recovery_backup_missing",
     "runtime_projection_readback_failed", "runtime_revalidation_failed",
-    "terminal_revalidation_failed", "xray_reload_failed",
+    "terminal_revalidation_failed", "xray_reload_failed", "inventory_generation_not_bound",
 })
 
 
@@ -83,6 +83,30 @@ def _safe_generation_recovery_reason(profile_result: dict[str, Any]) -> str | No
     if re.fullmatch(r"[A-Z][A-Za-z0-9]{0,63}(?:Error|Exception)", reason):
         return reason
     return None
+
+
+def _safe_checkpoint_recovery_diagnostic(result: dict[str, Any]) -> dict[str, Any]:
+    details = result.get("details") if isinstance(result.get("details"), dict) else {}
+    reason = _safe_generation_recovery_reason({"details": details})
+    recovery_code = result.get("error_code")
+    if not isinstance(recovery_code, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{1,95}", recovery_code):
+        recovery_code = "XRAY_GENERATION_RECOVERY_FAILED"
+    recovery_stage = result.get("stage")
+    if not isinstance(recovery_stage, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", recovery_stage):
+        recovery_stage = "generation_recovery"
+    recovered = details.get("recovered")
+    if not isinstance(recovered, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", recovered):
+        recovered = None
+    diagnostic: dict[str, Any] = {
+        "error_code": recovery_code,
+        "stage": recovery_stage,
+        "last_good_retained": result.get("last_good_retained") is True,
+    }
+    if reason:
+        diagnostic["reason"] = reason
+    if recovered:
+        diagnostic["recovered"] = recovered
+    return diagnostic
 
 
 def _validate_generated_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -422,12 +446,45 @@ def prepare_subscription_refresh(*, source_ref: str | None = None) -> dict[str, 
     """
 
     started_at = perf_counter()
-    refresh_started_at = perf_counter()
-    refresh_result = (
-        refresh_one_subscription_inventory(source_ref)
-        if source_ref is not None
-        else refresh_all_subscription_inventory()
+    from fwrouter_api.services.xray_subscription_service import (
+        recover_xray_generation_checkpoint_before_inventory_refresh,
     )
+    recovery = recover_xray_generation_checkpoint_before_inventory_refresh()
+    if not recovery.get("ok"):
+        recovery_diagnostic = _safe_checkpoint_recovery_diagnostic(recovery)
+        return {
+            "ok": False,
+            "stage": "generation_recovery",
+            "error_code": recovery_diagnostic["error_code"],
+            "generation_recovery_reason": recovery_diagnostic.get("reason"),
+            "generation_recovery": recovery_diagnostic,
+            "last_good_retained": True,
+            "promoted": False,
+            "container_restarted": False,
+            "timings_ms": {"inventory_refresh": 0.0, "prepare_total": round((perf_counter() - started_at) * 1000, 2)},
+        }
+    refresh_started_at = perf_counter()
+    try:
+        refresh_result = (
+            refresh_one_subscription_inventory(source_ref)
+            if source_ref is not None
+            else refresh_all_subscription_inventory()
+        )
+    except SubscriptionInventoryGenerationBlocked as exc:
+        blocked = exc.result
+        recovery_diagnostic = _safe_checkpoint_recovery_diagnostic(blocked)
+        return {
+            "ok": False,
+            "stage": "generation_recovery",
+            "error_code": recovery_diagnostic["error_code"],
+            "generation_recovery_reason": recovery_diagnostic.get("reason"),
+            "generation_recovery": recovery_diagnostic,
+            "last_good_retained": True,
+            "promoted": False,
+            "container_restarted": False,
+            "timings_ms": {"inventory_refresh": round((perf_counter() - refresh_started_at) * 1000, 2),
+                           "prepare_total": round((perf_counter() - started_at) * 1000, 2)},
+        }
     inventory_refresh_ms = round((perf_counter() - refresh_started_at) * 1000, 2)
 
     if not refresh_result["ok"]:

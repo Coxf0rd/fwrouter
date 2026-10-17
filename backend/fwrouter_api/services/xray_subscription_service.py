@@ -1305,7 +1305,9 @@ def _apply_staged_mihomo_candidate(
 
 
 def _xray_generation_checkpoint_path(adapter: Any) -> Path:
-    return Path(adapter.config_path).parent / ".generation" / "generation-checkpoint.json"
+    from fwrouter_api.adapters.xray_common import _default_xray_config_path
+    configured_path = getattr(adapter, "config_path", None) or _default_xray_config_path()
+    return Path(configured_path).parent / ".generation" / "generation-checkpoint.json"
 
 
 def _generation_checkpoint_sha256(path: Path) -> str:
@@ -1542,6 +1544,118 @@ def _checkpoint_inventory_generation_matches(checkpoint_path: Path) -> bool:
         and type(binding.get("revision")) is int
         and binding.get("revision") == state.get("candidate_revision")
     )
+
+
+def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> dict[str, Any]:
+    """Resolve an existing generation marker using the normal proof contracts.
+
+    Caller owns the Xray writer guard. This is shared by normal reconcile and
+    the refresh preflight so provider inventory cannot supersede an unresolved
+    checkpoint before its bound generation is recovered.
+    """
+    if not checkpoint_path.exists():
+        return {"ok": True, "status": "skipped", "reason": "no_checkpoint"}
+    try:
+        checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+        with db_session() as connection:
+            migration_tied_to_checkpoint = connection.execute(
+                "SELECT 1 FROM subscription_node_identity_transitions "
+                "WHERE checkpoint_sha256=? LIMIT 1", (checkpoint_digest,),
+            ).fetchone()
+        if migration_tied_to_checkpoint:
+            return {"ok": False, "status": "pending", "stage": "generation_supersession_required",
+                    "error_code": "XRAY_GENERATION_SUPERSESSION_REQUIRED", "last_good_retained": True}
+        try:
+            checkpoint_phase = str(json.loads(checkpoint_path.read_text(encoding="utf-8")).get("phase") or "")
+        except Exception:
+            checkpoint_phase = "invalid"
+        checkpoint_inventory_bound = _checkpoint_inventory_generation_matches(checkpoint_path)
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+        inventory_state = get_subscription_native_generation_state()
+        current_projection_recoverable = (
+            checkpoint_phase in {
+                "runtime_applied", "inventory_synced", "bindings_written",
+                "projections_cleaned", "selection_verified", "snapshots_published",
+            }
+            and inventory_state.get("status") == "pending"
+            and checkpoint_inventory_bound
+        )
+        if checkpoint_phase in {"restore_failed", "restore_started"} or current_projection_recoverable:
+            if not checkpoint_inventory_bound:
+                return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                        "error_code": "XRAY_GENERATION_INVENTORY_ADMISSION_REQUIRED",
+                        "last_good_retained": True}
+            recovered = _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
+        else:
+            recovered = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+            if not recovered.get("ok") and recovered.get("recovered") == "stale_checkpoint_declined":
+                recovered = (
+                    _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
+                    if _checkpoint_inventory_generation_matches(checkpoint_path)
+                    else {"ok": False, "recovered": "stale_checkpoint_declined",
+                          "reason": "inventory_generation_not_bound"}
+                )
+        if not recovered.get("ok"):
+            return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                    "error_code": "XRAY_GENERATION_RECOVERY_FAILED", "details": recovered,
+                    "last_good_retained": True}
+        return {"ok": True, "status": "recovered", **recovered}
+    except Exception as exc:
+        exception_name = type(exc).__name__
+        safe_exception_name = (
+            exception_name if len(exception_name) <= 64
+            and exception_name.endswith(("Error", "Exception"))
+            and exception_name.isascii()
+            and exception_name.isalnum()
+            else "recovery_exception"
+        )
+        return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                "error_code": "XRAY_GENERATION_RECOVERY_FAILED",
+                "details": {"recovered": "current_projection_unproven", "reason": safe_exception_name},
+                "last_good_retained": True}
+
+
+def recover_xray_generation_checkpoint_before_inventory_refresh() -> dict[str, Any]:
+    """Recover/prove any checkpoint before a provider inventory fetch begins."""
+    try:
+        with xray_writer_guard(timeout_seconds=30.0):
+            adapter = _xray_adapter()
+            checkpoint_path = _xray_generation_checkpoint_path(adapter)
+            module = _module_state("xray") or {}
+            managed_enabled = (
+                str(module.get("desired_state") or "disabled") == "enabled"
+                and str(module.get("lifecycle_mode") or "none") == "managed"
+            )
+            if not managed_enabled:
+                if checkpoint_path.exists():
+                    return {
+                        "ok": False, "status": "blocked", "stage": "lifecycle",
+                        "error_code": "XRAY_GENERATION_RECOVERY_REQUIRES_MANAGED_RUNTIME",
+                        "last_good_retained": True,
+                    }
+                return {"ok": True, "status": "skipped", "reason": "xray_runtime_not_managed"}
+            return _resolve_existing_xray_generation_checkpoint(adapter, checkpoint_path)
+    except Exception:
+        return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                "error_code": "XRAY_GENERATION_RECOVERY_FAILED", "last_good_retained": True}
+
+
+def subscription_inventory_checkpoint_write_gate() -> dict[str, Any]:
+    """Check-only guard for inventory writers; caller must own writer lock."""
+    if not xray_writer_guard_is_held():
+        return {"ok": False, "error_code": "XRAY_GENERATION_WRITER_GUARD_REQUIRED",
+                "last_good_retained": True}
+    try:
+        adapter = _xray_adapter()
+        checkpoint_path = _xray_generation_checkpoint_path(adapter)
+        if not checkpoint_path.exists():
+            return {"ok": True, "status": "clear"}
+        return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                "error_code": "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED",
+                "last_good_retained": True}
+    except Exception:
+        return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                "error_code": "XRAY_GENERATION_CHECKPOINT_UNAVAILABLE", "last_good_retained": True}
 
 
 def _capture_generation_derived_rows(
@@ -3913,6 +4027,30 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
 ) -> dict[str, Any]:
     adapter = _xray_adapter()
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
+    blocked = _xray_managed_runtime_blocked("xray_subscription_profile_reconcile")
+    module = _module_state("xray") or {}
+    managed_enabled = (
+        blocked is None
+        and str(module.get("desired_state") or "") == "enabled"
+        and str(module.get("lifecycle_mode") or "none") == "managed"
+    )
+    if not managed_enabled:
+        if checkpoint_path.exists():
+            return {
+                "ok": False,
+                "status": "blocked",
+                "stage": "lifecycle",
+                "error_code": "XRAY_GENERATION_RECOVERY_REQUIRES_MANAGED_RUNTIME",
+                "last_good_retained": True,
+            }
+        return {
+            **(blocked or {}),
+            "ok": True,
+            "status": "skipped",
+            "reason": "managed_runtime_required" if blocked is not None else "xray_module_disabled",
+            "nodes_count": 0,
+        }
+
     supersession: dict[str, Any] | None = None
     if bool(_supersede_checkpoint_sha256) != bool(_migration_plan_sha256):
         return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
@@ -3941,73 +4079,9 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
                     "error_code": code}
     if checkpoint_path.exists() and supersession is None:
-        checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
-        with db_session() as connection:
-            migration_tied_to_checkpoint = connection.execute(
-                "SELECT 1 FROM subscription_node_identity_transitions "
-                "WHERE checkpoint_sha256=? LIMIT 1", (checkpoint_digest,),
-            ).fetchone()
-        if migration_tied_to_checkpoint:
-            return {"ok": False, "status": "pending", "stage": "generation_supersession_required",
-                    "error_code": "XRAY_GENERATION_SUPERSESSION_REQUIRED",
-                    "last_good_retained": True}
-        try:
-            checkpoint_phase = str(json.loads(checkpoint_path.read_text(encoding="utf-8")).get("phase") or "")
-        except Exception:
-            checkpoint_phase = "invalid"
-        checkpoint_inventory_bound = _checkpoint_inventory_generation_matches(checkpoint_path)
-        from fwrouter_api.services.subscription import get_subscription_native_generation_state
-        inventory_state = get_subscription_native_generation_state()
-        current_projection_recoverable = (
-            checkpoint_phase in {
-                "runtime_applied", "inventory_synced", "bindings_written",
-                "projections_cleaned", "selection_verified", "snapshots_published",
-            }
-            and inventory_state.get("status") == "pending"
-            and checkpoint_inventory_bound
-        )
-        if checkpoint_phase in {"restore_failed", "restore_started"} or current_projection_recoverable:
-            if not checkpoint_inventory_bound:
-                return {"ok": False, "status": "pending", "stage": "generation_recovery",
-                        "error_code": "XRAY_GENERATION_INVENTORY_ADMISSION_REQUIRED",
-                        "last_good_retained": True}
-            recovered = _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
-        else:
-            recovered = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
-            if not recovered.get("ok") and recovered.get("recovered") == "stale_checkpoint_declined":
-                recovered = (
-                    _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
-                    if _checkpoint_inventory_generation_matches(checkpoint_path)
-                    else {"ok": False, "recovered": "stale_checkpoint_declined",
-                          "reason": "inventory_generation_not_bound"}
-                )
-        if not recovered.get("ok"):
-            return {
-                "ok": False,
-                "status": "pending",
-                "stage": "generation_recovery",
-                "error_code": "XRAY_GENERATION_RECOVERY_FAILED",
-                "details": recovered,
-            }
-
-    blocked = _xray_managed_runtime_blocked("xray_subscription_profile_reconcile")
-    if blocked is not None:
-        return {
-            **blocked,
-            "ok": True,
-            "status": "skipped",
-            "reason": "managed_runtime_required",
-            "nodes_count": 0,
-        }
-
-    module = _module_state("xray") or {}
-    if str(module.get("desired_state") or "") != "enabled":
-        return {
-            "ok": True,
-            "status": "skipped",
-            "reason": "xray_module_disabled",
-            "nodes_count": 0,
-        }
+        checkpoint_result = _resolve_existing_xray_generation_checkpoint(adapter, checkpoint_path)
+        if not checkpoint_result.get("ok"):
+            return checkpoint_result
 
     from fwrouter_api.services.subscription import (
         SubscriptionInventoryGenerationBlocked,

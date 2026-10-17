@@ -39,7 +39,7 @@ Nginx Proxy Manager owns local LAN proxy hosts and public TLS for the deployment
 
 SQLite stores persistent intent, operational metadata, jobs, logs, and accounting state that must survive reboot.
 
-Subscription inventory acquisition and native publication are separate durability boundaries. The internal generation admission marker in `settings` tracks pending versus native-verified inventory; it is not a replacement for canonical rows, generation checkpoints or native proof. See the [pending inventory recovery change](../audits/pending_inventory_verified_generation_fix_2026-10-16/REPORT.md) for admission, crash/restart and legacy-upgrade constraints. Source acceptance does not authorize production activation.
+Subscription inventory acquisition and native publication are separate durability boundaries. The internal generation admission marker in `settings` tracks pending versus native-verified inventory; it is not a replacement for canonical rows, generation checkpoints or native proof. See the [pending inventory recovery change](../audits/pending_inventory_verified_generation_fix_2026-10-16/REPORT.md) for admission, crash/restart and legacy-upgrade constraints. Source acceptance does not authorize production activation. Before another inventory refresh, the existing generation owner must recover/prove any open checkpoint. Ordinary inventory writers recheck under the shared writer guard and refuse every unresolved checkpoint; provider network work remains outside that guard. Disabled/external Xray ownership never authorizes native recovery. Explicit reviewed identity-migration supersession remains a separate exact checkpoint/plan/ledger operation.
 
 ## Generated Artifacts
 
