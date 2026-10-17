@@ -1656,9 +1656,13 @@ def _collect_legacy_admission_core_native_proof() -> dict[str, Any]:
             "dataplane_global.applied_manifest", ttl_seconds=5.0,
             loader=dataplane_global._read_applied_manifest_uncached, force_refresh=True,
         )
-        if not isinstance(manifest, dict) or not isinstance(manifest.get("apply_id"), str):
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("plan_id"), str):
             return {"ok": False, "reason": "core_applied_manifest_unavailable"}
-        manifest_apply_id = manifest["apply_id"]
+        manifest_apply_id = manifest["plan_id"]
+        if not manifest_apply_id or (
+            "apply_id" in manifest and manifest.get("apply_id") != manifest_apply_id
+        ):
+            return {"ok": False, "reason": "core_applied_manifest_unavailable"}
         with db_session() as connection:
             routing_row = connection.execute(
                 "SELECT desired_mode, applied_mode, selective_default, server_mode, "

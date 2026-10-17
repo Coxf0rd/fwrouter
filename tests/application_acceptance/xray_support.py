@@ -57,12 +57,21 @@ def await_job(api: str, response: dict, *, timeout: float = 75) -> dict:
     return current_job
 
 
+def _is_loopback_ip(host: str | None) -> bool:
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def enable_vpn_from_synthetic_subscription(api: str, state: Path, expected_url: str) -> None:
     """Enable the managed VPN owner through its public lifecycle using only this fixture's loopback source."""
     api_url = urlsplit(api)
     assert (api_url.scheme == "http" and api_url.path == "/api/v2"
             and not api_url.username and not api_url.password and not api_url.query and not api_url.fragment
-            and api_url.hostname is not None and ipaddress.ip_address(api_url.hostname).is_loopback), (
+            and _is_loopback_ip(api_url.hostname)), (
                 "acceptance API is not the owned loopback worker"
             )
     database = state / "fwrouter.db"
@@ -88,7 +97,7 @@ def enable_vpn_from_synthetic_subscription(api: str, state: Path, expected_url: 
         parsed = urlsplit(expected_url)
         assert parsed.scheme == "http" and parsed.path == "/synthetic-subscription"
         assert not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
-        assert parsed.hostname is not None and ipaddress.ip_address(parsed.hostname).is_loopback
+        assert _is_loopback_ip(parsed.hostname)
         enabled_bindings = connection.execute(
             "SELECT COUNT(*) FROM provider_bindings WHERE enabled=1"
         ).fetchone()[0]

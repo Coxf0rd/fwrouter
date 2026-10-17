@@ -197,6 +197,39 @@ def _seed_proof_native_module_rows(*, vpn_desired="enabled", vpn_lifecycle="mana
         connection.execute("DELETE FROM modules WHERE module_name='mihomo'")
 
 
+def _write_applied_manifest_via_existing_owner(monkeypatch, tmp_path, *, plan_id, routing):
+    """Use the production materializer and artifact promoter under a test-owned temp root."""
+    from types import SimpleNamespace
+    from fwrouter_api.services import apply_manifest, dataplane_global, dataplane_nft_artifacts
+
+    paths = SimpleNamespace(
+        generated_dir=tmp_path / "generated",
+        state_dir=tmp_path / "state",
+        jobs_dir=tmp_path / "jobs",
+    )
+    settings = SimpleNamespace(paths=paths)
+    monkeypatch.setattr(dataplane_nft_artifacts, "get_settings", lambda: settings)
+    monkeypatch.setattr(dataplane_global, "get_settings", lambda: settings)
+    manifest = apply_manifest._materialize_manifest(
+        prebuilt_manifest={"routing_global_state": routing},
+        plan_id=plan_id,
+        reason="synthetic_proof_test",
+        input_data={"scope": "test-owned"},
+    )
+    artifact_paths = dataplane_nft_artifacts.write_candidate_artifacts(
+        job_id="synthetic-proof-job",
+        apply_id=plan_id,
+        manifest=manifest,
+        renderer=lambda _manifest: "table inet fwrouter_v2 {\n}\n",
+    )
+    dataplane_nft_artifacts.promote_last_good(manifest=manifest, artifact_paths=artifact_paths)
+    loaded = dataplane_global._read_applied_manifest_uncached()
+    assert loaded == manifest
+    assert loaded.get("plan_id") == plan_id
+    assert "apply_id" not in loaded
+    return loaded
+
+
 def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(monkeypatch, tmp_path, capsys):
     """Execute both nested worker route callables with owned native boundary doubles."""
     import ast
@@ -720,7 +753,7 @@ def test_core_admission_gate_rejects_unowned_or_dirty_module_state(updates, expe
     ],
 )
 def test_core_native_proof_requires_owned_manifest_and_fresh_enforcement_for_each_mode(
-    monkeypatch, intent_mode, live_mode, enforcement_level, expected_ok,
+    monkeypatch, tmp_path, intent_mode, live_mode, enforcement_level, expected_ok,
 ):
     _seed_legacy_inventory()
     from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
@@ -749,10 +782,12 @@ def test_core_native_proof_requires_owned_manifest_and_fresh_enforcement_for_eac
         "fixed_server_until": None,
         "active_auto_server_id": None,
     }
-    manifest = {
-        "apply_id": "synthetic-applied-generation",
-        "routing_global_state": manifest_routing,
-    }
+    manifest = _write_applied_manifest_via_existing_owner(
+        monkeypatch,
+        tmp_path,
+        plan_id="synthetic-applied-generation",
+        routing=manifest_routing,
+    )
     force_refresh_calls = []
 
     def fresh_cache(key, *, ttl_seconds, loader, force_refresh=False):
@@ -761,7 +796,6 @@ def test_core_native_proof_requires_owned_manifest_and_fresh_enforcement_for_eac
 
     monkeypatch.setattr(dataplane_status, "_read_live_dataplane_payload", lambda: {"table_exists": True})
     monkeypatch.setattr(dataplane_status, "_live_owned_table_ready", lambda _payload: True)
-    monkeypatch.setattr(dataplane_global, "_read_applied_manifest_uncached", lambda: manifest)
     monkeypatch.setattr(dataplane_global, "read_applied_manifest", lambda: manifest)
     monkeypatch.setattr(dataplane_live, "_probe_live_global_mode_uncached", lambda: {
         "ok": True, "mode": live_mode, "selective_default": "direct",
@@ -827,7 +861,7 @@ def test_core_native_proof_blocks_missing_applied_generation_and_live_mode_misma
     monkeypatch.setattr(dataplane_status, "_read_live_dataplane_payload", lambda: {"table_exists": True})
     monkeypatch.setattr(dataplane_status, "_live_owned_table_ready", lambda _payload: True)
     monkeypatch.setattr(dataplane_global, "_read_applied_manifest_uncached", lambda: {
-        "apply_id": "not-owned", "routing_global_state": {"desired_mode": "direct", "applied_mode": "direct"},
+        "plan_id": "not-owned", "routing_global_state": {"desired_mode": "direct", "applied_mode": "direct"},
     })
     proof = xray_subscription_service._collect_legacy_admission_core_native_proof()
     assert proof["ok"] is False
@@ -837,9 +871,26 @@ def test_core_native_proof_blocks_missing_applied_generation_and_live_mode_misma
 @pytest.mark.parametrize(
     "manifest,expected_reason",
     [
-        ({"apply_id": "foreign-apply", "routing_global_state": {"desired_mode": "direct", "applied_mode": "direct"}},
+        ({"routing_global_state": {"desired_mode": "direct", "applied_mode": "direct"}},
+         "core_applied_manifest_unavailable"),
+        ({"plan_id": "foreign-apply", "routing_global_state": {"desired_mode": "direct", "applied_mode": "direct"}},
          "core_applied_generation_unowned"),
         ({"apply_id": "synthetic-applied-generation", "routing_global_state": {
+            "desired_mode": "direct", "applied_mode": "direct",
+        }}, "core_applied_manifest_unavailable"),
+        ({"plan_id": 9, "routing_global_state": {
+            "desired_mode": "direct", "applied_mode": "direct",
+        }}, "core_applied_manifest_unavailable"),
+        ({"plan_id": "synthetic-applied-generation", "apply_id": "foreign-apply",
+          "routing_global_state": {"desired_mode": "direct", "applied_mode": "direct"}},
+         "core_applied_manifest_unavailable"),
+        ({"plan_id": "synthetic-applied-generation", "apply_id": 9,
+          "routing_global_state": {"desired_mode": "direct", "applied_mode": "direct"}},
+         "core_applied_manifest_unavailable"),
+        ({"plan_id": 7, "apply_id": 9, "routing_global_state": {
+            "desired_mode": "direct", "applied_mode": "direct",
+        }}, "core_applied_manifest_unavailable"),
+        ({"plan_id": "synthetic-applied-generation", "routing_global_state": {
             "desired_mode": "vpn", "applied_mode": "vpn", "selective_default": "direct",
             "server_mode": "auto", "desired_fixed_server_id": None, "applied_fixed_server_id": None,
             "fixed_server_until": None, "active_auto_server_id": None,
@@ -944,7 +995,7 @@ def test_inventory_native_collector_completes_with_real_db_and_synthetic_native_
     assert "vpn" in module_names and "xray" in module_names and "mihomo" not in module_names
     selection_revision = selection["revision"]
     selection_decision_id = selection["decision_id"]
-    manifest = {"apply_id": "synthetic-applied-generation", "routing_global_state": {
+    manifest = {"plan_id": "synthetic-applied-generation", "routing_global_state": {
         key: routing.get(key) for key in (
             "desired_mode", "applied_mode", "selective_default", "server_mode",
             "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until", "active_auto_server_id",
