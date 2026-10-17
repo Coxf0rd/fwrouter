@@ -1941,8 +1941,24 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "provider-refresh-supported", "provider-refresh-unknown",
                      "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn",
                      "global-mode-selective", "selective-default-vpn", "selective-default-restore",
-                     "native-dns53-selective-direct-priority"}:
+                     "native-dns53-selective-direct-priority", "provider-reentry-checkpoint-recovery"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
+    if label == "provider-reentry-checkpoint-recovery":
+        expected_fields = {
+            "phase", "checkpoint_recovered_before_reentry_apply", "inventory_verified",
+            "inventory_digest_preserved", "identity_digest_preserved", "routing_mode", "live_global_mode",
+        }
+        if set(diagnostic) != expected_fields:
+            raise AssertionError("provider re-entry checkpoint diagnostic has an unknown field")
+        if any(type(diagnostic.get(field)) is not bool for field in (
+            "checkpoint_recovered_before_reentry_apply", "inventory_verified",
+            "inventory_digest_preserved", "identity_digest_preserved",
+        )):
+            raise AssertionError("provider re-entry checkpoint diagnostic has a non-boolean proof field")
+        valid_modes = {"vpn", "direct", "selective"}
+        if (diagnostic.get("routing_mode") not in valid_modes
+                or diagnostic.get("live_global_mode") not in valid_modes):
+            raise AssertionError("provider re-entry checkpoint diagnostic has an unknown routing mode")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
         raise AssertionError("packet phase diagnostic exceeded its fixed byte bound")

@@ -4758,6 +4758,59 @@ class AcceptanceContractTests(unittest.TestCase):
         })
         self.assertIsNone(bounded["native_nftset_probe_targets"][0]["materialized_count"])
 
+    def test_provider_reentry_checkpoint_junit_diagnostic_is_closed_and_redacted(self):
+        packet_path = Path(__file__).parents[1] / "application_acceptance" / "test_packet_dataplane.py"
+        packet_tree = ast.parse(packet_path.read_text(encoding="utf-8"), filename=str(packet_path))
+        recorder = next(
+            node for node in packet_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_record_phase_diagnostic"
+        )
+        namespace = {
+            "Any": Any,
+            "json": json,
+            "MAX_PHASE_DIAGNOSTIC_BYTES": 4096,
+        }
+        exec(compile(ast.Module(body=[recorder], type_ignores=[]), str(packet_path), "exec"), namespace)
+        diagnostic = {
+            "phase": "provider-reentry-checkpoint-recovery",
+            "checkpoint_recovered_before_reentry_apply": True,
+            "inventory_verified": True,
+            "inventory_digest_preserved": True,
+            "identity_digest_preserved": True,
+            "routing_mode": "vpn",
+            "live_global_mode": "vpn",
+        }
+        recorded = []
+        namespace["_record_phase_diagnostic"](
+            lambda name, value: recorded.append((name, value)), diagnostic,
+        )
+        self.assertEqual(recorded, [("packet_phase_provider_reentry_checkpoint_recovery", json.dumps(
+            diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        ))])
+        self.assertNotIn("uuid", recorded[0][1].lower())
+        self.assertNotIn("token", recorded[0][1].lower())
+
+        with self.assertRaisesRegex(AssertionError, "unknown field"):
+            namespace["_record_phase_diagnostic"](
+                lambda *_args: self.fail("rejected diagnostic must not be recorded"),
+                {**diagnostic, "raw_secret": "must-not-leak"},
+            )
+        with self.assertRaisesRegex(AssertionError, "unknown routing mode"):
+            namespace["_record_phase_diagnostic"](
+                lambda *_args: self.fail("rejected diagnostic must not be recorded"),
+                {**diagnostic, "routing_mode": "user-controlled-value"},
+            )
+        with self.assertRaisesRegex(AssertionError, "non-boolean"):
+            namespace["_record_phase_diagnostic"](
+                lambda *_args: self.fail("rejected diagnostic must not be recorded"),
+                {**diagnostic, "inventory_verified": 1},
+            )
+        with self.assertRaisesRegex(AssertionError, "unknown fixed phase"):
+            namespace["_record_phase_diagnostic"](
+                lambda *_args: self.fail("rejected diagnostic must not be recorded"),
+                {**diagnostic, "phase": "arbitrary-user-phase"},
+            )
+
     def test_xray_generation_rollback_observer_is_bounded_and_installed(self):
         worker_source = WORKER_PATH.read_text(encoding="utf-8")
         worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
