@@ -80,6 +80,159 @@ def _generation_failure_operation(result: dict[str, Any]) -> str:
     return str(result.get("error_code") or result.get("stage") or "generation_failed")
 
 
+def _legacy_xray_candidate_matches_active(active_path: Path, candidate_path: Path) -> bool:
+    """Prove a private Xray candidate is unchanged or only reorders disjoint per-user rules.
+
+    The fallback is deliberately narrower than general Xray semantic equivalence:
+    every byte-level semantic field outside ``routing.rules`` must match, and
+    rule movement is allowed only inside a contiguous block of exact single-user
+    rules. Unknown user selectors and all non-user rules remain fixed anchors.
+    """
+    from collections import Counter
+
+    max_bytes = 8 * 1024 * 1024
+
+    def read_regular(path: Path) -> bytes | None:
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+            )
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+                    return None
+                chunks: list[bytes] = []
+                remaining = max_bytes + 1
+                while remaining:
+                    chunk = os.read(descriptor, min(65536, remaining))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                data = b"".join(chunks)
+                if len(data) > max_bytes:
+                    return None
+                return data
+            finally:
+                os.close(descriptor)
+        except (OSError, ValueError):
+            return None
+
+    active_raw = read_regular(Path(active_path))
+    candidate_raw = read_regular(Path(candidate_path))
+    if active_raw is None or candidate_raw is None:
+        return False
+    if active_raw == candidate_raw:
+        return True
+
+    class _InvalidJson(ValueError):
+        pass
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise _InvalidJson("duplicate_key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> None:
+        raise _InvalidJson("nonfinite_number")
+
+    try:
+        active = json.loads(active_raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+        candidate = json.loads(candidate_raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return False
+    if type(active) is not dict or type(candidate) is not dict:
+        return False
+
+    def canonical(value: Any) -> bytes | None:
+        try:
+            return json.dumps(
+                value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError, RecursionError, UnicodeEncodeError):
+            return None
+
+    active_routing = active.get("routing")
+    candidate_routing = candidate.get("routing")
+    if type(active_routing) is not dict or type(candidate_routing) is not dict:
+        return False
+    active_rules = active_routing.get("rules")
+    candidate_rules = candidate_routing.get("rules")
+    if type(active_rules) is not list or type(candidate_rules) is not list or len(active_rules) != len(candidate_rules):
+        return False
+
+    active_without_rules = dict(active)
+    candidate_without_rules = dict(candidate)
+    active_routing_without_rules = dict(active_routing)
+    candidate_routing_without_rules = dict(candidate_routing)
+    active_routing_without_rules["rules"] = []
+    candidate_routing_without_rules["rules"] = []
+    active_without_rules["routing"] = active_routing_without_rules
+    candidate_without_rules["routing"] = candidate_routing_without_rules
+    active_base = canonical(active_without_rules)
+    candidate_base = canonical(candidate_without_rules)
+    if active_base is None or candidate_base is None or active_base != candidate_base:
+        return False
+
+    from fwrouter_api.adapters.xray_common import XRAY_INBOUND_TAG
+
+    def eligible_user(rule: Any) -> str | None:
+        if type(rule) is not dict or set(rule) != {"type", "inboundTag", "user", "outboundTag"}:
+            return None
+        inbound = rule.get("inboundTag")
+        users = rule.get("user")
+        if (type(rule.get("type")) is not str or rule["type"] != "field"
+                or type(inbound) is not list or len(inbound) != 1
+                or type(inbound[0]) is not str or inbound[0] != XRAY_INBOUND_TAG
+                or type(users) is not list or len(users) != 1
+                or type(users[0]) is not str or not users[0]
+                or users[0] != users[0].strip() or not users[0].isprintable()
+                or type(rule.get("outboundTag")) is not str or not rule["outboundTag"]):
+            return None
+        return users[0]
+
+    active_users: list[str | None] = [eligible_user(rule) for rule in active_rules]
+    candidate_users: list[str | None] = [eligible_user(rule) for rule in candidate_rules]
+    # Any unfamiliar rule that scopes by user could overlap a moved rule; refuse
+    # semantic fallback rather than guessing about selectors or Xray precedence.
+    if any(user is None and type(rule) is dict and "user" in rule
+           for user, rule in [*zip(active_users, active_rules), *zip(candidate_users, candidate_rules)]):
+        return False
+    for users in (active_users, candidate_users):
+        exact_users = [user for user in users if user is not None]
+        if len({user.casefold() for user in exact_users}) != len(exact_users):
+            return False
+
+    index = 0
+    while index < len(active_rules):
+        if active_users[index] is None or candidate_users[index] is None:
+            if active_users[index] is not None or candidate_users[index] is not None:
+                return False
+            active_anchor = canonical(active_rules[index])
+            candidate_anchor = canonical(candidate_rules[index])
+            if active_anchor is None or candidate_anchor is None or active_anchor != candidate_anchor:
+                return False
+            index += 1
+            continue
+
+        end = index
+        while end < len(active_rules) and active_users[end] is not None and candidate_users[end] is not None:
+            end += 1
+        active_segment = [canonical(rule) for rule in active_rules[index:end]]
+        candidate_segment = [canonical(rule) for rule in candidate_rules[index:end]]
+        if any(rule is None for rule in active_segment + candidate_segment):
+            return False
+        if Counter(active_segment) != Counter(candidate_segment):
+            return False
+        index = end
+    return True
+
+
 XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE = "xray_subscription_profile_delete"
 XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX = "subscription-account:"
 
@@ -2057,8 +2210,7 @@ def _collect_legacy_inventory_native_proof(
             )
             if not staged.ok:
                 return {"ok": False, "reason": "xray_candidate_native_validation_failed"}
-            candidate_xray_sha = hashlib.sha256(xray_candidate.read_bytes()).hexdigest()
-            if candidate_xray_sha != active_xray_sha:
+            if not _legacy_xray_candidate_matches_active(xray_path, xray_candidate):
                 return {"ok": False, "reason": "xray_candidate_differs_from_active"}
             expected_ids = sorted((str(item[0]), str(item[1])) for item in staged.details.get("expected_client_identities", []))
             loaded_ids = sorted((str(pair[0]), str(pair[1])) for pair in adapter.list_loaded_client_identities())

@@ -1087,6 +1087,24 @@ def _safe_xray_candidate_diff_summary(active_path: Path, candidate_path: Path) -
             changed_paths.append("$.routing.rules[*]")
         if active_other != candidate_other:
             changed_paths.append("$.<other_top_level>")
+
+        def routing_rule_hashes(payload: dict[str, Any]) -> list[str]:
+            routing = payload.get("routing")
+            rules = routing.get("rules") if isinstance(routing, dict) else None
+            if not isinstance(rules, list):
+                return []
+            return [hashlib.sha256(json.dumps(
+                rule, sort_keys=True, ensure_ascii=True, separators=(",", ":"),
+            ).encode("ascii")).hexdigest() for rule in rules]
+
+        active_rule_hashes = routing_rule_hashes(active_payload)
+        candidate_rule_hashes = routing_rule_hashes(candidate_payload)
+        first_rule_difference = next((index for index, (old, new) in enumerate(
+            zip(active_rule_hashes, candidate_rule_hashes),
+        ) if old != new), None)
+        if first_rule_difference is None and len(active_rule_hashes) != len(candidate_rule_hashes):
+            first_rule_difference = min(len(active_rule_hashes), len(candidate_rule_hashes))
+        rule_multiset_equal = sorted(active_rule_hashes) == sorted(candidate_rule_hashes)
         return {
             "available": True,
             "schema": "fwrouter-acceptance-xray-candidate-diff/v1",
@@ -1098,6 +1116,11 @@ def _safe_xray_candidate_diff_summary(active_path: Path, candidate_path: Path) -
             "changed_sections": changed_sections,
             "changed_paths": changed_paths,
             "other_top_level_changed": active_other != candidate_other,
+            "routing_rules_multiset_equal": rule_multiset_equal,
+            "routing_rules_order_only": (
+                active_rule_hashes != candidate_rule_hashes and rule_multiset_equal
+            ),
+            "routing_rules_first_diff_index": first_rule_difference,
             "shape": {"active": active_shape, "candidate": candidate_shape},
         }
     except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):

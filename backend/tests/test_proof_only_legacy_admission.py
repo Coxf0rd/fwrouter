@@ -440,10 +440,29 @@ def test_acceptance_worker_xray_candidate_diagnostic_is_bounded_and_redacted(mon
     assert decoded["changed_sections"] == ["outbounds"]
     assert decoded["changed_paths"] == ["$.outbounds", "$.outbounds[*]", "$.<other_top_level>"]
     assert decoded["other_top_level_changed"] is True
+    assert decoded["routing_rules_multiset_equal"] is True
+    assert decoded["routing_rules_order_only"] is False
+    assert decoded["routing_rules_first_diff_index"] is None
     assert decoded["shape"] == {
         "active": {"inbounds": 1, "inbound_clients": 1, "outbounds": 1, "routing_rules": 1},
         "candidate": {"inbounds": 1, "inbound_clients": 1, "outbounds": 1, "routing_rules": 1},
     }
+
+    # Order is safety-relevant to first-match routing, so the diagnostic may
+    # identify an order-only delta but must never itself treat it as equivalent.
+    active_rules = [
+        {"inboundTag": ["vless-ws"], "user": ["private-one@acceptance.invalid"], "outboundTag": "private-vpn-a"},
+        {"inboundTag": ["vless-ws"], "user": ["private-two@acceptance.invalid"], "outboundTag": "private-vpn-b"},
+    ]
+    candidate_rules = list(reversed(active_rules))
+    active.write_text(json.dumps({"routing": {"rules": active_rules}}), encoding="utf-8")
+    candidate.write_text(json.dumps({"routing": {"rules": candidate_rules}}), encoding="utf-8")
+    order_summary = worker._safe_xray_candidate_diff_summary(active, candidate)
+    assert order_summary["routing_rules_multiset_equal"] is True
+    assert order_summary["routing_rules_order_only"] is True
+    assert order_summary["routing_rules_first_diff_index"] == 0
+    assert "private-one@acceptance.invalid" not in json.dumps(order_summary)
+    assert "private-vpn-a" not in json.dumps(order_summary)
 
 
 def _positive_synthetic_proof() -> dict[str, object]:
@@ -1703,3 +1722,194 @@ def test_explicit_admission_rejects_missing_native_adapter(monkeypatch, tmp_path
     assert result["ok"] is False
     assert subscription.get_subscription_native_generation_state()["status"] == "unknown"
     assert not checkpoint.exists()
+
+
+def _proof_only_xray_config(rules):
+    from fwrouter_api.adapters.xray_common import XRAY_INBOUND_TAG
+
+    return {
+        "log": {"loglevel": "warning"},
+        "inbounds": [{"tag": XRAY_INBOUND_TAG, "protocol": "vless", "settings": {"clients": [
+            {"id": "synthetic-user-a", "email": "a@example.test"},
+            {"id": "synthetic-user-b", "email": "b@example.test"},
+        ]}}],
+        "outbounds": [{"tag": "vpn-a", "protocol": "freedom"}, {"tag": "vpn-b", "protocol": "freedom"}],
+        "dns": {"servers": ["192.0.2.53"]},
+        "routing": {"domainStrategy": "AsIs", "rules": json.loads(json.dumps(rules))},
+    }
+
+
+def _proof_only_user_rule(email, outbound="vpn-a"):
+    from fwrouter_api.adapters.xray_common import XRAY_INBOUND_TAG
+
+    return {
+        "type": "field", "inboundTag": [XRAY_INBOUND_TAG],
+        "user": [email], "outboundTag": outbound,
+    }
+
+
+def _write_proof_only_config(path, config):
+    path.write_text(json.dumps(config, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+
+def test_proof_only_xray_candidate_allows_only_safe_per_user_rule_permutation(tmp_path):
+    active = tmp_path / "active.json"
+    candidate = tmp_path / "candidate.json"
+    first = _proof_only_user_rule("a@example.test", "vpn-a")
+    second = _proof_only_user_rule("b@example.test", "vpn-b")
+    anchor = {"type": "field", "protocol": ["dns"], "outboundTag": "vpn-a"}
+    _write_proof_only_config(active, _proof_only_xray_config([anchor, first, second]))
+    _write_proof_only_config(candidate, _proof_only_xray_config([anchor, second, first]))
+
+    assert xray_subscription_service._legacy_xray_candidate_matches_active(active, candidate) is True
+
+
+@pytest.mark.parametrize("mutation", [
+    "outbound", "client_identity", "dns", "api_anchor", "anchor_moved", "duplicate_user",
+    "broad_user", "extra_rule_option", "unknown_user_shape", "duplicate_casefold_user",
+    "duplicate_json_key", "nonfinite_number", "bool_int_type",
+])
+def test_proof_only_xray_candidate_rejects_unproven_equivalence(tmp_path, mutation):
+    active = tmp_path / "active.json"
+    candidate = tmp_path / "candidate.json"
+    first = _proof_only_user_rule("a@example.test", "vpn-a")
+    second = _proof_only_user_rule("b@example.test", "vpn-b")
+    anchor = {"type": "field", "inboundTag": ["api-in"], "port": "0-65535", "outboundTag": "api-out"}
+    original = _proof_only_xray_config([anchor, first, second])
+    changed = _proof_only_xray_config([anchor, second, first])
+
+    if mutation == "outbound":
+        changed["routing"]["rules"][1]["outboundTag"] = "vpn-c"
+    elif mutation == "client_identity":
+        changed["inbounds"][0]["settings"]["clients"][0]["id"] = "synthetic-user-c"
+    elif mutation == "dns":
+        changed["dns"]["servers"] = ["192.0.2.54"]
+    elif mutation == "api_anchor":
+        changed["routing"]["rules"][0]["outboundTag"] = "vpn-a"
+    elif mutation == "anchor_moved":
+        changed["routing"]["rules"] = [second, anchor, first]
+    elif mutation == "duplicate_user":
+        duplicate_a = _proof_only_user_rule("a@example.test", "vpn-a")
+        duplicate_b = _proof_only_user_rule("a@example.test", "vpn-b")
+        original["routing"]["rules"] = [anchor, duplicate_a, duplicate_b]
+        changed["routing"]["rules"] = [anchor, duplicate_b, duplicate_a]
+    elif mutation == "broad_user":
+        changed["routing"]["rules"][1]["user"] = ["a@example.test", "b@example.test"]
+    elif mutation == "extra_rule_option":
+        changed["routing"]["rules"][1]["domain"] = ["example.test"]
+    elif mutation == "unknown_user_shape":
+        changed["routing"]["rules"][1]["user"] = [""]
+    elif mutation == "duplicate_casefold_user":
+        first_case = _proof_only_user_rule("A@example.test", "vpn-a")
+        second_case = _proof_only_user_rule("a@example.test", "vpn-b")
+        original["routing"]["rules"] = [anchor, first_case, second_case]
+        changed["routing"]["rules"] = [anchor, second_case, first_case]
+    elif mutation == "duplicate_json_key":
+        active.write_text('{"routing":{"rules":[],"rules":[]}}', encoding="utf-8")
+        candidate.write_text('{"routing":{"rules":[]}}', encoding="utf-8")
+        assert xray_subscription_service._legacy_xray_candidate_matches_active(active, candidate) is False
+        return
+    elif mutation == "nonfinite_number":
+        active.write_text('{"routing":{"rules":[],"domainStrategy":NaN}}', encoding="utf-8")
+        candidate.write_text('{"routing":{"rules":[],"domainStrategy":Infinity}}', encoding="utf-8")
+        assert xray_subscription_service._legacy_xray_candidate_matches_active(active, candidate) is False
+        return
+    elif mutation == "bool_int_type":
+        original["routing"]["domainStrategy"] = True
+        changed["routing"]["domainStrategy"] = 1
+
+    _write_proof_only_config(active, original)
+    _write_proof_only_config(candidate, changed)
+    assert xray_subscription_service._legacy_xray_candidate_matches_active(active, candidate) is False
+
+
+def test_proof_only_xray_candidate_exact_bytes_fastpath_includes_unknown_shapes(tmp_path):
+    active = tmp_path / "active.json"
+    candidate = tmp_path / "candidate.json"
+    data = b'{"routing":{"rules":[{"user":["wide","shape"]}]}}'
+    active.write_bytes(data)
+    candidate.write_bytes(data)
+
+    assert xray_subscription_service._legacy_xray_candidate_matches_active(active, candidate) is True
+
+
+def test_real_xray_stager_candidate_order_proof_uses_existing_generator_without_mutation(tmp_path):
+    from fwrouter_api.adapters.xray import XrayApplyResult
+    from fwrouter_api.adapters.xray_common import XRAY_INBOUND_TAG
+    from fwrouter_api.adapters.xray_real import RealXrayAdapter
+
+    active = tmp_path / "active-xray.json"
+    candidate = tmp_path / "candidate-xray.json"
+    active.parent.mkdir(parents=True, exist_ok=True)
+    active.write_text(json.dumps({
+        "log": {"loglevel": "warning"},
+        "inbounds": [{
+            "tag": XRAY_INBOUND_TAG, "listen": "127.0.0.1", "port": 5300,
+            "protocol": "vless", "settings": {"clients": [
+                {"id": "synthetic-uuid-a", "email": "sub-a@example.test"},
+                {"id": "synthetic-uuid-b", "email": "sub-b@example.test"},
+            ], "decryption": "none"},
+            "streamSettings": {"network": "ws", "wsSettings": {"path": "/synthetic"}},
+        }],
+        "outbounds": [{"protocol": "freedom", "tag": "direct"}],
+        "routing": {"rules": [{
+            "type": "field", "protocol": ["dns"], "outboundTag": "direct",
+        }]},
+    }), encoding="utf-8")
+    original_active = active.read_bytes()
+    native_validation_actions = []
+
+    def test_config_only_runner(action, payload):
+        assert action == "test_config"
+        assert Path(payload["path"]).is_file()
+        native_validation_actions.append(action)
+        return XrayApplyResult(ok=True, message="synthetic local config validation")
+
+    adapter = RealXrayAdapter(config_path=active, compose_path=tmp_path / "unused-compose.yml", runner=test_config_only_runner)
+    desired = [
+        {"client_uuid": "synthetic-uuid-a", "email": "sub-a@example.test"},
+        {"client_uuid": "synthetic-uuid-b", "email": "sub-b@example.test"},
+    ]
+
+    def binding(email, uuid, server):
+        return {
+            "client_uuid": uuid, "client_id": uuid, "client_email": email,
+            "subject_id": "subject-" + email[4], "selected_server_id": server,
+            "selected_server_source": "synthetic", "status": "bound", "match_key": email,
+        }
+
+    first_bindings = [
+        binding("sub-a@example.test", "synthetic-uuid-a", "server-a"),
+        binding("sub-b@example.test", "synthetic-uuid-b", "server-b"),
+    ]
+    staged_initial = adapter.stage_subscription_generation(
+        desired_clients=desired, managed_email_prefixes=["sub-"], bindings=first_bindings,
+        client_modes=[], candidate_path=candidate,
+    )
+    assert staged_initial.ok is True
+    # Seed the synthetic active generation from the actual producer output;
+    # subsequent stage calls remain private and never invoke apply/reload.
+    active.write_bytes(candidate.read_bytes())
+    active_generation = active.read_bytes()
+
+    reversed_candidate = tmp_path / "reversed-candidate.json"
+    staged_reversed = adapter.stage_subscription_generation(
+        desired_clients=desired, managed_email_prefixes=["sub-"], bindings=list(reversed(first_bindings)),
+        client_modes=[], candidate_path=reversed_candidate,
+    )
+    assert staged_reversed.ok is True
+    assert xray_subscription_service._legacy_xray_candidate_matches_active(active, reversed_candidate) is True
+    assert active.read_bytes() == active_generation
+
+    changed_candidate = tmp_path / "changed-candidate.json"
+    changed_bindings = [dict(item) for item in first_bindings]
+    changed_bindings[0]["selected_server_id"] = "server-c"
+    staged_changed = adapter.stage_subscription_generation(
+        desired_clients=desired, managed_email_prefixes=["sub-"], bindings=changed_bindings,
+        client_modes=[], candidate_path=changed_candidate,
+    )
+    assert staged_changed.ok is True
+    assert xray_subscription_service._legacy_xray_candidate_matches_active(active, changed_candidate) is False
+    assert active.read_bytes() == active_generation
+    assert native_validation_actions == ["test_config", "test_config", "test_config"]
+    assert all(action != "reload" for action in native_validation_actions)
