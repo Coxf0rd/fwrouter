@@ -1943,10 +1943,12 @@ def _collect_legacy_inventory_native_proof(
     if not xray_writer_guard_is_held():
         return {"ok": False, "reason": "writer_guard_required"}
     module = _module_state("xray") or {}
-    mihomo_module = _module_state("mihomo") or {}
+    # The managed Mihomo dataplane adapter is owned by the existing `vpn`
+    # module lifecycle row; there is no standalone `mihomo` module row.
+    vpn_module = _module_state("vpn") or {}
     if not (
         module.get("desired_state") == "enabled" and module.get("lifecycle_mode") == "managed"
-        and mihomo_module.get("desired_state") == "enabled" and mihomo_module.get("lifecycle_mode") == "managed"
+        and vpn_module.get("desired_state") == "enabled" and vpn_module.get("lifecycle_mode") == "managed"
     ):
         return {"ok": False, "reason": "managed_native_runtimes_required"}
     try:

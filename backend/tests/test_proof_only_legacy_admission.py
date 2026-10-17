@@ -46,6 +46,28 @@ def _seed_legacy_inventory() -> str:
         return subscription._subscription_inventory_digest(connection)[0]
 
 
+def _seed_proof_native_module_rows(*, vpn_desired="enabled", vpn_lifecycle="managed", include_vpn=True):
+    """Seed only real module ownership rows; Mihomo is owned by the `vpn` module."""
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO modules (module_name, desired_state, lifecycle_mode, runtime_state, apply_state) "
+            "VALUES ('xray', 'enabled', 'managed', 'running', 'clean') "
+            "ON CONFLICT(module_name) DO UPDATE SET desired_state='enabled', lifecycle_mode='managed', "
+            "runtime_state='running', apply_state='clean'",
+        )
+        if include_vpn:
+            connection.execute(
+                "INSERT INTO modules (module_name, desired_state, lifecycle_mode, runtime_state, apply_state) "
+                "VALUES ('vpn', ?, ?, 'running', 'clean') "
+                "ON CONFLICT(module_name) DO UPDATE SET desired_state=excluded.desired_state, "
+                "lifecycle_mode=excluded.lifecycle_mode, runtime_state='running', apply_state='clean'",
+                (vpn_desired, vpn_lifecycle),
+            )
+        else:
+            connection.execute("DELETE FROM modules WHERE module_name='vpn'")
+        connection.execute("DELETE FROM modules WHERE module_name='mihomo'")
+
+
 def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(monkeypatch, tmp_path, capsys):
     """Execute both nested worker route callables with owned native boundary doubles."""
     import ast
@@ -708,9 +730,7 @@ def test_core_native_proof_rejects_foreign_manifest_or_routing_drift(monkeypatch
 
 def test_inventory_native_collector_keeps_readonly_db_fence_reads_in_session(monkeypatch, tmp_path):
     digest = _seed_legacy_inventory()
-    monkeypatch.setattr(xray_subscription_service, "_module_state", lambda _name: {
-        "desired_state": "enabled", "lifecycle_mode": "managed",
-    })
+    _seed_proof_native_module_rows()
     core_proof_calls: list[bool] = []
 
     def reached_core_native_proof(*_args, **_kwargs):
@@ -730,6 +750,35 @@ def test_inventory_native_collector_keeps_readonly_db_fence_reads_in_session(mon
     assert core_proof_calls == [True]
     assert result["ok"] is False
     assert result["reason"] == "synthetic_core_native_readback_stop"
+
+
+@pytest.mark.parametrize(
+    "vpn_desired,vpn_lifecycle,include_vpn",
+    [
+        ("disabled", "managed", True),
+        ("enabled", "external", True),
+        ("enabled", "managed", False),
+    ],
+)
+def test_inventory_collector_requires_existing_managed_vpn_module_owner(
+    monkeypatch, tmp_path, vpn_desired, vpn_lifecycle, include_vpn,
+):
+    digest = _seed_legacy_inventory()
+    _seed_proof_native_module_rows(
+        vpn_desired=vpn_desired, vpn_lifecycle=vpn_lifecycle, include_vpn=include_vpn,
+    )
+    monkeypatch.setattr(
+        xray_subscription_service, "_collect_legacy_admission_core_native_proof",
+        lambda: pytest.fail("unavailable vpn module owner must block before native proof"),
+    )
+    source = xray_subscription_service._legacy_admission_source_fingerprint()
+    with xray_writer_guard():
+        result = xray_subscription_service._collect_legacy_inventory_native_proof(
+            object(), expected_digest=digest, source_fingerprint=source,
+            checkpoint_path=tmp_path / "generation-checkpoint.json",
+        )
+
+    assert result == {"ok": False, "reason": "managed_native_runtimes_required"}
 
 
 def test_inventory_native_collector_completes_with_real_db_and_synthetic_native_boundaries(monkeypatch, tmp_path):
@@ -757,10 +806,13 @@ def test_inventory_native_collector_completes_with_real_db_and_synthetic_native_
     from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
     from fwrouter_api.services import mihomo_config, mihomo_reconcile, mihomo_reconcile_fingerprint, mihomo_runtime
     from fwrouter_api.services import subscription_profiles, xray_materialize, xray_runtime_state
+    _seed_proof_native_module_rows()
     with db_session() as connection:
         routing = dict(connection.execute("SELECT * FROM routing_global_state WHERE id=1").fetchone())
+        module_names = {row[0] for row in connection.execute("SELECT module_name FROM modules")}
         from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
         selection = read_selection_fence(connection)
+    assert "vpn" in module_names and "xray" in module_names and "mihomo" not in module_names
     selection_revision = selection["revision"]
     selection_decision_id = selection["decision_id"]
     manifest = {"apply_id": "synthetic-applied-generation", "routing_global_state": {
@@ -772,9 +824,6 @@ def test_inventory_native_collector_completes_with_real_db_and_synthetic_native_
 
     # Native/service boundaries are bounded test doubles; SQLite ownership,
     # inventory reads, selection fencing and the proof collector stay real.
-    monkeypatch.setattr(xray_subscription_service, "_module_state", lambda _name: {
-        "desired_state": "enabled", "lifecycle_mode": "managed",
-    })
     monkeypatch.setattr(xray_subscription_service, "_capture_generation_auto_selection", lambda: {
         "selection_revision": selection_revision, "selection_decision_id": selection_decision_id,
     })
