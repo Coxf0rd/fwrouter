@@ -3482,7 +3482,14 @@ def build_app(socket_path: Path):
     faulthandler.register(signal.SIGUSR1, all_threads=True)
     from fwrouter_api.services import bootstrap as bootstrap_service
     from fwrouter_api.services import mihomo_config, subscription_pipeline
-    from fwrouter_api.services import apply_orchestrator, mihomo_reconcile
+    from fwrouter_api.services import (
+        apply as apply_service,
+        apply_orchestrator,
+        dataplane_global,
+        dataplane_nft_render,
+        dataplane_status,
+        mihomo_reconcile,
+    )
     from fwrouter_api.services import xray_subscription_service
 
     bootstrap_diagnostic_lock = threading.Lock()
@@ -3673,10 +3680,17 @@ def build_app(socket_path: Path):
         def observed(*args, **kwargs):
             if not bootstrap_diagnostic_active:
                 return original(*args, **kwargs)
+            with bootstrap_diagnostic_lock:
+                count = min(bootstrap_diagnostic_counts.get(name, 0) + 1, 10_000)
+                bootstrap_diagnostic_counts[name] = count
+                bootstrap_observation["phase_call_counts"] = dict(bootstrap_diagnostic_counts)
+                record_phase = count <= bootstrap_diagnostic_limit
+            if not record_phase:
+                return original(*args, **kwargs)
             started = time.monotonic()
             cpu_started = time.process_time()
             print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
-                "phase": name, "event": "enter",
+                "phase": name, "event": "enter", "call": count,
             }), flush=True)
             try:
                 return original(*args, **kwargs)
@@ -3687,7 +3701,7 @@ def build_app(socket_path: Path):
                     bootstrap_observation.setdefault("phase_timings", {}).setdefault(name, []).append(elapsed)
                     bootstrap_observation.setdefault("phase_cpu_timings", {}).setdefault(name, []).append(cpu_elapsed)
                 print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
-                    "phase": name, "event": "exit", "seconds": elapsed,
+                    "phase": name, "event": "exit", "call": count, "seconds": elapsed,
                     "cpu_seconds": cpu_elapsed,
                 }), flush=True)
         return observed
@@ -3701,6 +3715,11 @@ def build_app(socket_path: Path):
         (bootstrap_service, "_wait_for_startup_vpn_dataplane_ready", "startup.wait_vpn_dataplane_ready"),
         (apply_orchestrator, "apply_global_mode_immediately", "startup.apply_global_mode_immediately"),
         (mihomo_reconcile, "promote_mihomo_candidate_config", "startup.promote_mihomo_candidate_config"),
+        (dataplane_global, "_read_effective_rules_artifact_uncached", "startup.dataplane.read_effective_rules_artifact"),
+        (dataplane_nft_render, "build_nft_rule_sets", "startup.dataplane.build_nft_rule_sets"),
+        (dataplane_status, "build_applied_runtime_enforcement", "startup.dataplane_status.build_applied_runtime_enforcement"),
+        (apply_service, "build_global_preflight", "startup.apply.build_global_preflight"),
+        (apply_service, "build_applied_runtime_enforcement", "startup.apply.build_applied_runtime_enforcement"),
     ):
         setattr(module, attribute, observe_phase(phase, getattr(module, attribute)))
 
@@ -3797,6 +3816,11 @@ def build_app(socket_path: Path):
     _bind_xray_inventory_promotion_failure(state)
     _bind_xray_post_promotion_crash(state)
     mihomo_adapter = _bind_acceptance_mihomo(socket_path, state)
+    for attribute, phase in (
+        ("_config_runtime_details", "startup.mihomo.config_runtime_details"),
+        ("_config_text", "startup.mihomo.config_text"),
+    ):
+        setattr(mihomo_adapter, attribute, observe_phase(phase, getattr(mihomo_adapter, attribute)))
     _install_acceptance_mihomo_fence_observer()
     _install_acceptance_provider_verification_observer()
     _install_acceptance_generation_callback_observer()

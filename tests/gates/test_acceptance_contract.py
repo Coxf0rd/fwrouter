@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import tarfile
 import tempfile
 import threading
@@ -89,6 +90,19 @@ def _extract_startup_phase_parser():
     namespace = {"Path": Path, "os": os, "json": json, "math": math}
     exec(compile(module, str(APPLICATION_ACCEPTANCE_CONFTEST), "exec"), namespace)
     return namespace["_startup_phase_diagnostics"]
+
+
+def _extract_current_xray_subject_identity_pairs():
+    """Load the synthetic-DB identity oracle without importing hosted fixtures."""
+    source_path = Path(__file__).parents[1] / "application_acceptance" / "test_xray_generation.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "current_xray_subject_identity_pairs"
+    )
+    namespace = {"Path": Path, "sqlite3": sqlite3}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
+    return namespace["current_xray_subject_identity_pairs"]
 
 
 def _extract_bootstrap_phase_summary():
@@ -735,6 +749,96 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual({"calls": 1, "wall_seconds": 1.5, "cpu_seconds": 0.25},
                          result["totals"]["safe_phase"])
         self.assertNotIn("TOKEN_SENTINEL", json.dumps(result))
+
+    def test_startup_resource_spans_are_fixed_bootstrap_only_and_bounded(self):
+        tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+        build_app = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "build_app"
+        )
+        registrations = {
+            (element.elts[0].id if isinstance(element.elts[0], ast.Name) else None,
+             element.elts[1].value, element.elts[2].value)
+            for node in ast.walk(build_app)
+            if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple)
+            for element in node.iter.elts
+            if isinstance(element, ast.Tuple) and len(element.elts) == 3
+            and isinstance(element.elts[1], ast.Constant) and isinstance(element.elts[1].value, str)
+            and isinstance(element.elts[2], ast.Constant) and isinstance(element.elts[2].value, str)
+        }
+        required = {
+            ("dataplane_global", "_read_effective_rules_artifact_uncached",
+             "startup.dataplane.read_effective_rules_artifact"),
+            ("dataplane_nft_render", "build_nft_rule_sets", "startup.dataplane.build_nft_rule_sets"),
+            ("dataplane_status", "build_applied_runtime_enforcement",
+             "startup.dataplane_status.build_applied_runtime_enforcement"),
+            ("apply_service", "build_global_preflight", "startup.apply.build_global_preflight"),
+            ("apply_service", "build_applied_runtime_enforcement",
+             "startup.apply.build_applied_runtime_enforcement"),
+        }
+        self.assertTrue(required <= registrations, required - registrations)
+        worker_source = APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8")
+        for attribute, phase in (
+            ("_config_runtime_details", "startup.mihomo.config_runtime_details"),
+            ("_config_text", "startup.mihomo.config_text"),
+        ):
+            self.assertIn(f'("{attribute}", "{phase}")', worker_source)
+        self.assertIn("setattr(mihomo_adapter, attribute, observe_phase(phase, getattr(mihomo_adapter, attribute)))",
+                      worker_source)
+
+        observe_phase = next(
+            node for node in ast.walk(build_app)
+            if isinstance(node, ast.FunctionDef) and node.name == "observe_phase"
+        )
+        source = ast.get_source_segment(
+            APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"), observe_phase,
+        ) or ""
+        self.assertIn("if not bootstrap_diagnostic_active", source)
+        self.assertIn("record_phase = count <= bootstrap_diagnostic_limit", source)
+        self.assertIn("if not record_phase", source)
+
+    def test_canonical_xray_identity_oracle_uses_active_subjects_and_client_id_fallback(self):
+        identity_pairs = _extract_current_xray_subject_identity_pairs()
+        with tempfile.TemporaryDirectory(prefix="fwrouter-xray-identity-oracle-") as temp:
+            database = Path(temp) / "synthetic.db"
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "CREATE TABLE subjects (subject_id TEXT, implementation_kind TEXT, is_active INTEGER, "
+                "is_deleted INTEGER, metadata_json TEXT)"
+            )
+            rows = [
+                ("active-uuid", 1, 0, {"detail": {"client_uuid": "synthetic-uuid", "email": "u1@test.invalid"}}),
+                ("active-fallback", 1, 0, {"detail": {"client_id": "synthetic-client-id", "email": "u2@test.invalid"}}),
+                ("disabled-detail", 1, 0, {"detail": {"client_uuid": "disabled-id", "email": "disabled@test.invalid", "enabled": False}}),
+                ("inactive", 0, 0, {"detail": {"client_uuid": "inactive-id", "email": "inactive@test.invalid"}}),
+                ("deleted", 1, 1, {"detail": {"client_uuid": "deleted-id", "email": "deleted@test.invalid"}}),
+            ]
+            connection.executemany(
+                "INSERT INTO subjects VALUES (?, 'xray', ?, ?, ?)",
+                [(subject_id, active, deleted, json.dumps(metadata))
+                 for subject_id, active, deleted, metadata in rows],
+            )
+            connection.execute(
+                "INSERT INTO subjects VALUES (?, 'mihomo', 1, 0, ?)",
+                ("other-module", json.dumps({"detail": {"client_uuid": "other-id", "email": "other@test.invalid"}})),
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertEqual(
+                {("synthetic-uuid", "u1@test.invalid"), ("synthetic-client-id", "u2@test.invalid")},
+                identity_pairs(database),
+            )
+
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "INSERT INTO subjects VALUES (?, 'xray', 1, 0, ?)",
+                ("duplicate", json.dumps({"detail": {"client_uuid": "synthetic-uuid", "email": "u1@test.invalid"}})),
+            )
+            connection.commit()
+            connection.close()
+            with self.assertRaisesRegex(AssertionError, "duplicated"):
+                identity_pairs(database)
 
     def test_routine_unit_failure_report_is_bound_bounded_and_never_eligible(self):
         path = "backend/tests/test_apply_pipeline.py"

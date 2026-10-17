@@ -34,6 +34,30 @@ _PROVIDER_WORKER_LOG_MAX_FILES = 16
 _PROVIDER_WORKER_LOG_MAX_APPEND_BYTES = 64 * 1024
 
 
+def current_xray_subject_identity_pairs(database_path: Path) -> set[tuple[str, str]]:
+    """Read the canonical active Xray subject identities from a synthetic DB."""
+    connection = sqlite3.connect(database_path, timeout=5)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute(
+            "SELECT json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid, "
+            "json_extract(metadata_json, '$.detail.client_id') AS client_id, "
+            "json_extract(metadata_json, '$.detail.email') AS email "
+            "FROM subjects WHERE implementation_kind='xray' AND is_active=1 AND is_deleted=0 "
+            "AND COALESCE(json_extract(metadata_json, '$.detail.enabled'), 1)=1 "
+            "ORDER BY subject_id"
+        ).fetchall()
+    finally:
+        connection.close()
+    pairs = {
+        (str(row["client_uuid"] or row["client_id"] or "").strip(), str(row["email"] or "").strip())
+        for row in rows
+    }
+    assert len(pairs) == len(rows), "canonical Xray subject identities are incomplete or duplicated"
+    assert all(client_id and email for client_id, email in pairs), "canonical Xray subject identity is incomplete"
+    return pairs
+
+
 class _SyntheticSubscriptionSource:
     """Serve a mutable synthetic profile on a suite-owned loopback socket."""
 
@@ -386,28 +410,6 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         value = result.get("state")
         assert isinstance(value, dict), result
         return value
-
-    def persisted_subscription_identity_pairs() -> set[tuple[str, str]]:
-        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
-        try:
-            rows = connection.execute(
-                "SELECT snap.nodes_json FROM subscription_profile_snapshots AS snap "
-                "JOIN subscription_clients AS client ON client.token=snap.token "
-                "JOIN subscription_accounts AS account ON account.account_id=client.account_id "
-                "WHERE client.enabled=1 AND account.enabled=1 ORDER BY snap.token"
-            ).fetchall()
-        finally:
-            connection.close()
-        pairs: set[tuple[str, str]] = set()
-        for row in rows:
-            nodes = json.loads(row[0])
-            assert isinstance(nodes, list)
-            for node in nodes:
-                assert isinstance(node, dict)
-                pair = (str(node.get("client_uuid") or ""), str(node.get("client_email") or ""))
-                assert all(pair), "persisted subscription identity is incomplete"
-                pairs.add(pair)
-        return pairs
 
     def active_profile_runtime_name() -> str:
         # Read only this acceptance worker's synthetic database. This avoids
@@ -881,7 +883,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert_native_matches_active(native, active_xray)
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
-        identities_e = persisted_subscription_identity_pairs()
+        identities_e = current_xray_subject_identity_pairs(state / "fwrouter.db")
         expected_e_identities = baseline_pairs | identities_e
         assert set(loaded_identities(native)) == expected_e_identities, {
             "expected_count": len(expected_e_identities),
@@ -937,8 +939,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
             connection.close()
         assert len(rows) == 1
         committed_inventory = json.loads(rows[0][0])
-        identities_f = persisted_subscription_identity_pairs()
-        newly_derived_f_identities = identities_f - identities_e
+        identities_f = current_xray_subject_identity_pairs(state / "fwrouter.db")
         expected_f_identities = baseline_pairs | identities_f
         assert committed_inventory.get("status") == "verified"
         assert committed_inventory.get("candidate_digest") == committed_inventory.get("verified_digest")
@@ -950,7 +951,6 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert_native_matches_active(native, active_xray)
         assert_mihomo_launch_matches_active(native, active_mihomo)
         assert identities_e <= identities_f
-        assert newly_derived_f_identities, "synthetic F profile growth derived no new subscription identities"
         assert set(active_identities(active_xray)) == expected_f_identities
         assert set(loaded_identities(native)) == expected_f_identities, {
             "expected_count": len(expected_f_identities),

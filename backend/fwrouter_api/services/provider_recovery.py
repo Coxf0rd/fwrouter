@@ -312,6 +312,19 @@ def _same_reentry_context_after_reconcile(
     return all(before.get(key) == after.get(key) for key in keys)
 
 
+def _reentry_checkpoint_gate_error() -> str | None:
+    """Return a stable block code if an Xray checkpoint appeared after preflight."""
+    from fwrouter_api.services.xray_subscription_service import subscription_inventory_checkpoint_write_gate
+
+    gate = subscription_inventory_checkpoint_write_gate()
+    if isinstance(gate, dict) and gate.get("ok") is True and gate.get("status") == "clear":
+        return None
+    error_code = gate.get("error_code") if isinstance(gate, dict) else None
+    if error_code == "XRAY_GENERATION_WRITER_GUARD_REQUIRED":
+        return error_code
+    return "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"
+
+
 def _prepare_verified_reentry_runtime(controller: Any, pending: dict[str, Any]) -> dict[str, Any]:
     """Prepare verified Mihomo policy while Emergency Direct still owns routing.
 
@@ -329,12 +342,57 @@ def _prepare_verified_reentry_runtime(controller: Any, pending: dict[str, Any]) 
     routing = apply.get_routing_snapshot()
     if str(routing.get("desired_mode") or "") != str(before.get("desired_mode") or ""):
         return {"ok": False, "error_code": "provider_recovery_stale"}
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    with xray_writer_guard(timeout_seconds=5.0):
+        if not _recovery_context_matches(controller, before):
+            return {"ok": False, "error_code": "provider_recovery_stale"}
+
+    # A provider refresh can leave an Xray generation checkpoint bound to the
+    # current inventory. Resolve it while its native preimage still matches;
+    # the Mihomo VPN reconcile below may otherwise replace the config needed by
+    # the checkpoint proof. This owner recovery runs while Emergency Direct is
+    # still active and before any re-entry native apply or provider mutation.
+    from fwrouter_api.services.xray_subscription_service import (
+        recover_xray_generation_checkpoint_before_inventory_refresh,
+    )
+    generation_recovery = recover_xray_generation_checkpoint_before_inventory_refresh()
+    if not isinstance(generation_recovery, dict) or generation_recovery.get("ok") is not True:
+        error_code = generation_recovery.get("error_code") if isinstance(generation_recovery, dict) else None
+        if error_code not in {
+            "XRAY_GENERATION_RECOVERY_FAILED",
+            "XRAY_GENERATION_RECOVERY_REQUIRES_MANAGED_RUNTIME",
+            "XRAY_GENERATION_SUPERSESSION_REQUIRED",
+            "XRAY_GENERATION_INVENTORY_ADMISSION_REQUIRED",
+            "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED",
+            "XRAY_GENERATION_CHECKPOINT_UNAVAILABLE",
+        }:
+            error_code = "XRAY_GENERATION_RECOVERY_FAILED"
+        return {"ok": False, "error_code": error_code}
+
+    recovery_status = generation_recovery.get("status")
+    if recovery_status not in {"skipped", "recovered"}:
+        return {"ok": False, "error_code": "XRAY_GENERATION_RECOVERY_FAILED"}
+    after_checkpoint_recovery = before
+    if recovery_status == "recovered":
+        after_checkpoint_recovery = _capture_recovery_context(controller, pending)
+    if (after_checkpoint_recovery is None or after_checkpoint_recovery != before
+            or str(apply.get_routing_snapshot().get("desired_mode") or "")
+            != str(before.get("desired_mode") or "")):
+        return {"ok": False, "error_code": "provider_recovery_stale"}
+    with xray_writer_guard(timeout_seconds=5.0):
+        if not _recovery_context_matches(controller, after_checkpoint_recovery):
+            return {"ok": False, "error_code": "provider_recovery_stale"}
+    before = after_checkpoint_recovery
 
     if _mihomo_reentry_runtime_ready(routing):
         from fwrouter_api.adapters.xray_common import xray_writer_guard
         with xray_writer_guard(timeout_seconds=5.0):
-            if (_recovery_context_matches(controller, before)
-                    and _mihomo_reentry_runtime_ready(routing)):
+            if not _recovery_context_matches(controller, before):
+                return {"ok": False, "error_code": "provider_recovery_stale"}
+            checkpoint_error = _reentry_checkpoint_gate_error()
+            if checkpoint_error:
+                return {"ok": False, "error_code": checkpoint_error}
+            if _mihomo_reentry_runtime_ready(routing):
                 return {"ok": True, "snapshot": before, "prepared": False}
 
     from fwrouter_api.services.apply_orchestrator_constants import LOCK_APPLY
@@ -363,24 +421,28 @@ def _prepare_verified_reentry_runtime(controller: Any, pending: dict[str, Any]) 
             if not _recovery_context_matches(controller, before):
                 result = {"ok": False, "error_code": "provider_recovery_stale"}
             else:
-                from fwrouter_api.services.apply_orchestrator_handler_common import _reconcile_vpn_runtime_for_apply
-
-                reconciled = _reconcile_vpn_runtime_for_apply(routing, job_id=job_id)
-                if not isinstance(reconciled, dict) or not reconciled.get("ok"):
-                    result = {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_FAILED"}
+                checkpoint_error = _reentry_checkpoint_gate_error()
+                if checkpoint_error:
+                    result = {"ok": False, "error_code": checkpoint_error}
                 else:
-                    after = _capture_recovery_context(controller, pending)
-                    if (after is None
-                            or not _same_reentry_context_after_reconcile(
-                                before, after, reconciled, expected_job_id=job_id,
-                            )
-                            or not after.get("runtime_incarnation")
-                            or not _mihomo_reentry_policy_installed()):
-                        result = {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_UNVERIFIED"}
-                    elif not _recovery_context_matches(controller, after):
-                        result = {"ok": False, "error_code": "provider_recovery_stale"}
+                    from fwrouter_api.services.apply_orchestrator_handler_common import _reconcile_vpn_runtime_for_apply
+
+                    reconciled = _reconcile_vpn_runtime_for_apply(routing, job_id=job_id)
+                    if not isinstance(reconciled, dict) or not reconciled.get("ok"):
+                        result = {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_FAILED"}
                     else:
-                        result = {"ok": True, "snapshot": after, "prepared": True}
+                        after = _capture_recovery_context(controller, pending)
+                        if (after is None
+                                or not _same_reentry_context_after_reconcile(
+                                    before, after, reconciled, expected_job_id=job_id,
+                                )
+                                or not after.get("runtime_incarnation")
+                                or not _mihomo_reentry_policy_installed()):
+                            result = {"ok": False, "error_code": "MIHOMO_REENTRY_PREPARE_UNVERIFIED"}
+                        elif not _recovery_context_matches(controller, after):
+                            result = {"ok": False, "error_code": "provider_recovery_stale"}
+                        else:
+                            result = {"ok": True, "snapshot": after, "prepared": True}
 
         if result.get("ok"):
             mark_job_success(job_id, result={"prepared": True})
