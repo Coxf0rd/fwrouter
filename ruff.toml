@@ -1,0 +1,6 @@
+required-version = "==0.17.0"
+target-version = "py311"
+line-length = 100
+
+[lint]
+select = ["F", "E9"]

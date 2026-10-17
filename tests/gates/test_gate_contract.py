@@ -401,51 +401,212 @@ class GateContractTests(unittest.TestCase):
         self.assertIn('counts["skipped"] == 0', exact_runner)
         self.assertIn('report["junit_sanitized"]', exact_runner)
 
-    def test_changed_python_f821_checks_only_changed_python_and_selects_one_rule(self) -> None:
+    def test_changed_python_static_check_only_lints_changed_python_with_root_rules(self) -> None:
         relative = str(Path(__file__).relative_to(gate.ROOT))
         with tempfile.TemporaryDirectory(prefix="fwrouter-f821-contract-") as temp, \
              mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
              mock.patch.object(gate, "run_process", side_effect=[
                  (0, "ruff 0.17.0\n", False), (0, "", False),
              ]) as runner:
-            self.assertEqual([], gate.check_changed_python_undefined_names(
+            self.assertEqual([], gate.check_changed_python_rules(
                 ["README.md", relative, relative], Path(temp)))
         argv = runner.call_args.args[0]
         self.assertEqual("/locked/bin/ruff", argv[0])
-        self.assertEqual(["--isolated", "--select", "F821"], argv[2:5])
+        self.assertEqual(["check", "--config", str(gate.RUFF_CONFIG), "--select", "F,E9"], argv[1:6])
         self.assertIn("--ignore-noqa", argv)
         self.assertIn("--no-cache", argv)
         self.assertEqual("--", argv[-2])
         self.assertEqual([relative], argv[-1:])
 
-    def test_changed_python_f821_missing_tool_truncation_and_diagnostics_fail_closed(self) -> None:
+    def test_changed_python_static_check_missing_tool_truncation_and_diagnostics_fail_closed(self) -> None:
         relative = str(Path(__file__).relative_to(gate.ROOT))
         with tempfile.TemporaryDirectory(prefix="fwrouter-f821-contract-") as temp:
             with mock.patch.object(gate.shutil, "which", return_value=None):
-                self.assertTrue(gate.check_changed_python_undefined_names(
+                self.assertTrue(gate.check_changed_python_rules(
                     [relative], Path(temp)))
             with mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
                  mock.patch.object(gate, "run_process", side_effect=[
                      (0, "ruff 0.17.0\n", False), (0, "", True),
                  ]):
                 self.assertIn("output bound", " ".join(
-                    gate.check_changed_python_undefined_names([relative], Path(temp))))
+                    gate.check_changed_python_rules([relative], Path(temp))))
             with mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
                  mock.patch.object(gate, "run_process", side_effect=[
                      (0, "ruff 0.17.0\n", False),
-                     (1, "fixture.py:1:5: F821 Undefined name `lost`", False),
+                     (1, "fixture.py:1:1: F401 `json` imported but unused", False),
                  ]):
-                self.assertIn("F821", " ".join(
-                    gate.check_changed_python_undefined_names([relative], Path(temp))))
+                self.assertIn("F,E9", " ".join(
+                    gate.check_changed_python_rules([relative], Path(temp))))
 
-    def test_changed_python_f821_requires_exact_locked_ruff_version(self) -> None:
+    def test_changed_python_static_check_requires_exact_locked_ruff_version(self) -> None:
         relative = str(Path(__file__).relative_to(gate.ROOT))
         with tempfile.TemporaryDirectory(prefix="fwrouter-f821-contract-") as temp, \
              mock.patch.object(gate.shutil, "which", return_value="/other/bin/ruff"), \
              mock.patch.object(gate, "run_process", return_value=(0, "ruff 0.16.10\n", False)) as runner:
-            problems = gate.check_changed_python_undefined_names([relative], Path(temp))
+            problems = gate.check_changed_python_rules([relative], Path(temp))
         self.assertIn("hash-locked 0.17.0", " ".join(problems))
         runner.assert_called_once()
+
+    def test_static_analysis_configuration_and_dependency_pins_are_aligned(self) -> None:
+        import tomllib
+
+        root_config = tomllib.loads((gate.ROOT / "ruff.toml").read_text(encoding="utf-8"))
+        backend_config = tomllib.loads((gate.ROOT / "backend/pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual("==0.17.0", root_config["required-version"])
+        self.assertEqual(["F", "E9"], root_config["lint"]["select"])
+        self.assertNotIn("ignore", root_config["lint"])
+        self.assertNotIn("per-file-ignores", root_config["lint"])
+        self.assertNotIn("extend-ignore", root_config["lint"])
+        self.assertEqual("../ruff.toml", backend_config["tool"]["ruff"]["extend"])
+        self.assertNotIn("select", backend_config["tool"]["ruff"].get("lint", {}))
+        self.assertIn("ruff==0.17.0", backend_config["project"]["optional-dependencies"]["dev"])
+        requirements = (gate.ROOT / "tests/gates/requirements-ci.txt").read_text(encoding="utf-8")
+        uv_lock = tomllib.loads((gate.ROOT / "backend/uv.lock").read_text(encoding="utf-8"))
+        self.assertIn("ruff==0.17.0 --hash=sha256:", requirements)
+        ruff_rows = [row for row in uv_lock["package"] if row["name"] == "ruff"]
+        self.assertEqual(["0.17.0"], [row["version"] for row in ruff_rows])
+
+    def test_global_name_check_uses_only_tracked_maintained_python_and_f821_family(self) -> None:
+        paths = ["backend/main.py", "tests/test_main.py"]
+        with tempfile.TemporaryDirectory(prefix="fwrouter-global-f821-contract-") as temp, \
+             mock.patch.object(gate, "tracked_maintained_python_paths", return_value=paths), \
+             mock.patch.object(gate, "check_ruff_paths", return_value=[]) as checker:
+            self.assertEqual([], gate.check_tracked_python_undefined_names(Path(temp)))
+        checker.assert_called_once_with(
+            paths, mock.ANY, rules="F821,F822,F823", label="F821,F822,F823",
+        )
+
+    def test_changed_python_inventory_rejects_symlinks_and_path_escape(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-static-path-safety-") as temp:
+            root = Path(temp)
+            target = root / "target.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+            link = root / "link.py"
+            link.symlink_to(target)
+            with self.assertRaises(gate.GateError):
+                gate.validate_python_paths(["../outside.py"], root=root)
+            with self.assertRaises(gate.GateError):
+                gate.validate_python_paths(["link.py"], root=root)
+            with self.assertRaises(gate.GateError):
+                gate.validate_python_paths(["../missing.py"], root=root, require_existing=False)
+
+    def test_changed_python_inventory_fails_closed_on_malformed_or_incomplete_git_output(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-static-enumeration-") as temp, \
+             tempfile.TemporaryDirectory(prefix="fwrouter-static-owned-") as owned:
+            root = Path(temp)
+            with mock.patch.object(gate, "run_process", side_effect=[
+                (0, "../outside.py\0", False),
+                (0, "../outside.py\0", False),
+                (0, "", False),
+            ]):
+                with self.assertRaises(gate.GateError):
+                    gate.changed_python_paths("a" * 40, Path(owned), root=root)
+            for result in ((0, "partial.py", True), (2, "git error", False),
+                           (0, "bad\ufffd.py\0", False)):
+                with mock.patch.object(gate, "run_process", return_value=result):
+                    with self.assertRaises(gate.GateError):
+                        gate.changed_python_paths("a" * 40, Path(owned), root=root)
+            with mock.patch.object(gate, "run_process", side_effect=[
+                (0, "probe.py\0", False), (0, "", False), (0, "../outside.py\0", False),
+            ]):
+                with self.assertRaises(gate.GateError):
+                    gate.changed_python_paths("a" * 40, Path(owned), root=root)
+
+    def test_changed_python_inventory_excludes_only_explicit_local_deletions(self) -> None:
+        def branch_repo(path: Path) -> str:
+            subprocess.run(["git", "init", "--quiet"], cwd=path, check=True)
+            subprocess.run(["git", "config", "user.name", "Gate Contract"], cwd=path, check=True)
+            subprocess.run(["git", "config", "user.email", "gate-contract@example.invalid"], cwd=path, check=True)
+            (path / "probe.py").write_text("value = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "probe.py"], cwd=path, check=True)
+            subprocess.run(["git", "commit", "--quiet", "-m", "base"], cwd=path, check=True)
+            base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=path, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+            (path / "probe.py").write_text("value = 2\n", encoding="utf-8")
+            subprocess.run(["git", "add", "probe.py"], cwd=path, check=True)
+            subprocess.run(["git", "commit", "--quiet", "-m", "branch change"], cwd=path, check=True)
+            return base
+
+        for staged in (False, True):
+            with self.subTest(staged=staged), tempfile.TemporaryDirectory(
+                    prefix="fwrouter-local-delete-repo-") as repo_dir, \
+                 tempfile.TemporaryDirectory(prefix="fwrouter-local-delete-owned-") as owned:
+                repo = Path(repo_dir)
+                base = branch_repo(repo)
+                (repo / "probe.py").unlink()
+                if staged:
+                    subprocess.run(["git", "add", "-u", "--", "probe.py"], cwd=repo, check=True)
+                self.assertEqual([], gate.changed_python_paths(base, Path(owned), root=repo))
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-staged-rename-repo-") as repo_dir, \
+             tempfile.TemporaryDirectory(prefix="fwrouter-staged-rename-owned-") as owned:
+            repo = Path(repo_dir)
+            base = branch_repo(repo)
+            subprocess.run(["git", "mv", "probe.py", "renamed.py"], cwd=repo, check=True)
+            self.assertEqual(["renamed.py"], gate.changed_python_paths(base, Path(owned), root=repo))
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-unexpected-missing-repo-") as repo_dir, \
+             tempfile.TemporaryDirectory(prefix="fwrouter-unexpected-missing-owned-") as owned:
+            repo = Path(repo_dir)
+            with mock.patch.object(gate, "run_process", side_effect=[
+                (0, "probe.py\0", False), (0, "", False), (0, "", False),
+            ]):
+                with self.assertRaises(gate.GateError):
+                    gate.changed_python_paths("a" * 40, Path(owned), root=repo)
+
+    def test_tracked_python_inventory_excludes_untracked_and_knowledge_history(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-python-inventory-") as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Gate Contract"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "gate-contract@example.invalid"], cwd=repo, check=True)
+            for name in ("app.py", "knowledge/audit.py", "deleted.py"):
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("value = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py", "knowledge/audit.py", "deleted.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "--quiet", "-m", "base"], cwd=repo, check=True)
+            (repo / "deleted.py").unlink()
+            (repo / "untracked.py").write_text("value = 2\n", encoding="utf-8")
+            with tempfile.TemporaryDirectory(prefix="fwrouter-inventory-owned-") as owned:
+                paths = gate.tracked_maintained_python_paths(Path(owned), root=repo)
+            self.assertEqual(["app.py"], paths)
+
+    def test_changed_python_inventory_includes_committed_and_index_or_worktree_paths(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-python-diff-") as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Gate Contract"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "gate-contract@example.invalid"], cwd=repo, check=True)
+            (repo / "base.py").write_text("value = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "base.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "--quiet", "-m", "base"], cwd=repo, check=True)
+            base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+            (repo / "committed.py").write_text("value = 2\n", encoding="utf-8")
+            subprocess.run(["git", "add", "committed.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "--quiet", "-m", "committed change"], cwd=repo, check=True)
+            (repo / "base.py").write_text("value = 3\n", encoding="utf-8")
+            (repo / "staged.py").write_text("value = 4\n", encoding="utf-8")
+            subprocess.run(["git", "add", "staged.py"], cwd=repo, check=True)
+            (repo / "intent-to-add.py").write_text("value = 6\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-N", "intent-to-add.py"], cwd=repo, check=True)
+            (repo / "untracked.py").write_text("value = 5\n", encoding="utf-8")
+            with tempfile.TemporaryDirectory(prefix="fwrouter-diff-owned-") as owned:
+                paths = gate.changed_python_paths(base, Path(owned), root=repo)
+            self.assertEqual(["base.py", "committed.py", "intent-to-add.py", "staged.py"], paths)
+
+    def test_fast_and_affected_workflows_lint_before_planning_or_running_suites(self) -> None:
+        fast = (gate.ROOT / ".github/workflows/push-fast.yml").read_text(encoding="utf-8")
+        fast_script = fast.split("- name: Plan and run routine affected L0-L1 only", 1)[1]
+        self.assertLess(fast_script.index("gate.py lint-changed --base"), fast_script.index("gate.py plan"))
+        self.assertLess(fast_script.index("gate.py plan"), fast_script.index("gate.py run"))
+
+        affected = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        plan_start = affected.index("- name: Resolve immutable base, plan affected L0-L5, and execute routine suites")
+        plan_script = affected[plan_start:]
+        self.assertLess(plan_script.index("gate.py lint-changed --base"), plan_script.index("gate.py plan"))
+        self.assertIn("set -euo pipefail", plan_script)
 
     def test_provider_plan_expands_declared_domains_and_uses_l5_anchors_as_primary_levels(self) -> None:
         plan = gate.make_plan("HEAD", self.manifest, ["backend/fwrouter_api/services/provider_recovery.py"])

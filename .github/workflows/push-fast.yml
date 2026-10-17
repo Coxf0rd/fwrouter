@@ -47,6 +47,7 @@ jobs:
             echo "Push has no resolvable immutable before SHA" >&2
             exit 2
           fi
+          python tests/gates/gate.py lint-changed --base "$EVENT_BEFORE"
           PLAN="$RUNNER_TEMP/fwrouter-fast-plan.json"
           REPORT="$RUNNER_TEMP/fwrouter-fast-report.json"
           python tests/gates/gate.py plan --base "$EVENT_BEFORE" --quick-push --output "$PLAN"

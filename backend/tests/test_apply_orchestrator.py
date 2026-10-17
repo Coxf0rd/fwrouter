@@ -1,10 +1,49 @@
 import hashlib
 
 from fwrouter_api.services import apply_orchestrator as orchestrator
+from fwrouter_api.services import apply_orchestrator_server_handlers as server_handlers
 from fwrouter_api.services import rules, rules_state
 from fwrouter_api.services.apply_orchestrator import _commit_manual_rules_apply
 from fwrouter_api.services.apply_orchestrator_rules_handlers import _execute_apply_manual_rules
 from fwrouter_api.services.rules import validate_manual_rules
+
+
+def test_subject_server_override_reconciles_missing_selector(monkeypatch):
+    subject_id = "subject-1"
+    server_id = "server-1"
+    subject = {"subject_id": subject_id, "subject_type": "lan_client", "desired_mode": "vpn"}
+    switches = iter((
+        {"ok": False, "error_code": "MIHOMO_SELECTOR_NOT_FOUND"},
+        {"ok": True},
+    ))
+    reconciles: list[tuple[dict[str, object], str]] = []
+
+    monkeypatch.setattr(orchestrator, "get_subject_server_override", lambda _subject_id: None)
+    monkeypatch.setattr(orchestrator, "get_subject", lambda _subject_id: subject)
+    monkeypatch.setattr(orchestrator, "_validate_subject_server_override_request", lambda *_args: None)
+    monkeypatch.setattr(orchestrator, "set_subject_server_override", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(orchestrator, "get_routing_snapshot", lambda: {"desired_mode": "vpn"})
+    monkeypatch.setattr(server_handlers, "_subject_needs_mihomo_selector_from_committed", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server_handlers, "_switch_subject_mihomo_selector", lambda *_args: next(switches))
+    monkeypatch.setattr(orchestrator, "external_vpn_mihomo_reconcile_skip", lambda: None)
+
+    def reconcile(*, routing: dict[str, object], job_id: str) -> dict[str, object]:
+        reconciles.append((routing, job_id))
+        return {"ok": True, "reconcile_id": "reconcile-1"}
+
+    monkeypatch.setattr(orchestrator, "reconcile_mihomo_runtime", reconcile)
+    monkeypatch.setattr(orchestrator, "update_subject_server_override_apply_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(orchestrator, "get_subject_with_effective_state", lambda _subject_id: subject)
+    monkeypatch.setattr(orchestrator, "_build_success_result", lambda **kwargs: {"ok": True, **kwargs})
+
+    result = server_handlers._execute_set_subject_server_override(
+        {"job_id": "job-1", "requested_by": "test"},
+        {"subject_id": subject_id, "server_id": server_id, "actor_scope": "admin"},
+    )
+
+    assert result["ok"] is True
+    assert reconciles == [({"desired_mode": "vpn"}, "job-1")]
+    assert result["details"]["mihomo_reconcile"]["reconcile_id"] == "reconcile-1"
 
 
 def test_commit_manual_rules_apply_passes_manual_active_text(monkeypatch):

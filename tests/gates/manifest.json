@@ -523,6 +523,12 @@
     },
     {
       "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "ruff.toml"
+    },
+    {
+      "domains": [
         "ui"
       ],
       "glob": "ui/**",
