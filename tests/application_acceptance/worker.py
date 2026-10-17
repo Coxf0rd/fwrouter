@@ -1201,6 +1201,8 @@ def _safe_mihomo_candidate_diff_summary(
         changed_sections: list[str] = []
         other_top_level_changed: bool | None = None
         value_equal_active: bool | None = None
+        fwrouter_changed_fields: list[str] = []
+        fwrouter_unknown_fields_changed: bool | None = None
         if isinstance(active_payload, dict) and isinstance(candidate_config, dict):
             changed_sections = [
                 name for name in section_names
@@ -1212,6 +1214,32 @@ def _safe_mihomo_candidate_diff_summary(
                 != {key: value for key, value in candidate_config.items() if key not in known}
             )
             value_equal_active = _configs_equal(active_payload, candidate_config)
+            # Emit only names from the closed generator field inventory. Values
+            # and any unrecognized keys remain redacted in hosted artifacts.
+            fwrouter_field_names = (
+                "resolved_selective_default", "final_match_rule", "transparent_final_match_rule",
+                "rendered_rules_count", "scoped_vpn_source_rules_count", "transparent_rule_name",
+                "path_kind", "state_consistency_ok", "transparent_mechanism", "mixed_listener_name",
+                "mixed_listener_bind", "mixed_listener_port", "transparent_listener_name",
+                "transparent_listener_bind", "transparent_redir_port", "transparent_tproxy_port",
+                "full_vpn_redir_port", "full_vpn_tproxy_port", "transparent_listener_port",
+                "transparent_inbound_rules", "sanitized_legacy_inbound_keys",
+                "sanitized_managed_listeners",
+            )
+            active_fwrouter = active_payload.get("fwrouter")
+            candidate_fwrouter = candidate_config.get("fwrouter")
+            if isinstance(active_fwrouter, dict) and isinstance(candidate_fwrouter, dict):
+                fwrouter_changed_fields = [
+                    name for name in fwrouter_field_names
+                    if active_fwrouter.get(name) != candidate_fwrouter.get(name)
+                ]
+                known_fwrouter = set(fwrouter_field_names)
+                fwrouter_unknown_fields_changed = (
+                    {key: value for key, value in active_fwrouter.items() if key not in known_fwrouter}
+                    != {key: value for key, value in candidate_fwrouter.items() if key not in known_fwrouter}
+                )
+            else:
+                fwrouter_unknown_fields_changed = active_fwrouter != candidate_fwrouter
 
         def shape(payload: dict[str, Any] | None) -> dict[str, int]:
             value = payload if isinstance(payload, dict) else {}
@@ -1239,6 +1267,8 @@ def _safe_mihomo_candidate_diff_summary(
             "canonical_serializer_has_yaml_aliases_or_ambiguity": canonical_aliases,
             "canonical_serializer_tree_equal_active": canonical_equal_active,
             "changed_sections": changed_sections,
+            "fwrouter_changed_fields": fwrouter_changed_fields,
+            "fwrouter_unknown_fields_changed": fwrouter_unknown_fields_changed,
             "other_top_level_changed": other_top_level_changed,
             "shape": {"active": shape(active_payload), "candidate": shape(candidate_config)},
         }

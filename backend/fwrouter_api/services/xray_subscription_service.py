@@ -1936,20 +1936,181 @@ def _legacy_admission_checkpoint_parent_ready(path: Path) -> bool:
 
 
 def _legacy_mihomo_candidate_matches(active_path: Path, candidate_path: Path) -> bool:
-    """Prefer exact bytes; use the existing bounded semantic comparator only otherwise."""
-    def digest(path: Path) -> bytes:
+    """Compare a private admission candidate with active Mihomo without applying it.
+
+    The builder records which previous FWRouter inbounds it removed from its
+    active-config base. These fields describe sanitization provenance rather
+    than runtime policy. Accept their change only when the candidate exactly
+    records a fresh sanitization of the active config; compare every other
+    field strictly.
+    """
+    def digest(path: Path) -> bytes | None:
         hasher = hashlib.sha256()
-        with path.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                hasher.update(chunk)
-        return hasher.digest()
+        try:
+            before_path = path.lstat()
+            if not stat.S_ISREG(before_path.st_mode) or stat.S_ISLNK(before_path.st_mode):
+                return None
+            descriptor = os.open(
+                path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            try:
+                before = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(before.st_mode)
+                    or (before.st_dev, before.st_ino) != (before_path.st_dev, before_path.st_ino)
+                ):
+                    return None
+                while True:
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            after_path = path.lstat()
+            def stable_fields(value: os.stat_result) -> tuple[int, int, int, int, int]:
+                return (
+                    value.st_dev, value.st_ino, value.st_size,
+                    value.st_mtime_ns, value.st_ctime_ns,
+                )
+            if (
+                not stat.S_ISREG(after_path.st_mode) or stat.S_ISLNK(after_path.st_mode)
+                or stable_fields(before) != stable_fields(after)
+                or (after.st_dev, after.st_ino) != (after_path.st_dev, after_path.st_ino)
+            ):
+                return None
+            return hasher.digest()
+        except OSError:
+            return None
     try:
-        if digest(active_path) == digest(candidate_path):
+        active_digest = digest(active_path)
+        candidate_digest = digest(candidate_path)
+        if active_digest is None or candidate_digest is None:
+            return False
+        if active_digest == candidate_digest:
             return True
-    except OSError:
+    except (OSError, ValueError):
         return False
-    from fwrouter_api.services.mihomo_reconcile import _semantic_config_files_equal
-    return _semantic_config_files_equal(str(active_path), str(candidate_path))
+
+    import copy
+    import yaml
+
+    from fwrouter_api.services.mihomo_config_inbounds import _sanitize_fwrouter_managed_inbounds
+    from fwrouter_api.services.mihomo_config_paths import MAX_BASE_CONFIG_BYTES
+    from fwrouter_api.services.mihomo_config_status import _configs_equal
+    from fwrouter_api.services.mihomo_reconcile import (
+        MAX_SEMANTIC_CONFIG_BYTES, _yaml_tree_is_unambiguous, _yaml_value_is_json_safe,
+    )
+
+    max_bytes = min(MAX_BASE_CONFIG_BYTES, MAX_SEMANTIC_CONFIG_BYTES)
+
+    def load_bounded(path: Path) -> dict[str, Any] | None:
+        try:
+            before_path = path.lstat()
+            if not stat.S_ISREG(before_path.st_mode) or stat.S_ISLNK(before_path.st_mode):
+                return None
+            descriptor = os.open(
+                path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            try:
+                before = os.fstat(descriptor)
+                if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+                    return None
+                chunks: list[bytes] = []
+                total = 0
+                while total <= max_bytes:
+                    chunk = os.read(descriptor, min(65536, max_bytes + 1 - total))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                raw = b"".join(chunks)
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            after_path = path.lstat()
+            if (
+                len(raw) > max_bytes or len(raw) != before.st_size
+                or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                or (before.st_dev, before.st_ino)
+                != (before_path.st_dev, before_path.st_ino)
+                or (after.st_dev, after.st_ino)
+                != (after_path.st_dev, after_path.st_ino)
+                or stat.S_ISLNK(after_path.st_mode)
+            ):
+                return None
+            text = raw.decode("utf-8")
+            loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+            tree = yaml.compose(text, Loader=loader)
+            if not _yaml_tree_is_unambiguous(tree):
+                return None
+            value = yaml.load(text, Loader=loader)
+            if not isinstance(value, dict) or not _yaml_value_is_json_safe(value):
+                return None
+            return value
+        except (OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError, RecursionError):
+            return None
+
+    active = load_bounded(active_path)
+    candidate = load_bounded(candidate_path)
+    if active is None or candidate is None:
+        return False
+    active_meta = active.get("fwrouter")
+    candidate_meta = candidate.get("fwrouter")
+    if not isinstance(active_meta, dict) or not isinstance(candidate_meta, dict):
+        return False
+
+    # Existing active files may predate these provenance fields. If present,
+    # require bounded string lists; never trust arbitrary YAML types here.
+    provenance_fields = (
+        "sanitized_legacy_inbound_keys", "sanitized_managed_listeners",
+    )
+    for key in provenance_fields:
+        candidate_value = candidate_meta.get(key)
+        if key not in candidate_meta or not isinstance(candidate_value, list) or len(candidate_value) > 4096:
+            return False
+        if any(not isinstance(item, str) or len(item) > 512 for item in candidate_value):
+            return False
+        if key in active_meta:
+            active_value = active_meta[key]
+            if not isinstance(active_value, list) or len(active_value) > 4096:
+                return False
+            if any(not isinstance(item, str) or len(item) > 512 for item in active_value):
+                return False
+
+    # Derive expected provenance from the exact active config. This is not a
+    # blanket fwrouter-section exemption: wrong or invented removal records
+    # still reject, and all policy/runtime fields remain part of the comparison.
+    try:
+        _, sanitization = _sanitize_fwrouter_managed_inbounds(copy.deepcopy(active))
+    except (TypeError, ValueError):
+        return False
+    provenance = {
+        "sanitized_legacy_inbound_keys": sanitization.get("removed_top_level_keys"),
+        "sanitized_managed_listeners": sanitization.get("removed_listener_names"),
+    }
+    # Legacy top-level inbound ports are live listeners in the active config.
+    # Removing them changes runtime state, so their presence cannot be treated
+    # as a provenance-only difference during proof admission.
+    if provenance["sanitized_legacy_inbound_keys"]:
+        return False
+    if any(
+        not isinstance(expected, list)
+        or candidate_meta.get(key) != expected
+        for key, expected in provenance.items()
+    ):
+        return False
+
+    normalized_active = copy.deepcopy(active)
+    normalized_meta = normalized_active.get("fwrouter")
+    if not isinstance(normalized_meta, dict):
+        return False
+    normalized_meta.update(provenance)
+    return _configs_equal(normalized_active, candidate)
 
 
 _PROOF_ONLY_LEGACY_ADMISSION_CONFIRMATION = "PROOF_ONLY_LEGACY_ADMISSION"
