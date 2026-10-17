@@ -18,8 +18,8 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 256
-    mem_limit: 2g
-    memswap_limit: 2g
+    mem_limit: 2560m
+    memswap_limit: 2560m
     cpus: 2.0
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777

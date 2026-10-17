@@ -5397,7 +5397,7 @@
       "opt_in": true,
       "path": "tests/application_acceptance/test_runtime_scale.py",
       "primary_level": "L3",
-      "risk_notes": "Hosted only, bounded2GiB owned container; no production data or host recovery parity",
+      "risk_notes": "Hosted only, bounded2.5GiB owned application/router container; swap disabled; no production data or host recovery parity",
       "runtime_dependencies": [
         "Linux amd64 hosted runner",
         "Docker Compose v2",
