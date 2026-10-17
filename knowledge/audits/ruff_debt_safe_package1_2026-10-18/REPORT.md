@@ -49,3 +49,31 @@ The final targeted synthetic group completed11PASS/0FAIL/0SKIP with exact-node c
 ### Package2 handoff boundaries
 
 Deferred F401 requires public facade/__all__/registration/dynamic-consumer and side-effect tracing; F403/F405 needs interface ownership review rather than import-star rewriting. The32remaining F841 include queries/calls/projections, fixtures and possibly omitted assertions; their values must not be discarded before intent is established. Four F811 remain in mihomo_config, test_provider_recovery, test_routing_global_wave1 and test_xray; containing-file debt or qualification issues prevent a complete safe edit here. Two F541 remain in files with other ambiguous F401 findings. The per-file register names all remaining affected source files and counts. Optional native modules are not obsolete and no API compatibility is removed. Package2 is not authorized by this report and is not started.
+
+## User-authorized extension in the same PR — difficult debt and confirmed defect
+
+After Package1 qualified at19e1148, the user explicitly requested continuing all related fixes in the existing branch/PR21, superseding the earlier separate-Package2/merge gate. PR21 was returned to Draft. Earlier safe-only counts and CI remain historical evidence for19e1148; they are not final qualification of this extension. Production remains untouched.
+
+### Confirmed functional root cause
+
+A real SQLite regression seeded pending recovery via the existing state owner and called idle_active_failure_confirmation. Before the fix, active_quality_degraded_confirmation replaced the traffic_recovery candidate and lost its recovery_pending marker in durable state. The correction preserves that owner candidate while recovery is pending instead of allowing an idle observation to supersede it. The regression verifies the complete durable candidate, reload via SQLite and subsequent compare-and-set advancement of the same pending operation. No native apply, routing policy, credential or generation manager is introduced. This makes the final PR a lint cleanup plus a specifically documented recovery-state fix; it is no longer represented as entirely cosmetic.
+
+The proof-only Xray stager test captured original_active but never checked it before overwriting active config as setup for a second scenario. The new immediate byte-equality assertion closes that test gap; no production stager behavior is changed.
+
+### Difficult-debt choices
+
+Three wildcard-import consumers (UI clients/inventory and apply_orchestrator_drift) now name their actual dependencies explicitly. Central public facades, dynamic dependency injection and existing monkeypatch seams must remain available. Other changes remove ignored return bindings while preserving validation/save/refresh calls, accidental duplicate imports and proven redundant pure computations. The unused subscription_pipeline details dict is retained: deleting it could change reads/error behavior on malformed objects. Large unresolved central facades and unqualified native/recovery files are explicitly not deleted merely to satisfy Ruff.
+
+The same441-file pinned-Ruff inventory changes931→707: F401748→683, F4038→5, F405137→1, F5412→2, F8114→2, F84132→14. Compared with original main4f0c43c baseline951, the consolidated PR removes244diagnostics. Every touched Python file must pass fullF/E9 without noqa/config changes; globalcritical checks remain enabled.
+
+### Pre-QA qualification and limitations
+
+Official isolated exact-node execution:529backend PASS/0FAIL/0SKIP with exact-node coverage, sanitized JUnit and owned cleanup. Official test-infrastructure gate:14reported nodes PASS, L0PASS, no blocked reasons. Initial direct pytest attempts used the wrong isolation wrapper for stdlib contract tests and are retained as NOT ACCEPTED evidence, not passed qualification. Source hashes and detailed results are frozen privately under /root/fwrouter-recovery/ruff-debt-package2-20261018/FROZEN_SOURCE.json. Independent QA and new exact-HEAD fullmandatoryCI remain pending; previousCI39076593577 does not qualify new code. No production/deployment/native apply or next roadmap milestone follows from this source work.
+
+### Independent QA correction: durable concurrent ownership
+
+First independent review returned CHANGES_REQUIRED and deterministically reproduced a concurrent lost update: active quality read an empty snapshot, another writer persisted recovery_pending, then the stale unconditional UPDATE replaced it. The initial in-memory guard was insufficient. A real-SQLite barrier regression failed before correction. The existing watchdog runtime state owner now accepts optional expected candidate/path/last-decision conditions and executes a single conditional SQL UPDATE; conflict/write failure returns no successful publication. Active-quality write/clear paths supply the observed snapshot and publish their in-memory candidate only after CAS succeeds. Both paths refuse preexisting pending dictionaries regardless of candidate kind. Strict read mode prevents read exceptions from being converted into authoritative empty state; default reader compatibility remains unchanged for other callers. No migration or parallel owner is added.
+
+The corrective group passed279isolated exact tests(0FAIL/0SKIP), including real concurrent marker creation/phase advancement, owner preservation, stale/DB-error paths and a mutating-stager negative canary. Exact-node coverage, sanitized JUnit and owned cleanup passed. Earlier unchanged-module targeted evidence remains applicable only to unchanged file hashes; no duplicate test counts are summed into a fabricated total. The final independent re-review and exact-HEAD hosted gate remain pending at this source checkpoint.
+
+Final corrected source review: independent QA PASSED. It independently checked8race/error/admission cases and4facade/UI cases, reviewed279targeted writer results and verified strict touched-file Ruff/source hashes. Final count707(F401683,F4035,F4051,F5412,F8112,F84114),244removed from original951. Main requiredCI for the newHEAD is still pending; original19e1148qualification is historical only.

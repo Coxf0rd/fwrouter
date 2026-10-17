@@ -4669,7 +4669,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 root = ET.Element("testsuite")
                 for nodeid in sorted(expected):
                     path, _, name = nodeid.partition("::")
-                    case = ET.SubElement(root, "testcase", {
+                    ET.SubElement(root, "testcase", {
                         "classname": path[:-3].replace("/", "."), "name": name,
                     })
                 junit = Path(temp) / "junit.xml"
@@ -4685,7 +4685,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 rows[0]["phases"].pop("teardown")
                 with self.assertRaises(launcher.NotRun):
                     launcher.validate_suite_node_receipt(rows, suite, observed["nodeids"])
-                duplicate = ET.SubElement(root, "testcase", {
+                ET.SubElement(root, "testcase", {
                     "classname": next(iter(sorted(expected))).split("::", 1)[0][:-3].replace("/", "."),
                     "name": next(iter(sorted(expected))).split("::", 1)[1],
                 })

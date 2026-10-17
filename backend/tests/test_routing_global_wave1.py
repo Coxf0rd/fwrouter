@@ -3,17 +3,11 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 
 from pathlib import Path
-import json
-from typing import Any
-from fastapi.testclient import TestClient
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import get_default_job_manager
-from fwrouter_api.main import create_app
 from fwrouter_api.services.apply_orchestrator import (
     set_global_mode,
-    submit_apply_mutation,
-    INTENT_SET_GLOBAL_MODE,
     repair_global_direct_runtime_sync,
 )
 from fwrouter_api.services.servers import (

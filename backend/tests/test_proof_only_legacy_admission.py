@@ -1456,7 +1456,7 @@ def test_core_native_proof_requires_owned_manifest_and_fresh_enforcement_for_eac
 
 def test_core_native_proof_blocks_missing_applied_generation_and_live_mode_mismatch(monkeypatch):
     _seed_legacy_inventory()
-    from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
+    from fwrouter_api.services import dataplane_global, dataplane_status
     with db_session() as connection:
         connection.execute("DELETE FROM apply_versions")
     monkeypatch.setattr(dataplane_status, "_read_live_dataplane_payload", lambda: {"table_exists": True})
@@ -2406,6 +2406,7 @@ def test_real_xray_stager_candidate_order_proof_uses_existing_generator_without_
         client_modes=[], candidate_path=candidate,
     )
     assert staged_initial.ok is True
+    assert active.read_bytes() == original_active
     # Seed the synthetic active generation from the actual producer output;
     # subsequent stage calls remain private and never invoke apply/reload.
     active.write_bytes(candidate.read_bytes())
@@ -2432,6 +2433,50 @@ def test_real_xray_stager_candidate_order_proof_uses_existing_generator_without_
     assert active.read_bytes() == active_generation
     assert native_validation_actions == ["test_config", "test_config", "test_config"]
     assert all(action != "reload" for action in native_validation_actions)
+
+
+def test_active_file_immutability_assertion_detects_mutating_stager_hook(tmp_path):
+    from fwrouter_api.adapters.xray import XrayApplyResult
+    from fwrouter_api.adapters.xray_common import XRAY_INBOUND_TAG
+    from fwrouter_api.adapters.xray_real import RealXrayAdapter
+
+    active = tmp_path / "active-xray.json"
+    _write_proof_only_config(active, {
+        "inbounds": [{
+            "tag": XRAY_INBOUND_TAG,
+            "listen": "127.0.0.1",
+            "port": 5300,
+            "protocol": "vless",
+            "settings": {"clients": [], "decryption": "none"},
+            "streamSettings": {"network": "ws", "wsSettings": {"path": "/synthetic"}},
+        }],
+        "outbounds": [{"protocol": "freedom", "tag": "direct"}],
+        "routing": {"rules": []},
+    })
+    original_active = active.read_bytes()
+
+    def mutating_validator(action, payload):
+        assert action == "test_config"
+        assert Path(payload["path"]).is_file()
+        active.write_bytes(b'{"unexpected":"active mutation"}')
+        return XrayApplyResult(ok=True, message="synthetic mutating validator")
+
+    adapter = RealXrayAdapter(
+        config_path=active,
+        compose_path=tmp_path / "unused-compose.yml",
+        runner=mutating_validator,
+    )
+    staged = adapter.stage_subscription_generation(
+        desired_clients=[],
+        managed_email_prefixes=["sub-"],
+        bindings=[],
+        client_modes=[],
+        candidate_path=tmp_path / "candidate-xray.json",
+    )
+
+    assert staged.ok is True
+    with pytest.raises(AssertionError):
+        assert active.read_bytes() == original_active
 
 
 def test_mihomo_candidate_diagnostic_redacts_values_and_compares_existing_renderers(monkeypatch, tmp_path):

@@ -80,7 +80,7 @@ def _db(monkeypatch):
 
 
 def _binding(conn, *, source_ref="source-a", enabled=True):
-    binding = store.save_binding(conn, source_ref, "stealthsurf", 1234, "logical-provider-vpn",
+    store.save_binding(conn, source_ref, "stealthsurf", 1234, "logical-provider-vpn",
                                  "hysteria2", enabled)
     conn.execute("UPDATE provider_bindings SET allow_automatic_member_switch=1 WHERE source_ref=?", (source_ref,))
     return store.get_binding(conn, source_ref)

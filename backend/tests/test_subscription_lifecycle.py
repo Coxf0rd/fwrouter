@@ -9,7 +9,6 @@ import hashlib
 import sqlite3
 import uuid
 from pathlib import Path
-from subprocess import CompletedProcess
 
 from fastapi.testclient import TestClient
 import httpx
@@ -23,7 +22,6 @@ from fwrouter_api.adapters.subscription import (
     CLIENT_COMPATIBLE_PROFILE,
     LEGACY_FLCLASH_PROFILE,
     HttpMihomoSubscriptionAdapter,
-    SubscriptionRequestProfile,
     SubscriptionRefreshResult,
     SubscriptionRefreshStatus,
     SubscriptionServer,
@@ -2055,7 +2053,7 @@ def test_invalid_reality_provider_retains_its_prior_server_membership(monkeypatc
         "vless://uuid-good@one.example:443?type=tcp#good\n"
         "vless://uuid-bad@two.example:443?security=reality&pbk=public-key&sid=not-hex#bad\n"
     )
-    result = refresh_subscription_inventory()
+    refresh_subscription_inventory()
 
     with subscription_service.db_session() as connection:
         states = {

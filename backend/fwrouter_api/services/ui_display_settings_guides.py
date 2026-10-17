@@ -8,7 +8,6 @@ from fwrouter_api.services.runtime_adapters import (
     runtime_role_for_replacement_target,
 )
 from fwrouter_api.services.ui_display_settings_common import (
-    _default_external_collector_config,
     _normalize_external_collector_config,
     _normalize_external_integration_mode,
     _normalize_external_refresh_mode,
@@ -26,7 +25,6 @@ def _external_management_label(client_name: str) -> str:
 
 
 def _external_management_api_guide(system: dict[str, Any]) -> dict[str, Any]:
-    label = str(system.get("label") or system.get("system_id") or "external-client").strip()
     identity = external_connection_identity(system)
     client_slug = identity["external_system_id"]
     requested_by = identity["requested_by"]

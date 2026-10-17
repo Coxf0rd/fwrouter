@@ -18,7 +18,6 @@ import tempfile
 import time
 import tarfile
 import uuid
-import shlex
 import socket
 import struct
 import xml.etree.ElementTree as ET
@@ -1248,7 +1247,6 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
                 "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONDONTWRITEBYTECODE": "1", "HOME": "/tmp/fwrouter-home",
             }
         else:
-            role = "client" if service_name == "lanclient" else "endpoint"
             expected_environment = {
                 "FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
                 "FWROUTER_XRAY_BINARY": "/opt/fwrouter-test/bin/xray",
@@ -4186,7 +4184,6 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                     receipt["reason"] = "Docker root capacity could not be confirmed after owned cleanup"
         if dependency_profile and receipt.get("status") in {"passed", "partial"}:
             measurements = receipt.get("image_measurements", {})
-            samples = measurements.get("docker_root_samples", {}) if isinstance(measurements, dict) else {}
             if not valid_image_measurements(measurements, require_complete_docker_root=True):
                 receipt["status"] = "failed"
                 receipt["reason"] = "Docker root capacity measurements are incomplete or invalid"

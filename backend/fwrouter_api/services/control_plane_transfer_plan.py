@@ -138,7 +138,6 @@ def plan_control_plane_import(
     validation = validate_control_plane_snapshot(snapshot)
     state = _state_from_snapshot(snapshot)
     simulated = _enriched_subjects_from_snapshot(state)
-    settings_rows = [dict(row) for row in (state.get("settings") or []) if isinstance(row, dict)]
     modules = [dict(row) for row in (state.get("modules") or []) if isinstance(row, dict)]
     subject_server_overrides = [
         dict(row) for row in (state.get("subject_server_overrides") or []) if isinstance(row, dict)

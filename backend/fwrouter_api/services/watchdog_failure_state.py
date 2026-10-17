@@ -241,11 +241,41 @@ def active_quality_degraded_confirmation(
 
     global _TRAFFIC_FAILURE_CANDIDATE
     with _TRAFFIC_FAILURE_LOCK:
-        state = load_watchdog_runtime_state()
+        try:
+            state = load_watchdog_runtime_state(strict=True)
+        except Exception:
+            return {
+                "confirmed": False,
+                "pending": False,
+                "reason": "watchdog_state_unavailable",
+                "path_key": normalized_path_key,
+                "server_id": normalized_server_id,
+                "decision_id": decision_id,
+                "confirm_seconds": threshold,
+                "bad_checks_required": required_bad_checks,
+                "window_checks": required_window_checks,
+                "window_bad_checks": required_window_bad_checks,
+            }
         candidate = state.get("failure_candidate")
         if not isinstance(candidate, dict):
             candidate = _TRAFFIC_FAILURE_CANDIDATE
         recovery_pending = candidate.get("recovery_pending") if isinstance(candidate, dict) else None
+        if (
+            isinstance(candidate, dict)
+            and isinstance(recovery_pending, dict)
+        ):
+            return {
+                "confirmed": False,
+                "pending": False,
+                "reason": "recovery_pending",
+                "path_key": normalized_path_key,
+                "server_id": normalized_server_id,
+                "decision_id": decision_id,
+                "confirm_seconds": threshold,
+                "bad_checks_required": required_bad_checks,
+                "window_checks": required_window_checks,
+                "window_bad_checks": required_window_bad_checks,
+            }
         if isinstance(candidate, dict) and candidate.get("kind") == "traffic_recovery":
             candidate = None
         if (
@@ -277,12 +307,28 @@ def active_quality_degraded_confirmation(
                 "active_check": _compact_active_quality_check(active_check),
                 "traffic_signal": _compact_quality_traffic_signal(traffic_signal),
             }
-            _TRAFFIC_FAILURE_CANDIDATE = candidate
-            update_watchdog_runtime_state(
+            persisted = update_watchdog_runtime_state(
                 path_key=normalized_path_key,
                 failure_candidate=candidate,
                 last_processed_decision_id=decision_id,
+                expected_failure_candidate=state.get("failure_candidate"),
+                expected_path_key=state.get("path_key"),
+                expected_last_processed_decision_id=state.get("last_processed_decision_id"),
             )
+            if persisted is None:
+                return {
+                    "confirmed": False,
+                    "pending": False,
+                    "reason": "watchdog_state_changed",
+                    "path_key": normalized_path_key,
+                    "server_id": normalized_server_id,
+                    "decision_id": decision_id,
+                    "confirm_seconds": threshold,
+                    "bad_checks_required": required_bad_checks,
+                    "window_checks": required_window_checks,
+                    "window_bad_checks": required_window_bad_checks,
+                }
+            _TRAFFIC_FAILURE_CANDIDATE = candidate
             return {
                 "confirmed": False,
                 "pending": False,
@@ -306,6 +352,8 @@ def active_quality_degraded_confirmation(
                 "window_bad_observed_checks": 1,
             }
 
+        # Keep the durable snapshot intact until its conditional write succeeds.
+        candidate = dict(candidate)
         first_seen_at = parse_timestamp(str(candidate.get("first_seen_at") or ""))
         if first_seen_at is None:
             first_seen_at = now
@@ -335,12 +383,28 @@ def active_quality_degraded_confirmation(
         observed_checks = len(check_history)
         window_bad_observed_checks = _quality_history_bad_count(check_history)
         age_seconds = max(0, int((now - first_seen_at).total_seconds()))
-        _TRAFFIC_FAILURE_CANDIDATE = candidate
-        update_watchdog_runtime_state(
+        persisted = update_watchdog_runtime_state(
             path_key=normalized_path_key,
             failure_candidate=candidate,
             last_processed_decision_id=decision_id,
+            expected_failure_candidate=state.get("failure_candidate"),
+            expected_path_key=state.get("path_key"),
+            expected_last_processed_decision_id=state.get("last_processed_decision_id"),
         )
+        if persisted is None:
+            return {
+                "confirmed": False,
+                "pending": False,
+                "reason": "watchdog_state_changed",
+                "path_key": normalized_path_key,
+                "server_id": normalized_server_id,
+                "decision_id": decision_id,
+                "confirm_seconds": threshold,
+                "bad_checks_required": required_bad_checks,
+                "window_checks": required_window_checks,
+                "window_bad_checks": required_window_bad_checks,
+            }
+        _TRAFFIC_FAILURE_CANDIDATE = candidate
 
         if bad_checks < required_bad_checks:
             return {
@@ -384,12 +448,28 @@ def active_quality_degraded_confirmation(
                 "window_bad_observed_checks": window_bad_observed_checks,
             }
 
-        _TRAFFIC_FAILURE_CANDIDATE = None
-        update_watchdog_runtime_state(
+        cleared = update_watchdog_runtime_state(
             path_key=normalized_path_key,
             failure_candidate=None,
             last_processed_decision_id=decision_id,
+            expected_failure_candidate=candidate,
+            expected_path_key=normalized_path_key,
+            expected_last_processed_decision_id=decision_id,
         )
+        if cleared is None:
+            return {
+                "confirmed": False,
+                "pending": False,
+                "reason": "watchdog_state_changed",
+                "path_key": normalized_path_key,
+                "server_id": normalized_server_id,
+                "decision_id": decision_id,
+                "confirm_seconds": threshold,
+                "bad_checks_required": required_bad_checks,
+                "window_checks": required_window_checks,
+                "window_bad_checks": required_window_bad_checks,
+            }
+        _TRAFFIC_FAILURE_CANDIDATE = None
         return {
             "confirmed": True,
             "pending": False,
@@ -462,11 +542,32 @@ def active_quality_recovery_confirmation(
 
     global _TRAFFIC_FAILURE_CANDIDATE
     with _TRAFFIC_FAILURE_LOCK:
-        state = load_watchdog_runtime_state()
+        try:
+            state = load_watchdog_runtime_state(strict=True)
+        except Exception:
+            return {
+                "recovered": False,
+                "pending": False,
+                "reason": "watchdog_state_unavailable",
+                "path_key": normalized_path_key,
+                "server_id": normalized_server_id,
+                "good_checks_required": required_good_checks,
+                "window_checks": required_window_checks,
+            }
         candidate = state.get("failure_candidate")
         if not isinstance(candidate, dict):
             candidate = _TRAFFIC_FAILURE_CANDIDATE
         recovery_pending = candidate.get("recovery_pending") if isinstance(candidate, dict) else None
+        if isinstance(candidate, dict) and isinstance(recovery_pending, dict):
+            return {
+                "recovered": False,
+                "pending": False,
+                "reason": "recovery_pending",
+                "path_key": normalized_path_key,
+                "server_id": normalized_server_id,
+                "good_checks_required": required_good_checks,
+                "window_checks": required_window_checks,
+            }
         if isinstance(candidate, dict) and candidate.get("kind") == "traffic_recovery":
             candidate = None
         if (
@@ -483,6 +584,7 @@ def active_quality_recovery_confirmation(
                 "window_checks": required_window_checks,
             }
 
+        candidate = dict(candidate)
         check_history = _candidate_quality_history(candidate)
         check_history = _append_quality_history(
             check_history,
@@ -504,12 +606,26 @@ def active_quality_recovery_confirmation(
         candidate["last_seen_at"] = now_fn().isoformat()
         good_checks = int(candidate.get("good_checks") or 0)
         if good_checks >= required_good_checks:
-            _TRAFFIC_FAILURE_CANDIDATE = None
-            update_watchdog_runtime_state(
+            cleared = update_watchdog_runtime_state(
                 path_key=normalized_path_key,
                 failure_candidate=None,
                 last_processed_decision_id=decision_id or None,
+                expected_failure_candidate=state.get("failure_candidate"),
+                expected_path_key=state.get("path_key"),
+                expected_last_processed_decision_id=state.get("last_processed_decision_id"),
             )
+            if cleared is None:
+                return {
+                    "recovered": False,
+                    "pending": False,
+                    "reason": "watchdog_state_changed",
+                    "path_key": normalized_path_key,
+                    "server_id": normalized_server_id,
+                    "good_checks": good_checks,
+                    "good_checks_required": required_good_checks,
+                    "window_checks": required_window_checks,
+                }
+            _TRAFFIC_FAILURE_CANDIDATE = None
             return {
                 "recovered": True,
                 "pending": False,
@@ -521,12 +637,26 @@ def active_quality_recovery_confirmation(
                 "window_checks": required_window_checks,
             }
 
-        _TRAFFIC_FAILURE_CANDIDATE = candidate
-        update_watchdog_runtime_state(
+        persisted = update_watchdog_runtime_state(
             path_key=normalized_path_key,
             failure_candidate=candidate,
             last_processed_decision_id=decision_id or None,
+            expected_failure_candidate=state.get("failure_candidate"),
+            expected_path_key=state.get("path_key"),
+            expected_last_processed_decision_id=state.get("last_processed_decision_id"),
         )
+        if persisted is None:
+            return {
+                "recovered": False,
+                "pending": False,
+                "reason": "watchdog_state_changed",
+                "path_key": normalized_path_key,
+                "server_id": normalized_server_id,
+                "good_checks": good_checks,
+                "good_checks_required": required_good_checks,
+                "window_checks": required_window_checks,
+            }
+        _TRAFFIC_FAILURE_CANDIDATE = candidate
         return {
             "recovered": False,
             "pending": True,

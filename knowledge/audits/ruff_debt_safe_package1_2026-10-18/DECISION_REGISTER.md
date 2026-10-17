@@ -147,3 +147,72 @@ Every F841 from the baseline remains explicitly deferred here; the two unused `s
 - The four Xray rollback nodes were run identically on current and clean source-only baseline using the same exact-node runner and hash-locked CI dependency environment: both runs failed the same assertions (`test_xray.py:2821` and `:2913`). They are not attributed to this cleanup; full qualified hosted CI remains the acceptance gate, and local exact-node failures are reported rather than masked.
 - Routine exact-node tests passed 11/11 with exact coverage, sanitized JUnit and cleanup receipts. `tests/gates/test_smoke_contract.py` separately passed 14/14 by its unittest entry point. Other attempts that selected tests requiring host temporary-file or subprocess permissions failed closed in the routine profile; they are not product-PASS claims and must be handled only by the existing qualified hosted profile.
 - This cleanup makes no claim that all Ruff debt is safe, that all imports are unused, or that every F841 is a defect. Remaining entries need follow-up ownership and evidence.
+
+## Superseding current register — user-authorized same-PR extension
+
+The preceding931-finding register is the historical19e1148 checkpoint. User subsequently authorized related difficult fixes in PR21, without a separate branch/merge. Current corrected inventory:707findings over441maintained tracked files: F401=683, F403=5, F405=1, F541=2, F811=2, F841=14. Globalcritical and every changed-file F/E9 checks remain clean. This is not blanket closure of remaining debt.
+
+| Current file | Remaining findings | Disposition |
+|---|---:|---|
+| `backend/fwrouter_api/adapters/rules_sources.py` | F841 1 | Retain pending side-effect/ownership/qualification evidence; not removal permission |
+| `backend/fwrouter_api/adapters/xray.py` | F401 14 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/adapters/xray_real.py` | F401 2, F841 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/db/schema_state.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/routes/xray.py` | F401 3 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/apply.py` | F401 6 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/apply_orchestrator.py` | F401 106, F403 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/apply_orchestrator_commits.py` | F401 43, F403 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/apply_orchestrator_handlers.py` | F401 4 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/apply_orchestrator_pipeline.py` | F401 51, F403 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/apply_orchestrator_results.py` | F401 49, F403 1, F405 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/apply_orchestrator_state.py` | F401 46, F403 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/apply_orchestrator_subject_handlers.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/control_plane_transfer.py` | F401 28 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/dataplane_nft.py` | F401 36 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/dataplane_nft_render.py` | F841 1 | Retain pending side-effect/ownership/qualification evidence; not removal permission |
+| `backend/fwrouter_api/services/logs.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/logs_retention.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/mihomo_config.py` | F401 57, F811 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/mihomo_config_validation.py` | F401 2 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/mihomo_reconcile.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/mihomo_reconcile_fingerprint.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/provider_managed.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/provider_recovery.py` | F401 1, F841 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/routing_manifest.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/rules.py` | F401 51 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/rules_state_selective.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/runtime.py` | F401 3, F841 2 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/server_global_selection.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/server_inventory.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/server_preferences.py` | F401 2 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/server_state.py` | F401 2 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/server_subject_overrides.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/servers.py` | F401 33 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/subscription_pipeline.py` | F841 1 | Retain pending side-effect/ownership/qualification evidence; not removal permission |
+| `backend/fwrouter_api/services/subscription_profiles.py` | F401 1, F541 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/system_subjects.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/ui_display_settings.py` | F401 49 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/ui_display_settings_display.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/ui_display_settings_store.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/ui_state.py` | F401 48 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/ui_state_summary.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/xray.py` | F401 9 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/xray_materialize.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/fwrouter_api/services/xray_subscription_service.py` | F401 9, F541 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/tests/test_admin_audit_events.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/tests/test_client_lifecycle.py` | F401 2 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/tests/test_performance_optimizations.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/tests/test_reconcile_core.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/tests/test_stealthsurf_provider_boundary.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/tests/test_subscription_refresh_outcomes.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `backend/tests/test_xray.py` | F811 1 | Retain pending side-effect/ownership/qualification evidence; not removal permission |
+| `backend/tests/test_xray_default_runner_archive.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `installer/tests/test_controlled_backend_lifecycle.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `installer/tests/test_safe_recovery.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `integrations/homeassistant/scripts/fwrouter_action.py` | F841 1 | Retain pending side-effect/ownership/qualification evidence; not removal permission |
+| `tests/acceptance/provision.py` | F841 1 | Retain pending side-effect/ownership/qualification evidence; not removal permission |
+| `tests/application_acceptance/conftest.py` | F401 1 | Retain pending complete facade/export/dynamic-consumer contract review |
+| `tests/application_acceptance/test_core_provider_mihomo.py` | F841 1 | Retain pending side-effect/ownership/qualification evidence; not removal permission |
+| `tests/application_acceptance/test_packet_dataplane.py` | F841 2 | Retain pending side-effect/ownership/qualification evidence; not removal permission |
+| `tests/application_acceptance/test_xray_generation.py` | F841 1 | Retain pending side-effect/ownership/qualification evidence; not removal permission |
+| `tests/application_acceptance/test_xray_worker_crash_l7.py` | F841 1 | Retain pending side-effect/ownership/qualification evidence; not removal permission |

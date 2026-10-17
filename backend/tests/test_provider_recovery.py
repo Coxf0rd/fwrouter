@@ -999,7 +999,6 @@ def test_real_recovery_snapshot_fences_revision_exclusive_runtime_and_pending(mo
     monkeypatch.setattr(provider_recovery, "get_recovery_pending", lambda: pending_state["value"])
     monkeypatch.setattr(provider_recovery, "_runtime_incarnation", lambda: "runtime-a")
     from fwrouter_api.services import selector
-    from types import SimpleNamespace
     from fwrouter_api.services.provider_managed import provider_runtime_member_id
     runtime_member = provider_runtime_member_id({"provider_id": "stealthsurf", "source_ref": source_ref}, "member-1", "hysteria2")
     with db_session() as conn:
@@ -1998,7 +1997,6 @@ def test_ambiguous_confirmation_uses_sql_owned_pipeline_receipt(monkeypatch, tmp
     adapter = Adapter()
     monkeypatch.setattr("fwrouter_api.services.provider_adapters.provider_adapter", lambda *_args, **_kwargs: adapter)
     receipts = []
-    original_refresh = subscription_pipeline.refresh_subscription
     def commit_inventory(_source_ref):
         with db_session() as conn:
             current = provider_managed.binding_for(source_ref)

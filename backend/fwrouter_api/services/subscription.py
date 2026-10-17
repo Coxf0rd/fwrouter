@@ -1407,7 +1407,7 @@ def _upsert_subscription_servers(
             validate_provider_inventory_handoffs,
             validate_provider_material_handoff,
         )
-        provider_handoff = validate_provider_material_handoff(connection)
+        validate_provider_material_handoff(connection)
         if provider_handoffs and expected_selection_revision is None:
             raise RuntimeError("VPN_AUTO_SELECTION_SNAPSHOT_MISSING")
         if expected_selection_revision is not None:
