@@ -188,3 +188,26 @@ Affected39012689970 at8d01538 passed all27 ordinary and12 provider cases, includ
 The sole failure was packet diagnostic serialization: actual recovery-before-re-entry, checkpoint closure, unchanged inventory/identity digests and VPN desired/applied/live proof had passed, then the new fixed provider-reentry-checkpoint-recovery phase was absent from the recorder allowlist. The exporter now accepts only that exact label, four strict boolean proofs and two canonical mode enum fields under the existing byte cap; unknown fields/modes/nonbooleans remain rejected. No runtime path changed in this correction.
 
 Writer complete acceptance-contract suite138 PASS; independent QA PASSED frozen two-file diffbbaa1aae9fabc7655a5fd4879e613a3fbc244580c9e8becbe56a365cc22bdba0 with the actual-recorder contract test and diff-check PASS. Hosted packet continuation beyond the prior failed diagnostic and final full mandatory CI remain outstanding; prior partial evidence is not promoted to a whole-scenario PASS. Production unchanged.
+
+## Final targeted qualification — 27d36ce
+
+[Actual affected PR run39014004084](https://github.com/Coxf0rd/fwrouter/actions/runs/39014004084) SUCCESS on exact27d36cefca9278290432218a82d998fd89d584f3. Routine1615 PASS; qualified child-process37 PASS; qualified Xray1 PASS; isolated ordinary27 PASS; provider12 PASS; packet2 PASS. No failures/errors/skips. Immutable-source/plan/native aggregation eligible=true, blocked_reasons=[], all required partitions present, owned cleanup PASS. The new failed-refresh/restart/verified-generation/crash-before-and-after-promotion scenario, reviewed migration/supersession/recovery, provider re-entry and remaining packet continuation all passed. This is affected qualification, not the final full mandatory acceptance run.
+
+Scale: startup43.9400s, process CPU34.16s at readiness; sampled process RSS peak813676KiB, process lifetime HWM817232KiB (~798.1MiB); final graceful shutdown0.2141s. Concurrent safe HTTP reads24/24 PASS, observed handler responses0.0065–2.2987s across different endpoints.82/82 synthetic binding identities matched,7 runtime-verified profile snapshots; native Reality TCP transfer and existing native UDP policy proof PASS. API process HWM is not aggregate cgroup memory.45-second startup hard gate passed by1.06s;40-second engineering target NOT MET. Prior45.046s failure and unexplained CPU variability remain explicit; no guaranteed margin, long-soak or production performance claim follows. No timeout, memory limit, assertion, native proof or required gate was relaxed.
+
+### Scenario outcome matrix (isolated synthetic scope)
+
+| Scenario | Required behavior | Actual qualification |
+|---|---|---|
+| Successful explicit refresh | Native/readback proof precedes verified promotion | PASS |
+| Persist inventory, fail before staging, restart | Pending stays pending; generic apply cannot claim it | PASS |
+| Crash after native/publication before marker promotion | Bound current projection requires fresh proof and promotion | PASS |
+| Crash after verified promotion before checkpoint close | Reprove current generation; never restore preimage under verified marker | PASS |
+| Pending D checkpoint, new E discovery | Refuse without mutation until D owner recovery completes | PASS |
+| Stale inventory/revision/incarnation | No stale apply or promotion | PASS |
+| Reviewed migration/supersession/restart | Exact checkpoint/plan/ledger admission, identities retained | PASS |
+| Emergency Direct→VPN re-entry with checkpoint | Close bound checkpoint before Mihomo changes; preserve CAS/native proof | PASS |
+| Native/proof refusal | Retain checkpoint and last-good; no silent pending adoption | PASS |
+| Equivalent native data | Preserve existing no-recreate contract | PASS |
+
+Root final integration review combines independent frozen-package QA verdicts with actual affected native evidence. The remaining gate before PR Ready is ONE full mandatory PR CI at its final committed HEAD (requested via the existing ci:full-acceptance policy). Its immutable receipt is authoritative; this pre-run checkpoint does not assert a future result. Production deployment, production pending-inventory recovery, external E2E, full Debian host/reboot/live rollback and main-event CI after a user merge are NOT RUN in this source task. Production remains unchanged. Exact original source/staging-context actor remains UNKNOWN; the admission and recovery safeguards cover that failure safely. No roadmap/production changes or merge are performed.
