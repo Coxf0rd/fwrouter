@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +44,86 @@ def _seed_legacy_inventory() -> str:
                        'http://127.0.0.1:9/fixture', 'fixture-entry', 'fixture', 1)"""
         )
         return subscription._subscription_inventory_digest(connection)[0]
+
+
+def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(monkeypatch, tmp_path):
+    """Execute both nested worker route callables with owned native boundary doubles."""
+    import ast
+
+    tests_root = Path(__file__).resolve().parents[2] / "tests"
+    monkeypatch.syspath_prepend(str(tests_root))
+    from application_acceptance import worker
+    from fwrouter_api.services import bootstrap, xray, xray_subscription_service
+    from fwrouter_api.services import subscription as subscription_service
+
+    build_app = next(
+        node for node in ast.parse(Path(worker.__file__).read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_app"
+    )
+    nested = {
+        node.name: node for node in build_app.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {
+            "with_legacy_admission_mutation_tripwires",
+            "proof_only_tripwire_self_check",
+            "recover_startup_xray_subscription_generation",
+        }
+    }
+    assert set(nested) == {
+        "with_legacy_admission_mutation_tripwires",
+        "proof_only_tripwire_self_check",
+        "recover_startup_xray_subscription_generation",
+    }
+
+    class SyntheticXrayAdapter:
+        _runner = staticmethod(lambda _action, _request: None)
+
+        def _run(self, action):
+            return self._runner(action, {})
+
+    class SyntheticDataplaneAdapter:
+        apply = staticmethod(lambda _manifest: None)
+        rollback = staticmethod(lambda _manifest: None)
+
+    adapter = SyntheticXrayAdapter()
+    monkeypatch.setattr(xray, "DEFAULT_XRAY_ADAPTER", adapter)
+    monkeypatch.setattr(bootstrap, "recover_startup_xray_subscription_profiles", lambda: {
+        "ok": False, "status": "blocked", "stage": "generation_recovery",
+        "error_code": "XRAY_PROOF_ONLY_CHECKPOINT_PENDING",
+    })
+    monkeypatch.setattr(subscription_service, "get_subscription_native_generation_state", lambda: {
+        "status": "pending", "inventory_authority": "proof_only_pending",
+    })
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    checkpoint.write_text(json.dumps({"operation_mode": "proof_only_legacy_admission"}))
+    checkpoint.chmod(0o600)
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
+    monkeypatch.setenv("FWROUTER_ENVIRONMENT", "test")
+    monkeypatch.setenv("FWROUTER_APPLICATION_ACCEPTANCE_ROOT", "/tmp/fwrouter-application-acceptance")
+
+    namespace = {
+        "Any": object,
+        "Path": Path,
+        "os": os,
+        "stat": stat,
+        "json": json,
+        "_acceptance_xray_adapter": worker._acceptance_xray_adapter,
+    }
+    exec(compile(ast.Module(body=list(nested.values()), type_ignores=[]), worker.__file__, "exec"), namespace)
+
+    from fwrouter_api.services import apply as core_apply, mihomo_runtime
+    monkeypatch.setattr(core_apply, "DEFAULT_DATAPLANE_ADAPTER", SyntheticDataplaneAdapter())
+    monkeypatch.setattr(core_apply, "_apply_global_mode_hot_swap", lambda: None)
+    monkeypatch.setattr(mihomo_runtime, "_run_compose_command", lambda _argv: None)
+
+    tripwire_result = namespace["proof_only_tripwire_self_check"]()
+    assert tripwire_result["ok"] is True
+    assert all(tripwire_result["intercepts"].values())
+    recovery_result = namespace["recover_startup_xray_subscription_generation"]()
+    assert recovery_result["ok"] is False
+    assert recovery_result["tripwire_armed"] is True
+    assert recovery_result["error_code"] == "XRAY_PROOF_ONLY_CHECKPOINT_PENDING"
+    assert set(recovery_result["mutation_attempts"].values()) == {0}
 
 
 def _positive_synthetic_proof() -> dict[str, object]:

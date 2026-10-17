@@ -1007,6 +1007,13 @@ def _bounded_inventory_generation_recovery(value: Any) -> dict[str, Any] | None:
     return summary or None
 
 
+def _acceptance_xray_adapter() -> Any:
+    """Resolve Xray through the service-owned adapter accessor used by API paths."""
+    from fwrouter_api.services.xray_common import _xray_adapter
+
+    return _xray_adapter()
+
+
 def _bounded_generation_checkpoint_facts(
     checkpoint: Any, inventory_state: Any, selection_fence: Any,
 ) -> dict[str, Any]:
@@ -4046,7 +4053,6 @@ def build_app(socket_path: Path):
         operation: Any,
     ) -> tuple[Any, dict[str, int], bool]:
         """Run an operation while making native apply/reload attempts fail closed."""
-        from fwrouter_api.adapters.xray_common import _xray_adapter
         from fwrouter_api.services import mihomo_runtime
         from fwrouter_api.services import apply as core_apply
         import httpx
@@ -4057,7 +4063,7 @@ def build_app(socket_path: Path):
             "core_dataplane_apply_or_rollback": 0,
             "unexpected_http_request": 0,
         }
-        adapter = _xray_adapter()
+        adapter = _acceptance_xray_adapter()
         original_runner = adapter._runner
         original_generation_apply = getattr(adapter, "apply_staged_subscription_generation", None)
         original_compose_command = mihomo_runtime._run_compose_command
@@ -4180,7 +4186,6 @@ def build_app(socket_path: Path):
                 != "/tmp/fwrouter-application-acceptance"):
             return {"ok": False, "error_code": "ACCEPTANCE_WORKER_SCOPE_INVALID"}
 
-        from fwrouter_api.adapters.xray_common import _xray_adapter
         from fwrouter_api.services import mihomo_runtime
         from fwrouter_api.services import apply as core_apply
         import httpx
@@ -4192,7 +4197,7 @@ def build_app(socket_path: Path):
         checks = {}
         attempts_by_operation = {}
         for name, operation in (
-            ("xray_reload", lambda: _xray_adapter()._run("reload")),
+            ("xray_reload", lambda: _acceptance_xray_adapter()._run("reload")),
             ("mihomo_restart", lambda: mihomo_runtime._run_compose_command(["restart", "mihomo"])),
             ("core_dataplane_apply", lambda: core_apply.DEFAULT_DATAPLANE_ADAPTER.apply(None)),
             ("core_dataplane_rollback", lambda: core_apply.DEFAULT_DATAPLANE_ADAPTER.rollback(None)),
@@ -4215,12 +4220,11 @@ def build_app(socket_path: Path):
         """Run only the real Xray profile startup recovery under its normal guard."""
         from fwrouter_api.services.bootstrap import recover_startup_xray_subscription_profiles
         from fwrouter_api.services.subscription import get_subscription_native_generation_state
-        from fwrouter_api.adapters.xray_common import _xray_adapter
         from fwrouter_api.services.xray_subscription_service import _xray_generation_checkpoint_path
 
         tripwire_armed = False
         try:
-            checkpoint_path = _xray_generation_checkpoint_path(_xray_adapter())
+            checkpoint_path = _xray_generation_checkpoint_path(_acceptance_xray_adapter())
             checkpoint_info = checkpoint_path.lstat()
             if (stat.S_ISREG(checkpoint_info.st_mode) and not stat.S_ISLNK(checkpoint_info.st_mode)
                     and checkpoint_info.st_size <= 262144):
@@ -4384,12 +4388,12 @@ def build_app(socket_path: Path):
                 recovery_value = result.get("details")
         if isinstance(recovery_value, dict):
             from fwrouter_api.services.xray_subscription_service import (
-                _xray_adapter, _xray_generation_checkpoint_path,
+                _xray_generation_checkpoint_path,
             )
             recovery_value = {
                 **recovery_value,
                 "checkpoint_facts": _read_bounded_generation_checkpoint_facts(
-                    _xray_generation_checkpoint_path(_xray_adapter()),
+                    _xray_generation_checkpoint_path(_acceptance_xray_adapter()),
                 ),
             }
         recovery = _bounded_inventory_generation_recovery(recovery_value)
