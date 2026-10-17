@@ -367,7 +367,7 @@ def test_email_generation_reload_failure_keeps_desired_candidate_and_last_good_l
 
 
 def test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry(acceptance_stack):
-    """A persisted but un-staged inventory cannot be admitted by startup reconciliation."""
+    """Pending inventory stays blocked across startup; proof-only legacy admission resumes only by explicit owner action after fresh isolated Xray HandlerService and Mihomo proof, preserving 78 synthetic identities, durable mappings, dataplane state and native incarnations. Self-checking tripwires block Xray/Mihomo/Core dataplane mutation and unexpected HTTP; provider and synthetic-source request counts stay unchanged."""
     stack = acceptance_stack
     state, native = stack["state"], stack["native"]
 
