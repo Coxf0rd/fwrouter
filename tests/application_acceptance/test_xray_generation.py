@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import http.server
 import json
 import os
@@ -8,6 +9,7 @@ import re
 import sqlite3
 import stat
 import threading
+import urllib.error
 from pathlib import Path
 from queue import Queue
 from urllib.parse import urlsplit
@@ -384,6 +386,28 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         value = result.get("state")
         assert isinstance(value, dict), result
         return value
+
+    def persisted_subscription_identity_pairs() -> set[tuple[str, str]]:
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            rows = connection.execute(
+                "SELECT snap.nodes_json FROM subscription_profile_snapshots AS snap "
+                "JOIN subscription_clients AS client ON client.token=snap.token "
+                "JOIN subscription_accounts AS account ON account.account_id=client.account_id "
+                "WHERE client.enabled=1 AND account.enabled=1 ORDER BY snap.token"
+            ).fetchall()
+        finally:
+            connection.close()
+        pairs: set[tuple[str, str]] = set()
+        for row in rows:
+            nodes = json.loads(row[0])
+            assert isinstance(nodes, list)
+            for node in nodes:
+                assert isinstance(node, dict)
+                pair = (str(node.get("client_uuid") or ""), str(node.get("client_email") or ""))
+                assert all(pair), "persisted subscription identity is incomplete"
+                pairs.add(pair)
+        return pairs
 
     def active_profile_runtime_name() -> str:
         # Read only this acceptance worker's synthetic database. This avoids
@@ -830,9 +854,10 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert_native_matches_active(native, active_xray)
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
 
+        profile_e = add_profile_member(profile_d, 5)
         refresh_code, refreshed = http_json(
             f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
-            payload={"profile": add_profile_member(profile_d, 5)},
+            payload={"profile": profile_e},
         )
         assert refresh_code == 200 and refreshed.get("ok") is True, {
             "status": refresh_code, "ok": refreshed.get("ok"),
@@ -854,6 +879,107 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert verified_e.get("candidate_digest") == candidate_e.get("candidate_digest")
         assert verified_e.get("verified_digest") == candidate_e.get("candidate_digest")
         assert_native_matches_active(native, active_xray)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+        identities_e = persisted_subscription_identity_pairs()
+        expected_e_identities = baseline_pairs | identities_e
+        assert set(loaded_identities(native)) == expected_e_identities, {
+            "expected_count": len(expected_e_identities),
+            "actual_count": len(set(loaded_identities(native))),
+        }
+        assert set(active_identities(active_xray)) == expected_e_identities
+
+        # Exercise the distinct crash window after durable inventory promotion
+        # but before the generation checkpoint is closed. This must recover from
+        # the committed current projection, never restore the old preimage.
+        profile_f = add_profile_member(profile_e, 6)
+        profile_tags_f = [
+            str(item.get("tag") or "") for item in profile_f["outbounds"]
+            if isinstance(item, dict) and str(item.get("tag") or "").startswith("synthetic-member-")
+        ]
+        assert profile_tags_f == [f"synthetic-member-{index}" for index in range(7)]
+        source.replace(profile_f)
+        armed_code, armed = http_json(
+            f"{restarted_api}/__acceptance/xray/post-promotion-crash/arm", method="POST",
+        )
+        assert armed_code == 200 and armed.get("armed") is True, {
+            "status": armed_code, "ok": armed.get("ok"),
+        }
+        xray_before_promotion_crash = active_xray.read_bytes()
+        mihomo_before_promotion_crash = active_mihomo.read_bytes()
+        reloads_before_promotion_crash = native.reload_calls
+        try:
+            http_json(
+                f"{restarted_api}/subscription", method="POST",
+                payload={"urls": [source.url], "requested_by": "hosted-acceptance-synthetic"},
+                timeout=90,
+            )
+        except urllib.error.URLError as exc:
+            assert isinstance(exc.reason, (
+                ConnectionError, TimeoutError, http.client.RemoteDisconnected,
+            )), {"transport_error_type": type(exc.reason).__name__}
+        except http.client.RemoteDisconnected:
+            pass
+        else:
+            raise AssertionError("post-promotion crash injection unexpectedly returned an HTTP response")
+        old_worker = stack["worker"]
+        assert old_worker.wait(timeout=5) == 86, "worker did not exit at the injected post-promotion crash"
+        assert checkpoint_path.is_file(), "post-promotion interruption closed the generation checkpoint"
+        committed_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        committed_binding = committed_checkpoint.get("subscription_inventory_generation")
+        assert committed_checkpoint.get("phase") == "snapshots_published"
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            rows = connection.execute(
+                "SELECT value_json FROM settings WHERE key='subscriptions.native_generation.v1'"
+            ).fetchall()
+        finally:
+            connection.close()
+        assert len(rows) == 1
+        committed_inventory = json.loads(rows[0][0])
+        identities_f = persisted_subscription_identity_pairs()
+        newly_derived_f_identities = identities_f - identities_e
+        expected_f_identities = baseline_pairs | identities_f
+        assert committed_inventory.get("status") == "verified"
+        assert committed_inventory.get("candidate_digest") == committed_inventory.get("verified_digest")
+        assert isinstance(committed_binding, dict)
+        assert committed_binding.get("digest") == committed_inventory.get("candidate_digest")
+        assert committed_binding.get("revision") == committed_inventory.get("candidate_revision")
+        assert active_xray.read_bytes() != xray_before_promotion_crash
+        assert active_mihomo.read_bytes() != mihomo_before_promotion_crash
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert identities_e <= identities_f
+        assert newly_derived_f_identities, "synthetic F profile growth derived no new subscription identities"
+        assert set(active_identities(active_xray)) == expected_f_identities
+        assert set(loaded_identities(native)) == expected_f_identities, {
+            "expected_count": len(expected_f_identities),
+            "actual_count": len(set(loaded_identities(native))),
+        }
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+        assert native.reload_calls > reloads_before_promotion_crash
+
+        restarted_worker, restarted_api = stack["start_worker"]()
+        stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert checkpoint_path.is_file(), "restart discarded the committed generation checkpoint"
+        assert generation_state(restarted_api) == committed_inventory
+        recovery_code, recovered_committed = http_json(
+            f"{restarted_api}/__acceptance/xray/reconcile",
+            method="POST", payload={"direct_checkpoint": True}, timeout=75,
+        )
+        assert recovery_code == 200 and recovered_committed.get("ok") is True, {
+            "status": recovery_code, "ok": recovered_committed.get("ok"),
+            "recovered": recovered_committed.get("recovered"),
+            "reason": recovered_committed.get("reason"),
+        }
+        assert recovered_committed.get("recovered") == "current_projection_verified"
+        assert not checkpoint_path.exists()
+        verified_after_recovery = generation_state(restarted_api)
+        assert verified_after_recovery == committed_inventory
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) == expected_f_identities
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
     finally:
@@ -1326,6 +1452,18 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         }
         return result
 
+    # Reconstruct the exact pre-upgrade durable state before the CLI dry-run:
+    # its manifest is explicitly bound to this checkpoint SHA. The owned
+    # worker is stopped while this synthetic historical snapshot is restored.
+    prior_worker = stack["worker"]
+    prior_worker.terminate()
+    prior_worker.wait(timeout=5)
+    checkpoint.write_bytes(old_checkpoint_bytes)
+    checkpoint.chmod(0o600)
+    restarted_worker, restarted_api = stack["start_worker"]()
+    stack["worker"], stack["api"] = restarted_worker, restarted_api
+    assert checkpoint.is_file() and hashlib.sha256(checkpoint.read_bytes()).hexdigest() == old_checkpoint_sha
+
     reloads_before_intent = native.reload_calls
     active_before_intent = active_path.read_bytes()
     dry_code, dry = cli({"action": "dry-run", "manifest": manifest})
@@ -1353,19 +1491,6 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         assert current_raw.get("_fwrouter_identity_migration_required") is True
     finally:
         connection.close()
-
-    # Reconstruct the exact pre-upgrade durable state that carried an older
-    # unresolved checkpoint. The owned worker is stopped while this synthetic
-    # state-directory snapshot is restored; this is fixture construction, not
-    # a supported current-version ordinary inventory write.
-    prior_worker = stack["worker"]
-    prior_worker.terminate()
-    prior_worker.wait(timeout=5)
-    checkpoint.write_bytes(old_checkpoint_bytes)
-    checkpoint.chmod(0o600)
-    restarted_worker, restarted_api = stack["start_worker"]()
-    stack["worker"], stack["api"] = restarted_worker, restarted_api
-    assert checkpoint.is_file() and hashlib.sha256(checkpoint.read_bytes()).hexdigest() == old_checkpoint_sha
 
     assert native.reload_calls == reloads_before_intent
     apply_code, applied = cli({

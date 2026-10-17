@@ -1556,6 +1556,11 @@ def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: 
     if not checkpoint_path.exists():
         return {"ok": True, "status": "skipped", "reason": "no_checkpoint"}
     try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        checkpoint_phase = str(checkpoint.get("phase") or "") if isinstance(checkpoint, dict) else "invalid"
+        checkpoint_inventory_bound = _checkpoint_inventory_generation_matches(checkpoint_path)
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+        inventory_state = get_subscription_native_generation_state()
         checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
         with db_session() as connection:
             migration_tied_to_checkpoint = connection.execute(
@@ -1565,20 +1570,12 @@ def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: 
         if migration_tied_to_checkpoint:
             return {"ok": False, "status": "pending", "stage": "generation_supersession_required",
                     "error_code": "XRAY_GENERATION_SUPERSESSION_REQUIRED", "last_good_retained": True}
-        try:
-            checkpoint_phase = str(json.loads(checkpoint_path.read_text(encoding="utf-8")).get("phase") or "")
-        except Exception:
-            checkpoint_phase = "invalid"
-        checkpoint_inventory_bound = _checkpoint_inventory_generation_matches(checkpoint_path)
-        from fwrouter_api.services.subscription import get_subscription_native_generation_state
-        inventory_state = get_subscription_native_generation_state()
-        current_projection_recoverable = (
+        current_projection_recoverable = checkpoint_inventory_bound and (
             checkpoint_phase in {
                 "runtime_applied", "inventory_synced", "bindings_written",
                 "projections_cleaned", "selection_verified", "snapshots_published",
             }
-            and inventory_state.get("status") == "pending"
-            and checkpoint_inventory_bound
+            and inventory_state.get("status") in {"pending", "verified"}
         )
         if checkpoint_phase in {"restore_failed", "restore_started"} or current_projection_recoverable:
             if not checkpoint_inventory_bound:
@@ -2891,15 +2888,29 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
             write_mihomo_reconcile_fingerprint_state,
         )
 
-        if inventory_state.get("status") == "pending":
-            admission = _claim_subscription_inventory_admission()
-            if (
-                not isinstance(inventory_binding, dict)
-                or inventory_binding.get("digest") != admission.digest
-                or inventory_binding.get("revision") != admission.revision
-            ):
-                return {"ok": False, "recovered": "current_projection_unproven",
-                        "reason": "inventory_checkpoint_binding_mismatch"}
+        if inventory_state.get("status") in {"pending", "verified"}:
+            admission = None
+            if inventory_state.get("status") == "pending":
+                admission = _claim_subscription_inventory_admission()
+                if (
+                    not isinstance(inventory_binding, dict)
+                    or inventory_binding.get("digest") != admission.digest
+                    or inventory_binding.get("revision") != admission.revision
+                ):
+                    return {"ok": False, "recovered": "current_projection_unproven",
+                            "reason": "inventory_checkpoint_binding_mismatch"}
+
+            def inventory_generation_stable() -> bool:
+                current = get_subscription_native_generation_state()
+                return bool(
+                    current.get("status") == inventory_state.get("status")
+                    and current.get("candidate_digest") == inventory_state.get("candidate_digest")
+                    and current.get("candidate_revision") == inventory_state.get("candidate_revision")
+                    and isinstance(inventory_binding, dict)
+                    and inventory_binding.get("digest") == current.get("candidate_digest")
+                    and inventory_binding.get("revision") == current.get("candidate_revision")
+                )
+
             try:
                 mihomo_fingerprint = current_mihomo_input_fingerprint()
                 native_proof = _native_udp_policy_proof()
@@ -2908,6 +2919,7 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
                     native_proof.get("ok")
                     and stable(applied=True, runtime_incarnation=after_incarnation)
                     and core_selection_stable()
+                    and inventory_generation_stable()
                     and get_mihomo_runtime_incarnation() == mihomo_incarnation
                     and write_mihomo_reconcile_fingerprint_state(
                         fingerprint=mihomo_fingerprint,
@@ -2916,24 +2928,26 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
                         expected_active_hash=active_mihomo_hash,
                         expected_runtime_incarnation=mihomo_incarnation,
                     )
+                    and inventory_generation_stable()
+                    and stable(applied=True, runtime_incarnation=after_incarnation)
+                    and core_selection_stable()
                 )
             except Exception:
                 receipt_written = False
             if not receipt_written:
                 return {"ok": False, "recovered": "current_projection_unproven",
                         "reason": "inventory_native_receipt_unconfirmed"}
-            promoted_inventory = _promote_subscription_inventory_generation(admission)
-            if not promoted_inventory.get("ok"):
-                return {"ok": False, "recovered": "current_projection_unproven",
-                        "reason": "inventory_generation_promotion_unconfirmed"}
-        elif inventory_state.get("status") == "verified":
-            if (
-                not isinstance(inventory_binding, dict)
-                or inventory_binding.get("digest") != inventory_state.get("candidate_digest")
-                or inventory_binding.get("revision") != inventory_state.get("candidate_revision")
-            ):
-                return {"ok": False, "recovered": "current_projection_unproven",
-                        "reason": "inventory_checkpoint_binding_mismatch"}
+            if admission is not None:
+                promoted_inventory = _promote_subscription_inventory_generation(admission)
+                if not promoted_inventory.get("ok"):
+                    return {"ok": False, "recovered": "current_projection_unproven",
+                            "reason": "inventory_generation_promotion_unconfirmed"}
+                inventory_state = get_subscription_native_generation_state()
+                if (inventory_state.get("status") != "verified"
+                        or inventory_state.get("candidate_digest") != admission.digest
+                        or inventory_state.get("candidate_revision") != admission.revision):
+                    return {"ok": False, "recovered": "current_projection_unproven",
+                            "reason": "inventory_generation_promotion_unconfirmed"}
         elif inventory_state.get("status") != "empty":
             return {"ok": False, "recovered": "current_projection_unproven",
                     "reason": "inventory_generation_unverified"}

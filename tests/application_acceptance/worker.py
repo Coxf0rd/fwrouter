@@ -3795,6 +3795,7 @@ def build_app(socket_path: Path):
     _bind_xray_checkpoint_barrier(socket_path, state)
     _bind_xray_pre_native_stage_failure(state)
     _bind_xray_inventory_promotion_failure(state)
+    _bind_xray_post_promotion_crash(state)
     mihomo_adapter = _bind_acceptance_mihomo(socket_path, state)
     _install_acceptance_mihomo_fence_observer()
     _install_acceptance_provider_verification_observer()
@@ -3971,6 +3972,22 @@ def build_app(socket_path: Path):
     app.add_api_route(
         "/api/v2/__acceptance/xray/inventory-promotion-failure/arm",
         arm_inventory_promotion_failure,
+        methods=["POST"],
+    )
+
+    def arm_post_promotion_crash() -> dict[str, Any]:
+        failure_flag = state / "run" / "crash-after-inventory-promotion-once"
+        descriptor = os.open(
+            failure_flag,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.close(descriptor)
+        return {"ok": True, "armed": True}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/post-promotion-crash/arm",
+        arm_post_promotion_crash,
         methods=["POST"],
     )
 
@@ -4650,6 +4667,37 @@ def _bind_xray_inventory_promotion_failure(state: Path) -> None:
         return {"ok": False, "reason": "acceptance_inventory_promotion_failure"}
 
     subscription._promote_subscription_inventory_generation = promote_with_one_shot_failure
+
+
+def _bind_xray_post_promotion_crash(state: Path) -> None:
+    """Simulate process interruption after durable promotion and before checkpoint unlink."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("post-promotion crash injection requires the qualified test worker")
+
+    from fwrouter_api.services import subscription
+
+    original_promote = subscription._promote_subscription_inventory_generation
+    failure_flag = state / "run" / "crash-after-inventory-promotion-once"
+
+    def promote_then_interrupt(admission: Any) -> dict[str, Any]:
+        result = original_promote(admission)
+        if not result.get("ok"):
+            return result
+        try:
+            info = failure_flag.lstat()
+        except FileNotFoundError:
+            return result
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.getuid() or info.st_size != 0):
+            raise RuntimeError("acceptance post-promotion marker is not an owned empty file")
+        failure_flag.unlink()
+        # This process is the disposable, profile-qualified acceptance worker.
+        # Exit without Python cleanup to model the actual crash window between
+        # the committed SQLite promotion and checkpoint unlink.
+        os._exit(86)
+
+    subscription._promote_subscription_inventory_generation = promote_then_interrupt
 
 
 def _bind_acceptance_mihomo(socket_path: Path, state: Path):
