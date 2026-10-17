@@ -271,6 +271,134 @@ class AcceptanceContractTests(unittest.TestCase):
         for required in ("_read_bounded_generation_checkpoint_facts", "checkpoint_facts"):
             self.assertIn(required, route_source)
 
+    def test_xray_checkpoint_lifecycle_observer_records_failures_close_and_rejects_symlink_attribution(self):
+        worker_source = APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(APPLICATION_ACCEPTANCE_WORKER))
+        observer = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_install_acceptance_xray_checkpoint_lifecycle_observer"
+        )
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": __import__("os"), "sys": sys, "json": json,
+            "threading": threading, "Path": Path, "stat": __import__("stat"),
+            "Any": __import__("typing").Any,
+            "_XRAY_GENERATION_CHECKPOINT_PHASES": {"prepared", "xray_applied", "restore_failed"},
+            "_bounded_inventory_generation_recovery": lambda _result: {},
+        }
+        services = ModuleType("fwrouter_api.services")
+        observed = io.StringIO()
+        with tempfile.TemporaryDirectory(prefix="fwrouter-checkpoint-observer-") as temp:
+            checkpoint = Path(temp) / "generation-checkpoint.json"
+            checkpoint_target = Path(temp) / "checkpoint-target.json"
+            checkpoint_location = {"path": checkpoint}
+            calls = []
+            finalized_pending = []
+
+            def checkpoint_path(_adapter):
+                return checkpoint_location["path"]
+
+            def original_write(*args, **kwargs):
+                calls.append(("write", args, kwargs))
+                checkpoint.write_text(json.dumps({"phase": kwargs["phase"]}), encoding="utf-8")
+                return checkpoint
+
+            def original_finalize(pending, verification):
+                calls.append(("finalize", pending, verification))
+                Path(pending["checkpoint_path"]).unlink(missing_ok=True)
+                return {"ok": True, "status": "success"}
+
+            reconcile_calls = {"count": 0}
+
+            def original_reconcile(*, requested_by, **kwargs):
+                reconcile_calls["count"] += 1
+                if reconcile_calls["count"] == 1:
+                    service._write_xray_generation_checkpoint(
+                        phase="xray_applied", requested_by=requested_by, **kwargs,
+                    )
+                    return {
+                        "ok": False, "status": "pending", "stage": "xray_generation_apply",
+                        "error_code": "XRAY_GENERATION_APPLY_FAILED",
+                    }
+                if reconcile_calls["count"] == 3:
+                    return {"ok": True, "status": "success"}
+                pending = {"checkpoint_path": str(checkpoint), "private_token": "DO_NOT_LOG"}
+                finalized_pending.append(pending)
+                return service._finalize_xray_profile_publication(
+                    pending, {"ok": True},
+                )
+
+            service = SimpleNamespace(
+                _xray_adapter=lambda: object(),
+                _xray_generation_checkpoint_path=checkpoint_path,
+                _write_xray_generation_checkpoint=original_write,
+                _finalize_xray_profile_publication=original_finalize,
+                _restore_xray_generation_checkpoint=lambda *_args: {},
+                reconcile_xray_subscription_profile_nodes=original_reconcile,
+            )
+            services.xray_subscription_service = service
+            with mock.patch.dict(sys.modules, {"fwrouter_api.services": services}), \
+                    mock.patch.dict(__import__("os").environ, {
+                        "FWROUTER_ENVIRONMENT": "test",
+                        "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+                        "FWROUTER_STATE_DIR": temp,
+                    }), mock.patch("sys.stderr", observed):
+                exec(compile(ast.Module(body=[observer], type_ignores=[]),
+                             str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+                namespace[observer.name]()
+                failed = service.reconcile_xray_subscription_profile_nodes(
+                    requested_by="subscription-refresh", private_token="DO_NOT_LOG",
+                )
+                result = service.reconcile_xray_subscription_profile_nodes(
+                    requested_by="subscription-refresh", private_token="DO_NOT_LOG",
+                )
+                checkpoint_target.write_text(json.dumps({"phase": "xray_applied"}), encoding="utf-8")
+                checkpoint.unlink(missing_ok=True)
+                symlink_checkpoint = Path(temp) / "symlink-checkpoint.json"
+                symlink_checkpoint.symlink_to(checkpoint_target)
+                checkpoint_location["path"] = symlink_checkpoint
+                symlink_result = service.reconcile_xray_subscription_profile_nodes(
+                    requested_by="subscription-refresh", private_token="DO_NOT_LOG",
+                )
+            self.assertFalse(failed["ok"])
+            self.assertEqual("XRAY_GENERATION_APPLY_FAILED", failed["error_code"])
+            self.assertEqual({"ok": True, "status": "success"}, result)
+            self.assertEqual({"ok": True, "status": "success"}, symlink_result)
+            self.assertFalse(checkpoint.exists())
+            self.assertTrue(symlink_checkpoint.is_symlink())
+            self.assertEqual(1, len(finalized_pending))
+            self.assertEqual(["write", "finalize"], [call[0] for call in calls])
+            self.assertIs(finalized_pending[0], calls[1][1])
+
+        text = observed.getvalue()
+        self.assertNotIn("DO_NOT_LOG", text)
+        self.assertNotIn(str(checkpoint), text)
+        records = [json.loads(line.split(" ", 1)[1]) for line in text.splitlines()]
+        self.assertEqual(5, len(records))
+        self.assertEqual("checkpoint_created", records[0]["event"])
+        self.assertEqual("subscription_refresh", records[0]["owner"])
+        self.assertEqual("xray_applied", records[0]["phase"])
+        self.assertTrue(records[0]["checkpoint_exists"])
+        self.assertEqual("reconcile_result", records[1]["event"])
+        self.assertEqual("xray_generation_apply", records[1]["stage"])
+        self.assertEqual("XRAY_GENERATION_APPLY_FAILED", records[1]["error_code"])
+        self.assertTrue(records[1]["checkpoint_after"]["exists"])
+        self.assertEqual("xray_applied", records[1]["checkpoint_after"]["phase"])
+        self.assertEqual("publication_finalized", records[2]["event"])
+        self.assertTrue(records[2]["ok"])
+        self.assertEqual("success", records[2]["status"])
+        self.assertTrue(records[2]["checkpoint_before"]["exists"])
+        self.assertFalse(records[2]["checkpoint_after"]["exists"])
+        self.assertEqual("reconcile_result", records[3]["event"])
+        self.assertTrue(records[3]["checkpoint_before"]["exists"])
+        self.assertFalse(records[3]["checkpoint_after"]["exists"])
+        self.assertEqual("reconcile_result", records[4]["event"])
+        self.assertEqual("unknown", records[4]["checkpoint_before"]["phase"])
+        self.assertEqual("unknown", records[4]["checkpoint_after"]["phase"])
+        self.assertNotIn("xray_applied", json.dumps(records[4]))
+        self.assertLessEqual(max(map(len, text.splitlines())), 1024)
+
     def test_checkpoint_facts_compare_fences_without_exposing_values(self):
         project = _extract_bounded_generation_checkpoint_facts()
         checkpoint = {
@@ -4656,6 +4784,7 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual(1, len(install_calls))
         self.assertIn('if acceptance_profile.get("profile") == "hosted-kernel-packet":\n'
                       '        _install_acceptance_xray_generation_rollback_observer()\n'
+                      '        _install_acceptance_xray_checkpoint_lifecycle_observer()\n'
                       '        _install_acceptance_apply_exception_observer()\n'
                       '        _install_acceptance_live_mode_probe_observer()', worker_source)
 
