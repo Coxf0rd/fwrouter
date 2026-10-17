@@ -1014,6 +1014,96 @@ def _acceptance_xray_adapter() -> Any:
     return _xray_adapter()
 
 
+def _safe_xray_candidate_diff_summary(active_path: Path, candidate_path: Path) -> dict[str, Any] | None:
+    """Describe only fixed Xray config sections; never emit config values or dynamic keys."""
+    if os.environ.get("FWROUTER_ENVIRONMENT") != "test":
+        return None
+    try:
+        active_file, candidate_file = Path(active_path), Path(candidate_path)
+        if active_file.is_symlink() or candidate_file.is_symlink():
+            return {"available": False, "reason": "symlink"}
+        if not active_file.is_file() or not candidate_file.is_file():
+            return {"available": False, "reason": "not_regular_file"}
+        active_size, candidate_size = active_file.stat().st_size, candidate_file.stat().st_size
+        if active_size > 8 * 1024 * 1024 or candidate_size > 8 * 1024 * 1024:
+            return {"available": False, "reason": "size_limit"}
+        active_bytes, candidate_bytes = active_file.read_bytes(), candidate_file.read_bytes()
+        active_payload = json.loads(active_bytes)
+        candidate_payload = json.loads(candidate_bytes)
+        if not isinstance(active_payload, dict) or not isinstance(candidate_payload, dict):
+            return {"available": False, "reason": "invalid_root"}
+
+        def shape(payload: dict[str, Any]) -> dict[str, int]:
+            inbounds = payload.get("inbounds")
+            inbounds = inbounds if isinstance(inbounds, list) else []
+            clients = 0
+            for inbound in inbounds:
+                if not isinstance(inbound, dict):
+                    continue
+                settings = inbound.get("settings")
+                settings = settings if isinstance(settings, dict) else {}
+                values = settings.get("clients")
+                clients += len(values) if isinstance(values, list) else 0
+            outbounds = payload.get("outbounds")
+            outbounds = outbounds if isinstance(outbounds, list) else []
+            routing = payload.get("routing")
+            routing = routing if isinstance(routing, dict) else {}
+            rules = routing.get("rules")
+            rules = rules if isinstance(rules, list) else []
+            return {
+                "inbounds": len(inbounds), "inbound_clients": clients,
+                "outbounds": len(outbounds), "routing_rules": len(rules),
+            }
+
+        # These are fixed schema section labels, never user-supplied keys.
+        section_names = ("inbounds", "outbounds", "routing", "dns", "policy", "stats", "api", "log")
+        known_top_level = set(section_names)
+        changed_sections = [
+            name for name in section_names
+            if active_payload.get(name) != candidate_payload.get(name)
+        ]
+        active_other = {key: value for key, value in active_payload.items() if key not in known_top_level}
+        candidate_other = {key: value for key, value in candidate_payload.items() if key not in known_top_level}
+        active_shape, candidate_shape = shape(active_payload), shape(candidate_payload)
+        changed_paths = [f"$.{name}" for name in changed_sections]
+        if "inbounds" in changed_sections:
+            changed_paths.append("$.inbounds[*]")
+            old_inbounds = active_payload.get("inbounds")
+            new_inbounds = candidate_payload.get("inbounds")
+            old_inbounds = old_inbounds if isinstance(old_inbounds, list) else []
+            new_inbounds = new_inbounds if isinstance(new_inbounds, list) else []
+
+            def clients_for(inbound: Any) -> Any:
+                settings = inbound.get("settings") if isinstance(inbound, dict) else None
+                return settings.get("clients") if isinstance(settings, dict) else None
+
+            if (active_shape["inbound_clients"] != candidate_shape["inbound_clients"]
+                    or len(old_inbounds) != len(new_inbounds)
+                    or any(clients_for(old) != clients_for(new) for old, new in zip(old_inbounds, new_inbounds))):
+                changed_paths.append("$.inbounds[*].settings.clients[*]")
+        if "outbounds" in changed_sections:
+            changed_paths.append("$.outbounds[*]")
+        if "routing" in changed_sections:
+            changed_paths.append("$.routing.rules[*]")
+        if active_other != candidate_other:
+            changed_paths.append("$.<other_top_level>")
+        return {
+            "available": True,
+            "schema": "fwrouter-acceptance-xray-candidate-diff/v1",
+            "equal_bytes": active_bytes == candidate_bytes,
+            "active_bytes": len(active_bytes),
+            "candidate_bytes": len(candidate_bytes),
+            "active_sha256": hashlib.sha256(active_bytes).hexdigest(),
+            "candidate_sha256": hashlib.sha256(candidate_bytes).hexdigest(),
+            "changed_sections": changed_sections,
+            "changed_paths": changed_paths,
+            "other_top_level_changed": active_other != candidate_other,
+            "shape": {"active": active_shape, "candidate": candidate_shape},
+        }
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return {"available": False, "reason": "unreadable_or_invalid"}
+
+
 def _bounded_generation_checkpoint_facts(
     checkpoint: Any, inventory_state: Any, selection_fence: Any,
 ) -> dict[str, Any]:
@@ -4066,6 +4156,7 @@ def build_app(socket_path: Path):
         adapter = _acceptance_xray_adapter()
         original_runner = adapter._runner
         original_generation_apply = getattr(adapter, "apply_staged_subscription_generation", None)
+        original_generation_stage = getattr(adapter, "stage_subscription_generation", None)
         original_compose_command = mihomo_runtime._run_compose_command
         original_http_request = httpx.Client.request
         dataplane_adapter = core_apply.DEFAULT_DATAPLANE_ADAPTER
@@ -4082,6 +4173,25 @@ def build_app(socket_path: Path):
         def guarded_generation_apply(*args: Any, **kwargs: Any) -> Any:
             attempts["xray_apply_or_reload"] += 1
             raise RuntimeError("acceptance proof-only Xray apply tripwire")
+
+        def observed_generation_stage(*args: Any, **kwargs: Any) -> Any:
+            result = original_generation_stage(*args, **kwargs)
+            candidate_path = kwargs.get("candidate_path")
+            config_path = getattr(adapter, "config_path", None)
+            try:
+                candidate_file = Path(candidate_path) if candidate_path is not None else None
+                if (candidate_file is not None
+                        and candidate_file.parent.name.startswith("fwrouter-legacy-admission-")
+                        and config_path is not None):
+                    summary = _safe_xray_candidate_diff_summary(Path(config_path), candidate_file)
+                    if summary is not None and summary.get("equal_bytes") is False:
+                        print("FWROUTER_ACCEPTANCE_XRAY_CANDIDATE_DIFF " + json.dumps(
+                            summary, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                        ), flush=True)
+            except Exception:
+                # Diagnostics must never change the proof result or its safety behavior.
+                pass
+            return result
 
         def guarded_dataplane_apply(*args: Any, **kwargs: Any) -> Any:
             attempts["core_dataplane_apply_or_rollback"] += 1
@@ -4113,6 +4223,8 @@ def build_app(socket_path: Path):
             raise RuntimeError("acceptance proof-only unexpected HTTP request tripwire")
 
         adapter._runner = guarded_runner
+        if callable(original_generation_stage):
+            adapter.stage_subscription_generation = observed_generation_stage
         if original_generation_apply is not None:
             adapter.apply_staged_subscription_generation = guarded_generation_apply
         dataplane_adapter.apply = guarded_dataplane_apply
@@ -4128,6 +4240,8 @@ def build_app(socket_path: Path):
             raised = True
         finally:
             adapter._runner = original_runner
+            if callable(original_generation_stage):
+                adapter.stage_subscription_generation = original_generation_stage
             if original_generation_apply is not None:
                 adapter.apply_staged_subscription_generation = original_generation_apply
             dataplane_adapter.apply = original_dataplane_apply

@@ -349,6 +349,103 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
     assert set(recovery_result["mutation_attempts"].values()) == {0}
 
 
+def test_acceptance_worker_xray_candidate_diagnostic_is_bounded_and_redacted(monkeypatch, tmp_path, capsys):
+    """The actual staging wrapper may report only bounded synthetic hashes and fixed structural labels."""
+    import ast
+    import hashlib
+
+    tests_root = Path(__file__).resolve().parents[2] / "tests"
+    monkeypatch.syspath_prepend(str(tests_root))
+    from application_acceptance import worker
+    from fwrouter_api.services import apply as core_apply, mihomo_runtime, xray
+    from fwrouter_api.services import xray_common
+
+    build_app = next(
+        node for node in ast.parse(Path(worker.__file__).read_text()).body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_app"
+    )
+    tripwire = next(
+        node for node in build_app.body
+        if isinstance(node, ast.FunctionDef) and node.name == "with_legacy_admission_mutation_tripwires"
+    )
+    namespace = {
+        "Any": object,
+        "Path": Path,
+        "json": json,
+        "os": os,
+        "hashlib": hashlib,
+        "_acceptance_xray_adapter": worker._acceptance_xray_adapter,
+        "_safe_xray_candidate_diff_summary": worker._safe_xray_candidate_diff_summary,
+    }
+    exec(compile(ast.Module(body=[tripwire], type_ignores=[]), worker.__file__, "exec"), namespace)
+
+    secret_canary = "SYNTHETIC-UUID-CANARY-8e662f1c-9b30-4f0b-bd84-7f403110fb31"
+    active = tmp_path / "active.json"
+    staging = tmp_path / "fwrouter-legacy-admission-synthetic"
+    staging.mkdir(mode=0o700)
+    candidate = staging / "candidate.json"
+    active.write_text(json.dumps({
+        "inbounds": [{"settings": {"clients": [{"id": secret_canary, "email": "secret@acceptance.invalid"}]}}],
+        "outbounds": [{"tag": "proxy", "endpoint": "synthetic.invalid"}],
+        "routing": {"rules": [{"user": ["secret@acceptance.invalid"]}]},
+        "opaque-canary-key": "never report arbitrary JSON keys",
+    }), encoding="utf-8")
+    marker = object()
+
+    class SyntheticAdapter:
+        config_path = active
+        _runner = staticmethod(lambda _action, _request: None)
+
+        def stage_subscription_generation(self, *, candidate_path, **_kwargs):
+            Path(candidate_path).write_text(json.dumps({
+                "inbounds": [{"settings": {"clients": [{"id": secret_canary, "email": "secret@acceptance.invalid"}]}}],
+                "outbounds": [{"tag": "proxy", "endpoint": "changed.synthetic.invalid"}],
+                "routing": {"rules": [{"user": ["secret@acceptance.invalid"]}]},
+                "opaque-canary-key": "different arbitrary content",
+            }), encoding="utf-8")
+            return marker
+
+    adapter = SyntheticAdapter()
+    monkeypatch.setenv("FWROUTER_ENVIRONMENT", "test")
+    monkeypatch.setattr(xray_common, "_xray_adapter", lambda: adapter)
+    monkeypatch.setattr(xray, "DEFAULT_XRAY_ADAPTER", adapter)
+    monkeypatch.setattr(core_apply, "DEFAULT_DATAPLANE_ADAPTER", type("D", (), {
+        "apply": staticmethod(lambda *_args, **_kwargs: None),
+        "rollback": staticmethod(lambda *_args, **_kwargs: None),
+    })())
+    monkeypatch.setattr(core_apply, "_apply_global_mode_hot_swap", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mihomo_runtime, "_run_compose_command", lambda *_args, **_kwargs: None)
+
+    result, attempts, raised = namespace["with_legacy_admission_mutation_tripwires"](
+        lambda: adapter.stage_subscription_generation(candidate_path=candidate),
+    )
+    assert result is marker and not raised
+    assert attempts == {
+        "xray_apply_or_reload": 0,
+        "mihomo_apply_or_reload": 0,
+        "core_dataplane_apply_or_rollback": 0,
+        "unexpected_http_request": 0,
+    }
+    diagnostic = capsys.readouterr().out
+    assert "FWROUTER_ACCEPTANCE_XRAY_CANDIDATE_DIFF " in diagnostic
+    assert secret_canary not in diagnostic
+    assert "secret@acceptance.invalid" not in diagnostic
+    assert "opaque-canary-key" not in diagnostic
+    assert "changed.synthetic.invalid" not in diagnostic
+    decoded = json.loads(diagnostic.split("FWROUTER_ACCEPTANCE_XRAY_CANDIDATE_DIFF ", 1)[1])
+    assert decoded["schema"] == "fwrouter-acceptance-xray-candidate-diff/v1"
+    assert decoded["equal_bytes"] is False
+    assert decoded["active_sha256"] == hashlib.sha256(active.read_bytes()).hexdigest()
+    assert decoded["candidate_sha256"] == hashlib.sha256(candidate.read_bytes()).hexdigest()
+    assert decoded["changed_sections"] == ["outbounds"]
+    assert decoded["changed_paths"] == ["$.outbounds", "$.outbounds[*]", "$.<other_top_level>"]
+    assert decoded["other_top_level_changed"] is True
+    assert decoded["shape"] == {
+        "active": {"inbounds": 1, "inbound_clients": 1, "outbounds": 1, "routing_rules": 1},
+        "candidate": {"inbounds": 1, "inbound_clients": 1, "outbounds": 1, "routing_rules": 1},
+    }
+
+
 def _positive_synthetic_proof() -> dict[str, object]:
     from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
     with db_session() as connection:
