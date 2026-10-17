@@ -118,3 +118,12 @@ At this audit checkpoint, final hosted end-to-end qualification, independent rev
 | Verified repeat / interrupted closure → completion | Same explicit owner, exact generation, fresh native proof/receipt and durable/runtime checks | No revision bump or credential/native mutation; generic restore/reload remains forbidden for proof-only checkpoint mode |
 
 These are code contracts, not claims that every crash/power-loss or production host scenario has run. Real hosted completion and final CI evidence remain separate gates.
+
+
+### Consolidated targeted and hosted qualification
+
+The consolidated candidate `3396f7c699f862c23b32dfbe455f8e373a443047` passed173 affected isolated nodes, with zero failures/skips, exact-node coverage, sanitized JUnit and owned temporary cleanup. Four relevant catalog/selection contracts passed in the isolated repo-root invocation. Independent frozen QA PASSED and independently reran six relevant lifecycle/CLI/negative nodes, all passing. The local integration uses the actual CLI, service, SQLite, fingerprint, receipt writer/reader and promoter; native readback remains a synthetic boundary in those local checks.
+
+Qualified hosted diagnostic [39065004020](https://github.com/Coxf0rd/fwrouter/actions/runs/39065004020) then completed **12 PASS / 0 FAIL / 0 SKIP**, including the complete pending/legacy admission scenario and its post-publication preservation/idempotence tail. The receipt binds source `3396f7c699f862c23b32dfbe455f8e373a443047`, plan digest `f5e28a626868c71398513536d41870bf1c496628a0a453680d20d45350d55955` and profile digest `fb2c8126c94f90a98f4a8ad5efaaacf44a5f06a91aeca9a19c933d0ca0bcea25`; exit status0, cleanup errors none. Both setup/call/teardown passed for the admission node. Push fast lane39065004022 also passed.
+
+Diagnostic resource receipt: wall231.158s, CPU user131.529s/system23.566s, maximum single-process HWM189948KiB. That diagnostic HWM is not aggregate container memory and is not the separate startup-scale workload. Final mandatory-all PR CI at the final documented HEAD must independently qualify resource limits, all required suites and receipts; no final mandatory PASS is inferred from this diagnostic. Production recovery, deployment, external client E2E, full Debian host acceptance and long-soak remain NOT RUN.
