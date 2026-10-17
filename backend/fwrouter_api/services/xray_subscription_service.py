@@ -2163,8 +2163,23 @@ def _legacy_admission_checkpoint_payload(path: Path) -> dict[str, Any] | None:
     return payload
 
 
-def _legacy_admission_runtime_fences_match(admission: Any) -> bool:
-    """Check live native incarnation/config fences immediately before promotion."""
+def _legacy_admission_runtime_fence_facts(admission: Any) -> dict[str, bool]:
+    """Return closed-vocabulary runtime fence facts from one fresh readback pass."""
+    facts = {
+        "xray_incarnation_match": False,
+        "xray_runtime_config_match": False,
+        "xray_active_config_match": False,
+        "mihomo_incarnation_match": False,
+        "mihomo_active_config_match": False,
+        "mihomo_input_fingerprint_match": False,
+        "core_runtime_fingerprint_match": False,
+        "core_state_available": False,
+        "core_native_proof_ok": False,
+        "core_manifest_match": False,
+        "core_apply_id_match": False,
+        "core_enforcement_match": False,
+        "core_live_mode_match": False,
+    }
     try:
         adapter = _xray_adapter()
         from fwrouter_api.services import mihomo_config
@@ -2180,24 +2195,62 @@ def _legacy_admission_runtime_fences_match(admission: Any) -> bool:
         mihomo_sha = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
         fingerprint = current_mihomo_input_fingerprint()
         core_native = _collect_legacy_admission_core_native_proof()
-        return bool(
-            callable(getattr(adapter, "get_runtime_incarnation", None))
-            and callable(getattr(adapter, "get_runtime_config_sha256", None))
-            and adapter.get_runtime_incarnation() == admission.proof_only_xray_incarnation
-            and adapter.get_runtime_config_sha256() == admission.proof_only_xray_config_sha256 == xray_sha
-            and get_mihomo_runtime_incarnation() == admission.proof_only_mihomo_incarnation
-            and mihomo_sha == admission.proof_only_mihomo_config_sha256
-            and fingerprint.get("hash") == admission.proof_only_mihomo_fingerprint_hash
-            and core_fingerprint == admission.proof_only_core_runtime_fingerprint
-            and core_unavailable is None
-            and core_native.get("ok") is True
-            and core_native.get("manifest_hash") == admission.proof_only_core_manifest_hash
-            and core_native.get("apply_id") == admission.proof_only_core_apply_id
-            and core_native.get("enforcement_level") == admission.proof_only_core_enforcement_level
-            and core_native.get("live_global_mode") == admission.proof_only_core_live_mode
-        )
+        xray_incarnation_reader = getattr(adapter, "get_runtime_incarnation", None)
+        xray_config_reader = getattr(adapter, "get_runtime_config_sha256", None)
+        facts.update({
+            "xray_incarnation_match": bool(
+                callable(xray_incarnation_reader)
+                and xray_incarnation_reader() == admission.proof_only_xray_incarnation
+            ),
+            "xray_runtime_config_match": bool(
+                callable(xray_config_reader)
+                and xray_config_reader() == admission.proof_only_xray_config_sha256
+            ),
+            "xray_active_config_match": (
+                admission.proof_only_xray_config_sha256 == xray_sha
+            ),
+            "mihomo_incarnation_match": (
+                get_mihomo_runtime_incarnation() == admission.proof_only_mihomo_incarnation
+            ),
+            "mihomo_active_config_match": (
+                mihomo_sha == admission.proof_only_mihomo_config_sha256
+            ),
+            "mihomo_input_fingerprint_match": (
+                fingerprint.get("hash") == admission.proof_only_mihomo_fingerprint_hash
+            ),
+            "core_runtime_fingerprint_match": (
+                core_fingerprint == admission.proof_only_core_runtime_fingerprint
+            ),
+            "core_state_available": core_unavailable is None,
+            "core_native_proof_ok": core_native.get("ok") is True,
+            "core_manifest_match": (
+                core_native.get("manifest_hash") == admission.proof_only_core_manifest_hash
+            ),
+            "core_apply_id_match": (
+                core_native.get("apply_id") == admission.proof_only_core_apply_id
+            ),
+            "core_enforcement_match": (
+                core_native.get("enforcement_level") == admission.proof_only_core_enforcement_level
+            ),
+            "core_live_mode_match": (
+                core_native.get("live_global_mode") == admission.proof_only_core_live_mode
+            ),
+        })
     except Exception:
-        return False
+        return facts
+    return facts
+
+
+def _legacy_admission_runtime_fences_match(admission: Any) -> bool:
+    """Check live native incarnation/config fences immediately before promotion."""
+    required = {
+        "xray_incarnation_match", "xray_runtime_config_match", "xray_active_config_match",
+        "mihomo_incarnation_match", "mihomo_active_config_match", "mihomo_input_fingerprint_match",
+        "core_runtime_fingerprint_match", "core_state_available", "core_native_proof_ok",
+        "core_manifest_match", "core_apply_id_match", "core_enforcement_match", "core_live_mode_match",
+    }
+    facts = _legacy_admission_runtime_fence_facts(admission)
+    return set(facts) == required and all(facts.get(key) is True for key in required)
 
 
 def _legacy_admission_durable_fences_match(

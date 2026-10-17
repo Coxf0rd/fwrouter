@@ -233,6 +233,7 @@ def _write_applied_manifest_via_existing_owner(monkeypatch, tmp_path, *, plan_id
 def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(monkeypatch, tmp_path, capsys):
     """Execute both nested worker route callables with owned native boundary doubles."""
     import ast
+    from concurrent.futures import ThreadPoolExecutor
 
     tests_root = Path(__file__).resolve().parents[2] / "tests"
     monkeypatch.syspath_prepend(str(tests_root))
@@ -248,6 +249,7 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
         node.name: node for node in build_app.body
         if isinstance(node, ast.FunctionDef)
         and node.name in {
+            "_run_legacy_admission_mutation_tripwires",
             "with_legacy_admission_mutation_tripwires",
             "admit_legacy_inventory_for_acceptance",
             "proof_only_tripwire_self_check",
@@ -255,6 +257,7 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
         }
     }
     assert set(nested) == {
+        "_run_legacy_admission_mutation_tripwires",
         "with_legacy_admission_mutation_tripwires",
         "admit_legacy_inventory_for_acceptance",
         "proof_only_tripwire_self_check",
@@ -294,6 +297,8 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
         "stat": stat,
         "json": json,
         "_acceptance_xray_adapter": worker._acceptance_xray_adapter,
+        "threading": __import__("threading"),
+        "_LEGACY_ADMISSION_MUTATION_LOCK": worker._LEGACY_ADMISSION_MUTATION_LOCK,
         "re": __import__("re"),
     }
     exec(compile(ast.Module(body=list(nested.values()), type_ignores=[]), worker.__file__, "exec"), namespace)
@@ -308,7 +313,7 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
         "checkpoint_mode": None, "checkpoint_phase": None,
     })
     original_tripwires = namespace["with_legacy_admission_mutation_tripwires"]
-    namespace["with_legacy_admission_mutation_tripwires"] = lambda operation: (
+    namespace["with_legacy_admission_mutation_tripwires"] = lambda operation, receipt_observation=None: (
         operation(), {"xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
                       "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0}, False,
     )
@@ -342,11 +347,215 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
     tripwire_result = namespace["proof_only_tripwire_self_check"]()
     assert tripwire_result["ok"] is True
     assert all(tripwire_result["intercepts"].values())
+
+    from types import SimpleNamespace
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+
+    fingerprint_hash = "a" * 64
+    source_fingerprint = "b" * 64
+    active_config_hash = "c" * 64
+    runtime_incarnation = "synthetic-mihomo-incarnation"
+    native_proof_calls = []
+    receipt_write_calls = []
+    fence_facts = {
+        "xray_incarnation_match": True,
+        "xray_runtime_config_match": True,
+        "xray_active_config_match": True,
+        "mihomo_incarnation_match": True,
+        "mihomo_active_config_match": True,
+        "mihomo_input_fingerprint_match": True,
+        "core_runtime_fingerprint_match": True,
+        "core_state_available": True,
+        "core_native_proof_ok": True,
+        "core_manifest_match": True,
+        "core_apply_id_match": False,
+        "core_enforcement_match": True,
+        "core_live_mode_match": True,
+    }
+    fence_view = SimpleNamespace()
+    proof = {
+        "mihomo_native_policy_match": True,
+        "mihomo_fingerprint_hash": fingerprint_hash,
+        "source_fingerprint": source_fingerprint,
+        "mihomo_config_sha256": active_config_hash,
+        "mihomo_runtime_incarnation": runtime_incarnation,
+    }
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fence_facts",
+                        lambda _view: dict(fence_facts))
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_source_fingerprint",
+                        lambda _connection=None: source_fingerprint)
+    monkeypatch.setattr(xray_subscription_service, "xray_writer_guard_is_held", lambda: True)
+
+    def synthetic_legacy_publish(synthetic_proof, operation_id):
+        if not concurrent_ordinary_results:
+            native_before = len(native_proof_calls)
+            writes_before = len(receipt_write_calls)
+            # Exercise an unrelated receipt publication while admission's
+            # temporary diagnostic wrappers are installed process-wide.
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                concurrent_ordinary_results.append(executor.submit(
+                    xray_subscription_service._publish_mihomo_udp_receipt_with_owner,
+                    expected_mihomo_runtime=runtime_incarnation,
+                    expected_mihomo_sha=active_config_hash,
+                    reconcile_reason="ordinary_concurrent_publish",
+                    operation_id="synthetic-independent-operation",
+                    owner_matches=lambda _fingerprint: True,
+                ).result())
+            concurrent_ordinary_stage_counts.append((
+                len(native_proof_calls) - native_before,
+                len(receipt_write_calls) - writes_before,
+            ))
+        return xray_subscription_service._publish_mihomo_udp_receipt_with_owner(
+            expected_mihomo_runtime=runtime_incarnation,
+            expected_mihomo_sha=active_config_hash,
+            reconcile_reason="proof_only_legacy_admission",
+            operation_id=operation_id,
+            owner_matches=lambda fingerprint: (
+                fingerprint == fingerprint_hash
+                and xray_subscription_service._legacy_admission_source_fingerprint() == source_fingerprint
+                and xray_subscription_service._legacy_admission_runtime_fences_match(fence_view)
+            ),
+        )
+
+    concurrent_ordinary_results = []
+    concurrent_ordinary_stage_counts = []
+
+    # The actual shared publisher and its native-proof/write boundaries are
+    # wrapped by the test worker; the controlled doubles keep this unit test
+    # independent from processes, controllers and external networks.
+    monkeypatch.setattr(xray_subscription_service, "_publish_legacy_admission_mihomo_receipt",
+                        synthetic_legacy_publish)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+                        lambda: {"hash": fingerprint_hash})
+    def synthetic_native_udp_proof():
+        native_proof_calls.append(True)
+        return {
+            "ok": True, "native_top_level_rules_match": True,
+            "selector_membership_matches": True, "guarded_rules_match": True,
+        }
+
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", synthetic_native_udp_proof)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "active_config_hash", lambda: active_config_hash)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_current_runtime_incarnation",
+                        lambda: runtime_incarnation)
+
+    def synthetic_write_receipt(**_kwargs):
+        # Model the existing writer's one-pass active-config/incarnation reads;
+        # the actual hosted worker wrapper observes these return values.
+        receipt_write_calls.append(True)
+        mihomo_reconcile_fingerprint.active_config_hash()
+        mihomo_reconcile_fingerprint._current_runtime_incarnation()
+        return False
+
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "write_mihomo_reconcile_fingerprint_state",
+                        synthetic_write_receipt)
+
+    def synthetic_admission(**_kwargs):
+        written = xray_subscription_service._publish_legacy_admission_mihomo_receipt(proof, "synthetic-op")
+        return {
+            "ok": False, "status": "blocked",
+            "reason": "native_receipt_unverified" if not written else "synthetic-unexpected-success",
+        }
+
+    monkeypatch.setattr(xray_subscription_service, "admit_legacy_subscription_inventory", synthetic_admission)
+    failed_gate = namespace["admit_legacy_inventory_for_acceptance"]({"expected_digest": "d" * 64})
+    assert failed_gate["reason"] == "native_receipt_unverified"
+    assert concurrent_ordinary_results == [False]
+    assert concurrent_ordinary_stage_counts == [(1, 1)]
+    diagnostic = failed_gate["receipt_diagnostic"]
+    assert diagnostic["writer_guard_held"] is True
+    assert diagnostic["owner_checks"] == [{
+        "input_fingerprint_match": True,
+        "source_fingerprint_match": True,
+        "runtime_fences": fence_facts,
+        "owner_result": False,
+    }]
+    assert "native_policy_proof" not in diagnostic
+    assert "durable_write" not in diagnostic
+    output = capsys.readouterr().out
+    assert "FWROUTER_ACCEPTANCE_LEGACY_RECEIPT_DIAGNOSTIC " in output
+    for secret in (fingerprint_hash, source_fingerprint, active_config_hash, runtime_incarnation):
+        assert secret not in output
+    assert "synthetic-op" not in output
+
+    # With all owner fences passing, the wrapper records the real native-proof
+    # and persistence function results without exposing their inputs.
+    fence_facts["core_apply_id_match"] = True
+    succeeded_to_write = namespace["admit_legacy_inventory_for_acceptance"]({"expected_digest": "e" * 64})
+    write_diagnostic = succeeded_to_write["receipt_diagnostic"]
+    assert write_diagnostic["owner_checks"][0]["owner_result"] is True
+    assert write_diagnostic["owner_checks"][1]["owner_result"] is True
+    assert write_diagnostic["native_policy_proof"] == {
+        "ok": True, "top_level_rules_match": True,
+        "selector_membership_match": True, "guarded_rules_match": True,
+    }
+    assert write_diagnostic["durable_write"] == {
+        "input_fingerprint_match": True, "active_config_match": True,
+        "runtime_incarnation_match": True, "native_proof_complete": True,
+        "write_result": False,
+    }
+    output = capsys.readouterr().out
+    for secret in (fingerprint_hash, source_fingerprint, active_config_hash, runtime_incarnation):
+        assert secret not in output
+
     recovery_result = namespace["recover_startup_xray_subscription_generation"]()
     assert recovery_result["ok"] is False
     assert recovery_result["tripwire_armed"] is True
     assert recovery_result["error_code"] == "XRAY_PROOF_ONLY_CHECKPOINT_PENDING"
     assert set(recovery_result["mutation_attempts"].values()) == {0}
+
+    # Two synchronous FastAPI requests execute on different worker threads.
+    # Their process-global monkeypatch windows must never overlap.
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+    from fwrouter_api.services import xray_subscription_service
+    original_receipt_functions = (
+        xray_subscription_service._publish_legacy_admission_mihomo_receipt,
+        xray_subscription_service._publish_mihomo_udp_receipt_with_owner,
+        mihomo_reconcile._native_udp_policy_proof,
+        mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state,
+    )
+    state_lock = __import__("threading").Lock()
+    first_entered = __import__("threading").Event()
+    second_entered = __import__("threading").Event()
+    active_calls = 0
+    maximum_active_calls = 0
+
+    def tracked_operation(*, first):
+        nonlocal active_calls, maximum_active_calls
+        with state_lock:
+            active_calls += 1
+            maximum_active_calls = max(maximum_active_calls, active_calls)
+        try:
+            if first:
+                first_entered.set()
+                second_entered.wait(timeout=0.2)
+            else:
+                second_entered.set()
+            return first
+        finally:
+            with state_lock:
+                active_calls -= 1
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_call = executor.submit(
+            namespace["with_legacy_admission_mutation_tripwires"],
+            lambda: tracked_operation(first=True),
+        )
+        assert first_entered.wait(timeout=1)
+        second_call = executor.submit(
+            namespace["with_legacy_admission_mutation_tripwires"],
+            lambda: tracked_operation(first=False),
+        )
+        first_result = first_call.result(timeout=2)
+        second_result = second_call.result(timeout=2)
+    assert first_result[2] is False and second_result[2] is False
+    assert maximum_active_calls == 1
+    assert original_receipt_functions == (
+        xray_subscription_service._publish_legacy_admission_mihomo_receipt,
+        xray_subscription_service._publish_mihomo_udp_receipt_with_owner,
+        mihomo_reconcile._native_udp_policy_proof,
+        mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state,
+    )
 
 
 def test_acceptance_worker_xray_candidate_diagnostic_is_bounded_and_redacted(monkeypatch, tmp_path, capsys):
@@ -364,10 +573,14 @@ def test_acceptance_worker_xray_candidate_diagnostic_is_bounded_and_redacted(mon
         node for node in ast.parse(Path(worker.__file__).read_text()).body
         if isinstance(node, ast.FunctionDef) and node.name == "build_app"
     )
-    tripwire = next(
+    tripwire_functions = [
         node for node in build_app.body
-        if isinstance(node, ast.FunctionDef) and node.name == "with_legacy_admission_mutation_tripwires"
-    )
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {
+            "_run_legacy_admission_mutation_tripwires",
+            "with_legacy_admission_mutation_tripwires",
+        }
+    ]
     namespace = {
         "Any": object,
         "Path": Path,
@@ -376,8 +589,10 @@ def test_acceptance_worker_xray_candidate_diagnostic_is_bounded_and_redacted(mon
         "hashlib": hashlib,
         "_acceptance_xray_adapter": worker._acceptance_xray_adapter,
         "_safe_xray_candidate_diff_summary": worker._safe_xray_candidate_diff_summary,
+        "threading": __import__("threading"),
+        "_LEGACY_ADMISSION_MUTATION_LOCK": worker._LEGACY_ADMISSION_MUTATION_LOCK,
     }
-    exec(compile(ast.Module(body=[tripwire], type_ignores=[]), worker.__file__, "exec"), namespace)
+    exec(compile(ast.Module(body=tripwire_functions, type_ignores=[]), worker.__file__, "exec"), namespace)
 
     secret_canary = "SYNTHETIC-UUID-CANARY-8e662f1c-9b30-4f0b-bd84-7f403110fb31"
     active = tmp_path / "active.json"
@@ -636,6 +851,80 @@ def test_proof_only_admission_never_publishes_when_fences_drift_after_readback(m
     assert recovery["ok"] is False
     assert recovery.get("reason") == "proof_only_operation_requires_explicit_resume"
     assert checkpoint.is_file()
+
+
+def test_legacy_admission_runtime_fence_facts_are_closed_and_match_owner_predicate(monkeypatch, tmp_path):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from fwrouter_api.services import mihomo_config, mihomo_runtime
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+
+    xray_path = tmp_path / "xray.json"
+    mihomo_path = tmp_path / "mihomo.yaml"
+    xray_path.write_bytes(b"synthetic xray active")
+    mihomo_path.write_bytes(b"synthetic mihomo active")
+    xray_sha = __import__("hashlib").sha256(xray_path.read_bytes()).hexdigest()
+    mihomo_sha = __import__("hashlib").sha256(mihomo_path.read_bytes()).hexdigest()
+    fingerprint_hash = "a" * 64
+    core_fingerprint = "b" * 64
+    core_proof = {
+        "ok": True, "manifest_hash": "c" * 64, "apply_id": "synthetic-apply",
+        "enforcement_level": "global_vpn_enforced", "live_global_mode": "vpn",
+    }
+
+    class RuntimeAdapter:
+        config_path = xray_path
+
+        @staticmethod
+        def get_runtime_incarnation():
+            return "synthetic-xray-incarnation"
+
+        @staticmethod
+        def get_runtime_config_sha256():
+            return xray_sha
+
+    admission = SimpleNamespace(
+        proof_only_xray_incarnation="synthetic-xray-incarnation",
+        proof_only_xray_config_sha256=xray_sha,
+        proof_only_mihomo_incarnation="synthetic-mihomo-incarnation",
+        proof_only_mihomo_config_sha256=mihomo_sha,
+        proof_only_mihomo_fingerprint_hash=fingerprint_hash,
+        proof_only_core_runtime_fingerprint=core_fingerprint,
+        proof_only_core_manifest_hash=core_proof["manifest_hash"],
+        proof_only_core_apply_id=core_proof["apply_id"],
+        proof_only_core_enforcement_level=core_proof["enforcement_level"],
+        proof_only_core_live_mode=core_proof["live_global_mode"],
+    )
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: RuntimeAdapter())
+    monkeypatch.setattr(xray_subscription_service, "db_session", lambda: nullcontext(object()))
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_core_runtime_fingerprint",
+                        lambda _connection=None: core_fingerprint)
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_core_unavailable_reason",
+                        lambda _connection=None: None)
+    monkeypatch.setattr(xray_subscription_service, "_collect_legacy_admission_core_native_proof",
+                        lambda: dict(core_proof))
+    monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: mihomo_path)
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation",
+                        lambda: "synthetic-mihomo-incarnation")
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+                        lambda: {"hash": fingerprint_hash})
+
+    facts = xray_subscription_service._legacy_admission_runtime_fence_facts(admission)
+    assert xray_subscription_service._legacy_admission_runtime_fences_match(admission) is True
+    assert facts and all(type(value) is bool and value for value in facts.values())
+    assert set(facts) == {
+        "xray_incarnation_match", "xray_runtime_config_match", "xray_active_config_match",
+        "mihomo_incarnation_match", "mihomo_active_config_match", "mihomo_input_fingerprint_match",
+        "core_runtime_fingerprint_match", "core_state_available", "core_native_proof_ok",
+        "core_manifest_match", "core_apply_id_match", "core_enforcement_match", "core_live_mode_match",
+    }
+
+    admission.proof_only_core_apply_id = "stale-apply"
+    stale = xray_subscription_service._legacy_admission_runtime_fence_facts(admission)
+    assert stale["core_apply_id_match"] is False
+    assert sum(value is False for value in stale.values()) == 1
+    assert xray_subscription_service._legacy_admission_runtime_fences_match(admission) is False
 
 
 def test_proof_only_checkpoint_direct_recovery_helpers_are_non_mutating(tmp_path, monkeypatch):

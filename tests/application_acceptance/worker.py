@@ -42,6 +42,7 @@ def _clean_environment() -> None:
 
 _PACKET_DNSMASQ_LOCK = threading.RLock()
 _PACKET_DNSMASQ_STATE: dict[str, Any] = {}
+_LEGACY_ADMISSION_MUTATION_LOCK = threading.RLock()
 
 
 def _packet_dns_effective_artifact_observation() -> dict[str, Any]:
@@ -4312,13 +4313,15 @@ def build_app(socket_path: Path):
         methods=["GET"],
     )
 
-    def with_legacy_admission_mutation_tripwires(
-        operation: Any,
+    def _run_legacy_admission_mutation_tripwires(
+        operation: Any, receipt_observation: dict[str, Any] | None = None,
     ) -> tuple[Any, dict[str, int], bool]:
         """Run an operation while making native apply/reload attempts fail closed."""
         from fwrouter_api.services import mihomo_runtime
         from fwrouter_api.services import mihomo_config
         from fwrouter_api.services import apply as core_apply
+        from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+        from fwrouter_api.services import xray_subscription_service
         import httpx
 
         attempts = {
@@ -4333,11 +4336,27 @@ def build_app(socket_path: Path):
         original_generation_stage = getattr(adapter, "stage_subscription_generation", None)
         original_compose_command = mihomo_runtime._run_compose_command
         original_http_request = httpx.Client.request
+        original_writer_guard_held = xray_subscription_service.xray_writer_guard_is_held
+        original_legacy_publish = xray_subscription_service._publish_legacy_admission_mihomo_receipt
+        original_shared_publish = xray_subscription_service._publish_mihomo_udp_receipt_with_owner
+        original_runtime_facts = xray_subscription_service._legacy_admission_runtime_fence_facts
+        original_source_fingerprint = xray_subscription_service._legacy_admission_source_fingerprint
+        original_native_udp_proof = mihomo_reconcile._native_udp_policy_proof
+        original_write_receipt = mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state
+        original_active_config_hash = mihomo_reconcile_fingerprint.active_config_hash
+        original_current_runtime_incarnation = mihomo_reconcile_fingerprint._current_runtime_incarnation
+        receipt_context = threading.local()
         dataplane_adapter = core_apply.DEFAULT_DATAPLANE_ADAPTER
         original_dataplane_apply = dataplane_adapter.apply
         original_dataplane_rollback = dataplane_adapter.rollback
         original_global_hot_swap = core_apply._apply_global_mode_hot_swap
         original_mihomo_candidate_validator = mihomo_config.validate_mihomo_candidate_config
+
+        def receipt_observation_active() -> bool:
+            return bool(
+                receipt_observation is not None
+                and getattr(receipt_context, "admission_active", False)
+            )
 
         def guarded_runner(action: str, request: dict[str, Any]) -> Any:
             if action == "reload":
@@ -4422,6 +4441,157 @@ def build_app(socket_path: Path):
             attempts["unexpected_http_request"] += 1
             raise RuntimeError("acceptance proof-only unexpected HTTP request tripwire")
 
+        def observed_runtime_facts(admission: Any) -> dict[str, bool]:
+            facts = original_runtime_facts(admission)
+            if (receipt_observation_active()
+                    and getattr(receipt_context, "owner_check", False)):
+                receipt_observation.setdefault("runtime_fence_facts", []).append(dict(facts))
+            return facts
+
+        def observed_source_fingerprint(connection: Any = None) -> str:
+            value = original_source_fingerprint(connection)
+            if (receipt_observation_active()
+                    and getattr(receipt_context, "owner_check", False)):
+                expected = getattr(receipt_context, "expected_source_fingerprint", None)
+                receipt_context.source_fingerprint_match = value == expected
+            return value
+
+        def observed_legacy_publish(proof: dict[str, Any], operation_id: str) -> bool:
+            if not receipt_observation_active():
+                return bool(original_legacy_publish(proof, operation_id))
+            if receipt_observation_active():
+                receipt_observation["publisher_invoked"] = True
+                receipt_observation["expected_fingerprint_valid"] = (
+                    isinstance(proof, dict)
+                    and isinstance(proof.get("mihomo_fingerprint_hash"), str)
+                    and len(proof["mihomo_fingerprint_hash"]) == 64
+                )
+                receipt_context.expected_fingerprint_hash = proof.get("mihomo_fingerprint_hash")
+                receipt_context.expected_source_fingerprint = proof.get("source_fingerprint")
+                receipt_context.expected_active_hash = proof.get("mihomo_config_sha256")
+                receipt_context.expected_runtime_incarnation = proof.get("mihomo_runtime_incarnation")
+                receipt_context.owner_checks = receipt_observation.setdefault("owner_checks", [])
+            try:
+                result = bool(original_legacy_publish(proof, operation_id))
+                if receipt_observation is not None:
+                    receipt_observation["legacy_publisher_result"] = result
+                return result
+            finally:
+                for name in (
+                    "expected_fingerprint_hash", "expected_source_fingerprint",
+                    "expected_active_hash", "expected_runtime_incarnation", "owner_checks",
+                ):
+                    if hasattr(receipt_context, name):
+                        delattr(receipt_context, name)
+
+        def observed_shared_publish(**kwargs: Any) -> bool:
+            if not receipt_observation_active():
+                return bool(original_shared_publish(**kwargs))
+            owner_matches = kwargs.get("owner_matches")
+            receipt_observation["shared_publisher_invoked"] = True
+
+            def observed_owner_matches(fingerprint_hash: str) -> bool:
+                if receipt_observation is not None:
+                    observed_facts = receipt_observation.get("runtime_fence_facts", [])
+                    runtime_facts_before = len(observed_facts)
+                    check: dict[str, Any] = {
+                        "input_fingerprint_match": (
+                            fingerprint_hash == getattr(receipt_context, "expected_fingerprint_hash", None)
+                        ),
+                    }
+                    receipt_context.owner_check = True
+                    receipt_context.source_fingerprint_match = None
+                    try:
+                        result = bool(owner_matches(fingerprint_hash)) if callable(owner_matches) else False
+                    finally:
+                        receipt_context.owner_check = False
+                    check["source_fingerprint_match"] = receipt_context.source_fingerprint_match
+                    observed_facts = receipt_observation.get("runtime_fence_facts", [])
+                    check["runtime_fences"] = (
+                        observed_facts[-1] if len(observed_facts) > runtime_facts_before else None
+                    )
+                    check["owner_result"] = result
+                    receipt_context.owner_checks.append(check)
+                    return result
+                return bool(owner_matches(fingerprint_hash)) if callable(owner_matches) else False
+
+            def observed_native_udp_proof() -> dict[str, Any]:
+                proof = original_native_udp_proof()
+                if receipt_observation_active():
+                    receipt_observation["native_policy_proof"] = {
+                        "ok": proof.get("ok") is True,
+                        "top_level_rules_match": proof.get("native_top_level_rules_match") is True,
+                        "selector_membership_match": proof.get("selector_membership_matches") is True,
+                        "guarded_rules_match": proof.get("guarded_rules_match") is True,
+                    }
+                return proof
+
+            def observed_active_hash() -> str | None:
+                value = original_active_config_hash()
+                if receipt_observation_active():
+                    receipt_context.active_config_match = (
+                        value == getattr(receipt_context, "expected_active_hash", None)
+                    )
+                return value
+
+            def observed_runtime_incarnation() -> str | None:
+                value = original_current_runtime_incarnation()
+                if receipt_observation_active():
+                    receipt_context.runtime_incarnation_match = (
+                        value == getattr(receipt_context, "expected_runtime_incarnation", None)
+                    )
+                return value
+
+            def observed_write_receipt(**write_kwargs: Any) -> bool:
+                result = original_write_receipt(**write_kwargs)
+                if receipt_observation_active():
+                    native = write_kwargs.get("native_proof")
+                    receipt_observation["durable_write"] = {
+                        "input_fingerprint_match": (
+                            isinstance(write_kwargs.get("fingerprint"), dict)
+                            and write_kwargs["fingerprint"].get("hash")
+                            == getattr(receipt_context, "expected_fingerprint_hash", None)
+                        ),
+                        "active_config_match": getattr(receipt_context, "active_config_match", None),
+                        "runtime_incarnation_match": getattr(
+                            receipt_context, "runtime_incarnation_match", None,
+                        ),
+                        "native_proof_complete": bool(
+                            isinstance(native, dict)
+                            and native.get("native_top_level_rules_match") is True
+                            and native.get("selector_membership_matches") is True
+                            and native.get("guarded_rules_match") is True
+                        ),
+                        "write_result": bool(result),
+                    }
+                return result
+
+            if not callable(owner_matches):
+                return bool(original_shared_publish(**kwargs))
+            kwargs["owner_matches"] = observed_owner_matches
+            receipt_context.shared_publisher_active = True
+            mihomo_reconcile._native_udp_policy_proof = observed_native_udp_proof
+            mihomo_reconcile_fingerprint.active_config_hash = observed_active_hash
+            mihomo_reconcile_fingerprint._current_runtime_incarnation = observed_runtime_incarnation
+            mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state = observed_write_receipt
+            try:
+                result = bool(original_shared_publish(**kwargs))
+                receipt_observation["shared_publisher_result"] = result
+                return result
+            finally:
+                receipt_context.shared_publisher_active = False
+                mihomo_reconcile._native_udp_policy_proof = original_native_udp_proof
+                mihomo_reconcile_fingerprint.active_config_hash = original_active_config_hash
+                mihomo_reconcile_fingerprint._current_runtime_incarnation = original_current_runtime_incarnation
+                mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state = original_write_receipt
+
+        def observed_writer_guard_held() -> bool:
+            result = bool(original_writer_guard_held())
+            if (receipt_observation is not None
+                    and getattr(receipt_context, "shared_publisher_active", False)):
+                receipt_observation["writer_guard_held"] = result
+            return result
+
         adapter._runner = guarded_runner
         if callable(original_generation_stage):
             adapter.stage_subscription_generation = observed_generation_stage
@@ -4433,13 +4603,23 @@ def build_app(socket_path: Path):
         core_apply._apply_global_mode_hot_swap = guarded_global_hot_swap
         mihomo_runtime._run_compose_command = guarded_compose_command
         httpx.Client.request = guarded_http_request
+        if receipt_observation is not None:
+            xray_subscription_service._publish_legacy_admission_mihomo_receipt = observed_legacy_publish
+            xray_subscription_service._publish_mihomo_udp_receipt_with_owner = observed_shared_publish
+            xray_subscription_service._legacy_admission_runtime_fence_facts = observed_runtime_facts
+            xray_subscription_service._legacy_admission_source_fingerprint = observed_source_fingerprint
+            xray_subscription_service.xray_writer_guard_is_held = observed_writer_guard_held
         raised = False
+        if receipt_observation is not None:
+            receipt_context.admission_active = True
         try:
             result = operation()
         except Exception:
             result = None
             raised = True
         finally:
+            if receipt_observation is not None:
+                receipt_context.admission_active = False
             adapter._runner = original_runner
             if callable(original_generation_stage):
                 adapter.stage_subscription_generation = original_generation_stage
@@ -4451,7 +4631,23 @@ def build_app(socket_path: Path):
             core_apply._apply_global_mode_hot_swap = original_global_hot_swap
             mihomo_runtime._run_compose_command = original_compose_command
             httpx.Client.request = original_http_request
+            xray_subscription_service._publish_legacy_admission_mihomo_receipt = original_legacy_publish
+            xray_subscription_service._publish_mihomo_udp_receipt_with_owner = original_shared_publish
+            xray_subscription_service._legacy_admission_runtime_fence_facts = original_runtime_facts
+            xray_subscription_service._legacy_admission_source_fingerprint = original_source_fingerprint
+            xray_subscription_service.xray_writer_guard_is_held = original_writer_guard_held
+            mihomo_reconcile._native_udp_policy_proof = original_native_udp_proof
+            mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state = original_write_receipt
+            mihomo_reconcile_fingerprint.active_config_hash = original_active_config_hash
+            mihomo_reconcile_fingerprint._current_runtime_incarnation = original_current_runtime_incarnation
         return result, attempts, raised
+
+    def with_legacy_admission_mutation_tripwires(
+        operation: Any, receipt_observation: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, int], bool]:
+        """Serialize process-global mutation tripwires for synchronous requests."""
+        with _LEGACY_ADMISSION_MUTATION_LOCK:
+            return _run_legacy_admission_mutation_tripwires(operation, receipt_observation)
 
     def admit_legacy_inventory_for_acceptance(payload: dict[str, Any]) -> dict[str, Any]:
         """Invoke the real proof-only owner behind test-scoped mutation tripwires."""
@@ -4466,11 +4662,17 @@ def build_app(socket_path: Path):
 
         from fwrouter_api.services import xray_subscription_service
         try:
+            receipt_diagnostic: dict[str, Any] = {
+                "schema": "fwrouter-acceptance-legacy-receipt-diagnostic/v1",
+                "publisher_invoked": False,
+                "shared_publisher_invoked": False,
+            }
             result, attempts, raised = with_legacy_admission_mutation_tripwires(
                 lambda: xray_subscription_service.admit_legacy_subscription_inventory(
                     expected_digest=payload["expected_digest"],
                     operator_confirmation="PROOF_ONLY_LEGACY_ADMISSION",
-                )
+                ),
+                receipt_observation=receipt_diagnostic,
             )
             if raised or not isinstance(result, dict):
                 return {"ok": False, "error_code": "ACCEPTANCE_LEGACY_ADMISSION_EXCEPTION",
@@ -4478,6 +4680,11 @@ def build_app(socket_path: Path):
             allowed = {"ok", "status", "reason", "digest", "revision", "operation_id",
                        "already_admitted", "proof_receipt_written"}
             response = {key: result[key] for key in allowed if key in result}
+            if result.get("reason") == "native_receipt_unverified":
+                response["receipt_diagnostic"] = receipt_diagnostic
+                print("FWROUTER_ACCEPTANCE_LEGACY_RECEIPT_DIAGNOSTIC " + json.dumps(
+                    receipt_diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                ), flush=True)
             if result.get("ok") is not True:
                 safe_reasons = {
                     "writer_guard_required", "managed_native_runtimes_required", "durable_source_changed",
