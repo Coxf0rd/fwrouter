@@ -4027,18 +4027,256 @@ def build_app(socket_path: Path):
         methods=["GET"],
     )
 
+    def legacy_inventory_digest_for_acceptance() -> dict[str, Any]:
+        """Expose the real owner digest to this isolated test worker only."""
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.services.subscription import _subscription_inventory_digest
+
+        with db_session() as connection:
+            digest, inventory_count = _subscription_inventory_digest(connection)
+        return {"ok": True, "digest": digest, "inventory_count": inventory_count}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/subscription/legacy-inventory-digest",
+        legacy_inventory_digest_for_acceptance,
+        methods=["GET"],
+    )
+
+    def with_legacy_admission_mutation_tripwires(
+        operation: Any,
+    ) -> tuple[Any, dict[str, int], bool]:
+        """Run an operation while making native apply/reload attempts fail closed."""
+        from fwrouter_api.adapters.xray_common import _xray_adapter
+        from fwrouter_api.services import mihomo_runtime
+        from fwrouter_api.services import apply as core_apply
+        import httpx
+
+        attempts = {
+            "xray_apply_or_reload": 0,
+            "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0,
+            "unexpected_http_request": 0,
+        }
+        adapter = _xray_adapter()
+        original_runner = adapter._runner
+        original_generation_apply = getattr(adapter, "apply_staged_subscription_generation", None)
+        original_compose_command = mihomo_runtime._run_compose_command
+        original_http_request = httpx.Client.request
+        dataplane_adapter = core_apply.DEFAULT_DATAPLANE_ADAPTER
+        original_dataplane_apply = dataplane_adapter.apply
+        original_dataplane_rollback = dataplane_adapter.rollback
+        original_global_hot_swap = core_apply._apply_global_mode_hot_swap
+
+        def guarded_runner(action: str, request: dict[str, Any]) -> Any:
+            if action == "reload":
+                attempts["xray_apply_or_reload"] += 1
+                raise RuntimeError("acceptance proof-only Xray mutation tripwire")
+            return original_runner(action, request)
+
+        def guarded_generation_apply(*args: Any, **kwargs: Any) -> Any:
+            attempts["xray_apply_or_reload"] += 1
+            raise RuntimeError("acceptance proof-only Xray apply tripwire")
+
+        def guarded_dataplane_apply(*args: Any, **kwargs: Any) -> Any:
+            attempts["core_dataplane_apply_or_rollback"] += 1
+            raise RuntimeError("acceptance proof-only Core dataplane apply tripwire")
+
+        def guarded_dataplane_rollback(*args: Any, **kwargs: Any) -> Any:
+            attempts["core_dataplane_apply_or_rollback"] += 1
+            raise RuntimeError("acceptance proof-only Core dataplane rollback tripwire")
+
+        def guarded_global_hot_swap(*args: Any, **kwargs: Any) -> Any:
+            attempts["core_dataplane_apply_or_rollback"] += 1
+            raise RuntimeError("acceptance proof-only Core routing hot-swap tripwire")
+
+        def guarded_compose_command(args: list[str], **kwargs: Any) -> Any:
+            if args in (["restart", "mihomo"], ["up", "-d", "--force-recreate", "mihomo"]):
+                attempts["mihomo_apply_or_reload"] += 1
+                raise RuntimeError("acceptance proof-only Mihomo restart tripwire")
+            return original_compose_command(args, **kwargs)
+
+        def guarded_http_request(client: Any, method: str, url: Any, *args: Any, **kwargs: Any) -> Any:
+            parsed = urlsplit(str(url))
+            controller = parsed.hostname == "127.0.0.1" and parsed.port == 5200
+            if controller and method.upper() in {"GET", "HEAD"}:
+                return original_http_request(client, method, url, *args, **kwargs)
+            if controller:
+                attempts["mihomo_apply_or_reload"] += 1
+                raise RuntimeError("acceptance proof-only Mihomo controller mutation tripwire")
+            attempts["unexpected_http_request"] += 1
+            raise RuntimeError("acceptance proof-only unexpected HTTP request tripwire")
+
+        adapter._runner = guarded_runner
+        if original_generation_apply is not None:
+            adapter.apply_staged_subscription_generation = guarded_generation_apply
+        dataplane_adapter.apply = guarded_dataplane_apply
+        dataplane_adapter.rollback = guarded_dataplane_rollback
+        core_apply._apply_global_mode_hot_swap = guarded_global_hot_swap
+        mihomo_runtime._run_compose_command = guarded_compose_command
+        httpx.Client.request = guarded_http_request
+        raised = False
+        try:
+            result = operation()
+        except Exception:
+            result = None
+            raised = True
+        finally:
+            adapter._runner = original_runner
+            if original_generation_apply is not None:
+                adapter.apply_staged_subscription_generation = original_generation_apply
+            dataplane_adapter.apply = original_dataplane_apply
+            dataplane_adapter.rollback = original_dataplane_rollback
+            core_apply._apply_global_mode_hot_swap = original_global_hot_swap
+            mihomo_runtime._run_compose_command = original_compose_command
+            httpx.Client.request = original_http_request
+        return result, attempts, raised
+
+    def admit_legacy_inventory_for_acceptance(payload: dict[str, Any]) -> dict[str, Any]:
+        """Invoke the real proof-only owner behind test-scoped mutation tripwires."""
+        if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+                or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT")
+                != "/tmp/fwrouter-application-acceptance"):
+            return {"ok": False, "error_code": "ACCEPTANCE_WORKER_SCOPE_INVALID"}
+        if (set(payload) != {"expected_digest"}
+                or not isinstance(payload.get("expected_digest"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", payload["expected_digest"])):
+            return {"ok": False, "error_code": "ACCEPTANCE_LEGACY_ADMISSION_REQUEST_INVALID"}
+
+        from fwrouter_api.services import xray_subscription_service
+        try:
+            result, attempts, raised = with_legacy_admission_mutation_tripwires(
+                lambda: xray_subscription_service.admit_legacy_subscription_inventory(
+                    expected_digest=payload["expected_digest"],
+                    operator_confirmation="PROOF_ONLY_LEGACY_ADMISSION",
+                )
+            )
+            if raised or not isinstance(result, dict):
+                return {"ok": False, "error_code": "ACCEPTANCE_LEGACY_ADMISSION_EXCEPTION",
+                        "mutation_attempts": dict(attempts)}
+            allowed = {"ok", "status", "reason", "digest", "revision", "operation_id",
+                       "already_admitted", "proof_receipt_written"}
+            response = {key: result[key] for key in allowed if key in result}
+            response["mutation_attempts"] = dict(attempts)
+            return response
+        except Exception:
+            # Keep diagnostics closed-schema: a backend exception may include
+            # fixture data and must never be copied into hosted artifacts.
+            return {"ok": False, "error_code": "ACCEPTANCE_LEGACY_ADMISSION_EXCEPTION",
+                    "mutation_attempts": {"xray_apply_or_reload": -1,
+                                           "mihomo_apply_or_reload": -1,
+                                           "core_dataplane_apply_or_rollback": -1,
+                                           "unexpected_http_request": -1}}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/subscription/admit-legacy-inventory",
+        admit_legacy_inventory_for_acceptance,
+        methods=["POST"],
+    )
+
+    def proof_only_tripwire_self_check() -> dict[str, Any]:
+        """Prove the test-only tripwires intercept mutation and refresh attempts."""
+        if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+                or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT")
+                != "/tmp/fwrouter-application-acceptance"):
+            return {"ok": False, "error_code": "ACCEPTANCE_WORKER_SCOPE_INVALID"}
+
+        from fwrouter_api.adapters.xray_common import _xray_adapter
+        from fwrouter_api.services import mihomo_runtime
+        from fwrouter_api.services import apply as core_apply
+        import httpx
+
+        def unexpected_http_attempt() -> None:
+            with httpx.Client() as client:
+                client.get("http://proof-tripwire.invalid/")
+
+        checks = {}
+        attempts_by_operation = {}
+        for name, operation in (
+            ("xray_reload", lambda: _xray_adapter()._run("reload")),
+            ("mihomo_restart", lambda: mihomo_runtime._run_compose_command(["restart", "mihomo"])),
+            ("core_dataplane_apply", lambda: core_apply.DEFAULT_DATAPLANE_ADAPTER.apply(None)),
+            ("core_dataplane_rollback", lambda: core_apply.DEFAULT_DATAPLANE_ADAPTER.rollback(None)),
+            ("core_routing_hot_swap", lambda: core_apply._apply_global_mode_hot_swap()),
+            ("unexpected_http", unexpected_http_attempt),
+        ):
+            _result, attempts, raised = with_legacy_admission_mutation_tripwires(operation)
+            checks[name] = raised
+            attempts_by_operation[name] = attempts
+        return {"ok": all(checks.values()), "intercepts": checks,
+                "attempts": attempts_by_operation}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/subscription/proof-only-tripwire-self-check",
+        proof_only_tripwire_self_check,
+        methods=["POST"],
+    )
+
     def recover_startup_xray_subscription_generation() -> dict[str, Any]:
         """Run only the real Xray profile startup recovery under its normal guard."""
         from fwrouter_api.services.bootstrap import recover_startup_xray_subscription_profiles
         from fwrouter_api.services.subscription import get_subscription_native_generation_state
+        from fwrouter_api.adapters.xray_common import _xray_adapter
+        from fwrouter_api.services.xray_subscription_service import _xray_generation_checkpoint_path
 
-        result = recover_startup_xray_subscription_profiles()
+        tripwire_armed = False
+        try:
+            checkpoint_path = _xray_generation_checkpoint_path(_xray_adapter())
+            checkpoint_info = checkpoint_path.lstat()
+            if (stat.S_ISREG(checkpoint_info.st_mode) and not stat.S_ISLNK(checkpoint_info.st_mode)
+                    and checkpoint_info.st_size <= 262144):
+                checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                tripwire_armed = (
+                    isinstance(checkpoint, dict)
+                    and checkpoint.get("operation_mode") == "proof_only_legacy_admission"
+                )
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError):
+            # A malformed or unsupported checkpoint is exercised by the actual
+            # owner recovery path. Only a positively identified proof-only mode
+            # needs mutation tripwires; ordinary recovery retains its contract.
+            pass
+        try:
+            if tripwire_armed:
+                result, mutation_attempts, raised = with_legacy_admission_mutation_tripwires(
+                    recover_startup_xray_subscription_profiles,
+                )
+            else:
+                result = recover_startup_xray_subscription_profiles()
+                mutation_attempts = {"xray_apply_or_reload": 0,
+                                     "mihomo_apply_or_reload": 0,
+                                     "core_dataplane_apply_or_rollback": 0,
+                                     "unexpected_http_request": 0}
+                raised = False
+        except Exception:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "error_code": "ACCEPTANCE_STARTUP_RECOVERY_EXCEPTION",
+                "mutation_attempts": {"xray_apply_or_reload": -1,
+                                       "mihomo_apply_or_reload": -1,
+                                       "core_dataplane_apply_or_rollback": -1,
+                                       "unexpected_http_request": -1},
+                "tripwire_armed": tripwire_armed,
+                "native_generation": get_subscription_native_generation_state(),
+            }
+        if raised or not isinstance(result, dict):
+            return {
+                "ok": False,
+                "status": "blocked",
+                "error_code": "ACCEPTANCE_STARTUP_RECOVERY_EXCEPTION",
+                "mutation_attempts": mutation_attempts,
+                "tripwire_armed": tripwire_armed,
+                "native_generation": get_subscription_native_generation_state(),
+            }
         return {
             "ok": result.get("ok") is True,
             "status": str(result.get("status") or ""),
             "stage": str(result.get("stage") or ""),
             "error_code": str(result.get("error_code") or ""),
             "inventory_authority": str(result.get("inventory_authority") or ""),
+            "mutation_attempts": mutation_attempts,
+            "tripwire_armed": tripwire_armed,
             "native_generation": get_subscription_native_generation_state(),
         }
 

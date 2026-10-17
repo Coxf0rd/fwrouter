@@ -4,9 +4,12 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import stat
+import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -1487,34 +1490,1059 @@ def _atomic_write_private_checkpoint(path: Path, text: str) -> None:
             pass
 
 
-def _generation_source_fingerprint() -> str:
-    with db_session() as connection:
-        sources = [
-            [dict(row) for row in connection.execute("SELECT * FROM subscription_node_identities ORDER BY identity_id")],
-            [dict(row) for row in connection.execute("SELECT * FROM subscription_node_aliases ORDER BY server_id")],
-            [dict(row) for row in connection.execute("SELECT * FROM subscription_node_credentials ORDER BY scope, identity_id")],
-            [dict(row) for row in connection.execute("SELECT * FROM subscription_node_credential_history ORDER BY client_uuid")],
-            [dict(row) for row in connection.execute(
+def _generation_source_fingerprint(connection: sqlite3.Connection | None = None) -> str:
+    def read_sources(active: sqlite3.Connection) -> list[Any]:
+        return [
+            [dict(row) for row in active.execute("SELECT * FROM subscription_node_identities ORDER BY identity_id")],
+            [dict(row) for row in active.execute("SELECT * FROM subscription_node_aliases ORDER BY server_id")],
+            [dict(row) for row in active.execute("SELECT * FROM subscription_node_credentials ORDER BY scope, identity_id")],
+            [dict(row) for row in active.execute("SELECT * FROM subscription_node_credential_history ORDER BY client_uuid")],
+            [dict(row) for row in active.execute(
                 "SELECT * FROM subscription_node_identity_transitions ORDER BY identity_id, from_revision"
             )],
-            [dict(row) for row in connection.execute("SELECT source_id, server_id, is_active FROM subscription_server_memberships ORDER BY source_id, server_id")],
-            [dict(row) for row in connection.execute("SELECT account_id, slug, enabled FROM subscription_accounts ORDER BY account_id").fetchall()],
-            [dict(row) for row in connection.execute("SELECT client_id, account_id, token, enabled FROM subscription_clients ORDER BY client_id").fetchall()],
-            [dict(row) for row in connection.execute("SELECT server_id, vpn_auto, vpn_auto_priority, manually_deleted_at FROM server_preferences ORDER BY server_id").fetchall()],
-            [dict(row) for row in connection.execute("SELECT server_id, inventory_state, raw_json FROM servers ORDER BY server_id").fetchall()],
-            [dict(row) for row in connection.execute("""SELECT subject_id, subject_type, subject_role, desired_mode, is_active, is_deleted,
+            [dict(row) for row in active.execute("SELECT source_id, server_id, is_active FROM subscription_server_memberships ORDER BY source_id, server_id")],
+            [dict(row) for row in active.execute("SELECT account_id, slug, enabled FROM subscription_accounts ORDER BY account_id").fetchall()],
+            [dict(row) for row in active.execute("SELECT client_id, account_id, token, enabled FROM subscription_clients ORDER BY client_id").fetchall()],
+            [dict(row) for row in active.execute("SELECT server_id, vpn_auto, vpn_auto_priority, manually_deleted_at FROM server_preferences ORDER BY server_id").fetchall()],
+            [dict(row) for row in active.execute("SELECT server_id, inventory_state, raw_json FROM servers ORDER BY server_id").fetchall()],
+            [dict(row) for row in active.execute("""SELECT subject_id, subject_type, subject_role, desired_mode, is_active, is_deleted,
                 json_extract(metadata_json, '$.detail.client_id') AS client_id,
                 json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid,
                 json_extract(metadata_json, '$.detail.email') AS email
                 FROM subjects WHERE implementation_kind = 'xray' ORDER BY subject_id""").fetchall()],
-            [dict(row) for row in connection.execute("SELECT subject_id, selected_server_id, selected_until FROM subject_server_overrides ORDER BY subject_id").fetchall()],
-            [dict(row) for row in connection.execute("SELECT subject_id, override_mode, override_until FROM subject_user_overrides ORDER BY subject_id").fetchall()],
-            [dict(row) for row in connection.execute("SELECT desired_mode, selective_default, server_mode FROM routing_global_state ORDER BY id").fetchall()],
-            [dict(row) for row in connection.execute("SELECT key, value_json FROM settings WHERE key='vpn_auto_exclusive_source_ref'").fetchall()],
-            [dict(row) for row in connection.execute("SELECT source_ref, enabled, logical_server_id, provider_id, resource_id, protocol, binding_revision FROM provider_bindings ORDER BY source_ref").fetchall()],
-            [dict(row) for row in connection.execute("SELECT source_ref, provider_member_id, location_id, protocol, provider_status, auto_enabled, priority, advertised FROM provider_members ORDER BY source_ref, provider_member_id, location_id, protocol").fetchall()],
+            [dict(row) for row in active.execute("SELECT subject_id, selected_server_id, selected_until FROM subject_server_overrides ORDER BY subject_id").fetchall()],
+            [dict(row) for row in active.execute("SELECT subject_id, override_mode, override_until FROM subject_user_overrides ORDER BY subject_id").fetchall()],
+            [dict(row) for row in active.execute("SELECT desired_mode, selective_default, server_mode FROM routing_global_state ORDER BY id").fetchall()],
+            [dict(row) for row in active.execute("SELECT key, value_json FROM settings WHERE key='vpn_auto_exclusive_source_ref'").fetchall()],
+            [dict(row) for row in active.execute("SELECT source_ref, enabled, logical_server_id, provider_id, resource_id, protocol, binding_revision FROM provider_bindings ORDER BY source_ref").fetchall()],
+            [dict(row) for row in active.execute("SELECT source_ref, provider_member_id, location_id, protocol, provider_status, auto_enabled, priority, advertised FROM provider_members ORDER BY source_ref, provider_member_id, location_id, protocol").fetchall()],
         ]
+
+    if connection is None:
+        with db_session() as active:
+            sources = read_sources(active)
+    else:
+        sources = read_sources(connection)
     return hashlib.sha256(json.dumps(sources, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _legacy_admission_source_fingerprint(connection: sqlite3.Connection | None = None) -> str:
+    """Proof-only extension of the historical generation source fence.
+
+    Keep ordinary generation/checkpoint fingerprints byte-for-byte compatible;
+    the explicit admission path needs extra public/Core projection fences.
+    """
+    def payload(active: sqlite3.Connection) -> list[Any]:
+        return [
+            _generation_source_fingerprint(active),
+            [dict(row) for row in active.execute(
+                "SELECT token, nodes_json, runtime_verified_at, updated_at "
+                "FROM subscription_profile_snapshots ORDER BY token"
+            ).fetchall()],
+            [dict(row) for row in active.execute(
+                "SELECT id, desired_mode, applied_mode, selective_default, server_mode, "
+                "desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
+                "active_auto_server_id, apply_state, error_code "
+                "FROM routing_global_state ORDER BY id"
+            ).fetchall()],
+            [dict(row) for row in active.execute(
+                "SELECT module_name, desired_state, lifecycle_mode FROM modules ORDER BY module_name"
+            ).fetchall()],
+            [dict(row) for row in active.execute(
+                "SELECT key, value_json FROM settings "
+                "WHERE key IN ('routing.auto_selection_provenance', 'vpn_auto_exclusive_source_ref', 'core.bypass') "
+                "ORDER BY key"
+            ).fetchall()],
+            [dict(row) for row in active.execute(
+                "SELECT apply_id, job_id, status, created_at, promoted_at "
+                "FROM apply_versions ORDER BY apply_id"
+            ).fetchall()],
+            [dict(row) for row in active.execute(
+                "SELECT connection_id, system_id, label, connection_type, runtime_type, "
+                "replacement_target, location, address, integration_mode, refresh_mode, enabled, value_json "
+                "FROM external_connections ORDER BY connection_id"
+            ).fetchall()],
+        ]
+
+    if connection is None:
+        with db_session() as active:
+            values = payload(active)
+    else:
+        values = payload(connection)
+    return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _legacy_admission_core_runtime_snapshot(connection: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
+    """Capture Core/module apply observations for one fresh proof attempt only."""
+    query = (
+        "SELECT module_name, desired_state, lifecycle_mode, runtime_state, apply_state "
+        "FROM modules WHERE module_name IN ('core', 'vpn', 'xray', 'watchdog', 'selector') "
+        "ORDER BY module_name"
+    )
+    if connection is None:
+        with db_session() as active:
+            return [dict(row) for row in active.execute(query).fetchall()]
+    return [dict(row) for row in connection.execute(query).fetchall()]
+
+
+def _legacy_admission_core_runtime_fingerprint(connection: sqlite3.Connection | None = None) -> str:
+    return hashlib.sha256(json.dumps(
+        _legacy_admission_core_runtime_snapshot(connection), sort_keys=True, default=str,
+    ).encode()).hexdigest()
+
+
+def _legacy_admission_core_unavailable_reason(connection: sqlite3.Connection | None = None) -> str | None:
+    """Reject bypass, incomplete Core apply state, or an active apply owner."""
+    if connection is None:
+        with db_session() as active:
+            return _legacy_admission_core_unavailable_reason(active)
+    bypass_row = connection.execute(
+        "SELECT value_json FROM settings WHERE key='core.bypass'",
+    ).fetchone()
+    if bypass_row is not None:
+        try:
+            bypass = json.loads(str(bypass_row["value_json"] or ""))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "core_bypass_state_unverifiable"
+        if not isinstance(bypass, dict):
+            return "core_bypass_state_unverifiable"
+        if type(bypass.get("enabled", False)) is not bool:
+            return "core_bypass_state_unverifiable"
+        if bypass.get("enabled"):
+            return "core_bypass_active"
+
+    core = connection.execute(
+        "SELECT desired_state, runtime_state, apply_state FROM modules WHERE module_name='core'",
+    ).fetchone()
+    routing = connection.execute(
+        "SELECT desired_mode, applied_mode, apply_state FROM routing_global_state WHERE id=1",
+    ).fetchone()
+    latest_apply = connection.execute(
+        "SELECT apply_id, status FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+    ).fetchone()
+    if latest_apply is None or latest_apply["status"] != "applied":
+        return "core_applied_generation_unowned"
+    if (
+        core is None or core["desired_state"] != "enabled" or core["runtime_state"] != "running"
+        or core["apply_state"] != "clean" or routing is None
+        or routing["apply_state"] != "clean" or routing["desired_mode"] != routing["applied_mode"]
+    ):
+        return "core_apply_state_unverified"
+
+    # Use the existing lock-key tokenization without its stale-job cleanup side
+    # effect. Admission must remain a read-only observer of active owners.
+    from fwrouter_api.services.jobs import _lock_tokens
+    active_rows = connection.execute(
+        "SELECT job_type, lock_key FROM jobs WHERE status IN ('queued', 'running')",
+    ).fetchall()
+    blocked_tokens = {"apply", "module:core", "selector", "xray"}
+    for row in active_rows:
+        if row["job_type"] == "core_bypass" or blocked_tokens.intersection(_lock_tokens(row["lock_key"])):
+            return "core_apply_inflight"
+    return None
+
+
+def _collect_legacy_admission_core_native_proof() -> dict[str, Any]:
+    """Prove the currently-owned Core apply and its live enforcement mode.
+
+    This is a read-only proof collector. It refreshes only existing short-lived
+    readback cache keys and never invokes the Core apply owner.
+    """
+    from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
+    from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+
+    try:
+        manifest = get_live_probe_cache(
+            "dataplane_global.applied_manifest", ttl_seconds=5.0,
+            loader=dataplane_global._read_applied_manifest_uncached, force_refresh=True,
+        )
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("apply_id"), str):
+            return {"ok": False, "reason": "core_applied_manifest_unavailable"}
+        manifest_apply_id = manifest["apply_id"]
+        with db_session() as connection:
+            routing_row = connection.execute(
+                "SELECT desired_mode, applied_mode, selective_default, server_mode, "
+                "desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
+                "active_auto_server_id, apply_state FROM routing_global_state WHERE id=1",
+            ).fetchone()
+            owned_apply = connection.execute(
+                "SELECT status FROM apply_versions WHERE apply_id=?", (manifest_apply_id,),
+            ).fetchone()
+            latest_apply = connection.execute(
+                "SELECT apply_id, status FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+            ).fetchone()
+            routing = dict(routing_row) if routing_row is not None else None
+        if routing is None or routing["apply_state"] != "clean":
+            return {"ok": False, "reason": "core_routing_state_unverified"}
+        if (
+            owned_apply is None or owned_apply["status"] != "applied"
+            or latest_apply is None or latest_apply["status"] != "applied"
+            or str(latest_apply["apply_id"]) != manifest_apply_id
+        ):
+            return {"ok": False, "reason": "core_applied_generation_unowned"}
+        manifest_routing = manifest.get("routing_global_state")
+        if not isinstance(manifest_routing, dict):
+            return {"ok": False, "reason": "core_applied_routing_unavailable"}
+        routing_keys = (
+            "desired_mode", "applied_mode", "selective_default", "server_mode",
+            "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until",
+            "active_auto_server_id",
+        )
+        if any(
+            str(manifest_routing.get(key) or "") != str(routing.get(key) or "")
+            for key in routing_keys
+        ):
+            return {"ok": False, "reason": "core_applied_routing_mismatch"}
+        mode = str(routing.get("desired_mode") or "").strip().lower()
+        if mode not in {"direct", "selective", "vpn"} or routing.get("applied_mode") != mode:
+            return {"ok": False, "reason": "core_routing_mode_unverified"}
+
+        payload = dataplane_status._read_live_dataplane_payload()
+        if not dataplane_status._live_owned_table_ready(payload):
+            return {"ok": False, "reason": "core_live_dataplane_unready"}
+        # Refresh the existing active-mode probe explicitly; runtime enforcement
+        # consumes this freshly populated cache entry along with the payload.
+        get_live_probe_cache(
+            "dataplane_live.global_mode", ttl_seconds=2.0,
+            loader=dataplane_live._probe_live_global_mode_uncached, force_refresh=True,
+        )
+        enforcement = dataplane_status.build_runtime_enforcement_state(live_payload=payload)
+        expected_levels = {
+            "direct": "global_direct_enforced",
+            "selective": "global_selective_enforced",
+            "vpn": "global_vpn_enforced",
+        }
+        if (
+            not isinstance(enforcement, dict)
+            or enforcement.get("enforcement_level") != expected_levels[mode]
+            or enforcement.get("traffic_enforcement_guaranteed") is not True
+            or enforcement.get("active_mode_matches_intent") is not True
+            or str(enforcement.get("live_global_mode") or "").strip().lower() != mode
+            or enforcement.get("bypass_active") is True
+        ):
+            return {"ok": False, "reason": "core_native_enforcement_unproven"}
+        manifest_hash = hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"),
+        ).hexdigest()
+        return {
+            "ok": True,
+            "apply_id": manifest_apply_id,
+            "manifest_hash": manifest_hash,
+            "enforcement_level": enforcement["enforcement_level"],
+            "traffic_enforcement_guaranteed": True,
+            "active_mode_matches_intent": True,
+            "live_global_mode": mode,
+            "live_selective_default": enforcement.get("live_selective_default"),
+        }
+    except Exception:
+        return {"ok": False, "reason": "core_native_readback_unavailable"}
+
+
+def _legacy_admission_checkpoint_parent_ready(path: Path) -> bool:
+    """Create a new private checkpoint parent safely, without following or chmodding it."""
+    parent = path.parent
+    try:
+        try:
+            before = parent.lstat()
+        except FileNotFoundError:
+            ancestor = parent.parent.lstat()
+            if not stat.S_ISDIR(ancestor.st_mode) or stat.S_ISLNK(ancestor.st_mode) or ancestor.st_uid != os.geteuid():
+                return False
+            try:
+                os.mkdir(parent, 0o700)
+            except FileExistsError:
+                pass
+            before = parent.lstat()
+        if (
+            not stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode)
+            or before.st_uid != os.geteuid() or stat.S_IMODE(before.st_mode) & 0o077
+            or stat.S_IMODE(before.st_mode) & 0o700 != 0o700
+        ):
+            return False
+        descriptor = os.open(
+            parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            opened = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        after = parent.lstat()
+        return bool(
+            stat.S_ISDIR(opened.st_mode) and opened.st_uid == os.geteuid()
+            and stat.S_IMODE(opened.st_mode) & 0o077 == 0
+            and (before.st_dev, before.st_ino) == (opened.st_dev, opened.st_ino)
+            and (after.st_dev, after.st_ino) == (opened.st_dev, opened.st_ino)
+        )
+    except OSError:
+        return False
+
+
+def _legacy_mihomo_candidate_matches(active_path: Path, candidate_path: Path) -> bool:
+    """Prefer exact bytes; use the existing bounded semantic comparator only otherwise."""
+    def digest(path: Path) -> bytes:
+        hasher = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        return hasher.digest()
+    try:
+        if digest(active_path) == digest(candidate_path):
+            return True
+    except OSError:
+        return False
+    from fwrouter_api.services.mihomo_reconcile import _semantic_config_files_equal
+    return _semantic_config_files_equal(str(active_path), str(candidate_path))
+
+
+_PROOF_ONLY_LEGACY_ADMISSION_CONFIRMATION = "PROOF_ONLY_LEGACY_ADMISSION"
+
+
+def _legacy_admission_checkpoint_payload(path: Path) -> dict[str, Any] | None:
+    try:
+        info = path.lstat()
+        parent = path.parent.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1 or info.st_size > 65536
+            or not stat.S_ISDIR(parent.st_mode) or stat.S_ISLNK(parent.st_mode)
+            or parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) & 0o077
+        ):
+            return None
+        raw = path.read_bytes()
+        after = path.lstat()
+        if (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino) or len(raw) > 65536:
+            return None
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    allowed = {
+        "schema", "operation_mode", "operation_id", "phase", "candidate_digest",
+        "candidate_revision", "source_fingerprint", "selection_revision",
+        "selection_decision_id", "created_at", "proof_summary",
+        "xray_runtime_incarnation", "mihomo_runtime_incarnation",
+        "xray_config_sha256", "mihomo_config_sha256", "mihomo_fingerprint_hash",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) - allowed
+        or type(payload.get("schema")) is not int
+        or payload.get("schema") != 1
+        or payload.get("operation_mode") != "proof_only_legacy_admission"
+        or payload.get("phase") not in {"proof_started", "proof_complete", "verified"}
+        or not isinstance(payload.get("operation_id"), str)
+        or not re.fullmatch(r"[0-9a-f]{32}", payload.get("operation_id", ""))
+        or not isinstance(payload.get("candidate_digest"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", payload.get("candidate_digest", ""))
+        or type(payload.get("candidate_revision")) is not int
+        or payload.get("candidate_revision") < 1
+        or not isinstance(payload.get("source_fingerprint"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", payload.get("source_fingerprint", ""))
+        or type(payload.get("selection_revision")) is not int
+    ):
+        return None
+    return payload
+
+
+def _legacy_admission_runtime_fences_match(admission: Any) -> bool:
+    """Check live native incarnation/config fences immediately before promotion."""
+    try:
+        adapter = _xray_adapter()
+        from fwrouter_api.services import mihomo_config
+        from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
+        from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+        from fwrouter_api.services import dataplane_global
+        from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+        with db_session() as connection:
+            core_fingerprint = _legacy_admission_core_runtime_fingerprint(connection)
+            core_unavailable = _legacy_admission_core_unavailable_reason(connection)
+        xray_sha = hashlib.sha256(Path(adapter.config_path).read_bytes()).hexdigest()
+        mihomo_path = Path(mihomo_config._resolved_base_config_path())
+        mihomo_sha = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+        fingerprint = current_mihomo_input_fingerprint()
+        core_native = _collect_legacy_admission_core_native_proof()
+        return bool(
+            callable(getattr(adapter, "get_runtime_incarnation", None))
+            and callable(getattr(adapter, "get_runtime_config_sha256", None))
+            and adapter.get_runtime_incarnation() == admission.proof_only_xray_incarnation
+            and adapter.get_runtime_config_sha256() == admission.proof_only_xray_config_sha256 == xray_sha
+            and get_mihomo_runtime_incarnation() == admission.proof_only_mihomo_incarnation
+            and mihomo_sha == admission.proof_only_mihomo_config_sha256
+            and fingerprint.get("hash") == admission.proof_only_mihomo_fingerprint_hash
+            and core_fingerprint == admission.proof_only_core_runtime_fingerprint
+            and core_unavailable is None
+            and core_native.get("ok") is True
+            and core_native.get("manifest_hash") == admission.proof_only_core_manifest_hash
+            and core_native.get("apply_id") == admission.proof_only_core_apply_id
+            and core_native.get("enforcement_level") == admission.proof_only_core_enforcement_level
+            and core_native.get("live_global_mode") == admission.proof_only_core_live_mode
+        )
+    except Exception:
+        return False
+
+
+def _legacy_admission_durable_fences_match(
+    *, expected_digest: str, expected_source: str, selection_revision: int,
+    selection_decision_id: str | None, expected_status: str, expected_revision: int,
+    expected_core_runtime_fingerprint: str,
+) -> bool:
+    """Recheck the admission tuple in one immediate transaction before closure."""
+    try:
+        from fwrouter_api.services.subscription import _read_subscription_native_generation, _subscription_inventory_digest
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+        with db_session() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            digest, count = _subscription_inventory_digest(connection)
+            source = _legacy_admission_source_fingerprint(connection)
+            selection = read_selection_fence(connection)
+            generation = _read_subscription_native_generation(connection)
+            return bool(
+                digest == expected_digest and count > 0 and source == expected_source
+                and selection.get("revision") == selection_revision
+                and selection.get("decision_id") == selection_decision_id
+                and _legacy_admission_core_runtime_fingerprint(connection)
+                == expected_core_runtime_fingerprint
+                and _legacy_admission_core_unavailable_reason(connection) is None
+                and generation.get("status") == expected_status
+                and generation.get("candidate_digest") == expected_digest
+                and generation.get("candidate_revision") == expected_revision
+                and (expected_status != "verified" or (
+                    generation.get("verified_digest") == expected_digest
+                    and generation.get("verified_revision") == expected_revision
+                ))
+            )
+    except Exception:
+        return False
+
+
+def _collect_legacy_inventory_native_proof(
+    adapter: Any,
+    *,
+    expected_digest: str,
+    source_fingerprint: str,
+    checkpoint_path: Path,
+) -> dict[str, Any]:
+    """Build private candidates and prove they equal the currently loaded native state.
+
+    This deliberately does not call the regular staging owner: that helper
+    writes shared candidate paths. The temporary directory is private and is
+    removed on return; this function never applies, reloads, or publishes.
+    """
+    from fwrouter_api.services import mihomo_config, subscription_profiles
+    from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.subscription import _subscription_inventory_digest
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+    from fwrouter_api.services.xray_materialize import (
+        _verify_active_config_bindings, _verify_active_config_client_modes,
+    )
+    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
+
+    if not xray_writer_guard_is_held():
+        return {"ok": False, "reason": "writer_guard_required"}
+    module = _module_state("xray") or {}
+    mihomo_module = _module_state("mihomo") or {}
+    if not (
+        module.get("desired_state") == "enabled" and module.get("lifecycle_mode") == "managed"
+        and mihomo_module.get("desired_state") == "enabled" and mihomo_module.get("lifecycle_mode") == "managed"
+    ):
+        return {"ok": False, "reason": "managed_native_runtimes_required"}
+    try:
+        with db_session() as connection:
+            digest, count = _subscription_inventory_digest(connection)
+            source_now = _legacy_admission_source_fingerprint(connection)
+            selection = read_selection_fence(connection)
+            core_unavailable = _legacy_admission_core_unavailable_reason(connection)
+            core_runtime_fingerprint = _legacy_admission_core_runtime_fingerprint(connection)
+        if digest != expected_digest or count <= 0 or source_now != source_fingerprint:
+            return {"ok": False, "reason": "durable_source_changed"}
+        if core_unavailable is not None:
+            return {"ok": False, "reason": core_unavailable}
+        core_native_proof = _collect_legacy_admission_core_native_proof()
+        if core_native_proof.get("ok") is not True:
+            return {"ok": False, "reason": core_native_proof.get("reason", "core_native_enforcement_unproven")}
+        if not callable(getattr(adapter, "stage_subscription_generation", None)):
+            return {"ok": False, "reason": "xray_candidate_validation_unavailable"}
+        xray_path = Path(adapter.config_path)
+        active_xray_sha = hashlib.sha256(xray_path.read_bytes()).hexdigest()
+        xray_incarnation = adapter.get_runtime_incarnation()
+        mounted_xray_sha = adapter.get_runtime_config_sha256()
+        if not xray_incarnation or active_xray_sha != mounted_xray_sha:
+            return {"ok": False, "reason": "xray_active_runtime_mismatch"}
+        mihomo_path = Path(mihomo_config._resolved_base_config_path())
+        active_mihomo_sha = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+        mihomo_incarnation = get_mihomo_runtime_incarnation()
+        if not mihomo_incarnation:
+            return {"ok": False, "reason": "mihomo_runtime_incarnation_unavailable"}
+        input_fingerprint = current_mihomo_input_fingerprint()
+        fingerprint_hash = str(input_fingerprint.get("hash") or "")
+        if len(fingerprint_hash) != 64:
+            return {"ok": False, "reason": "mihomo_input_fingerprint_unavailable"}
+
+        # Refuse deterministic fallback credentials. Proof-only admission may
+        # verify identities already present in durable mapping; it never
+        # creates, registers, repairs, or rotates them.
+        with db_session() as connection:
+            from fwrouter_api.services.subscription_node_identity import credentials_for_scope
+            profile_tokens = list_subscription_profile_tokens()
+            profile_servers = subscription_profiles._subscription_servers()
+            for token in profile_tokens:
+                rows = credentials_for_scope(connection, "subscription:" + token)
+                for server in profile_servers:
+                    server_id = str(server.get("server_id") or "")
+                    if server_id == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
+                        continue
+                    credential = rows.get(server_id)
+                    if credential is None:
+                        return {"ok": False, "reason": "durable_profile_credential_missing"}
+            retained_auto = credentials_for_scope(connection, "vpn-auto")
+        auto_servers = _vpn_auto_servers_for_xray_subscription()
+        desired_nodes = list_desired_subscription_xray_clients()
+        for server in auto_servers:
+            server_id = str(server.get("server_id") or "")
+            credential = retained_auto.get(server_id)
+            if credential is None:
+                return {"ok": False, "reason": "durable_auto_credential_missing"}
+            if credential.get("revoked"):
+                continue
+            desired_nodes.append({
+                "server_id": server_id,
+                "server_name": str(server.get("server_name") or server_id),
+                "client_uuid": str(credential["client_uuid"]),
+                "client_email": str(credential["client_email"]),
+                "xray_alias": str(server.get("server_name") or server_id),
+                "vpn_auto": True,
+            })
+        desired_by_email = {
+            str(node.get("client_email") or ""): node
+            for node in desired_nodes if str(node.get("client_email") or "").strip()
+        }
+        if len(desired_by_email) != len(desired_nodes):
+            return {"ok": False, "reason": "durable_identity_projection_ambiguous"}
+        desired_clients = [{
+            "client_uuid": node["client_uuid"], "client_id": node["client_uuid"],
+            "email": node["client_email"], "alias": node.get("xray_alias") or "",
+        } for node in desired_nodes]
+        managed_prefixes = ["sub-", "vpn-auto-"]
+        bindings, modes, assignments = _prospective_profile_bindings(
+            desired_nodes, token_prefix="sub-", managed_email_prefixes=managed_prefixes,
+            preserve_existing_overrides=True,
+        )
+        expected_selection = _capture_generation_auto_selection()
+        selection_proof = _verify_generation_recovery_selection_readback(expected_selection)
+        if not selection_proof.get("ok"):
+            return {"ok": False, "reason": "core_selection_readback_unproven"}
+        current_projection = _current_xray_projection_snapshot()
+        if current_projection.get("fence", {}).get("revision") != selection.get("revision"):
+            return {"ok": False, "reason": "selection_fence_changed"}
+        artifact_ok, bindings_artifact_sha = _current_bindings_artifact_parity(bindings, modes)
+        if not artifact_ok:
+            return {"ok": False, "reason": "xray_bindings_artifact_mismatch"}
+        with tempfile.TemporaryDirectory(prefix="fwrouter-legacy-admission-") as raw_dir:
+            private_dir = Path(raw_dir)
+            private_dir.chmod(0o700)
+            xray_candidate = private_dir / "xray-candidate.json"
+            staged = adapter.stage_subscription_generation(
+                desired_clients=desired_clients, managed_email_prefixes=managed_prefixes,
+                bindings=bindings, client_modes=modes, handoff_assignments=assignments,
+                candidate_path=xray_candidate,
+            )
+            if not staged.ok:
+                return {"ok": False, "reason": "xray_candidate_native_validation_failed"}
+            candidate_xray_sha = hashlib.sha256(xray_candidate.read_bytes()).hexdigest()
+            if candidate_xray_sha != active_xray_sha:
+                return {"ok": False, "reason": "xray_candidate_differs_from_active"}
+            expected_ids = sorted((str(item[0]), str(item[1])) for item in staged.details.get("expected_client_identities", []))
+            loaded_ids = sorted((str(pair[0]), str(pair[1])) for pair in adapter.list_loaded_client_identities())
+            if not expected_ids or loaded_ids != expected_ids:
+                return {"ok": False, "reason": "xray_handler_users_mismatch"}
+            binding_readback = _verify_active_config_bindings(
+                bindings, expected_client_identities=expected_ids,
+            )
+            mode_readback = _verify_active_config_client_modes(modes)
+            if not binding_readback.get("ok") or not mode_readback.get("ok"):
+                return {"ok": False, "reason": "xray_native_binding_or_mode_mismatch"}
+
+            candidate_mihomo = mihomo_config.build_mihomo_config(
+                xray_handoff_assignments=assignments,
+            )
+            import yaml
+            mihomo_candidate = private_dir / "mihomo-candidate.yaml"
+            mihomo_candidate.write_text(
+                yaml.safe_dump(candidate_mihomo, sort_keys=False, allow_unicode=True), encoding="utf-8",
+            )
+            mihomo_candidate.chmod(0o600)
+            local_validation = mihomo_config.validate_mihomo_candidate_config(
+                candidate_config=candidate_mihomo, candidate_path=mihomo_candidate,
+            )
+            if not local_validation.get("ok"):
+                return {"ok": False, "reason": "mihomo_candidate_validation_failed"}
+            if not _legacy_mihomo_candidate_matches(mihomo_path, mihomo_candidate):
+                return {"ok": False, "reason": "mihomo_candidate_differs_from_active"}
+            native = _native_udp_policy_proof()
+            if not (
+                native.get("ok") is True
+                and native.get("native_top_level_rules_match") is True
+                and native.get("selector_membership_matches") is True
+                and native.get("guarded_rules_match") is True
+            ):
+                return {"ok": False, "reason": "mihomo_native_policy_unproven"}
+        # Detect source/runtime changes that occurred while expensive native
+        # readbacks were in flight. The caller repeats CAS at marker promotion.
+        core_native_recheck = _collect_legacy_admission_core_native_proof()
+        if (
+            _legacy_admission_source_fingerprint() != source_fingerprint
+            or _legacy_admission_core_unavailable_reason() is not None
+            or _legacy_admission_core_runtime_fingerprint() != core_runtime_fingerprint
+            or _capture_generation_auto_selection() != expected_selection
+            or adapter.get_runtime_incarnation() != xray_incarnation
+            or adapter.get_runtime_config_sha256() != active_xray_sha
+            or get_mihomo_runtime_incarnation() != mihomo_incarnation
+            or hashlib.sha256(mihomo_path.read_bytes()).hexdigest() != active_mihomo_sha
+            or hashlib.sha256(Path(_xray_bindings_path()).read_bytes()).hexdigest() != bindings_artifact_sha
+            or _current_projection_fingerprint(_current_xray_projection_snapshot())
+            != _current_projection_fingerprint(current_projection)
+            or core_native_recheck.get("ok") is not True
+            or core_native_recheck.get("manifest_hash") != core_native_proof.get("manifest_hash")
+            or core_native_recheck.get("apply_id") != core_native_proof.get("apply_id")
+            or core_native_recheck.get("enforcement_level") != core_native_proof.get("enforcement_level")
+            or core_native_recheck.get("live_global_mode") != core_native_proof.get("live_global_mode")
+        ):
+            return {"ok": False, "reason": "native_proof_fence_changed"}
+        return {
+            "ok": True, "xray_config_match": True, "xray_loaded_users_match": True,
+            "xray_bindings_match": True, "xray_modes_match": True,
+            "core_selection_match": True, "mihomo_candidate_match": True,
+            "mihomo_native_policy_match": True, "source_fingerprint": source_fingerprint,
+            "selection_revision": selection.get("revision"),
+            "selection_decision_id": selection.get("decision_id"),
+            "xray_runtime_incarnation": xray_incarnation,
+            "mihomo_runtime_incarnation": mihomo_incarnation,
+            "xray_config_sha256": active_xray_sha,
+            "mihomo_config_sha256": active_mihomo_sha,
+            "mihomo_fingerprint_hash": fingerprint_hash,
+            "core_runtime_fingerprint": core_runtime_fingerprint,
+            "core_dataplane_proof": core_native_proof,
+            "core_native_policy_match": True,
+            "mihomo_proof": {
+                "native_top_level_rules_match": True,
+                "selector_membership_matches": True,
+                "guarded_rules_match": True,
+            },
+        }
+    except Exception as exc:
+        name = type(exc).__name__
+        safe_name = name if name.isascii() and name.isalnum() and name.endswith(("Error", "Exception")) else "proof_error"
+        return {"ok": False, "reason": safe_name}
+
+
+def _publish_legacy_admission_mihomo_receipt(proof: dict[str, Any], operation_id: str) -> bool:
+    if not isinstance(proof, dict) or proof.get("mihomo_native_policy_match") is not True:
+        return False
+    try:
+        fence_view = _AdmissionFenceView(
+            proof_only_source_fingerprint=str(proof["source_fingerprint"]),
+            proof_only_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
+            proof_only_selection_revision=int(proof["selection_revision"]),
+            proof_only_selection_decision_id=proof.get("selection_decision_id"),
+            proof_only_xray_incarnation=str(proof["xray_runtime_incarnation"]),
+            proof_only_mihomo_incarnation=str(proof["mihomo_runtime_incarnation"]),
+            proof_only_xray_config_sha256=str(proof["xray_config_sha256"]),
+            proof_only_mihomo_config_sha256=str(proof["mihomo_config_sha256"]),
+            proof_only_mihomo_fingerprint_hash=str(proof["mihomo_fingerprint_hash"]),
+            proof_only_core_manifest_hash=str(proof["core_dataplane_proof"]["manifest_hash"]),
+            proof_only_core_apply_id=str(proof["core_dataplane_proof"]["apply_id"]),
+            proof_only_core_enforcement_level=str(proof["core_dataplane_proof"]["enforcement_level"]),
+            proof_only_core_live_mode=str(proof["core_dataplane_proof"]["live_global_mode"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    return _publish_mihomo_udp_receipt_with_owner(
+        expected_mihomo_runtime=str(proof.get("mihomo_runtime_incarnation") or ""),
+        expected_mihomo_sha=str(proof.get("mihomo_config_sha256") or ""),
+        reconcile_reason="proof_only_legacy_admission",
+        operation_id=operation_id,
+        owner_matches=lambda fingerprint_hash: (
+            fingerprint_hash == proof.get("mihomo_fingerprint_hash")
+            and _legacy_admission_source_fingerprint() == proof.get("source_fingerprint")
+            and _legacy_admission_runtime_fences_match(fence_view)
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _AdmissionFenceView:
+    """Narrow value object for reusing the native runtime fence verifier."""
+    proof_only_source_fingerprint: str
+    proof_only_core_runtime_fingerprint: str
+    proof_only_selection_revision: int
+    proof_only_selection_decision_id: str | None
+    proof_only_xray_incarnation: str
+    proof_only_mihomo_incarnation: str
+    proof_only_xray_config_sha256: str
+    proof_only_mihomo_config_sha256: str
+    proof_only_mihomo_fingerprint_hash: str
+    proof_only_core_manifest_hash: str
+    proof_only_core_apply_id: str
+    proof_only_core_enforcement_level: str
+    proof_only_core_live_mode: str
+
+
+def admit_legacy_subscription_inventory(
+    *, expected_digest: str, operator_confirmation: str,
+) -> dict[str, Any]:
+    """Explicitly admit an unmarked legacy inventory after fresh native proof.
+
+    Generic startup/recovery does not invoke this operation. It is intentionally
+    operator-confirmed, exact-digest-bound, and unable to mutate providers,
+    credentials, or native runtime. Failures retain the private owner checkpoint
+    so only this same explicit operation can retry.
+    """
+    import re
+    if operator_confirmation != _PROOF_ONLY_LEGACY_ADMISSION_CONFIRMATION:
+        return {"ok": False, "status": "blocked", "reason": "operator_confirmation_required"}
+    if not isinstance(expected_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
+        return {"ok": False, "status": "blocked", "reason": "inventory_digest_invalid"}
+    try:
+        with xray_writer_guard(timeout_seconds=30.0):
+            adapter = _xray_adapter()
+            checkpoint_path = _xray_generation_checkpoint_path(adapter)
+            from fwrouter_api.services.subscription import (
+                SUBSCRIPTION_NATIVE_GENERATION_KEY, _read_subscription_native_generation,
+                _subscription_inventory_digest, _write_subscription_inventory_candidate,
+                _claim_subscription_inventory_admission, _promote_subscription_inventory_generation,
+            )
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+            with db_session() as connection:
+                digest, count = _subscription_inventory_digest(connection)
+                state = _read_subscription_native_generation(connection)
+                marker_row = connection.execute(
+                    "SELECT value_json FROM settings WHERE key=?", (SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+                ).fetchone()
+                source_fingerprint = _legacy_admission_source_fingerprint(connection)
+                selection = read_selection_fence(connection)
+                core_unavailable = _legacy_admission_core_unavailable_reason(connection)
+                if digest != expected_digest or count <= 0:
+                    return {"ok": False, "status": "blocked", "reason": "inventory_digest_mismatch"}
+                if core_unavailable is not None:
+                    return {"ok": False, "status": "blocked", "reason": core_unavailable}
+
+            checkpoint_entry_exists = checkpoint_path.exists() or checkpoint_path.is_symlink()
+            checkpoint = _legacy_admission_checkpoint_payload(checkpoint_path) if checkpoint_entry_exists else None
+            if checkpoint_entry_exists and checkpoint is None:
+                return {"ok": False, "status": "blocked", "reason": "checkpoint_unverifiable"}
+            if checkpoint is not None:
+                if checkpoint.get("candidate_digest") != expected_digest:
+                    return {"ok": False, "status": "blocked", "reason": "checkpoint_inventory_mismatch"}
+                if checkpoint.get("source_fingerprint") != source_fingerprint:
+                    return {"ok": False, "status": "blocked", "reason": "legacy_admission_fence_changed"}
+                if checkpoint.get("selection_revision") != selection.get("revision") or checkpoint.get(
+                    "selection_decision_id"
+                ) != selection.get("decision_id"):
+                    return {"ok": False, "status": "blocked", "reason": "selection_fence_changed"}
+                expected_revision = checkpoint["candidate_revision"]
+                if state.get("status") == "pending" and (
+                    state.get("candidate_digest") != expected_digest
+                    or state.get("candidate_revision") != expected_revision
+                ):
+                    return {"ok": False, "status": "blocked", "reason": "inventory_generation_stale"}
+                if state.get("status") == "verified" and (
+                    state.get("candidate_digest") != expected_digest
+                    or state.get("candidate_revision") != expected_revision
+                    or state.get("verified_digest") != expected_digest
+                    or state.get("verified_revision") != expected_revision
+                ):
+                    return {"ok": False, "status": "blocked", "reason": "inventory_generation_stale"}
+                if state.get("status") not in {"unknown", "pending", "verified"}:
+                    return {"ok": False, "status": "blocked", "reason": "inventory_generation_unexpected"}
+            else:
+                if marker_row is not None:
+                    # Pending/unknown markers and malformed state are owned by
+                    # their existing lifecycle; admission cannot appropriate it.
+                    # A verified exact marker may be re-proved idempotently.
+                    if not (
+                        state.get("status") == "verified"
+                        and state.get("candidate_digest") == expected_digest
+                        and state.get("verified_digest") == expected_digest
+                        and type(state.get("candidate_revision")) is int
+                        and state.get("candidate_revision") == state.get("verified_revision")
+                    ):
+                        return {"ok": False, "status": "blocked", "reason": "generation_marker_already_present"}
+                    candidate_revision = int(state["candidate_revision"])
+                else:
+                    if state.get("status") != "unknown" or state.get("reason") != "verified_generation_missing":
+                        return {"ok": False, "status": "blocked", "reason": "legacy_inventory_not_admissible"}
+                    candidate_revision = 1
+                checkpoint = {
+                    "schema": 1,
+                    "operation_mode": "proof_only_legacy_admission",
+                    "operation_id": uuid4().hex,
+                    "phase": "proof_started",
+                    "candidate_digest": expected_digest,
+                    "candidate_revision": candidate_revision,
+                    "source_fingerprint": source_fingerprint,
+                    "selection_revision": selection.get("revision"),
+                    "selection_decision_id": selection.get("decision_id"),
+                    "created_at": time.time(),
+                }
+                if not _legacy_admission_checkpoint_parent_ready(checkpoint_path):
+                    return {"ok": False, "status": "blocked", "reason": "checkpoint_directory_untrusted"}
+                _atomic_write_private_checkpoint(
+                    checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+                )
+            assert checkpoint is not None
+            proof = _collect_legacy_inventory_native_proof(
+                adapter, expected_digest=expected_digest,
+                source_fingerprint=source_fingerprint, checkpoint_path=checkpoint_path,
+            )
+            required_truths = (
+                "xray_config_match", "xray_loaded_users_match", "xray_bindings_match",
+                "xray_modes_match", "core_selection_match", "mihomo_candidate_match",
+                "mihomo_native_policy_match", "core_native_policy_match",
+            )
+            if proof.get("ok") is not True or any(proof.get(key) is not True for key in required_truths):
+                reason = proof.get("reason") if isinstance(proof.get("reason"), str) else "native_proof_incomplete"
+                return {"ok": False, "status": "blocked", "reason": reason,
+                        "last_good_retained": True}
+            if proof.get("source_fingerprint") != source_fingerprint:
+                return {"ok": False, "status": "blocked", "reason": "legacy_admission_fence_changed",
+                        "last_good_retained": True}
+            current_selection = _capture_generation_auto_selection()
+            if (current_selection.get("selection_revision") != checkpoint.get("selection_revision")
+                    or current_selection.get("selection_decision_id") != checkpoint.get("selection_decision_id")):
+                return {"ok": False, "status": "blocked", "reason": "selection_fence_changed",
+                        "last_good_retained": True}
+            with db_session() as connection:
+                current_inventory_digest, current_inventory_count = _subscription_inventory_digest(connection)
+                current_source_fingerprint = _legacy_admission_source_fingerprint(connection)
+                core_unavailable = _legacy_admission_core_unavailable_reason(connection)
+                current_core_runtime_fingerprint = _legacy_admission_core_runtime_fingerprint(connection)
+            if (current_inventory_digest != expected_digest or current_inventory_count <= 0
+                    or current_source_fingerprint != source_fingerprint or core_unavailable is not None
+                    or current_core_runtime_fingerprint != proof.get("core_runtime_fingerprint")):
+                return {"ok": False, "status": "blocked", "reason": "legacy_admission_fence_changed",
+                        "last_good_retained": True}
+            if not _publish_legacy_admission_mihomo_receipt(proof, str(checkpoint["operation_id"])):
+                return {"ok": False, "status": "blocked", "reason": "native_receipt_unverified",
+                        "last_good_retained": True}
+            checkpoint.update({
+                "phase": "proof_complete",
+                "proof_summary": {key: True for key in required_truths},
+                "xray_runtime_incarnation": proof["xray_runtime_incarnation"],
+                "mihomo_runtime_incarnation": proof["mihomo_runtime_incarnation"],
+                "xray_config_sha256": proof["xray_config_sha256"],
+                "mihomo_config_sha256": proof["mihomo_config_sha256"],
+                "mihomo_fingerprint_hash": proof["mihomo_fingerprint_hash"],
+            })
+            _atomic_write_private_checkpoint(
+                checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+            )
+
+            # Close the missing-marker crash window by publishing a pending
+            # generation only after proof, under the same immediate SQLite
+            # transaction that verifies every durable source and selection
+            # fence. Existing verified exact-generation retries do not bump it.
+            if state.get("status") == "verified":
+                already_admitted = _AdmissionFenceView(
+                    proof_only_source_fingerprint=source_fingerprint,
+                    proof_only_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
+                    proof_only_selection_revision=int(proof["selection_revision"]),
+                    proof_only_selection_decision_id=proof.get("selection_decision_id"),
+                    proof_only_xray_incarnation=str(proof["xray_runtime_incarnation"]),
+                    proof_only_mihomo_incarnation=str(proof["mihomo_runtime_incarnation"]),
+                    proof_only_xray_config_sha256=str(proof["xray_config_sha256"]),
+                    proof_only_mihomo_config_sha256=str(proof["mihomo_config_sha256"]),
+                    proof_only_mihomo_fingerprint_hash=str(proof["mihomo_fingerprint_hash"]),
+                    proof_only_core_manifest_hash=str(proof["core_dataplane_proof"]["manifest_hash"]),
+                    proof_only_core_apply_id=str(proof["core_dataplane_proof"]["apply_id"]),
+                    proof_only_core_enforcement_level=str(proof["core_dataplane_proof"]["enforcement_level"]),
+                    proof_only_core_live_mode=str(proof["core_dataplane_proof"]["live_global_mode"]),
+                )
+                if (
+                    not _legacy_admission_runtime_fences_match(already_admitted)
+                    or not _legacy_admission_durable_fences_match(
+                        expected_digest=expected_digest, expected_source=source_fingerprint,
+                        selection_revision=int(proof["selection_revision"]),
+                        selection_decision_id=proof.get("selection_decision_id"),
+                        expected_status="verified", expected_revision=int(state["candidate_revision"]),
+                        expected_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
+                    )
+                ):
+                    return {"ok": False, "status": "blocked", "reason": "legacy_admission_fence_changed",
+                            "last_good_retained": True}
+                checkpoint["phase"] = "verified"
+                _atomic_write_private_checkpoint(
+                    checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+                )
+                checkpoint_path.unlink(missing_ok=True)
+                _fsync_directory(checkpoint_path.parent)
+                return {"ok": True, "status": "verified", "already_admitted": True,
+                        "digest": expected_digest, "revision": state["candidate_revision"]}
+            if state.get("status") == "unknown":
+                with db_session() as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    current_digest, current_count = _subscription_inventory_digest(connection)
+                    current_marker = connection.execute(
+                        "SELECT 1 FROM settings WHERE key=?", (SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+                    ).fetchone()
+                    current_selection = read_selection_fence(connection)
+                    if (
+                        current_marker is not None or current_digest != expected_digest or current_count <= 0
+                        or _legacy_admission_source_fingerprint(connection) != source_fingerprint
+                        or current_selection.get("revision") != selection.get("revision")
+                        or current_selection.get("decision_id") != selection.get("decision_id")
+                    ):
+                        return {"ok": False, "status": "blocked", "reason": "legacy_admission_fence_changed",
+                                "last_good_retained": True}
+                    _write_subscription_inventory_candidate(connection, force_pending=True)
+                    current = _read_subscription_native_generation(connection)
+                    if current.get("status") != "pending" or current.get("candidate_digest") != expected_digest:
+                        return {"ok": False, "status": "blocked", "reason": "pending_generation_publish_failed",
+                                "last_good_retained": True}
+                    if current.get("candidate_revision") != checkpoint.get("candidate_revision"):
+                        checkpoint["candidate_revision"] = current.get("candidate_revision")
+                        _atomic_write_private_checkpoint(
+                            checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+                        )
+            admission = _claim_subscription_inventory_admission()
+            if admission is None:
+                return {"ok": False, "status": "blocked", "reason": "inventory_generation_admission_missing",
+                        "last_good_retained": True}
+            from dataclasses import replace
+            admission = replace(
+                admission,
+                proof_only_source_fingerprint=source_fingerprint,
+                proof_only_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
+                proof_only_selection_revision=int(proof["selection_revision"]),
+                proof_only_selection_decision_id=proof.get("selection_decision_id"),
+                proof_only_xray_incarnation=str(proof["xray_runtime_incarnation"]),
+                proof_only_mihomo_incarnation=str(proof["mihomo_runtime_incarnation"]),
+                proof_only_xray_config_sha256=str(proof["xray_config_sha256"]),
+                proof_only_mihomo_config_sha256=str(proof["mihomo_config_sha256"]),
+                proof_only_mihomo_fingerprint_hash=str(proof["mihomo_fingerprint_hash"]),
+                proof_only_core_manifest_hash=str(proof["core_dataplane_proof"]["manifest_hash"]),
+                proof_only_core_apply_id=str(proof["core_dataplane_proof"]["apply_id"]),
+                proof_only_core_enforcement_level=str(proof["core_dataplane_proof"]["enforcement_level"]),
+                proof_only_core_live_mode=str(proof["core_dataplane_proof"]["live_global_mode"]),
+            )
+            promoted = _promote_subscription_inventory_generation(admission)
+            if not promoted.get("ok"):
+                return {"ok": False, "status": "blocked", "reason": promoted.get("reason") or "inventory_promotion_failed",
+                        "last_good_retained": True}
+            checkpoint["phase"] = "verified"
+            _atomic_write_private_checkpoint(
+                checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+            )
+            checkpoint_path.unlink(missing_ok=True)
+            _fsync_directory(checkpoint_path.parent)
+            return {"ok": True, "status": "verified", "digest": expected_digest,
+                    "revision": promoted.get("revision", admission.revision), "already_admitted": False}
+    except Exception as exc:
+        name = type(exc).__name__
+        safe_name = name if name.isascii() and name.isalnum() and name.endswith(("Error", "Exception")) else "admission_error"
+        return {"ok": False, "status": "blocked", "reason": safe_name,
+                "last_good_retained": True}
+
+
+def inspect_legacy_subscription_inventory_admission() -> dict[str, Any]:
+    """Return a read-only operator plan without native reads or state writes."""
+    try:
+        from fwrouter_api.db.connection import get_db_path
+        from fwrouter_api.services.subscription import (
+            SUBSCRIPTION_NATIVE_GENERATION_KEY, _read_subscription_native_generation,
+            _subscription_inventory_digest,
+        )
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+        from fwrouter_api.adapters.xray_common import _default_xray_config_path
+        checkpoint_path = Path(_default_xray_config_path()).parent / ".generation" / "generation-checkpoint.json"
+        db_path = get_db_path().resolve(strict=True)
+        readonly_uri = db_path.as_uri() + "?mode=ro"
+        connection = sqlite3.connect(readonly_uri, uri=True, timeout=2.0)
+        connection.row_factory = sqlite3.Row
+        try:
+            digest, count = _subscription_inventory_digest(connection)
+            generation = _read_subscription_native_generation(connection)
+            marker = connection.execute(
+                "SELECT 1 FROM settings WHERE key=?", (SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+            ).fetchone()
+            source_fingerprint = _legacy_admission_source_fingerprint(connection)
+            selection = read_selection_fence(connection)
+            core_unavailable = _legacy_admission_core_unavailable_reason(connection)
+        finally:
+            connection.close()
+        checkpoint_entry_exists = checkpoint_path.exists() or checkpoint_path.is_symlink()
+        checkpoint = _legacy_admission_checkpoint_payload(checkpoint_path) if checkpoint_entry_exists else None
+        if checkpoint_entry_exists and checkpoint is None:
+            checkpoint_mode, checkpoint_phase = "unknown", "unknown"
+        else:
+            checkpoint_mode = checkpoint.get("operation_mode") if checkpoint else None
+            checkpoint_phase = checkpoint.get("phase") if checkpoint else None
+        action, reason = "blocked", None
+        if not count or digest != generation.get("inventory_digest"):
+            reason = "inventory_digest_unavailable_or_mismatched"
+        elif core_unavailable is not None:
+            reason = core_unavailable
+        elif checkpoint_entry_exists and checkpoint is None:
+            reason = "checkpoint_unverifiable"
+        elif checkpoint is not None:
+            if checkpoint.get("candidate_digest") != digest:
+                reason = "checkpoint_inventory_mismatch"
+            elif checkpoint.get("source_fingerprint") != source_fingerprint:
+                reason = "legacy_admission_fence_changed"
+            elif (checkpoint.get("selection_revision") != selection.get("revision")
+                  or checkpoint.get("selection_decision_id") != selection.get("decision_id")):
+                reason = "selection_fence_changed"
+            elif generation.get("status") == "unknown" and marker is None:
+                if (checkpoint.get("candidate_revision") == 1
+                        and generation.get("reason") == "verified_generation_missing"
+                        and checkpoint.get("phase") != "verified"):
+                    action = "resume_proof_only"
+                else:
+                    reason = "checkpoint_generation_state_mismatch"
+            elif generation.get("status") == "pending" and (
+                generation.get("candidate_digest") == digest
+                and generation.get("candidate_revision") == checkpoint.get("candidate_revision")
+                and checkpoint.get("phase") in {"proof_complete", "verified"}
+            ):
+                action = "resume_proof_only"
+            elif generation.get("status") == "verified" and (
+                generation.get("candidate_digest") == digest
+                and generation.get("verified_digest") == digest
+                and generation.get("candidate_revision") == checkpoint.get("candidate_revision")
+                and generation.get("verified_revision") == checkpoint.get("candidate_revision")
+            ):
+                action = "reprove_verified"
+            else:
+                reason = "checkpoint_generation_state_mismatch"
+        elif marker is None and generation.get("status") == "unknown" and (
+            generation.get("reason") == "verified_generation_missing"
+        ):
+            action = "fresh_admission"
+        elif marker is not None and generation.get("status") == "verified" and (
+            generation.get("candidate_digest") == digest
+            and generation.get("verified_digest") == digest
+            and type(generation.get("candidate_revision")) is int
+            and generation.get("candidate_revision") == generation.get("verified_revision")
+        ):
+            action = "reprove_verified"
+        else:
+            reason = "generation_marker_not_admissible"
+        eligible = action != "blocked"
+        return {
+            "ok": True, "status": "plan", "eligible": eligible,
+            "action": action, "reason": reason, "native_proof_required": True,
+            "inventory_digest": digest, "inventory_count": count,
+            "generation_status": generation.get("status"),
+            "generation_reason": generation.get("reason"),
+            "checkpoint_mode": checkpoint_mode, "checkpoint_phase": checkpoint_phase,
+            "source_fingerprint": source_fingerprint,
+        }
+    except Exception as exc:
+        name = type(exc).__name__
+        safe_name = name if name.isascii() and name.isalnum() and name.endswith(("Error", "Exception")) else "inspection_error"
+        return {"ok": False, "status": "unavailable", "reason": safe_name}
 
 
 def _current_inventory_generation_binding() -> dict[str, Any]:
@@ -1546,6 +2574,18 @@ def _checkpoint_inventory_generation_matches(checkpoint_path: Path) -> bool:
     )
 
 
+def _checkpoint_operation_mode(checkpoint: Any) -> str | None:
+    """Return a supported checkpoint mode, rejecting unknown future modes."""
+    if not isinstance(checkpoint, dict):
+        raise ValueError("XRAY_GENERATION_CHECKPOINT_INVALID")
+    mode = checkpoint.get("operation_mode")
+    if mode is None:
+        return None  # Historical apply/recovery checkpoints predate this field.
+    if mode != "proof_only_legacy_admission":
+        raise ValueError("XRAY_GENERATION_CHECKPOINT_MODE_UNSUPPORTED")
+    return str(mode)
+
+
 def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> dict[str, Any]:
     """Resolve an existing generation marker using the normal proof contracts.
 
@@ -1557,6 +2597,11 @@ def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: 
         return {"ok": True, "status": "skipped", "reason": "no_checkpoint"}
     try:
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        mode = _checkpoint_operation_mode(checkpoint)
+        if mode == "proof_only_legacy_admission":
+            return {"ok": False, "status": "pending", "stage": "proof_only_legacy_admission",
+                    "reason": "proof_only_operation_requires_explicit_resume",
+                    "error_code": "XRAY_PROOF_ONLY_ADMISSION_REQUIRES_OPERATOR"}
         checkpoint_phase = str(checkpoint.get("phase") or "") if isinstance(checkpoint, dict) else "invalid"
         checkpoint_inventory_bound = _checkpoint_inventory_generation_matches(checkpoint_path)
         from fwrouter_api.services.subscription import get_subscription_native_generation_state
@@ -1790,6 +2835,17 @@ def _write_xray_generation_checkpoint(
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint_path.parent.chmod(0o700)
+    if checkpoint_path.exists():
+        try:
+            existing_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if _checkpoint_operation_mode(existing_checkpoint) == "proof_only_legacy_admission":
+                raise RuntimeError("XRAY_PROOF_ONLY_CHECKPOINT_CANNOT_BE_SUPERSEDED")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            if isinstance(exc, RuntimeError):
+                raise
+            # Invalid/unknown checkpoints must not be reinterpreted or
+            # overwritten by an ordinary operation.
+            raise RuntimeError("XRAY_GENERATION_CHECKPOINT_MODE_UNVERIFIABLE") from exc
     if checkpoint_path.exists() and supersession is None:
         raise RuntimeError("An unresolved Xray generation checkpoint already exists.")
     if supersession is not None:
@@ -2596,6 +3652,10 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
         checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
         attempt_path = _generation_recovery_attempt_path(checkpoint_path, checkpoint_digest)
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        mode = _checkpoint_operation_mode(checkpoint)
+        if mode == "proof_only_legacy_admission":
+            return {"ok": False, "recovered": "proof_only_admission_pending",
+                    "reason": "proof_only_operation_requires_explicit_resume"}
         phase = str(checkpoint.get("phase") or "")
         recoverable_phases = {
             "runtime_applied", "inventory_synced", "bindings_written",
@@ -3372,6 +4432,10 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
 
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    mode = _checkpoint_operation_mode(data)
+    if mode == "proof_only_legacy_admission":
+        return {"ok": False, "recovered": "proof_only_admission_pending",
+                "reason": "proof_only_operation_requires_explicit_resume"}
     supersession = data.get("supersession") if isinstance(data.get("supersession"), dict) else None
     if supersession is not None and not supersession.get("rollback_preimage_projection_matches"):
         # The old native set was not proven equal to the newly committed DB

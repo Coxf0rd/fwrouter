@@ -12,6 +12,7 @@ import threading
 import urllib.error
 from pathlib import Path
 from queue import Queue
+from typing import Any
 from urllib.parse import urlsplit
 from uuid import NAMESPACE_DNS, uuid5
 
@@ -25,6 +26,7 @@ from .xray_support import (
     assert_native_matches_active,
     await_job,
     loaded_identities,
+    native_config_bytes,
     read_subscription_rows,
 )
 
@@ -58,12 +60,80 @@ def current_xray_subject_identity_pairs(database_path: Path) -> set[tuple[str, s
     return pairs
 
 
+def _synthetic_table_fingerprints(database_path: Path) -> dict[str, tuple[int, str]]:
+    """Hash durable subscription identity/profile rows without exposing values."""
+    tables = (
+        "subscription_accounts", "subscription_clients", "subscription_profile_snapshots",
+        "servers", "subscription_server_memberships", "subscription_node_identities",
+        "subscription_node_aliases", "subscription_node_credentials",
+        "subscription_node_identity_transitions", "subscription_node_credential_history",
+    )
+
+    def json_value(value):
+        if isinstance(value, bytes):
+            return {"blob_length": len(value), "sha256": hashlib.sha256(value).hexdigest()}
+        return value
+
+    connection = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=3)
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        result = {}
+        for table in tables:
+            rows = connection.execute(f'SELECT * FROM "{table}"').fetchall()
+            encoded = sorted(json.dumps([json_value(value) for value in row], ensure_ascii=False,
+                                        sort_keys=True, separators=(",", ":")) for row in rows)
+            payload = "\n".join(encoded).encode("utf-8")
+            result[table] = (len(rows), hashlib.sha256(payload).hexdigest())
+        return result
+    finally:
+        connection.close()
+
+
+def _synthetic_file_tree_fingerprint(
+    root: Path, *, exclude_relative_paths: tuple[str, ...] = (),
+) -> tuple[tuple[str, int, str], ...]:
+    """Fingerprint a bounded owned test tree; return no artifact contents."""
+    try:
+        root_info = root.lstat()
+    except FileNotFoundError:
+        return ()
+    assert stat.S_ISDIR(root_info.st_mode) and not stat.S_ISLNK(root_info.st_mode)
+    entries = []
+    total_bytes = 0
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        assert not stat.S_ISLNK(info.st_mode), f"synthetic state tree contains symlink: {path.name}"
+        if stat.S_ISDIR(info.st_mode):
+            continue
+        assert stat.S_ISREG(info.st_mode), f"synthetic state tree contains non-file: {path.name}"
+        relative_path = path.relative_to(root).as_posix()
+        if relative_path in exclude_relative_paths:
+            continue
+        total_bytes += info.st_size
+        assert len(entries) < 256 and total_bytes <= 32 * 1024 * 1024, "synthetic state tree exceeded audit bound"
+        entries.append((relative_path, info.st_size,
+                        hashlib.sha256(path.read_bytes()).hexdigest()))
+    return tuple(entries)
+
+
+def _synthetic_file_fingerprint(path: Path) -> str | None:
+    """Hash one known suite-owned state artifact without exposing its contents."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    assert stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+    assert info.st_size <= 8 * 1024 * 1024, f"synthetic artifact exceeded bound: {path.name}"
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 class _SyntheticSubscriptionSource:
     """Serve a mutable synthetic profile on a suite-owned loopback socket."""
 
     def __init__(self, payload: dict) -> None:
         self._lock = threading.Lock()
         self._body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        self._request_count = 0
         source = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -72,6 +142,7 @@ class _SyntheticSubscriptionSource:
                     self.send_error(404)
                     return
                 with source._lock:
+                    source._request_count += 1
                     body = source._body
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -95,6 +166,10 @@ class _SyntheticSubscriptionSource:
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         with self._lock:
             self._body = body
+
+    def snapshot_requests(self) -> int:
+        with self._lock:
+            return self._request_count
 
     def close(self) -> None:
         self._server.shutdown()
@@ -982,6 +1057,268 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert set(loaded_identities(native)) == expected_f_identities
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # Model the historical 69ec419 state by removing only the generation
+        # marker from this suite-owned DB. Inventory, identity mappings,
+        # credentials, snapshots and native processes remain the real isolated
+        # outputs of the preceding successful synthetic refreshes.
+        assert not checkpoint_path.exists()
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            deleted = connection.execute(
+                "DELETE FROM settings WHERE key=?",
+                ("subscriptions.native_generation.v1",),
+            ).rowcount
+            connection.commit()
+        finally:
+            connection.close()
+        assert deleted == 1, "legacy fixture did not remove exactly the synthetic generation marker"
+
+        code, generation_digest = http_json(
+            f"{restarted_api}/__acceptance/subscription/legacy-inventory-digest",
+        )
+        assert code == 200 and generation_digest.get("ok") is True
+        expected_digest = generation_digest.get("digest")
+        assert isinstance(expected_digest, str) and re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+        assert type(generation_digest.get("inventory_count")) is int
+        state_before_admission = generation_state(restarted_api)
+        assert state_before_admission.get("status") == "unknown"
+        assert state_before_admission.get("reason") == "verified_generation_missing"
+        assert state_before_admission.get("inventory_count") == generation_digest["inventory_count"]
+
+        def controller_state_fingerprint() -> dict[str, tuple[int, str]]:
+            observed = {}
+            for path in ("/proxies/vpn-global", "/proxies/vpn-auto"):
+                status, body = http_json(f"http://127.0.0.1:5200{path}")
+                encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+                observed[path] = (status, hashlib.sha256(encoded).hexdigest())
+            return observed
+
+        def native_state_fingerprint() -> dict[str, Any]:
+            xray_native, _xray_launch = native_config_bytes(native)
+            return {
+                "xray_active": hashlib.sha256(active_xray.read_bytes()).hexdigest(),
+                "xray_mounted": hashlib.sha256(xray_native).hexdigest(),
+                "xray_loaded": hashlib.sha256(
+                    json.dumps(loaded_identities(native), separators=(",", ":")).encode()
+                ).hexdigest(),
+                "xray_bindings": hashlib.sha256(
+                    (state / "xray" / "fwrouter-bindings.json").read_bytes()
+                ).hexdigest() if (state / "xray" / "fwrouter-bindings.json").is_file() else None,
+                "dataplane_applied_manifest": _synthetic_file_fingerprint(
+                    state / "generated" / "dataplane" / "applied-manifest.json",
+                ),
+                "dataplane_last_good_manifest": _synthetic_file_fingerprint(
+                    state / "last-good" / "dataplane" / "last-good-manifest.json",
+                ),
+                "dataplane_last_good_nft": _synthetic_file_fingerprint(
+                    state / "last-good" / "dataplane" / "last-good.nft",
+                ),
+                "mihomo_active": hashlib.sha256(active_mihomo.read_bytes()).hexdigest(),
+                # The exact reconcile receipt may be refreshed by successful
+                # proof-only admission. Check its semantics separately below;
+                # every other generated artifact remains in this fingerprint.
+                "mihomo_generated": _synthetic_file_tree_fingerprint(
+                    state / "generated" / "mihomo",
+                    exclude_relative_paths=("reconcile-state.json",),
+                ),
+                "mihomo_last_good": last_good_mihomo_snapshot(),
+                "xray_last_good": _synthetic_file_tree_fingerprint(state / "last-good" / "xray"),
+                "xray_incarnation": (native.process.pid, native.started_at),
+                "mihomo_incarnation": (native.mihomo_process.pid, native.mihomo_started_at),
+                "xray_reload_calls": native.reload_calls,
+                "mihomo_controller": controller_state_fingerprint(),
+            }
+
+        def mihomo_proof_receipt_state() -> dict[str, Any]:
+            receipt_path = state / "generated" / "mihomo" / "reconcile-state.json"
+            receipt_info = receipt_path.lstat()
+            assert stat.S_ISREG(receipt_info.st_mode) and not stat.S_ISLNK(receipt_info.st_mode)
+            assert receipt_info.st_size <= 262144, "Mihomo proof receipt exceeded its contract bound"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            assert isinstance(receipt, dict)
+            incarnation_result = native.rpc("mihomo_incarnation", {})
+            incarnation = (
+                incarnation_result.get("details", {}).get("stdout")
+                if isinstance(incarnation_result, dict)
+                and isinstance(incarnation_result.get("details"), dict) else None
+            )
+            active_hash = hashlib.sha256(active_mihomo.read_bytes()).hexdigest()
+            return {
+                "active_hash_matches": receipt.get("active_config_hash") == active_hash,
+                "runtime_incarnation_matches": (
+                    isinstance(incarnation, str) and bool(incarnation.strip())
+                    and receipt.get("runtime_incarnation") == incarnation.strip()
+                ),
+                "version": receipt.get("version"),
+                "udp_policy_version": receipt.get("udp_policy_version"),
+                "native_proof": (
+                    receipt.get("native_top_level_rules_match"),
+                    receipt.get("native_selector_membership_match"),
+                    receipt.get("subrule_config_guard_match"),
+                ),
+            }
+
+        native_before_admission = native_state_fingerprint()
+        mihomo_receipt_before_admission = mihomo_proof_receipt_state()
+        assert mihomo_receipt_before_admission["active_hash_matches"] is True
+        assert mihomo_receipt_before_admission["runtime_incarnation_matches"] is True
+        persistence_before_admission = _synthetic_table_fingerprints(state / "fwrouter.db")
+        assert persistence_before_admission["subscription_node_credentials"][0] > 0
+        assert persistence_before_admission["subscription_node_identities"][0] > 0
+        assert len(set(loaded_identities(native)) & baseline_pairs) == 78
+        provider_calls_before_admission = stack["provider_bridge"].snapshot_calls()
+        subscription_source_requests_before_admission = source.snapshot_requests()
+        checkpoint_path = state / "xray" / ".generation" / "generation-checkpoint.json"
+        assert not checkpoint_path.exists()
+
+        # Prove each tripwire catches the forbidden attempt before it reaches
+        # a native process or external source. The .invalid HTTP request is
+        # rejected by the wrapper and must never leave the worker.
+        tripwire_code, tripwire_check = http_json(
+            f"{restarted_api}/__acceptance/subscription/proof-only-tripwire-self-check",
+            method="POST",
+        )
+        assert tripwire_code == 200 and tripwire_check.get("ok") is True
+        assert tripwire_check.get("intercepts") == {
+            "xray_reload": True, "mihomo_restart": True,
+            "core_dataplane_apply": True, "core_dataplane_rollback": True,
+            "core_routing_hot_swap": True, "unexpected_http": True,
+        }
+        tripwire_attempts = tripwire_check.get("attempts")
+        assert isinstance(tripwire_attempts, dict)
+        assert tripwire_attempts["xray_reload"] == {
+            "xray_apply_or_reload": 1, "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0,
+        }
+        assert tripwire_attempts["mihomo_restart"] == {
+            "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 1,
+            "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0,
+        }
+        for name in ("core_dataplane_apply", "core_dataplane_rollback", "core_routing_hot_swap"):
+            assert tripwire_attempts[name] == {
+                "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
+                "core_dataplane_apply_or_rollback": 1, "unexpected_http_request": 0,
+            }
+        assert tripwire_attempts["unexpected_http"] == {
+            "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 1,
+        }
+        assert native_state_fingerprint() == native_before_admission
+        assert mihomo_proof_receipt_state() == mihomo_receipt_before_admission
+        assert source.snapshot_requests() == subscription_source_requests_before_admission
+
+        def admit_legacy_inventory(api: str) -> tuple[int, dict]:
+            return http_json(
+                f"{api}/__acceptance/subscription/admit-legacy-inventory",
+                method="POST", payload={"expected_digest": expected_digest}, timeout=90,
+            )
+
+        # An actual HandlerService transport error after the proof-only
+        # checkpoint is durable must leave the inventory unknown. It must not
+        # run the ordinary checkpoint restore/reload path.
+        native.fail_next_action("api_inbound_users")
+        failed_admission_code, failed_admission = admit_legacy_inventory(restarted_api)
+        assert failed_admission_code == 200 and failed_admission.get("ok") is False, {
+            "status": failed_admission_code,
+            "error_code": failed_admission.get("error_code"),
+            "status_name": failed_admission.get("status"),
+        }
+        assert failed_admission.get("mutation_attempts") == {
+            "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0,
+        }
+        failed_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        assert failed_checkpoint.get("operation_mode") == "proof_only_legacy_admission"
+        assert failed_checkpoint.get("phase") == "proof_started"
+        assert generation_state(restarted_api) == state_before_admission
+        assert _synthetic_table_fingerprints(state / "fwrouter.db") == persistence_before_admission
+        assert native_state_fingerprint() == native_before_admission
+        assert mihomo_proof_receipt_state() == mihomo_receipt_before_admission
+        assert stack["provider_bridge"].snapshot_calls() == provider_calls_before_admission
+        assert source.snapshot_requests() == subscription_source_requests_before_admission
+
+        # A generic startup recovery attempt must recognize the proof-only
+        # checkpoint and refuse it without restoring or reloading native state.
+        old_worker = stack["worker"]
+        old_worker.terminate()
+        old_worker.wait(timeout=5)
+        restarted_worker, restarted_api = stack["start_worker"]()
+        stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert native_state_fingerprint() == native_before_admission
+        startup_code, startup_recovery = http_json(
+            f"{restarted_api}/__acceptance/xray/startup-generation-recovery",
+            method="POST", timeout=75,
+        )
+        assert startup_code == 200 and startup_recovery.get("ok") is False
+        assert startup_recovery.get("tripwire_armed") is True
+        assert startup_recovery.get("mutation_attempts") == {
+            "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0,
+        }
+        assert "proof" in str(startup_recovery.get("error_code") or "").lower() or (
+            "proof" in str(startup_recovery.get("inventory_authority") or "").lower()
+        ), {"error_code": startup_recovery.get("error_code"),
+            "inventory_authority": startup_recovery.get("inventory_authority")}
+        assert checkpoint_path.is_file()
+        assert json.loads(checkpoint_path.read_text(encoding="utf-8")).get("phase") == "proof_started"
+        assert generation_state(restarted_api) == state_before_admission
+        assert _synthetic_table_fingerprints(state / "fwrouter.db") == persistence_before_admission
+        assert native_state_fingerprint() == native_before_admission
+        assert mihomo_proof_receipt_state() == mihomo_receipt_before_admission
+        assert stack["provider_bridge"].snapshot_calls() == provider_calls_before_admission
+        assert source.snapshot_requests() == subscription_source_requests_before_admission
+
+        # Explicitly repeat the owner operation with the same exact digest and
+        # confirmation. It must re-read the actual native processes, then
+        # atomically promote the legacy generation without changing runtime.
+        resumed_code, resumed_admission = admit_legacy_inventory(restarted_api)
+        assert resumed_code == 200 and resumed_admission.get("ok") is True, {
+            "status": resumed_code,
+            "status_name": resumed_admission.get("status"),
+            "reason": resumed_admission.get("reason"),
+            "error_code": resumed_admission.get("error_code"),
+        }
+        assert resumed_admission.get("status") == "verified"
+        assert resumed_admission.get("digest") == expected_digest
+        assert resumed_admission.get("proof_receipt_written") is True
+        mihomo_receipt_after_admission = mihomo_proof_receipt_state()
+        assert mihomo_receipt_after_admission["active_hash_matches"] is True
+        assert mihomo_receipt_after_admission["runtime_incarnation_matches"] is True
+        assert mihomo_receipt_after_admission["native_proof"] == (True, True, True)
+        assert resumed_admission.get("mutation_attempts") == {
+            "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0,
+        }
+        admitted = generation_state(restarted_api)
+        assert admitted.get("status") == "verified"
+        assert admitted.get("candidate_digest") == expected_digest
+        assert admitted.get("verified_digest") == expected_digest
+        assert admitted.get("candidate_revision") == admitted.get("verified_revision")
+        assert not checkpoint_path.exists(), "successful proof-only admission left its checkpoint open"
+        assert _synthetic_table_fingerprints(state / "fwrouter.db") == persistence_before_admission
+        assert native_state_fingerprint() == native_before_admission
+        assert mihomo_proof_receipt_state() == mihomo_receipt_after_admission
+        assert stack["provider_bridge"].snapshot_calls() == provider_calls_before_admission
+        assert source.snapshot_requests() == subscription_source_requests_before_admission
+        assert set(loaded_identities(native)) == expected_f_identities
+        assert len(set(loaded_identities(native)) & baseline_pairs) == 78
+
+        # Repeating admission is idempotent: it may collect fresh proof, but it
+        # cannot alter inventory, credentials, projections or native processes.
+        repeat_code, repeated_admission = admit_legacy_inventory(restarted_api)
+        assert repeat_code == 200 and repeated_admission.get("ok") is True
+        assert repeated_admission.get("already_admitted") is True
+        assert repeated_admission.get("mutation_attempts") == {
+            "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0,
+        }
+        assert generation_state(restarted_api) == admitted
+        assert _synthetic_table_fingerprints(state / "fwrouter.db") == persistence_before_admission
+        assert native_state_fingerprint() == native_before_admission
+        assert mihomo_proof_receipt_state() == mihomo_receipt_after_admission
+        assert stack["provider_bridge"].snapshot_calls() == provider_calls_before_admission
+        assert source.snapshot_requests() == subscription_source_requests_before_admission
     finally:
         source.close()
 
