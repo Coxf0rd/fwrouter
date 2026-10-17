@@ -1913,3 +1913,68 @@ def test_real_xray_stager_candidate_order_proof_uses_existing_generator_without_
     assert active.read_bytes() == active_generation
     assert native_validation_actions == ["test_config", "test_config", "test_config"]
     assert all(action != "reload" for action in native_validation_actions)
+
+
+def test_mihomo_candidate_diagnostic_redacts_values_and_compares_existing_renderers(monkeypatch, tmp_path):
+    import yaml
+
+    tests_root = Path(__file__).resolve().parents[2] / "tests"
+    monkeypatch.syspath_prepend(str(tests_root))
+    from application_acceptance.worker import _safe_mihomo_candidate_diff_summary
+    from fwrouter_api.services.mihomo_serialization import dump_mihomo_config
+
+    shared = {"type": "select", "proxies": ["SECRET_PROXY_A", "SECRET_PROXY_B"]}
+    candidate_config = {
+        "rules": ["MATCH,SECRET_PROXY_A"],
+        "proxy-groups": [shared, shared],
+        "proxies": [{"name": "SECRET_PROXY_A", "type": "ss", "server": "secret.example.test"}],
+    }
+    active = tmp_path / "active.yaml"
+    candidate_dir = tmp_path / "fwrouter-legacy-admission-diagnostic"
+    candidate_dir.mkdir()
+    candidate = candidate_dir / "mihomo-candidate.yaml"
+    # The active file has equal values but no shared Python references. The
+    # private candidate serializer sees the original shared object graph.
+    active_config = json.loads(json.dumps(candidate_config))
+    active.write_text(dump_mihomo_config(active_config), encoding="utf-8")
+    candidate.write_text(yaml.safe_dump(candidate_config, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    monkeypatch.setenv("FWROUTER_ENVIRONMENT", "test")
+    monkeypatch.setenv("FWROUTER_APPLICATION_ACCEPTANCE_ROOT", str(tmp_path))
+
+    summary = _safe_mihomo_candidate_diff_summary(active, candidate, candidate_config)
+    assert summary is not None
+    assert summary["active_has_yaml_aliases_or_ambiguity"] is False
+    assert summary["candidate_has_yaml_aliases_or_ambiguity"] is True
+    assert summary["candidate_semantic_equal_active"] is False
+    assert summary["candidate_tree_equal_active"] is True
+    assert summary["changed_sections"] == []
+    assert "SECRET_PROXY_A" not in json.dumps(summary)
+    assert "secret.example.test" not in json.dumps(summary)
+
+
+def test_actual_mihomo_builder_candidate_serialization_is_observed_without_values(monkeypatch, tmp_path):
+    import yaml
+
+    tests_root = Path(__file__).resolve().parents[2] / "tests"
+    monkeypatch.syspath_prepend(str(tests_root))
+    from application_acceptance.worker import _safe_mihomo_candidate_diff_summary
+    from fwrouter_api.services import mihomo_config
+
+    config = mihomo_config.build_mihomo_config(
+        {"selective_default": "direct"}, xray_handoff_assignments=[],
+    )
+    active = tmp_path / "active.yaml"
+    candidate_dir = tmp_path / "fwrouter-legacy-admission-builder"
+    candidate_dir.mkdir()
+    candidate = candidate_dir / "mihomo-candidate.yaml"
+    active.write_text(mihomo_config.dump_mihomo_config(config), encoding="utf-8")
+    candidate.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    monkeypatch.setenv("FWROUTER_ENVIRONMENT", "test")
+    monkeypatch.setenv("FWROUTER_APPLICATION_ACCEPTANCE_ROOT", str(tmp_path))
+
+    summary = _safe_mihomo_candidate_diff_summary(active, candidate, config)
+    assert summary is not None and summary["available"] is True
+    assert summary["candidate_tree_equal_active"] is True
+    assert summary["changed_sections"] == []
+    # The result is intentionally a boolean diagnostic, never serialized config.
+    assert isinstance(summary["candidate_has_yaml_aliases_or_ambiguity"], (bool, type(None)))

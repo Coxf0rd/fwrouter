@@ -1127,6 +1127,126 @@ def _safe_xray_candidate_diff_summary(active_path: Path, candidate_path: Path) -
         return {"available": False, "reason": "unreadable_or_invalid"}
 
 
+def _safe_mihomo_candidate_diff_summary(
+    active_path: Path, candidate_path: Path, candidate_config: Any,
+) -> dict[str, Any] | None:
+    """Report fixed Mihomo structural facts without serializing names or values."""
+    raw_acceptance_root = os.environ.get(
+        "FWROUTER_APPLICATION_ACCEPTANCE_ROOT", "/tmp/fwrouter-application-acceptance",
+    )
+    acceptance_root = Path(raw_acceptance_root)
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or not acceptance_root.is_absolute()
+            or not Path(candidate_path).parent.name.startswith("fwrouter-legacy-admission-")):
+        return None
+
+    import yaml
+
+    from fwrouter_api.services.mihomo_reconcile import _semantic_config_files_equal, _yaml_tree_is_unambiguous
+    from fwrouter_api.services.mihomo_serialization import dump_mihomo_config
+    from fwrouter_api.services.mihomo_config import _configs_equal
+
+    active_file, candidate_file = Path(active_path), Path(candidate_path)
+    try:
+        if (active_file.is_symlink() or candidate_file.is_symlink()
+                or not active_file.is_file() or not candidate_file.is_file()):
+            return {"available": False, "reason": "path_type"}
+        acceptance_root = acceptance_root.resolve(strict=False)
+        active_resolved = active_file.resolve(strict=True)
+        candidate_resolved = candidate_file.resolve(strict=True)
+        if (active_resolved != acceptance_root and acceptance_root not in active_resolved.parents
+                or candidate_resolved != acceptance_root and acceptance_root not in candidate_resolved.parents):
+            return {"available": False, "reason": "path_scope"}
+        max_bytes = 1024 * 1024
+        active_size, candidate_size = active_file.stat().st_size, candidate_file.stat().st_size
+        if active_size > max_bytes or candidate_size > max_bytes:
+            return {"available": False, "reason": "size_limit"}
+        active_raw, candidate_raw = active_file.read_bytes(), candidate_file.read_bytes()
+        if len(active_raw) > max_bytes or len(candidate_raw) > max_bytes:
+            return {"available": False, "reason": "size_limit"}
+
+        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+        def aliases_or_ambiguous(raw: bytes) -> tuple[bool | None, dict[str, Any] | None]:
+            try:
+                text = raw.decode("utf-8")
+                tree = yaml.compose(text, Loader=loader)
+                unambiguous = _yaml_tree_is_unambiguous(tree)
+                if not unambiguous:
+                    return True, None
+                loaded = yaml.load(text, Loader=loader)
+                return False, loaded if isinstance(loaded, dict) else None
+            except (OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError, RecursionError):
+                return None, None
+
+        active_aliases, active_payload = aliases_or_ambiguous(active_raw)
+        candidate_aliases, candidate_payload = aliases_or_ambiguous(candidate_raw)
+        if not isinstance(candidate_config, dict):
+            candidate_config = candidate_payload
+        canonical_aliases: bool | None = None
+        canonical_equal_active: bool | None = None
+        if isinstance(candidate_config, dict):
+            canonical_text = dump_mihomo_config(candidate_config)
+            canonical_alias_bytes = canonical_text.encode("utf-8")
+            if len(canonical_alias_bytes) <= max_bytes:
+                canonical_aliases, canonical_payload = aliases_or_ambiguous(canonical_alias_bytes)
+                if isinstance(active_payload, dict) and isinstance(canonical_payload, dict):
+                    canonical_equal_active = _configs_equal(active_payload, canonical_payload)
+
+        section_names = (
+            "rules", "proxies", "proxy-groups", "listeners", "sub-rules", "dns", "tun",
+            "fwrouter", "inbounds", "outbounds", "sniffer", "external-controller", "bind-address",
+            "routing-mark", "allow-lan", "ipv6", "mode", "port", "mixed-port", "redir-port", "tproxy-port",
+        )
+        changed_sections: list[str] = []
+        other_top_level_changed: bool | None = None
+        value_equal_active: bool | None = None
+        if isinstance(active_payload, dict) and isinstance(candidate_config, dict):
+            changed_sections = [
+                name for name in section_names
+                if active_payload.get(name) != candidate_config.get(name)
+            ]
+            known = set(section_names)
+            other_top_level_changed = (
+                {key: value for key, value in active_payload.items() if key not in known}
+                != {key: value for key, value in candidate_config.items() if key not in known}
+            )
+            value_equal_active = _configs_equal(active_payload, candidate_config)
+
+        def shape(payload: dict[str, Any] | None) -> dict[str, int]:
+            value = payload if isinstance(payload, dict) else {}
+            sub_rules = value.get("sub-rules")
+            sub_rules_count = sum(len(items) for items in sub_rules.values() if isinstance(items, list)) \
+                if isinstance(sub_rules, dict) else 0
+            return {
+                "rules": len(value.get("rules")) if isinstance(value.get("rules"), list) else 0,
+                "proxies": len(value.get("proxies")) if isinstance(value.get("proxies"), list) else 0,
+                "proxy_groups": len(value.get("proxy-groups")) if isinstance(value.get("proxy-groups"), list) else 0,
+                "listeners": len(value.get("listeners")) if isinstance(value.get("listeners"), list) else 0,
+                "sub_rules": sub_rules_count,
+            }
+
+        return {
+            "available": True,
+            "schema": "fwrouter-acceptance-mihomo-candidate-diff/v1",
+            "active_bytes": len(active_raw),
+            "candidate_bytes": len(candidate_raw),
+            "equal_bytes": active_raw == candidate_raw,
+            "candidate_semantic_equal_active": _semantic_config_files_equal(str(active_file), str(candidate_file)),
+            "active_has_yaml_aliases_or_ambiguity": active_aliases,
+            "candidate_has_yaml_aliases_or_ambiguity": candidate_aliases,
+            "candidate_tree_equal_active": value_equal_active,
+            "canonical_serializer_has_yaml_aliases_or_ambiguity": canonical_aliases,
+            "canonical_serializer_tree_equal_active": canonical_equal_active,
+            "changed_sections": changed_sections,
+            "other_top_level_changed": other_top_level_changed,
+            "shape": {"active": shape(active_payload), "candidate": shape(candidate_config)},
+        }
+    except Exception:
+        # The observer is diagnostic-only and must never alter admission behavior.
+        return {"available": False, "reason": "inspection_failed"}
+
+
 def _bounded_generation_checkpoint_facts(
     checkpoint: Any, inventory_state: Any, selection_fence: Any,
 ) -> dict[str, Any]:
@@ -4167,6 +4287,7 @@ def build_app(socket_path: Path):
     ) -> tuple[Any, dict[str, int], bool]:
         """Run an operation while making native apply/reload attempts fail closed."""
         from fwrouter_api.services import mihomo_runtime
+        from fwrouter_api.services import mihomo_config
         from fwrouter_api.services import apply as core_apply
         import httpx
 
@@ -4186,6 +4307,7 @@ def build_app(socket_path: Path):
         original_dataplane_apply = dataplane_adapter.apply
         original_dataplane_rollback = dataplane_adapter.rollback
         original_global_hot_swap = core_apply._apply_global_mode_hot_swap
+        original_mihomo_candidate_validator = mihomo_config.validate_mihomo_candidate_config
 
         def guarded_runner(action: str, request: dict[str, Any]) -> Any:
             if action == "reload":
@@ -4213,6 +4335,31 @@ def build_app(socket_path: Path):
                         ), flush=True)
             except Exception:
                 # Diagnostics must never change the proof result or its safety behavior.
+                pass
+            return result
+
+        def observed_mihomo_candidate_validation(*args: Any, **kwargs: Any) -> Any:
+            # Preserve the real validator's arguments and result. This observer
+            # only reads the private proof candidate and emits redacted facts.
+            result = original_mihomo_candidate_validator(*args, **kwargs)
+            candidate_path = kwargs.get("candidate_path")
+            candidate_config = kwargs.get("candidate_config")
+            if candidate_path is None and len(args) >= 3:
+                candidate_path = args[2]
+            try:
+                candidate_file = Path(candidate_path) if candidate_path is not None else None
+                if (candidate_file is not None
+                        and candidate_file.parent.name.startswith("fwrouter-legacy-admission-")):
+                    active_file = mihomo_config._resolved_base_config_path()
+                    summary = _safe_mihomo_candidate_diff_summary(
+                        Path(active_file), candidate_file, candidate_config,
+                    )
+                    if summary is not None:
+                        print("FWROUTER_ACCEPTANCE_MIHOMO_CANDIDATE_DIFF " + json.dumps(
+                            summary, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                        ), flush=True)
+            except Exception:
+                # Diagnostics must never alter validation or admission behavior.
                 pass
             return result
 
@@ -4248,6 +4395,7 @@ def build_app(socket_path: Path):
         adapter._runner = guarded_runner
         if callable(original_generation_stage):
             adapter.stage_subscription_generation = observed_generation_stage
+        mihomo_config.validate_mihomo_candidate_config = observed_mihomo_candidate_validation
         if original_generation_apply is not None:
             adapter.apply_staged_subscription_generation = guarded_generation_apply
         dataplane_adapter.apply = guarded_dataplane_apply
@@ -4265,6 +4413,7 @@ def build_app(socket_path: Path):
             adapter._runner = original_runner
             if callable(original_generation_stage):
                 adapter.stage_subscription_generation = original_generation_stage
+            mihomo_config.validate_mihomo_candidate_config = original_mihomo_candidate_validator
             if original_generation_apply is not None:
                 adapter.apply_staged_subscription_generation = original_generation_apply
             dataplane_adapter.apply = original_dataplane_apply
