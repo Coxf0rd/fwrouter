@@ -6,6 +6,8 @@ from threading import Barrier
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held

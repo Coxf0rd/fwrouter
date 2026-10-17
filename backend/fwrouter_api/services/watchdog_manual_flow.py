@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fwrouter_api.services.watchdog_flow_deps import (
     DEFAULT_WATCHDOG_CANDIDATE_LIMIT,
     DEFAULT_WATCHDOG_TIMEOUT_MS,

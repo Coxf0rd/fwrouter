@@ -98,6 +98,7 @@ jobs:
             echo "Cannot resolve immutable event base SHA" >&2
             exit 2
           fi
+          python tests/gates/gate.py lint-changed --base "$BASE"
           PLAN="$RUNNER_TEMP/fwrouter-affected-plan.json"
           REPORT="$RUNNER_TEMP/fwrouter-affected-unit.json"
           PLAN_ARGS=(--base "$BASE" --include-native --output "$PLAN")

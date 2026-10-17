@@ -4,6 +4,7 @@ from typing import Any
 
 from fwrouter_api.services import apply_orchestrator as orchestrator
 from fwrouter_api.services.apply_orchestrator_handler_common import (
+    _reconcile_vpn_runtime_for_apply,
     _subject_needs_mihomo_selector_from_committed,
     _switch_subject_mihomo_selector,
 )

@@ -12,8 +12,6 @@ import hashlib
 import json
 import os
 import re
-import re
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -35,6 +33,12 @@ REPORT_DIR = ROOT / "knowledge" / "audits" / "test_architecture_cicd_2026-10-04"
 SCHEMA_VERSION = 1
 TOOL_VERSION = "fwrouter-test-gate/3"
 MAX_REPORT_BYTES = 8 * 1024 * 1024
+RUFF_VERSION = "0.17.0"
+RUFF_CONFIG = ROOT / "ruff.toml"
+RUFF_CHANGED_RULES = "F,E9"
+RUFF_GLOBAL_RULES = "F821,F822,F823"
+MAX_RUFF_PATHS = 512
+MAX_RUFF_OUTPUT_BYTES = 32768
 LEVELS = {f"L{i}" for i in range(8)}
 PACKET_EXECUTION_PROFILE = "hosted-kernel-packet"
 KERNEL_DATAPLANE_EXECUTION_PROFILE = "hosted-kernel-dataplane"
@@ -318,6 +322,72 @@ def changed_paths(base: str) -> list[str]:
     if raw.returncode:
         raise GateError(f"cannot diff base {base!r}; fetch/resolve the immutable base first")
     return sorted({part.decode("utf-8", "strict") for part in raw.stdout.split(b"\0") if part})
+
+
+def changed_python_paths(base: str, owned: Path, *, root: Path = ROOT) -> list[str]:
+    """Return committed and local staged/unstaged tracked Python changes.
+
+    New files must be staged or intent-to-add indexed to be included locally.
+    Untracked and ignored files are never walked.
+    """
+    commands = (
+        ["git", "diff", "--name-only", "--diff-filter=ACMR", "-z", f"{base}...HEAD"],
+        ["git", "diff", "--name-only", "--diff-filter=ACMR", "-z", "HEAD"],
+    )
+    names: set[str] = set()
+    env = clean_test_environment(owned)
+    for argv in commands:
+        code, output, truncated = run_process(argv, 15, 65536, cwd=root, env=env)
+        if code or truncated or "\ufffd" in output:
+            raise GateError("cannot enumerate committed and local tracked change paths for lint")
+        names.update(name for name in output.split("\0") if name.endswith(".py"))
+    code, deletion_output, truncated = run_process(
+        ["git", "diff", "--name-only", "--diff-filter=D", "--no-renames", "-z", "HEAD"],
+        15, 65536, cwd=root, env=env,
+    )
+    if code or truncated or "\ufffd" in deletion_output:
+        raise GateError("cannot enumerate local Python deletions for lint")
+    deleted = {name for name in deletion_output.split("\0") if name.endswith(".py")}
+    validate_python_paths(sorted(names), root=root, require_existing=False)
+    validate_python_paths(sorted(deleted), root=root, require_existing=False)
+    paths = sorted(names - deleted)
+    validate_python_paths(paths, root=root)
+    if len(paths) > MAX_RUFF_PATHS:
+        raise GateError("changed Python path inventory exceeds its bound")
+    return paths
+
+
+def tracked_maintained_python_paths(owned: Path, *, root: Path = ROOT) -> list[str]:
+    """List tracked maintained Python files, excluding historical knowledge audits."""
+    code, output, truncated = run_process(
+        ["git", "ls-files", "--cached", "-z", "--", "*.py"],
+        15, 65536, cwd=root, env=clean_test_environment(owned),
+    )
+    if code or truncated or "\ufffd" in output:
+        raise GateError("cannot enumerate tracked Python paths for global undefined-name checks")
+    names = [name for name in output.split("\0") if name and name.endswith(".py")]
+    maintained_names = sorted({name for name in names if not name.startswith("knowledge/")})
+    validate_python_paths(maintained_names, root=root, require_existing=False)
+    paths = [name for name in maintained_names if (root / name).is_file()]
+    if len(paths) > MAX_RUFF_PATHS:
+        raise GateError("tracked maintained Python path inventory exceeds its bound")
+    return paths
+
+
+def validate_python_paths(
+    paths: list[str], *, root: Path = ROOT, require_existing: bool = True,
+) -> None:
+    if len(paths) > MAX_RUFF_PATHS:
+        raise GateError("Python path inventory exceeds its bound")
+    root_resolved = root.resolve()
+    for name in paths:
+        candidate = root / name
+        if ("\ufffd" in name or Path(name).is_absolute() or ".." in Path(name).parts
+                or len(name) > 512 or "\0" in name or candidate.is_symlink()
+                or (require_existing and not candidate.is_file())):
+            raise GateError("Python path inventory contains an invalid, symlinked, or missing path")
+        if not candidate.resolve().is_relative_to(root_resolved):
+            raise GateError("Python path inventory escapes the repository root")
 
 
 def dependency_closure(domains: set[str], dependencies: dict[str, list[str]]) -> set[str]:
@@ -829,7 +899,6 @@ def classify(plan: dict[str, Any], execution: dict[str, Any], baseline: dict[str
         raise GateError(f"execution contains unknown node statuses: {invalid}")
     baseline_rows = {canonical_node_id(row["nodeid"]): row for row in baseline["failures"]}
     selected_paths = set(plan["selected_files"])
-    current_paths = {node.split("::", 1)[0] for node in statuses}
     baseline_selected = {
         node: row for node, row in baseline_rows.items()
         if canonical_test_path(node.split("::", 1)[0]) in selected_paths
@@ -976,21 +1045,18 @@ def command_lint_changed(args: argparse.Namespace) -> int:
         raise GateError("base must be a full lowercase commit hash")
     with tempfile.TemporaryDirectory(prefix="fwrouter-l0-lint-") as temp:
         owned = Path(temp)
-        code, output, truncated = run_process(
-            ["git", "diff", "--name-only", "--diff-filter=ACMR", f"{args.base}...HEAD"],
-            15, 65536, cwd=ROOT, env=clean_test_environment(owned),
-        )
-        if code or truncated:
-            raise GateError("cannot enumerate changed paths for F821 validation")
-        changed = output.splitlines()
-        problems = check_changed_python_undefined_names(changed, owned)
-        problems.extend(verify_ruff_f821_behavior(owned))
+        changed = changed_python_paths(args.base, owned)
+        problems = check_tracked_python_undefined_names(owned)
+        problems.extend(check_changed_python_rules(changed, owned))
+        problems.extend(verify_ruff_static_behavior(owned))
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)
         return 1
-    count = sum(name.endswith(".py") and (ROOT / name).is_file() for name in changed)
-    print(f"Ruff F821 passed its valid/undefined fixtures and {count} changed Python files")
+    print(
+        f"Ruff {RUFF_VERSION} passed global {RUFF_GLOBAL_RULES}, changed {RUFF_CHANGED_RULES}, "
+        f"and static-analysis canaries for {len(changed)} changed Python files"
+    )
     return 0
 
 
@@ -1459,53 +1525,101 @@ def node_status_from_tap(output: str, test_path: str, *, include_file_status: bo
     return statuses
 
 
-def check_changed_python_undefined_names(changed: list[str], owned: Path) -> list[str]:
-    python_paths = sorted({name for name in changed if name.endswith(".py") and (ROOT / name).is_file()})
-    if not python_paths:
-        return []
-    if len(python_paths) > 512 or any(
-        Path(name).is_absolute() or ".." in Path(name).parts or len(name) > 512
-        for name in python_paths
-    ):
-        return ["changed Python path inventory is invalid or exceeds its bound"]
+def ruff_executable(owned: Path) -> tuple[str | None, str | None]:
     ruff = shutil.which("ruff", path=os.environ.get("PATH", os.defpath))
     if ruff is None:
-        return ["pinned Ruff executable is required for changed-Python undefined-name checks"]
+        return None, "pinned Ruff executable is required for static Python checks"
     env = clean_test_environment(owned)
     version_code, version_output, version_truncated = run_process(
         [ruff, "--version"], 10, 4096, cwd=ROOT, env=env,
     )
-    if version_code or version_truncated or version_output.strip() != "ruff 0.17.0":
-        return ["Ruff executable version does not match the hash-locked 0.17.0 release"]
+    if version_code or version_truncated or version_output.strip() != f"ruff {RUFF_VERSION}":
+        return None, f"Ruff executable version does not match hash-locked {RUFF_VERSION}"
+    return ruff, None
+
+
+def check_ruff_paths(paths: list[str], owned: Path, *, rules: str, label: str) -> list[str]:
+    if not paths:
+        return []
+    try:
+        validate_python_paths(paths)
+    except GateError as exc:
+        return [str(exc)]
+    ruff, error = ruff_executable(owned)
+    if error:
+        return [error]
+    assert ruff is not None
     code, output, truncated = run_process(
-        [ruff, "check", "--isolated", "--select", "F821", "--target-version", "py311",
-         "--ignore-noqa", "--output-format", "concise", "--no-cache", "--", *python_paths],
-        30, 32768, cwd=ROOT, env=env,
+        [ruff, "check", "--config", str(RUFF_CONFIG), "--select", rules,
+         "--target-version", "py311", "--ignore-noqa", "--output-format", "concise",
+         "--no-cache", "--", *paths],
+        30, MAX_RUFF_OUTPUT_BYTES, cwd=ROOT, env=clean_test_environment(owned),
     )
     if truncated:
-        return ["Ruff F821 diagnostics exceeded the 32 KiB output bound"]
+        return [f"Ruff {label} diagnostics exceeded the {MAX_RUFF_OUTPUT_BYTES} byte output bound"]
     if code:
         detail = output.strip()[:2048]
-        return ["Ruff F821 check failed" + (f": {detail}" if detail else "")]
+        return [f"Ruff {label} check failed" + (f": {detail}" if detail else "")]
     return []
 
 
-def verify_ruff_f821_behavior(owned: Path) -> list[str]:
-    with tempfile.TemporaryDirectory(prefix=".fwrouter-f821-proof-", dir=ROOT) as temp:
+def check_tracked_python_undefined_names(owned: Path) -> list[str]:
+    try:
+        paths = tracked_maintained_python_paths(owned)
+    except GateError as exc:
+        return [str(exc)]
+    return check_ruff_paths(paths, owned, rules=RUFF_GLOBAL_RULES, label=RUFF_GLOBAL_RULES)
+
+
+def check_changed_python_rules(changed: list[str], owned: Path) -> list[str]:
+    try:
+        python_paths = sorted({name for name in changed if name.endswith(".py") and (ROOT / name).is_file()})
+        validate_python_paths(python_paths)
+    except GateError as exc:
+        return [str(exc)]
+    return check_ruff_paths(python_paths, owned, rules=RUFF_CHANGED_RULES, label=RUFF_CHANGED_RULES)
+
+
+def verify_ruff_static_behavior(owned: Path) -> list[str]:
+    with tempfile.TemporaryDirectory(prefix=".fwrouter-ruff-proof-", dir=ROOT) as temp:
         root = Path(temp)
-        good = root / "valid.py"
-        bad = root / "undefined.py"
-        good.write_text("value = 42\nprint(value)\n", encoding="utf-8")
-        bad.write_text("print(missing_symbol)  # noqa: F821\n", encoding="utf-8")
-        good_name = good.relative_to(ROOT).as_posix()
-        bad_name = bad.relative_to(ROOT).as_posix()
-        good_problems = check_changed_python_undefined_names([good_name], owned)
-        bad_problems = check_changed_python_undefined_names([bad_name], owned)
-        if good_problems:
-            return ["Ruff F821 valid-fixture check failed: " + " ".join(good_problems)[:512]]
-        bad_detail = " ".join(bad_problems)
-        if "F821" not in bad_detail or "missing_symbol" not in bad_detail:
-            return ["Ruff F821 undefined-name self-check failed to catch its synthetic violation"]
+        fixtures = {
+            "valid.py": "value = 42\nprint(value)\n",
+            "undefined.py": "print(missing_symbol)  # noqa: F821\n",
+            "unused_import.py": "import json  # noqa: F401\n",
+            "unused_local.py": "def unused_value():\n    value = 42  # noqa: F841\n",
+            "missing_export.py": '__all__ = ["missing_symbol"]\n',
+            "unbound_local.py": "def unbound():\n    print(value)\n    value = 1\n",
+            "syntax_error.py": "def incomplete(:\n    pass\n",
+        }
+        for name, source in fixtures.items():
+            (root / name).write_text(source, encoding="utf-8")
+        valid_name = (root / "valid.py").relative_to(ROOT).as_posix()
+        changed_errors = check_changed_python_rules([valid_name], owned)
+        if changed_errors:
+            return ["Ruff valid static fixture failed: " + " ".join(changed_errors)[:512]]
+        for filename, expected in (
+            ("undefined.py", "F821"),
+            ("unused_import.py", "F401"),
+            ("unused_local.py", "F841"),
+            ("syntax_error.py", "invalid-syntax"),
+        ):
+            problems = check_changed_python_rules(
+                [(root / filename).relative_to(ROOT).as_posix()], owned,
+            )
+            if not problems or expected not in " ".join(problems):
+                return [f"Ruff changed-file canary failed to reject {expected}"]
+        global_names = [
+            (root / filename).relative_to(ROOT).as_posix()
+            for filename in ("valid.py", "undefined.py", "missing_export.py", "unbound_local.py")
+        ]
+        global_errors = check_ruff_paths(
+            global_names, owned, rules=RUFF_GLOBAL_RULES, label=RUFF_GLOBAL_RULES,
+        )
+        global_detail = " ".join(global_errors)
+        for expected in ("F821", "F822", "F823"):
+            if expected not in global_detail:
+                return [f"Ruff global-name canary failed to reject {expected}"]
     return []
 
 
@@ -1514,6 +1628,11 @@ def run_l0(changed: list[str], owned: Path, base_commit: str) -> tuple[bool, lis
     diff = diff_check(base_commit, cwd=ROOT)
     if diff.returncode:
         problems.append("git diff --check failed")
+    try:
+        lint_changed = changed_python_paths(base_commit, owned)
+    except GateError as exc:
+        problems.append(str(exc))
+        lint_changed = sorted({name for name in changed if name.endswith(".py")})
     for relative in changed:
         path = ROOT / relative
         if not path.is_file():
@@ -1544,8 +1663,9 @@ def run_l0(changed: list[str], owned: Path, base_commit: str) -> tuple[bool, lis
                     problems.append(f"PyYAML is required for changed YAML L0 validation: {relative}")
         except Exception as exc:
             problems.append(f"L0 parse failed for {relative}: {type(exc).__name__}")
-    problems.extend(check_changed_python_undefined_names(changed, owned))
-    problems.extend(verify_ruff_f821_behavior(owned))
+    problems.extend(check_tracked_python_undefined_names(owned))
+    problems.extend(check_changed_python_rules(lint_changed, owned))
+    problems.extend(verify_ruff_static_behavior(owned))
     return not problems, problems
 
 
