@@ -477,6 +477,77 @@ def test_admission_requires_owned_current_applied_manifest_before_native_proof(m
     assert not checkpoint.exists()
 
 
+def test_core_admission_gate_uses_owned_apply_not_runtime_observation(monkeypatch, tmp_path):
+    _seed_legacy_inventory()
+    from types import SimpleNamespace
+    from fwrouter_api.services import apply_results
+
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET runtime_state='not_configured' WHERE module_name='core'",
+        )
+        connection.execute("DELETE FROM apply_versions")
+        connection.execute(
+            "INSERT INTO jobs (job_id, job_type, status) VALUES (?, 'apply', 'success')",
+            ("synthetic-real-apply-job",),
+        )
+    monkeypatch.setattr(apply_results, "write_apply_result_log", lambda **_kwargs: None)
+    monkeypatch.setattr(apply_results, "write_job_json_artifact", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(apply_results, "atomic_write_json", lambda *_args, **_kwargs: None)
+    manifest = {
+        "generated_at": "synthetic-generation-time",
+        "summary": {"path_counts": {}},
+        "owned_table": "fwrouter",
+    }
+    plan = {
+        "apply_id": "synthetic-real-apply-writer",
+        "job_id": "synthetic-real-apply-job",
+        "artifacts": {"artifact_dir": str(tmp_path / "apply-artifacts")},
+    }
+    apply_results.persist_apply_result(
+        job_id=plan["job_id"],
+        result_manifest_path=tmp_path / "apply-result.json",
+        result={"ok": True, "dataplane": {"error_code": None, "error_message": None}},
+        plan=plan,
+        mode=SimpleNamespace(value="apply"),
+        reason="set_global_mode",
+        manifest=manifest,
+        manifest_paths={"versioned_manifest_path": str(tmp_path / "manifest.json")},
+        result_runtime_enforcement={
+            "dataplane_capability": "synthetic-owned",
+            "enforcement_level": "global_direct_enforced",
+        },
+        rollback_result=None,
+    )
+
+    with db_session() as connection:
+        core = connection.execute(
+            "SELECT desired_state, lifecycle_mode, runtime_state, apply_state "
+            "FROM modules WHERE module_name='core'",
+        ).fetchone()
+    assert tuple(core) == ("enabled", "managed", "not_configured", "clean")
+    assert xray_subscription_service._legacy_admission_core_unavailable_reason() is None
+
+
+@pytest.mark.parametrize(
+    "updates,expected_reason",
+    [
+        ({"desired_state": "disabled"}, "core_apply_state_unverified"),
+        ({"lifecycle_mode": "none"}, "core_apply_state_unverified"),
+        ({"apply_state": "failed"}, "core_apply_state_unverified"),
+    ],
+)
+def test_core_admission_gate_rejects_unowned_or_dirty_module_state(updates, expected_reason):
+    _seed_legacy_inventory()
+    with db_session() as connection:
+        assignments = ", ".join(f"{key}=?" for key in updates)
+        connection.execute(
+            f"UPDATE modules SET {assignments} WHERE module_name='core'",
+            tuple(updates.values()),
+        )
+    assert xray_subscription_service._legacy_admission_core_unavailable_reason() == expected_reason
+
+
 @pytest.mark.parametrize(
     "intent_mode,live_mode,enforcement_level,expected_ok",
     [
@@ -493,6 +564,11 @@ def test_core_native_proof_requires_owned_manifest_and_fresh_enforcement_for_eac
     from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
 
     with db_session() as connection:
+        # The historical Core schema seeds an observational not_configured
+        # runtime state even when routing has a valid owned applied generation.
+        connection.execute(
+            "UPDATE modules SET runtime_state='not_configured' WHERE module_name='core'",
+        )
         connection.execute(
             "UPDATE routing_global_state SET desired_mode=?, applied_mode=?, apply_state='clean' WHERE id=1",
             (intent_mode, intent_mode),
@@ -572,6 +648,11 @@ def test_core_native_proof_requires_owned_manifest_and_fresh_enforcement_for_eac
     assert proof["live_global_mode"] == live_mode
     assert proof["apply_id"] == "synthetic-applied-generation"
     assert len(proof["manifest_hash"]) == 64
+    with db_session() as connection:
+        core_runtime_state = connection.execute(
+            "SELECT runtime_state FROM modules WHERE module_name='core'",
+        ).fetchone()["runtime_state"]
+    assert core_runtime_state == "not_configured"
     assert ("dataplane_global.applied_manifest", True) in force_refresh_calls
     assert ("dataplane_live.global_mode", True) in force_refresh_calls
 

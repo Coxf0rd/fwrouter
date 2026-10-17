@@ -1612,7 +1612,7 @@ def _legacy_admission_core_unavailable_reason(connection: sqlite3.Connection | N
             return "core_bypass_active"
 
     core = connection.execute(
-        "SELECT desired_state, runtime_state, apply_state FROM modules WHERE module_name='core'",
+        "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
     ).fetchone()
     routing = connection.execute(
         "SELECT desired_mode, applied_mode, apply_state FROM routing_global_state WHERE id=1",
@@ -1623,7 +1623,7 @@ def _legacy_admission_core_unavailable_reason(connection: sqlite3.Connection | N
     if latest_apply is None or latest_apply["status"] != "applied":
         return "core_applied_generation_unowned"
     if (
-        core is None or core["desired_state"] != "enabled" or core["runtime_state"] != "running"
+        core is None or core["desired_state"] != "enabled" or core["lifecycle_mode"] != "managed"
         or core["apply_state"] != "clean" or routing is None
         or routing["apply_state"] != "clean" or routing["desired_mode"] != routing["applied_mode"]
     ):
