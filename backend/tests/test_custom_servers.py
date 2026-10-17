@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from fwrouter_api.adapters.subscription import SubscriptionRefreshResult, SubscriptionRefreshStatus, SubscriptionServer
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.main import create_app
 from fwrouter_api.services.control_plane_transfer import export_control_plane_snapshot, import_control_plane_snapshot
 from fwrouter_api.services.custom_servers import (

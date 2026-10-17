@@ -3,7 +3,6 @@ from _test_support import configure_test_state_dir as _configure_env
 from fwrouter_api.db.connection import initialize_database
 
 
-import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient

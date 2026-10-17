@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 import pytest
 
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.logs import list_technical_logs
 from fwrouter_api.services.modules import get_module_state, set_module_desired_state

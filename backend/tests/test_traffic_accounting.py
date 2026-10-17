@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 from fwrouter_api.jobs.extended_handlers import traffic_accounting_collect_handler
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.traffic import (
     cleanup_traffic_history,
     collect_traffic_from_script,
