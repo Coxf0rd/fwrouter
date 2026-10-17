@@ -64,6 +64,31 @@ NATIVE_SPEC.loader.exec_module(native_runner)
 WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 APPLICATION_ACCEPTANCE_CONFTEST = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
 APPLICATION_ACCEPTANCE_WORKER = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+BROWSER_ACCEPTANCE_SOURCE = Path(__file__).parents[1] / "application_acceptance" / "test_browser_locale.py"
+
+
+def _extract_browser_resource_helpers():
+    tree = ast.parse(BROWSER_ACCEPTANCE_SOURCE.read_text(encoding="utf-8"))
+    wanted_functions = {
+        "_read_cgroup_integer", "_read_cgroup_events", "_filesystem_usage",
+        "_browser_resource_snapshot", "_safe_browser_resource_snapshot",
+        "_launch_chromium_with_diagnostics",
+    }
+    body = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted_functions:
+            body.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in {
+                "_BROWSER_DIAGNOSTIC_SCENARIOS", "_CGROUP_V2_ROOT", "_CGROUP_FILE_MAX_BYTES",
+            }
+            for target in node.targets
+        ):
+            body.append(node)
+    namespace: dict[str, Any] = {"Path": Path, "os": os, "json": json}
+    module = ast.Module(body=body, type_ignores=[])
+    exec(compile(module, str(BROWSER_ACCEPTANCE_SOURCE), "exec"), namespace)
+    return namespace
 
 
 def _extract_health_readiness_predicate():
@@ -179,6 +204,155 @@ def _extract_bounded_generation_checkpoint_facts():
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_browser_resource_snapshot_is_bounded_allowlisted_and_uses_unknown_for_missing_data(self):
+        helpers = _extract_browser_resource_helpers()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "memory.current").write_text("12345\n", encoding="ascii")
+            (root / "memory.peak").write_text("max\n", encoding="ascii")
+            (root / "memory.max").write_text("not-a-counter SECRET_SENTINEL\n", encoding="ascii")
+            (root / "memory.events").write_text(
+                "low 1\nhigh 2\nmax 3\noom 4\noom_kill 5\noom_group_kill 6\nprivate_secret 99\n",
+                encoding="ascii",
+            )
+            (root / "pids.current").write_text("7\n", encoding="ascii")
+            (root / "pids.events").write_text("max 8\nsecret 9\n", encoding="ascii")
+
+            def fake_statvfs(path):
+                self.assertIn(path, ("/tmp", "/dev/shm"))
+                return SimpleNamespace(f_frsize=4096, f_bsize=4096, f_blocks=100, f_bfree=25)
+
+            snapshot = helpers["_browser_resource_snapshot"](root, fake_statvfs)
+            self.assertEqual(12345, snapshot["memory_current_bytes"])
+            self.assertIsNone(snapshot["memory_peak_bytes"])
+            self.assertIsNone(snapshot["memory_max_bytes"])
+            self.assertIsNone(snapshot["pids_max"])
+            self.assertEqual(7, snapshot["pids_current"])
+            self.assertEqual({"low": 1, "high": 2, "max": 3, "oom": 4,
+                              "oom_kill": 5, "oom_group_kill": 6}, snapshot["memory_events"])
+            self.assertEqual({"max": 8}, snapshot["pids_events"])
+            self.assertEqual({"used_bytes": 307200, "capacity_bytes": 409600}, snapshot["tmp"])
+            self.assertEqual(snapshot["tmp"], snapshot["dev_shm"])
+            encoded = json.dumps(snapshot)
+            self.assertNotIn("SECRET_SENTINEL", encoded)
+            self.assertNotIn("private_secret", encoded)
+            self.assertNotIn(temporary, encoded)
+
+            (root / "memory.current").write_bytes(b"1" * 4097)
+            malformed = helpers["_browser_resource_snapshot"](root, fake_statvfs)
+            self.assertIsNone(malformed["memory_current_bytes"])
+            self.assertIsNone(malformed["memory_peak_bytes"])
+
+    def test_browser_launch_diagnostic_records_one_unchanged_attempt_and_preserves_failure(self):
+        helpers = _extract_browser_resource_helpers()
+        launch = helpers["_launch_chromium_with_diagnostics"]
+        fixed_snapshot = {"memory_current_bytes": 100, "pids_current": 2}
+
+        class Request:
+            def __init__(self):
+                self.finalizers = []
+
+            def addfinalizer(self, callback):
+                self.finalizers.append(callback)
+
+        class Chromium:
+            def __init__(self, result=None, error=None):
+                self.calls = []
+                self.result = result
+                self.error = error
+
+            def launch(self, **kwargs):
+                self.calls.append(kwargs)
+                if self.error is not None:
+                    raise self.error
+                return self.result
+
+        expected_args = ["--disable-dev-shm-usage", "--no-proxy-server"]
+        properties = []
+        request = Request()
+        browser_object = object()
+        chromium = Chromium(result=browser_object)
+        snapshots = iter((fixed_snapshot, {"memory_current_bytes": 110}, {"memory_current_bytes": 120}))
+        result = launch(
+            chromium, scenario="navigation", executable_path="/fixed/chromium", args=expected_args,
+            request=request, record_property=lambda *args: properties.append(args),
+            snapshot_fn=lambda: next(snapshots),
+        )
+        self.assertIs(result, browser_object)
+        self.assertEqual(1, len(chromium.calls))
+        self.assertEqual({"headless": True, "executable_path": "/fixed/chromium", "args": expected_args}, chromium.calls[0])
+        self.assertEqual(1, len(request.finalizers))
+        request.finalizers[0]()
+        self.assertEqual(1, len(properties))
+        property_name, encoded = properties[0]
+        self.assertEqual("browser_resource_diagnostic_navigation", property_name)
+        diagnostic = json.loads(encoded)
+        self.assertEqual("succeeded", diagnostic["launch_outcome"])
+        self.assertEqual(["before_launch", "after_launch", "posttest"],
+                         [item["phase"] for item in diagnostic["samples"]])
+        self.assertEqual(fixed_snapshot, diagnostic["samples"][0]["resources"])
+
+        secret = "SECRET_SENTINEL_DO_NOT_EXPORT"
+        original_error = RuntimeError(secret)
+        failing_request = Request()
+        failing_properties = []
+        failing_chromium = Chromium(error=original_error)
+        failure_snapshots = iter((fixed_snapshot, {"memory_current_bytes": None}, {"memory_current_bytes": 130}))
+        with self.assertRaises(RuntimeError) as caught:
+            launch(
+                failing_chromium, scenario="xray_client_editor", executable_path="/fixed/chromium",
+                args=expected_args, request=failing_request,
+                record_property=lambda *args: failing_properties.append(args),
+                snapshot_fn=lambda: next(failure_snapshots),
+            )
+        self.assertIs(caught.exception, original_error)
+        self.assertEqual(1, len(failing_chromium.calls))
+        self.assertEqual(chromium.calls[0], failing_chromium.calls[0])
+        failing_request.finalizers[0]()
+        self.assertEqual(1, len(failing_properties))
+        failed_json = failing_properties[0][1]
+        self.assertEqual("failed", json.loads(failed_json)["launch_outcome"])
+        self.assertNotIn(secret, failed_json)
+        self.assertEqual(["before_launch", "after_launch", "posttest"],
+                         [item["phase"] for item in json.loads(failed_json)["samples"]])
+
+        diagnostic_error = RuntimeError("diagnostic-only-secret")
+        protected_request = Request()
+        protected_properties = []
+        protected_chromium = Chromium(error=original_error)
+        with self.assertRaises(RuntimeError) as protected_caught:
+            launch(
+                protected_chromium, scenario="provider_error", executable_path="/fixed/chromium",
+                args=expected_args, request=protected_request,
+                record_property=lambda *args: protected_properties.append(args),
+                snapshot_fn=lambda: (_ for _ in ()).throw(diagnostic_error),
+            )
+        self.assertIs(protected_caught.exception, original_error)
+        self.assertEqual(1, len(protected_chromium.calls))
+        protected_request.finalizers[0]()
+        protected_diagnostic = json.loads(protected_properties[0][1])
+        self.assertTrue(all(
+            sample["resources"]["memory_current_bytes"] is None
+            for sample in protected_diagnostic["samples"]
+        ))
+        self.assertNotIn("diagnostic-only-secret", protected_properties[0][1])
+
+    def test_browser_diagnostic_rejects_unregistered_scenario_before_launch(self):
+        helpers = _extract_browser_resource_helpers()
+        calls = []
+
+        class Chromium:
+            def launch(self, **kwargs):
+                calls.append(kwargs)
+
+        with self.assertRaisesRegex(ValueError, "unsupported browser diagnostic scenario"):
+            helpers["_launch_chromium_with_diagnostics"](
+                Chromium(), scenario="arbitrary-user-value", executable_path="ignored", args=[],
+                request=SimpleNamespace(addfinalizer=lambda _callback: None),
+                record_property=lambda *_args: None, snapshot_fn=lambda: {},
+            )
+        self.assertEqual([], calls)
+
     def test_inventory_recovery_projection_is_fixed_redacted_and_preserves_false_proof(self):
         project = _extract_bounded_inventory_generation_recovery()
         source = {
