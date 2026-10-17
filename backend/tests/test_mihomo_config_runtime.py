@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -557,6 +558,138 @@ def test_build_mihomo_config_sanitizes_legacy_inbound_ports_and_managed_listener
     _assert_managed_contour(config)
     assert "fwrouter-mixed" in config["fwrouter"]["sanitized_managed_listeners"]
     assert "fwrouter-tproxy" in {listener["name"] for listener in config["listeners"]}
+
+
+def test_rebuilding_from_active_mihomo_config_changes_only_sanitization_provenance(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A second proof candidate must distinguish runtime policy from sanitize history."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
+
+    base_path = get_settings().paths.generated_dir / "mihomo" / "config.yaml"
+    first = mihomo_config_service.build_mihomo_config(
+        {"selective_default": "direct"}, xray_handoff_assignments=[],
+    )
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    base_path.write_text(mihomo_config_service.dump_mihomo_config(first), encoding="utf-8")
+
+    second = mihomo_config_service.build_mihomo_config(
+        {"selective_default": "direct"}, xray_handoff_assignments=[],
+    )
+    first_meta = first["fwrouter"]
+    second_meta = second["fwrouter"]
+    changed_metadata = {
+        key for key in set(first_meta) | set(second_meta)
+        if first_meta.get(key) != second_meta.get(key)
+    }
+
+    # The active base contains generated FWRouter listeners, so the second
+    # builder pass records their removal. This field is provenance only; all
+    # routing and native listener content must remain unchanged.
+    assert changed_metadata == {"sanitized_managed_listeners"}
+    assert first_meta["sanitized_managed_listeners"] == []
+    assert len(second_meta["sanitized_managed_listeners"]) == 5
+    assert second_meta["sanitized_legacy_inbound_keys"] == []
+    runtime_fields = set(first_meta) - {
+        "sanitized_legacy_inbound_keys", "sanitized_managed_listeners",
+    }
+    assert {key: first_meta[key] for key in runtime_fields} == {
+        key: second_meta[key] for key in runtime_fields
+    }
+    assert first["listeners"] == second["listeners"]
+    assert first["rules"] == second["rules"]
+    assert first["proxy-groups"] == second["proxy-groups"]
+
+    active_path = get_settings().paths.generated_dir / "mihomo" / "config.yaml"
+    candidate_path = tmp_path / "candidate.yaml"
+    candidate_path.write_text(mihomo_config_service.dump_mihomo_config(second), encoding="utf-8")
+    active_before = active_path.read_bytes()
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(
+        active_path, candidate_path,
+    ) is True
+    assert active_path.read_bytes() == active_before
+
+    def candidate_matches(mutator) -> bool:
+        altered = json.loads(json.dumps(second))
+        mutator(altered)
+        candidate_path.write_text(mihomo_config_service.dump_mihomo_config(altered), encoding="utf-8")
+        return xray_subscription_service._legacy_mihomo_candidate_matches(active_path, candidate_path)
+
+    assert candidate_matches(lambda value: value["fwrouter"].update({
+        "resolved_selective_default": "vpn",
+    })) is False
+    assert candidate_matches(lambda value: value["rules"].append("MATCH,DIRECT")) is False
+    assert candidate_matches(lambda value: value.update({"unknown-runtime-setting": True})) is False
+    bad_provenance_matches = candidate_matches(lambda value: value["fwrouter"].update({
+        "sanitized_managed_listeners": ["not-present-in-active-config"],
+    }))
+    import copy
+    _, active_sanitization = mihomo_inbounds_service._sanitize_fwrouter_managed_inbounds(
+        copy.deepcopy(yaml.safe_load(active_path.read_text(encoding="utf-8"))),
+    )
+    assert bad_provenance_matches is False, {
+        "active_listener_count": len(yaml.safe_load(active_path.read_text(encoding="utf-8")).get("listeners") or []),
+        "derived_provenance_count": len(active_sanitization["removed_listener_names"]),
+        "candidate_original_provenance_count": len(second_meta["sanitized_managed_listeners"]),
+        "candidate_metadata_mutated": True,
+    }
+    assert candidate_matches(lambda value: value["fwrouter"].update({
+        "sanitized_legacy_inbound_keys": "not-a-list",
+    })) is False
+    assert candidate_matches(lambda value: value["listeners"].append({
+        "name": "unexpected-listener", "type": "mixed", "listen": "127.0.0.1", "port": 9,
+    })) is False
+    assert active_path.read_bytes() == active_before
+
+    candidate_path.write_text(mihomo_config_service.dump_mihomo_config(second), encoding="utf-8")
+    candidate_path.unlink()
+    candidate_path.symlink_to(active_path)
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(
+        active_path, candidate_path,
+    ) is False
+    candidate_path.unlink()
+    os.mkfifo(candidate_path)
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(
+        active_path, candidate_path,
+    ) is False
+    candidate_path.unlink()
+
+    active_with_legacy_inbound = yaml.safe_load(active_before)
+    active_with_legacy_inbound["mixed-port"] = 7890
+    active_path.write_text(
+        mihomo_config_service.dump_mihomo_config(active_with_legacy_inbound), encoding="utf-8",
+    )
+    legacy_candidate = mihomo_config_service.build_mihomo_config(
+        {"selective_default": "direct"}, xray_handoff_assignments=[],
+    )
+    candidate_path.write_text(
+        mihomo_config_service.dump_mihomo_config(legacy_candidate), encoding="utf-8",
+    )
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(
+        active_path, candidate_path,
+    ) is False
+    active_path.write_bytes(active_before)
+
+    tests_root = Path(__file__).resolve().parents[2] / "tests"
+    monkeypatch.syspath_prepend(str(tests_root))
+    from application_acceptance.worker import _safe_mihomo_candidate_diff_summary
+
+    diagnostic_dir = tmp_path / "fwrouter-legacy-admission-diagnostic"
+    diagnostic_dir.mkdir()
+    diagnostic_candidate = diagnostic_dir / "candidate.yaml"
+    diagnostic_candidate.write_text(yaml.safe_dump(second, sort_keys=False), encoding="utf-8")
+    monkeypatch.setenv("FWROUTER_ENVIRONMENT", "test")
+    monkeypatch.setenv("FWROUTER_APPLICATION_ACCEPTANCE_ROOT", str(tmp_path))
+    summary = _safe_mihomo_candidate_diff_summary(
+        active_path, diagnostic_candidate, second,
+    )
+    assert summary is not None
+    assert summary["fwrouter_changed_fields"] == ["sanitized_managed_listeners"]
+    assert summary["fwrouter_unknown_fields_changed"] is False
+    assert "sanitized_managed_listeners" in json.dumps(summary)
+    assert second_meta["sanitized_managed_listeners"][0] not in json.dumps(summary)
 
 
 def test_build_mihomo_config_does_not_resurrect_legacy_managed_inbounds_from_last_good_or_debug(

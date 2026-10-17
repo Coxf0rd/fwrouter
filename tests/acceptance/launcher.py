@@ -49,6 +49,7 @@ KERNEL_PACKET_TOOL_PACKAGE_VERSIONS = {
 MAX_RECEIPT_BYTES = 2 * 1024 * 1024
 MAX_TEST_OUTPUT_BYTES = 4 * 1024 * 1024
 MAX_TEST_SECONDS = 900
+APPLICATION_MEMORY_LIMIT_BYTES = 2560 * 1024 ** 2
 ALLOWED_PREFIXES = (
     "backend/fwrouter_api/", "backend/tests/", "backend/pyproject.toml", "ui/",
     "tests/application_acceptance/", "tests/acceptance/",
@@ -714,7 +715,7 @@ def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path
         memory = int(float(memory_value[:-1] if scale > 1 else memory_value) * scale)
     except ValueError:
         memory = 0
-    if memory <= 0 or memory > 2 * 1024 * 1024 * 1024 or int(service.get("pids_limit", 0)) not in range(1, 257):
+    if memory <= 0 or memory > APPLICATION_MEMORY_LIMIT_BYTES or int(service.get("pids_limit", 0)) not in range(1, 257):
         raise NotRun("container resource limits are missing or exceed policy")
     swap_limit = str(service.get("memswap_limit", "")).lower()
     if not swap_limit:
@@ -724,8 +725,8 @@ def validate_compose_config(config: dict[str, Any], *, run_id: str, profile_path
         swap_bytes = int(float(swap_limit[:-1] if swap_scale > 1 else swap_limit) * swap_scale)
     except ValueError:
         swap_bytes = 0
-    if not memory <= swap_bytes <= 2 * 1024 * 1024 * 1024:
-        raise NotRun("container swap limit is missing or exceeds memory policy")
+    if swap_bytes != memory:
+        raise NotRun("container swap must remain disabled with an explicit limit equal to memory")
     try:
         cpus = float(service.get("cpus", 0))
     except (TypeError, ValueError) as exc:
@@ -898,10 +899,11 @@ def validate_container_inspect(value: dict[str, Any], *, project: str, run_id: s
         raise NotRun("runtime profile mount is not read-only")
     if Path(mount.get("Source", "")).resolve() != profile_path.resolve():
         raise NotRun("runtime mount source is not this run's profile")
-    if host.get("PidsLimit", 0) not in range(1, 257) or host.get("Memory", 0) not in range(1, 2 * 1024 * 1024 * 1024 + 1):
+    if (host.get("PidsLimit", 0) not in range(1, 257)
+            or host.get("Memory", 0) not in range(1, APPLICATION_MEMORY_LIMIT_BYTES + 1)):
         raise NotRun("runtime resource cgroup limits are missing or excessive")
-    if host.get("MemorySwap", 0) not in range(host.get("Memory", 0), 2 * 1024 * 1024 * 1024 + 1):
-        raise NotRun("runtime swap limit is missing or exceeds memory policy")
+    if host.get("MemorySwap", 0) != host.get("Memory", 0):
+        raise NotRun("runtime swap must remain disabled with an explicit limit equal to memory")
     if host.get("NanoCpus", 0) not in range(1, 2_000_000_001):
         raise NotRun("runtime CPU cgroup limit is missing or excessive")
     tmpfs_config = host.get("Tmpfs", {})
@@ -1181,7 +1183,7 @@ def validate_packet_compose_config(config: dict[str, Any], *, run_id: str,
         expected_image = f"fwrouter-acceptance:{run_id}"
         if service.get("image") != expected_image:
             raise NotRun("packet roles must use this run's single source-built image")
-        resource_limits = {"application": (2 * 1024 ** 3, 256, 2.0),
+        resource_limits = {"application": (APPLICATION_MEMORY_LIMIT_BYTES, 256, 2.0),
                            "lanclient": (256 * 1024 ** 2, 64, 1.0),
                            "endpoint": (384 * 1024 ** 2, 96, 1.0)}[service_name]
         def bytes_value(raw: Any) -> int:
@@ -1369,7 +1371,7 @@ def validate_packet_container_inspect(value: dict[str, Any], *, project: str, ru
         raise NotRun("packet container has unreviewed runtime security options")
     if config.get("Entrypoint") != ["python"] or config.get("Cmd") != ["-c", "import signal; signal.pause()"]:
         raise NotRun("packet container command differs from the reviewed idle command")
-    expected_resources = {"router": (2 * 1024 ** 3, 2_000_000_000, 256),
+    expected_resources = {"router": (APPLICATION_MEMORY_LIMIT_BYTES, 2_000_000_000, 256),
                           "client": (256 * 1024 ** 2, 1_000_000_000, 64),
                           "endpoint": (384 * 1024 ** 2, 1_000_000_000, 96)}[role]
     if (host.get("Memory") != expected_resources[0] or host.get("MemorySwap") != expected_resources[0]

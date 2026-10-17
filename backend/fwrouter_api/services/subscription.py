@@ -37,6 +37,19 @@ class _SubscriptionInventoryAdmission:
     digest: str
     revision: int
     issuer: object
+    proof_only_source_fingerprint: str | None = None
+    proof_only_core_runtime_fingerprint: str | None = None
+    proof_only_selection_revision: int | None = None
+    proof_only_selection_decision_id: str | None = None
+    proof_only_xray_incarnation: str | None = None
+    proof_only_mihomo_incarnation: str | None = None
+    proof_only_xray_config_sha256: str | None = None
+    proof_only_mihomo_config_sha256: str | None = None
+    proof_only_mihomo_fingerprint_hash: str | None = None
+    proof_only_core_manifest_hash: str | None = None
+    proof_only_core_apply_id: str | None = None
+    proof_only_core_enforcement_level: str | None = None
+    proof_only_core_live_mode: str | None = None
 
 
 class SubscriptionInventoryGenerationBlocked(RuntimeError):
@@ -353,7 +366,49 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
         return {"ok": False, "reason": "native_input_fingerprint_unavailable"}
     if not mihomo_udp_policy_receipt_matches() or not mihomo_input_unchanged(fingerprint):
         return {"ok": False, "reason": "native_receipt_unverified"}
+    if admission.proof_only_source_fingerprint is not None:
+        from fwrouter_api.services.xray_subscription_service import (
+            _legacy_admission_core_runtime_fingerprint,
+            _legacy_admission_core_unavailable_reason,
+            _legacy_admission_runtime_fences_match,
+        )
+        if not _legacy_admission_runtime_fences_match(admission):
+            return {"ok": False, "reason": "legacy_admission_fence_changed"}
     with db_session() as connection:
+        if admission.proof_only_source_fingerprint is not None:
+            # Serialize the final proof+marker CAS with any SQLite writer and
+            # compare all durable intent/credential/publication inputs in this
+            # same transaction. The filesystem checkpoint remains the durable
+            # operation owner across the SQLite commit boundary.
+            connection.execute("BEGIN IMMEDIATE")
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+            from fwrouter_api.services.xray_subscription_service import (
+                _legacy_admission_core_runtime_fingerprint,
+                _legacy_admission_core_unavailable_reason,
+                _legacy_admission_source_fingerprint,
+            )
+            latest_apply = connection.execute(
+                "SELECT apply_id, status FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+            ).fetchone()
+            owned_apply = connection.execute(
+                "SELECT status FROM apply_versions WHERE apply_id=?",
+                (admission.proof_only_core_apply_id,),
+            ).fetchone()
+            durable_fence = read_selection_fence(connection)
+            core_unavailable = _legacy_admission_core_unavailable_reason(connection)
+            if core_unavailable is not None:
+                return {"ok": False, "reason": core_unavailable}
+            if (
+                _legacy_admission_source_fingerprint(connection) != admission.proof_only_source_fingerprint
+                or durable_fence.get("revision") != admission.proof_only_selection_revision
+                or durable_fence.get("decision_id") != admission.proof_only_selection_decision_id
+                or _legacy_admission_core_runtime_fingerprint(connection)
+                != admission.proof_only_core_runtime_fingerprint
+                or latest_apply is None or latest_apply["status"] != "applied"
+                or str(latest_apply["apply_id"]) != admission.proof_only_core_apply_id
+                or owned_apply is None or owned_apply["status"] != "applied"
+            ):
+                return {"ok": False, "reason": "legacy_admission_fence_changed"}
         current = _read_subscription_native_generation(connection)
         if (
             current["status"] == "verified"

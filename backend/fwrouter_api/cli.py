@@ -204,6 +204,47 @@ def _run_checkpoint_supersession(args: argparse.Namespace) -> int:
         return 1
 
 
+def _run_legacy_inventory_admission(args: argparse.Namespace) -> int:
+    try:
+        from fwrouter_api.services.xray_subscription_service import (
+            admit_legacy_subscription_inventory, inspect_legacy_subscription_inventory_admission,
+        )
+
+        if args.plan:
+            result = inspect_legacy_subscription_inventory_admission()
+            safe_keys = {
+                "ok", "status", "eligible", "action", "native_proof_required", "inventory_digest", "inventory_count",
+                "generation_status", "generation_reason", "checkpoint_mode", "checkpoint_phase",
+                "source_fingerprint", "reason",
+            }
+            output = {key: result[key] for key in safe_keys if key in result}
+            print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+            return 0 if output.get("ok") is True else 1
+        if not args.expected_inventory_digest or not args.confirm:
+            print(json.dumps({"ok": False, "status": "blocked", "error_code": "ADMISSION_CONFIRMATION_REQUIRED"}))
+            return 2
+
+        result = admit_legacy_subscription_inventory(
+            expected_digest=args.expected_inventory_digest,
+            operator_confirmation=args.confirm,
+        )
+        safe_keys = {
+            "ok", "status", "reason", "digest", "revision", "already_admitted",
+            "last_good_retained",
+        }
+        output = {key: result[key] for key in safe_keys if key in result}
+        if (result.get("ok") is True and result.get("status") == "verified"
+                and result.get("proof_receipt_written") is True):
+            output["proof_receipt_written"] = True
+        print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+        return 0 if output.get("ok") is True else 1
+    except Exception as exc:
+        candidate = str(exc)
+        code = candidate if re.fullmatch(r"XRAY_[A-Z0-9_]+", candidate) else type(exc).__name__
+        print(json.dumps({"ok": False, "status": "blocked", "error_code": code}, sort_keys=True))
+        return 1
+
+
 _SCHEMA_25_IDENTITY_TABLES = frozenset({
     "subscription_node_identities",
     "subscription_node_aliases",
@@ -538,6 +579,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     supersede_parser.add_argument("--checkpoint-sha256", required=True)
     supersede_parser.add_argument("--migration-plan-sha256", required=True)
     supersede_parser.add_argument("--apply", action="store_true")
+    legacy_admission_parser = generation_subparsers.add_parser("admit-legacy")
+    legacy_admission_parser.add_argument("--plan", action="store_true")
+    legacy_admission_parser.add_argument("--expected-inventory-digest")
+    legacy_admission_parser.add_argument("--confirm")
     database_parser = subparsers.add_parser("database")
     database_subparsers = database_parser.add_subparsers(dest="database_command")
     upgrade_parser = database_subparsers.add_parser("upgrade")
@@ -557,6 +602,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_identity_migration(args)
     if args.command == "xray" and args.xray_command == "generation" and args.generation_command == "supersede":
         return _run_checkpoint_supersession(args)
+    if args.command == "xray" and args.xray_command == "generation" and args.generation_command == "admit-legacy":
+        return _run_legacy_inventory_admission(args)
     if args.command == "database" and args.database_command == "upgrade":
         return _run_database_upgrade(args)
     parser.print_help()

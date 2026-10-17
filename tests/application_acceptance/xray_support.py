@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import ipaddress
 import io
+import json
 import sqlite3
 import tarfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .http_support import http_json
 
@@ -53,6 +55,103 @@ def await_job(api: str, response: dict, *, timeout: float = 75) -> dict:
     current_job = result["job"]
     assert current_job.get("status") in {"success", "failed", "cancelled"}, current_job
     return current_job
+
+
+def _is_loopback_ip(host: str | None) -> bool:
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def enable_vpn_from_synthetic_subscription(api: str, state: Path, expected_url: str) -> None:
+    """Enable the managed VPN owner through its public lifecycle using only this fixture's loopback source."""
+    api_url = urlsplit(api)
+    assert (api_url.scheme == "http" and api_url.path == "/api/v2"
+            and not api_url.username and not api_url.password and not api_url.query and not api_url.fragment
+            and _is_loopback_ip(api_url.hostname)), (
+                "acceptance API is not the owned loopback worker"
+            )
+    database = state / "fwrouter.db"
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=2)
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        row = connection.execute(
+            "SELECT url, metadata_json FROM subscription_state WHERE id=1"
+        ).fetchone()
+        assert row is not None, "synthetic subscription state is missing"
+        metadata = json.loads(row["metadata_json"] or "{}")
+        registry = metadata.get("subscriptions") if isinstance(metadata, dict) else None
+        items = registry.get("items") if isinstance(registry, dict) else None
+        assert isinstance(items, list), "synthetic subscription registry is missing"
+        assert all(isinstance(item, dict) and str(item.get("url") or "").strip() for item in items), (
+            "subscription registry contains an unclassifiable source"
+        )
+        saved_urls = {str(item["url"]).strip() for item in items}
+        if row["url"]:
+            saved_urls.add(str(row["url"]).strip())
+        assert saved_urls == {expected_url}, "subscription registry is not limited to the owned synthetic source"
+        parsed = urlsplit(expected_url)
+        assert parsed.scheme == "http" and parsed.path == "/synthetic-subscription"
+        assert not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
+        assert _is_loopback_ip(parsed.hostname)
+        enabled_bindings = connection.execute(
+            "SELECT COUNT(*) FROM provider_bindings WHERE enabled=1"
+        ).fetchone()[0]
+        assert enabled_bindings == 0, "enabled provider binding could introduce an external refresh source"
+    finally:
+        connection.close()
+
+    code, response = http_json(f"{api}/modules/vpn")
+    initial_module = ((response.get("data") or {}).get("module")
+                      if isinstance(response.get("data"), dict) else None)
+    assert code == 200 and response.get("ok") is True and isinstance(initial_module, dict), {
+        "status": code,
+        "ok": response.get("ok"),
+        "error_code": (response.get("error") or {}).get("code")
+        if isinstance(response.get("error"), dict) else None,
+    }
+    assert (initial_module.get("module_name"), initial_module.get("desired_state"),
+            initial_module.get("lifecycle_mode")) == ("vpn", "disabled", "managed"), (
+                "synthetic acceptance fixture is not in the expected disabled managed state"
+            )
+    code, response = http_json(
+        f"{api}/modules/vpn/desired-state",
+        method="POST",
+        payload={
+            "desired_state": "enabled",
+            "requested_by": "hosted-acceptance-synthetic",
+            "run_now": True,
+        },
+        timeout=90,
+    )
+    assert code == 200 and response.get("ok") is True, {
+        "status": code,
+        "ok": response.get("ok"),
+        "error_code": (response.get("error") or {}).get("code")
+        if isinstance(response.get("error"), dict) else None,
+    }
+    job = await_job(api, response)
+    assert job.get("status") == "success", {
+        "job_status": job.get("status"),
+        "error_code": job.get("error_code"),
+    }
+    code, response = http_json(f"{api}/modules/vpn")
+    module = ((response.get("data") or {}).get("module")
+              if isinstance(response.get("data"), dict) else None)
+    assert code == 200 and response.get("ok") is True and isinstance(module, dict), {
+        "status": code,
+        "ok": response.get("ok"),
+        "error_code": (response.get("error") or {}).get("code")
+        if isinstance(response.get("error"), dict) else None,
+    }
+    assert (module.get("module_name"), module.get("desired_state"), module.get("lifecycle_mode"),
+            module.get("runtime_state"), module.get("apply_state")) == (
+                "vpn", "enabled", "managed", "running", "clean",
+            ), "VPN owner did not converge through its public lifecycle"
 
 
 def parse_inbound_users_reply(reply: dict) -> list[dict]:

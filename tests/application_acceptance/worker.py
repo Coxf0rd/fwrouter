@@ -42,6 +42,7 @@ def _clean_environment() -> None:
 
 _PACKET_DNSMASQ_LOCK = threading.RLock()
 _PACKET_DNSMASQ_STATE: dict[str, Any] = {}
+_LEGACY_ADMISSION_MUTATION_LOCK = threading.RLock()
 
 
 def _packet_dns_effective_artifact_observation() -> dict[str, Any]:
@@ -1005,6 +1006,276 @@ def _bounded_inventory_generation_recovery(value: Any) -> dict[str, Any] | None:
         if type(value.get(key)) is bool:
             summary[key] = value[key]
     return summary or None
+
+
+def _acceptance_xray_adapter() -> Any:
+    """Resolve Xray through the service-owned adapter accessor used by API paths."""
+    from fwrouter_api.services.xray_common import _xray_adapter
+
+    return _xray_adapter()
+
+
+def _safe_xray_candidate_diff_summary(active_path: Path, candidate_path: Path) -> dict[str, Any] | None:
+    """Describe only fixed Xray config sections; never emit config values or dynamic keys."""
+    if os.environ.get("FWROUTER_ENVIRONMENT") != "test":
+        return None
+    try:
+        active_file, candidate_file = Path(active_path), Path(candidate_path)
+        if active_file.is_symlink() or candidate_file.is_symlink():
+            return {"available": False, "reason": "symlink"}
+        if not active_file.is_file() or not candidate_file.is_file():
+            return {"available": False, "reason": "not_regular_file"}
+        active_size, candidate_size = active_file.stat().st_size, candidate_file.stat().st_size
+        if active_size > 8 * 1024 * 1024 or candidate_size > 8 * 1024 * 1024:
+            return {"available": False, "reason": "size_limit"}
+        active_bytes, candidate_bytes = active_file.read_bytes(), candidate_file.read_bytes()
+        active_payload = json.loads(active_bytes)
+        candidate_payload = json.loads(candidate_bytes)
+        if not isinstance(active_payload, dict) or not isinstance(candidate_payload, dict):
+            return {"available": False, "reason": "invalid_root"}
+
+        def shape(payload: dict[str, Any]) -> dict[str, int]:
+            inbounds = payload.get("inbounds")
+            inbounds = inbounds if isinstance(inbounds, list) else []
+            clients = 0
+            for inbound in inbounds:
+                if not isinstance(inbound, dict):
+                    continue
+                settings = inbound.get("settings")
+                settings = settings if isinstance(settings, dict) else {}
+                values = settings.get("clients")
+                clients += len(values) if isinstance(values, list) else 0
+            outbounds = payload.get("outbounds")
+            outbounds = outbounds if isinstance(outbounds, list) else []
+            routing = payload.get("routing")
+            routing = routing if isinstance(routing, dict) else {}
+            rules = routing.get("rules")
+            rules = rules if isinstance(rules, list) else []
+            return {
+                "inbounds": len(inbounds), "inbound_clients": clients,
+                "outbounds": len(outbounds), "routing_rules": len(rules),
+            }
+
+        # These are fixed schema section labels, never user-supplied keys.
+        section_names = ("inbounds", "outbounds", "routing", "dns", "policy", "stats", "api", "log")
+        known_top_level = set(section_names)
+        changed_sections = [
+            name for name in section_names
+            if active_payload.get(name) != candidate_payload.get(name)
+        ]
+        active_other = {key: value for key, value in active_payload.items() if key not in known_top_level}
+        candidate_other = {key: value for key, value in candidate_payload.items() if key not in known_top_level}
+        active_shape, candidate_shape = shape(active_payload), shape(candidate_payload)
+        changed_paths = [f"$.{name}" for name in changed_sections]
+        if "inbounds" in changed_sections:
+            changed_paths.append("$.inbounds[*]")
+            old_inbounds = active_payload.get("inbounds")
+            new_inbounds = candidate_payload.get("inbounds")
+            old_inbounds = old_inbounds if isinstance(old_inbounds, list) else []
+            new_inbounds = new_inbounds if isinstance(new_inbounds, list) else []
+
+            def clients_for(inbound: Any) -> Any:
+                settings = inbound.get("settings") if isinstance(inbound, dict) else None
+                return settings.get("clients") if isinstance(settings, dict) else None
+
+            if (active_shape["inbound_clients"] != candidate_shape["inbound_clients"]
+                    or len(old_inbounds) != len(new_inbounds)
+                    or any(clients_for(old) != clients_for(new) for old, new in zip(old_inbounds, new_inbounds))):
+                changed_paths.append("$.inbounds[*].settings.clients[*]")
+        if "outbounds" in changed_sections:
+            changed_paths.append("$.outbounds[*]")
+        if "routing" in changed_sections:
+            changed_paths.append("$.routing.rules[*]")
+        if active_other != candidate_other:
+            changed_paths.append("$.<other_top_level>")
+
+        def routing_rule_hashes(payload: dict[str, Any]) -> list[str]:
+            routing = payload.get("routing")
+            rules = routing.get("rules") if isinstance(routing, dict) else None
+            if not isinstance(rules, list):
+                return []
+            return [hashlib.sha256(json.dumps(
+                rule, sort_keys=True, ensure_ascii=True, separators=(",", ":"),
+            ).encode("ascii")).hexdigest() for rule in rules]
+
+        active_rule_hashes = routing_rule_hashes(active_payload)
+        candidate_rule_hashes = routing_rule_hashes(candidate_payload)
+        first_rule_difference = next((index for index, (old, new) in enumerate(
+            zip(active_rule_hashes, candidate_rule_hashes),
+        ) if old != new), None)
+        if first_rule_difference is None and len(active_rule_hashes) != len(candidate_rule_hashes):
+            first_rule_difference = min(len(active_rule_hashes), len(candidate_rule_hashes))
+        rule_multiset_equal = sorted(active_rule_hashes) == sorted(candidate_rule_hashes)
+        return {
+            "available": True,
+            "schema": "fwrouter-acceptance-xray-candidate-diff/v1",
+            "equal_bytes": active_bytes == candidate_bytes,
+            "active_bytes": len(active_bytes),
+            "candidate_bytes": len(candidate_bytes),
+            "active_sha256": hashlib.sha256(active_bytes).hexdigest(),
+            "candidate_sha256": hashlib.sha256(candidate_bytes).hexdigest(),
+            "changed_sections": changed_sections,
+            "changed_paths": changed_paths,
+            "other_top_level_changed": active_other != candidate_other,
+            "routing_rules_multiset_equal": rule_multiset_equal,
+            "routing_rules_order_only": (
+                active_rule_hashes != candidate_rule_hashes and rule_multiset_equal
+            ),
+            "routing_rules_first_diff_index": first_rule_difference,
+            "shape": {"active": active_shape, "candidate": candidate_shape},
+        }
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+        return {"available": False, "reason": "unreadable_or_invalid"}
+
+
+def _safe_mihomo_candidate_diff_summary(
+    active_path: Path, candidate_path: Path, candidate_config: Any,
+) -> dict[str, Any] | None:
+    """Report fixed Mihomo structural facts without serializing names or values."""
+    raw_acceptance_root = os.environ.get(
+        "FWROUTER_APPLICATION_ACCEPTANCE_ROOT", "/tmp/fwrouter-application-acceptance",
+    )
+    acceptance_root = Path(raw_acceptance_root)
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or not acceptance_root.is_absolute()
+            or not Path(candidate_path).parent.name.startswith("fwrouter-legacy-admission-")):
+        return None
+
+    import yaml
+
+    from fwrouter_api.services.mihomo_reconcile import _semantic_config_files_equal, _yaml_tree_is_unambiguous
+    from fwrouter_api.services.mihomo_serialization import dump_mihomo_config
+    from fwrouter_api.services.mihomo_config import _configs_equal
+
+    active_file, candidate_file = Path(active_path), Path(candidate_path)
+    try:
+        if (active_file.is_symlink() or candidate_file.is_symlink()
+                or not active_file.is_file() or not candidate_file.is_file()):
+            return {"available": False, "reason": "path_type"}
+        acceptance_root = acceptance_root.resolve(strict=False)
+        active_resolved = active_file.resolve(strict=True)
+        candidate_resolved = candidate_file.resolve(strict=True)
+        if (active_resolved != acceptance_root and acceptance_root not in active_resolved.parents
+                or candidate_resolved != acceptance_root and acceptance_root not in candidate_resolved.parents):
+            return {"available": False, "reason": "path_scope"}
+        max_bytes = 1024 * 1024
+        active_size, candidate_size = active_file.stat().st_size, candidate_file.stat().st_size
+        if active_size > max_bytes or candidate_size > max_bytes:
+            return {"available": False, "reason": "size_limit"}
+        active_raw, candidate_raw = active_file.read_bytes(), candidate_file.read_bytes()
+        if len(active_raw) > max_bytes or len(candidate_raw) > max_bytes:
+            return {"available": False, "reason": "size_limit"}
+
+        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+        def aliases_or_ambiguous(raw: bytes) -> tuple[bool | None, dict[str, Any] | None]:
+            try:
+                text = raw.decode("utf-8")
+                tree = yaml.compose(text, Loader=loader)
+                unambiguous = _yaml_tree_is_unambiguous(tree)
+                if not unambiguous:
+                    return True, None
+                loaded = yaml.load(text, Loader=loader)
+                return False, loaded if isinstance(loaded, dict) else None
+            except (OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError, RecursionError):
+                return None, None
+
+        active_aliases, active_payload = aliases_or_ambiguous(active_raw)
+        candidate_aliases, candidate_payload = aliases_or_ambiguous(candidate_raw)
+        if not isinstance(candidate_config, dict):
+            candidate_config = candidate_payload
+        canonical_aliases: bool | None = None
+        canonical_equal_active: bool | None = None
+        if isinstance(candidate_config, dict):
+            canonical_text = dump_mihomo_config(candidate_config)
+            canonical_alias_bytes = canonical_text.encode("utf-8")
+            if len(canonical_alias_bytes) <= max_bytes:
+                canonical_aliases, canonical_payload = aliases_or_ambiguous(canonical_alias_bytes)
+                if isinstance(active_payload, dict) and isinstance(canonical_payload, dict):
+                    canonical_equal_active = _configs_equal(active_payload, canonical_payload)
+
+        section_names = (
+            "rules", "proxies", "proxy-groups", "listeners", "sub-rules", "dns", "tun",
+            "fwrouter", "inbounds", "outbounds", "sniffer", "external-controller", "bind-address",
+            "routing-mark", "allow-lan", "ipv6", "mode", "port", "mixed-port", "redir-port", "tproxy-port",
+        )
+        changed_sections: list[str] = []
+        other_top_level_changed: bool | None = None
+        value_equal_active: bool | None = None
+        fwrouter_changed_fields: list[str] = []
+        fwrouter_unknown_fields_changed: bool | None = None
+        if isinstance(active_payload, dict) and isinstance(candidate_config, dict):
+            changed_sections = [
+                name for name in section_names
+                if active_payload.get(name) != candidate_config.get(name)
+            ]
+            known = set(section_names)
+            other_top_level_changed = (
+                {key: value for key, value in active_payload.items() if key not in known}
+                != {key: value for key, value in candidate_config.items() if key not in known}
+            )
+            value_equal_active = _configs_equal(active_payload, candidate_config)
+            # Emit only names from the closed generator field inventory. Values
+            # and any unrecognized keys remain redacted in hosted artifacts.
+            fwrouter_field_names = (
+                "resolved_selective_default", "final_match_rule", "transparent_final_match_rule",
+                "rendered_rules_count", "scoped_vpn_source_rules_count", "transparent_rule_name",
+                "path_kind", "state_consistency_ok", "transparent_mechanism", "mixed_listener_name",
+                "mixed_listener_bind", "mixed_listener_port", "transparent_listener_name",
+                "transparent_listener_bind", "transparent_redir_port", "transparent_tproxy_port",
+                "full_vpn_redir_port", "full_vpn_tproxy_port", "transparent_listener_port",
+                "transparent_inbound_rules", "sanitized_legacy_inbound_keys",
+                "sanitized_managed_listeners",
+            )
+            active_fwrouter = active_payload.get("fwrouter")
+            candidate_fwrouter = candidate_config.get("fwrouter")
+            if isinstance(active_fwrouter, dict) and isinstance(candidate_fwrouter, dict):
+                fwrouter_changed_fields = [
+                    name for name in fwrouter_field_names
+                    if active_fwrouter.get(name) != candidate_fwrouter.get(name)
+                ]
+                known_fwrouter = set(fwrouter_field_names)
+                fwrouter_unknown_fields_changed = (
+                    {key: value for key, value in active_fwrouter.items() if key not in known_fwrouter}
+                    != {key: value for key, value in candidate_fwrouter.items() if key not in known_fwrouter}
+                )
+            else:
+                fwrouter_unknown_fields_changed = active_fwrouter != candidate_fwrouter
+
+        def shape(payload: dict[str, Any] | None) -> dict[str, int]:
+            value = payload if isinstance(payload, dict) else {}
+            sub_rules = value.get("sub-rules")
+            sub_rules_count = sum(len(items) for items in sub_rules.values() if isinstance(items, list)) \
+                if isinstance(sub_rules, dict) else 0
+            return {
+                "rules": len(value.get("rules")) if isinstance(value.get("rules"), list) else 0,
+                "proxies": len(value.get("proxies")) if isinstance(value.get("proxies"), list) else 0,
+                "proxy_groups": len(value.get("proxy-groups")) if isinstance(value.get("proxy-groups"), list) else 0,
+                "listeners": len(value.get("listeners")) if isinstance(value.get("listeners"), list) else 0,
+                "sub_rules": sub_rules_count,
+            }
+
+        return {
+            "available": True,
+            "schema": "fwrouter-acceptance-mihomo-candidate-diff/v1",
+            "active_bytes": len(active_raw),
+            "candidate_bytes": len(candidate_raw),
+            "equal_bytes": active_raw == candidate_raw,
+            "candidate_semantic_equal_active": _semantic_config_files_equal(str(active_file), str(candidate_file)),
+            "active_has_yaml_aliases_or_ambiguity": active_aliases,
+            "candidate_has_yaml_aliases_or_ambiguity": candidate_aliases,
+            "candidate_tree_equal_active": value_equal_active,
+            "canonical_serializer_has_yaml_aliases_or_ambiguity": canonical_aliases,
+            "canonical_serializer_tree_equal_active": canonical_equal_active,
+            "changed_sections": changed_sections,
+            "fwrouter_changed_fields": fwrouter_changed_fields,
+            "fwrouter_unknown_fields_changed": fwrouter_unknown_fields_changed,
+            "other_top_level_changed": other_top_level_changed,
+            "shape": {"active": shape(active_payload), "candidate": shape(candidate_config)},
+        }
+    except Exception:
+        # The observer is diagnostic-only and must never alter admission behavior.
+        return {"available": False, "reason": "inspection_failed"}
 
 
 def _bounded_generation_checkpoint_facts(
@@ -4027,18 +4298,562 @@ def build_app(socket_path: Path):
         methods=["GET"],
     )
 
+    def legacy_inventory_digest_for_acceptance() -> dict[str, Any]:
+        """Expose the real owner digest to this isolated test worker only."""
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.services.subscription import _subscription_inventory_digest
+
+        with db_session() as connection:
+            digest, inventory_count = _subscription_inventory_digest(connection)
+        return {"ok": True, "digest": digest, "inventory_count": inventory_count}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/subscription/legacy-inventory-digest",
+        legacy_inventory_digest_for_acceptance,
+        methods=["GET"],
+    )
+
+    def _run_legacy_admission_mutation_tripwires(
+        operation: Any, receipt_observation: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, int], bool]:
+        """Run an operation while making native apply/reload attempts fail closed."""
+        from fwrouter_api.services import mihomo_runtime
+        from fwrouter_api.services import mihomo_config
+        from fwrouter_api.services import apply as core_apply
+        from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+        from fwrouter_api.services import xray_subscription_service
+        import httpx
+
+        attempts = {
+            "xray_apply_or_reload": 0,
+            "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0,
+            "unexpected_http_request": 0,
+        }
+        adapter = _acceptance_xray_adapter()
+        original_runner = adapter._runner
+        original_generation_apply = getattr(adapter, "apply_staged_subscription_generation", None)
+        original_generation_stage = getattr(adapter, "stage_subscription_generation", None)
+        original_compose_command = mihomo_runtime._run_compose_command
+        original_http_request = httpx.Client.request
+        original_writer_guard_held = xray_subscription_service.xray_writer_guard_is_held
+        original_legacy_publish = xray_subscription_service._publish_legacy_admission_mihomo_receipt
+        original_shared_publish = xray_subscription_service._publish_mihomo_udp_receipt_with_owner
+        original_runtime_facts = xray_subscription_service._legacy_admission_runtime_fence_facts
+        original_source_fingerprint = xray_subscription_service._legacy_admission_source_fingerprint
+        original_native_udp_proof = mihomo_reconcile._native_udp_policy_proof
+        original_write_receipt = mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state
+        original_active_config_hash = mihomo_reconcile_fingerprint.active_config_hash
+        original_current_runtime_incarnation = mihomo_reconcile_fingerprint._current_runtime_incarnation
+        receipt_context = threading.local()
+        dataplane_adapter = core_apply.DEFAULT_DATAPLANE_ADAPTER
+        original_dataplane_apply = dataplane_adapter.apply
+        original_dataplane_rollback = dataplane_adapter.rollback
+        original_global_hot_swap = core_apply._apply_global_mode_hot_swap
+        original_mihomo_candidate_validator = mihomo_config.validate_mihomo_candidate_config
+
+        def receipt_observation_active() -> bool:
+            return bool(
+                receipt_observation is not None
+                and getattr(receipt_context, "admission_active", False)
+            )
+
+        def guarded_runner(action: str, request: dict[str, Any]) -> Any:
+            if action == "reload":
+                attempts["xray_apply_or_reload"] += 1
+                raise RuntimeError("acceptance proof-only Xray mutation tripwire")
+            return original_runner(action, request)
+
+        def guarded_generation_apply(*args: Any, **kwargs: Any) -> Any:
+            attempts["xray_apply_or_reload"] += 1
+            raise RuntimeError("acceptance proof-only Xray apply tripwire")
+
+        def observed_generation_stage(*args: Any, **kwargs: Any) -> Any:
+            result = original_generation_stage(*args, **kwargs)
+            candidate_path = kwargs.get("candidate_path")
+            config_path = getattr(adapter, "config_path", None)
+            try:
+                candidate_file = Path(candidate_path) if candidate_path is not None else None
+                if (candidate_file is not None
+                        and candidate_file.parent.name.startswith("fwrouter-legacy-admission-")
+                        and config_path is not None):
+                    summary = _safe_xray_candidate_diff_summary(Path(config_path), candidate_file)
+                    if summary is not None and summary.get("equal_bytes") is False:
+                        print("FWROUTER_ACCEPTANCE_XRAY_CANDIDATE_DIFF " + json.dumps(
+                            summary, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                        ), flush=True)
+            except Exception:
+                # Diagnostics must never change the proof result or its safety behavior.
+                pass
+            return result
+
+        def observed_mihomo_candidate_validation(*args: Any, **kwargs: Any) -> Any:
+            # Preserve the real validator's arguments and result. This observer
+            # only reads the private proof candidate and emits redacted facts.
+            result = original_mihomo_candidate_validator(*args, **kwargs)
+            candidate_path = kwargs.get("candidate_path")
+            candidate_config = kwargs.get("candidate_config")
+            if candidate_path is None and len(args) >= 3:
+                candidate_path = args[2]
+            try:
+                candidate_file = Path(candidate_path) if candidate_path is not None else None
+                if (candidate_file is not None
+                        and candidate_file.parent.name.startswith("fwrouter-legacy-admission-")):
+                    active_file = mihomo_config._resolved_base_config_path()
+                    summary = _safe_mihomo_candidate_diff_summary(
+                        Path(active_file), candidate_file, candidate_config,
+                    )
+                    if summary is not None:
+                        print("FWROUTER_ACCEPTANCE_MIHOMO_CANDIDATE_DIFF " + json.dumps(
+                            summary, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                        ), flush=True)
+            except Exception:
+                # Diagnostics must never alter validation or admission behavior.
+                pass
+            return result
+
+        def guarded_dataplane_apply(*args: Any, **kwargs: Any) -> Any:
+            attempts["core_dataplane_apply_or_rollback"] += 1
+            raise RuntimeError("acceptance proof-only Core dataplane apply tripwire")
+
+        def guarded_dataplane_rollback(*args: Any, **kwargs: Any) -> Any:
+            attempts["core_dataplane_apply_or_rollback"] += 1
+            raise RuntimeError("acceptance proof-only Core dataplane rollback tripwire")
+
+        def guarded_global_hot_swap(*args: Any, **kwargs: Any) -> Any:
+            attempts["core_dataplane_apply_or_rollback"] += 1
+            raise RuntimeError("acceptance proof-only Core routing hot-swap tripwire")
+
+        def guarded_compose_command(args: list[str], **kwargs: Any) -> Any:
+            if args in (["restart", "mihomo"], ["up", "-d", "--force-recreate", "mihomo"]):
+                attempts["mihomo_apply_or_reload"] += 1
+                raise RuntimeError("acceptance proof-only Mihomo restart tripwire")
+            return original_compose_command(args, **kwargs)
+
+        def guarded_http_request(client: Any, method: str, url: Any, *args: Any, **kwargs: Any) -> Any:
+            parsed = urlsplit(str(url))
+            controller = parsed.hostname == "127.0.0.1" and parsed.port == 5200
+            if controller and method.upper() in {"GET", "HEAD"}:
+                return original_http_request(client, method, url, *args, **kwargs)
+            if controller:
+                attempts["mihomo_apply_or_reload"] += 1
+                raise RuntimeError("acceptance proof-only Mihomo controller mutation tripwire")
+            attempts["unexpected_http_request"] += 1
+            raise RuntimeError("acceptance proof-only unexpected HTTP request tripwire")
+
+        def observed_runtime_facts(admission: Any) -> dict[str, bool]:
+            facts = original_runtime_facts(admission)
+            if (receipt_observation_active()
+                    and getattr(receipt_context, "owner_check", False)):
+                receipt_observation.setdefault("runtime_fence_facts", []).append(dict(facts))
+            return facts
+
+        def observed_source_fingerprint(connection: Any = None) -> str:
+            value = original_source_fingerprint(connection)
+            if (receipt_observation_active()
+                    and getattr(receipt_context, "owner_check", False)):
+                expected = getattr(receipt_context, "expected_source_fingerprint", None)
+                receipt_context.source_fingerprint_match = value == expected
+            return value
+
+        def observed_legacy_publish(proof: dict[str, Any], operation_id: str) -> bool:
+            if not receipt_observation_active():
+                return bool(original_legacy_publish(proof, operation_id))
+            if receipt_observation_active():
+                receipt_observation["publisher_invoked"] = True
+                receipt_observation["expected_fingerprint_valid"] = (
+                    isinstance(proof, dict)
+                    and isinstance(proof.get("mihomo_fingerprint_hash"), str)
+                    and len(proof["mihomo_fingerprint_hash"]) == 64
+                )
+                receipt_context.expected_fingerprint_hash = proof.get("mihomo_fingerprint_hash")
+                receipt_context.expected_source_fingerprint = proof.get("source_fingerprint")
+                receipt_context.expected_active_hash = proof.get("mihomo_config_sha256")
+                receipt_context.expected_runtime_incarnation = proof.get("mihomo_runtime_incarnation")
+                receipt_context.owner_checks = receipt_observation.setdefault("owner_checks", [])
+            try:
+                result = bool(original_legacy_publish(proof, operation_id))
+                if receipt_observation is not None:
+                    receipt_observation["legacy_publisher_result"] = result
+                return result
+            finally:
+                for name in (
+                    "expected_fingerprint_hash", "expected_source_fingerprint",
+                    "expected_active_hash", "expected_runtime_incarnation", "owner_checks",
+                ):
+                    if hasattr(receipt_context, name):
+                        delattr(receipt_context, name)
+
+        def observed_shared_publish(**kwargs: Any) -> bool:
+            if not receipt_observation_active():
+                return bool(original_shared_publish(**kwargs))
+            owner_matches = kwargs.get("owner_matches")
+            receipt_observation["shared_publisher_invoked"] = True
+
+            def observed_owner_matches(fingerprint_hash: str) -> bool:
+                if receipt_observation is not None:
+                    observed_facts = receipt_observation.get("runtime_fence_facts", [])
+                    runtime_facts_before = len(observed_facts)
+                    check: dict[str, Any] = {
+                        "input_fingerprint_match": (
+                            fingerprint_hash == getattr(receipt_context, "expected_fingerprint_hash", None)
+                        ),
+                    }
+                    receipt_context.owner_check = True
+                    receipt_context.source_fingerprint_match = None
+                    try:
+                        result = bool(owner_matches(fingerprint_hash)) if callable(owner_matches) else False
+                    finally:
+                        receipt_context.owner_check = False
+                    check["source_fingerprint_match"] = receipt_context.source_fingerprint_match
+                    observed_facts = receipt_observation.get("runtime_fence_facts", [])
+                    check["runtime_fences"] = (
+                        observed_facts[-1] if len(observed_facts) > runtime_facts_before else None
+                    )
+                    check["owner_result"] = result
+                    receipt_context.owner_checks.append(check)
+                    return result
+                return bool(owner_matches(fingerprint_hash)) if callable(owner_matches) else False
+
+            def observed_native_udp_proof() -> dict[str, Any]:
+                proof = original_native_udp_proof()
+                if receipt_observation_active():
+                    receipt_observation["native_policy_proof"] = {
+                        "ok": proof.get("ok") is True,
+                        "top_level_rules_match": proof.get("native_top_level_rules_match") is True,
+                        "selector_membership_match": proof.get("selector_membership_matches") is True,
+                        "guarded_rules_match": proof.get("guarded_rules_match") is True,
+                    }
+                return proof
+
+            def observed_active_hash() -> str | None:
+                value = original_active_config_hash()
+                if receipt_observation_active():
+                    receipt_context.active_config_match = (
+                        value == getattr(receipt_context, "expected_active_hash", None)
+                    )
+                return value
+
+            def observed_runtime_incarnation() -> str | None:
+                value = original_current_runtime_incarnation()
+                if receipt_observation_active():
+                    receipt_context.runtime_incarnation_match = (
+                        value == getattr(receipt_context, "expected_runtime_incarnation", None)
+                    )
+                return value
+
+            def observed_write_receipt(**write_kwargs: Any) -> bool:
+                result = original_write_receipt(**write_kwargs)
+                if receipt_observation_active():
+                    native = write_kwargs.get("native_proof")
+                    receipt_observation["durable_write"] = {
+                        "input_fingerprint_match": (
+                            isinstance(write_kwargs.get("fingerprint"), dict)
+                            and write_kwargs["fingerprint"].get("hash")
+                            == getattr(receipt_context, "expected_fingerprint_hash", None)
+                        ),
+                        "active_config_match": getattr(receipt_context, "active_config_match", None),
+                        "runtime_incarnation_match": getattr(
+                            receipt_context, "runtime_incarnation_match", None,
+                        ),
+                        "native_proof_complete": bool(
+                            isinstance(native, dict)
+                            and native.get("native_top_level_rules_match") is True
+                            and native.get("selector_membership_matches") is True
+                            and native.get("guarded_rules_match") is True
+                        ),
+                        "write_result": bool(result),
+                    }
+                return result
+
+            if not callable(owner_matches):
+                return bool(original_shared_publish(**kwargs))
+            kwargs["owner_matches"] = observed_owner_matches
+            receipt_context.shared_publisher_active = True
+            mihomo_reconcile._native_udp_policy_proof = observed_native_udp_proof
+            mihomo_reconcile_fingerprint.active_config_hash = observed_active_hash
+            mihomo_reconcile_fingerprint._current_runtime_incarnation = observed_runtime_incarnation
+            mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state = observed_write_receipt
+            try:
+                result = bool(original_shared_publish(**kwargs))
+                receipt_observation["shared_publisher_result"] = result
+                return result
+            finally:
+                receipt_context.shared_publisher_active = False
+                mihomo_reconcile._native_udp_policy_proof = original_native_udp_proof
+                mihomo_reconcile_fingerprint.active_config_hash = original_active_config_hash
+                mihomo_reconcile_fingerprint._current_runtime_incarnation = original_current_runtime_incarnation
+                mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state = original_write_receipt
+
+        def observed_writer_guard_held() -> bool:
+            result = bool(original_writer_guard_held())
+            if (receipt_observation is not None
+                    and getattr(receipt_context, "shared_publisher_active", False)):
+                receipt_observation["writer_guard_held"] = result
+            return result
+
+        adapter._runner = guarded_runner
+        if callable(original_generation_stage):
+            adapter.stage_subscription_generation = observed_generation_stage
+        mihomo_config.validate_mihomo_candidate_config = observed_mihomo_candidate_validation
+        if original_generation_apply is not None:
+            adapter.apply_staged_subscription_generation = guarded_generation_apply
+        dataplane_adapter.apply = guarded_dataplane_apply
+        dataplane_adapter.rollback = guarded_dataplane_rollback
+        core_apply._apply_global_mode_hot_swap = guarded_global_hot_swap
+        mihomo_runtime._run_compose_command = guarded_compose_command
+        httpx.Client.request = guarded_http_request
+        if receipt_observation is not None:
+            xray_subscription_service._publish_legacy_admission_mihomo_receipt = observed_legacy_publish
+            xray_subscription_service._publish_mihomo_udp_receipt_with_owner = observed_shared_publish
+            xray_subscription_service._legacy_admission_runtime_fence_facts = observed_runtime_facts
+            xray_subscription_service._legacy_admission_source_fingerprint = observed_source_fingerprint
+            xray_subscription_service.xray_writer_guard_is_held = observed_writer_guard_held
+        raised = False
+        if receipt_observation is not None:
+            receipt_context.admission_active = True
+        try:
+            result = operation()
+        except Exception:
+            result = None
+            raised = True
+        finally:
+            if receipt_observation is not None:
+                receipt_context.admission_active = False
+            adapter._runner = original_runner
+            if callable(original_generation_stage):
+                adapter.stage_subscription_generation = original_generation_stage
+            mihomo_config.validate_mihomo_candidate_config = original_mihomo_candidate_validator
+            if original_generation_apply is not None:
+                adapter.apply_staged_subscription_generation = original_generation_apply
+            dataplane_adapter.apply = original_dataplane_apply
+            dataplane_adapter.rollback = original_dataplane_rollback
+            core_apply._apply_global_mode_hot_swap = original_global_hot_swap
+            mihomo_runtime._run_compose_command = original_compose_command
+            httpx.Client.request = original_http_request
+            xray_subscription_service._publish_legacy_admission_mihomo_receipt = original_legacy_publish
+            xray_subscription_service._publish_mihomo_udp_receipt_with_owner = original_shared_publish
+            xray_subscription_service._legacy_admission_runtime_fence_facts = original_runtime_facts
+            xray_subscription_service._legacy_admission_source_fingerprint = original_source_fingerprint
+            xray_subscription_service.xray_writer_guard_is_held = original_writer_guard_held
+            mihomo_reconcile._native_udp_policy_proof = original_native_udp_proof
+            mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state = original_write_receipt
+            mihomo_reconcile_fingerprint.active_config_hash = original_active_config_hash
+            mihomo_reconcile_fingerprint._current_runtime_incarnation = original_current_runtime_incarnation
+        return result, attempts, raised
+
+    def with_legacy_admission_mutation_tripwires(
+        operation: Any, receipt_observation: dict[str, Any] | None = None,
+    ) -> tuple[Any, dict[str, int], bool]:
+        """Serialize process-global mutation tripwires for synchronous requests."""
+        with _LEGACY_ADMISSION_MUTATION_LOCK:
+            return _run_legacy_admission_mutation_tripwires(operation, receipt_observation)
+
+    def admit_legacy_inventory_for_acceptance(payload: dict[str, Any]) -> dict[str, Any]:
+        """Invoke the real proof-only owner behind test-scoped mutation tripwires."""
+        if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+                or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT")
+                != "/tmp/fwrouter-application-acceptance"):
+            return {"ok": False, "error_code": "ACCEPTANCE_WORKER_SCOPE_INVALID"}
+        if (set(payload) != {"expected_digest"}
+                or not isinstance(payload.get("expected_digest"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", payload["expected_digest"])):
+            return {"ok": False, "error_code": "ACCEPTANCE_LEGACY_ADMISSION_REQUEST_INVALID"}
+
+        from fwrouter_api.services import xray_subscription_service
+        try:
+            receipt_diagnostic: dict[str, Any] = {
+                "schema": "fwrouter-acceptance-legacy-receipt-diagnostic/v1",
+                "publisher_invoked": False,
+                "shared_publisher_invoked": False,
+            }
+            result, attempts, raised = with_legacy_admission_mutation_tripwires(
+                lambda: xray_subscription_service.admit_legacy_subscription_inventory(
+                    expected_digest=payload["expected_digest"],
+                    operator_confirmation="PROOF_ONLY_LEGACY_ADMISSION",
+                ),
+                receipt_observation=receipt_diagnostic,
+            )
+            if raised or not isinstance(result, dict):
+                return {"ok": False, "error_code": "ACCEPTANCE_LEGACY_ADMISSION_EXCEPTION",
+                        "mutation_attempts": dict(attempts)}
+            allowed = {"ok", "status", "reason", "digest", "revision", "operation_id",
+                       "already_admitted", "proof_receipt_written"}
+            response = {key: result[key] for key in allowed if key in result}
+            if result.get("reason") == "native_receipt_unverified":
+                response["receipt_diagnostic"] = receipt_diagnostic
+                print("FWROUTER_ACCEPTANCE_LEGACY_RECEIPT_DIAGNOSTIC " + json.dumps(
+                    receipt_diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                ), flush=True)
+            if result.get("ok") is not True:
+                safe_reasons = {
+                    "writer_guard_required", "managed_native_runtimes_required", "durable_source_changed",
+                    "core_apply_state_unverified", "core_applied_generation_unowned", "core_apply_inflight",
+                    "core_bypass_state_unverifiable", "core_bypass_active", "core_native_readback_unavailable",
+                    "core_native_enforcement_unproven", "core_applied_manifest_unavailable",
+                    "core_routing_state_unverified", "core_applied_routing_unavailable",
+                    "core_applied_routing_mismatch", "core_routing_mode_unverified",
+                    "core_live_dataplane_unready", "xray_candidate_validation_unavailable",
+                    "xray_active_runtime_mismatch", "mihomo_runtime_incarnation_unavailable",
+                    "mihomo_input_fingerprint_unavailable", "durable_profile_credential_missing",
+                    "durable_auto_credential_missing", "durable_identity_projection_ambiguous",
+                    "core_selection_readback_unproven", "selection_fence_changed",
+                    "xray_bindings_artifact_mismatch", "xray_candidate_native_validation_failed",
+                    "xray_candidate_differs_from_active", "xray_handler_users_mismatch",
+                    "xray_native_binding_or_mode_mismatch", "mihomo_candidate_validation_failed",
+                    "mihomo_candidate_differs_from_active", "mihomo_native_policy_unproven",
+                    "native_proof_fence_changed", "native_proof_incomplete", "checkpoint_directory_untrusted",
+                    "checkpoint_unverifiable", "checkpoint_inventory_mismatch",
+                    "legacy_admission_fence_changed", "inventory_generation_stale",
+                    "inventory_generation_unexpected", "generation_marker_already_present",
+                    "legacy_inventory_not_admissible", "native_receipt_unverified",
+                    "pending_generation_publish_failed", "inventory_generation_admission_missing",
+                    "inventory_promotion_failed", "inventory_digest_mismatch", "inventory_digest_invalid",
+                    "operator_confirmation_required", "XrayAdapterError", "RuntimeError", "ValueError",
+                    "OSError", "PermissionError", "TypeError", "KeyError",
+                }
+                raw_reason = result.get("reason")
+                safe_reason = raw_reason if isinstance(raw_reason, str) and raw_reason in safe_reasons else "unknown"
+                raw_status = result.get("status")
+                safe_status = raw_status if isinstance(raw_status, str) and raw_status in {"blocked", "verified"} else "unknown"
+                print("FWROUTER_ACCEPTANCE_LEGACY_ADMISSION " + json.dumps({
+                    "schema": "fwrouter-acceptance-legacy-admission/v1",
+                    "ok": False,
+                    "status": safe_status,
+                    "reason": safe_reason,
+                }, sort_keys=True, separators=(",", ":"), ensure_ascii=True), flush=True)
+                # Keep hosted diagnostics useful without exposing inventory data
+                # or native configuration. The owner inspector is read-only and
+                # reports only eligibility and bounded state labels.
+                try:
+                    plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission()
+                    response["entry_facts"] = {
+                        key: plan[key] for key in (
+                            "eligible", "action", "reason", "generation_status",
+                            "checkpoint_mode", "checkpoint_phase",
+                        ) if key in plan
+                    }
+                except Exception:
+                    response["entry_facts"] = {"inspection": "unavailable"}
+            response["mutation_attempts"] = dict(attempts)
+            return response
+        except Exception:
+            # Keep diagnostics closed-schema: a backend exception may include
+            # fixture data and must never be copied into hosted artifacts.
+            return {"ok": False, "error_code": "ACCEPTANCE_LEGACY_ADMISSION_EXCEPTION",
+                    "mutation_attempts": {"xray_apply_or_reload": -1,
+                                           "mihomo_apply_or_reload": -1,
+                                           "core_dataplane_apply_or_rollback": -1,
+                                           "unexpected_http_request": -1}}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/subscription/admit-legacy-inventory",
+        admit_legacy_inventory_for_acceptance,
+        methods=["POST"],
+    )
+
+    def proof_only_tripwire_self_check() -> dict[str, Any]:
+        """Prove the test-only tripwires intercept mutation and refresh attempts."""
+        if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+                or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT")
+                != "/tmp/fwrouter-application-acceptance"):
+            return {"ok": False, "error_code": "ACCEPTANCE_WORKER_SCOPE_INVALID"}
+
+        from fwrouter_api.services import mihomo_runtime
+        from fwrouter_api.services import apply as core_apply
+        import httpx
+
+        def unexpected_http_attempt() -> None:
+            with httpx.Client() as client:
+                client.get("http://proof-tripwire.invalid/")
+
+        checks = {}
+        attempts_by_operation = {}
+        for name, operation in (
+            ("xray_reload", lambda: _acceptance_xray_adapter()._run("reload")),
+            ("mihomo_restart", lambda: mihomo_runtime._run_compose_command(["restart", "mihomo"])),
+            ("core_dataplane_apply", lambda: core_apply.DEFAULT_DATAPLANE_ADAPTER.apply(None)),
+            ("core_dataplane_rollback", lambda: core_apply.DEFAULT_DATAPLANE_ADAPTER.rollback(None)),
+            ("core_routing_hot_swap", lambda: core_apply._apply_global_mode_hot_swap()),
+            ("unexpected_http", unexpected_http_attempt),
+        ):
+            _result, attempts, raised = with_legacy_admission_mutation_tripwires(operation)
+            checks[name] = raised
+            attempts_by_operation[name] = attempts
+        return {"ok": all(checks.values()), "intercepts": checks,
+                "attempts": attempts_by_operation}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/subscription/proof-only-tripwire-self-check",
+        proof_only_tripwire_self_check,
+        methods=["POST"],
+    )
+
     def recover_startup_xray_subscription_generation() -> dict[str, Any]:
         """Run only the real Xray profile startup recovery under its normal guard."""
         from fwrouter_api.services.bootstrap import recover_startup_xray_subscription_profiles
         from fwrouter_api.services.subscription import get_subscription_native_generation_state
+        from fwrouter_api.services.xray_subscription_service import _xray_generation_checkpoint_path
 
-        result = recover_startup_xray_subscription_profiles()
+        tripwire_armed = False
+        try:
+            checkpoint_path = _xray_generation_checkpoint_path(_acceptance_xray_adapter())
+            checkpoint_info = checkpoint_path.lstat()
+            if (stat.S_ISREG(checkpoint_info.st_mode) and not stat.S_ISLNK(checkpoint_info.st_mode)
+                    and checkpoint_info.st_size <= 262144):
+                checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                tripwire_armed = (
+                    isinstance(checkpoint, dict)
+                    and checkpoint.get("operation_mode") == "proof_only_legacy_admission"
+                )
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError):
+            # A malformed or unsupported checkpoint is exercised by the actual
+            # owner recovery path. Only a positively identified proof-only mode
+            # needs mutation tripwires; ordinary recovery retains its contract.
+            pass
+        try:
+            if tripwire_armed:
+                result, mutation_attempts, raised = with_legacy_admission_mutation_tripwires(
+                    recover_startup_xray_subscription_profiles,
+                )
+            else:
+                result = recover_startup_xray_subscription_profiles()
+                mutation_attempts = {"xray_apply_or_reload": 0,
+                                     "mihomo_apply_or_reload": 0,
+                                     "core_dataplane_apply_or_rollback": 0,
+                                     "unexpected_http_request": 0}
+                raised = False
+        except Exception:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "error_code": "ACCEPTANCE_STARTUP_RECOVERY_EXCEPTION",
+                "mutation_attempts": {"xray_apply_or_reload": -1,
+                                       "mihomo_apply_or_reload": -1,
+                                       "core_dataplane_apply_or_rollback": -1,
+                                       "unexpected_http_request": -1},
+                "tripwire_armed": tripwire_armed,
+                "native_generation": get_subscription_native_generation_state(),
+            }
+        if raised or not isinstance(result, dict):
+            return {
+                "ok": False,
+                "status": "blocked",
+                "error_code": "ACCEPTANCE_STARTUP_RECOVERY_EXCEPTION",
+                "mutation_attempts": mutation_attempts,
+                "tripwire_armed": tripwire_armed,
+                "native_generation": get_subscription_native_generation_state(),
+            }
         return {
             "ok": result.get("ok") is True,
             "status": str(result.get("status") or ""),
             "stage": str(result.get("stage") or ""),
             "error_code": str(result.get("error_code") or ""),
             "inventory_authority": str(result.get("inventory_authority") or ""),
+            "mutation_attempts": mutation_attempts,
+            "tripwire_armed": tripwire_armed,
             "native_generation": get_subscription_native_generation_state(),
         }
 
@@ -4146,12 +4961,12 @@ def build_app(socket_path: Path):
                 recovery_value = result.get("details")
         if isinstance(recovery_value, dict):
             from fwrouter_api.services.xray_subscription_service import (
-                _xray_adapter, _xray_generation_checkpoint_path,
+                _xray_generation_checkpoint_path,
             )
             recovery_value = {
                 **recovery_value,
                 "checkpoint_facts": _read_bounded_generation_checkpoint_facts(
-                    _xray_generation_checkpoint_path(_xray_adapter()),
+                    _xray_generation_checkpoint_path(_acceptance_xray_adapter()),
                 ),
             }
         recovery = _bounded_inventory_generation_recovery(recovery_value)

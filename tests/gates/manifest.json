@@ -5397,7 +5397,7 @@
       "opt_in": true,
       "path": "tests/application_acceptance/test_runtime_scale.py",
       "primary_level": "L3",
-      "risk_notes": "Hosted only, bounded2GiB owned container; no production data or host recovery parity",
+      "risk_notes": "Hosted only, bounded2.5GiB owned application/router container; swap disabled; no production data or host recovery parity",
       "runtime_dependencies": [
         "Linux amd64 hosted runner",
         "Docker Compose v2",
@@ -5510,6 +5510,32 @@
       ],
       "slow": false,
       "timeout_seconds": 30
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "subscription",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "module-owned synthetic legacy inventory; no production data or provider calls",
+      "fixture_owner": "backend/tests/test_proof_only_legacy_admission.py",
+      "id": "test_proof_only_legacy_admission",
+      "isolation": "temporary test state and fake adapters per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_proof_only_legacy_admission.py",
+      "primary_level": "L2",
+      "risk_notes": "Proof-only legacy admission state machine, explicit operator gate, checkpoint resume, transactional fences, and zero native/provider mutation under synthetic adapters",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 45
     }
   ],
   "version": "2026.10.17.1",

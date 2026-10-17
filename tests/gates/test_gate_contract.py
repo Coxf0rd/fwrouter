@@ -38,6 +38,27 @@ WHEEL_VERIFIER_SPEC.loader.exec_module(wheel_verifier)
 
 
 class GateContractTests(unittest.TestCase):
+    def test_proof_only_admission_branch_can_select_existing_qualified_cohort(self) -> None:
+        branch = "fix/proof-only-legacy-admission"
+        workflow_path = gate.ROOT / ".github/workflows/phase-d-validation.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        trigger = workflow.split("on:", 1)[1].split("permissions:", 1)[0]
+        self.assertIn(branch, trigger)
+        base = "9a48562ab347f6e5324f24504cec1ecbc9f48f7c"
+        self.assertGreaterEqual(workflow.count(f"github.ref == 'refs/heads/{branch}'") , 3)
+        self.assertGreaterEqual(workflow.count(f"'{base}'"), 3)
+        self.assertIn("'6bdf37e9c73b5728b8d50e971f34d848610eb345'", workflow)
+        self.assertIn("'1b302e91b3cd652cd4aab4f45bbdd88c088e5786'", workflow)
+        self.assertIn("PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/" + branch + "' && '" + base + "' || '6bdf37e9c73b5728b8d50e971f34d848610eb345' }}", workflow)
+        self.assertIn('"ci:validate-cohort": "provider-cohort"', workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == provider-cohort ]]; then suite=provider-cohort; fi', workflow)
+        launcher_source = (gate.ROOT / "tests/acceptance/launcher.py").read_text(encoding="utf-8")
+        target_node = (
+            "tests/application_acceptance/test_xray_generation.py::"
+            "test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry"
+        )
+        self.assertIn(target_node, launcher_source)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.manifest = gate.load_manifest()
@@ -233,16 +254,21 @@ class GateContractTests(unittest.TestCase):
 
     def test_identity_diagnostic_uses_available_main_base_without_rebasing_legacy_stages(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
-        identity_base = (
-            "PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage == 'identity-diagnostic' || "
+        legacy_stage_base = (
+            "((needs.select-stage.outputs.stage == 'identity-diagnostic' || "
             "needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || "
             "needs.select-stage.outputs.stage == 'packet-diagnostic') && "
             "'1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || "
-            "'6bdf37e9c73b5728b8d50e971f34d848610eb345' }}"
+            "'6bdf37e9c73b5728b8d50e971f34d848610eb345')"
         )
-        self.assertEqual(2, workflow.count(identity_base))
-        self.assertEqual(1, workflow.count(
-            "PHASE_D_BASE_SHA: 6bdf37e9c73b5728b8d50e971f34d848610eb345"))
+        self.assertEqual(2, workflow.count(legacy_stage_base))
+        self.assertEqual(3, workflow.count(
+            "github.ref == 'refs/heads/fix/proof-only-legacy-admission' && "
+            "'9a48562ab347f6e5324f24504cec1ecbc9f48f7c'"))
+        self.assertIn(
+            "PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/proof-only-legacy-admission' && "
+            "'9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || "
+            "'6bdf37e9c73b5728b8d50e971f34d848610eb345' }}", workflow)
         identity_step = workflow.split("Run subscription identity L1 subset", 1)[0]
         self.assertIn("git cat-file -e \"$PHASE_D_BASE_SHA^{commit}\"", identity_step)
         self.assertIn('git diff --check "$PHASE_D_BASE_SHA...HEAD"', identity_step)
@@ -305,7 +331,10 @@ class GateContractTests(unittest.TestCase):
             'if [[ "$VALIDATION_STAGE" == final-regressions-diagnostic ]]; then suite=final-regressions-diagnostic; fi',
             workflow,
         )
-        self.assertIn('PHASE_D_BASE_SHA: ${{ (needs.select-stage.outputs.stage ==', workflow)
+        self.assertEqual(3, workflow.count(
+            "github.ref == 'refs/heads/fix/proof-only-legacy-admission' && "
+            "'9a48562ab347f6e5324f24504cec1ecbc9f48f7c'"))
+        self.assertIn("needs.select-stage.outputs.stage == 'final-regressions-diagnostic'", workflow)
 
         deletion_step = workflow.split(
             "- name: Run final deletion and verified-reentry unit regressions", 1,

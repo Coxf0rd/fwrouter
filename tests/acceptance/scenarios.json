@@ -203,7 +203,7 @@
       "nodeid": "tests/application_acceptance/test_xray_generation.py::test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry",
       "suite": "functional",
       "level": "L3",
-      "contract": "A persisted but un-staged inventory cannot be admitted by startup reconciliation."
+      "contract": "Pending inventory stays blocked across startup; proof-only legacy admission resumes only by explicit owner action after fresh isolated Xray HandlerService and Mihomo proof, preserving 78 synthetic identities, durable mappings, dataplane state and native incarnations. Self-checking tripwires block Xray/Mihomo/Core dataplane mutation and unexpected HTTP; provider and synthetic-source request counts stay unchanged."
     },
     {
       "nodeid": "tests/application_acceptance/test_xray_generation.py::test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery",

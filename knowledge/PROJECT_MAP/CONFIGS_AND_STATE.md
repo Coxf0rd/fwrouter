@@ -41,6 +41,12 @@ SQLite stores persistent intent, operational metadata, jobs, logs, and accountin
 
 Subscription inventory acquisition and native publication are separate durability boundaries. The internal generation admission marker in `settings` tracks pending versus native-verified inventory; it is not a replacement for canonical rows, generation checkpoints or native proof. See the [pending inventory recovery change](../audits/pending_inventory_verified_generation_fix_2026-10-16/REPORT.md) for admission, crash/restart and legacy-upgrade constraints. Source acceptance does not authorize production activation. Before another inventory refresh, the existing generation owner must recover/prove any open checkpoint. Ordinary inventory writers recheck under the shared writer guard and refuse every unresolved checkpoint; provider network work remains outside that guard. Disabled/external Xray ownership never authorizes native recovery. Explicit reviewed identity-migration supersession remains a separate exact checkpoint/plan/ledger operation.
 
+## Explicit Legacy Inventory Admission
+
+A nonempty pre-marker inventory remains unverified after upgrade; generic startup must not grant it admission. The explicit proof-only owner operation is distinct from provider refresh and native apply. It may persist an operation checkpoint, fresh proof receipt and generation marker, but must not prepare credentials, fetch providers, change routing or apply/reload/restart native components. Incomplete proof, drift or stale ownership/revision/incarnation fences blocks publication.
+
+Proof-only checkpoints have their own operation mode. Ordinary recovery must refuse them before any restore/reload path; only explicit operator re-entry can re-prove the bound inventory and complete or close that operation. A verified marker never replaces fresh native proof, last-good protection or a reviewed identity-migration/supersession contract. See the [implementation contract and qualification status](../audits/proof_only_legacy_admission_2026-10-17/REPORT.md). Source availability does not authorize production execution.
+
 ## Generated Artifacts
 
 - `/var/lib/fwrouter-v2/generated/dataplane/`

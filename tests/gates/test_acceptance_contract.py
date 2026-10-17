@@ -1777,6 +1777,186 @@ class AcceptanceContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(launcher.NotRun, "inherit the fixed image entrypoint"):
                     launcher.validate_packet_service_fields(role, override, expected_keys)
 
+    def test_packet_application_memory_cap_is_2560m_and_rejects_unbounded_or_swap(self):
+        import yaml
+
+        compose_source = yaml.safe_load((Path(__file__).parents[1] / "acceptance" / "compose.yaml")
+                                        .read_text(encoding="utf-8"))
+        application_source = compose_source["services"]["application"]
+        self.assertEqual(2560 * 1024**2, launcher.APPLICATION_MEMORY_LIMIT_BYTES)
+        self.assertEqual("2560m", application_source["mem_limit"])
+        self.assertEqual(application_source["mem_limit"], application_source["memswap_limit"])
+        run_id = "packet-memory-policy-run"
+        base_image_ref = "ghcr.io/coxf0rd/fwrouter-acceptance-dependencies@sha256:" + "a" * 64
+        profile_paths = {}
+        with tempfile.TemporaryDirectory(prefix="fwrouter-packet-memory-policy-") as temp:
+            root = Path(temp)
+            for role in ("router", "client", "endpoint"):
+                profile_paths[role] = root / f"{role}.json"
+                profile_paths[role].write_text("{}")
+            labels = {launcher.OWNER_LABEL: launcher.OWNER_VALUE, launcher.RUN_LABEL: run_id}
+            services = {
+                "application": {
+                    "build": {"dockerfile": launcher.DEPENDENCY_APPLICATION_DOCKERFILE,
+                              "args": {"BASE_IMAGE": base_image_ref}},
+                    "cap_add": ["NET_ADMIN", "NET_RAW"], "cap_drop": ["ALL"],
+                    "command": ["-c", "import signal; signal.pause()"], "cpus": 2.0,
+                    "environment": {
+                        "FWROUTER_ENVIRONMENT": "test", "FWROUTER_STATE_DIR": "/tmp/fwrouter-acceptance-state",
+                        "FWROUTER_STARTUP_TASKS_ENABLED": "0", "FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
+                        "FWROUTER_XRAY_BINARY": "/opt/fwrouter-test/bin/xray",
+                        "FWROUTER_MIHOMO_BINARY": "/opt/fwrouter-test/bin/mihomo",
+                        "FWROUTER_BROWSER_EXECUTABLE": "/opt/fwrouter-test/chromium/chrome-linux64/chrome",
+                        "FWROUTER_CHROMIUM_BINARY": "/opt/fwrouter-test/chromium/chrome-linux64/chrome",
+                        "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+                        "FWROUTER_ACCEPTANCE_RECEIPT_PATH": "/tmp/fwrouter-receipts/application-acceptance.json",
+                        "PLAYWRIGHT_BROWSERS_PATH": "/opt/fwrouter-test/playwright-browsers",
+                        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONDONTWRITEBYTECODE": "1",
+                        "HOME": "/tmp/fwrouter-home",
+                    },
+                    "image": f"fwrouter-acceptance:{run_id}", "init": True, "labels": labels,
+                    "mem_limit": "2560m", "memswap_limit": "2560m", "networks": {
+                        "lan": {"ipv4_address": "10.240.0.1"},
+                        "wan": {"ipv4_address": "198.18.240.1"},
+                    }, "pids_limit": 256, "read_only": True, "restart": "no",
+                    "security_opt": ["no-new-privileges:true"],
+                    "sysctls": {"net.ipv4.ip_forward": "1", "net.ipv4.ip_unprivileged_port_start": "53"},
+                    "tmpfs": ["/tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777"], "user": "0:0",
+                    "volumes": [{"source": str(profile_paths["router"]),
+                                 "target": "/run/fwrouter-acceptance/profile.json", "read_only": True}],
+                },
+                "lanclient": {
+                    "cap_add": ["NET_ADMIN"], "cap_drop": ["ALL"],
+                    "command": ["-c", "import signal; signal.pause()"], "cpus": 1.0,
+                    "environment": {"FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
+                                    "FWROUTER_XRAY_BINARY": "/opt/fwrouter-test/bin/xray",
+                                    "PYTHONDONTWRITEBYTECODE": "1", "HOME": "/tmp"},
+                    "image": f"fwrouter-acceptance:{run_id}", "init": True, "labels": labels,
+                    "mem_limit": "256m", "memswap_limit": "256m", "networks": {
+                        "lan": {"ipv4_address": "10.240.0.2"}}, "pids_limit": 64, "read_only": True,
+                    "restart": "no", "security_opt": ["no-new-privileges:true"],
+                    "tmpfs": ["/tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777"], "user": "0:0",
+                    "volumes": [{"source": str(profile_paths["client"]),
+                                 "target": "/run/fwrouter-acceptance/profile.json", "read_only": True}],
+                },
+                "endpoint": {
+                    "cap_add": ["NET_ADMIN"], "cap_drop": ["ALL"],
+                    "command": ["-c", "import signal; signal.pause()"], "cpus": 1.0,
+                    "environment": {"FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
+                                    "FWROUTER_XRAY_BINARY": "/opt/fwrouter-test/bin/xray",
+                                    "PYTHONDONTWRITEBYTECODE": "1", "HOME": "/tmp"},
+                    "image": f"fwrouter-acceptance:{run_id}", "init": True, "labels": labels,
+                    "mem_limit": "384m", "memswap_limit": "384m", "networks": {
+                        "wan": {"ipv4_address": "198.18.240.2"}}, "pids_limit": 96, "read_only": True,
+                    "restart": "no", "security_opt": ["no-new-privileges:true"],
+                    "sysctls": {"net.ipv4.ip_unprivileged_port_start": "53"},
+                    "tmpfs": ["/tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777"], "user": "0:0",
+                    "volumes": [{"source": str(profile_paths["endpoint"]),
+                                 "target": "/run/fwrouter-acceptance/profile.json", "read_only": True}],
+                },
+            }
+            networks = {name: {
+                "internal": True, "enable_ipv6": False,
+                "ipam": {"config": [{"subnet": spec["subnet"], "gateway": spec["gateway"]}]},
+                "labels": labels,
+            } for name, spec in launcher.PACKET_NETWORKS.items()}
+            config = {"services": services, "networks": networks}
+            launcher.validate_packet_compose_config(
+                config, run_id=run_id, profile_paths=profile_paths, base_image_ref=base_image_ref,
+            )
+            self.assertEqual(application_source["mem_limit"], services["application"]["mem_limit"])
+            self.assertEqual(application_source["memswap_limit"], services["application"]["memswap_limit"])
+            for memory, swap in (("2561m", "2561m"), ("0", "0"), ("2560m", "2561m"), ("2560m", "")):
+                invalid = json.loads(json.dumps(config))
+                invalid["services"]["application"]["mem_limit"] = memory
+                invalid["services"]["application"]["memswap_limit"] = swap
+                with self.subTest(memory=memory, swap=swap), self.assertRaises(launcher.NotRun):
+                    launcher.validate_packet_compose_config(
+                        invalid, run_id=run_id, profile_paths=profile_paths, base_image_ref=base_image_ref,
+                    )
+            missing_limit = json.loads(json.dumps(config))
+            missing_limit["services"]["application"].pop("mem_limit")
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_packet_compose_config(
+                    missing_limit, run_id=run_id, profile_paths=profile_paths, base_image_ref=base_image_ref,
+                )
+            missing_swap = json.loads(json.dumps(config))
+            missing_swap["services"]["application"].pop("memswap_limit")
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_packet_compose_config(
+                    missing_swap, run_id=run_id, profile_paths=profile_paths, base_image_ref=base_image_ref,
+                )
+
+            runtime = {
+                "Config": {
+                    "Labels": {**labels, "com.docker.compose.project": "packet-project"},
+                    "User": "0:0", "Entrypoint": ["python"],
+                    "Cmd": ["-c", "import signal; signal.pause()"],
+                    "Env": ["PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                            "LANG=C.UTF-8", "PYTHONPATH=/workspace/backend",
+                            "FWROUTER_ENVIRONMENT=test", "FWROUTER_STATE_DIR=/tmp/fwrouter-acceptance-state",
+                            "FWROUTER_STARTUP_TASKS_ENABLED=0", "FWROUTER_ACCEPTANCE_PROFILE=/run/fwrouter-acceptance/profile.json",
+                            "FWROUTER_XRAY_BINARY=/opt/fwrouter-test/bin/xray",
+                            "FWROUTER_MIHOMO_BINARY=/opt/fwrouter-test/bin/mihomo",
+                            "FWROUTER_BROWSER_EXECUTABLE=/opt/fwrouter-test/chromium/chrome-linux64/chrome",
+                            "FWROUTER_CHROMIUM_BINARY=/opt/fwrouter-test/chromium/chrome-linux64/chrome",
+                            "FWROUTER_APPLICATION_ACCEPTANCE_ROOT=/tmp/fwrouter-application-acceptance",
+                            "FWROUTER_ACCEPTANCE_RECEIPT_PATH=/tmp/fwrouter-receipts/application-acceptance.json",
+                            "PLAYWRIGHT_BROWSERS_PATH=/opt/fwrouter-test/playwright-browsers",
+                            "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1", "PYTHONDONTWRITEBYTECODE=1", "HOME=/tmp/fwrouter-home"],
+                },
+                "HostConfig": {
+                    "ReadonlyRootfs": True, "Privileged": False, "CapDrop": ["ALL"],
+                    "CapAdd": ["NET_ADMIN", "NET_RAW"], "Devices": [], "PortBindings": {},
+                    "PidMode": "", "IpcMode": "private", "SecurityOpt": ["no-new-privileges:true"],
+                    "NetworkMode": "packet-project_lan", "Sysctls": services["application"]["sysctls"],
+                    "Memory": 2560 * 1024**2, "MemorySwap": 2560 * 1024**2,
+                    "NanoCpus": 2_000_000_000, "PidsLimit": 256,
+                    "Tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=512m,mode=1777"},
+                },
+                "State": {"Status": "created"}, "Image": "sha256:" + "b" * 64,
+                "Mounts": [{"Type": "bind", "Destination": "/run/fwrouter-acceptance/profile.json",
+                            "Source": str(profile_paths["router"]), "RW": False}],
+                "NetworkSettings": {"Networks": {
+                    "packet-project_lan": {"IPAddress": "10.240.0.1"},
+                    "packet-project_wan": {"IPAddress": "198.18.240.1"},
+                }},
+            }
+            self.assertEqual(int(application_source["mem_limit"][:-1]) * 1024**2,
+                             runtime["HostConfig"]["Memory"])
+            self.assertEqual(runtime["HostConfig"]["Memory"], runtime["HostConfig"]["MemorySwap"])
+            launcher.validate_packet_container_inspect(
+                runtime, project="packet-project", run_id=run_id, image_id=runtime["Image"],
+                role="router", profile_path=profile_paths["router"], inherited_base_env={},
+            )
+            for memory, swap in ((2560 * 1024**2 + 1, 2560 * 1024**2 + 1),
+                                 (0, 0), (2560 * 1024**2, 2561 * 1024**2)):
+                invalid_runtime = json.loads(json.dumps(runtime))
+                invalid_runtime["HostConfig"]["Memory"] = memory
+                invalid_runtime["HostConfig"]["MemorySwap"] = swap
+                with self.subTest(runtime_memory=memory, runtime_swap=swap), self.assertRaises(launcher.NotRun):
+                    launcher.validate_packet_container_inspect(
+                        invalid_runtime, project="packet-project", run_id=run_id,
+                        image_id=runtime["Image"], role="router", profile_path=profile_paths["router"],
+                        inherited_base_env={},
+                    )
+            missing_limit = json.loads(json.dumps(runtime))
+            missing_limit["HostConfig"].pop("Memory")
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_packet_container_inspect(
+                    missing_limit, project="packet-project", run_id=run_id,
+                    image_id=runtime["Image"], role="router", profile_path=profile_paths["router"],
+                    inherited_base_env={},
+                )
+            missing_swap = json.loads(json.dumps(runtime))
+            missing_swap["HostConfig"].pop("MemorySwap")
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_packet_container_inspect(
+                    missing_swap, project="packet-project", run_id=run_id,
+                    image_id=runtime["Image"], role="router", profile_path=profile_paths["router"],
+                    inherited_base_env={},
+                )
+
     def test_packet_compose_contract_reports_only_bounded_service_field_names(self):
         run_id = "packet-contract-run"
         profile_paths = {role: Path(f"/owned/{role}-profile.json")
@@ -6278,8 +6458,8 @@ class AcceptanceContractTests(unittest.TestCase):
                 "ReadonlyRootfs": True, "Privileged": False, "NetworkMode": "project_isolated",
                 "CapAdd": [], "Devices": [], "PidMode": "", "IpcMode": "private",
                 "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges:true"],
-                "PortBindings": {}, "PidsLimit": 256, "Memory": 2 * 1024**3,
-                "MemorySwap": 2 * 1024**3,
+                "PortBindings": {}, "PidsLimit": 256, "Memory": 2560 * 1024**2,
+                "MemorySwap": 2560 * 1024**2,
                 "NanoCpus": 2_000_000_000,
                 "Tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=512m,mode=1777"},
             },
@@ -6298,6 +6478,27 @@ class AcceptanceContractTests(unittest.TestCase):
             base["Mounts"][0]["Source"] = str(profile)
             launcher.validate_container_inspect(base, project="project", run_id="run", profile_path=profile,
                                                 image_id=base["Image"])
+            for memory, memory_swap in (
+                (2560 * 1024**2 + 1, 2560 * 1024**2 + 1),
+                (0, 0),
+                (2560 * 1024**2, 2561 * 1024**2),
+                (2560 * 1024**2, 2560 * 1024**2 - 1),
+            ):
+                invalid_resources = json.loads(json.dumps(base))
+                invalid_resources["HostConfig"]["Memory"] = memory
+                invalid_resources["HostConfig"]["MemorySwap"] = memory_swap
+                with self.subTest(memory=memory, memory_swap=memory_swap), self.assertRaises(launcher.NotRun):
+                    launcher.validate_container_inspect(
+                        invalid_resources, project="project", run_id="run", profile_path=profile,
+                        image_id=base["Image"],
+                    )
+            missing_swap = json.loads(json.dumps(base))
+            missing_swap["HostConfig"].pop("MemorySwap")
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_container_inspect(
+                    missing_swap, project="project", run_id="run", profile_path=profile,
+                    image_id=base["Image"],
+                )
             wrong_handoff = json.loads(json.dumps(base))
             wrong_handoff["NetworkSettings"]["Networks"]["project_isolated"] = {
                 "IPAddress": "172.18.0.9", "Gateway": launcher.GENERAL_NETWORK["gateway"]}
@@ -6403,7 +6604,7 @@ class AcceptanceContractTests(unittest.TestCase):
             profile.write_text("{}")
             service = {
                 "cap_drop": ["ALL"], "read_only": True, "user": "10001:10001", "restart": "no",
-                "init": True, "security_opt": ["no-new-privileges:true"], "memswap_limit": "2g",
+                "init": True, "security_opt": ["no-new-privileges:true"], "memswap_limit": "2560m",
                 "tmpfs": ["/tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777"],
                 "command": ["-c", "import signal; signal.pause()"],
                 "labels": {launcher.OWNER_LABEL: launcher.OWNER_VALUE, launcher.RUN_LABEL: run_id},
@@ -6411,7 +6612,7 @@ class AcceptanceContractTests(unittest.TestCase):
                 "networks": {"isolated": {"ipv4_address": launcher.GENERAL_NETWORK["address"]}},
                 "volumes": [{"source": str(profile),
                     "target": "/run/fwrouter-acceptance/profile.json", "read_only": True}],
-                "mem_limit": "2g", "pids_limit": 256, "cpus": 2.0,
+                "mem_limit": "2560m", "pids_limit": 256, "cpus": 2.0,
                 "environment": {
                     "FWROUTER_ENVIRONMENT": "test", "FWROUTER_STATE_DIR": "/tmp/fwrouter-acceptance-state",
                     "FWROUTER_STARTUP_TASKS_ENABLED": "0", "FWROUTER_ACCEPTANCE_PROFILE": "/run/fwrouter-acceptance/profile.json",
@@ -6434,6 +6635,31 @@ class AcceptanceContractTests(unittest.TestCase):
                                                launcher.RUN_LABEL: run_id}}}}
             launcher.validate_compose_config(config, run_id=run_id, profile_path=profile,
                                              base_image_ref=dependency_ref, application_dockerfile=dockerfile)
+            for memory, memory_swap in (
+                ("2561m", "2561m"), ("0", "0"), ("2560m", "2561m"), ("2560m", "")
+            ):
+                invalid_resources = json.loads(json.dumps(config))
+                invalid_resources["services"]["application"]["mem_limit"] = memory
+                invalid_resources["services"]["application"]["memswap_limit"] = memory_swap
+                with self.subTest(memory=memory, memory_swap=memory_swap), self.assertRaises(launcher.NotRun):
+                    launcher.validate_compose_config(
+                        invalid_resources, run_id=run_id, profile_path=profile,
+                        base_image_ref=dependency_ref, application_dockerfile=dockerfile,
+                    )
+            missing_limit = json.loads(json.dumps(config))
+            missing_limit["services"]["application"].pop("mem_limit")
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_compose_config(
+                    missing_limit, run_id=run_id, profile_path=profile,
+                    base_image_ref=dependency_ref, application_dockerfile=dockerfile,
+                )
+            missing_swap = json.loads(json.dumps(config))
+            missing_swap["services"]["application"].pop("memswap_limit")
+            with self.assertRaises(launcher.NotRun):
+                launcher.validate_compose_config(
+                    missing_swap, run_id=run_id, profile_path=profile,
+                    base_image_ref=dependency_ref, application_dockerfile=dockerfile,
+                )
             wrong_base = json.loads(json.dumps(config))
             wrong_base["services"]["application"]["build"]["args"]["BASE_IMAGE"] = "python:3.12-slim"
             with self.assertRaises(launcher.NotRun):
