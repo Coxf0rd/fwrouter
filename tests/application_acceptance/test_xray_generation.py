@@ -1223,6 +1223,15 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
             "status": failed_admission_code,
             "error_code": failed_admission.get("error_code"),
             "status_name": failed_admission.get("status"),
+            "reason": failed_admission.get("reason"),
+            "entry_facts": failed_admission.get("entry_facts"),
+        }
+        # The injected HandlerService failure must be consumed inside the
+        # admission proof itself. Assert its closed exception class before any
+        # later native read can consume a still-pending one-shot fault.
+        assert failed_admission.get("reason") == "XrayAdapterError", {
+            "reason": failed_admission.get("reason"),
+            "entry_facts": failed_admission.get("entry_facts"),
         }
         assert failed_admission.get("mutation_attempts") == {
             "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,

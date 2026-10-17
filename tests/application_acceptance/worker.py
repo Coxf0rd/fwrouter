@@ -4163,6 +4163,42 @@ def build_app(socket_path: Path):
                        "already_admitted", "proof_receipt_written"}
             response = {key: result[key] for key in allowed if key in result}
             if result.get("ok") is not True:
+                safe_reasons = {
+                    "writer_guard_required", "managed_native_runtimes_required", "durable_source_changed",
+                    "core_apply_state_unverified", "core_applied_generation_unowned", "core_apply_inflight",
+                    "core_bypass_state_unverifiable", "core_bypass_active", "core_native_readback_unavailable",
+                    "core_native_enforcement_unproven", "core_applied_manifest_unavailable",
+                    "core_routing_state_unverified", "core_applied_routing_unavailable",
+                    "core_applied_routing_mismatch", "core_routing_mode_unverified",
+                    "core_live_dataplane_unready", "xray_candidate_validation_unavailable",
+                    "xray_active_runtime_mismatch", "mihomo_runtime_incarnation_unavailable",
+                    "mihomo_input_fingerprint_unavailable", "durable_profile_credential_missing",
+                    "durable_auto_credential_missing", "durable_identity_projection_ambiguous",
+                    "core_selection_readback_unproven", "selection_fence_changed",
+                    "xray_bindings_artifact_mismatch", "xray_candidate_native_validation_failed",
+                    "xray_candidate_differs_from_active", "xray_handler_users_mismatch",
+                    "xray_native_binding_or_mode_mismatch", "mihomo_candidate_validation_failed",
+                    "mihomo_candidate_differs_from_active", "mihomo_native_policy_unproven",
+                    "native_proof_fence_changed", "native_proof_incomplete", "checkpoint_directory_untrusted",
+                    "checkpoint_unverifiable", "checkpoint_inventory_mismatch",
+                    "legacy_admission_fence_changed", "inventory_generation_stale",
+                    "inventory_generation_unexpected", "generation_marker_already_present",
+                    "legacy_inventory_not_admissible", "native_receipt_unverified",
+                    "pending_generation_publish_failed", "inventory_generation_admission_missing",
+                    "inventory_promotion_failed", "inventory_digest_mismatch", "inventory_digest_invalid",
+                    "operator_confirmation_required", "XrayAdapterError", "RuntimeError", "ValueError",
+                    "OSError", "PermissionError", "TypeError", "KeyError",
+                }
+                raw_reason = result.get("reason")
+                safe_reason = raw_reason if isinstance(raw_reason, str) and raw_reason in safe_reasons else "unknown"
+                raw_status = result.get("status")
+                safe_status = raw_status if isinstance(raw_status, str) and raw_status in {"blocked", "verified"} else "unknown"
+                print("FWROUTER_ACCEPTANCE_LEGACY_ADMISSION " + json.dumps({
+                    "schema": "fwrouter-acceptance-legacy-admission/v1",
+                    "ok": False,
+                    "status": safe_status,
+                    "reason": safe_reason,
+                }, sort_keys=True, separators=(",", ":"), ensure_ascii=True), flush=True)
                 # Keep hosted diagnostics useful without exposing inventory data
                 # or native configuration. The owner inspector is read-only and
                 # reports only eligibility and bounded state labels.

@@ -46,7 +46,7 @@ def _seed_legacy_inventory() -> str:
         return subscription._subscription_inventory_digest(connection)[0]
 
 
-def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(monkeypatch, tmp_path):
+def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(monkeypatch, tmp_path, capsys):
     """Execute both nested worker route callables with owned native boundary doubles."""
     import ast
 
@@ -137,6 +137,17 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
         "generation_status": "unknown", "checkpoint_mode": None, "checkpoint_phase": None,
     }
     assert secret_canary not in repr(admission_response)
+    admission_log = capsys.readouterr().out
+    assert admission_log == (
+        'FWROUTER_ACCEPTANCE_LEGACY_ADMISSION '
+        '{"ok":false,"reason":"unknown","schema":"fwrouter-acceptance-legacy-admission/v1",'
+        '"status":"blocked"}\n'
+    )
+    monkeypatch.setattr(xray_subscription_service, "admit_legacy_subscription_inventory", lambda **_kwargs: {
+        "ok": False, "status": "blocked", "reason": "XrayAdapterError",
+    })
+    namespace["admit_legacy_inventory_for_acceptance"]({"expected_digest": "b" * 64})
+    assert '"reason":"XrayAdapterError"' in capsys.readouterr().out
     namespace["with_legacy_admission_mutation_tripwires"] = original_tripwires
 
     from fwrouter_api.services import apply as core_apply, mihomo_runtime
