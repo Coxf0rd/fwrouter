@@ -87,6 +87,20 @@ class GateContractTests(unittest.TestCase):
         with self.assertRaises(gate.GateError):
             gate.domain_for_path("unmapped/binary.blob", self.manifest)
 
+    def test_backend_uv_lock_selects_test_infrastructure_in_quick_and_required_plans(self) -> None:
+        path = "backend/uv.lock"
+        expected = {
+            "backend/tests/test_isolation_bootstrap.py",
+            "tests/gates/test_gate_contract.py",
+        }
+        for planner in (gate.make_quick_push_plan, gate.make_plan):
+            with self.subTest(planner=planner.__name__):
+                plan = planner("HEAD", self.manifest, [path]) if planner is gate.make_quick_push_plan \
+                    else planner("HEAD", self.manifest, [path], include_native=True)
+                self.assertEqual([path], plan["changed_paths"])
+                self.assertEqual(["test-infrastructure"], plan["domains"])
+                self.assertTrue(expected <= set(plan["selected_files"]))
+
     def test_targeted_marker_fails_required_ci_immediately_after_checkout(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
         checkout = workflow.index("uses: actions/checkout@")

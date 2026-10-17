@@ -525,6 +525,12 @@
       "domains": [
         "test-infrastructure"
       ],
+      "glob": "backend/uv.lock"
+    },
+    {
+      "domains": [
+        "test-infrastructure"
+      ],
       "glob": "ruff.toml"
     },
     {
