@@ -4162,6 +4162,20 @@ def build_app(socket_path: Path):
             allowed = {"ok", "status", "reason", "digest", "revision", "operation_id",
                        "already_admitted", "proof_receipt_written"}
             response = {key: result[key] for key in allowed if key in result}
+            if result.get("ok") is not True:
+                # Keep hosted diagnostics useful without exposing inventory data
+                # or native configuration. The owner inspector is read-only and
+                # reports only eligibility and bounded state labels.
+                try:
+                    plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission()
+                    response["entry_facts"] = {
+                        key: plan[key] for key in (
+                            "eligible", "action", "reason", "generation_status",
+                            "checkpoint_mode", "checkpoint_phase",
+                        ) if key in plan
+                    }
+                except Exception:
+                    response["entry_facts"] = {"inspection": "unavailable"}
             response["mutation_attempts"] = dict(attempts)
             return response
         except Exception:

@@ -38,6 +38,21 @@ WHEEL_VERIFIER_SPEC.loader.exec_module(wheel_verifier)
 
 
 class GateContractTests(unittest.TestCase):
+    def test_proof_only_admission_branch_can_select_existing_qualified_cohort(self) -> None:
+        branch = "fix/proof-only-legacy-admission"
+        workflow_path = gate.ROOT / ".github/workflows/phase-d-validation.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        trigger = workflow.split("on:", 1)[1].split("permissions:", 1)[0]
+        self.assertIn(branch, trigger)
+        self.assertIn('"ci:validate-cohort": "provider-cohort"', workflow)
+        self.assertIn('if [[ "$VALIDATION_STAGE" == provider-cohort ]]; then suite=provider-cohort; fi', workflow)
+        launcher_source = (gate.ROOT / "tests/acceptance/launcher.py").read_text(encoding="utf-8")
+        target_node = (
+            "tests/application_acceptance/test_xray_generation.py::"
+            "test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry"
+        )
+        self.assertIn(target_node, launcher_source)
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.manifest = gate.load_manifest()

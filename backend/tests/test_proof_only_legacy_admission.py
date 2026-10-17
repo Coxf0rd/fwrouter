@@ -65,12 +65,14 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
         if isinstance(node, ast.FunctionDef)
         and node.name in {
             "with_legacy_admission_mutation_tripwires",
+            "admit_legacy_inventory_for_acceptance",
             "proof_only_tripwire_self_check",
             "recover_startup_xray_subscription_generation",
         }
     }
     assert set(nested) == {
         "with_legacy_admission_mutation_tripwires",
+        "admit_legacy_inventory_for_acceptance",
         "proof_only_tripwire_self_check",
         "recover_startup_xray_subscription_generation",
     }
@@ -108,8 +110,34 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
         "stat": stat,
         "json": json,
         "_acceptance_xray_adapter": worker._acceptance_xray_adapter,
+        "re": __import__("re"),
     }
     exec(compile(ast.Module(body=list(nested.values()), type_ignores=[]), worker.__file__, "exec"), namespace)
+
+    secret_canary = "SYNTHETIC-SECRET-CANARY-never-output"
+    monkeypatch.setattr(xray_subscription_service, "admit_legacy_subscription_inventory", lambda **_kwargs: {
+        "ok": False, "status": "blocked", "reason": "synthetic_native_proof_unavailable",
+    })
+    monkeypatch.setattr(xray_subscription_service, "inspect_legacy_subscription_inventory_admission", lambda: {
+        "ok": True, "eligible": False, "action": "blocked", "reason": "synthetic_blocked",
+        "generation_status": "unknown", "generation_reason": secret_canary,
+        "checkpoint_mode": None, "checkpoint_phase": None,
+    })
+    original_tripwires = namespace["with_legacy_admission_mutation_tripwires"]
+    namespace["with_legacy_admission_mutation_tripwires"] = lambda operation: (
+        operation(), {"xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
+                      "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0}, False,
+    )
+    admission_response = namespace["admit_legacy_inventory_for_acceptance"]({
+        "expected_digest": "a" * 64,
+    })
+    assert admission_response["reason"] == "synthetic_native_proof_unavailable"
+    assert admission_response["entry_facts"] == {
+        "eligible": False, "action": "blocked", "reason": "synthetic_blocked",
+        "generation_status": "unknown", "checkpoint_mode": None, "checkpoint_phase": None,
+    }
+    assert secret_canary not in repr(admission_response)
+    namespace["with_legacy_admission_mutation_tripwires"] = original_tripwires
 
     from fwrouter_api.services import apply as core_apply, mihomo_runtime
     monkeypatch.setattr(core_apply, "DEFAULT_DATAPLANE_ADAPTER", SyntheticDataplaneAdapter())
