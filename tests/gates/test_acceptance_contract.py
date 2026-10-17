@@ -290,6 +290,7 @@ class AcceptanceContractTests(unittest.TestCase):
         services = ModuleType("fwrouter_api.services")
         observed = io.StringIO()
         with tempfile.TemporaryDirectory(prefix="fwrouter-checkpoint-observer-") as temp:
+            (Path(temp) / "run").mkdir(mode=0o700)
             checkpoint = Path(temp) / "generation-checkpoint.json"
             checkpoint_target = Path(temp) / "checkpoint-target.json"
             checkpoint_location = {"path": checkpoint}
@@ -397,7 +398,113 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual("unknown", records[4]["checkpoint_before"]["phase"])
         self.assertEqual("unknown", records[4]["checkpoint_after"]["phase"])
         self.assertNotIn("xray_applied", json.dumps(records[4]))
-        self.assertLessEqual(max(map(len, text.splitlines())), 1024)
+
+    def test_xray_checkpoint_lifecycle_capture_survives_noisy_log_and_caps_records(self):
+        worker_source = APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(APPLICATION_ACCEPTANCE_WORKER))
+        observer = next(node for node in worker_tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_xray_checkpoint_lifecycle_observer")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": os, "sys": sys, "json": json, "threading": threading,
+            "Path": Path, "stat": stat, "Any": Any,
+            "_XRAY_GENERATION_CHECKPOINT_PHASES": {"prepared", "xray_applied", "restore_failed"},
+            "_bounded_inventory_generation_recovery": lambda _result: {},
+        }
+        services = ModuleType("fwrouter_api.services")
+        noisy_stderr = io.StringIO()
+        with tempfile.TemporaryDirectory(prefix="fwrouter-checkpoint-capture-") as temp:
+            state = Path(temp)
+            (state / "run").mkdir(mode=0o700)
+            checkpoint = state / "generation-checkpoint.json"
+            checkpoint_location = {"path": checkpoint}
+
+            def original_reconcile(**_kwargs):
+                return {"ok": True, "status": "success"}
+
+            service = SimpleNamespace(
+                _xray_adapter=lambda: object(),
+                _xray_generation_checkpoint_path=lambda _adapter: checkpoint_location["path"],
+                reconcile_xray_subscription_profile_nodes=original_reconcile,
+                _write_xray_generation_checkpoint=lambda **_kwargs: checkpoint,
+                _finalize_xray_profile_publication=lambda pending, _verification: pending,
+                _restore_xray_generation_checkpoint=lambda *_args: {},
+            )
+            services.xray_subscription_service = service
+            with mock.patch.dict(sys.modules, {"fwrouter_api.services": services}), \
+                    mock.patch.dict(os.environ, {
+                        "FWROUTER_ENVIRONMENT": "test",
+                        "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+                        "FWROUTER_STATE_DIR": temp,
+                    }), mock.patch("sys.stderr", noisy_stderr):
+                exec(compile(ast.Module(body=[observer], type_ignores=[]),
+                             str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+                namespace[observer.name]()
+                noisy_stderr.write("UNRELATED_LOG_NOISE " + ("x" * 20000) + "\n")
+                for _ in range(20):
+                    service.reconcile_xray_subscription_profile_nodes(requested_by="api")
+                # A worker process restart installs a fresh observer over the
+                # original service callable; it must continue the durable cap.
+                service.reconcile_xray_subscription_profile_nodes = original_reconcile
+                namespace[observer.name]()
+                for _ in range(40):
+                    service.reconcile_xray_subscription_profile_nodes(requested_by="api")
+            event_file = state / "run" / "xray-checkpoint-lifecycle.jsonl"
+            events = [json.loads(line) for line in event_file.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(48, len(events))
+            self.assertEqual(list(range(1, 49)), [event["sequence"] for event in events])
+            self.assertTrue(all(event["schema"] == "fwrouter-acceptance-xray-checkpoint/v1" for event in events))
+            self.assertTrue(all(len(line.encode("utf-8")) <= 1024
+                                for line in event_file.read_text(encoding="utf-8").splitlines()))
+            self.assertNotIn("UNRELATED_LOG_NOISE", event_file.read_text(encoding="utf-8"))
+            self.assertNotIn("UNRELATED_LOG_NOISE", noisy_stderr.getvalue()[-16 * 1024:])
+            self.assertLessEqual(max(map(len, event_file.read_text(encoding="utf-8").splitlines())), 1024)
+
+    def test_xray_checkpoint_lifecycle_artifact_reader_rejects_symlink_and_unknown_fields(self):
+        conftest_path = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
+        source = conftest_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(conftest_path))
+        reader = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "_read_acceptance_xray_checkpoint_lifecycle")
+        namespace = {"Path": Path, "os": os, "stat": stat, "json": json}
+        exec(compile(ast.Module(body=[reader], type_ignores=[]), str(conftest_path), "exec"), namespace)
+        event = {
+            "schema": "fwrouter-acceptance-xray-checkpoint/v1", "sequence": 1,
+            "event": "checkpoint_created", "owner": "subscription_refresh",
+            "phase": "xray_applied", "checkpoint_exists": True,
+            "checkpoint_phase": "xray_applied", "inventory_admission_present": True,
+        }
+        with tempfile.TemporaryDirectory(prefix="fwrouter-checkpoint-artifact-") as temp:
+            state = Path(temp)
+            (state / "run").mkdir(mode=0o700)
+            capture = state / "run" / "xray-checkpoint-lifecycle.jsonl"
+            capture.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            os.chmod(capture, 0o600)
+            valid = namespace[reader.name](state)
+            self.assertEqual("captured", valid["status"])
+            self.assertEqual([event], valid["events"])
+            capture.unlink()
+            private_target = state / "run" / "private.jsonl"
+            private_target.write_text(json.dumps({**event, "private_token": "DO_NOT_EXPORT"}) + "\n",
+                                      encoding="utf-8")
+            os.chmod(private_target, 0o600)
+            capture.symlink_to(private_target)
+            symlink_result = namespace[reader.name](state)
+            self.assertEqual("rejected", symlink_result["status"])
+            self.assertEqual([], symlink_result["events"])
+            self.assertNotIn("DO_NOT_EXPORT", json.dumps(symlink_result))
+            capture.unlink()
+            capture.write_text("not-json\n", encoding="utf-8")
+            os.chmod(capture, 0o600)
+            invalid = namespace[reader.name](state)
+            self.assertEqual("invalid", invalid["status"])
+            self.assertEqual([], invalid["events"])
+            capture.write_text(json.dumps({**event, "unrecognized": "DO_NOT_EXPORT"}) + "\n", encoding="utf-8")
+            os.chmod(capture, 0o600)
+            unknown = namespace[reader.name](state)
+            self.assertEqual("invalid", unknown["status"])
+            self.assertEqual([], unknown["events"])
+            self.assertNotIn("DO_NOT_EXPORT", json.dumps(unknown))
 
     def test_checkpoint_facts_compare_fences_without_exposing_values(self):
         project = _extract_bounded_generation_checkpoint_facts()

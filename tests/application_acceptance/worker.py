@@ -2652,12 +2652,93 @@ def _install_acceptance_xray_checkpoint_lifecycle_observer() -> None:
     phases = _XRAY_GENERATION_CHECKPOINT_PHASES
     owners = {
         "subscription-refresh": "subscription_refresh",
+        "hosted-acceptance-inventory-publication": "acceptance_inventory_publication",
+        "startup-xray-profile-reconcile": "startup_profile_reconcile",
         "watchdog.provider_recovery": "provider_recovery",
         "bootstrap": "bootstrap", "api": "api", "watchdog": "watchdog",
     }
     local = threading.local()
     lock = threading.Lock()
     records = {"count": 0}
+    capture_path = Path(os.environ["FWROUTER_STATE_DIR"]) / "run" / "xray-checkpoint-lifecycle.jsonl"
+    capture_limit = 48 * 1025
+
+    def append_capture(encoded: str) -> None:
+        raw = encoded.encode("ascii") + b"\n"
+        if len(raw) > 1025:
+            return
+        run_dir = capture_path.parent
+        directory_info = run_dir.lstat()
+        if (not stat.S_ISDIR(directory_info.st_mode) or stat.S_ISLNK(directory_info.st_mode)
+                or directory_info.st_uid != os.geteuid() or directory_info.st_mode & 0o022):
+            return
+        directory_fd = os.open(run_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                               | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened_dir = os.fstat(directory_fd)
+            if (not stat.S_ISDIR(opened_dir.st_mode)
+                    or (opened_dir.st_dev, opened_dir.st_ino) != (directory_info.st_dev, directory_info.st_ino)):
+                return
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(capture_path.name, flags, 0o600, dir_fd=directory_fd)
+            try:
+                info = os.fstat(descriptor)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                        or info.st_mode & 0o077 or info.st_size < 0
+                        or info.st_size + len(raw) > capture_limit):
+                    return
+                if os.write(descriptor, raw) != len(raw):
+                    return
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(directory_fd)
+
+    def existing_capture_count() -> int:
+        try:
+            directory_info = capture_path.parent.lstat()
+            directory_fd = os.open(capture_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                                   | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            return 0
+        try:
+            opened_directory = os.fstat(directory_fd)
+            if ((opened_directory.st_dev, opened_directory.st_ino) != (directory_info.st_dev, directory_info.st_ino)
+                    or not stat.S_ISDIR(opened_directory.st_mode)
+                    or directory_info.st_uid != os.geteuid() or directory_info.st_mode & 0o022):
+                return 48
+            try:
+                descriptor = os.open(capture_path.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                                     dir_fd=directory_fd)
+            except FileNotFoundError:
+                return 0
+            try:
+                info = os.fstat(descriptor)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                        or info.st_mode & 0o077 or info.st_size < 0 or info.st_size > capture_limit):
+                    return 48
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    data = stream.read(capture_limit + 1)
+                if len(data) > capture_limit or (data and not data.endswith(b"\n")):
+                    return 48
+                rows = data.splitlines()
+                for index, line in enumerate(rows, 1):
+                    if len(line) > 1024:
+                        return 48
+                    item = json.loads(line)
+                    if (not isinstance(item, dict)
+                            or item.get("schema") != "fwrouter-acceptance-xray-checkpoint/v1"
+                            or type(item.get("sequence")) is not int or item["sequence"] != index):
+                        return 48
+                return min(len(rows), 48)
+            finally:
+                os.close(descriptor)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return 48
+        finally:
+            os.close(directory_fd)
+
+    records["count"] = existing_capture_count()
 
     def checkpoint_facts(path_value: Any) -> dict[str, Any]:
         try:
@@ -2693,11 +2774,15 @@ def _install_acceptance_xray_checkpoint_lifecycle_observer() -> None:
                     return
                 records["count"] += 1
                 sequence = records["count"]
-            payload = {"schema": "fwrouter-acceptance-xray-checkpoint/v1", "sequence": sequence,
-                       "event": event, "owner": getattr(local, "owner", "other"), **fields}
-            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-            if len(encoded) <= 1024:
-                print("FWROUTER_ACCEPTANCE_XRAY_CHECKPOINT " + encoded, file=sys.stderr, flush=True)
+                payload = {"schema": "fwrouter-acceptance-xray-checkpoint/v1", "sequence": sequence,
+                           "event": event, "owner": getattr(local, "owner", "other"), **fields}
+                encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                if len(encoded) <= 1024:
+                    try:
+                        append_capture(encoded)
+                    except Exception:
+                        pass
+                    print("FWROUTER_ACCEPTANCE_XRAY_CHECKPOINT " + encoded, file=sys.stderr, flush=True)
         except Exception:
             return
 
