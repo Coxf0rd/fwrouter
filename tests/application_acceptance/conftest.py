@@ -10,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import stat
 import tempfile
 import threading
 import time
@@ -40,6 +41,142 @@ def _owned_dir(path: Path) -> bool:
         return path.is_dir() and not path.is_symlink() and info.st_uid == os.getuid() and not info.st_mode & 0o022
     except OSError:
         return False
+
+
+def _read_acceptance_xray_checkpoint_lifecycle(state: Path) -> dict[str, object]:
+    """Read the packet worker's fixed, bounded, closed-schema checkpoint trace."""
+    empty: dict[str, object] = {"status": "missing", "events": []}
+    path = state / "run" / "xray-checkpoint-lifecycle.jsonl"
+    phases = {"prepared", "transition_applied", "xray_applied", "runtime_applied",
+              "inventory_synced", "bindings_written", "projections_cleaned", "selection_verified",
+              "snapshots_published", "restore_started", "restore_failed", "unknown", "absent"}
+    owners = {"subscription_refresh", "acceptance_inventory_publication", "startup_profile_reconcile",
+              "provider_recovery", "bootstrap", "api", "watchdog", "other"}
+    events = {"checkpoint_create_failed", "checkpoint_created", "publication_exception",
+              "publication_finalized", "restore_result", "reconcile_exception", "reconcile_result"}
+    stages = {"unknown", "checkpoint_prepare", "native_candidate_validation", "mihomo_transition_apply",
+              "xray_generation_apply", "mihomo_final_apply", "inventory_synced", "bindings_written",
+              "projections_cleaned", "selection_verification", "generation_publication",
+              "xray_runtime_readback", "mihomo_udp_policy_receipt", "inventory_generation_promotion",
+              "generation_recovery", "generation_verification_deferred", "generation_publication_revalidation"}
+    errors = {"unknown", "XRAY_GENERATION_CHECKPOINT_FAILED", "XRAY_GENERATION_TRANSITION_APPLY_FAILED",
+              "XRAY_GENERATION_APPLY_FAILED", "XRAY_GENERATION_FINAL_APPLY_FAILED",
+              "XRAY_GENERATION_FINAL_READBACK_FAILED", "XRAY_GENERATION_RUNTIME_READBACK_FAILED",
+              "XRAY_GENERATION_STALE_BEFORE_PUBLICATION", "XRAY_GENERATION_RECOVERY_FAILED",
+              "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+              "SUBSCRIPTION_INVENTORY_GENERATION_PROMOTION_UNVERIFIED", "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED"}
+    statuses = {"unknown", "success", "failed", "pending", "partial"}
+    outcomes = {"unknown", "current_projection_unproven", "current_projection_verified", "no_generation_checkpoint",
+                "restore_failed", "restored_last_good", "stale_checkpoint_declined"}
+    reasons = {"unknown", "selection_fence_changed", "runtime_incarnation_changed",
+               "mihomo_transition_digest_unavailable", "active_mihomo_generation_changed",
+               "active_mihomo_unavailable", "mihomo_preimage_unavailable", "mihomo_preimage_invalid",
+               "mihomo_preimage_policy_unproven", "mihomo_preimage_native_invalid", "xray_preimage_unavailable",
+               "xray_preimage_invalid", "xray_runtime_ownership_changed", "xray_runtime_identity_changed",
+               "xray_runtime_readback_unavailable", "xray_preimage_api_unsafe", "xray_preimage_bindings_unavailable",
+               "xray_preimage_native_invalid", "subscription_snapshot_changed", "generation_source_changed",
+               "generation_projection_changed", "selection_provenance_changed", "selection_runtime_unconfirmed",
+               "runtime_ownership_changed", "runtime_readback_unavailable", "inventory_generation_not_bound",
+               "checkpoint_phase_not_recoverable", "recovery_attempt_mismatch", "recovery_attempt_phase_unknown",
+               "inventory_checkpoint_binding_mismatch", "inventory_generation_unverified",
+               "supersession_current_candidate_unowned", "committed_projection_mismatch", "bindings_artifact_mismatch",
+               "mounted_config_mismatch", "checkpoint_selection_intent_missing", "handoff_listener_unready",
+               "api_listener_unsafe", "config_identity_mismatch", "native_candidate_invalid",
+               "supersession_candidate_rebuild_mismatch", "recovery_backup_mismatch", "recovery_backup_missing",
+               "ambiguous_prior_prepare", "ambiguous_prior_reload", "inventory_mihomo_checkpoint_mismatch",
+               "inventory_native_receipt_unconfirmed", "inventory_generation_promotion_unconfirmed",
+               "preapply_revalidation_failed", "xray_reload_failed", "runtime_revalidation_failed",
+               "loaded_identity_mismatch", "runtime_projection_readback_failed", "auto_target_unverified",
+               "preterminal_revalidation_failed", "terminal_revalidation_failed", "supersession_preimage_unproven"}
+    try:
+        directory = path.parent.lstat()
+        if (not stat.S_ISDIR(directory.st_mode) or stat.S_ISLNK(directory.st_mode)
+                or directory.st_uid != os.getuid() or directory.st_mode & 0o022):
+            return {"status": "rejected", "events": []}
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                               | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return empty
+    except OSError:
+        return {"status": "rejected", "events": []}
+    try:
+        opened_directory = os.fstat(directory_fd)
+        if ((opened_directory.st_dev, opened_directory.st_ino) != (directory.st_dev, directory.st_ino)
+                or not stat.S_ISDIR(opened_directory.st_mode)):
+            return {"status": "rejected", "events": []}
+        try:
+            path_info = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return empty
+        if (not stat.S_ISREG(path_info.st_mode) or path_info.st_uid != os.getuid()
+                or path_info.st_mode & 0o077 or path_info.st_size < 0 or path_info.st_size > 48 * 1025):
+            return {"status": "rejected", "events": []}
+        descriptor = os.open(path.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+        try:
+            info = os.fstat(descriptor)
+            if ((info.st_dev, info.st_ino) != (path_info.st_dev, path_info.st_ino)
+                    or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_size > 48 * 1025):
+                return {"status": "rejected", "events": []}
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                raw = stream.read(48 * 1025 + 1)
+        finally:
+            os.close(descriptor)
+        if len(raw) > 48 * 1025 or (raw and not raw.endswith(b"\n")):
+            return {"status": "invalid", "events": []}
+        parsed = [json.loads(line) for line in raw.splitlines()]
+        if len(parsed) > 48:
+            return {"status": "invalid", "events": []}
+        safe: list[dict[str, object]] = []
+        for index, item in enumerate(parsed, 1):
+            if (not isinstance(item, dict) or item.get("schema") != "fwrouter-acceptance-xray-checkpoint/v1"
+                    or type(item.get("sequence")) is not int or item["sequence"] != index
+                    or item.get("event") not in events or item.get("owner") not in owners):
+                return {"status": "invalid", "events": []}
+            event = item["event"]
+            base = {"schema", "sequence", "event", "owner"}
+            expected = {
+                "checkpoint_create_failed": {"phase"},
+                "checkpoint_created": {"phase", "checkpoint_exists", "checkpoint_phase", "inventory_admission_present"},
+                "publication_exception": {"checkpoint_before", "checkpoint_after"},
+                "publication_finalized": {"checkpoint_before", "checkpoint_after", "ok", "status", "stage", "error_code"},
+                "restore_result": {"checkpoint_before", "checkpoint_after", "ok", "status", "stage", "error_code", "recovered", "reason"},
+                "reconcile_exception": {"checkpoint_before", "checkpoint_after", "exception"},
+                "reconcile_result": {"checkpoint_before", "checkpoint_after", "ok", "status", "stage", "error_code"},
+            }[event]
+            if set(item) != base | expected:
+                return {"status": "invalid", "events": []}
+            row = {key: item[key] for key in ("schema", "sequence", "event", "owner")}
+            for key in ("phase", "checkpoint_phase"):
+                if key in item:
+                    if item[key] not in phases:
+                        return {"status": "invalid", "events": []}
+                    row[key] = item[key]
+            for key in ("checkpoint_exists", "inventory_admission_present", "ok"):
+                if key in item:
+                    if type(item[key]) is not bool:
+                        return {"status": "invalid", "events": []}
+                    row[key] = item[key]
+            for key, allowed in (("status", statuses), ("stage", stages), ("error_code", errors),
+                                 ("recovered", outcomes), ("reason", reasons),
+                                 ("exception", {"known", "other"})):
+                if key in item:
+                    if item[key] not in allowed:
+                        return {"status": "invalid", "events": []}
+                    row[key] = item[key]
+            for key in ("checkpoint_before", "checkpoint_after"):
+                if key in item:
+                    facts = item[key]
+                    if (not isinstance(facts, dict) or set(facts) != {"exists", "phase"}
+                            or type(facts["exists"]) is not bool or facts["phase"] not in phases):
+                        return {"status": "invalid", "events": []}
+                    row[key] = {"exists": facts["exists"], "phase": facts["phase"]}
+            safe.append(row)
+        return {"status": "captured", "events": safe}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        return {"status": "invalid", "events": []}
+    finally:
+        os.close(directory_fd)
 
 
 def _prepare_db(state: Path) -> None:
@@ -425,6 +562,7 @@ def acceptance_stack(request):
             except OSError:
                 worker_logs.append({"name": log_path.name, "tail": "[unreadable]"})
         native_diagnostics = native.diagnostic_snapshot()
+        native_diagnostics["xray_checkpoint_lifecycle"] = _read_acceptance_xray_checkpoint_lifecycle(state)
         candidate_graph_path = state / "run" / "mihomo-candidate-graph.json"
         if candidate_graph_path.is_file() and not candidate_graph_path.is_symlink():
             try:

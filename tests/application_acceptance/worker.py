@@ -915,8 +915,170 @@ def _install_acceptance_live_mode_probe_observer() -> None:
             print("FWROUTER_ACCEPTANCE_LIVE_MODE_PROBE " + json.dumps(
                 receipt, sort_keys=True, separators=(",", ":")), flush=True)
         return result
-
     apply_service.probe_live_global_mode = observed_probe
+
+
+_XRAY_GENERATION_RECOVERY_REASONS = frozenset({
+    "selection_fence_changed", "runtime_incarnation_changed", "mihomo_transition_digest_unavailable",
+    "active_mihomo_generation_changed", "artifact_target_mismatch", "active_mihomo_unavailable",
+    "mihomo_preimage_unavailable", "mihomo_preimage_invalid", "mihomo_preimage_policy_unproven",
+    "mihomo_preimage_native_invalid", "xray_preimage_unavailable", "xray_preimage_invalid",
+    "xray_runtime_ownership_changed", "xray_runtime_identity_changed", "xray_runtime_readback_unavailable",
+    "xray_preimage_api_unsafe", "xray_preimage_bindings_unavailable", "xray_preimage_native_invalid",
+    "subscription_snapshot_changed", "generation_source_changed", "generation_projection_changed",
+    "selection_provenance_changed", "selection_runtime_unconfirmed", "runtime_ownership_changed",
+    "runtime_readback_unavailable", "inventory_generation_not_bound", "checkpoint_phase_not_recoverable",
+    "recovery_attempt_mismatch", "recovery_attempt_phase_unknown", "inventory_checkpoint_binding_mismatch",
+    "inventory_generation_unverified", "supersession_current_candidate_unowned", "committed_projection_mismatch",
+    "bindings_artifact_mismatch", "mounted_config_mismatch", "checkpoint_selection_intent_missing",
+    "handoff_listener_unready", "api_listener_unsafe", "config_identity_mismatch", "native_candidate_invalid",
+    "supersession_candidate_rebuild_mismatch", "recovery_backup_mismatch", "recovery_backup_missing",
+    "ambiguous_prior_prepare", "ambiguous_prior_reload", "inventory_mihomo_checkpoint_mismatch",
+    "inventory_native_receipt_unconfirmed", "inventory_generation_promotion_unconfirmed",
+    "preapply_revalidation_failed", "xray_reload_failed", "runtime_revalidation_failed",
+    "loaded_identity_mismatch", "runtime_projection_readback_failed", "auto_target_unverified",
+    "preterminal_revalidation_failed", "terminal_revalidation_failed", "supersession_preimage_unproven",
+})
+_XRAY_GENERATION_SELECTION_ERRORS = frozenset({
+    "SELECTION_BASELINE_UNAVAILABLE", "SELECTION_BASELINE_UNSELECTED", "SELECTION_RESTORE_READBACK_UNCONFIRMED",
+    "SELECTION_DIRECT_INTENT_UNPROVEN", "SELECTION_DIRECT_FENCE_UNPROVEN",
+    "SELECTION_DIRECT_NATIVE_READBACK_UNREADY", "SELECTION_DIRECT_APPLIED_MANIFEST_UNPROVEN",
+    "SELECTION_DIRECT_NATIVE_POLICY_UNPROVEN", "SELECTION_DIRECT_NATIVE_READBACK_FAILED",
+})
+_XRAY_GENERATION_CHECKPOINT_PHASES = frozenset({
+    "prepared", "transition_applied", "xray_applied", "runtime_applied", "inventory_synced",
+    "bindings_written", "projections_cleaned", "selection_verified", "snapshots_published",
+    "restore_started", "restore_failed",
+})
+
+
+def _bounded_inventory_generation_recovery(value: Any) -> dict[str, Any] | None:
+    """Expose only fixed recovery proof fields to the synthetic acceptance API."""
+    if not isinstance(value, dict):
+        return None
+    nested = value.get("generation_recovery")
+    if not isinstance(nested, dict) and value.get("stage") == "generation_recovery":
+        nested = value.get("details")
+    if isinstance(nested, dict):
+        value = nested
+    allowed_outcomes = {
+        "current_projection_unproven", "current_projection_verified",
+        "no_generation_checkpoint", "restore_failed", "restored_last_good",
+        "stale_checkpoint_declined",
+    }
+    summary: dict[str, Any] = {}
+    if type(value.get("ok")) is bool:
+        summary["ok"] = value["ok"]
+    recovered = value.get("recovered")
+    if isinstance(recovered, str) and recovered in allowed_outcomes:
+        summary["recovered"] = recovered
+    reason = value.get("reason")
+    if isinstance(reason, str) and reason in _XRAY_GENERATION_RECOVERY_REASONS:
+        summary["reason"] = reason
+    selection_error_code = value.get("selection_error_code")
+    if isinstance(selection_error_code, str) and selection_error_code in _XRAY_GENERATION_SELECTION_ERRORS:
+        summary["selection_error_code"] = selection_error_code
+    checkpoint_facts = value.get("checkpoint_facts")
+    if isinstance(checkpoint_facts, dict):
+        phase = checkpoint_facts.get("checkpoint_phase")
+        facts = {
+            "checkpoint_phase": phase if isinstance(phase, str) and phase in _XRAY_GENERATION_CHECKPOINT_PHASES else "unknown",
+        }
+        for key in ("checkpoint_selection_fence_matches", "checkpoint_inventory_binding_matches"):
+            if type(checkpoint_facts.get(key)) is bool:
+                facts[key] = checkpoint_facts[key]
+        summary["checkpoint_facts"] = facts
+    mihomo_proof = value.get("mihomo_preimage_proof")
+    if isinstance(mihomo_proof, dict):
+        projected = {
+            key: mihomo_proof[key]
+            for key in ("ok", "policy_verified", "native_config_validated")
+            if type(mihomo_proof.get(key)) is bool
+        }
+        if projected:
+            summary["mihomo_preimage_proof"] = projected
+    for key in ("xray_runtime_readback", "mihomo_runtime_readback"):
+        readback = value.get(key)
+        if isinstance(readback, dict) and type(readback.get("ok")) is bool:
+            summary[key] = {"ok": readback["ok"]}
+    for key in ("xray_reload", "mihomo_restart", "derived_rows_restored"):
+        if type(value.get(key)) is bool:
+            summary[key] = value[key]
+    return summary or None
+
+
+def _bounded_generation_checkpoint_facts(
+    checkpoint: Any, inventory_state: Any, selection_fence: Any,
+) -> dict[str, Any]:
+    """Project checkpoint ownership into a closed phase and comparison booleans."""
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    inventory_state = inventory_state if isinstance(inventory_state, dict) else {}
+    selection_fence = selection_fence if isinstance(selection_fence, dict) else {}
+    phase = checkpoint.get("phase")
+    binding = checkpoint.get("subscription_inventory_generation")
+    if not isinstance(binding, dict):
+        binding = {}
+    state = inventory_state.get("status")
+    if state == "empty":
+        inventory_matches = binding.get("digest") is None and binding.get("revision") is None
+    elif state in {"pending", "verified"}:
+        inventory_matches = (
+            binding.get("digest") == inventory_state.get("candidate_digest")
+            and type(binding.get("revision")) is int
+            and binding.get("revision") == inventory_state.get("candidate_revision")
+        )
+    else:
+        inventory_matches = False
+    checkpoint_revision = checkpoint.get("selection_revision")
+    return {
+        "checkpoint_phase": phase if isinstance(phase, str) and phase in _XRAY_GENERATION_CHECKPOINT_PHASES else "unknown",
+        "checkpoint_selection_fence_matches": (
+            type(checkpoint_revision) is int and checkpoint_revision == selection_fence.get("revision")
+        ),
+        "checkpoint_inventory_binding_matches": bool(inventory_matches),
+    }
+
+
+def _read_bounded_generation_checkpoint_facts(checkpoint_path: Any) -> dict[str, Any]:
+    """Read only bounded, owned checkpoint metadata and return boolean comparisons."""
+    fallback = {
+        "checkpoint_phase": "unknown",
+        "checkpoint_selection_fence_matches": False,
+        "checkpoint_inventory_binding_matches": False,
+    }
+    try:
+        path = Path(checkpoint_path)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or info.st_size < 0 or info.st_size > 1024 * 1024):
+                return fallback
+            chunks: list[bytes] = []
+            remaining = 1024 * 1024 + 1
+            while remaining:
+                chunk = os.read(fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            encoded = b"".join(chunks)
+            if len(encoded) > 1024 * 1024:
+                return fallback
+            checkpoint = json.loads(encoded.decode("utf-8"))
+        finally:
+            os.close(fd)
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+        with db_session() as connection:
+            fence = read_selection_fence(connection)
+        return _bounded_generation_checkpoint_facts(
+            checkpoint, get_subscription_native_generation_state(), fence,
+        )
+    except Exception:
+        return fallback
 
 
 def _install_acceptance_preflight_observer() -> None:
@@ -2325,6 +2487,8 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
         return facts
 
     original_restore = xray_subscription_service._restore_xray_generation_checkpoint
+    original_current_projection_recovery = xray_subscription_service._recover_checkpoint_from_current_projection
+    original_selection_readback = xray_subscription_service._verify_generation_recovery_selection_readback
     original_rollback_receipt = xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt
     original_publish = xray_subscription_service._publish_mihomo_udp_receipt_with_owner
     original_native_proof = mihomo_reconcile._native_udp_policy_proof
@@ -2348,6 +2512,9 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
             recovered = result.get("recovered")
             if recovered in {"restored_last_good", "restore_failed", "stale_checkpoint_declined"}:
                 summary["recovered"] = recovered
+            reason = result.get("reason")
+            if isinstance(reason, str) and reason in _XRAY_GENERATION_RECOVERY_REASONS:
+                summary["reason"] = reason
             error_code = result.get("error_code")
             if error_code == "MIHOMO_UDP_POLICY_ROLLBACK_RECEIPT_UNCONFIRMED":
                 summary["error_code"] = error_code
@@ -2362,6 +2529,31 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
                         nested["reason"] = reason
                     summary[key] = nested
         emit("restore_result", summary)
+        return result
+
+    def observed_selection_readback(selection: Any) -> Any:
+        result = original_selection_readback(selection)
+        if getattr(local, "current_projection_recovery", False) and isinstance(result, dict):
+            error_code = result.get("error_code")
+            if isinstance(error_code, str) and error_code in _XRAY_GENERATION_SELECTION_ERRORS:
+                local.selection_error_code = error_code
+        return result
+
+    def observed_current_projection_recovery(adapter: Any, checkpoint_path: Any) -> Any:
+        prior_recovering = getattr(local, "current_projection_recovery", False)
+        prior_error = getattr(local, "selection_error_code", None)
+        local.current_projection_recovery = True
+        local.selection_error_code = None
+        try:
+            result = original_current_projection_recovery(adapter, checkpoint_path)
+        finally:
+            observed_selection_error = getattr(local, "selection_error_code", None)
+            local.current_projection_recovery = prior_recovering
+            local.selection_error_code = prior_error
+        if (isinstance(observed_selection_error, str)
+                and observed_selection_error in _XRAY_GENERATION_SELECTION_ERRORS):
+            if isinstance(result, dict):
+                result = {**result, "selection_error_code": observed_selection_error}
         return result
 
     def observed_publish(*, expected_mihomo_runtime: str, expected_mihomo_sha: str,
@@ -2441,11 +2633,260 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
         return result
 
     xray_subscription_service._restore_xray_generation_checkpoint = observed_restore
+    xray_subscription_service._recover_checkpoint_from_current_projection = observed_current_projection_recovery
+    xray_subscription_service._verify_generation_recovery_selection_readback = observed_selection_readback
     xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt = observed_rollback_receipt
     xray_subscription_service._publish_mihomo_udp_receipt_with_owner = observed_publish
     mihomo_reconcile._native_udp_policy_proof = observed_native_proof
     mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state = observed_write
 
+
+def _install_acceptance_xray_checkpoint_lifecycle_observer() -> None:
+    """Record bounded checkpoint lifecycle facts in the isolated acceptance worker."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("Xray checkpoint observer requires the qualified acceptance worker")
+
+    from fwrouter_api.services import xray_subscription_service as service
+
+    phases = _XRAY_GENERATION_CHECKPOINT_PHASES
+    owners = {
+        "subscription-refresh": "subscription_refresh",
+        "hosted-acceptance-inventory-publication": "acceptance_inventory_publication",
+        "startup-xray-profile-reconcile": "startup_profile_reconcile",
+        "watchdog.provider_recovery": "provider_recovery",
+        "bootstrap": "bootstrap", "api": "api", "watchdog": "watchdog",
+    }
+    local = threading.local()
+    lock = threading.Lock()
+    records = {"count": 0}
+    capture_path = Path(os.environ["FWROUTER_STATE_DIR"]) / "run" / "xray-checkpoint-lifecycle.jsonl"
+    capture_limit = 48 * 1025
+
+    def append_capture(encoded: str) -> None:
+        raw = encoded.encode("ascii") + b"\n"
+        if len(raw) > 1025:
+            return
+        run_dir = capture_path.parent
+        directory_info = run_dir.lstat()
+        if (not stat.S_ISDIR(directory_info.st_mode) or stat.S_ISLNK(directory_info.st_mode)
+                or directory_info.st_uid != os.geteuid() or directory_info.st_mode & 0o022):
+            return
+        directory_fd = os.open(run_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                               | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened_dir = os.fstat(directory_fd)
+            if (not stat.S_ISDIR(opened_dir.st_mode)
+                    or (opened_dir.st_dev, opened_dir.st_ino) != (directory_info.st_dev, directory_info.st_ino)):
+                return
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(capture_path.name, flags, 0o600, dir_fd=directory_fd)
+            try:
+                info = os.fstat(descriptor)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                        or info.st_mode & 0o077 or info.st_size < 0
+                        or info.st_size + len(raw) > capture_limit):
+                    return
+                if os.write(descriptor, raw) != len(raw):
+                    return
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(directory_fd)
+
+    def existing_capture_count() -> int:
+        try:
+            directory_info = capture_path.parent.lstat()
+            directory_fd = os.open(capture_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                                   | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            return 0
+        try:
+            opened_directory = os.fstat(directory_fd)
+            if ((opened_directory.st_dev, opened_directory.st_ino) != (directory_info.st_dev, directory_info.st_ino)
+                    or not stat.S_ISDIR(opened_directory.st_mode)
+                    or directory_info.st_uid != os.geteuid() or directory_info.st_mode & 0o022):
+                return 48
+            try:
+                descriptor = os.open(capture_path.name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                                     dir_fd=directory_fd)
+            except FileNotFoundError:
+                return 0
+            try:
+                info = os.fstat(descriptor)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                        or info.st_mode & 0o077 or info.st_size < 0 or info.st_size > capture_limit):
+                    return 48
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    data = stream.read(capture_limit + 1)
+                if len(data) > capture_limit or (data and not data.endswith(b"\n")):
+                    return 48
+                rows = data.splitlines()
+                for index, line in enumerate(rows, 1):
+                    if len(line) > 1024:
+                        return 48
+                    item = json.loads(line)
+                    if (not isinstance(item, dict)
+                            or item.get("schema") != "fwrouter-acceptance-xray-checkpoint/v1"
+                            or type(item.get("sequence")) is not int or item["sequence"] != index):
+                        return 48
+                return min(len(rows), 48)
+            finally:
+                os.close(descriptor)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            return 48
+        finally:
+            os.close(directory_fd)
+
+    records["count"] = existing_capture_count()
+
+    def checkpoint_facts(path_value: Any) -> dict[str, Any]:
+        try:
+            candidate = Path(os.path.abspath(Path(path_value)))
+            path_info = candidate.lstat()
+            if (not stat.S_ISREG(path_info.st_mode) or path_info.st_uid != os.geteuid()
+                    or path_info.st_size < 0 or path_info.st_size > 1024 * 1024):
+                return {"exists": True, "phase": "unknown"}
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(Path(os.environ["FWROUTER_STATE_DIR"]).resolve(strict=True))
+            descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                info = os.fstat(descriptor)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                        or info.st_size < 0 or info.st_size > 1024 * 1024
+                        or (info.st_dev, info.st_ino) != (path_info.st_dev, path_info.st_ino)):
+                    return {"exists": True, "phase": "unknown"}
+                with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                    checkpoint = json.loads(stream.read(1024 * 1024 + 1))
+            finally:
+                os.close(descriptor)
+            phase = checkpoint.get("phase") if isinstance(checkpoint, dict) else None
+            return {"exists": True, "phase": phase if isinstance(phase, str) and phase in phases else "unknown"}
+        except FileNotFoundError:
+            return {"exists": False, "phase": "absent"}
+        except Exception:
+            return {"exists": False, "phase": "unknown"}
+
+    def emit(event: str, **fields: Any) -> None:
+        try:
+            with lock:
+                if records["count"] >= 48:
+                    return
+                records["count"] += 1
+                sequence = records["count"]
+                payload = {"schema": "fwrouter-acceptance-xray-checkpoint/v1", "sequence": sequence,
+                           "event": event, "owner": getattr(local, "owner", "other"), **fields}
+                encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                if len(encoded) <= 1024:
+                    try:
+                        append_capture(encoded)
+                    except Exception:
+                        pass
+                    print("FWROUTER_ACCEPTANCE_XRAY_CHECKPOINT " + encoded, file=sys.stderr, flush=True)
+        except Exception:
+            return
+
+    def result_facts(result: Any) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            return {"ok": False, "status": "unknown", "stage": "unknown", "error_code": "unknown"}
+        status = result.get("status")
+        stage = result.get("stage")
+        error_code = result.get("error_code")
+        return {
+            "ok": result.get("ok") if type(result.get("ok")) is bool else False,
+            "status": status if isinstance(status, str) and status in {"success", "failed", "pending", "partial"} else "unknown",
+            "stage": stage if isinstance(stage, str) and stage in {
+                "checkpoint_prepare", "native_candidate_validation", "mihomo_transition_apply",
+                "xray_generation_apply", "mihomo_final_apply", "inventory_synced", "bindings_written",
+                "projections_cleaned", "selection_verification", "generation_publication",
+                "xray_runtime_readback", "mihomo_udp_policy_receipt", "inventory_generation_promotion",
+                "generation_recovery", "generation_verification_deferred", "generation_publication_revalidation",
+            } else "unknown",
+            "error_code": error_code if isinstance(error_code, str) and error_code in {
+                "XRAY_GENERATION_CHECKPOINT_FAILED", "XRAY_GENERATION_TRANSITION_APPLY_FAILED",
+                "XRAY_GENERATION_APPLY_FAILED", "XRAY_GENERATION_FINAL_APPLY_FAILED",
+                "XRAY_GENERATION_FINAL_READBACK_FAILED", "XRAY_GENERATION_RUNTIME_READBACK_FAILED",
+                "XRAY_GENERATION_STALE_BEFORE_PUBLICATION", "XRAY_GENERATION_RECOVERY_FAILED",
+                "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+                "SUBSCRIPTION_INVENTORY_GENERATION_PROMOTION_UNVERIFIED",
+                "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED",
+            } else "unknown",
+        }
+
+    original_path = service._xray_generation_checkpoint_path
+    original_reconcile = service.reconcile_xray_subscription_profile_nodes
+    original_write = service._write_xray_generation_checkpoint
+    original_finalize = service._finalize_xray_profile_publication
+    original_restore = service._restore_xray_generation_checkpoint
+
+    def observed_reconcile(*args: Any, **kwargs: Any) -> Any:
+        requested_by = kwargs.get("requested_by")
+        prior_owner = getattr(local, "owner", "other")
+        local.owner = owners.get(requested_by, "other") if isinstance(requested_by, str) else "other"
+        try:
+            try:
+                before = checkpoint_facts(original_path(service._xray_adapter()))
+            except Exception:
+                before = {"exists": False, "phase": "unknown"}
+            try:
+                result = original_reconcile(*args, **kwargs)
+            except Exception as exc:
+                try:
+                    after = checkpoint_facts(original_path(service._xray_adapter()))
+                except Exception:
+                    after = {"exists": False, "phase": "unknown"}
+                emit("reconcile_exception", checkpoint_before=before, checkpoint_after=after,
+                     exception="known" if type(exc).__name__ in {"RuntimeError", "ValueError", "OSError"} else "other")
+                raise
+            try:
+                after = checkpoint_facts(original_path(service._xray_adapter()))
+            except Exception:
+                after = {"exists": False, "phase": "unknown"}
+            emit("reconcile_result", checkpoint_before=before, checkpoint_after=after, **result_facts(result))
+            return result
+        finally:
+            local.owner = prior_owner
+
+    def observed_write(*args: Any, **kwargs: Any) -> Any:
+        phase = kwargs.get("phase")
+        try:
+            result = original_write(*args, **kwargs)
+        except Exception:
+            emit("checkpoint_create_failed", phase=phase if isinstance(phase, str) and phase in phases else "unknown")
+            raise
+        facts = checkpoint_facts(result)
+        emit("checkpoint_created", phase=phase if isinstance(phase, str) and phase in phases else "unknown",
+             checkpoint_exists=facts["exists"], checkpoint_phase=facts["phase"],
+             inventory_admission_present=kwargs.get("inventory_generation") is not None)
+        return result
+
+    def observed_finalize(pending: Any, verification: Any) -> Any:
+        metadata = pending if isinstance(pending, dict) else {}
+        path = metadata.get("checkpoint_path")
+        before = checkpoint_facts(path)
+        try:
+            result = original_finalize(pending, verification)
+        except Exception:
+            emit("publication_exception", checkpoint_before=before, checkpoint_after=checkpoint_facts(path))
+            raise
+        emit("publication_finalized", checkpoint_before=before, checkpoint_after=checkpoint_facts(path),
+             **result_facts(result))
+        return result
+
+    def observed_restore(adapter: Any, path: Any) -> Any:
+        before = checkpoint_facts(path)
+        result = original_restore(adapter, path)
+        after = checkpoint_facts(path)
+        summary = _bounded_inventory_generation_recovery(result) or {}
+        emit("restore_result", checkpoint_before=before, checkpoint_after=after,
+             recovered=summary.get("recovered", "unknown"), reason=summary.get("reason", "unknown"),
+             **result_facts(result))
+        return result
+
+    service.reconcile_xray_subscription_profile_nodes = observed_reconcile
+    service._write_xray_generation_checkpoint = observed_write
+    service._finalize_xray_profile_publication = observed_finalize
+    service._restore_xray_generation_checkpoint = observed_restore
 
 def _install_acceptance_generation_callback_observer() -> None:
     """Capture bounded exception provenance at the staged-generation callback seam."""
@@ -3041,7 +3482,14 @@ def build_app(socket_path: Path):
     faulthandler.register(signal.SIGUSR1, all_threads=True)
     from fwrouter_api.services import bootstrap as bootstrap_service
     from fwrouter_api.services import mihomo_config, subscription_pipeline
-    from fwrouter_api.services import apply_orchestrator, mihomo_reconcile
+    from fwrouter_api.services import (
+        apply as apply_service,
+        apply_orchestrator,
+        dataplane_global,
+        dataplane_nft_render,
+        dataplane_status,
+        mihomo_reconcile,
+    )
     from fwrouter_api.services import xray_subscription_service
 
     bootstrap_diagnostic_lock = threading.Lock()
@@ -3232,10 +3680,17 @@ def build_app(socket_path: Path):
         def observed(*args, **kwargs):
             if not bootstrap_diagnostic_active:
                 return original(*args, **kwargs)
+            with bootstrap_diagnostic_lock:
+                count = min(bootstrap_diagnostic_counts.get(name, 0) + 1, 10_000)
+                bootstrap_diagnostic_counts[name] = count
+                bootstrap_observation["phase_call_counts"] = dict(bootstrap_diagnostic_counts)
+                record_phase = count <= bootstrap_diagnostic_limit
+            if not record_phase:
+                return original(*args, **kwargs)
             started = time.monotonic()
             cpu_started = time.process_time()
             print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
-                "phase": name, "event": "enter",
+                "phase": name, "event": "enter", "call": count,
             }), flush=True)
             try:
                 return original(*args, **kwargs)
@@ -3246,7 +3701,7 @@ def build_app(socket_path: Path):
                     bootstrap_observation.setdefault("phase_timings", {}).setdefault(name, []).append(elapsed)
                     bootstrap_observation.setdefault("phase_cpu_timings", {}).setdefault(name, []).append(cpu_elapsed)
                 print("FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE " + json.dumps({
-                    "phase": name, "event": "exit", "seconds": elapsed,
+                    "phase": name, "event": "exit", "call": count, "seconds": elapsed,
                     "cpu_seconds": cpu_elapsed,
                 }), flush=True)
         return observed
@@ -3260,6 +3715,11 @@ def build_app(socket_path: Path):
         (bootstrap_service, "_wait_for_startup_vpn_dataplane_ready", "startup.wait_vpn_dataplane_ready"),
         (apply_orchestrator, "apply_global_mode_immediately", "startup.apply_global_mode_immediately"),
         (mihomo_reconcile, "promote_mihomo_candidate_config", "startup.promote_mihomo_candidate_config"),
+        (dataplane_global, "_read_effective_rules_artifact_uncached", "startup.dataplane.read_effective_rules_artifact"),
+        (dataplane_nft_render, "build_nft_rule_sets", "startup.dataplane.build_nft_rule_sets"),
+        (dataplane_status, "build_applied_runtime_enforcement", "startup.dataplane_status.build_applied_runtime_enforcement"),
+        (apply_service, "build_global_preflight", "startup.apply.build_global_preflight"),
+        (apply_service, "build_applied_runtime_enforcement", "startup.apply.build_applied_runtime_enforcement"),
     ):
         setattr(module, attribute, observe_phase(phase, getattr(module, attribute)))
 
@@ -3352,7 +3812,15 @@ def build_app(socket_path: Path):
     app = create_app(enable_startup_tasks=os.environ.get("FWROUTER_STARTUP_TASKS_ENABLED") == "1")
     app.add_api_route("/api/v2/__acceptance/bootstrap/report", lambda: dict(bootstrap_observation), methods=["GET"])
     _bind_xray_checkpoint_barrier(socket_path, state)
+    _bind_xray_pre_native_stage_failure(state)
+    _bind_xray_inventory_promotion_failure(state)
+    _bind_xray_post_promotion_crash(state)
     mihomo_adapter = _bind_acceptance_mihomo(socket_path, state)
+    for attribute, phase in (
+        ("_config_runtime_details", "startup.mihomo.config_runtime_details"),
+        ("_config_text", "startup.mihomo.config_text"),
+    ):
+        setattr(mihomo_adapter, attribute, observe_phase(phase, getattr(mihomo_adapter, attribute)))
     _install_acceptance_mihomo_fence_observer()
     _install_acceptance_provider_verification_observer()
     _install_acceptance_generation_callback_observer()
@@ -3363,6 +3831,7 @@ def build_app(socket_path: Path):
     _install_acceptance_recovery_apply_observer()
     if acceptance_profile.get("profile") == "hosted-kernel-packet":
         _install_acceptance_xray_generation_rollback_observer()
+        _install_acceptance_xray_checkpoint_lifecycle_observer()
         _install_acceptance_apply_exception_observer()
         _install_acceptance_live_mode_probe_observer()
         _install_acceptance_preflight_observer()
@@ -3414,10 +3883,12 @@ def build_app(socket_path: Path):
                 _xray_generation_checkpoint_path,
                 _xray_adapter,
             )
-            adapter = _xray_adapter()
-            return _recover_checkpoint_from_current_projection(
-                adapter, _xray_generation_checkpoint_path(adapter),
-            )
+            from fwrouter_api.adapters.xray_common import xray_writer_guard
+            with xray_writer_guard(timeout_seconds=30.0):
+                adapter = _xray_adapter()
+                return _recover_checkpoint_from_current_projection(
+                    adapter, _xray_generation_checkpoint_path(adapter),
+                )
         options: dict[str, Any] = {}
         if payload.get("verify_selection") is True:
             from fwrouter_api.services.xray_subscription_service import (
@@ -3466,6 +3937,17 @@ def build_app(socket_path: Path):
 
     app.add_api_route("/api/v2/__acceptance/xray/reconcile", recover_xray_generation, methods=["POST"])
 
+    def recover_xray_generation_before_subscription_refresh() -> dict[str, Any]:
+        """Exercise the production owner preflight used before inventory fetch."""
+        from fwrouter_api.services.xray_subscription_service import recover_xray_generation_checkpoint_before_inventory_refresh
+        return recover_xray_generation_checkpoint_before_inventory_refresh()
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/subscription-refresh-preflight",
+        recover_xray_generation_before_subscription_refresh,
+        methods=["POST"],
+    )
+
     def arm_prepared_checkpoint_failure() -> dict[str, Any]:
         """Fail once after the real prepared checkpoint write has returned."""
         failure_flag = state / "run" / "fail-after-prepared-checkpoint-once"
@@ -3483,21 +3965,115 @@ def build_app(socket_path: Path):
         methods=["POST"],
     )
 
+    def arm_pre_native_stage_failure() -> dict[str, Any]:
+        """Inject one controlled failure before any Xray/Mihomo candidate staging."""
+        failure_flag = state / "run" / "fail-before-native-stage-once"
+        descriptor = os.open(
+            failure_flag,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.close(descriptor)
+        return {"ok": True, "armed": True}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/pre-native-stage-failure/arm",
+        arm_pre_native_stage_failure,
+        methods=["POST"],
+    )
+
+    def arm_inventory_promotion_failure() -> dict[str, Any]:
+        """Fail once after native publication, immediately before inventory promotion."""
+        failure_flag = state / "run" / "fail-before-inventory-promotion-once"
+        descriptor = os.open(
+            failure_flag,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.close(descriptor)
+        return {"ok": True, "armed": True}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/inventory-promotion-failure/arm",
+        arm_inventory_promotion_failure,
+        methods=["POST"],
+    )
+
+    def arm_post_promotion_crash() -> dict[str, Any]:
+        failure_flag = state / "run" / "crash-after-inventory-promotion-once"
+        descriptor = os.open(
+            failure_flag,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        os.close(descriptor)
+        return {"ok": True, "armed": True}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/post-promotion-crash/arm",
+        arm_post_promotion_crash,
+        methods=["POST"],
+    )
+
+    def subscription_native_generation_state() -> dict[str, Any]:
+        """Expose only the non-secret digest/revision lifecycle diagnostic to this test."""
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+
+        return {"ok": True, "state": get_subscription_native_generation_state()}
+
+    app.add_api_route(
+        "/api/v2/__acceptance/subscription/native-generation",
+        subscription_native_generation_state,
+        methods=["GET"],
+    )
+
+    def recover_startup_xray_subscription_generation() -> dict[str, Any]:
+        """Run only the real Xray profile startup recovery under its normal guard."""
+        from fwrouter_api.services.bootstrap import recover_startup_xray_subscription_profiles
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+
+        result = recover_startup_xray_subscription_profiles()
+        return {
+            "ok": result.get("ok") is True,
+            "status": str(result.get("status") or ""),
+            "stage": str(result.get("stage") or ""),
+            "error_code": str(result.get("error_code") or ""),
+            "inventory_authority": str(result.get("inventory_authority") or ""),
+            "native_generation": get_subscription_native_generation_state(),
+        }
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/startup-generation-recovery",
+        recover_startup_xray_subscription_generation,
+        methods=["POST"],
+    )
+
     def refresh_identity_fixture_profile(payload: dict[str, Any]) -> dict[str, Any]:
         """Run the real subscription inventory upsert for a synthetic JSON profile."""
         if set(payload) != {"profile"} or not isinstance(payload.get("profile"), dict):
             return {"ok": False, "error_code": "IDENTITY_FIXTURE_PROFILE_INVALID"}
         import json as _json
         from fwrouter_api.adapters.subscription import parse_subscription_payload
-        from fwrouter_api.services.subscription import _upsert_subscription_servers
+        from fwrouter_api.services.subscription import (
+            SubscriptionInventoryGenerationBlocked,
+            _upsert_subscription_servers,
+        )
         parsed = parse_subscription_payload(_json.dumps(payload["profile"], sort_keys=True))
         if not parsed.servers:
             return {"ok": False, "error_code": "IDENTITY_FIXTURE_PROFILE_UNSUPPORTED"}
         source_url = "https://identity.acceptance.invalid/subscription"
         servers = parsed.servers
-        result = _upsert_subscription_servers(
-            servers, servers_by_url={source_url: servers},
-        )
+        try:
+            result = _upsert_subscription_servers(
+                servers, servers_by_url={source_url: servers},
+            )
+        except SubscriptionInventoryGenerationBlocked as exc:
+            return {
+                "ok": False,
+                "error_code": str(exc.result.get("error_code") or "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"),
+                "stage": str(exc.result.get("stage") or "generation_recovery"),
+                "last_good_retained": exc.result.get("last_good_retained") is True,
+            }
         return {
             "ok": bool(result.get("ok", True)),
             "server_ids": [str(server.server_id) for server in servers],
@@ -3507,6 +4083,85 @@ def build_app(socket_path: Path):
     app.add_api_route(
         "/api/v2/__acceptance/xray/identity-refresh",
         refresh_identity_fixture_profile,
+        methods=["POST"],
+    )
+
+    def publish_pending_subscription_inventory(payload: dict[str, Any]) -> dict[str, Any]:
+        """Admit a synthetic candidate only through the real native publication path."""
+        if (
+            set(payload) - {"include_vpn_auto"}
+            or ("include_vpn_auto" in payload and type(payload["include_vpn_auto"]) is not bool)
+        ):
+            return {"ok": False, "error_code": "ACCEPTANCE_INVENTORY_PUBLICATION_OPTIONS_INVALID"}
+
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        from fwrouter_api.services.subscription import (
+            _claim_subscription_inventory_admission,
+            get_subscription_native_generation_state,
+        )
+        from fwrouter_api.services.xray_subscription_service import reconcile_xray_subscription_profile_nodes
+
+        # Keep admission issuance short. The real reconcile owns its own writer
+        # guard and native readback path; the opaque capability fences the exact
+        # candidate digest/revision if another writer wins before it begins.
+        with xray_writer_guard(timeout_seconds=30.0):
+            admission = _claim_subscription_inventory_admission()
+        if admission is None:
+            return {"ok": False, "error_code": "ACCEPTANCE_PENDING_INVENTORY_REQUIRED"}
+
+        result = reconcile_xray_subscription_profile_nodes(
+            requested_by="hosted-acceptance-inventory-publication",
+            include_vpn_auto=payload.get("include_vpn_auto", False),
+            _inventory_admission=admission,
+        )
+        state = get_subscription_native_generation_state()
+        promotion = result.get("inventory_generation_promotion") if isinstance(result, dict) else None
+        generation_verified = bool(
+            isinstance(state, dict)
+            and state.get("status") == "verified"
+            and state.get("candidate_digest") == state.get("verified_digest")
+            and state.get("candidate_revision") == state.get("verified_revision")
+            and isinstance(promotion, dict)
+            and promotion.get("ok") is True
+            and promotion.get("digest") == state.get("candidate_digest")
+            and promotion.get("revision") == state.get("candidate_revision")
+        )
+        ok = bool(isinstance(result, dict) and result.get("ok") is True and generation_verified)
+        response = {
+            "ok": ok,
+            "status": str(result.get("status") or "failed") if isinstance(result, dict) else "failed",
+            "stage": str(result.get("stage") or "") if isinstance(result, dict) else "",
+            "error_code": str(result.get("error_code") or "") if isinstance(result, dict) else "",
+            "native_generation_verified": generation_verified,
+            "generation": state,
+            "promotion": {
+                "ok": promotion.get("ok") is True,
+                "revision": promotion.get("revision"),
+            } if isinstance(promotion, dict) else {"ok": False},
+        }
+        recovery_value = None
+        if isinstance(result, dict):
+            recovery_value = result.get("generation_recovery")
+            if not isinstance(recovery_value, dict) and result.get("stage") == "generation_recovery":
+                recovery_value = result.get("details")
+        if isinstance(recovery_value, dict):
+            from fwrouter_api.services.xray_subscription_service import (
+                _xray_adapter, _xray_generation_checkpoint_path,
+            )
+            recovery_value = {
+                **recovery_value,
+                "checkpoint_facts": _read_bounded_generation_checkpoint_facts(
+                    _xray_generation_checkpoint_path(_xray_adapter()),
+                ),
+            }
+        recovery = _bounded_inventory_generation_recovery(recovery_value)
+        if recovery is not None:
+            response["generation_recovery"] = recovery
+        return response
+
+    app.add_api_route(
+        "/api/v2/__acceptance/xray/publish-pending-inventory",
+        publish_pending_subscription_inventory,
         methods=["POST"],
     )
 
@@ -3979,6 +4634,94 @@ def _bind_xray_checkpoint_barrier(socket_path: Path, state: Path) -> None:
             _rpc_call(socket_path, "generation_checkpoint", {"phase": phase})
 
     xray_subscription_service._fsync_directory = fsync_directory_with_checkpoint_barrier
+
+
+def _bind_xray_pre_native_stage_failure(state: Path) -> None:
+    """Install a one-shot, suite-owned failure before native candidate staging."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("pre-native-stage fault injection requires the qualified test worker")
+
+    from fwrouter_api.services import xray_subscription_service
+
+    original_stage = xray_subscription_service._stage_profile_native_candidates
+    failure_flag = state / "run" / "fail-before-native-stage-once"
+
+    def stage_with_one_shot_failure(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            descriptor = os.open(failure_flag, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return original_stage(*args, **kwargs)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size != 0:
+                raise RuntimeError("acceptance pre-native-stage fault marker is not an owned empty file")
+        finally:
+            os.close(descriptor)
+        os.unlink(failure_flag)
+        return {
+            "ok": False,
+            "stage": "acceptance_pre_native_stage",
+            "error_code": "ACCEPTANCE_PRE_NATIVE_STAGE_FAILURE",
+        }
+
+    xray_subscription_service._stage_profile_native_candidates = stage_with_one_shot_failure
+
+
+def _bind_xray_inventory_promotion_failure(state: Path) -> None:
+    """Inject one test-owned failure after native proof but before marker promotion."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("inventory promotion fault injection requires the qualified test worker")
+
+    from fwrouter_api.services import subscription
+
+    original_promote = subscription._promote_subscription_inventory_generation
+    failure_flag = state / "run" / "fail-before-inventory-promotion-once"
+
+    def promote_with_one_shot_failure(admission: Any) -> dict[str, Any]:
+        try:
+            info = failure_flag.lstat()
+        except FileNotFoundError:
+            return original_promote(admission)
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.getuid() or info.st_size != 0):
+            raise RuntimeError("acceptance inventory-promotion marker is not an owned empty file")
+        failure_flag.unlink()
+        return {"ok": False, "reason": "acceptance_inventory_promotion_failure"}
+
+    subscription._promote_subscription_inventory_generation = promote_with_one_shot_failure
+
+
+def _bind_xray_post_promotion_crash(state: Path) -> None:
+    """Simulate process interruption after durable promotion and before checkpoint unlink."""
+    if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
+            or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
+        raise RuntimeError("post-promotion crash injection requires the qualified test worker")
+
+    from fwrouter_api.services import subscription
+
+    original_promote = subscription._promote_subscription_inventory_generation
+    failure_flag = state / "run" / "crash-after-inventory-promotion-once"
+
+    def promote_then_interrupt(admission: Any) -> dict[str, Any]:
+        result = original_promote(admission)
+        if not result.get("ok"):
+            return result
+        try:
+            info = failure_flag.lstat()
+        except FileNotFoundError:
+            return result
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.getuid() or info.st_size != 0):
+            raise RuntimeError("acceptance post-promotion marker is not an owned empty file")
+        failure_flag.unlink()
+        # This process is the disposable, profile-qualified acceptance worker.
+        # Exit without Python cleanup to model the actual crash window between
+        # the committed SQLite promotion and checkpoint unlink.
+        os._exit(86)
+
+    subscription._promote_subscription_inventory_generation = promote_then_interrupt
 
 
 def _bind_acceptance_mihomo(socket_path: Path, state: Path):

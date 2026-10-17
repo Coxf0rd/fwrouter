@@ -26,6 +26,9 @@ from fwrouter_api.services.subscription import (
     refresh_subscription as refresh_one_subscription_inventory,
     redact_subscription_public_value,
     safe_subscription_source_labels,
+    SubscriptionInventoryGenerationBlocked,
+    _claim_subscription_inventory_admission,
+    _promote_subscription_inventory_generation,
 )
 
 
@@ -63,7 +66,7 @@ _GENERATION_RECOVERY_REASONS = frozenset({
     "preterminal_revalidation_failed", "recovery_attempt_mismatch",
     "recovery_attempt_phase_unknown", "recovery_backup_mismatch", "recovery_backup_missing",
     "runtime_projection_readback_failed", "runtime_revalidation_failed",
-    "terminal_revalidation_failed", "xray_reload_failed",
+    "terminal_revalidation_failed", "xray_reload_failed", "inventory_generation_not_bound",
 })
 
 
@@ -80,6 +83,30 @@ def _safe_generation_recovery_reason(profile_result: dict[str, Any]) -> str | No
     if re.fullmatch(r"[A-Z][A-Za-z0-9]{0,63}(?:Error|Exception)", reason):
         return reason
     return None
+
+
+def _safe_checkpoint_recovery_diagnostic(result: dict[str, Any]) -> dict[str, Any]:
+    details = result.get("details") if isinstance(result.get("details"), dict) else {}
+    reason = _safe_generation_recovery_reason({"details": details})
+    recovery_code = result.get("error_code")
+    if not isinstance(recovery_code, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{1,95}", recovery_code):
+        recovery_code = "XRAY_GENERATION_RECOVERY_FAILED"
+    recovery_stage = result.get("stage")
+    if not isinstance(recovery_stage, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", recovery_stage):
+        recovery_stage = "generation_recovery"
+    recovered = details.get("recovered")
+    if not isinstance(recovered, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", recovered):
+        recovered = None
+    diagnostic: dict[str, Any] = {
+        "error_code": recovery_code,
+        "stage": recovery_stage,
+        "last_good_retained": result.get("last_good_retained") is True,
+    }
+    if reason:
+        diagnostic["reason"] = reason
+    if recovered:
+        diagnostic["recovered"] = recovered
+    return diagnostic
 
 
 def _validate_generated_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -419,12 +446,45 @@ def prepare_subscription_refresh(*, source_ref: str | None = None) -> dict[str, 
     """
 
     started_at = perf_counter()
-    refresh_started_at = perf_counter()
-    refresh_result = (
-        refresh_one_subscription_inventory(source_ref)
-        if source_ref is not None
-        else refresh_all_subscription_inventory()
+    from fwrouter_api.services.xray_subscription_service import (
+        recover_xray_generation_checkpoint_before_inventory_refresh,
     )
+    recovery = recover_xray_generation_checkpoint_before_inventory_refresh()
+    if not recovery.get("ok"):
+        recovery_diagnostic = _safe_checkpoint_recovery_diagnostic(recovery)
+        return {
+            "ok": False,
+            "stage": "generation_recovery",
+            "error_code": recovery_diagnostic["error_code"],
+            "generation_recovery_reason": recovery_diagnostic.get("reason"),
+            "generation_recovery": recovery_diagnostic,
+            "last_good_retained": True,
+            "promoted": False,
+            "container_restarted": False,
+            "timings_ms": {"inventory_refresh": 0.0, "prepare_total": round((perf_counter() - started_at) * 1000, 2)},
+        }
+    refresh_started_at = perf_counter()
+    try:
+        refresh_result = (
+            refresh_one_subscription_inventory(source_ref)
+            if source_ref is not None
+            else refresh_all_subscription_inventory()
+        )
+    except SubscriptionInventoryGenerationBlocked as exc:
+        blocked = exc.result
+        recovery_diagnostic = _safe_checkpoint_recovery_diagnostic(blocked)
+        return {
+            "ok": False,
+            "stage": "generation_recovery",
+            "error_code": recovery_diagnostic["error_code"],
+            "generation_recovery_reason": recovery_diagnostic.get("reason"),
+            "generation_recovery": recovery_diagnostic,
+            "last_good_retained": True,
+            "promoted": False,
+            "container_restarted": False,
+            "timings_ms": {"inventory_refresh": round((perf_counter() - refresh_started_at) * 1000, 2),
+                           "prepare_total": round((perf_counter() - started_at) * 1000, 2)},
+        }
     inventory_refresh_ms = round((perf_counter() - refresh_started_at) * 1000, 2)
 
     if not refresh_result["ok"]:
@@ -512,7 +572,9 @@ def prepare_subscription_refresh(*, source_ref: str | None = None) -> dict[str, 
     }
 
 
-def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, Any]) -> dict[str, Any]:
+def _apply_prepared_subscription_refresh_under_xray_guard(
+    prepared: dict[str, Any], *, inventory_admission: Any = None,
+) -> dict[str, Any]:
     """Reconcile Mihomo runtime after a prepared subscription inventory refresh."""
 
     started_at = perf_counter()
@@ -610,6 +672,7 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
             _reconcile_xray_after_authoritative_inventory_refresh(
                 prepared,
                 verification_callback=verify_selection_before_publication,
+                inventory_admission=inventory_admission,
             )
         )
         xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
@@ -638,9 +701,9 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
     if reconcile is None:
         prepared_metadata = prepared.get("prepared_candidate_metadata")
         reconcile = (
-            reconcile_mihomo_runtime(prepared_candidate_metadata=prepared_metadata, verification_callback=verify_nonstaged_selection)
+            reconcile_mihomo_runtime(prepared_candidate_metadata=prepared_metadata, verification_callback=verify_nonstaged_selection, _inventory_admission=inventory_admission)
             if prepared_metadata
-            else reconcile_mihomo_runtime(verification_callback=verify_nonstaged_selection)
+            else reconcile_mihomo_runtime(verification_callback=verify_nonstaged_selection, _inventory_admission=inventory_admission)
         )
     initial_reconcile_ms = round((perf_counter() - initial_reconcile_started_at) * 1000, 2)
     mihomo_recovery_checkpoint = reconcile.pop("_recovery_checkpoint", None)
@@ -663,7 +726,9 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
         if xray_vpn_auto_reconcile is None or xray_profile_reconcile is None:
             xray_started_at = perf_counter()
             xray_vpn_auto_reconcile, xray_profile_reconcile = (
-                _reconcile_xray_after_authoritative_inventory_refresh(prepared)
+                _reconcile_xray_after_authoritative_inventory_refresh(
+                    prepared, inventory_admission=inventory_admission,
+                )
             )
             xray_reconcile_ms = round((perf_counter() - xray_started_at) * 1000, 2)
         xray_ok = bool(xray_vpn_auto_reconcile.get("ok", True)) and bool(
@@ -677,7 +742,7 @@ def _apply_prepared_subscription_refresh_under_xray_guard(prepared: dict[str, An
             # binding state to remove obsolete listeners before publishing the
             # new public profile.
             final_reconcile_started_at = perf_counter()
-            final_reconcile = reconcile_mihomo_runtime()
+            final_reconcile = reconcile_mihomo_runtime(_inventory_admission=inventory_admission)
             final_reconcile_ms = round((perf_counter() - final_reconcile_started_at) * 1000, 2)
             xray_ok = bool(final_reconcile.get("ok"))
             if xray_ok:
@@ -939,22 +1004,66 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
         get_xray_vpn_auto_pending_state,
     )
 
+    try:
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard(timeout_seconds=5.0):
+            inventory_admission = _claim_subscription_inventory_admission()
+    except SubscriptionInventoryGenerationBlocked as exc:
+        blocked = {
+            **_public_prepared_result(prepared),
+            "ok": False,
+            "status": "pending",
+            "stage": "inventory_generation_admission",
+            "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+            "error": {"code": "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+                      "message": str(exc.result.get("reason") or "Verified inventory generation is unavailable.")},
+            "last_good_retained": True,
+            "inventory_generation": exc.result,
+        }
+        _write_subscription_terminal_event(blocked)
+        return blocked
     pending = get_xray_vpn_auto_pending_state()
     revision = int(pending.get("revision") or 0) if pending.get("pending") else None
-    result = _apply_prepared_subscription_refresh_under_xray_guard(prepared)
-    full_success = bool(
-        revision is not None
-        and result.get("ok")
-        and isinstance(result.get("xray_vpn_auto_reconcile"), dict)
-        and result["xray_vpn_auto_reconcile"].get("status") == "success"
-        and isinstance(result.get("xray_profile_reconcile"), dict)
-        and result["xray_profile_reconcile"].get("ok")
-        and isinstance(result.get("final_mihomo_reconcile"), dict)
-        and result["final_mihomo_reconcile"].get("ok")
-        and isinstance(result.get("public_profile_promote"), dict)
+    result = _apply_prepared_subscription_refresh_under_xray_guard(
+        prepared, inventory_admission=inventory_admission,
     )
-    if full_success:
+    xray_profile_result = result.get("xray_profile_reconcile")
+    xray_skipped_safely = bool(
+        isinstance(xray_profile_result, dict)
+        and xray_profile_result.get("status") == "skipped"
+        and xray_profile_result.get("reason") == "xray_module_disabled"
+    )
+    xray_profile_proven = bool(
+        isinstance(xray_profile_result, dict) and xray_profile_result.get("ok")
+    )
+    publication_complete = bool(
+        result.get("ok")
+        and result.get("runtime_verified")
+        and isinstance(result.get("xray_vpn_auto_reconcile"), dict)
+        and (xray_profile_proven or xray_skipped_safely)
+        and (result.get("public_profile_promote") is None
+             or isinstance(result.get("public_profile_promote"), dict))
+    )
+    if publication_complete and inventory_admission is not None:
         from fwrouter_api.adapters.xray_common import xray_writer_guard
+        with xray_writer_guard(timeout_seconds=5.0):
+            promotion = _promote_subscription_inventory_generation(inventory_admission)
+        result["inventory_generation_promotion"] = promotion
+        if not promotion.get("ok"):
+            result.update({
+                "ok": False,
+                "status": "pending",
+                "stage": "inventory_generation_promotion",
+                "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_PROMOTION_UNVERIFIED",
+                "last_good_retained": True,
+            })
+            publication_complete = False
+    pending_lane_complete = bool(
+        revision is not None and publication_complete
+        and result.get("xray_vpn_auto_reconcile", {}).get("status") == "success"
+        and result.get("final_mihomo_reconcile") is not None
+    )
+    if pending_lane_complete:
         with xray_writer_guard(timeout_seconds=5.0):
             result["pending_revision_cleared"] = clear_pending_revision_after_success(revision)
     return result
@@ -964,6 +1073,7 @@ def _reconcile_xray_subscription_profiles_after_refresh(
     *,
     promote_public_profile: bool = True,
     verification_callback: Any = None,
+    inventory_admission: Any = None,
 ) -> dict[str, Any]:
     """Keep public VLESS profile identities converged after server inventory changes."""
 
@@ -985,6 +1095,7 @@ def _reconcile_xray_subscription_profiles_after_refresh(
             requested_by="subscription-refresh",
             promote_public_profile=promote_public_profile,
             verification_callback=verification_callback,
+            _inventory_admission=inventory_admission,
         )
     except Exception as exc:  # pragma: no cover - defensive runtime path
         return {
@@ -1000,6 +1111,7 @@ def _reconcile_xray_after_authoritative_inventory_refresh(
     prepared: dict[str, Any],
     *,
     verification_callback: Any = None,
+    inventory_admission: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Reconcile generated vpn-auto identities only after a successful refresh.
 
@@ -1019,7 +1131,8 @@ def _reconcile_xray_after_authoritative_inventory_refresh(
             "deleted_count": 0,
         }
         return skipped, _reconcile_xray_subscription_profiles_after_refresh(
-            promote_public_profile=True
+            promote_public_profile=True,
+            inventory_admission=inventory_admission,
         )
 
     try:
@@ -1041,12 +1154,14 @@ def _reconcile_xray_after_authoritative_inventory_refresh(
                 "deleted_count": 0,
             }
             return skipped, _reconcile_xray_subscription_profiles_after_refresh(
-                promote_public_profile=True
+                promote_public_profile=True,
+                inventory_admission=inventory_admission,
             )
 
         auto_reconcile = reconcile_xray_vpn_auto_subscription(
             requested_by="subscription-refresh",
             verification_callback=verification_callback,
+            _inventory_admission=inventory_admission,
         )
         profile_reconcile = auto_reconcile.get("profile_reconcile")
         if not isinstance(profile_reconcile, dict):

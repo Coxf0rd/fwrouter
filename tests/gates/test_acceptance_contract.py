@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import tarfile
 import tempfile
 import threading
@@ -63,6 +64,31 @@ NATIVE_SPEC.loader.exec_module(native_runner)
 WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 APPLICATION_ACCEPTANCE_CONFTEST = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
 APPLICATION_ACCEPTANCE_WORKER = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+BROWSER_ACCEPTANCE_SOURCE = Path(__file__).parents[1] / "application_acceptance" / "test_browser_locale.py"
+
+
+def _extract_browser_resource_helpers():
+    tree = ast.parse(BROWSER_ACCEPTANCE_SOURCE.read_text(encoding="utf-8"))
+    wanted_functions = {
+        "_read_cgroup_integer", "_read_cgroup_events", "_filesystem_usage",
+        "_browser_resource_snapshot", "_safe_browser_resource_snapshot",
+        "_launch_chromium_with_diagnostics",
+    }
+    body = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted_functions:
+            body.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in {
+                "_BROWSER_DIAGNOSTIC_SCENARIOS", "_CGROUP_V2_ROOT", "_CGROUP_FILE_MAX_BYTES",
+            }
+            for target in node.targets
+        ):
+            body.append(node)
+    namespace: dict[str, Any] = {"Path": Path, "os": os, "json": json}
+    module = ast.Module(body=body, type_ignores=[])
+    exec(compile(module, str(BROWSER_ACCEPTANCE_SOURCE), "exec"), namespace)
+    return namespace
 
 
 def _extract_health_readiness_predicate():
@@ -89,6 +115,19 @@ def _extract_startup_phase_parser():
     namespace = {"Path": Path, "os": os, "json": json, "math": math}
     exec(compile(module, str(APPLICATION_ACCEPTANCE_CONFTEST), "exec"), namespace)
     return namespace["_startup_phase_diagnostics"]
+
+
+def _extract_current_xray_subject_identity_pairs():
+    """Load the synthetic-DB identity oracle without importing hosted fixtures."""
+    source_path = Path(__file__).parents[1] / "application_acceptance" / "test_xray_generation.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "current_xray_subject_identity_pairs"
+    )
+    namespace = {"Path": Path, "sqlite3": sqlite3}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source_path), "exec"), namespace)
+    return namespace["current_xray_subject_identity_pairs"]
 
 
 def _extract_bootstrap_phase_summary():
@@ -128,7 +167,553 @@ def _extract_worker_candidate_fingerprint(state_root: Path):
     return namespace["candidate_fingerprint"]
 
 
+def _extract_bounded_inventory_generation_recovery():
+    """Load the fixed-field projection without importing the application worker."""
+    tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_bounded_inventory_generation_recovery"
+    )
+    constants = [node for node in tree.body if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id in {
+            "_XRAY_GENERATION_RECOVERY_REASONS", "_XRAY_GENERATION_SELECTION_ERRORS",
+            "_XRAY_GENERATION_CHECKPOINT_PHASES",
+        } for target in node.targets
+    )]
+    module = ast.Module(body=[*constants, function], type_ignores=[])
+    namespace = {"Any": Any, "frozenset": frozenset}
+    exec(compile(module, str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+    return namespace["_bounded_inventory_generation_recovery"]
+
+
+def _extract_bounded_generation_checkpoint_facts():
+    tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+    function = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_bounded_generation_checkpoint_facts"
+    )
+    constants = [node for node in tree.body if isinstance(node, ast.Assign) and any(
+        isinstance(target, ast.Name) and target.id == "_XRAY_GENERATION_CHECKPOINT_PHASES"
+        for target in node.targets
+    )]
+    namespace = {"Any": Any, "frozenset": frozenset}
+    exec(compile(ast.Module(body=[*constants, function], type_ignores=[]), str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+    return namespace["_bounded_generation_checkpoint_facts"]
+
+
 class AcceptanceContractTests(unittest.TestCase):
+    def test_browser_resource_snapshot_is_bounded_allowlisted_and_uses_unknown_for_missing_data(self):
+        helpers = _extract_browser_resource_helpers()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "memory.current").write_text("12345\n", encoding="ascii")
+            (root / "memory.peak").write_text("max\n", encoding="ascii")
+            (root / "memory.max").write_text("not-a-counter SECRET_SENTINEL\n", encoding="ascii")
+            (root / "memory.events").write_text(
+                "low 1\nhigh 2\nmax 3\noom 4\noom_kill 5\noom_group_kill 6\nprivate_secret 99\n",
+                encoding="ascii",
+            )
+            (root / "pids.current").write_text("7\n", encoding="ascii")
+            (root / "pids.events").write_text("max 8\nsecret 9\n", encoding="ascii")
+
+            def fake_statvfs(path):
+                self.assertIn(path, ("/tmp", "/dev/shm"))
+                return SimpleNamespace(f_frsize=4096, f_bsize=4096, f_blocks=100, f_bfree=25)
+
+            snapshot = helpers["_browser_resource_snapshot"](root, fake_statvfs)
+            self.assertEqual(12345, snapshot["memory_current_bytes"])
+            self.assertIsNone(snapshot["memory_peak_bytes"])
+            self.assertIsNone(snapshot["memory_max_bytes"])
+            self.assertIsNone(snapshot["pids_max"])
+            self.assertEqual(7, snapshot["pids_current"])
+            self.assertEqual({"low": 1, "high": 2, "max": 3, "oom": 4,
+                              "oom_kill": 5, "oom_group_kill": 6}, snapshot["memory_events"])
+            self.assertEqual({"max": 8}, snapshot["pids_events"])
+            self.assertEqual({"used_bytes": 307200, "capacity_bytes": 409600}, snapshot["tmp"])
+            self.assertEqual(snapshot["tmp"], snapshot["dev_shm"])
+            encoded = json.dumps(snapshot)
+            self.assertNotIn("SECRET_SENTINEL", encoded)
+            self.assertNotIn("private_secret", encoded)
+            self.assertNotIn(temporary, encoded)
+
+            (root / "memory.current").write_bytes(b"1" * 4097)
+            malformed = helpers["_browser_resource_snapshot"](root, fake_statvfs)
+            self.assertIsNone(malformed["memory_current_bytes"])
+            self.assertIsNone(malformed["memory_peak_bytes"])
+
+    def test_browser_launch_diagnostic_records_one_unchanged_attempt_and_preserves_failure(self):
+        helpers = _extract_browser_resource_helpers()
+        launch = helpers["_launch_chromium_with_diagnostics"]
+        fixed_snapshot = {"memory_current_bytes": 100, "pids_current": 2}
+
+        class Request:
+            def __init__(self):
+                self.finalizers = []
+
+            def addfinalizer(self, callback):
+                self.finalizers.append(callback)
+
+        class Chromium:
+            def __init__(self, result=None, error=None):
+                self.calls = []
+                self.result = result
+                self.error = error
+
+            def launch(self, **kwargs):
+                self.calls.append(kwargs)
+                if self.error is not None:
+                    raise self.error
+                return self.result
+
+        expected_args = ["--disable-dev-shm-usage", "--no-proxy-server"]
+        properties = []
+        request = Request()
+        browser_object = object()
+        chromium = Chromium(result=browser_object)
+        snapshots = iter((fixed_snapshot, {"memory_current_bytes": 110}, {"memory_current_bytes": 120}))
+        result = launch(
+            chromium, scenario="navigation", executable_path="/fixed/chromium", args=expected_args,
+            request=request, record_property=lambda *args: properties.append(args),
+            snapshot_fn=lambda: next(snapshots),
+        )
+        self.assertIs(result, browser_object)
+        self.assertEqual(1, len(chromium.calls))
+        self.assertEqual({"headless": True, "executable_path": "/fixed/chromium", "args": expected_args}, chromium.calls[0])
+        self.assertEqual(1, len(request.finalizers))
+        request.finalizers[0]()
+        self.assertEqual(1, len(properties))
+        property_name, encoded = properties[0]
+        self.assertEqual("browser_resource_diagnostic_navigation", property_name)
+        diagnostic = json.loads(encoded)
+        self.assertEqual("succeeded", diagnostic["launch_outcome"])
+        self.assertEqual(["before_launch", "after_launch", "posttest"],
+                         [item["phase"] for item in diagnostic["samples"]])
+        self.assertEqual(fixed_snapshot, diagnostic["samples"][0]["resources"])
+
+        secret = "SECRET_SENTINEL_DO_NOT_EXPORT"
+        original_error = RuntimeError(secret)
+        failing_request = Request()
+        failing_properties = []
+        failing_chromium = Chromium(error=original_error)
+        failure_snapshots = iter((fixed_snapshot, {"memory_current_bytes": None}, {"memory_current_bytes": 130}))
+        with self.assertRaises(RuntimeError) as caught:
+            launch(
+                failing_chromium, scenario="xray_client_editor", executable_path="/fixed/chromium",
+                args=expected_args, request=failing_request,
+                record_property=lambda *args: failing_properties.append(args),
+                snapshot_fn=lambda: next(failure_snapshots),
+            )
+        self.assertIs(caught.exception, original_error)
+        self.assertEqual(1, len(failing_chromium.calls))
+        self.assertEqual(chromium.calls[0], failing_chromium.calls[0])
+        failing_request.finalizers[0]()
+        self.assertEqual(1, len(failing_properties))
+        failed_json = failing_properties[0][1]
+        self.assertEqual("failed", json.loads(failed_json)["launch_outcome"])
+        self.assertNotIn(secret, failed_json)
+        self.assertEqual(["before_launch", "after_launch", "posttest"],
+                         [item["phase"] for item in json.loads(failed_json)["samples"]])
+
+        diagnostic_error = RuntimeError("diagnostic-only-secret")
+        protected_request = Request()
+        protected_properties = []
+        protected_chromium = Chromium(error=original_error)
+        with self.assertRaises(RuntimeError) as protected_caught:
+            launch(
+                protected_chromium, scenario="provider_error", executable_path="/fixed/chromium",
+                args=expected_args, request=protected_request,
+                record_property=lambda *args: protected_properties.append(args),
+                snapshot_fn=lambda: (_ for _ in ()).throw(diagnostic_error),
+            )
+        self.assertIs(protected_caught.exception, original_error)
+        self.assertEqual(1, len(protected_chromium.calls))
+        protected_request.finalizers[0]()
+        protected_diagnostic = json.loads(protected_properties[0][1])
+        self.assertTrue(all(
+            sample["resources"]["memory_current_bytes"] is None
+            for sample in protected_diagnostic["samples"]
+        ))
+        self.assertNotIn("diagnostic-only-secret", protected_properties[0][1])
+
+    def test_browser_diagnostic_rejects_unregistered_scenario_before_launch(self):
+        helpers = _extract_browser_resource_helpers()
+        calls = []
+
+        class Chromium:
+            def launch(self, **kwargs):
+                calls.append(kwargs)
+
+        with self.assertRaisesRegex(ValueError, "unsupported browser diagnostic scenario"):
+            helpers["_launch_chromium_with_diagnostics"](
+                Chromium(), scenario="arbitrary-user-value", executable_path="ignored", args=[],
+                request=SimpleNamespace(addfinalizer=lambda _callback: None),
+                record_property=lambda *_args: None, snapshot_fn=lambda: {},
+            )
+        self.assertEqual([], calls)
+
+    def test_inventory_recovery_projection_is_fixed_redacted_and_preserves_false_proof(self):
+        project = _extract_bounded_inventory_generation_recovery()
+        source = {
+            "ok": True,
+            "recovered": "restored_last_good",
+            "operation_id": "private-operation-id",
+            "mihomo_preimage_proof": {
+                "ok": True, "policy_verified": False, "native_config_validated": True,
+                "config_path": "/private/state/config.yaml",
+            },
+            "xray_reload": True,
+            "mihomo_restart": True,
+            "derived_rows_restored": True,
+            "xray_runtime_readback": {"ok": True, "client_uuid": "UUID_SENTINEL"},
+            "mihomo_runtime_readback": {"ok": True, "config": "RAW_CONFIG_SENTINEL"},
+            "private_path": "/private/state/checkpoint.json",
+            "private_message": "token=SECRET_SENTINEL",
+        }
+        result = project(source)
+        self.assertEqual({
+            "ok": True,
+            "recovered": "restored_last_good",
+            "mihomo_preimage_proof": {
+                "ok": True, "policy_verified": False, "native_config_validated": True,
+            },
+            "xray_runtime_readback": {"ok": True},
+            "mihomo_runtime_readback": {"ok": True},
+            "xray_reload": True,
+            "mihomo_restart": True,
+            "derived_rows_restored": True,
+        }, result)
+        encoded = json.dumps(result)
+        for secret in ("private-operation-id", "/private/state", "UUID_SENTINEL",
+                       "RAW_CONFIG_SENTINEL", "SECRET_SENTINEL"):
+            self.assertNotIn(secret, encoded)
+        malformed = project({
+            "ok": False,
+            "recovered": "unexpected-outcome",
+            "mihomo_preimage_proof": {
+                "ok": "true", "policy_verified": 1, "native_config_validated": None,
+            },
+            "xray_runtime_readback": {"ok": False, "raw": "private"},
+            "mihomo_restart": 1,
+        })
+        self.assertEqual({"ok": False, "xray_runtime_readback": {"ok": False}}, malformed)
+
+    def test_failed_inventory_publication_projects_bounded_recovery_reason(self):
+        project = _extract_bounded_inventory_generation_recovery()
+        for reason in (
+            "ambiguous_prior_prepare", "ambiguous_prior_reload", "inventory_mihomo_checkpoint_mismatch",
+            "inventory_native_receipt_unconfirmed", "inventory_generation_promotion_unconfirmed",
+        ):
+            with self.subTest(reason=reason):
+                source = {
+                    "ok": False,
+                    "stage": "generation_recovery",
+                    "error_code": "XRAY_GENERATION_RECOVERY_FAILED",
+                    "details": {
+                        "ok": False,
+                        "recovered": "stale_checkpoint_declined",
+                        "reason": reason,
+                        "checkpoint_path": "/private/state/generation-checkpoint.json",
+                        "selection_revision": 9931,
+                        "candidate_digest": "DIGEST_SENTINEL",
+                        "client_uuid": "UUID_SENTINEL",
+                        "exception": "token=SECRET_SENTINEL",
+                    },
+                }
+                expected = {
+                    "ok": False,
+                    "recovered": "stale_checkpoint_declined",
+                    "reason": reason,
+                }
+                projected = project(source)
+                self.assertEqual(expected, projected)
+                encoded = json.dumps(projected)
+                for secret in ("/private/state", "9931", "DIGEST_SENTINEL", "UUID_SENTINEL", "SECRET_SENTINEL"):
+                    self.assertNotIn(secret, encoded)
+        unknown = project({
+            "ok": False, "stage": "generation_recovery",
+            "details": {"ok": False, "reason": "token=DO_NOT_EXPOSE"},
+        })
+        self.assertEqual({"ok": False}, unknown)
+
+    def test_checkpoint_recovery_facts_expose_only_closed_state_and_boolean_fences(self):
+        worker_source = APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(APPLICATION_ACCEPTANCE_WORKER))
+        observer = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_install_acceptance_xray_generation_rollback_observer"
+        )
+        observer_source = ast.get_source_segment(worker_source, observer) or ""
+        self.assertIn("_recover_checkpoint_from_current_projection", observer_source)
+        self.assertIn("selection_error_code", observer_source)
+        for forbidden in ("checkpoint_path\":", "candidate_digest\":", "selection_revision\":",
+                          "client_uuid\":", "str(exc)"):
+            self.assertNotIn(forbidden, observer_source)
+        route = next(
+            node for node in ast.walk(worker_tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "publish_pending_subscription_inventory"
+        )
+        route_source = ast.get_source_segment(worker_source, route) or ""
+        for required in ("_read_bounded_generation_checkpoint_facts", "checkpoint_facts"):
+            self.assertIn(required, route_source)
+
+    def test_xray_checkpoint_lifecycle_observer_records_failures_close_and_rejects_symlink_attribution(self):
+        worker_source = APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(APPLICATION_ACCEPTANCE_WORKER))
+        observer = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_install_acceptance_xray_checkpoint_lifecycle_observer"
+        )
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": __import__("os"), "sys": sys, "json": json,
+            "threading": threading, "Path": Path, "stat": __import__("stat"),
+            "Any": __import__("typing").Any,
+            "_XRAY_GENERATION_CHECKPOINT_PHASES": {"prepared", "xray_applied", "restore_failed"},
+            "_bounded_inventory_generation_recovery": lambda _result: {},
+        }
+        services = ModuleType("fwrouter_api.services")
+        observed = io.StringIO()
+        with tempfile.TemporaryDirectory(prefix="fwrouter-checkpoint-observer-") as temp:
+            (Path(temp) / "run").mkdir(mode=0o700)
+            checkpoint = Path(temp) / "generation-checkpoint.json"
+            checkpoint_target = Path(temp) / "checkpoint-target.json"
+            checkpoint_location = {"path": checkpoint}
+            calls = []
+            finalized_pending = []
+
+            def checkpoint_path(_adapter):
+                return checkpoint_location["path"]
+
+            def original_write(*args, **kwargs):
+                calls.append(("write", args, kwargs))
+                checkpoint.write_text(json.dumps({"phase": kwargs["phase"]}), encoding="utf-8")
+                return checkpoint
+
+            def original_finalize(pending, verification):
+                calls.append(("finalize", pending, verification))
+                Path(pending["checkpoint_path"]).unlink(missing_ok=True)
+                return {"ok": True, "status": "success"}
+
+            reconcile_calls = {"count": 0}
+
+            def original_reconcile(*, requested_by, **kwargs):
+                reconcile_calls["count"] += 1
+                if reconcile_calls["count"] == 1:
+                    service._write_xray_generation_checkpoint(
+                        phase="xray_applied", requested_by=requested_by, **kwargs,
+                    )
+                    return {
+                        "ok": False, "status": "pending", "stage": "xray_generation_apply",
+                        "error_code": "XRAY_GENERATION_APPLY_FAILED",
+                    }
+                if reconcile_calls["count"] == 3:
+                    return {"ok": True, "status": "success"}
+                pending = {"checkpoint_path": str(checkpoint), "private_token": "DO_NOT_LOG"}
+                finalized_pending.append(pending)
+                return service._finalize_xray_profile_publication(
+                    pending, {"ok": True},
+                )
+
+            service = SimpleNamespace(
+                _xray_adapter=lambda: object(),
+                _xray_generation_checkpoint_path=checkpoint_path,
+                _write_xray_generation_checkpoint=original_write,
+                _finalize_xray_profile_publication=original_finalize,
+                _restore_xray_generation_checkpoint=lambda *_args: {},
+                reconcile_xray_subscription_profile_nodes=original_reconcile,
+            )
+            services.xray_subscription_service = service
+            with mock.patch.dict(sys.modules, {"fwrouter_api.services": services}), \
+                    mock.patch.dict(__import__("os").environ, {
+                        "FWROUTER_ENVIRONMENT": "test",
+                        "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+                        "FWROUTER_STATE_DIR": temp,
+                    }), mock.patch("sys.stderr", observed):
+                exec(compile(ast.Module(body=[observer], type_ignores=[]),
+                             str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+                namespace[observer.name]()
+                failed = service.reconcile_xray_subscription_profile_nodes(
+                    requested_by="subscription-refresh", private_token="DO_NOT_LOG",
+                )
+                result = service.reconcile_xray_subscription_profile_nodes(
+                    requested_by="subscription-refresh", private_token="DO_NOT_LOG",
+                )
+                checkpoint_target.write_text(json.dumps({"phase": "xray_applied"}), encoding="utf-8")
+                checkpoint.unlink(missing_ok=True)
+                symlink_checkpoint = Path(temp) / "symlink-checkpoint.json"
+                symlink_checkpoint.symlink_to(checkpoint_target)
+                checkpoint_location["path"] = symlink_checkpoint
+                symlink_result = service.reconcile_xray_subscription_profile_nodes(
+                    requested_by="subscription-refresh", private_token="DO_NOT_LOG",
+                )
+            self.assertFalse(failed["ok"])
+            self.assertEqual("XRAY_GENERATION_APPLY_FAILED", failed["error_code"])
+            self.assertEqual({"ok": True, "status": "success"}, result)
+            self.assertEqual({"ok": True, "status": "success"}, symlink_result)
+            self.assertFalse(checkpoint.exists())
+            self.assertTrue(symlink_checkpoint.is_symlink())
+            self.assertEqual(1, len(finalized_pending))
+            self.assertEqual(["write", "finalize"], [call[0] for call in calls])
+            self.assertIs(finalized_pending[0], calls[1][1])
+
+        text = observed.getvalue()
+        self.assertNotIn("DO_NOT_LOG", text)
+        self.assertNotIn(str(checkpoint), text)
+        records = [json.loads(line.split(" ", 1)[1]) for line in text.splitlines()]
+        self.assertEqual(5, len(records))
+        self.assertEqual("checkpoint_created", records[0]["event"])
+        self.assertEqual("subscription_refresh", records[0]["owner"])
+        self.assertEqual("xray_applied", records[0]["phase"])
+        self.assertTrue(records[0]["checkpoint_exists"])
+        self.assertEqual("reconcile_result", records[1]["event"])
+        self.assertEqual("xray_generation_apply", records[1]["stage"])
+        self.assertEqual("XRAY_GENERATION_APPLY_FAILED", records[1]["error_code"])
+        self.assertTrue(records[1]["checkpoint_after"]["exists"])
+        self.assertEqual("xray_applied", records[1]["checkpoint_after"]["phase"])
+        self.assertEqual("publication_finalized", records[2]["event"])
+        self.assertTrue(records[2]["ok"])
+        self.assertEqual("success", records[2]["status"])
+        self.assertTrue(records[2]["checkpoint_before"]["exists"])
+        self.assertFalse(records[2]["checkpoint_after"]["exists"])
+        self.assertEqual("reconcile_result", records[3]["event"])
+        self.assertTrue(records[3]["checkpoint_before"]["exists"])
+        self.assertFalse(records[3]["checkpoint_after"]["exists"])
+        self.assertEqual("reconcile_result", records[4]["event"])
+        self.assertEqual("unknown", records[4]["checkpoint_before"]["phase"])
+        self.assertEqual("unknown", records[4]["checkpoint_after"]["phase"])
+        self.assertNotIn("xray_applied", json.dumps(records[4]))
+
+    def test_xray_checkpoint_lifecycle_capture_survives_noisy_log_and_caps_records(self):
+        worker_source = APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8")
+        worker_tree = ast.parse(worker_source, filename=str(APPLICATION_ACCEPTANCE_WORKER))
+        observer = next(node for node in worker_tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_xray_checkpoint_lifecycle_observer")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": os, "sys": sys, "json": json, "threading": threading,
+            "Path": Path, "stat": stat, "Any": Any,
+            "_XRAY_GENERATION_CHECKPOINT_PHASES": {"prepared", "xray_applied", "restore_failed"},
+            "_bounded_inventory_generation_recovery": lambda _result: {},
+        }
+        services = ModuleType("fwrouter_api.services")
+        noisy_stderr = io.StringIO()
+        with tempfile.TemporaryDirectory(prefix="fwrouter-checkpoint-capture-") as temp:
+            state = Path(temp)
+            (state / "run").mkdir(mode=0o700)
+            checkpoint = state / "generation-checkpoint.json"
+            checkpoint_location = {"path": checkpoint}
+
+            def original_reconcile(**_kwargs):
+                return {"ok": True, "status": "success"}
+
+            service = SimpleNamespace(
+                _xray_adapter=lambda: object(),
+                _xray_generation_checkpoint_path=lambda _adapter: checkpoint_location["path"],
+                reconcile_xray_subscription_profile_nodes=original_reconcile,
+                _write_xray_generation_checkpoint=lambda **_kwargs: checkpoint,
+                _finalize_xray_profile_publication=lambda pending, _verification: pending,
+                _restore_xray_generation_checkpoint=lambda *_args: {},
+            )
+            services.xray_subscription_service = service
+            with mock.patch.dict(sys.modules, {"fwrouter_api.services": services}), \
+                    mock.patch.dict(os.environ, {
+                        "FWROUTER_ENVIRONMENT": "test",
+                        "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
+                        "FWROUTER_STATE_DIR": temp,
+                    }), mock.patch("sys.stderr", noisy_stderr):
+                exec(compile(ast.Module(body=[observer], type_ignores=[]),
+                             str(APPLICATION_ACCEPTANCE_WORKER), "exec"), namespace)
+                namespace[observer.name]()
+                noisy_stderr.write("UNRELATED_LOG_NOISE " + ("x" * 20000) + "\n")
+                for _ in range(20):
+                    service.reconcile_xray_subscription_profile_nodes(requested_by="api")
+                # A worker process restart installs a fresh observer over the
+                # original service callable; it must continue the durable cap.
+                service.reconcile_xray_subscription_profile_nodes = original_reconcile
+                namespace[observer.name]()
+                for _ in range(40):
+                    service.reconcile_xray_subscription_profile_nodes(requested_by="api")
+            event_file = state / "run" / "xray-checkpoint-lifecycle.jsonl"
+            events = [json.loads(line) for line in event_file.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(48, len(events))
+            self.assertEqual(list(range(1, 49)), [event["sequence"] for event in events])
+            self.assertTrue(all(event["schema"] == "fwrouter-acceptance-xray-checkpoint/v1" for event in events))
+            self.assertTrue(all(len(line.encode("utf-8")) <= 1024
+                                for line in event_file.read_text(encoding="utf-8").splitlines()))
+            self.assertNotIn("UNRELATED_LOG_NOISE", event_file.read_text(encoding="utf-8"))
+            self.assertNotIn("UNRELATED_LOG_NOISE", noisy_stderr.getvalue()[-16 * 1024:])
+            self.assertLessEqual(max(map(len, event_file.read_text(encoding="utf-8").splitlines())), 1024)
+
+    def test_xray_checkpoint_lifecycle_artifact_reader_rejects_symlink_and_unknown_fields(self):
+        conftest_path = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
+        source = conftest_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(conftest_path))
+        reader = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "_read_acceptance_xray_checkpoint_lifecycle")
+        namespace = {"Path": Path, "os": os, "stat": stat, "json": json}
+        exec(compile(ast.Module(body=[reader], type_ignores=[]), str(conftest_path), "exec"), namespace)
+        event = {
+            "schema": "fwrouter-acceptance-xray-checkpoint/v1", "sequence": 1,
+            "event": "checkpoint_created", "owner": "subscription_refresh",
+            "phase": "xray_applied", "checkpoint_exists": True,
+            "checkpoint_phase": "xray_applied", "inventory_admission_present": True,
+        }
+        with tempfile.TemporaryDirectory(prefix="fwrouter-checkpoint-artifact-") as temp:
+            state = Path(temp)
+            (state / "run").mkdir(mode=0o700)
+            capture = state / "run" / "xray-checkpoint-lifecycle.jsonl"
+            capture.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            os.chmod(capture, 0o600)
+            valid = namespace[reader.name](state)
+            self.assertEqual("captured", valid["status"])
+            self.assertEqual([event], valid["events"])
+            capture.unlink()
+            private_target = state / "run" / "private.jsonl"
+            private_target.write_text(json.dumps({**event, "private_token": "DO_NOT_EXPORT"}) + "\n",
+                                      encoding="utf-8")
+            os.chmod(private_target, 0o600)
+            capture.symlink_to(private_target)
+            symlink_result = namespace[reader.name](state)
+            self.assertEqual("rejected", symlink_result["status"])
+            self.assertEqual([], symlink_result["events"])
+            self.assertNotIn("DO_NOT_EXPORT", json.dumps(symlink_result))
+            capture.unlink()
+            capture.write_text("not-json\n", encoding="utf-8")
+            os.chmod(capture, 0o600)
+            invalid = namespace[reader.name](state)
+            self.assertEqual("invalid", invalid["status"])
+            self.assertEqual([], invalid["events"])
+            capture.write_text(json.dumps({**event, "unrecognized": "DO_NOT_EXPORT"}) + "\n", encoding="utf-8")
+            os.chmod(capture, 0o600)
+            unknown = namespace[reader.name](state)
+            self.assertEqual("invalid", unknown["status"])
+            self.assertEqual([], unknown["events"])
+            self.assertNotIn("DO_NOT_EXPORT", json.dumps(unknown))
+
+    def test_checkpoint_facts_compare_fences_without_exposing_values(self):
+        project = _extract_bounded_generation_checkpoint_facts()
+        checkpoint = {
+            "phase": "xray_applied", "selection_revision": 18,
+            "subscription_inventory_generation": {"digest": "DIGEST_SENTINEL", "revision": 7},
+            "client_uuid": "UUID_SENTINEL", "artifact_path": "/private/state/config.json",
+        }
+        inventory = {"status": "pending", "candidate_digest": "DIGEST_SENTINEL", "candidate_revision": 7}
+        fence = {"revision": 19, "decision_id": "PRIVATE_DECISION"}
+        result = project(checkpoint, inventory, fence)
+        self.assertEqual({
+            "checkpoint_phase": "xray_applied",
+            "checkpoint_selection_fence_matches": False,
+            "checkpoint_inventory_binding_matches": True,
+        }, result)
+        self.assertNotIn("DIGEST_SENTINEL", json.dumps(result))
+        self.assertNotIn("UUID_SENTINEL", json.dumps(result))
+        self.assertNotIn("PRIVATE_DECISION", json.dumps(result))
+        self.assertNotIn("/private/state", json.dumps(result))
+
     def test_reentry_native_diagnostic_is_redacted_and_size_bounded(self):
         secret_url = "http://probe-user:probe-pass@vpn-secret.test/private"
         secret_uuid = "11111111-2222-4333-8444-555555555555"
@@ -339,6 +924,96 @@ class AcceptanceContractTests(unittest.TestCase):
                          result["totals"]["safe_phase"])
         self.assertNotIn("TOKEN_SENTINEL", json.dumps(result))
 
+    def test_startup_resource_spans_are_fixed_bootstrap_only_and_bounded(self):
+        tree = ast.parse(APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"))
+        build_app = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "build_app"
+        )
+        registrations = {
+            (element.elts[0].id if isinstance(element.elts[0], ast.Name) else None,
+             element.elts[1].value, element.elts[2].value)
+            for node in ast.walk(build_app)
+            if isinstance(node, ast.For) and isinstance(node.iter, ast.Tuple)
+            for element in node.iter.elts
+            if isinstance(element, ast.Tuple) and len(element.elts) == 3
+            and isinstance(element.elts[1], ast.Constant) and isinstance(element.elts[1].value, str)
+            and isinstance(element.elts[2], ast.Constant) and isinstance(element.elts[2].value, str)
+        }
+        required = {
+            ("dataplane_global", "_read_effective_rules_artifact_uncached",
+             "startup.dataplane.read_effective_rules_artifact"),
+            ("dataplane_nft_render", "build_nft_rule_sets", "startup.dataplane.build_nft_rule_sets"),
+            ("dataplane_status", "build_applied_runtime_enforcement",
+             "startup.dataplane_status.build_applied_runtime_enforcement"),
+            ("apply_service", "build_global_preflight", "startup.apply.build_global_preflight"),
+            ("apply_service", "build_applied_runtime_enforcement",
+             "startup.apply.build_applied_runtime_enforcement"),
+        }
+        self.assertTrue(required <= registrations, required - registrations)
+        worker_source = APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8")
+        for attribute, phase in (
+            ("_config_runtime_details", "startup.mihomo.config_runtime_details"),
+            ("_config_text", "startup.mihomo.config_text"),
+        ):
+            self.assertIn(f'("{attribute}", "{phase}")', worker_source)
+        self.assertIn("setattr(mihomo_adapter, attribute, observe_phase(phase, getattr(mihomo_adapter, attribute)))",
+                      worker_source)
+
+        observe_phase = next(
+            node for node in ast.walk(build_app)
+            if isinstance(node, ast.FunctionDef) and node.name == "observe_phase"
+        )
+        source = ast.get_source_segment(
+            APPLICATION_ACCEPTANCE_WORKER.read_text(encoding="utf-8"), observe_phase,
+        ) or ""
+        self.assertIn("if not bootstrap_diagnostic_active", source)
+        self.assertIn("record_phase = count <= bootstrap_diagnostic_limit", source)
+        self.assertIn("if not record_phase", source)
+
+    def test_canonical_xray_identity_oracle_uses_active_subjects_and_client_id_fallback(self):
+        identity_pairs = _extract_current_xray_subject_identity_pairs()
+        with tempfile.TemporaryDirectory(prefix="fwrouter-xray-identity-oracle-") as temp:
+            database = Path(temp) / "synthetic.db"
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "CREATE TABLE subjects (subject_id TEXT, implementation_kind TEXT, is_active INTEGER, "
+                "is_deleted INTEGER, metadata_json TEXT)"
+            )
+            rows = [
+                ("active-uuid", 1, 0, {"detail": {"client_uuid": "synthetic-uuid", "email": "u1@test.invalid"}}),
+                ("active-fallback", 1, 0, {"detail": {"client_id": "synthetic-client-id", "email": "u2@test.invalid"}}),
+                ("disabled-detail", 1, 0, {"detail": {"client_uuid": "disabled-id", "email": "disabled@test.invalid", "enabled": False}}),
+                ("inactive", 0, 0, {"detail": {"client_uuid": "inactive-id", "email": "inactive@test.invalid"}}),
+                ("deleted", 1, 1, {"detail": {"client_uuid": "deleted-id", "email": "deleted@test.invalid"}}),
+            ]
+            connection.executemany(
+                "INSERT INTO subjects VALUES (?, 'xray', ?, ?, ?)",
+                [(subject_id, active, deleted, json.dumps(metadata))
+                 for subject_id, active, deleted, metadata in rows],
+            )
+            connection.execute(
+                "INSERT INTO subjects VALUES (?, 'mihomo', 1, 0, ?)",
+                ("other-module", json.dumps({"detail": {"client_uuid": "other-id", "email": "other@test.invalid"}})),
+            )
+            connection.commit()
+            connection.close()
+
+            self.assertEqual(
+                {("synthetic-uuid", "u1@test.invalid"), ("synthetic-client-id", "u2@test.invalid")},
+                identity_pairs(database),
+            )
+
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "INSERT INTO subjects VALUES (?, 'xray', 1, 0, ?)",
+                ("duplicate", json.dumps({"detail": {"client_uuid": "synthetic-uuid", "email": "u1@test.invalid"}})),
+            )
+            connection.commit()
+            connection.close()
+            with self.assertRaisesRegex(AssertionError, "duplicated"):
+                identity_pairs(database)
+
     def test_routine_unit_failure_report_is_bound_bounded_and_never_eligible(self):
         path = "backend/tests/test_apply_pipeline.py"
         manifest = aggregate_hosted.gate.load_manifest()
@@ -546,13 +1221,13 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((27, 11, 2), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((27, 12, 2), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
         with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
             launcher.expected_acceptance_nodeids("functional")
-        self.assertEqual(40, len(ordinary | provider | packet))
+        self.assertEqual(41, len(ordinary | provider | packet))
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(
                 [{"nodeid": nodeid, "status": "passed",
@@ -4089,6 +4764,7 @@ class AcceptanceContractTests(unittest.TestCase):
         )
         self.assertEqual({identity}, launcher.expected_acceptance_nodeids("identity-diagnostic"))
         self.assertEqual({scale}, launcher.expected_acceptance_nodeids("runtime-scale-diagnostic"))
+        self.assertNotIn(identity, launcher.expected_acceptance_nodeids("provider-cohort"))
         self.assertIn(identity, launcher.expected_acceptance_nodeids("functional-ordinary"))
         with self.assertRaises(launcher.NotRun):
             launcher.expected_acceptance_nodeids("identity-diagnostic-extra")
@@ -4256,6 +4932,59 @@ class AcceptanceContractTests(unittest.TestCase):
         })
         self.assertIsNone(bounded["native_nftset_probe_targets"][0]["materialized_count"])
 
+    def test_provider_reentry_checkpoint_junit_diagnostic_is_closed_and_redacted(self):
+        packet_path = Path(__file__).parents[1] / "application_acceptance" / "test_packet_dataplane.py"
+        packet_tree = ast.parse(packet_path.read_text(encoding="utf-8"), filename=str(packet_path))
+        recorder = next(
+            node for node in packet_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_record_phase_diagnostic"
+        )
+        namespace = {
+            "Any": Any,
+            "json": json,
+            "MAX_PHASE_DIAGNOSTIC_BYTES": 4096,
+        }
+        exec(compile(ast.Module(body=[recorder], type_ignores=[]), str(packet_path), "exec"), namespace)
+        diagnostic = {
+            "phase": "provider-reentry-checkpoint-recovery",
+            "checkpoint_recovered_before_reentry_apply": True,
+            "inventory_verified": True,
+            "inventory_digest_preserved": True,
+            "identity_digest_preserved": True,
+            "routing_mode": "vpn",
+            "live_global_mode": "vpn",
+        }
+        recorded = []
+        namespace["_record_phase_diagnostic"](
+            lambda name, value: recorded.append((name, value)), diagnostic,
+        )
+        self.assertEqual(recorded, [("packet_phase_provider_reentry_checkpoint_recovery", json.dumps(
+            diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        ))])
+        self.assertNotIn("uuid", recorded[0][1].lower())
+        self.assertNotIn("token", recorded[0][1].lower())
+
+        with self.assertRaisesRegex(AssertionError, "unknown field"):
+            namespace["_record_phase_diagnostic"](
+                lambda *_args: self.fail("rejected diagnostic must not be recorded"),
+                {**diagnostic, "raw_secret": "must-not-leak"},
+            )
+        with self.assertRaisesRegex(AssertionError, "unknown routing mode"):
+            namespace["_record_phase_diagnostic"](
+                lambda *_args: self.fail("rejected diagnostic must not be recorded"),
+                {**diagnostic, "routing_mode": "user-controlled-value"},
+            )
+        with self.assertRaisesRegex(AssertionError, "non-boolean"):
+            namespace["_record_phase_diagnostic"](
+                lambda *_args: self.fail("rejected diagnostic must not be recorded"),
+                {**diagnostic, "inventory_verified": 1},
+            )
+        with self.assertRaisesRegex(AssertionError, "unknown fixed phase"):
+            namespace["_record_phase_diagnostic"](
+                lambda *_args: self.fail("rejected diagnostic must not be recorded"),
+                {**diagnostic, "phase": "arbitrary-user-phase"},
+            )
+
     def test_xray_generation_rollback_observer_is_bounded_and_installed(self):
         worker_source = WORKER_PATH.read_text(encoding="utf-8")
         worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
@@ -4283,6 +5012,17 @@ class AcceptanceContractTests(unittest.TestCase):
                           '"expected_mihomo_runtime":', '"checkpoint_path":'):
             self.assertNotIn(forbidden, observer_source)
         self.assertIn('acceptance_profile.get("profile") == "hosted-kernel-packet"', worker_source)
+        for required in ("_recover_checkpoint_from_current_projection", "selection_error_code"):
+            self.assertIn(required, observer_source)
+        checkpoint_helper = next(
+            node for node in worker_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_read_bounded_generation_checkpoint_facts"
+        )
+        checkpoint_source = ast.get_source_segment(worker_source, checkpoint_helper) or ""
+        for required in ("O_NOFOLLOW", "os.geteuid()", "1024 * 1024", "checkpoint_phase",
+                         "checkpoint_selection_fence_matches", "checkpoint_inventory_binding_matches"):
+            self.assertIn(required, checkpoint_source)
         install_calls = [node for node in ast.walk(worker_tree)
                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                          and node.func.id == "_install_acceptance_xray_generation_rollback_observer"]
@@ -4482,6 +5222,7 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual(1, len(install_calls))
         self.assertIn('if acceptance_profile.get("profile") == "hosted-kernel-packet":\n'
                       '        _install_acceptance_xray_generation_rollback_observer()\n'
+                      '        _install_acceptance_xray_checkpoint_lifecycle_observer()\n'
                       '        _install_acceptance_apply_exception_observer()\n'
                       '        _install_acceptance_live_mode_probe_observer()', worker_source)
 
@@ -5067,8 +5808,9 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
             "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
             "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+            "tests/application_acceptance/test_xray_generation.py::test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry",
         }
-        self.assertEqual(11, len(expected))
+        self.assertEqual(12, len(expected))
         self.assertEqual(expected, set(launcher._PROVIDER_COHORT_NODEIDS))
         self.assertEqual(expected, launcher.expected_acceptance_nodeids("provider-cohort"))
         self.assertIn("provider-cohort", launcher._KERNEL_DATAPLANE_SUITES)

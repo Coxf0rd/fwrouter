@@ -1941,8 +1941,24 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "provider-refresh-supported", "provider-refresh-unknown",
                      "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn",
                      "global-mode-selective", "selective-default-vpn", "selective-default-restore",
-                     "native-dns53-selective-direct-priority"}:
+                     "native-dns53-selective-direct-priority", "provider-reentry-checkpoint-recovery"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
+    if label == "provider-reentry-checkpoint-recovery":
+        expected_fields = {
+            "phase", "checkpoint_recovered_before_reentry_apply", "inventory_verified",
+            "inventory_digest_preserved", "identity_digest_preserved", "routing_mode", "live_global_mode",
+        }
+        if set(diagnostic) != expected_fields:
+            raise AssertionError("provider re-entry checkpoint diagnostic has an unknown field")
+        if any(type(diagnostic.get(field)) is not bool for field in (
+            "checkpoint_recovered_before_reentry_apply", "inventory_verified",
+            "inventory_digest_preserved", "identity_digest_preserved",
+        )):
+            raise AssertionError("provider re-entry checkpoint diagnostic has a non-boolean proof field")
+        valid_modes = {"vpn", "direct", "selective"}
+        if (diagnostic.get("routing_mode") not in valid_modes
+                or diagnostic.get("live_global_mode") not in valid_modes):
+            raise AssertionError("provider re-entry checkpoint diagnostic has an unknown routing mode")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
         raise AssertionError("packet phase diagnostic exceeded its fixed byte bound")
@@ -3441,6 +3457,52 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "phase": "emergency-direct", "flows": emergency_flows,
     }
 
+    # The failed health refresh left an owner-bound verified generation while
+    # Emergency Direct is active. Keep the exact binding as evidence; re-entry
+    # must prove and close this checkpoint before its Mihomo apply changes the
+    # native hash used by that proof.
+    checkpoint_path = stack["state"] / "xray" / ".generation" / "generation-checkpoint.json"
+    code, pre_reentry_inventory_response = http_json(
+        f"{api}/__acceptance/subscription/native-generation",
+    )
+    pre_reentry_inventory = pre_reentry_inventory_response.get("state") or {}
+    pre_reentry_checkpoint = (
+        json.loads(checkpoint_path.read_text(encoding="utf-8")) if checkpoint_path.is_file() else {}
+    )
+    pre_reentry_binding = pre_reentry_checkpoint.get("subscription_inventory_generation")
+    pre_reentry_digest = pre_reentry_inventory.get("candidate_digest")
+    pre_reentry_revision = pre_reentry_inventory.get("candidate_revision")
+    assert (
+        code == 200 and pre_reentry_inventory_response.get("ok") is True
+        and checkpoint_path.is_file()
+        and pre_reentry_inventory.get("status") == "verified"
+        and pre_reentry_checkpoint.get("phase") == "projections_cleaned"
+        and isinstance(pre_reentry_digest, str) and len(pre_reentry_digest) == 64
+        and pre_reentry_digest == pre_reentry_inventory.get("verified_digest")
+        and type(pre_reentry_revision) is int
+        and pre_reentry_revision == pre_reentry_inventory.get("verified_revision")
+        and isinstance(pre_reentry_binding, dict)
+        and pre_reentry_binding.get("digest") == pre_reentry_digest
+        and pre_reentry_binding.get("revision") == pre_reentry_revision
+    ), {
+        "phase": "emergency-direct-checkpoint-before-reentry",
+        "checkpoint_present": checkpoint_path.is_file(),
+        "checkpoint_phase": pre_reentry_checkpoint.get("phase"),
+        "inventory_status": pre_reentry_inventory.get("status"),
+        "verified_generation_bound": bool(
+            isinstance(pre_reentry_binding, dict)
+            and pre_reentry_binding.get("digest") == pre_reentry_digest
+            and pre_reentry_binding.get("revision") == pre_reentry_revision
+        ),
+    }
+    identity_code, identity_before_reentry = http_json(f"{api}/__acceptance/xray/identity-context")
+    identity_digest_before = identity_before_reentry.get("identity_digest")
+    assert (
+        identity_code == 200 and identity_before_reentry.get("ok") is True
+        and isinstance(identity_digest_before, str) and len(identity_digest_before) == 64
+        and all(char in "0123456789abcdef" for char in identity_digest_before)
+    ), {"phase": "emergency-direct-checkpoint-before-reentry", "identity_digest_available": False}
+
     _set_health_available(True)
     provider_calls_before_reentry = bridge.snapshot_calls()
     code, reentered = http_json(f"{api}/__acceptance/provider/reentry", method="POST",
@@ -3500,6 +3562,60 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         "phase": "vpn-after-reentry", "vless_endpoint_packets": reentry_flow,
         "direct_client_leaks": reentry_direct_leaks,
     }
+    # Successful provider re-entry must have recovered the still-bound Xray
+    # generation before the Mihomo reconcile changed its native checkpoint
+    # hash. A post-reentry cleanup would be too late and must fail closed.
+    assert not checkpoint_path.exists(), {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "checkpoint_closed_by_reentry_preparation": not checkpoint_path.exists(),
+    }
+    code, verified_generation = http_json(f"{api}/__acceptance/subscription/native-generation")
+    verified_state = verified_generation.get("state") or {}
+    assert code == 200 and verified_generation.get("ok") is True
+    assert (
+        verified_state.get("status") == "verified"
+        and verified_state.get("candidate_digest") == pre_reentry_digest == verified_state.get("verified_digest")
+        and verified_state.get("candidate_revision") == pre_reentry_revision == verified_state.get("verified_revision")
+    ), {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "inventory_status": verified_state.get("status"),
+        "candidate_revision": verified_state.get("candidate_revision"),
+        "verified_revision": verified_state.get("verified_revision"),
+        "candidate_digest_matches": verified_state.get("candidate_digest") == pre_reentry_digest,
+    }
+    identity_code, identity_after_reentry = http_json(f"{api}/__acceptance/xray/identity-context")
+    assert (
+        identity_code == 200
+        and identity_after_reentry.get("ok") is True
+        and identity_after_reentry.get("identity_digest") == identity_digest_before
+    ), {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "identity_context_status": identity_code,
+        "identity_digest_preserved": (
+            identity_after_reentry.get("identity_digest") == identity_digest_before
+        ),
+    }
+    recovery_routing_code, recovery_routing = http_json(f"{api}/routing/global")
+    assert (
+        recovery_routing_code == 200
+        and recovery_routing.get("data", {}).get("routing", {}).get("desired_mode") == "vpn"
+        and recovery_routing.get("data", {}).get("routing", {}).get("applied_mode") == "vpn"
+        and recovery_routing.get("data", {}).get("runtime_enforcement", {}).get("live_global_mode") == "vpn"
+    ), {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "routing_status": recovery_routing_code,
+        "routing_mode": (recovery_routing.get("data", {}).get("routing") or {}).get("applied_mode"),
+        "live_global_mode": (recovery_routing.get("data", {}).get("runtime_enforcement") or {}).get("live_global_mode"),
+    }
+    _record_phase_diagnostic(record_property, {
+        "phase": "provider-reentry-checkpoint-recovery",
+        "checkpoint_recovered_before_reentry_apply": not checkpoint_path.exists(),
+        "inventory_verified": verified_state.get("status") == "verified",
+        "inventory_digest_preserved": verified_state.get("candidate_digest") == pre_reentry_digest,
+        "identity_digest_preserved": identity_after_reentry.get("identity_digest") == identity_digest_before,
+        "routing_mode": (recovery_routing.get("data", {}).get("routing") or {}).get("applied_mode"),
+        "live_global_mode": (recovery_routing.get("data", {}).get("runtime_enforcement") or {}).get("live_global_mode"),
+    })
     dns53_phase = _probe_dns53_policy_phase(stack, source_ref, record_property)
     assert_mihomo_launch_matches_active(native, stack["state"] / "generated" / "mihomo" / "config.yaml")
     final_binding = binding_for(source_ref)
@@ -3534,6 +3650,15 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         [ordinary_server], servers_by_url={selector_source_url: [ordinary_server]},
     )
     assert inventory.get("seen_count") == 1
+    code, publication = http_json(
+        f"{api}/__acceptance/xray/publish-pending-inventory", method="POST", payload={}, timeout=90,
+    )
+    assert code == 200 and publication.get("ok") is True, {
+        "status": code, "error_code": publication.get("error_code"),
+        "stage": publication.get("stage"),
+        "native_generation_verified": publication.get("native_generation_verified"),
+    }
+    assert publication.get("native_generation_verified") is True
     code, ordinary_preference = http_json(
         f"{api}/servers/{ordinary_server.server_id}/preferences", method="PATCH",
         payload={"vpn_auto": True, "vpn_auto_priority": 1, "reconcile_mihomo": True,

@@ -106,6 +106,7 @@ _PROVIDER_COHORT_NODEIDS = (
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-malformed]",
     "tests/application_acceptance/test_core_provider_mihomo.py::test_provider_status_controls_real_core_apply_and_native_mihomo_parity[unknown-status-neutral]",
     "tests/application_acceptance/test_xray_generation.py::test_xray_generation_fence_rejects_replaced_native_incarnation",
+    "tests/application_acceptance/test_xray_generation.py::test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry",
 )
 _FENCE_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_core_provider_mihomo.py::test_confirmed_recovery_typed_provider_api_errors_are_unknown_not_member_down[recovery-unavailable]",
@@ -2467,9 +2468,9 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         functional = {row["nodeid"] for row in rows if row["suite"] == "functional"}
         packet = {row["nodeid"] for row in rows if row["suite"] == "packet"}
         provider = set(_PROVIDER_COHORT_NODEIDS)
-        if (len(functional) != 38 or len(packet) != 2 or len(provider) != 11
+        if (len(functional) != 39 or len(packet) != 2 or len(provider) != 12
                 or not provider <= functional or functional & packet):
-            raise NotRun("functional profile partitions differ from the reviewed 38+2 inventory")
+            raise NotRun("functional profile partitions differ from the reviewed 39+2 inventory")
         selected = functional - provider
         if len(selected) != 27 or selected & provider or selected | provider != functional:
             raise NotRun("ordinary/provider profile partitions are not disjoint and exhaustive")

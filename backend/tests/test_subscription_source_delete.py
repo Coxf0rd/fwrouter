@@ -99,6 +99,49 @@ def test_source_delete_last_source_never_keeps_its_last_good_snapshot(monkeypatc
     assert membership["is_active"] == 0
 
 
+def test_source_delete_does_not_change_intent_when_checkpoint_recovery_is_unproven(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    url = "https://one.example/sub"
+    _import(monkeypatch, {url: ("only",)})
+    before = get_subscription_state()
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.recover_xray_generation_checkpoint_before_inventory_refresh",
+        lambda: {"ok": False, "error_code": "XRAY_GENERATION_RECOVERY_FAILED"},
+    )
+
+    result = delete_subscription_source_intent(_source_id(url))
+
+    assert result["ok"] is False
+    assert result["error_code"] == "XRAY_GENERATION_RECOVERY_FAILED"
+    assert get_subscription_state() == before
+
+
+def test_source_delete_rechecks_checkpoint_under_writer_guard_before_intent(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    url = "https://one.example/sub"
+    _import(monkeypatch, {url: ("only",)})
+    before = get_subscription_state()
+    from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+    gate_observations: list[bool] = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.recover_xray_generation_checkpoint_before_inventory_refresh",
+        lambda: {"ok": True, "status": "skipped"},
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.subscription_inventory_checkpoint_write_gate",
+        lambda: gate_observations.append(xray_writer_guard_is_held()) or {
+            "ok": False, "error_code": "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED",
+        },
+    )
+
+    result = delete_subscription_source_intent(_source_id(url))
+
+    assert gate_observations == [True]
+    assert result["ok"] is False
+    assert result["error_code"] == "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"
+    assert get_subscription_state() == before
+
+
 def test_source_delete_selector_probe_is_outside_guard_and_stale_snapshot_preserves_source(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     url = "https://one.example/sub"
@@ -239,6 +282,41 @@ def test_source_delete_apply_failure_is_partial_and_never_exposes_source_url(mon
     state = get_subscription_state()
     assert state["url"] is None
     assert state["metadata"]["subscriptions"]["items"] == []
+
+
+def test_source_delete_checkpoint_race_after_intent_is_reported_as_reconciliation_pending(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _setup(monkeypatch, tmp_path)
+    from fwrouter_api.services import subscription_refresh_job as refresh_job
+    from fwrouter_api.services.subscription import SubscriptionInventoryGenerationBlocked
+
+    source_ref = _source_id("https://one.example/sub")
+    monkeypatch.setattr(refresh_job, "delete_subscription_source_intent", lambda _ref: {
+        "ok": True, "selection_revision": 4, "orphaned_server_ids": [],
+        "current_auto_server_id": None,
+    })
+    monkeypatch.setattr(subscription_service, "get_subscription_state", lambda: {
+        "url": None, "metadata": {"subscriptions": {"items": []}},
+    })
+    monkeypatch.setattr(subscription_service, "subscription_state_fingerprint", lambda _state: "synthetic-fingerprint")
+    monkeypatch.setattr(refresh_job, "update_job_running_result", lambda *_args, **_kwargs: None)
+    blocked = {"ok": False, "error_code": "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"}
+
+    def reject_new_inventory(*_args, **_kwargs):
+        raise SubscriptionInventoryGenerationBlocked(blocked)
+
+    monkeypatch.setattr(subscription_service, "_upsert_subscription_servers", reject_new_inventory)
+
+    result = refresh_job.run_subscription_source_delete_job({
+        "job_id": "synthetic-checkpoint-race", "input": {"source_ref": source_ref},
+    })
+
+    assert result["job_status"] == "failed"
+    assert result["stage"] == "inventory"
+    assert result["source"] == {"source_ref": source_ref, "deleted": True}
+    assert result["reconcile_pending"] is True
+    assert result["error_code"] == "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"
 
 
 def test_source_delete_reselects_auto_and_verifies_logical_and_effective_target(monkeypatch, tmp_path: Path) -> None:

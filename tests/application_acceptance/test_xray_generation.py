@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import http.client
+import http.server
+import json
 import os
 import re
 import sqlite3
 import stat
 import threading
-from queue import Queue
+import urllib.error
 from pathlib import Path
+from queue import Queue
+from urllib.parse import urlsplit
 from uuid import NAMESPACE_DNS, uuid5
 
 import yaml
@@ -16,18 +20,87 @@ import yaml
 from .http_support import http_json
 from .xray_support import (
     active_identities,
+    assert_applied_bindings,
     assert_mihomo_launch_matches_active,
     assert_native_matches_active,
     await_job,
     loaded_identities,
     read_subscription_rows,
-    assert_applied_bindings,
 )
 
 
 _PROVIDER_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
 _PROVIDER_WORKER_LOG_MAX_FILES = 16
 _PROVIDER_WORKER_LOG_MAX_APPEND_BYTES = 64 * 1024
+
+
+def current_xray_subject_identity_pairs(database_path: Path) -> set[tuple[str, str]]:
+    """Read the canonical active Xray subject identities from a synthetic DB."""
+    connection = sqlite3.connect(database_path, timeout=5)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute(
+            "SELECT json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid, "
+            "json_extract(metadata_json, '$.detail.client_id') AS client_id, "
+            "json_extract(metadata_json, '$.detail.email') AS email "
+            "FROM subjects WHERE implementation_kind='xray' AND is_active=1 AND is_deleted=0 "
+            "AND COALESCE(json_extract(metadata_json, '$.detail.enabled'), 1)=1 "
+            "ORDER BY subject_id"
+        ).fetchall()
+    finally:
+        connection.close()
+    pairs = {
+        (str(row["client_uuid"] or row["client_id"] or "").strip(), str(row["email"] or "").strip())
+        for row in rows
+    }
+    assert len(pairs) == len(rows), "canonical Xray subject identities are incomplete or duplicated"
+    assert all(client_id and email for client_id, email in pairs), "canonical Xray subject identity is incomplete"
+    return pairs
+
+
+class _SyntheticSubscriptionSource:
+    """Serve a mutable synthetic profile on a suite-owned loopback socket."""
+
+    def __init__(self, payload: dict) -> None:
+        self._lock = threading.Lock()
+        self._body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        source = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path != "/synthetic-subscription":
+                    self.send_error(404)
+                    return
+                with source._lock:
+                    body = source._body
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt: str, *args) -> None:
+                return
+
+        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server.daemon_threads = False
+        self._server.block_on_close = True
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True,
+        )
+        self._thread.start()
+        self.url = f"http://127.0.0.1:{self._server.server_port}/synthetic-subscription"
+
+    def replace(self, payload: dict) -> None:
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        with self._lock:
+            self._body = body
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=3)
+        assert not self._thread.is_alive(), "synthetic subscription source did not stop"
 
 
 def _snapshot_provider_worker_logs(root):
@@ -89,6 +162,44 @@ def _provider_worker_records_since(root, snapshot):
             if isinstance(record, dict):
                 records.append(record)
     return records
+
+
+def _synthetic_vless_profile(*, short_id_suffix: str, include_third_member: bool) -> dict:
+    def outbound(index: int) -> dict:
+        return {
+            "tag": f"synthetic-member-{index}",
+            "protocol": "vless",
+            "settings": {"vnext": [{
+                "address": f"synthetic-member-{index}.example.invalid",
+                "port": 443,
+                "users": [{
+                    "id": str(uuid5(NAMESPACE_DNS, f"pending-generation-member-{index}")),
+                    "encryption": "none",
+                    "flow": "xtls-rprx-vision",
+                }],
+            }]},
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "serverName": f"synthetic-member-{index}.example.invalid",
+                    "publicKey": "CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "shortId": f"{index + 1:02x}" * 8 if not short_id_suffix else f"{index + 1:02x}{short_id_suffix}",
+                    "fingerprint": "chrome",
+                },
+            },
+        }
+
+    count = 3 if include_third_member else 2
+    return {
+        "remarks": "acceptance-pending-generation-profile",
+        "outbounds": [outbound(index) for index in range(count)] + [
+            {"tag": "direct", "protocol": "freedom"},
+            {"tag": "reject", "protocol": "blackhole"},
+            {"tag": "dns", "protocol": "dns"},
+        ],
+        "routing": {"rules": [{"type": "field", "outboundTag": "direct"}]},
+    }
 
 
 def test_email_client_generation_persists_and_matches_native_after_worker_restart(acceptance_stack):
@@ -178,6 +289,701 @@ def test_email_generation_reload_failure_keeps_desired_candidate_and_last_good_l
     }
     assert loaded_identities(stack["native"]) == before_loaded, "failed generation changed actual HandlerService identities"
     assert (token_uuid(job), "reload-failure@acceptance.invalid") not in set(loaded_identities(stack["native"])), job
+
+
+def test_unverified_subscription_inventory_stays_pending_across_startup_until_native_retry(acceptance_stack):
+    """A persisted but un-staged inventory cannot be admitted by startup reconciliation."""
+    stack = acceptance_stack
+    state, native = stack["state"], stack["native"]
+
+    # Keep this generation/recovery scenario independent of external VPN
+    # reachability. Establish the supported public routing intent before any
+    # native baselines or reload counters are captured: direct traffic remains
+    # the applied global policy, while fixed server selection without a target
+    # explicitly skips post-refresh VPN auto-selection.
+    for routing_payload in (
+        {"mode": "direct", "requested_by": "hosted-acceptance", "run_now": True},
+        {"server_mode": "fixed", "requested_by": "hosted-acceptance", "run_now": True},
+    ):
+        code, response = http_json(
+            f"{stack['api']}/routing/global", method="POST", payload=routing_payload,
+        )
+        assert code == 200 and response.get("ok") is True, {
+            "status": code, "ok": response.get("ok"),
+            "error_code": (response.get("error") or {}).get("code")
+            if isinstance(response.get("error"), dict) else None,
+        }
+        job = await_job(stack["api"], response)
+        assert job.get("status") == "success", job
+
+    def assert_generation_routing(api: str) -> None:
+        code, response = http_json(f"{api}/routing/global")
+        assert code == 200 and response.get("ok") is True, {
+            "status": code, "ok": response.get("ok"),
+        }
+        routing = ((response.get("data") or {}).get("routing") or {})
+        assert routing.get("desired_mode") == "direct", routing
+        assert routing.get("applied_mode") == "direct", routing
+        assert routing.get("server_mode") == "fixed", routing
+        assert routing.get("desired_fixed_server_id") is None, routing
+        assert routing.get("applied_fixed_server_id") is None, routing
+
+    def assert_no_fixed_target_auto_select(result: dict) -> None:
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        auto_select = data.get("auto_select")
+        assert isinstance(auto_select, dict), {
+            "data_keys": sorted(data), "auto_select_type": type(auto_select).__name__,
+        }
+        assert auto_select.get("status") == "skipped_no_fixed_target", auto_select
+
+    assert_generation_routing(stack["api"])
+    active_xray = state / "xray" / "config.json"
+    active_mihomo = state / "generated" / "mihomo" / "config.yaml"
+
+    # Seed an exact, isolated 78-identity native baseline. These deterministic
+    # fixtures are local to this acceptance worker and never sourced from prod.
+    xray_config = json.loads(active_xray.read_text(encoding="utf-8"))
+    inbound = next(item for item in xray_config["inbounds"] if item.get("tag") == "vless-ws")
+    baseline_clients = [
+        {
+            "id": str(uuid5(NAMESPACE_DNS, f"pending-inventory-preserved-{index}")),
+            "email": f"pending-inventory-preserved-{index}@acceptance.invalid",
+            "level": 0,
+        }
+        for index in range(78)
+    ]
+    inbound["settings"]["clients"] = baseline_clients
+    active_xray.write_text(json.dumps(xray_config, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    native.restart_xray_child()
+    assert_native_matches_active(native, active_xray)
+    baseline_pairs = {(str(row["id"]), str(row["email"])) for row in baseline_clients}
+    baseline_fingerprint = hashlib.sha256(
+        json.dumps(sorted(baseline_pairs), separators=(",", ":")).encode()
+    ).hexdigest()
+    assert set(loaded_identities(native)) == baseline_pairs
+    assert len(loaded_identities(native)) == 78
+
+    def profile(*, changed_short_ids: bool, add_member: bool) -> dict:
+        suffix = "a1b2c3d4e5f607" if changed_short_ids else ""
+        return _synthetic_vless_profile(short_id_suffix=suffix, include_third_member=add_member)
+
+    def add_profile_member(value: dict, index: int) -> dict:
+        """Create strict ordered growth while preserving every existing outbound."""
+        grown = json.loads(json.dumps(value))
+        prior = next(
+            item for item in grown["outbounds"]
+            if isinstance(item, dict) and item.get("tag") == "synthetic-member-2"
+        )
+        added = json.loads(json.dumps(prior))
+        added["tag"] = f"synthetic-member-{index}"
+        vnext = added["settings"]["vnext"][0]
+        vnext["address"] = f"synthetic-member-{index}.example.invalid"
+        vnext["users"][0]["id"] = str(uuid5(NAMESPACE_DNS, f"pending-generation-member-{index}"))
+        reality = added["streamSettings"]["realitySettings"]
+        reality["serverName"] = f"synthetic-member-{index}.example.invalid"
+        reality["shortId"] = f"{index + 1:02x}" * 8
+        service_index = next(
+            index for index, outbound in enumerate(grown["outbounds"])
+            if isinstance(outbound, dict) and outbound.get("protocol") in {"freedom", "blackhole", "dns"}
+        )
+        grown["outbounds"].insert(service_index, added)
+        return grown
+
+    def content_id(value: dict) -> str:
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        return "sub:" + hashlib.sha256(raw).hexdigest()
+
+    def import_source(url: str) -> dict:
+        code, result = http_json(
+            f"{stack['api']}/subscription", method="POST",
+            payload={"urls": [url], "requested_by": "hosted-acceptance-synthetic"},
+            timeout=90,
+        )
+        assert code == 200, {"status": code, "ok": result.get("ok"), "error": result.get("error")}
+        return result
+
+    def generation_state(api: str) -> dict:
+        code, result = http_json(f"{api}/__acceptance/subscription/native-generation")
+        assert code == 200 and result.get("ok") is True, {
+            "status": code, "ok": result.get("ok"), "error_code": result.get("error_code"),
+        }
+        value = result.get("state")
+        assert isinstance(value, dict), result
+        return value
+
+    def active_profile_runtime_name() -> str:
+        # Read only this acceptance worker's synthetic database. This avoids
+        # depending on API DTO redaction/shape for internal runtime metadata.
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            rows = connection.execute(
+                "SELECT raw_json FROM servers WHERE server_name=? AND inventory_state='active'",
+                ("acceptance-pending-generation-profile",),
+            ).fetchall()
+        finally:
+            connection.close()
+        matches = []
+        for row in rows:
+            raw = json.loads(row[0])
+            topology = raw.get("_fwrouter_topology") if isinstance(raw, dict) else None
+            if isinstance(topology, dict) and topology.get("kind") == "logical_profile":
+                name = str(raw.get("_fwrouter_runtime_name") or "").strip()
+                if name:
+                    matches.append(name)
+        assert len(matches) == 1, {"owned_logical_profile_count": len(matches)}
+        return matches[0]
+
+    def logical_profile_group(config: dict, runtime_name: str, expected_probe_url: str) -> dict:
+        groups = [
+            item for item in config.get("proxy-groups", [])
+            if isinstance(item, dict) and item.get("name") == runtime_name
+        ]
+        assert len(groups) == 1, {"owned_logical_group_count": len(groups)}
+        group = groups[0]
+        assert group.get("type") == "fallback"
+        probe = urlsplit(str(group.get("url") or ""))
+        expected_probe = urlsplit(expected_probe_url)
+        assert (expected_probe.scheme == "http" and expected_probe.hostname is not None
+                and expected_probe.port is not None and expected_probe.path == "/generate_204"
+                and not expected_probe.username and not expected_probe.password
+                and not expected_probe.query and not expected_probe.fragment), {
+            "expected_probe_is_owned": False,
+        }
+        assert probe == expected_probe, {"probe_matches_owned_stack_endpoint": probe == expected_probe}
+        return group
+
+    def expected_logical_probe_url() -> str:
+        profile = stack.get("profile")
+        assert isinstance(profile, dict)
+        if profile.get("profile") == "hosted-kernel-packet":
+            return "http://203.0.113.53:9080/generate_204"
+        if profile.get("profile") == "hosted-kernel-dataplane":
+            probe_url = stack.get("mihomo_probe_url")
+            assert isinstance(probe_url, str) and probe_url
+            return probe_url
+        bridge = stack.get("provider_bridge")
+        assert bridge is not None
+        return f"{bridge.base_url}/generate_204"
+
+    def last_good_mihomo_snapshot() -> dict[str, str]:
+        directory = state / "last-good" / "mihomo"
+        if not directory.is_dir():
+            return {}
+        return {
+            item.name: hashlib.sha256(item.read_bytes()).hexdigest()
+            for item in sorted(directory.iterdir()) if item.is_file() and not item.is_symlink()
+        }
+
+    source = _SyntheticSubscriptionSource(profile(changed_short_ids=False, add_member=False))
+    try:
+        initial = import_source(source.url)
+        assert initial.get("ok") is True, {
+            "ok": initial.get("ok"),
+            "error_code": (initial.get("error") or {}).get("code")
+            if isinstance(initial.get("error"), dict) else None,
+        }
+        assert_no_fixed_target_auto_select(initial)
+        applied = generation_state(stack["api"])
+        assert applied.get("status") == "verified"
+        assert applied.get("candidate_digest") == applied.get("verified_digest")
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        runtime_name_a = active_profile_runtime_name()
+        owned_probe_url = expected_logical_probe_url()
+        mihomo_before = active_mihomo.read_bytes()
+        xray_before = active_xray.read_bytes()
+        config_a = yaml.safe_load(mihomo_before)
+        group_a = logical_profile_group(config_a, runtime_name_a, owned_probe_url)
+        members_a = {str(item) for item in group_a.get("proxies", [])}
+        assert len(members_a) == 2
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        last_good_before_failure = last_good_mihomo_snapshot()
+        mihomo_incarnation = (native.mihomo_process.pid, native.mihomo_started_at)
+        reloads_before_failure = native.reload_calls
+
+        source.replace(profile(changed_short_ids=True, add_member=True))
+        # The first observation persists B but must stop at the reviewed
+        # identity-migration boundary. It is not the injected native-stage
+        # failure below; assert the distinct reason so the one-shot hook cannot
+        # be accidentally consumed by an earlier lifecycle guard.
+        identity_blocked = import_source(source.url)
+        identity_error = identity_blocked.get("error")
+        assert identity_blocked.get("ok") is False
+        assert (identity_error or {}).get("code") == "XRAY_VPN_AUTO_RECONCILE_EXCEPTION"
+        assert (identity_error or {}).get("message") == "IDENTITY_MIGRATION_REQUIRED"
+        pending = generation_state(stack["api"])
+        assert pending.get("status") == "pending"
+        assert pending.get("candidate_digest") and pending.get("verified_digest")
+        assert pending.get("candidate_digest") != pending.get("verified_digest")
+        assert type(pending.get("candidate_revision")) is int
+        assert type(pending.get("verified_revision")) is int
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
+        assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert_native_matches_active(native, active_xray)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        old_worker = stack["worker"]
+        old_worker.terminate()
+        old_worker.wait(timeout=5)
+        restarted_worker, restarted_api = stack["start_worker"]()
+        stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert_generation_routing(restarted_api)
+        assert generation_state(restarted_api) == pending
+        recovery_code, recovery = http_json(
+            f"{restarted_api}/__acceptance/xray/startup-generation-recovery",
+            method="POST", timeout=75,
+        )
+        assert recovery_code == 200 and recovery.get("ok") is False, {
+            "status": recovery_code, "ok": recovery.get("ok"),
+            "status_name": recovery.get("status"), "error_code": recovery.get("error_code"),
+        }
+        assert recovery.get("native_generation", {}).get("status") == "pending"
+        assert generation_state(restarted_api) == pending
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
+        assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # A changed Reality short-id is a transport-identity change, not
+        # compatible profile growth. Keep the failed candidate fenced across
+        # restart, then use the existing exact-context identity review flow;
+        # it must not write native state or claim the inventory verified.
+        assert not (state / "xray" / ".generation" / "generation-checkpoint.json").exists(), (
+            "pre-stage identity-migration refusal unexpectedly created a generation checkpoint"
+        )
+        context_code, context = http_json(
+            f"{restarted_api}/__acceptance/xray/identity-context",
+        )
+        assert context_code == 200 and context.get("ok") is True
+        old_server_id = content_id(profile(changed_short_ids=False, add_member=False))
+        new_profile = profile(changed_short_ids=True, add_member=True)
+        new_server_id = content_id(new_profile)
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            identity_row = connection.execute(
+                "SELECT i.revision FROM subscription_node_aliases a "
+                "JOIN subscription_node_identities i ON i.identity_id=a.identity_id "
+                "WHERE a.server_id=?", (old_server_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        assert identity_row is not None, "synthetic source identity was not durably registered"
+        manifest = {
+            "version": 1,
+            "expected_selection_revision": context["selection_revision"],
+            "expected_identity_digest": context["identity_digest"],
+            "mappings": [{
+                "old_server_id": old_server_id,
+                "new_server_id": new_server_id,
+                "expected_identity_revision": int(identity_row[0]),
+                "old_profile": profile(changed_short_ids=False, add_member=False),
+                "new_profile": new_profile,
+            }],
+        }
+
+        def identity_cli(payload: dict) -> dict:
+            code, result = http_json(
+                f"{restarted_api}/__acceptance/xray/identity-cli", method="POST",
+                payload=payload, timeout=90,
+            )
+            assert code == 200 and result.get("stderr_empty") is True, {
+                "status": code, "ok": result.get("ok"), "error_code": result.get("error_code"),
+            }
+            assert result.get("ok") is True, {
+                "exit_code": result.get("exit_code"),
+                "error_code": (result.get("receipt") or {}).get("error_code"),
+            }
+            return result.get("receipt") or {}
+
+        dry = identity_cli({"action": "dry-run", "manifest": manifest})
+        assert dry.get("fresh_generation_required") is True
+        assert dry.get("native_applied") is False and dry.get("changed_count") == 1
+        apply = identity_cli({
+            "action": "apply", "manifest": manifest,
+            "expected_plan_sha256": dry.get("plan_sha256"),
+        })
+        assert apply.get("fresh_generation_required") is True
+        assert apply.get("native_applied") is False and apply.get("changed_count") == 1
+        reviewed_pending = generation_state(restarted_api)
+        assert reviewed_pending.get("status") == "pending"
+        assert reviewed_pending.get("candidate_digest") != reviewed_pending.get("verified_digest")
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # Now the reviewed candidate can reach the native staging boundary.
+        # The one-shot fault must be consumed there, and report its own exact
+        # error rather than inheriting the earlier identity guard failure.
+        armed_code, armed = http_json(
+            f"{restarted_api}/__acceptance/xray/pre-native-stage-failure/arm", method="POST",
+        )
+        assert armed_code == 200 and armed.get("ok") is True and armed.get("armed") is True, {
+            "status": armed_code, "ok": armed.get("ok"),
+        }
+        stage_failed = import_source(source.url)
+        stage_data = stage_failed.get("data") if isinstance(stage_failed.get("data"), dict) else {}
+        stage_apply = stage_data.get("refresh") if isinstance(stage_data.get("refresh"), dict) else {}
+        stage_error = stage_apply.get("error") if isinstance(stage_apply.get("error"), dict) else {}
+        stage_reconcile = stage_apply.get("reconcile") if isinstance(stage_apply.get("reconcile"), dict) else {}
+        assert stage_failed.get("ok") is False
+        assert stage_error.get("code") == "ACCEPTANCE_PRE_NATIVE_STAGE_FAILURE"
+        assert stage_reconcile.get("error_code") == "ACCEPTANCE_PRE_NATIVE_STAGE_FAILURE"
+        assert not (state / "run" / "fail-before-native-stage-once").exists(), (
+            "pre-native-stage fault hook was not consumed at the staging boundary"
+        )
+        assert not (state / "xray" / ".generation" / "generation-checkpoint.json").exists(), (
+            "pre-native-stage failure unexpectedly created a generation checkpoint"
+        )
+        pending_after_stage_failure = generation_state(restarted_api)
+        assert pending_after_stage_failure.get("status") == "pending"
+        assert pending_after_stage_failure.get("candidate_digest") != pending_after_stage_failure.get("verified_digest")
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
+        assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # A real native-stage failure remains pending across a worker restart;
+        # automatic startup reconciliation must decline without changing native.
+        old_worker = stack["worker"]
+        old_worker.terminate()
+        old_worker.wait(timeout=5)
+        restarted_worker, restarted_api = stack["start_worker"]()
+        stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert generation_state(restarted_api) == pending_after_stage_failure
+        recovery_code, recovery = http_json(
+            f"{restarted_api}/__acceptance/xray/startup-generation-recovery",
+            method="POST", timeout=75,
+        )
+        assert recovery_code == 200 and recovery.get("ok") is False, {
+            "status": recovery_code, "ok": recovery.get("ok"),
+            "status_name": recovery.get("status"), "error_code": recovery.get("error_code"),
+        }
+        assert recovery.get("native_generation", {}).get("status") == "pending"
+        assert generation_state(restarted_api) == pending_after_stage_failure
+        assert active_mihomo.read_bytes() == mihomo_before
+        assert active_xray.read_bytes() == xray_before
+        assert native.reload_calls == reloads_before_failure
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == mihomo_incarnation
+        assert last_good_mihomo_snapshot() == last_good_before_failure
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # Re-fetch the same synthetic source through the normal public import
+        # and native publication path after the reviewed identity transition.
+        # The explicit review authorizes the identity continuity; this fresh
+        # operation still has to prove the candidate through native readback.
+        retried = import_source(source.url)
+        assert retried.get("ok") is True, {
+            "ok": retried.get("ok"),
+            "error_code": (retried.get("error") or {}).get("code")
+            if isinstance(retried.get("error"), dict) else None,
+        }
+        assert_no_fixed_target_auto_select(retried)
+        verified = generation_state(restarted_api)
+        assert verified.get("status") == "verified"
+        assert verified.get("candidate_digest") == verified.get("verified_digest")
+        assert verified.get("verified_digest") == pending_after_stage_failure.get("candidate_digest")
+        runtime_name_b = active_profile_runtime_name()
+        config_b = yaml.safe_load(active_mihomo.read_bytes())
+        group_b = logical_profile_group(config_b, runtime_name_b, owned_probe_url)
+        members_b = {str(item) for item in group_b.get("proxies", [])}
+        assert len(members_b) == 3
+        assert members_b != members_a and members_a - members_b and members_b - members_a
+        proxies = {
+            str(item.get("name") or ""): item
+            for item in config_b.get("proxies", []) if isinstance(item, dict)
+        }
+        assert members_b <= set(proxies)
+        observed_short_ids = {
+            str((proxy.get("reality-opts") or {}).get("short-id") or "")
+            for name, proxy in proxies.items() if name in members_b
+        }
+        expected_short_ids = {
+            f"{index + 1:02x}a1b2c3d4e5f607" for index in range(3)
+        }
+        assert expected_short_ids <= observed_short_ids, {
+            "expected_count": len(expected_short_ids),
+            "observed_count": len(observed_short_ids),
+        }
+        final_identities = loaded_identities(native)
+        assert set(final_identities) >= baseline_pairs
+        assert sum(1 for pair in final_identities if pair in baseline_pairs) == 78
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert hashlib.sha256(json.dumps(sorted(baseline_pairs), separators=(",", ":")).encode()).hexdigest() == baseline_fingerprint
+
+        # Exercise a crash-window after real native apply/readback and profile
+        # publication, but before the durable inventory marker is promoted.
+        before_checkpoint_mihomo = active_mihomo.read_bytes()
+        profile_c = add_profile_member(new_profile, 3)
+        source.replace(profile_c)
+        armed_code, armed = http_json(
+            f"{restarted_api}/__acceptance/xray/inventory-promotion-failure/arm", method="POST",
+        )
+        assert armed_code == 200 and armed.get("armed") is True, {
+            "status": armed_code, "ok": armed.get("ok"),
+        }
+        promotion_failed = import_source(source.url)
+        assert promotion_failed.get("ok") is False, {
+            "ok": promotion_failed.get("ok"),
+            "stage": (promotion_failed.get("data") or {}).get("stage")
+            if isinstance(promotion_failed.get("data"), dict) else None,
+        }
+        checkpoint_path = state / "xray" / ".generation" / "generation-checkpoint.json"
+        assert checkpoint_path.is_file(), "promotion failure closed the native generation checkpoint"
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        pending_after_apply = generation_state(restarted_api)
+        binding = checkpoint.get("subscription_inventory_generation")
+        assert pending_after_apply.get("status") == "pending"
+        assert isinstance(binding, dict)
+        assert binding.get("digest") == pending_after_apply.get("candidate_digest")
+        assert binding.get("revision") == pending_after_apply.get("candidate_revision")
+        assert type(binding.get("revision")) is int
+        assert checkpoint.get("phase") == "snapshots_published", checkpoint.get("phase")
+        assert active_mihomo.read_bytes() != before_checkpoint_mihomo
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        old_worker = stack["worker"]
+        old_worker.terminate()
+        old_worker.wait(timeout=5)
+        restarted_worker, restarted_api = stack["start_worker"]()
+        stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert generation_state(restarted_api).get("status") == "pending"
+        recovery_reloads = native.reload_calls
+        recovery_incarnation = (native.mihomo_process.pid, native.mihomo_started_at)
+        checkpoint_recovery_code, checkpoint_recovery = http_json(
+            f"{restarted_api}/__acceptance/xray/reconcile",
+            method="POST", payload={"direct_checkpoint": True}, timeout=75,
+        )
+        assert checkpoint_recovery_code == 200 and checkpoint_recovery.get("ok") is True, {
+            "status": checkpoint_recovery_code,
+            "ok": checkpoint_recovery.get("ok"),
+            "recovered": checkpoint_recovery.get("recovered"),
+            "reason": checkpoint_recovery.get("reason"),
+        }
+        recovered_generation = generation_state(restarted_api)
+        assert recovered_generation.get("status") == "verified"
+        assert recovered_generation.get("candidate_digest") == recovered_generation.get("verified_digest")
+        assert recovered_generation.get("candidate_digest") == pending_after_apply.get("candidate_digest")
+        assert not checkpoint_path.exists(), "freshly proven recovery left the generation checkpoint open"
+        assert native.reload_calls == recovery_reloads + 1, (
+            "checkpoint recovery must reload the owned Xray projection once for fresh native proof"
+        )
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == recovery_incarnation
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # A newer persisted candidate invalidates the checkpoint's bound
+        # digest/revision. Recovery must decline without touching native state.
+        profile_d = add_profile_member(profile_c, 4)
+        source.replace(profile_d)
+        armed_code, armed = http_json(
+            f"{restarted_api}/__acceptance/xray/inventory-promotion-failure/arm", method="POST",
+        )
+        assert armed_code == 200 and armed.get("armed") is True, {
+            "status": armed_code, "ok": armed.get("ok"),
+        }
+        stale_candidate_apply = import_source(source.url)
+        assert stale_candidate_apply.get("ok") is False
+        assert checkpoint_path.is_file()
+        stale_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        stale_native_xray = active_xray.read_bytes()
+        stale_native_mihomo = active_mihomo.read_bytes()
+        stale_reload_count = native.reload_calls
+        stale_incarnation = (native.mihomo_process.pid, native.mihomo_started_at)
+        stale_binding = stale_checkpoint.get("subscription_inventory_generation")
+        stale_pending = generation_state(restarted_api)
+        assert isinstance(stale_binding, dict) and stale_binding.get("digest") == stale_pending.get("candidate_digest")
+        stale_checkpoint_bytes = checkpoint_path.read_bytes()
+
+        blocked_code, blocked_refresh = http_json(
+            f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
+            payload={"profile": add_profile_member(profile_d, 5)},
+        )
+        assert blocked_code == 200 and blocked_refresh.get("ok") is False, {
+            "status": blocked_code, "ok": blocked_refresh.get("ok"),
+            "error_code": blocked_refresh.get("error_code"),
+        }
+        assert blocked_refresh.get("error_code") == "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"
+        assert blocked_refresh.get("last_good_retained") is True
+        assert generation_state(restarted_api) == stale_pending
+        assert checkpoint_path.read_bytes() == stale_checkpoint_bytes
+        assert active_xray.read_bytes() == stale_native_xray
+        assert active_mihomo.read_bytes() == stale_native_mihomo
+        assert native.reload_calls == stale_reload_count
+        assert (native.mihomo_process.pid, native.mihomo_started_at) == stale_incarnation
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        # Resolve D through the owner while its durable checkpoint still matches.
+        # Only after fresh native proof and promotion may ordinary refresh E run.
+        recovery_code, recovered_d = http_json(
+            f"{restarted_api}/__acceptance/xray/reconcile",
+            method="POST", payload={"direct_checkpoint": True}, timeout=75,
+        )
+        assert recovery_code == 200 and recovered_d.get("ok") is True, {
+            "status": recovery_code, "ok": recovered_d.get("ok"),
+            "recovered": recovered_d.get("recovered"), "reason": recovered_d.get("reason"),
+        }
+        assert not checkpoint_path.exists()
+        verified_d = generation_state(restarted_api)
+        assert verified_d.get("status") == "verified"
+        assert verified_d.get("candidate_digest") == stale_binding.get("digest")
+        assert verified_d.get("verified_digest") == stale_binding.get("digest")
+        assert_native_matches_active(native, active_xray)
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+
+        profile_e = add_profile_member(profile_d, 5)
+        refresh_code, refreshed = http_json(
+            f"{restarted_api}/__acceptance/xray/identity-refresh", method="POST",
+            payload={"profile": profile_e},
+        )
+        assert refresh_code == 200 and refreshed.get("ok") is True, {
+            "status": refresh_code, "ok": refreshed.get("ok"),
+            "error_code": refreshed.get("error_code"),
+        }
+        candidate_e = generation_state(restarted_api)
+        assert candidate_e.get("status") == "pending"
+        assert candidate_e.get("candidate_digest") != verified_d.get("candidate_digest")
+        publish_code, published_e = http_json(
+            f"{restarted_api}/__acceptance/xray/publish-pending-inventory",
+            method="POST", payload={"include_vpn_auto": True}, timeout=75,
+        )
+        assert publish_code == 200 and published_e.get("ok") is True, {
+            "status": publish_code, "ok": published_e.get("ok"),
+            "error_code": published_e.get("error_code"),
+        }
+        verified_e = generation_state(restarted_api)
+        assert verified_e.get("status") == "verified"
+        assert verified_e.get("candidate_digest") == candidate_e.get("candidate_digest")
+        assert verified_e.get("verified_digest") == candidate_e.get("candidate_digest")
+        assert_native_matches_active(native, active_xray)
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+        identities_e = current_xray_subject_identity_pairs(state / "fwrouter.db")
+        expected_e_identities = baseline_pairs | identities_e
+        assert set(loaded_identities(native)) == expected_e_identities, {
+            "expected_count": len(expected_e_identities),
+            "actual_count": len(set(loaded_identities(native))),
+        }
+        assert set(active_identities(active_xray)) == expected_e_identities
+
+        # Exercise the distinct crash window after durable inventory promotion
+        # but before the generation checkpoint is closed. This must recover from
+        # the committed current projection, never restore the old preimage.
+        profile_f = add_profile_member(profile_e, 6)
+        profile_tags_f = [
+            str(item.get("tag") or "") for item in profile_f["outbounds"]
+            if isinstance(item, dict) and str(item.get("tag") or "").startswith("synthetic-member-")
+        ]
+        assert profile_tags_f == [f"synthetic-member-{index}" for index in range(7)]
+        source.replace(profile_f)
+        armed_code, armed = http_json(
+            f"{restarted_api}/__acceptance/xray/post-promotion-crash/arm", method="POST",
+        )
+        assert armed_code == 200 and armed.get("armed") is True, {
+            "status": armed_code, "ok": armed.get("ok"),
+        }
+        xray_before_promotion_crash = active_xray.read_bytes()
+        mihomo_before_promotion_crash = active_mihomo.read_bytes()
+        reloads_before_promotion_crash = native.reload_calls
+        try:
+            http_json(
+                f"{restarted_api}/subscription", method="POST",
+                payload={"urls": [source.url], "requested_by": "hosted-acceptance-synthetic"},
+                timeout=90,
+            )
+        except urllib.error.URLError as exc:
+            assert isinstance(exc.reason, (
+                ConnectionError, TimeoutError, http.client.RemoteDisconnected,
+            )), {"transport_error_type": type(exc.reason).__name__}
+        except http.client.RemoteDisconnected:
+            pass
+        else:
+            raise AssertionError("post-promotion crash injection unexpectedly returned an HTTP response")
+        old_worker = stack["worker"]
+        assert old_worker.wait(timeout=5) == 86, "worker did not exit at the injected post-promotion crash"
+        assert checkpoint_path.is_file(), "post-promotion interruption closed the generation checkpoint"
+        committed_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        committed_binding = committed_checkpoint.get("subscription_inventory_generation")
+        assert committed_checkpoint.get("phase") == "snapshots_published"
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            rows = connection.execute(
+                "SELECT value_json FROM settings WHERE key='subscriptions.native_generation.v1'"
+            ).fetchall()
+        finally:
+            connection.close()
+        assert len(rows) == 1
+        committed_inventory = json.loads(rows[0][0])
+        identities_f = current_xray_subject_identity_pairs(state / "fwrouter.db")
+        expected_f_identities = baseline_pairs | identities_f
+        assert committed_inventory.get("status") == "verified"
+        assert committed_inventory.get("candidate_digest") == committed_inventory.get("verified_digest")
+        assert isinstance(committed_binding, dict)
+        assert committed_binding.get("digest") == committed_inventory.get("candidate_digest")
+        assert committed_binding.get("revision") == committed_inventory.get("candidate_revision")
+        assert active_xray.read_bytes() != xray_before_promotion_crash
+        assert active_mihomo.read_bytes() != mihomo_before_promotion_crash
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert identities_e <= identities_f
+        assert set(active_identities(active_xray)) == expected_f_identities
+        assert set(loaded_identities(native)) == expected_f_identities, {
+            "expected_count": len(expected_f_identities),
+            "actual_count": len(set(loaded_identities(native))),
+        }
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+        assert native.reload_calls > reloads_before_promotion_crash
+
+        restarted_worker, restarted_api = stack["start_worker"]()
+        stack["worker"], stack["api"] = restarted_worker, restarted_api
+        assert checkpoint_path.is_file(), "restart discarded the committed generation checkpoint"
+        assert generation_state(restarted_api) == committed_inventory
+        recovery_code, recovered_committed = http_json(
+            f"{restarted_api}/__acceptance/xray/reconcile",
+            method="POST", payload={"direct_checkpoint": True}, timeout=75,
+        )
+        assert recovery_code == 200 and recovered_committed.get("ok") is True, {
+            "status": recovery_code, "ok": recovered_committed.get("ok"),
+            "recovered": recovered_committed.get("recovered"),
+            "reason": recovered_committed.get("reason"),
+        }
+        assert recovered_committed.get("recovered") == "current_projection_verified"
+        assert not checkpoint_path.exists()
+        verified_after_recovery = generation_state(restarted_api)
+        assert verified_after_recovery == committed_inventory
+        assert_native_matches_active(native, active_xray)
+        assert_mihomo_launch_matches_active(native, active_mihomo)
+        assert set(loaded_identities(native)) == expected_f_identities
+        assert set(loaded_identities(native)) >= baseline_pairs
+        assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
+    finally:
+        source.close()
 
 
 def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_restart_recovery(acceptance_stack):
@@ -334,13 +1140,14 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         connection.close()
 
     code, baseline = http_json(
-        f"{stack['api']}/__acceptance/xray/reconcile", method="POST",
-        payload={"include_vpn_auto": True}, timeout=75,
+        f"{stack['api']}/__acceptance/xray/publish-pending-inventory", method="POST",
+        payload={"include_vpn_auto": True}, timeout=90,
     )
     assert code == 200 and baseline.get("ok") is True, {
         "status": code, "ok": baseline.get("ok"), "stage": baseline.get("stage"),
         "error_code": baseline.get("error_code"),
     }
+    assert baseline.get("native_generation_verified") is True
     assert_native_matches_active(native, active_path)
     baseline_pairs = set(loaded_identities(native))
     affected = {
@@ -483,7 +1290,38 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         "loaded_count": len(loaded_after_restart), "loaded_sha256": identity_fingerprint(loaded_after_restart),
         "expected_count": len(baseline_pairs), "expected_sha256": identity_fingerprint(baseline_pairs),
     }
+    inventory_code, inventory_response = http_json(
+        f"{restarted_api}/__acceptance/subscription/native-generation",
+    )
+    assert inventory_code == 200 and inventory_response.get("ok") is True, {
+        "status": inventory_code, "error_code": inventory_response.get("error_code"),
+    }
+    verified_inventory = inventory_response.get("state")
+    assert isinstance(verified_inventory, dict)
+    checkpoint_binding = checkpoint_data.get("subscription_inventory_generation")
+    assert (verified_inventory.get("status") == "verified"
+            and isinstance(checkpoint_binding, dict)
+            and checkpoint_binding.get("digest") == verified_inventory.get("candidate_digest")
+            and checkpoint_binding.get("digest") == verified_inventory.get("verified_digest")
+            and checkpoint_binding.get("revision") == verified_inventory.get("candidate_revision")
+            and checkpoint_binding.get("revision") == verified_inventory.get("verified_revision")), {
+        "inventory_status": verified_inventory.get("status"),
+        "checkpoint_inventory_bound": isinstance(checkpoint_binding, dict),
+        "candidate_revision": verified_inventory.get("candidate_revision"),
+        "verified_revision": verified_inventory.get("verified_revision"),
+    }
 
+    # Resolve the still-bound checkpoint through the production recovery owner
+    # before allowing the ordinary identity refresh to persist a new candidate.
+    recovery_code, recovered_checkpoint = http_json(
+        f"{restarted_api}/__acceptance/xray/subscription-refresh-preflight",
+        method="POST", timeout=75,
+    )
+    assert recovery_code == 200 and recovered_checkpoint.get("ok") is True, {
+        "status": recovery_code, "error_code": recovered_checkpoint.get("error_code"),
+        "stage": recovered_checkpoint.get("stage"),
+    }
+    assert not checkpoint.exists()
     connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
     try:
         connection.execute(
@@ -582,6 +1420,50 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         }
         return int(result.get("exit_code", 1)), result.get("receipt", {})
 
+    def reconcile_after_identity_refresh(api: str) -> dict:
+        code, generation_response = http_json(
+            f"{api}/__acceptance/subscription/native-generation",
+        )
+        assert code == 200 and generation_response.get("ok") is True, {
+            "status": code,
+            "error_code": generation_response.get("error_code"),
+        }
+        inventory = generation_response.get("state")
+        assert isinstance(inventory, dict)
+        if inventory.get("status") == "pending":
+            code, result = http_json(
+                f"{api}/__acceptance/xray/publish-pending-inventory", method="POST",
+                payload={"include_vpn_auto": True}, timeout=75,
+            )
+            assert code == 200 and result.get("ok") is True, {
+                "status": code, "ok": result.get("ok"), "stage": result.get("stage"),
+                "error_code": result.get("error_code"),
+                "native_generation_verified": result.get("native_generation_verified"),
+            }
+            assert result.get("native_generation_verified") is True
+            return result
+        code, result = http_json(
+            f"{api}/__acceptance/xray/reconcile", method="POST",
+            payload={"include_vpn_auto": True}, timeout=75,
+        )
+        assert code == 200 and result.get("ok") is True, {
+            "status": code, "ok": result.get("ok"), "stage": result.get("stage"),
+            "error_code": result.get("error_code"),
+        }
+        return result
+
+    # Reconstruct the exact pre-upgrade durable state before the CLI dry-run:
+    # its manifest is explicitly bound to this checkpoint SHA. The owned
+    # worker is stopped while this synthetic historical snapshot is restored.
+    prior_worker = stack["worker"]
+    prior_worker.terminate()
+    prior_worker.wait(timeout=5)
+    checkpoint.write_bytes(old_checkpoint_bytes)
+    checkpoint.chmod(0o600)
+    restarted_worker, restarted_api = stack["start_worker"]()
+    stack["worker"], stack["api"] = restarted_worker, restarted_api
+    assert checkpoint.is_file() and hashlib.sha256(checkpoint.read_bytes()).hexdigest() == old_checkpoint_sha
+
     reloads_before_intent = native.reload_calls
     active_before_intent = active_path.read_bytes()
     dry_code, dry = cli({"action": "dry-run", "manifest": manifest})
@@ -609,6 +1491,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         assert current_raw.get("_fwrouter_identity_migration_required") is True
     finally:
         connection.close()
+
     assert native.reload_calls == reloads_before_intent
     apply_code, applied = cli({
         "action": "apply", "manifest": manifest,
@@ -758,14 +1641,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         payload={"profile": new_profile},
     )
     assert code == 200 and repeated_refresh.get("ok") is True and repeated_refresh.get("server_ids") == [new_id]
-    code, recovered = http_json(
-        f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
-        payload={"include_vpn_auto": True}, timeout=75,
-    )
-    assert code == 200 and recovered.get("ok") is True, {
-        "status": code, "ok": recovered.get("ok"), "stage": recovered.get("stage"),
-        "error_code": recovered.get("error_code"),
-    }
+    reconcile_after_identity_refresh(restarted_api)
     assert_native_matches_active(native, active_path)
     loaded_after_restart = set(loaded_identities(native))
     assert len(loaded_after_restart) == 78 and identity_fingerprint(loaded_after_restart) == identity_fingerprint(unaffected | affected), {
@@ -823,7 +1699,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     def reconcile_with_candidate_integrity_fault() -> None:
         try:
             reconcile_result.put(("result", http_json(
-                f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
+                f"{restarted_api}/__acceptance/xray/publish-pending-inventory", method="POST",
                 payload={"include_vpn_auto": True}, timeout=110,
             )), timeout=2)
         except Exception as exc:
@@ -921,6 +1797,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
         "status": fault_code, "ok": fault.get("ok"), "stage": fault.get("stage"),
         "error_code": fault.get("error_code"),
     }
+    assert fault.get("native_generation_verified") is False
     assert fault.get("stage") == "mihomo_final_apply"
     assert fault.get("error_code") == "XRAY_GENERATION_FINAL_APPLY_FAILED"
     recovery = fault.get("generation_recovery")
@@ -964,14 +1841,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     )
     assert code == 200 and recovered_refresh.get("ok") is True
     assert recovered_refresh.get("server_ids") == [grown_id]
-    code, recovered_after_fault = http_json(
-        f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
-        payload={"include_vpn_auto": True}, timeout=75,
-    )
-    assert code == 200 and recovered_after_fault.get("ok") is True, {
-        "status": code, "ok": recovered_after_fault.get("ok"),
-        "stage": recovered_after_fault.get("stage"), "error_code": recovered_after_fault.get("error_code"),
-    }
+    reconcile_after_identity_refresh(restarted_api)
     assert_native_matches_active(native, active_path)
     assert_mihomo_launch_matches_active(native, mihomo_active_path)
     loaded_after_fault_restart = set(loaded_identities(native))
@@ -1016,14 +1886,7 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     )
     assert code == 200 and post_revoke_refresh.get("ok") is True
     assert post_revoke_refresh.get("server_ids") == [grown_id]
-    code, post_revoke_reconcile = http_json(
-        f"{restarted_api}/__acceptance/xray/reconcile", method="POST",
-        payload={"include_vpn_auto": True}, timeout=75,
-    )
-    assert code == 200 and post_revoke_reconcile.get("ok") is True, {
-        "status": code, "ok": post_revoke_reconcile.get("ok"),
-        "stage": post_revoke_reconcile.get("stage"), "error_code": post_revoke_reconcile.get("error_code"),
-    }
+    reconcile_after_identity_refresh(restarted_api)
     loaded_after_revocation = set(loaded_identities(native))
     expected_after_revocation = (unaffected | affected) - {(revoked_uuid, revoked_email)}
     assert len(loaded_after_revocation) == 77 and identity_fingerprint(loaded_after_revocation) == identity_fingerprint(expected_after_revocation), {

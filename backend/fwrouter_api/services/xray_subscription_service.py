@@ -561,6 +561,7 @@ def migrate_subscription_profile_identities(
             "ON a.account_id=c.account_id WHERE c.enabled=1 AND a.enabled=1 ORDER BY c.token"
         )]
         changed = 0
+        inventory_changed = False
         for item in mappings:
             old_id = str(item["old_server_id"])
             origin_id = origin_server_id_for_server(connection, old_id)
@@ -605,9 +606,13 @@ def migrate_subscription_profile_identities(
             )
             target_raw.pop("_fwrouter_identity_migration_required", None)
             target_raw["_fwrouter_profile_provenance"] = expected_provenance
+            target_raw_json = json.dumps(
+                target_raw, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            )
+            inventory_changed = inventory_changed or target_raw_json != str(target_row["raw_json"] or "")
             connection.execute(
                 "UPDATE servers SET raw_json=? WHERE server_id=? AND inventory_state='active'",
-                (json.dumps(target_raw, ensure_ascii=False, sort_keys=True, separators=(",", ":")), target_id),
+                (target_raw_json, target_id),
             )
             changed += int(prior is None)
         revision = current_revision
@@ -615,6 +620,13 @@ def migrate_subscription_profile_identities(
             revision = advance_selection_revision(connection, expected_revision=current_revision)
             if revision is None:
                 raise IdentityConflict("IDENTITY_MIGRATION_SELECTION_STALE")
+        if apply and inventory_changed:
+            # The reviewed migration changes exact raw_json bytes covered by
+            # the inventory digest. Advance its admission marker in this same
+            # transaction, but never treat the new generation as applied.
+            from fwrouter_api.services.subscription import _write_subscription_inventory_candidate
+
+            _write_subscription_inventory_candidate(connection, force_pending=True)
         if not apply:
             connection.rollback()
     return {"ok": True, "status": "applied" if apply else "dry_run",
@@ -1197,8 +1209,13 @@ def _stage_profile_native_candidates(
                 "error_code": "MIHOMO_CANDIDATE_INVALID",
                 "validation": _strip_raw_payload(validation),
             }
-        if write_reused and candidate_input_context() != transition_context:
-            return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_STAGE_INPUTS_CHANGED_AFTER_VALIDATION"}
+        if (
+            context_before is None
+            or candidate_input_context() != context_before
+            or (name == "final" and transition_context != context_before)
+        ):
+            return {"ok": False, "stage": f"mihomo_{name}_candidate",
+                    "error_code": "MIHOMO_STAGE_INPUTS_CHANGED_AFTER_VALIDATION"}
         if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != candidate_hash:
             return {"ok": False, "stage": f"mihomo_{name}_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"}
         if cached_native_validation is None and native_validator_identity is not None:
@@ -1217,16 +1234,44 @@ def _stage_profile_native_candidates(
         "xray_candidate_sha256": str(xray_result.details.get("candidate_sha256") or ""),
         "mihomo_candidates": staged_mihomo,
         "native_validation": native,
+        # Staged files are generated away from config.next.yaml, so they do
+        # not receive the default writer's provenance sidecar. Carry the
+        # exact input revision through the existing stage validation and bind
+        # it when the validated bytes are copied to the default candidate.
+        "mihomo_input_fingerprint": (
+            {"hash": transition_context[0], "payload": {}}
+            if transition_context is not None else None
+        ),
     }
 
 
-def _apply_staged_mihomo_candidate(candidate_path: str, expected_sha256: str) -> dict[str, Any]:
+def _apply_staged_mihomo_candidate(
+    candidate_path: str, expected_sha256: str, *, inventory_admission: Any = None,
+    candidate_input_fingerprint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     source = Path(candidate_path)
     if not source.exists() or hashlib.sha256(source.read_bytes()).hexdigest() != expected_sha256:
         return {"ok": False, "stage": "candidate_integrity", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_AFTER_VALIDATION"}
     from fwrouter_api.services import mihomo_config
     from fwrouter_api.services.artifacts import atomic_copy_file
     from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
+    expected_input_hash = (
+        candidate_input_fingerprint.get("hash")
+        if isinstance(candidate_input_fingerprint, dict) else None
+    )
+    try:
+        current_input_hash = current_mihomo_input_fingerprint().get("hash")
+    except Exception:
+        current_input_hash = None
+    if (
+        not isinstance(expected_input_hash, str)
+        or len(expected_input_hash) != 64
+        or current_input_hash != expected_input_hash
+    ):
+        return {"ok": False, "stage": "candidate_provenance",
+                "error_code": "MIHOMO_CANDIDATE_PROVENANCE_UNVERIFIED",
+                "last_good_retained": True}
 
     active_path = Path(mihomo_config._resolved_base_config_path())
     if active_path.exists() and hashlib.sha256(active_path.read_bytes()).hexdigest() == expected_sha256:
@@ -1235,7 +1280,19 @@ def _apply_staged_mihomo_candidate(candidate_path: str, expected_sha256: str) ->
     atomic_copy_file(source, active_candidate)
     if hashlib.sha256(active_candidate.read_bytes()).hexdigest() != expected_sha256:
         return {"ok": False, "stage": "candidate_integrity", "error_code": "MIHOMO_STAGE_CANDIDATE_COPY_MISMATCH"}
-    promoted = mihomo_config.promote_mihomo_candidate_config()
+    if inventory_admission is None:
+        from fwrouter_api.services.mihomo_reconcile_fingerprint import record_candidate_provenance
+        if not record_candidate_provenance(
+            candidate_path=active_candidate,
+            fingerprint=candidate_input_fingerprint or {},
+        ):
+            return {"ok": False, "stage": "candidate_provenance",
+                    "error_code": "MIHOMO_CANDIDATE_PROVENANCE_UNVERIFIED",
+                    "last_good_retained": True}
+    promoted = mihomo_config.promote_mihomo_candidate_config(
+        _inventory_admission=inventory_admission,
+        _candidate_input_fingerprint=candidate_input_fingerprint,
+    )
     if not promoted.get("ok"):
         return {"ok": False, "stage": "promote", "promoted": _strip_raw_payload(promoted)}
     restarted = restart_mihomo_container(action="force_recreate")
@@ -1248,7 +1305,9 @@ def _apply_staged_mihomo_candidate(candidate_path: str, expected_sha256: str) ->
 
 
 def _xray_generation_checkpoint_path(adapter: Any) -> Path:
-    return Path(adapter.config_path).parent / ".generation" / "generation-checkpoint.json"
+    from fwrouter_api.adapters.xray_common import _default_xray_config_path
+    configured_path = getattr(adapter, "config_path", None) or _default_xray_config_path()
+    return Path(configured_path).parent / ".generation" / "generation-checkpoint.json"
 
 
 def _generation_checkpoint_sha256(path: Path) -> str:
@@ -1458,6 +1517,144 @@ def _generation_source_fingerprint() -> str:
     return hashlib.sha256(json.dumps(sources, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _current_inventory_generation_binding() -> dict[str, Any]:
+    from fwrouter_api.services.subscription import get_subscription_native_generation_state
+    state = get_subscription_native_generation_state()
+    if state.get("status") == "empty":
+        return {"digest": None, "revision": None}
+    return {"digest": state.get("candidate_digest"), "revision": state.get("candidate_revision")}
+
+
+def _checkpoint_inventory_generation_matches(checkpoint_path: Path) -> bool:
+    """A current-projection recovery must be bound to this exact inventory."""
+    try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        binding = checkpoint.get("subscription_inventory_generation")
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+        state = get_subscription_native_generation_state()
+    except Exception:
+        return False
+    if not isinstance(binding, dict):
+        return False
+    if state.get("status") == "empty":
+        return binding.get("digest") is None and binding.get("revision") is None
+    return bool(
+        state.get("status") in {"pending", "verified"}
+        and binding.get("digest") == state.get("candidate_digest")
+        and type(binding.get("revision")) is int
+        and binding.get("revision") == state.get("candidate_revision")
+    )
+
+
+def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> dict[str, Any]:
+    """Resolve an existing generation marker using the normal proof contracts.
+
+    Caller owns the Xray writer guard. This is shared by normal reconcile and
+    the refresh preflight so provider inventory cannot supersede an unresolved
+    checkpoint before its bound generation is recovered.
+    """
+    if not checkpoint_path.exists():
+        return {"ok": True, "status": "skipped", "reason": "no_checkpoint"}
+    try:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        checkpoint_phase = str(checkpoint.get("phase") or "") if isinstance(checkpoint, dict) else "invalid"
+        checkpoint_inventory_bound = _checkpoint_inventory_generation_matches(checkpoint_path)
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+        inventory_state = get_subscription_native_generation_state()
+        checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+        with db_session() as connection:
+            migration_tied_to_checkpoint = connection.execute(
+                "SELECT 1 FROM subscription_node_identity_transitions "
+                "WHERE checkpoint_sha256=? LIMIT 1", (checkpoint_digest,),
+            ).fetchone()
+        if migration_tied_to_checkpoint:
+            return {"ok": False, "status": "pending", "stage": "generation_supersession_required",
+                    "error_code": "XRAY_GENERATION_SUPERSESSION_REQUIRED", "last_good_retained": True}
+        current_projection_recoverable = checkpoint_inventory_bound and (
+            checkpoint_phase in {
+                "runtime_applied", "inventory_synced", "bindings_written",
+                "projections_cleaned", "selection_verified", "snapshots_published",
+            }
+            and inventory_state.get("status") in {"pending", "verified"}
+        )
+        if checkpoint_phase in {"restore_failed", "restore_started"} or current_projection_recoverable:
+            if not checkpoint_inventory_bound:
+                return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                        "error_code": "XRAY_GENERATION_INVENTORY_ADMISSION_REQUIRED",
+                        "last_good_retained": True}
+            recovered = _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
+        else:
+            recovered = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
+            if not recovered.get("ok") and recovered.get("recovered") == "stale_checkpoint_declined":
+                recovered = (
+                    _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
+                    if _checkpoint_inventory_generation_matches(checkpoint_path)
+                    else {"ok": False, "recovered": "stale_checkpoint_declined",
+                          "reason": "inventory_generation_not_bound"}
+                )
+        if not recovered.get("ok"):
+            return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                    "error_code": "XRAY_GENERATION_RECOVERY_FAILED", "details": recovered,
+                    "last_good_retained": True}
+        return {"ok": True, "status": "recovered", **recovered}
+    except Exception as exc:
+        exception_name = type(exc).__name__
+        safe_exception_name = (
+            exception_name if len(exception_name) <= 64
+            and exception_name.endswith(("Error", "Exception"))
+            and exception_name.isascii()
+            and exception_name.isalnum()
+            else "recovery_exception"
+        )
+        return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                "error_code": "XRAY_GENERATION_RECOVERY_FAILED",
+                "details": {"recovered": "current_projection_unproven", "reason": safe_exception_name},
+                "last_good_retained": True}
+
+
+def recover_xray_generation_checkpoint_before_inventory_refresh() -> dict[str, Any]:
+    """Recover/prove any checkpoint before a provider inventory fetch begins."""
+    try:
+        with xray_writer_guard(timeout_seconds=30.0):
+            adapter = _xray_adapter()
+            checkpoint_path = _xray_generation_checkpoint_path(adapter)
+            module = _module_state("xray") or {}
+            managed_enabled = (
+                str(module.get("desired_state") or "disabled") == "enabled"
+                and str(module.get("lifecycle_mode") or "none") == "managed"
+            )
+            if not managed_enabled:
+                if checkpoint_path.exists():
+                    return {
+                        "ok": False, "status": "blocked", "stage": "lifecycle",
+                        "error_code": "XRAY_GENERATION_RECOVERY_REQUIRES_MANAGED_RUNTIME",
+                        "last_good_retained": True,
+                    }
+                return {"ok": True, "status": "skipped", "reason": "xray_runtime_not_managed"}
+            return _resolve_existing_xray_generation_checkpoint(adapter, checkpoint_path)
+    except Exception:
+        return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                "error_code": "XRAY_GENERATION_RECOVERY_FAILED", "last_good_retained": True}
+
+
+def subscription_inventory_checkpoint_write_gate() -> dict[str, Any]:
+    """Check-only guard for inventory writers; caller must own writer lock."""
+    if not xray_writer_guard_is_held():
+        return {"ok": False, "error_code": "XRAY_GENERATION_WRITER_GUARD_REQUIRED",
+                "last_good_retained": True}
+    try:
+        adapter = _xray_adapter()
+        checkpoint_path = _xray_generation_checkpoint_path(adapter)
+        if not checkpoint_path.exists():
+            return {"ok": True, "status": "clear"}
+        return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                "error_code": "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED",
+                "last_good_retained": True}
+    except Exception:
+        return {"ok": False, "status": "pending", "stage": "generation_recovery",
+                "error_code": "XRAY_GENERATION_CHECKPOINT_UNAVAILABLE", "last_good_retained": True}
+
+
 def _capture_generation_derived_rows(
     *, managed_email_prefixes: list[str], expected_client_identities: list[list[str]] | list[tuple[str, str]],
 ) -> dict[str, Any]:
@@ -1583,6 +1780,7 @@ def _write_xray_generation_checkpoint(
     staged_generation: dict[str, Any],
     managed_email_prefixes: list[str],
     supersession: dict[str, Any] | None = None,
+    inventory_generation: dict[str, Any] | None = None,
 ) -> Path:
     from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
     from fwrouter_api.services import mihomo_config
@@ -1640,6 +1838,9 @@ def _write_xray_generation_checkpoint(
         "generation_id": generation_id,
         "phase": phase,
         "source_fingerprint": source_fingerprint,
+        "subscription_inventory_generation": dict(
+            inventory_generation if inventory_generation is not None else _current_inventory_generation_binding()
+        ),
         "created_at": time.time(),
         "selection_operation_id": generation_id,
         "selection_revision": selection_fence["revision"],
@@ -1744,7 +1945,8 @@ def _capture_generation_auto_selection() -> dict[str, Any]:
     from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_fence
     with db_session() as connection:
         routing = connection.execute(
-            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, updated_at FROM routing_global_state WHERE id = 1"
+            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, "
+            "desired_mode, applied_mode, apply_state, updated_at FROM routing_global_state WHERE id = 1"
         ).fetchone()
         provenance = connection.execute(
             "SELECT value_json, updated_at FROM settings WHERE key = 'routing.auto_selection_provenance'"
@@ -1974,6 +2176,135 @@ def _verify_generation_selection_readback(selection: dict[str, Any] | None) -> d
         "effective_target": observed or None,
         "error_code": None if ok else "SELECTION_RESTORE_READBACK_UNCONFIRMED",
     }
+
+
+def _verify_generation_recovery_selection_readback(selection: dict[str, Any] | None) -> dict[str, Any]:
+    """Verify selection readback, including an explicitly committed global-DIRECT intent.
+
+    Recovery may legitimately run with no selected VPN target while global DIRECT is
+    applied. That case is accepted only when the checkpoint captured the exact DIRECT
+    intent/fence and fresh native dataplane readback proves the same mode. Older
+    checkpoints lacking the intent fields remain unprovable and fail closed.
+    """
+    ordinary = _verify_generation_selection_readback(selection)
+    if ordinary.get("ok") is True:
+        return ordinary
+    if ordinary.get("error_code") != "SELECTION_BASELINE_UNSELECTED":
+        return ordinary
+
+    captured = selection if isinstance(selection, dict) else {}
+    captured_routing = captured.get("routing") if isinstance(captured.get("routing"), dict) else {}
+    captured_mode = str(captured_routing.get("desired_mode") or "").strip().lower()
+    if (
+        captured_mode != "direct"
+        or str(captured_routing.get("applied_mode") or "").strip().lower() != "direct"
+        or str(captured_routing.get("apply_state") or "").strip().lower() != "clean"
+    ):
+        return {"ok": False, "error_code": "SELECTION_DIRECT_INTENT_UNPROVEN"}
+
+    try:
+        from fwrouter_api.services.servers import get_routing_global_state
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+        current_routing = get_routing_global_state(expire_ttl=False) or {}
+        current_fence = _current_xray_projection_snapshot().get("fence") or {}
+        expected_routing = {
+            key: captured_routing.get(key)
+            for key in (
+                "server_mode", "desired_fixed_server_id", "applied_fixed_server_id",
+                "active_auto_server_id", "desired_mode", "applied_mode", "apply_state",
+            )
+        }
+        observed_routing = {key: current_routing.get(key) for key in expected_routing}
+        with db_session() as connection:
+            durable_fence = read_selection_fence(connection)
+        no_vpn_target = not any(
+            str(value or "").strip()
+            for value in (
+                captured_routing.get("desired_fixed_server_id"),
+                captured_routing.get("applied_fixed_server_id"),
+                captured_routing.get("active_auto_server_id"),
+                current_routing.get("desired_fixed_server_id"),
+                current_routing.get("applied_fixed_server_id"),
+                current_routing.get("active_auto_server_id"),
+                current_fence.get("active_server_id"),
+                current_fence.get("provenance_server_id"),
+                durable_fence.get("active_server_id"),
+                durable_fence.get("provenance_server_id"),
+            )
+        )
+        checkpoint_decision = captured.get("selection_decision_id")
+        if (
+            observed_routing != expected_routing
+            or type(captured.get("selection_revision")) is not int
+            or captured.get("selection_revision") != current_fence.get("revision")
+            or captured.get("selection_revision") != durable_fence.get("revision")
+            or "selection_decision_id" not in captured
+            or checkpoint_decision != current_fence.get("decision_id")
+            or checkpoint_decision != durable_fence.get("decision_id")
+            or (checkpoint_decision is None and not no_vpn_target)
+            or (checkpoint_decision is not None and not str(checkpoint_decision).strip())
+        ):
+            return {"ok": False, "error_code": "SELECTION_DIRECT_FENCE_UNPROVEN"}
+
+        # Use the existing live dataplane/enforcement readbacks. Refresh their
+        # existing short-lived probe keys so stale cached state cannot verify a
+        # checkpoint after restart.
+        from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
+        from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+
+        payload = dataplane_status._read_live_dataplane_payload()
+        if not dataplane_status._live_owned_table_ready(payload):
+            return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_READBACK_UNREADY"}
+        manifest = get_live_probe_cache(
+            "dataplane_global.applied_manifest", ttl_seconds=5.0,
+            loader=dataplane_global._read_applied_manifest_uncached, force_refresh=True,
+        )
+        get_live_probe_cache(
+            "dataplane_live.global_mode", ttl_seconds=2.0,
+            loader=dataplane_live._probe_live_global_mode_uncached, force_refresh=True,
+        )
+        manifest_routing = manifest.get("routing_global_state") if isinstance(manifest, dict) else None
+        if not isinstance(manifest_routing, dict) or any(
+            str(manifest_routing.get(key) or "").strip().lower() != "direct"
+            for key in ("desired_mode", "applied_mode")
+        ):
+            return {"ok": False, "error_code": "SELECTION_DIRECT_APPLIED_MANIFEST_UNPROVEN"}
+        proof = dataplane_status.build_runtime_enforcement_state(live_payload=payload)
+        if (
+            not isinstance(proof, dict)
+            or proof.get("enforcement_level") != "global_direct_enforced"
+            or proof.get("traffic_enforcement_guaranteed") is not True
+            or proof.get("active_mode_matches_intent") is not True
+            or str(proof.get("live_global_mode") or "").strip().lower() != "direct"
+        ):
+            return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_POLICY_UNPROVEN"}
+        return {
+            "ok": True,
+            "mode": "direct",
+            "logical_server_id": None,
+            "native_enforcement_level": proof["enforcement_level"],
+        }
+    except Exception:
+        return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_READBACK_FAILED"}
+
+
+def _checkpoint_selection_for_recovery(
+    checkpoint: dict[str, Any], current_selection: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Use checkpoint-bound intent when current Core has no VPN target selected."""
+    routing = current_selection.get("routing") if isinstance(current_selection.get("routing"), dict) else {}
+    mode = str(routing.get("server_mode") or "auto").strip().lower()
+    target = (
+        routing.get("desired_fixed_server_id") or routing.get("applied_fixed_server_id")
+        if mode == "fixed" else routing.get("active_auto_server_id")
+    )
+    if str(target or "").strip():
+        return current_selection
+    checkpoint_selection = checkpoint.get("auto_selection_after")
+    if not isinstance(checkpoint_selection, dict):
+        checkpoint_selection = checkpoint.get("auto_selection_before")
+    return checkpoint_selection if isinstance(checkpoint_selection, dict) else None
 
 
 def _generation_recovery_attempt_path(checkpoint_path: Path, checkpoint_digest: str) -> Path:
@@ -2265,6 +2596,15 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
         checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
         attempt_path = _generation_recovery_attempt_path(checkpoint_path, checkpoint_digest)
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        phase = str(checkpoint.get("phase") or "")
+        recoverable_phases = {
+            "runtime_applied", "inventory_synced", "bindings_written",
+            "projections_cleaned", "selection_verified", "snapshots_published",
+            "restore_failed", "restore_started",
+        }
+        if phase not in recoverable_phases:
+            return {"ok": False, "recovered": "current_projection_unproven",
+                    "reason": "checkpoint_phase_not_recoverable"}
         supersession = checkpoint.get("supersession") if isinstance(checkpoint.get("supersession"), dict) else None
         previous_attempt = None
         if attempt_path.exists():
@@ -2275,6 +2615,29 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
             if previous_attempt.get("phase") not in {"prepared", "reload_started", "superseded_verified"}:
                 return {"ok": False, "recovered": "current_projection_unproven", "reason": "recovery_attempt_phase_unknown"}
         generation_id = str(checkpoint.get("generation_id") or "")
+        from fwrouter_api.services.subscription import get_subscription_native_generation_state
+        inventory_state = get_subscription_native_generation_state()
+        inventory_binding = checkpoint.get("subscription_inventory_generation")
+        if inventory_state.get("status") == "empty":
+            if inventory_binding is not None and (
+                not isinstance(inventory_binding, dict)
+                or inventory_binding.get("digest") is not None
+                or inventory_binding.get("revision") is not None
+            ):
+                return {"ok": False, "recovered": "current_projection_unproven",
+                        "reason": "inventory_checkpoint_binding_mismatch"}
+        elif inventory_state.get("status") in {"pending", "verified"}:
+            if (
+                not isinstance(inventory_binding, dict)
+                or inventory_binding.get("digest") != inventory_state.get("candidate_digest")
+                or type(inventory_binding.get("revision")) is not int
+                or inventory_binding.get("revision") != inventory_state.get("candidate_revision")
+            ):
+                return {"ok": False, "recovered": "current_projection_unproven",
+                        "reason": "inventory_checkpoint_binding_mismatch"}
+        else:
+            return {"ok": False, "recovered": "current_projection_unproven",
+                    "reason": "inventory_generation_unverified"}
         projection = _current_xray_projection_snapshot()
         supersession_owned = bool(
             isinstance(supersession, dict)
@@ -2327,10 +2690,21 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
             resume_owned_restart = True
         mihomo_path = Path(mihomo_config._resolved_base_config_path())
         mihomo_hash = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+        if isinstance(inventory_binding, dict) and inventory_binding.get("digest") is not None:
+            expected_mihomo_candidate = str(
+                ((checkpoint.get("staged_generation") or {}).get("mihomo_final_sha256")) or ""
+            )
+            if not expected_mihomo_candidate or mihomo_hash != expected_mihomo_candidate:
+                return {"ok": False, "recovered": "current_projection_unproven",
+                        "reason": "inventory_mihomo_checkpoint_mismatch"}
         mihomo_incarnation = get_mihomo_runtime_incarnation()
         source_fingerprint = _generation_source_fingerprint()
         projection_fingerprint = _current_projection_fingerprint(projection)
-        selection = _capture_generation_auto_selection()
+        current_selection = _capture_generation_auto_selection()
+        selection = _checkpoint_selection_for_recovery(checkpoint, current_selection)
+        if not isinstance(selection, dict):
+            return {"ok": False, "recovered": "current_projection_unproven",
+                    "reason": "checkpoint_selection_intent_missing"}
         from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
         from fwrouter_api.services.xray_bindings import get_xray_handoff_listeners
         handoffs = get_xray_handoff_listeners(bindings)
@@ -2441,8 +2815,11 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
 
         def core_selection_stable() -> bool:
             try:
-                if not _verify_generation_selection_readback(selection).get("ok"):
+                selection_proof = _verify_generation_recovery_selection_readback(selection)
+                if not selection_proof.get("ok"):
                     return False
+                if selection_proof.get("mode") == "direct":
+                    return True
                 if str((selection.get("routing") or {}).get("server_mode") or "auto").lower() == "auto":
                     from fwrouter_api.services.selector import get_vpn_auto_state
                     auto_state = get_vpn_auto_state(read_only=True)
@@ -2479,7 +2856,7 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
             return {"ok": False, "recovered": "current_projection_unproven", "reason": "loaded_identity_mismatch"}
         bindings_readback = _verify_active_config_bindings(bindings, expected_client_identities=expected)
         modes_readback = _verify_active_config_client_modes(modes)
-        selection_readback = _verify_generation_selection_readback(selection)
+        selection_readback = _verify_generation_recovery_selection_readback(selection)
         if not bindings_readback.get("ok") or not modes_readback.get("ok") or not selection_readback.get("ok"):
             return {"ok": False, "recovered": "current_projection_unproven", "reason": "runtime_projection_readback_failed"}
         if not core_selection_stable():
@@ -2496,6 +2873,84 @@ def _recover_checkpoint_from_current_projection(adapter: Any, checkpoint_path: P
                      selection_target=selection_readback.get("logical_server_id"))
         if not stable(applied=True, runtime_incarnation=after_incarnation) or not core_selection_stable():
             return {"ok": False, "recovered": "current_projection_unproven", "reason": "terminal_revalidation_failed"}
+        # A checkpoint-bound recovery may finish a refresh that crashed after
+        # native apply. Close the durable admission only after rebuilding the
+        # native receipt from current readback; never infer verification from
+        # the checkpoint fingerprint alone.
+        from fwrouter_api.services.subscription import (
+            _claim_subscription_inventory_admission,
+            _promote_subscription_inventory_generation,
+            get_subscription_native_generation_state,
+        )
+        from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
+        from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+            current_mihomo_input_fingerprint,
+            write_mihomo_reconcile_fingerprint_state,
+        )
+
+        if inventory_state.get("status") in {"pending", "verified"}:
+            admission = None
+            if inventory_state.get("status") == "pending":
+                admission = _claim_subscription_inventory_admission()
+                if (
+                    not isinstance(inventory_binding, dict)
+                    or inventory_binding.get("digest") != admission.digest
+                    or inventory_binding.get("revision") != admission.revision
+                ):
+                    return {"ok": False, "recovered": "current_projection_unproven",
+                            "reason": "inventory_checkpoint_binding_mismatch"}
+
+            def inventory_generation_stable() -> bool:
+                current = get_subscription_native_generation_state()
+                return bool(
+                    current.get("status") == inventory_state.get("status")
+                    and current.get("candidate_digest") == inventory_state.get("candidate_digest")
+                    and current.get("candidate_revision") == inventory_state.get("candidate_revision")
+                    and isinstance(inventory_binding, dict)
+                    and inventory_binding.get("digest") == current.get("candidate_digest")
+                    and inventory_binding.get("revision") == current.get("candidate_revision")
+                )
+
+            try:
+                mihomo_fingerprint = current_mihomo_input_fingerprint()
+                native_proof = _native_udp_policy_proof()
+                active_mihomo_hash = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+                receipt_written = bool(
+                    native_proof.get("ok")
+                    and stable(applied=True, runtime_incarnation=after_incarnation)
+                    and core_selection_stable()
+                    and inventory_generation_stable()
+                    and get_mihomo_runtime_incarnation() == mihomo_incarnation
+                    and write_mihomo_reconcile_fingerprint_state(
+                        fingerprint=mihomo_fingerprint,
+                        result={"ok": True, "reconcile_reason": "xray_checkpoint_recovery"},
+                        native_proof=native_proof,
+                        expected_active_hash=active_mihomo_hash,
+                        expected_runtime_incarnation=mihomo_incarnation,
+                    )
+                    and inventory_generation_stable()
+                    and stable(applied=True, runtime_incarnation=after_incarnation)
+                    and core_selection_stable()
+                )
+            except Exception:
+                receipt_written = False
+            if not receipt_written:
+                return {"ok": False, "recovered": "current_projection_unproven",
+                        "reason": "inventory_native_receipt_unconfirmed"}
+            if admission is not None:
+                promoted_inventory = _promote_subscription_inventory_generation(admission)
+                if not promoted_inventory.get("ok"):
+                    return {"ok": False, "recovered": "current_projection_unproven",
+                            "reason": "inventory_generation_promotion_unconfirmed"}
+                inventory_state = get_subscription_native_generation_state()
+                if (inventory_state.get("status") != "verified"
+                        or inventory_state.get("candidate_digest") != admission.digest
+                        or inventory_state.get("candidate_revision") != admission.revision):
+                    return {"ok": False, "recovered": "current_projection_unproven",
+                            "reason": "inventory_generation_promotion_unconfirmed"}
+        elif inventory_state.get("status") != "empty":
+            return {"ok": False, "recovered": "current_projection_unproven",
+                    "reason": "inventory_generation_unverified"}
         checkpoint_path.unlink()
         _fsync_directory(checkpoint_path.parent)
         return {"ok": True, "recovered": "current_projection_verified", "operation_id": attempt["operation_id"],
@@ -2859,6 +3314,20 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
         "generation_apply": generation_apply,
         "pre_publication_verification": verification,
     }
+    inventory_admission = pending.get("inventory_admission")
+    if inventory_admission is not None:
+        from fwrouter_api.services.subscription import _promote_subscription_inventory_generation
+        generation_promotion = _promote_subscription_inventory_generation(inventory_admission)
+        if not generation_promotion.get("ok"):
+            return {
+                "ok": False,
+                "status": "pending",
+                "stage": "inventory_generation_promotion",
+                "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_PROMOTION_UNVERIFIED",
+                "inventory_generation_promotion": generation_promotion,
+                "last_good_retained": True,
+            }
+        result["inventory_generation_promotion"] = generation_promotion
     if checkpoint_path.exists():
         checkpoint_path.unlink(missing_ok=True)
         _fsync_directory(checkpoint_path.parent)
@@ -3397,11 +3866,13 @@ def reconcile_xray_vpn_auto_subscription(
     *,
     requested_by: str = "api",
     verification_callback: Any = None,
+    _inventory_admission: Any = None,
 ) -> dict[str, Any]:
     result = reconcile_xray_subscription_profile_nodes(
         requested_by=requested_by,
         include_vpn_auto=True,
         verification_callback=verification_callback,
+        _inventory_admission=_inventory_admission,
     )
     return {**result, "profile_reconcile": result}
 
@@ -3411,6 +3882,7 @@ def reconcile_xray_subscription_profile_nodes(
     token_or_slug: str | None = None, promote_public_profile: bool = True,
     cleanup_deleted_projections: bool = True, preserve_existing_overrides: bool = False,
     include_vpn_auto: bool = False, verification_callback: Any = None,
+    _inventory_admission: Any = None,
     _supersede_checkpoint_sha256: str | None = None,
     _migration_plan_sha256: str | None = None,
 ) -> dict[str, Any]:
@@ -3425,6 +3897,7 @@ def reconcile_xray_subscription_profile_nodes(
             preserve_existing_overrides=preserve_existing_overrides,
             include_vpn_auto=include_vpn_auto,
             verification_callback=verification_callback,
+            _inventory_admission=_inventory_admission,
             _supersede_checkpoint_sha256=_supersede_checkpoint_sha256,
             _migration_plan_sha256=_migration_plan_sha256,
             _defer_selection_verification=callable(verification_callback),
@@ -3561,12 +4034,37 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
     preserve_existing_overrides: bool = False,
     include_vpn_auto: bool = False,
     verification_callback: Any = None,
+    _inventory_admission: Any = None,
     _defer_selection_verification: bool = False,
     _supersede_checkpoint_sha256: str | None = None,
     _migration_plan_sha256: str | None = None,
 ) -> dict[str, Any]:
     adapter = _xray_adapter()
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
+    blocked = _xray_managed_runtime_blocked("xray_subscription_profile_reconcile")
+    module = _module_state("xray") or {}
+    managed_enabled = (
+        blocked is None
+        and str(module.get("desired_state") or "") == "enabled"
+        and str(module.get("lifecycle_mode") or "none") == "managed"
+    )
+    if not managed_enabled:
+        if checkpoint_path.exists():
+            return {
+                "ok": False,
+                "status": "blocked",
+                "stage": "lifecycle",
+                "error_code": "XRAY_GENERATION_RECOVERY_REQUIRES_MANAGED_RUNTIME",
+                "last_good_retained": True,
+            }
+        return {
+            **(blocked or {}),
+            "ok": True,
+            "status": "skipped",
+            "reason": "managed_runtime_required" if blocked is not None else "xray_module_disabled",
+            "nodes_count": 0,
+        }
+
     supersession: dict[str, Any] | None = None
     if bool(_supersede_checkpoint_sha256) != bool(_migration_plan_sha256):
         return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
@@ -3595,52 +4093,34 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             return {"ok": False, "status": "failed", "stage": "generation_supersession_admission",
                     "error_code": code}
     if checkpoint_path.exists() and supersession is None:
-        checkpoint_digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
-        with db_session() as connection:
-            migration_tied_to_checkpoint = connection.execute(
-                "SELECT 1 FROM subscription_node_identity_transitions "
-                "WHERE checkpoint_sha256=? LIMIT 1", (checkpoint_digest,),
-            ).fetchone()
-        if migration_tied_to_checkpoint:
-            return {"ok": False, "status": "pending", "stage": "generation_supersession_required",
-                    "error_code": "XRAY_GENERATION_SUPERSESSION_REQUIRED",
-                    "last_good_retained": True}
+        checkpoint_result = _resolve_existing_xray_generation_checkpoint(adapter, checkpoint_path)
+        if not checkpoint_result.get("ok"):
+            return checkpoint_result
+
+    from fwrouter_api.services.subscription import (
+        SubscriptionInventoryGenerationBlocked,
+        _claim_subscription_inventory_admission,
+        _subscription_inventory_generation_gate,
+    )
+    if supersession is not None and _inventory_admission is None:
         try:
-            checkpoint_phase = str(json.loads(checkpoint_path.read_text(encoding="utf-8")).get("phase") or "")
-        except Exception:
-            checkpoint_phase = "invalid"
-        if checkpoint_phase in {"restore_failed", "restore_started"}:
-            recovered = _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
-        else:
-            recovered = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
-            if not recovered.get("ok") and recovered.get("recovered") == "stale_checkpoint_declined":
-                recovered = _recover_checkpoint_from_current_projection(adapter, checkpoint_path)
-        if not recovered.get("ok"):
-            return {
-                "ok": False,
-                "status": "pending",
-                "stage": "generation_recovery",
-                "error_code": "XRAY_GENERATION_RECOVERY_FAILED",
-                "details": recovered,
-            }
-
-    blocked = _xray_managed_runtime_blocked("xray_subscription_profile_reconcile")
-    if blocked is not None:
+            # Exact checkpoint and migration-plan proofs were checked above.
+            # Only this explicit fresh-generation path may claim the current
+            # pending candidate; generic startup/reconcile remains fail-closed.
+            _inventory_admission = _claim_subscription_inventory_admission()
+        except SubscriptionInventoryGenerationBlocked as exc:
+            return exc.result
+    inventory_gate = _subscription_inventory_generation_gate(
+        _inventory_admission, require_writer_guard=True,
+    )
+    if not inventory_gate.get("ok"):
         return {
-            **blocked,
-            "ok": True,
-            "status": "skipped",
-            "reason": "managed_runtime_required",
-            "nodes_count": 0,
-        }
-
-    module = _module_state("xray") or {}
-    if str(module.get("desired_state") or "") != "enabled":
-        return {
-            "ok": True,
-            "status": "skipped",
-            "reason": "xray_module_disabled",
-            "nodes_count": 0,
+            "ok": False,
+            "status": "pending",
+            "stage": "inventory_generation_admission",
+            "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+            "reason": inventory_gate.get("reason"),
+            "last_good_retained": True,
         }
 
     if not materialize or not promote_public_profile:
@@ -3860,6 +4340,11 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                 staged_generation=staged_generation,
                 managed_email_prefixes=managed_prefixes,
                 supersession=supersession,
+                inventory_generation=(
+                    {"digest": _inventory_admission.digest,
+                     "revision": _inventory_admission.revision}
+                    if _inventory_admission is not None else _current_inventory_generation_binding()
+                ),
             )
         except Exception as exc:
             return fail_before_checkpoint({
@@ -3873,6 +4358,8 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
         applied_transition = _apply_staged_mihomo_candidate(
             transition,
             staged_generation["native_validation"]["transition"]["candidate_sha256"],
+            inventory_admission=_inventory_admission,
+            candidate_input_fingerprint=staged_generation.get("mihomo_input_fingerprint"),
         )
         if not applied_transition.get("ok"):
             restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
@@ -3897,6 +4384,8 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
         applied_final_mihomo = _apply_staged_mihomo_candidate(
             final_path,
             staged_generation["native_validation"]["final"]["candidate_sha256"],
+            inventory_admission=_inventory_admission,
+            candidate_input_fingerprint=staged_generation.get("mihomo_input_fingerprint"),
         )
         if not applied_final_mihomo.get("ok"):
             restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
@@ -4028,6 +4517,7 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             _atomic_write_private_checkpoint(checkpoint_path, json.dumps(checkpoint_data, sort_keys=True))
             return {"_pending_generation": {
                 "verification_callback": verification_callback,
+                "inventory_admission": _inventory_admission,
                 "checkpoint_path": str(checkpoint_path),
                 "adapter": adapter,
                 "subscription_nodes": subscription_nodes,
@@ -4061,6 +4551,7 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             active_hash = hashlib.sha256(active_path.read_bytes()).hexdigest() if active_path.is_file() else None
             return {"_pending_generation": {
                 "staged_generation": False,
+                "inventory_admission": _inventory_admission,
                 "verification_callback": verification_callback,
                 "operation_id": uuid4().hex,
                 "selection_revision": fence["revision"],
@@ -4110,6 +4601,7 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
         pending_publication = {
             "checkpoint_path": str(checkpoint_path),
             "adapter": adapter,
+            "inventory_admission": _inventory_admission,
             "subscription_nodes": subscription_nodes,
             "affected_profile_tokens": affected_profile_tokens,
             "materialize": materialize,

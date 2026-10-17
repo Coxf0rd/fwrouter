@@ -152,14 +152,12 @@ def validate_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiRespon
 @router.post("/subscription", response_model=ApiResponse)
 def save_subscription_endpoint(request: SubscriptionUrlRequest) -> ApiResponse:
     if request.urls is not None:
-        from fwrouter_api.adapters.xray_common import xray_writer_guard
-        with xray_writer_guard():
-            import_result = refresh_subscription_inventory_batch(
-                request.urls,
-                metadata=request.metadata,
-                requested_by=request.requested_by or "api",
-            )
-            result = apply_subscription_import_result(import_result)
+        import_result = refresh_subscription_inventory_batch(
+            request.urls,
+            metadata=request.metadata,
+            requested_by=request.requested_by or "api",
+        )
+        result = apply_subscription_import_result(import_result)
         refresh_public = _redact_batch_response(result.get("refresh") or import_result)
         apply_public = _redact_batch_apply_response(result)
         return ApiResponse(

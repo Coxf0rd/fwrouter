@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.server
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 import urllib.error
@@ -12,6 +13,140 @@ from pathlib import Path
 
 import pytest
 from .http_support import http_json
+
+
+_BROWSER_DIAGNOSTIC_SCENARIOS = {
+    "navigation": "browser_resource_diagnostic_navigation",
+    "provider_exclusive": "browser_resource_diagnostic_provider_exclusive",
+    "provider_error": "browser_resource_diagnostic_provider_error",
+    "xray_client_editor": "browser_resource_diagnostic_xray_client_editor",
+}
+_CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
+_CGROUP_FILE_MAX_BYTES = 4096
+
+
+def _read_cgroup_integer(cgroup_dir, filename):
+    try:
+        with (Path(cgroup_dir) / filename).open("rb") as source:
+            raw = source.read(_CGROUP_FILE_MAX_BYTES + 1)
+        if len(raw) > _CGROUP_FILE_MAX_BYTES:
+            return None
+        value = raw.decode("ascii").strip()
+        if not value.isdecimal() or len(value) > 20:
+            return None
+        return int(value)
+    except (OSError, UnicodeError, ValueError):
+        return None
+
+
+def _read_cgroup_events(cgroup_dir, filename, allowed_keys):
+    result = {key: None for key in allowed_keys}
+    try:
+        with (Path(cgroup_dir) / filename).open("rb") as source:
+            raw = source.read(_CGROUP_FILE_MAX_BYTES + 1)
+        if len(raw) > _CGROUP_FILE_MAX_BYTES:
+            return result
+        lines = raw.decode("ascii").splitlines()
+        for line in lines:
+            parts = line.split()
+            if len(parts) != 2 or parts[0] not in result or not parts[1].isdecimal():
+                continue
+            if len(parts[1]) <= 20:
+                result[parts[0]] = int(parts[1])
+    except (OSError, UnicodeError, ValueError):
+        pass
+    return result
+
+
+def _filesystem_usage(statvfs_fn, path):
+    try:
+        stats = statvfs_fn(path)
+        block_size = int(stats.f_frsize or stats.f_bsize)
+        blocks = int(stats.f_blocks)
+        free_blocks = int(stats.f_bfree)
+        if block_size <= 0 or blocks < 0 or free_blocks < 0 or free_blocks > blocks:
+            return {"used_bytes": None, "capacity_bytes": None}
+        return {
+            "used_bytes": (blocks - free_blocks) * block_size,
+            "capacity_bytes": blocks * block_size,
+        }
+    except (OSError, AttributeError, TypeError, ValueError, OverflowError):
+        return {"used_bytes": None, "capacity_bytes": None}
+
+
+def _browser_resource_snapshot(cgroup_dir=_CGROUP_V2_ROOT, statvfs_fn=os.statvfs):
+    """Return a fixed, bounded resource sample without process or environment details."""
+    return {
+        "memory_current_bytes": _read_cgroup_integer(cgroup_dir, "memory.current"),
+        "memory_peak_bytes": _read_cgroup_integer(cgroup_dir, "memory.peak"),
+        "memory_max_bytes": _read_cgroup_integer(cgroup_dir, "memory.max"),
+        "memory_events": _read_cgroup_events(
+            cgroup_dir, "memory.events", ("low", "high", "max", "oom", "oom_kill", "oom_group_kill"),
+        ),
+        "pids_current": _read_cgroup_integer(cgroup_dir, "pids.current"),
+        "pids_max": _read_cgroup_integer(cgroup_dir, "pids.max"),
+        "pids_events": _read_cgroup_events(cgroup_dir, "pids.events", ("max",)),
+        "tmp": _filesystem_usage(statvfs_fn, "/tmp"),
+        "dev_shm": _filesystem_usage(statvfs_fn, "/dev/shm"),
+    }
+
+
+def _safe_browser_resource_snapshot(snapshot_fn):
+    try:
+        return snapshot_fn()
+    except Exception:
+        return {
+            "memory_current_bytes": None,
+            "memory_peak_bytes": None,
+            "memory_max_bytes": None,
+            "memory_events": {key: None for key in ("low", "high", "max", "oom", "oom_kill", "oom_group_kill")},
+            "pids_current": None,
+            "pids_max": None,
+            "pids_events": {"max": None},
+            "tmp": {"used_bytes": None, "capacity_bytes": None},
+            "dev_shm": {"used_bytes": None, "capacity_bytes": None},
+        }
+
+
+def _launch_chromium_with_diagnostics(
+    chromium, *, scenario, executable_path, args, request, record_property,
+    snapshot_fn=_browser_resource_snapshot,
+):
+    property_name = _BROWSER_DIAGNOSTIC_SCENARIOS.get(scenario)
+    if property_name is None:
+        raise ValueError("unsupported browser diagnostic scenario")
+
+    samples = [{"phase": "before_launch", "resources": _safe_browser_resource_snapshot(snapshot_fn)}]
+    state = {"launch_outcome": "not_started"}
+
+    def record_posttest_sample():
+        samples.append({"phase": "posttest", "resources": _safe_browser_resource_snapshot(snapshot_fn)})
+        try:
+            encoded = json.dumps(
+                {"schema": 1, "scenario": scenario, "launch_outcome": state["launch_outcome"],
+                 "samples": samples},
+                separators=(",", ":"),
+            )
+            if len(encoded) <= 4096:
+                record_property(property_name, encoded)
+        except Exception:
+            # Diagnostics must never replace the browser/test result.
+            return
+
+    request.addfinalizer(record_posttest_sample)
+    try:
+        browser = chromium.launch(
+            headless=True,
+            executable_path=executable_path,
+            args=args,
+        )
+    except BaseException:
+        state["launch_outcome"] = "failed"
+        samples.append({"phase": "after_launch", "resources": _safe_browser_resource_snapshot(snapshot_fn)})
+        raise
+    state["launch_outcome"] = "succeeded"
+    samples.append({"phase": "after_launch", "resources": _safe_browser_resource_snapshot(snapshot_fn)})
+    return browser
 
 
 def _credential_rows_digest(rows: list[tuple[object, ...]]) -> str:
@@ -173,7 +308,7 @@ class _UiAndApiBridge(http.server.SimpleHTTPRequestHandler):
 
 
 @pytest.mark.browser
-def test_real_chromium_navigation_locale_and_settings_write(acceptance_stack):
+def test_real_chromium_navigation_locale_and_settings_write(acceptance_stack, request, record_property):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -195,10 +330,10 @@ def test_real_chromium_navigation_locale_and_settings_write(acceptance_stack):
     thread.start()
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=True,
-                executable_path=profile["chromium"]["path"],
-                args=["--disable-dev-shm-usage", "--no-proxy-server"],
+            browser = _launch_chromium_with_diagnostics(
+                playwright.chromium, scenario="navigation", executable_path=profile["chromium"]["path"],
+                args=["--disable-dev-shm-usage", "--no-proxy-server"], request=request,
+                record_property=record_property,
             )
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             browser_origin = f"http://127.0.0.1:{server.server_port}"
@@ -267,7 +402,9 @@ def test_real_chromium_navigation_locale_and_settings_write(acceptance_stack):
 
 
 @pytest.mark.browser
-def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate(acceptance_stack):
+def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate(
+    acceptance_stack, request, record_property,
+):
     from .test_core_provider_mihomo import _configure_provider, _enable_owned_mihomo_runtime_state, _seed_source
     from .joined_support import await_core_job
 
@@ -316,8 +453,12 @@ def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_can
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True, executable_path=stack["profile"]["chromium"]["path"],
-                                                  args=["--disable-dev-shm-usage", "--no-proxy-server"])
+            browser = _launch_chromium_with_diagnostics(
+                playwright.chromium, scenario="provider_exclusive",
+                executable_path=stack["profile"]["chromium"]["path"],
+                args=["--disable-dev-shm-usage", "--no-proxy-server"], request=request,
+                record_property=record_property,
+            )
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             browser_origin = f"http://127.0.0.1:{server.server_port}"
             page.route("**/*", lambda route: route.continue_() if urllib.parse.urlparse(route.request.url).netloc == f"127.0.0.1:{server.server_port}" else route.abort())
@@ -407,7 +548,9 @@ def test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_can
 
 
 @pytest.mark.browser
-def test_real_chromium_provider_controls_report_real_api_failure_without_success(acceptance_stack):
+def test_real_chromium_provider_controls_report_real_api_failure_without_success(
+    acceptance_stack, request, record_property,
+):
     from .test_core_provider_mihomo import _configure_provider, _seed_source
 
     stack = acceptance_stack
@@ -429,8 +572,11 @@ def test_real_chromium_provider_controls_report_real_api_failure_without_success
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True, executable_path=profile["chromium"]["path"],
-                                                  args=["--disable-dev-shm-usage", "--no-proxy-server"])
+            browser = _launch_chromium_with_diagnostics(
+                playwright.chromium, scenario="provider_error", executable_path=profile["chromium"]["path"],
+                args=["--disable-dev-shm-usage", "--no-proxy-server"], request=request,
+                record_property=record_property,
+            )
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             browser_origin = f"http://127.0.0.1:{server.server_port}"
             page.route("**/*", lambda route: route.continue_() if urllib.parse.urlparse(route.request.url).netloc == f"127.0.0.1:{server.server_port}" else route.abort())
@@ -472,7 +618,9 @@ def test_real_chromium_provider_controls_report_real_api_failure_without_success
 
 
 @pytest.mark.browser
-def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acceptance_stack):
+def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(
+    acceptance_stack, request, record_property,
+):
     stack = acceptance_stack
     api, profile = stack["api"], stack["profile"]
     from .joined_support import await_core_job
@@ -560,8 +708,11 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(acce
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True, executable_path=profile["chromium"]["path"],
-                                                  args=["--disable-dev-shm-usage", "--no-proxy-server"])
+            browser = _launch_chromium_with_diagnostics(
+                playwright.chromium, scenario="xray_client_editor", executable_path=profile["chromium"]["path"],
+                args=["--disable-dev-shm-usage", "--no-proxy-server"], request=request,
+                record_property=record_property,
+            )
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             browser_origin = f"http://127.0.0.1:{server.server_port}"
             page.route("**/*", lambda route: route.continue_() if urllib.parse.urlparse(route.request.url).netloc == f"127.0.0.1:{server.server_port}" else route.abort())

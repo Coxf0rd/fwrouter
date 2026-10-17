@@ -246,6 +246,15 @@ def write_mihomo_candidate_config(
     xray_handoff_assignments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Generate and write Mihomo config."""
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+        _candidate_provenance_path, current_mihomo_input_fingerprint,
+        record_candidate_provenance,
+    )
+
+    try:
+        before_fingerprint = current_mihomo_input_fingerprint(routing)
+    except Exception:
+        before_fingerprint = None
     base_config = build_mihomo_config(
         routing,
         xray_handoff_assignments=xray_handoff_assignments,
@@ -259,6 +268,18 @@ def write_mihomo_candidate_config(
 
     resolved_candidate_path = Path(candidate_path or _resolved_candidate_config_path())
     atomic_write_text(resolved_candidate_path, dump_mihomo_config(base_config))
+    if resolved_candidate_path.resolve(strict=False) == Path(_resolved_candidate_config_path()).resolve(strict=False):
+        try:
+            after_fingerprint = current_mihomo_input_fingerprint(routing)
+        except Exception:
+            after_fingerprint = None
+        if (isinstance(before_fingerprint, dict) and isinstance(after_fingerprint, dict)
+                and before_fingerprint.get("hash") == after_fingerprint.get("hash")):
+            record_candidate_provenance(
+                candidate_path=resolved_candidate_path, fingerprint=after_fingerprint,
+            )
+        else:
+            _candidate_provenance_path().unlink(missing_ok=True)
 
     fwrouter_meta = base_config.get("fwrouter") if isinstance(base_config.get("fwrouter"), dict) else {}
     result = {

@@ -20,6 +20,7 @@ from fwrouter_api.services.mihomo_config_paths import (
 FINGERPRINT_VERSION = 2
 UDP_POLICY_RECEIPT_VERSION = 1
 STATE_FILE_NAME = "reconcile-state.json"
+CANDIDATE_PROVENANCE_FILE_NAME = "config.next.provenance.json"
 
 
 def _utc_timestamp() -> str:
@@ -47,6 +48,52 @@ def _file_hash(path: str | Path) -> str | None:
 
 def _state_path() -> Path:
     return Path(_resolved_candidate_config_path()).with_name(STATE_FILE_NAME)
+
+
+def _candidate_provenance_path() -> Path:
+    return Path(_resolved_candidate_config_path()).with_name(CANDIDATE_PROVENANCE_FILE_NAME)
+
+
+def record_candidate_provenance(*, candidate_path: str | Path, fingerprint: dict[str, Any]) -> bool:
+    """Record bounded, non-secret provenance for the generated default candidate."""
+    candidate = Path(candidate_path)
+    if candidate.resolve(strict=False) != Path(_resolved_candidate_config_path()).resolve(strict=False):
+        return False
+    fingerprint_hash = fingerprint.get("hash") if isinstance(fingerprint, dict) else None
+    candidate_hash = _file_hash(candidate)
+    if not isinstance(fingerprint_hash, str) or len(fingerprint_hash) != 64 or not candidate_hash:
+        _candidate_provenance_path().unlink(missing_ok=True)
+        return False
+    try:
+        atomic_write_json(_candidate_provenance_path(), {
+            "schema": 1,
+            "candidate_sha256": candidate_hash,
+            "input_fingerprint_hash": fingerprint_hash,
+        })
+        return True
+    except OSError:
+        return False
+
+
+def candidate_provenance_matches(
+    *, expected_fingerprint_hash: str, candidate_bytes: bytes | None = None,
+) -> bool:
+    """Verify the exact candidate bytes were generated from the expected inputs."""
+    try:
+        value = json.loads(_candidate_provenance_path().read_text(encoding="utf-8"))
+        return bool(
+            isinstance(value, dict)
+            and type(value.get("schema")) is int
+            and value.get("schema") == 1
+            and value.get("input_fingerprint_hash") == expected_fingerprint_hash
+            and isinstance(value.get("candidate_sha256"), str)
+            and value.get("candidate_sha256") == (
+                hashlib.sha256(candidate_bytes).hexdigest()
+                if candidate_bytes is not None else _file_hash(_resolved_candidate_config_path())
+            )
+        )
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
 
 
 def _load_state() -> dict[str, Any] | None:
@@ -91,6 +138,15 @@ def _table_fingerprint() -> dict[str, Any]:
             FROM settings
             WHERE key = 'vpn_auto_exclusive_source_ref'
             """
+        ),
+        # The verified inventory digest is a durable input to every native
+        # projection. Bind the existing native receipt to it without exposing
+        # inventory contents or changing the receipt's ownership model.
+        "subscription_inventory_generation": _query_rows(
+            """SELECT CASE WHEN json_valid(value_json)
+                            THEN json_extract(value_json, '$.candidate_digest') ELSE NULL END AS digest
+               FROM settings
+               WHERE key = 'subscriptions.native_generation.v1'"""
         ),
         "server_custom_https_proxy": _query_rows(
             """

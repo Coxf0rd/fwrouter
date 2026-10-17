@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import filecmp
+import hashlib
 import inspect
 import math
 import os
@@ -166,15 +167,33 @@ def _semantic_config_files_equal(active_path: str, candidate_path: str) -> bool:
 
 def promote_mihomo_candidate_config(
     *, selection_fenced: bool = False, expected_selection_revision: int | None = None,
+    _inventory_admission: Any = None,
+    _candidate_input_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not selection_fenced:
         with xray_writer_guard(timeout_seconds=30.0):
+            blocked = _inventory_candidate_promotion_blocked(_inventory_admission)
+            if blocked is not None:
+                return blocked
+            candidate_fingerprint = _candidate_input_fingerprint
+            if _inventory_admission is None:
+                if not isinstance(candidate_fingerprint, dict):
+                    from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
+                    candidate_fingerprint = current_mihomo_input_fingerprint()
+                candidate_blocked = _manual_candidate_provenance_blocked(candidate_fingerprint)
+                if candidate_blocked is not None:
+                    return candidate_blocked
             with db_session() as connection:
                 revision = read_selection_revision(connection)
                 next_revision = advance_selection_revision(connection, expected_revision=revision)
             if next_revision is None:
                 return {"ok": False, "promoted": False, "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT"}
-            result = _promote_mihomo_candidate_config_under_fence()
+            result = _promote_mihomo_candidate_config_under_fence(
+                inventory_admission=_inventory_admission,
+                candidate_input_fingerprint=(
+                    candidate_fingerprint if _inventory_admission is None else None
+                ),
+            )
             return {**result, "selection_revision": next_revision}
     from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
     if not xray_writer_guard_is_held() or type(expected_selection_revision) is not int:
@@ -182,10 +201,78 @@ def promote_mihomo_candidate_config(
     with db_session() as connection:
         if read_selection_revision(connection) != expected_selection_revision:
             return {"ok": False, "promoted": False, "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT"}
-    return _promote_mihomo_candidate_config_under_fence()
+    blocked = _inventory_candidate_promotion_blocked(_inventory_admission)
+    if blocked is not None:
+        return blocked
+    if _inventory_admission is None:
+        candidate_fingerprint = _candidate_input_fingerprint
+        if not isinstance(candidate_fingerprint, dict):
+            from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
+            candidate_fingerprint = current_mihomo_input_fingerprint()
+        candidate_blocked = _manual_candidate_provenance_blocked(candidate_fingerprint)
+        if candidate_blocked is not None:
+            return candidate_blocked
+    else:
+        candidate_fingerprint = None
+    return _promote_mihomo_candidate_config_under_fence(
+        inventory_admission=_inventory_admission,
+        candidate_input_fingerprint=(
+            candidate_fingerprint if _inventory_admission is None else None
+        ),
+    )
 
 
-def _promote_mihomo_candidate_config_under_fence() -> dict[str, Any]:
+def _manual_candidate_provenance_blocked(
+    expected_fingerprint: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+        candidate_provenance_matches, current_mihomo_input_fingerprint,
+    )
+
+    try:
+        expected = expected_fingerprint if isinstance(expected_fingerprint, dict) else current_mihomo_input_fingerprint()
+        payload = expected.get("payload") if isinstance(expected.get("payload"), dict) else {}
+        current = current_mihomo_input_fingerprint(payload.get("routing"))
+        expected_hash = expected.get("hash")
+        if not isinstance(expected_hash, str) or current.get("hash") != expected_hash:
+            raise ValueError("candidate_inputs_changed")
+        if not candidate_provenance_matches(expected_fingerprint_hash=expected_hash):
+            raise ValueError("candidate_provenance_mismatch")
+    except Exception as exc:
+        reason = str(exc) if str(exc) in {"candidate_inputs_changed", "candidate_provenance_mismatch"} else "candidate_provenance_unavailable"
+        return {
+            "ok": False, "promoted": False,
+            "stage": "candidate_provenance",
+            "error_code": "MIHOMO_CANDIDATE_PROVENANCE_UNVERIFIED",
+            "reason": reason,
+            "last_good_retained": True,
+        }
+    return None
+
+
+def _inventory_candidate_promotion_blocked(admission: Any) -> dict[str, Any] | None:
+    from fwrouter_api.services.subscription import _subscription_inventory_generation_gate
+
+    gate = _subscription_inventory_generation_gate(admission, require_writer_guard=True)
+    if gate.get("ok"):
+        return None
+    return {
+        "ok": False,
+        "promoted": False,
+        "stage": "inventory_generation_admission",
+        "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+        "reason": gate.get("reason"),
+        "last_good_retained": True,
+    }
+
+
+def _promote_mihomo_candidate_config_under_fence(
+    *, inventory_admission: Any = None,
+    candidate_input_fingerprint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    blocked = _inventory_candidate_promotion_blocked(inventory_admission)
+    if blocked is not None:
+        return blocked
     blocked = config.managed_runtime_operation_blocked(
         "vpn",
         error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
@@ -217,8 +304,35 @@ def _promote_mihomo_candidate_config_under_fence() -> dict[str, Any]:
         )
         return result
 
-    os.makedirs(os.path.dirname(base_path), exist_ok=True)
-    shutil.copyfile(candidate_path, base_path)
+    try:
+        candidate_bytes = Path(candidate_path).read_bytes()
+        candidate_hash = _file_hash(candidate_path)
+        if not candidate_hash or hashlib.sha256(candidate_bytes).hexdigest() != candidate_hash:
+            return {"ok": False, "promoted": False, "error_code": "MIHOMO_CANDIDATE_CHANGED_DURING_PROMOTE",
+                    "last_good_retained": True}
+        if inventory_admission is None:
+            from fwrouter_api.services.mihomo_reconcile_fingerprint import (
+                candidate_provenance_matches, current_mihomo_input_fingerprint,
+            )
+            expected = candidate_input_fingerprint if isinstance(candidate_input_fingerprint, dict) else {}
+            expected_hash = expected.get("hash")
+            payload = expected.get("payload") if isinstance(expected.get("payload"), dict) else {}
+            current = current_mihomo_input_fingerprint(payload.get("routing"))
+            if (not isinstance(expected_hash, str) or current.get("hash") != expected_hash
+                    or not candidate_provenance_matches(
+                        expected_fingerprint_hash=expected_hash, candidate_bytes=candidate_bytes,
+                    )):
+                return {"ok": False, "promoted": False,
+                        "error_code": "MIHOMO_CANDIDATE_PROVENANCE_UNVERIFIED",
+                        "last_good_retained": True}
+        os.makedirs(os.path.dirname(base_path), exist_ok=True)
+        atomic_write_text(Path(base_path), candidate_bytes.decode("utf-8"))
+        if _file_hash(base_path) != candidate_hash:
+            return {"ok": False, "promoted": False, "error_code": "MIHOMO_CANDIDATE_COPY_MISMATCH",
+                    "last_good_retained": True}
+    except (OSError, UnicodeError):
+        return {"ok": False, "promoted": False, "error_code": "MIHOMO_CANDIDATE_READ_FAILED",
+                "last_good_retained": True}
 
     result = {
         "ok": True,
@@ -538,6 +652,7 @@ def reconcile_mihomo_runtime(
     job_id: str = "manual",
     prepared_candidate_metadata: dict[str, Any] | None = None,
     verification_callback: Any = None,
+    _inventory_admission: Any = None,
 ) -> dict[str, Any]:
     blocked = config.managed_runtime_operation_blocked(
         "vpn",
@@ -563,6 +678,26 @@ def reconcile_mihomo_runtime(
             "reconcile_action": "none",
             "reconcile_reason": "managed_runtime_required",
             "config": config.get_mihomo_config_status(),
+        }
+
+    from fwrouter_api.services.subscription import _subscription_inventory_generation_gate
+    inventory_gate = _subscription_inventory_generation_gate(_inventory_admission)
+    if not inventory_gate.get("ok"):
+        return {
+            "ok": False,
+            "stage": "inventory_generation_admission",
+            "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+            "reconcile_action": "none",
+            "reconcile_reason": str(inventory_gate.get("reason") or "generation_unverified"),
+            "candidate": None,
+            "promoted": {"ok": False, "promoted": False, "reason": "inventory_generation_unverified"},
+            "container": {"ok": False, "action": "none", "reason": "inventory_generation_unverified"},
+            "last_good_retained": True,
+            "inventory_generation": {
+                "status": inventory_gate.get("status"),
+                "candidate_digest": inventory_gate.get("candidate_digest"),
+                "candidate_revision": inventory_gate.get("candidate_revision"),
+            },
         }
 
     operation_id = str(uuid4())
@@ -810,6 +945,15 @@ def reconcile_mihomo_runtime(
         )
         if result["ok"]:
             with xray_writer_guard(timeout_seconds=30.0):
+                inventory_block = _inventory_candidate_promotion_blocked(_inventory_admission)
+                if inventory_block is not None:
+                    result.update({
+                        **inventory_block,
+                        "stage": "inventory_generation_publication_revalidation",
+                        "reconcile_action": "none",
+                        "reconcile_reason": "inventory_generation_stale",
+                    })
+                    return result
                 owned_revision = verification.get("selection_revision") if verification else expected_selection_revision
                 if type(owned_revision) is not int or not _selection_publication_still_owned(
                     operation_id=operation_id, expected_revision=owned_revision,
@@ -850,6 +994,14 @@ def reconcile_mihomo_runtime(
     restart_action = "force_recreate"
 
     with xray_writer_guard(timeout_seconds=30.0):
+        inventory_block = _inventory_candidate_promotion_blocked(_inventory_admission)
+        if inventory_block is not None:
+            return {
+                **inventory_block,
+                "stage": "inventory_generation_publication_revalidation",
+                "reconcile_action": "none",
+                "reconcile_reason": "inventory_generation_stale",
+            }
         try:
             current_fingerprint = current_mihomo_input_fingerprint(routing_dict)
             current_incarnation = _mihomo_incarnation()
@@ -905,6 +1057,8 @@ def reconcile_mihomo_runtime(
         })
         promoted = promote_mihomo_candidate_config(
             selection_fenced=True, expected_selection_revision=generation_revision,
+            _inventory_admission=_inventory_admission,
+            _candidate_input_fingerprint=input_fingerprint,
         )
         restarted = config.restart_mihomo_container(
             action=restart_action, selection_fenced=True,

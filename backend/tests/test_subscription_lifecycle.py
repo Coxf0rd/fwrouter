@@ -2219,6 +2219,110 @@ def test_subscription_batch_endpoint_continues_after_one_url_error(monkeypatch, 
     assert len(apply_calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("failure_code", "failure_message", "reconcile_stage"),
+    [
+        ("XRAY_VPN_AUTO_RECONCILE_EXCEPTION", "IDENTITY_MIGRATION_REQUIRED", "vpn_auto_reconcile"),
+        ("ACCEPTANCE_PRE_NATIVE_STAGE_FAILURE", "Synthetic candidate staging failed", "native_candidate_validation"),
+    ],
+)
+def test_subscription_batch_apply_failure_preserves_diagnostic_dto_paths(
+    monkeypatch, tmp_path: Path, failure_code: str, failure_message: str, reconcile_stage: str,
+) -> None:
+    """Both lifecycle refusals remain visible at their established API DTO paths."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    import_result = {
+        "ok": True,
+        "state": None,
+        "batch": {"items": [], "added_subscriptions": 1, "errors": 0},
+    }
+    failure = {"code": failure_code, "message": failure_message}
+    monkeypatch.setattr(
+        subscription_route,
+        "refresh_subscription_inventory_batch",
+        lambda *_args, **_kwargs: import_result,
+    )
+
+    def _failed_apply(result):
+        assert result is import_result
+        return {
+            "ok": False,
+            "stage": "xray_generation",
+            "refresh": import_result,
+            "candidate": None,
+            "config_validation": None,
+            "promoted": False,
+            "container_restarted": False,
+            "applied": False,
+            "auto_select": None,
+            "error": failure,
+            "reconcile": {
+                "ok": False,
+                "stage": reconcile_stage,
+                "error_code": failure_code,
+                "error_message": failure_message,
+            },
+        }
+
+    monkeypatch.setattr(subscription_route, "apply_subscription_import_result", _failed_apply)
+    response = subscription_route.save_subscription_endpoint(
+        subscription_route.SubscriptionUrlRequest(urls=["https://synthetic.acceptance.invalid/profile"])
+    )
+    body = response.model_dump()
+
+    assert body["ok"] is False
+    assert body["error"] == failure
+    assert body["data"]["applied"] is False
+    assert "error" not in body["data"]
+    apply_diagnostics = body["data"]["refresh"]
+    assert apply_diagnostics["error"] == failure
+    assert apply_diagnostics["reconcile"]["stage"] == reconcile_stage
+    assert apply_diagnostics["reconcile"]["error_code"] == failure_code
+
+
+def test_subscription_batch_native_apply_runs_outside_outer_writer_guard(monkeypatch, tmp_path: Path) -> None:
+    """Route orchestration must not keep the Xray writer lock across selector probes."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    import_result = {
+        "ok": True,
+        "state": None,
+        "batch": {"items": [], "added_subscriptions": 0, "errors": 0},
+    }
+    monkeypatch.setattr(
+        subscription_route,
+        "refresh_subscription_inventory_batch",
+        lambda *args, **kwargs: import_result,
+    )
+    apply_guard_states: list[bool] = []
+
+    def _fake_apply(result):
+        from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+
+        assert result is import_result
+        apply_guard_states.append(xray_writer_guard_is_held())
+        return {
+            "ok": True,
+            "refresh": import_result,
+            "candidate": None,
+            "config_validation": {"ok": True},
+            "promoted": False,
+            "container_restarted": False,
+            "applied": True,
+            "auto_select": None,
+            "error": None,
+        }
+
+    monkeypatch.setattr(subscription_route, "apply_subscription_import_result", _fake_apply)
+
+    response = _client().post("/api/v2/subscription", json={"urls": ["https://example.test/sub"]})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert apply_guard_states == [False]
+
+
 def test_apply_subscription_import_result_reuses_existing_batch_import(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

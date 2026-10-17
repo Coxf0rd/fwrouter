@@ -353,8 +353,13 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
              json.dumps({"detail": {"email": internal_email, "client_uuid": internal_uuid}})),
         )
         selection_revision = read_selection_revision(connection)
+        # Model the normal refresh transaction: inventory and its pending
+        # native-generation marker are committed together before review.
+        subscription_service._write_subscription_inventory_candidate(connection)
 
     snapshots_before = _database_snapshot()["subscription_profile_snapshots"]
+    generation_before = subscription_service.get_subscription_native_generation_state()
+    assert generation_before["status"] == "pending"
     manifest = [{
         "old_server_id": old_server.server_id,
         "new_server_id": new_server.server_id,
@@ -407,6 +412,7 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
     assert preview["native_applied"] is False
     assert preview["fresh_generation_required"] is True
     assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before
+    assert subscription_service.get_subscription_native_generation_state() == generation_before
     with db_session() as connection:
         assert connection.execute(
             "SELECT 1 FROM subscription_node_aliases WHERE server_id=?", (new_server.server_id,),
@@ -415,6 +421,25 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
             "SELECT raw_json FROM servers WHERE server_id=?", (new_server.server_id,),
         ).fetchone()[0])
         assert "_fwrouter_profile_provenance" not in dry_run_raw
+
+    before_failed_apply = _database_snapshot()
+    real_inventory_writer = subscription_service._write_subscription_inventory_candidate
+
+    def reject_inventory_marker(_connection, **_kwargs):
+        raise RuntimeError("TEST_INVENTORY_MARKER_WRITE_FAILED")
+
+    monkeypatch.setattr(subscription_service, "_write_subscription_inventory_candidate", reject_inventory_marker)
+    with pytest.raises(RuntimeError, match="TEST_INVENTORY_MARKER_WRITE_FAILED"):
+        xray_subscription_service.migrate_subscription_profile_identities(
+            manifest,
+            expected_selection_revision=selection_revision,
+            expected_identity_digest=identity_digest,
+            apply=True,
+            expected_plan_sha256=preview["plan_sha256"],
+        )
+    monkeypatch.setattr(subscription_service, "_write_subscription_inventory_candidate", real_inventory_writer)
+    assert _database_snapshot() == before_failed_apply
+    assert subscription_service.get_subscription_native_generation_state() == generation_before
 
     result = xray_subscription_service.migrate_subscription_profile_identities(
         manifest,
@@ -427,6 +452,12 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
     assert result["native_applied"] is False
     assert result["fresh_generation_required"] is True
     assert _database_snapshot()["subscription_profile_snapshots"] == snapshots_before
+    generation_after_apply = subscription_service.get_subscription_native_generation_state()
+    assert generation_after_apply["status"] == "pending"
+    assert generation_after_apply["candidate_revision"] == generation_before["candidate_revision"] + 1
+    assert generation_after_apply["candidate_digest"] != generation_before["candidate_digest"]
+    assert generation_after_apply["verified_digest"] == generation_before["verified_digest"]
+    assert generation_after_apply["verified_revision"] == generation_before["verified_revision"]
     with db_session() as connection:
         stored_witness = json.loads(connection.execute(
             "SELECT raw_json FROM servers WHERE server_id=?", (new_server.server_id,),
@@ -444,6 +475,24 @@ def test_reviewed_profile_identity_mapping_preserves_credentials_without_publish
                 (scope, new_server.server_id),
             ).fetchone()
             assert row is not None
+
+    # Replaying the exact reviewed mapping is idempotent: no inventory bytes
+    # change, so it must not advance the candidate fence a second time.
+    replay = xray_subscription_service.migrate_subscription_profile_identities(
+        manifest,
+        expected_selection_revision=result["selection_revision"],
+        expected_identity_digest=identity_digest,
+    )
+    assert replay["ok"] is True and replay["status"] == "dry_run"
+    replay_apply = xray_subscription_service.migrate_subscription_profile_identities(
+        manifest,
+        expected_selection_revision=result["selection_revision"],
+        expected_identity_digest=identity_digest,
+        apply=True,
+        expected_plan_sha256=replay["plan_sha256"],
+    )
+    assert replay_apply["ok"] is True and replay_apply["changed_count"] == 0
+    assert subscription_service.get_subscription_native_generation_state() == generation_after_apply
 
 
 @pytest.mark.parametrize(
@@ -669,6 +718,11 @@ def test_identical_candidate_copy_retains_both_validations_and_rejects_changed_c
     if case == "copy-corrupted":
         assert result["ok"] is False
         assert result["error_code"] == "MIHOMO_STAGE_CANDIDATE_COPY_MISMATCH"
+        assert len(local_calls) == 1 and len(native_calls) == 1
+        return
+    if case == "changed-inputs":
+        assert result["ok"] is False
+        assert result["error_code"] == "MIHOMO_STAGE_INPUTS_CHANGED_AFTER_VALIDATION"
         assert len(local_calls) == 1 and len(native_calls) == 1
         return
     assert result["ok"] is True

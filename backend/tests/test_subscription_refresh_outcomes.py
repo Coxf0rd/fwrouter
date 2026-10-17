@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from fwrouter_api.services import mihomo_config as _mihomo_config  # initialize reconcile exports before test imports
 from fwrouter_api.services import mihomo_reconcile, subscription_pipeline, subscription_refresh_job
 from fwrouter_api.services.events import CORE_EVENT_CODE_CATALOG
@@ -68,6 +70,172 @@ def test_invalid_source_job_does_not_claim_saved_intent_or_last_good(monkeypatch
     assert result["outcome"] == "failed"
     assert result["intent_saved"] is False
     assert result["last_good_retained"] is False
+
+
+def test_prepare_subscription_refresh_recovers_checkpoint_before_provider_fetch(monkeypatch) -> None:
+    from fwrouter_api.services import xray_subscription_service
+    from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guard_is_held
+
+    order: list[str] = []
+    def recover_checkpoint():
+        with xray_writer_guard():
+            order.append("checkpoint_recovery")
+            assert xray_writer_guard_is_held()
+        assert not xray_writer_guard_is_held()
+        return {"ok": True, "status": "skipped"}
+
+    def fetch_provider_inventory():
+        assert not xray_writer_guard_is_held()
+        order.append("provider_fetch")
+        return {"ok": True, "stage": "inventory_synced"}
+
+    monkeypatch.setattr(
+        xray_subscription_service,
+        "recover_xray_generation_checkpoint_before_inventory_refresh",
+        recover_checkpoint,
+    )
+    monkeypatch.setattr(
+        subscription_pipeline, "refresh_all_subscription_inventory",
+        fetch_provider_inventory,
+    )
+    monkeypatch.setattr(subscription_pipeline, "current_mihomo_input_fingerprint", lambda: {"hash": "synthetic"})
+    monkeypatch.setattr(subscription_pipeline, "mihomo_input_unchanged", lambda _fingerprint: True)
+
+    result = subscription_pipeline.prepare_subscription_refresh()
+
+    assert result["ok"] is True
+    assert result["stage"] == "already_current"
+    assert order == ["checkpoint_recovery", "provider_fetch"]
+
+
+@pytest.mark.parametrize("checkpoint_present", [False, True])
+@pytest.mark.parametrize("module", [
+    {"desired_state": "disabled", "lifecycle_mode": "managed"},
+    {"desired_state": "enabled", "lifecycle_mode": "external"},
+    None,
+])
+def test_refresh_preflight_respects_optional_xray_lifecycle_without_native_calls(
+    monkeypatch, tmp_path: Path, checkpoint_present: bool, module: dict[str, str] | None,
+) -> None:
+    from fwrouter_api.services import xray_subscription_service
+
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    if checkpoint_present:
+        checkpoint.write_text("{}", encoding="utf-8")
+
+    class Adapter:
+        config_path = tmp_path / "xray.json"
+
+        def __getattr__(self, name):
+            if name.startswith("stage_") or name in {"reload", "restart", "readback"}:
+                raise AssertionError(f"optional Xray preflight attempted native operation: {name}")
+            raise AttributeError(name)
+
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: Adapter())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
+    monkeypatch.setattr(xray_subscription_service, "_module_state", lambda _name: module)
+
+    result = xray_subscription_service.recover_xray_generation_checkpoint_before_inventory_refresh()
+
+    if checkpoint_present:
+        assert result["ok"] is False
+        assert result["status"] == "blocked"
+        assert result["stage"] == "lifecycle"
+        assert result["error_code"] == "XRAY_GENERATION_RECOVERY_REQUIRES_MANAGED_RUNTIME"
+        assert checkpoint.is_file()
+    else:
+        assert result == {"ok": True, "status": "skipped", "reason": "xray_runtime_not_managed"}
+
+
+@pytest.mark.parametrize("checkpoint_present", [False, True])
+def test_optional_xray_checkpoint_state_controls_provider_fetch(
+    monkeypatch, tmp_path: Path, checkpoint_present: bool,
+) -> None:
+    from fwrouter_api.services import xray_subscription_service
+
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    if checkpoint_present:
+        checkpoint.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
+    monkeypatch.setattr(
+        xray_subscription_service, "_module_state",
+        lambda _name: {"desired_state": "disabled", "lifecycle_mode": "managed"},
+    )
+    provider_calls: list[str] = []
+    monkeypatch.setattr(
+        subscription_pipeline, "refresh_all_subscription_inventory",
+        lambda: provider_calls.append("all") or {"ok": True, "stage": "inventory_synced"},
+    )
+    monkeypatch.setattr(subscription_pipeline, "current_mihomo_input_fingerprint", lambda: {"hash": "synthetic"})
+    monkeypatch.setattr(subscription_pipeline, "mihomo_input_unchanged", lambda _fingerprint: True)
+
+    result = subscription_pipeline.prepare_subscription_refresh()
+
+    if checkpoint_present:
+        assert result["ok"] is False
+        assert result["stage"] == "generation_recovery"
+        assert provider_calls == []
+    else:
+        assert result["ok"] is True
+        assert result["stage"] == "already_current"
+        assert provider_calls == ["all"]
+
+
+def test_prepare_subscription_refresh_does_not_fetch_when_checkpoint_recovery_is_unproven(monkeypatch) -> None:
+    from fwrouter_api.services import xray_subscription_service
+
+    fetch_calls: list[bool] = []
+    monkeypatch.setattr(
+        xray_subscription_service,
+        "recover_xray_generation_checkpoint_before_inventory_refresh",
+        lambda: {
+            "ok": False, "stage": "generation_recovery",
+            "error_code": "XRAY_GENERATION_RECOVERY_FAILED", "last_good_retained": True,
+            "details": {"recovered": "stale_checkpoint_declined", "reason": "inventory_generation_not_bound"},
+        },
+    )
+    monkeypatch.setattr(
+        subscription_pipeline, "refresh_all_subscription_inventory",
+        lambda: fetch_calls.append(True) or {"ok": True},
+    )
+
+    result = subscription_pipeline.prepare_subscription_refresh()
+
+    assert result["ok"] is False
+    assert result["stage"] == "generation_recovery"
+    assert result["error_code"] == "XRAY_GENERATION_RECOVERY_FAILED"
+    assert result["generation_recovery"] == {
+        "error_code": "XRAY_GENERATION_RECOVERY_FAILED",
+        "stage": "generation_recovery",
+        "last_good_retained": True,
+        "reason": "inventory_generation_not_bound",
+        "recovered": "stale_checkpoint_declined",
+    }
+    assert result["last_good_retained"] is True
+    assert fetch_calls == []
+
+
+def test_prepare_subscription_refresh_converts_checkpoint_race_to_typed_block(monkeypatch) -> None:
+    from fwrouter_api.services.subscription import SubscriptionInventoryGenerationBlocked
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.recover_xray_generation_checkpoint_before_inventory_refresh",
+        lambda: {"ok": True, "status": "skipped"},
+    )
+    blocked = {"ok": False, "error_code": "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"}
+
+    def fetch_and_hit_writer_gate():
+        raise SubscriptionInventoryGenerationBlocked(blocked)
+
+    monkeypatch.setattr(subscription_pipeline, "refresh_all_subscription_inventory", fetch_and_hit_writer_gate)
+
+    result = subscription_pipeline.prepare_subscription_refresh()
+
+    assert result["ok"] is False
+    assert result["stage"] == "generation_recovery"
+    assert result["error_code"] == blocked["error_code"]
+    assert result["last_good_retained"] is True
 
 
 def test_terminal_partial_event_is_warning_with_typed_source_errors(monkeypatch) -> None:

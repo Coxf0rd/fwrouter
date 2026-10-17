@@ -148,6 +148,79 @@ def _setup(monkeypatch, tmp_path: Path, *, fail: str | None = None):
     return adapter, checkpoint
 
 
+def _prepare_verified_committed_checkpoint(
+    monkeypatch, tmp_path: Path, *, fail: str | None = None,
+    phase: str = "snapshots_published",
+):
+    """Model crash after durable inventory promotion, before checkpoint unlink."""
+    adapter, checkpoint = _setup(monkeypatch, tmp_path, fail=fail)
+    from fwrouter_api.services import subscription
+    from fwrouter_api.db.connection import db_session
+
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state) "
+            "VALUES ('synthetic-committed', 'Synthetic committed', 'subscription', '{}', 'active')"
+        )
+        connection.execute(
+            "INSERT INTO subscription_server_memberships "
+            "(source_id, server_id, source_url, entry_identity_hash, parser_format, is_active) "
+            "VALUES ('src:committed', 'synthetic-committed', 'http://127.0.0.1:9/committed', 'synthetic', 'fixture', 1)"
+        )
+        subscription._write_subscription_inventory_candidate(connection)
+    inventory = subscription.get_subscription_native_generation_state()
+    assert inventory["status"] == "pending"
+    # Recreate the exact settings row committed by successful promotion. The
+    # checkpoint remains on disk, representing a process crash before unlink.
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            (json.dumps({
+                "schema": 1,
+                "status": "verified",
+                "candidate_digest": inventory["candidate_digest"],
+                "candidate_revision": inventory["candidate_revision"],
+                "verified_digest": inventory["candidate_digest"],
+                "verified_revision": inventory["candidate_revision"],
+                "reason": None,
+                "inventory_count": inventory["inventory_count"],
+            }, sort_keys=True, separators=(",", ":")), subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+    inventory = subscription.get_subscription_native_generation_state()
+    assert inventory["status"] == "verified"
+
+    checkpoint_data = json.loads(checkpoint.read_text(encoding="utf-8"))
+    checkpoint_data["phase"] = phase
+    checkpoint_data["subscription_inventory_generation"] = {
+        "digest": inventory["candidate_digest"],
+        "revision": inventory["candidate_revision"],
+    }
+    mihomo_path = Path(mihomo_config._resolved_base_config_path())
+    checkpoint_data["staged_generation"] = {
+        "mihomo_final_sha256": hashlib.sha256(mihomo_path.read_bytes()).hexdigest(),
+    }
+    checkpoint.write_text(json.dumps(checkpoint_data, sort_keys=True), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    return adapter, checkpoint, inventory
+
+
+def _stub_verified_mihomo_recovery_receipt(monkeypatch, *, proof_ok: bool):
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+
+    proof = {"ok": proof_ok, "evidence": "synthetic-native-readback"}
+    proof_calls = []
+    receipt_calls = []
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", lambda: proof_calls.append(proof) or proof)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda: "synthetic-fingerprint")
+
+    def write_receipt(**kwargs):
+        receipt_calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "write_mihomo_reconcile_fingerprint_state", write_receipt)
+    return proof_calls, receipt_calls
+
+
 def _write_supersession_candidate_proof(adapter: _Adapter, checkpoint: Path) -> dict[str, Any]:
     """Build internally consistent persisted proof fields for the ownership predicate unit test."""
     mihomo_path = Path(mihomo_config._resolved_base_config_path())
@@ -264,6 +337,138 @@ def test_current_projection_recovery_reloads_and_closes_checkpoint(monkeypatch, 
     assert attempt["expected_identity_count"] == 1
     assert attempt["operation_id"]
     assert set(attempt).isdisjoint({"uuid", "email", "stdout", "stderr", "config"})
+
+
+def test_verified_promotion_crash_uses_current_projection_proof_and_retains_on_failure(
+    monkeypatch, tmp_path: Path,
+):
+    adapter, checkpoint, inventory = _prepare_verified_committed_checkpoint(
+        monkeypatch, tmp_path, fail="public_mismatch",
+    )
+    checkpoint_before = checkpoint.read_bytes()
+    config_before = adapter.config_path.read_bytes()
+    loaded_before = list(adapter.list_loaded_client_identities())
+    calls_before = list(adapter._candidate.read_bytes() for _ in [0] if adapter._candidate.exists())
+    reloads_before = adapter.reload_count
+    restore_calls = []
+
+    def forbidden_preimage_restore(_adapter, _checkpoint_path):
+        restore_calls.append(True)
+        return {"ok": True, "recovered": "restored_preimage"}
+
+    monkeypatch.setattr(service, "_restore_xray_generation_checkpoint", forbidden_preimage_restore)
+    result = service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result["ok"] is False
+    assert result["error_code"] == "XRAY_GENERATION_RECOVERY_FAILED"
+    assert result["details"].get("reason") == "committed_projection_mismatch"
+    assert restore_calls == []
+    assert checkpoint.read_bytes() == checkpoint_before
+    assert adapter.config_path.read_bytes() == config_before
+    assert adapter.list_loaded_client_identities() == loaded_before
+    assert adapter.reload_count == reloads_before
+    assert list(adapter._candidate.read_bytes() for _ in [0] if adapter._candidate.exists()) == calls_before
+    from fwrouter_api.services.subscription import get_subscription_native_generation_state
+    assert get_subscription_native_generation_state() == inventory
+
+
+def test_verified_promotion_crash_requires_fresh_native_udp_proof_before_closing(
+    monkeypatch, tmp_path: Path,
+):
+    adapter, checkpoint, inventory = _prepare_verified_committed_checkpoint(monkeypatch, tmp_path)
+    proof_calls, receipt_calls = _stub_verified_mihomo_recovery_receipt(monkeypatch, proof_ok=False)
+    restore_calls = []
+    monkeypatch.setattr(
+        service, "_restore_xray_generation_checkpoint",
+        lambda *_args: restore_calls.append(True) or {"ok": True, "recovered": "restored_preimage"},
+    )
+    checkpoint_before = checkpoint.read_bytes()
+    reloads_before = adapter.reload_count
+
+    result = service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result["ok"] is False
+    assert (result.get("details") or {}).get("reason") == "inventory_native_receipt_unconfirmed"
+    assert len(proof_calls) == 1
+    assert receipt_calls == []
+    assert restore_calls == []
+    assert checkpoint.read_bytes() == checkpoint_before
+    assert adapter.reload_count == reloads_before + 1
+    from fwrouter_api.services.subscription import get_subscription_native_generation_state
+    assert get_subscription_native_generation_state() == inventory
+
+
+@pytest.mark.parametrize("phase", ["snapshots_published", "projections_cleaned"])
+def test_verified_promotion_crash_closes_only_after_current_projection_proof(
+    monkeypatch, tmp_path: Path, phase: str,
+):
+    adapter, checkpoint, inventory = _prepare_verified_committed_checkpoint(
+        monkeypatch, tmp_path, phase=phase,
+    )
+    proof_calls, receipt_calls = _stub_verified_mihomo_recovery_receipt(monkeypatch, proof_ok=True)
+    old_digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    reloads_before = adapter.reload_count
+
+    result = service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result["ok"] is True, result
+    assert result.get("recovered") == "current_projection_verified"
+    assert not checkpoint.exists()
+    assert adapter.reload_count == reloads_before + 1
+    assert set(adapter.list_loaded_client_identities()) == {IDENTITY}
+    from fwrouter_api.services.subscription import get_subscription_native_generation_state
+    assert get_subscription_native_generation_state() == inventory
+    assert len(proof_calls) == 1
+    assert len(receipt_calls) == 1
+    assert receipt_calls[0].get("native_proof") == proof_calls[0]
+    assert receipt_calls[0].get("result") == {
+        "ok": True, "reconcile_reason": "xray_checkpoint_recovery",
+    }
+    attempt_path = service._generation_recovery_attempt_path(checkpoint, old_digest)
+    attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+    assert attempt.get("phase") == "superseded_verified"
+    assert attempt.get("checkpoint_sha256") == old_digest
+
+
+def test_verified_promotion_crash_still_requires_explicit_migration_supersession(
+    monkeypatch, tmp_path: Path,
+):
+    adapter, checkpoint, inventory = _prepare_verified_committed_checkpoint(monkeypatch, tmp_path)
+    from fwrouter_api.db.connection import db_session
+
+    checkpoint_digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subscription_node_identities "
+            "(identity_id, origin_server_id, current_server_id, revision, provenance_sha256) "
+            "VALUES ('synthetic-migration', 'origin', 'current', 1, ?)",
+            ("a" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_identity_transitions "
+            "(identity_id, from_server_id, to_server_id, from_revision, to_revision, "
+            "before_provenance_sha256, after_provenance_sha256, source_ownership_sha256, checkpoint_sha256) "
+            "VALUES ('synthetic-migration', 'origin', 'current', 1, 2, ?, ?, ?, ?)",
+            ("a" * 64, "b" * 64, "c" * 64, checkpoint_digest),
+        )
+    calls = []
+    monkeypatch.setattr(service, "_recover_checkpoint_from_current_projection", lambda *_a: calls.append("current"))
+    monkeypatch.setattr(service, "_restore_xray_generation_checkpoint", lambda *_a: calls.append("restore"))
+    checkpoint_before = checkpoint.read_bytes()
+    config_before = adapter.config_path.read_bytes()
+    reloads_before = adapter.reload_count
+
+    result = service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result["ok"] is False
+    assert result["stage"] == "generation_supersession_required"
+    assert result["error_code"] == "XRAY_GENERATION_SUPERSESSION_REQUIRED"
+    assert calls == []
+    assert checkpoint.read_bytes() == checkpoint_before
+    assert adapter.config_path.read_bytes() == config_before
+    assert adapter.reload_count == reloads_before
+    from fwrouter_api.services.subscription import get_subscription_native_generation_state
+    assert get_subscription_native_generation_state() == inventory
 
 
 def _handoff_parity_state(handoffs):
@@ -383,6 +588,183 @@ def test_current_projection_recovery_proves_mixed_binding_and_direct_clients(mon
     assert result["modes_verified"] == 1
 
 
+def _direct_selection_snapshot(*, desired_mode: str = "direct", applied_mode: str = "direct") -> dict[str, Any]:
+    return {
+        "routing": {
+            "server_mode": "fixed",
+            "desired_fixed_server_id": None,
+            "applied_fixed_server_id": None,
+            "active_auto_server_id": None,
+            "desired_mode": desired_mode,
+            "applied_mode": applied_mode,
+            "apply_state": "clean",
+            "updated_at": "2026-10-17 00:00:00",
+        },
+        "selection_revision": 4,
+        "selection_decision_id": "current",
+    }
+
+
+def _install_direct_readback_fakes(
+    monkeypatch, *, native_ok: bool = True, current_routing_override: dict[str, Any] | None = None,
+    decision_id: str | None = "current",
+) -> None:
+    from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status, servers
+
+    routing = current_routing_override or _direct_selection_snapshot()["routing"]
+    monkeypatch.setattr(servers, "get_routing_global_state", lambda **_kwargs: dict(routing))
+    from fwrouter_api.services import vpn_auto_selection_state
+    monkeypatch.setattr(vpn_auto_selection_state, "read_selection_fence", lambda _connection: {
+        "revision": 4, "decision_id": decision_id,
+    })
+    monkeypatch.setattr(
+        dataplane_status, "_read_live_dataplane_payload",
+        lambda: {"ok": native_ok, "table_exists": native_ok,
+                 "required_chains": {"fwrouter_classify": native_ok},
+                 "artifact_consistency": {"ok": native_ok}},
+    )
+    monkeypatch.setattr(dataplane_status, "_live_owned_table_ready", lambda payload: bool(payload.get("ok")))
+    monkeypatch.setattr(
+        dataplane_global, "_read_applied_manifest_uncached",
+        lambda: {"routing_global_state": dict(routing), "extra": {"rules_effective": {}}},
+    )
+    monkeypatch.setattr(
+        dataplane_live, "_probe_live_global_mode_uncached",
+        lambda: {"ok": native_ok, "mode": "direct" if native_ok else "unknown"},
+    )
+    monkeypatch.setattr(
+        dataplane_global, "build_global_preflight",
+        lambda **_kwargs: {"can_enforce_global_direct": native_ok},
+    )
+    monkeypatch.setattr(
+        dataplane_status, "build_global_preflight",
+        lambda **_kwargs: {"can_enforce_global_direct": native_ok},
+    )
+    monkeypatch.setattr(
+        dataplane_global, "build_applied_runtime_enforcement",
+        lambda **_kwargs: {
+            "enforcement_level": "global_direct_enforced" if native_ok else "global_direct_only",
+            "traffic_enforcement_guaranteed": native_ok,
+            "active_mode_matches_intent": native_ok,
+            "live_global_mode": "direct" if native_ok else "unknown",
+        },
+    )
+    monkeypatch.setattr(
+        dataplane_status, "build_applied_runtime_enforcement",
+        lambda **_kwargs: {
+            "enforcement_level": "global_direct_enforced" if native_ok else "global_direct_only",
+            "traffic_enforcement_guaranteed": native_ok,
+            "active_mode_matches_intent": native_ok,
+            "live_global_mode": "direct" if native_ok else "unknown",
+        },
+    )
+
+
+def test_recovery_selection_readback_accepts_unselected_only_with_checkpointed_native_direct_proof(
+    monkeypatch, tmp_path: Path,
+):
+    adapter, _checkpoint = _setup(monkeypatch, tmp_path)
+    selection = _direct_selection_snapshot()
+    selection["selection_decision_id"] = None
+    monkeypatch.setattr(service, "_verify_generation_selection_readback", lambda _selection: {
+        "ok": False, "error_code": "SELECTION_BASELINE_UNSELECTED",
+    })
+    monkeypatch.setattr(service, "_current_xray_projection_snapshot", lambda: {
+        "identities": [IDENTITY], "snapshots": [], "published_snapshots": [],
+        "fence": {"revision": 4, "decision_id": None, "active_server_id": None,
+                  "provenance_server_id": None},
+    })
+    _install_direct_readback_fakes(monkeypatch, decision_id=None)
+
+    result = service._verify_generation_recovery_selection_readback(selection)
+
+    assert result["ok"] is True, result
+    assert result["mode"] == "direct"
+    assert result["native_enforcement_level"] == "global_direct_enforced"
+
+
+def test_recovery_selection_uses_checkpoint_intent_for_unselected_and_never_synthesizes_legacy_direct(
+    monkeypatch, tmp_path: Path,
+):
+    _adapter, _checkpoint = _setup(monkeypatch, tmp_path)
+    current_direct = _direct_selection_snapshot()
+    assert service._checkpoint_selection_for_recovery(
+        {"auto_selection_after": current_direct}, current_direct,
+    ) == current_direct
+    assert service._checkpoint_selection_for_recovery({}, current_direct) is None
+
+    current_vpn = {
+        "routing": {"server_mode": "auto", "active_auto_server_id": "vpn-target"},
+        "selection_revision": 9, "selection_decision_id": "current-vpn",
+    }
+    assert service._checkpoint_selection_for_recovery({}, current_vpn) is current_vpn
+
+
+@pytest.mark.parametrize("mutation", [
+    "native_missing", "revision", "decision", "desired_vpn", "current_desired_vpn",
+    "decision_none_vs_current", "applied_pending", "legacy_checkpoint",
+])
+def test_recovery_selection_readback_rejects_direct_without_exact_fenced_native_proof(
+    monkeypatch, tmp_path: Path, mutation: str,
+):
+    _adapter, _checkpoint = _setup(monkeypatch, tmp_path)
+    selection = _direct_selection_snapshot()
+    projection_fence = {"revision": 4, "decision_id": "current"}
+    native_ok = True
+    current_routing_override = None
+    if mutation == "revision":
+        projection_fence["revision"] = 5
+    elif mutation == "decision":
+        projection_fence["decision_id"] = "new-decision"
+    elif mutation == "decision_none_vs_current":
+        selection["selection_decision_id"] = None
+    elif mutation == "desired_vpn":
+        selection["routing"]["desired_mode"] = "vpn"
+    elif mutation == "current_desired_vpn":
+        current_routing_override = _direct_selection_snapshot(desired_mode="vpn", applied_mode="vpn")["routing"]
+    elif mutation == "applied_pending":
+        selection["routing"]["apply_state"] = "pending"
+    elif mutation == "legacy_checkpoint":
+        del selection["routing"]["desired_mode"]
+        del selection["routing"]["applied_mode"]
+        del selection["routing"]["apply_state"]
+    elif mutation == "native_missing":
+        native_ok = False
+    monkeypatch.setattr(service, "_verify_generation_selection_readback", lambda _selection: {
+        "ok": False, "error_code": "SELECTION_BASELINE_UNSELECTED",
+    })
+    monkeypatch.setattr(service, "_current_xray_projection_snapshot", lambda: {
+        "identities": [IDENTITY], "snapshots": [], "published_snapshots": [],
+        "fence": projection_fence,
+    })
+    _install_direct_readback_fakes(
+        monkeypatch, native_ok=native_ok, current_routing_override=current_routing_override,
+    )
+
+    result = service._verify_generation_recovery_selection_readback(selection)
+
+    assert result["ok"] is False, result
+
+
+def test_recovery_selection_readback_does_not_treat_emergency_direct_as_desired_direct(
+    monkeypatch, tmp_path: Path,
+):
+    _adapter, _checkpoint = _setup(monkeypatch, tmp_path)
+    selection = _direct_selection_snapshot(desired_mode="vpn", applied_mode="vpn")
+    monkeypatch.setattr(service, "_verify_generation_selection_readback", lambda _selection: {
+        "ok": False, "error_code": "SELECTION_BASELINE_UNSELECTED",
+    })
+    monkeypatch.setattr(service, "_current_xray_projection_snapshot", lambda: {
+        "identities": [IDENTITY], "snapshots": [], "published_snapshots": [],
+        "fence": {"revision": 4, "decision_id": "current"},
+    })
+    _install_direct_readback_fakes(monkeypatch)
+
+    result = service._verify_generation_recovery_selection_readback(selection)
+
+    assert result["ok"] is False, result
+
+
 def test_runtime_incarnation_change_during_native_validation_prevents_reload(monkeypatch, tmp_path: Path):
     adapter, checkpoint = _setup(monkeypatch, tmp_path)
     original_config = adapter.config_path.read_bytes()
@@ -451,7 +833,14 @@ def test_stale_checkpoint_uses_current_intent_recovery_before_normal_generation(
     monkeypatch, tmp_path: Path, phase, restore_declines,
 ):
     adapter, checkpoint = _setup(monkeypatch, tmp_path)
-    checkpoint.write_text(json.dumps({"generation_id": "old-gen", "phase": phase}), encoding="utf-8")
+    checkpoint.write_text(json.dumps({
+        "generation_id": "old-gen",
+        "phase": phase,
+        # This fixture intentionally models a checkpoint bound to a clean,
+        # truly empty inventory. Unbound legacy checkpoints must not adopt
+        # current projection state after the generation-admission change.
+        "subscription_inventory_generation": {"digest": None, "revision": None},
+    }), encoding="utf-8")
     monkeypatch.setattr(service, "_xray_adapter", lambda: adapter)
     calls = {"restore": 0, "current": 0}
     def restore(*_args):
