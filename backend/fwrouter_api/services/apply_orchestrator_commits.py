@@ -166,10 +166,32 @@ def _write_routing_audit(
 
 
 def _commit_global_mode(
-    *, mode: str, requested_by: str = "api", job_id: str = "", apply_id: str | None = None
+    *, mode: str, requested_by: str = "api", job_id: str = "", apply_id: str | None = None,
+    expected_core_revision: int | None = None, expected_apply_id: str | None = None,
+    expected_core_snapshot: tuple[str, str, str] | None = None,
 ) -> dict[str, Any]:
     ensure_routing_global_state()
     with db_session() as connection:
+        if expected_core_revision is not None:
+            connection.execute("BEGIN IMMEDIATE")
+            from fwrouter_api.services.core_intent import assert_core_intent_snapshot_current
+            if not assert_core_intent_snapshot_current(
+                connection, expected_core_revision, expected_core_snapshot,
+            ):
+                raise RuntimeError("CORE_INTENT_STALE")
+            owned = connection.execute(
+                "SELECT status, core_intent_revision FROM apply_versions WHERE apply_id=?",
+                (expected_apply_id,),
+            ).fetchone()
+            latest = connection.execute(
+                "SELECT apply_id FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+            ).fetchone()
+            if (
+                owned is None or owned["status"] != "applied"
+                or owned["core_intent_revision"] != expected_core_revision
+                or latest is None or latest["apply_id"] != expected_apply_id
+            ):
+                raise RuntimeError("CORE_APPLY_BINDING_STALE")
         previous = connection.execute(
             "SELECT desired_mode FROM routing_global_state WHERE id = 1"
         ).fetchone()

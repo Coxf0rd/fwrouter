@@ -23,3 +23,4 @@ Reads and updates the `modules` table. `fetch_modules()` enriches existing rows 
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- Core desired-state requests, including repeated enable requests, advance the local `core.intent_revision` in the same transaction and enabled Core stays pending until canonical apply settlement. Lifecycle writes use the same fence.

@@ -324,10 +324,18 @@ def _schema_version_matches_canonical_structure(
                 "subscription_node_identities",
             ):
                 expected.execute(f'DROP TABLE "{table_name}"')
+            expected.execute("ALTER TABLE apply_versions DROP COLUMN core_intent_revision")
+            expected.execute("DELETE FROM settings WHERE key='core.intent_revision'")
             expected.execute(
                 "UPDATE schema_meta SET value = '24' WHERE key = 'schema_version'"
             )
-        elif schema_version != 25:
+        elif schema_version == 25:
+            expected.execute("ALTER TABLE apply_versions DROP COLUMN core_intent_revision")
+            expected.execute("DELETE FROM settings WHERE key='core.intent_revision'")
+            expected.execute(
+                "UPDATE schema_meta SET value = '25' WHERE key = 'schema_version'"
+            )
+        elif schema_version != 26:
             return False
 
         expected_tables = {
@@ -383,7 +391,7 @@ def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_sche
         except (TypeError, ValueError):
             actual_schema = None
         if (
-            (expected_schema, target_schema) in {(24, 25), (25, 25)}
+            (expected_schema, target_schema) in {(24, 26), (25, 26), (26, 26)}
             and actual_schema == expected_schema
             and integrity == ["ok"]
             and not foreign_key_violations
@@ -410,30 +418,35 @@ def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_sche
             raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
         return actual_schema
 
-    if (expected_schema, target_schema) != (24, 25):
+    if (expected_schema, target_schema) == (25, 26):
+        if not canonical_structure_matches:
+            raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+        return actual_schema
+
+    if (expected_schema, target_schema) != (24, 26):
         raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
     if not canonical_structure_matches:
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
     tables = state.get("tables") if isinstance(state.get("tables"), dict) else {}
     if set(_SCHEMA_25_IDENTITY_TABLES) - set(tables):
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
-    # The only tolerated v24 drift is the version marker plus all five v25
-    # identity tables being wholly absent. Partial table creation or any
-    # baseline table mismatch means this is not a supported upgrade preimage.
+    # The only tolerated v24 drift is the version marker plus v25 identity
+    # tables and the v26 Core fence additions being wholly absent.
     if any(bool(tables[name].get("exists")) for name in _SCHEMA_25_IDENTITY_TABLES):
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
     if any(not table.get("ok") for name, table in tables.items()
-           if name not in _SCHEMA_25_IDENTITY_TABLES):
+           if name not in _SCHEMA_25_IDENTITY_TABLES and name != "apply_versions"):
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
     problems = state.get("problems") if isinstance(state.get("problems"), list) else []
     allowed_problem_keys = {
         ("SCHEMA_VERSION_MISMATCH", None),
         *(("TABLE_SCHEMA_MISMATCH", name) for name in _SCHEMA_25_IDENTITY_TABLES),
+        ("TABLE_SCHEMA_MISMATCH", "apply_versions"),
     }
     if any((problem.get("code"), problem.get("table")) not in allowed_problem_keys
            for problem in problems):
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
-    if len(problems) != len(_SCHEMA_25_IDENTITY_TABLES) + 1:
+    if len(problems) != len(_SCHEMA_25_IDENTITY_TABLES) + 2:
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
     return actual_schema
 
@@ -511,8 +524,9 @@ def _run_database_upgrade(args: argparse.Namespace) -> int:
             raise ValueError("DATABASE_SCHEMA_FILE_UNAVAILABLE")
         target_version = int(EXPECTED_SCHEMA_VERSION)
         if not (
-            (args.expected_schema == target_version and target_version == 25)
-            or (args.expected_schema == 24 and target_version == 25)
+            (args.expected_schema == target_version and target_version == 26)
+            or (args.expected_schema == 25 and target_version == 26)
+            or (args.expected_schema == 24 and target_version == 26)
         ):
             raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
         current = _database_upgrade_preflight(
@@ -522,7 +536,7 @@ def _run_database_upgrade(args: argparse.Namespace) -> int:
             print(json.dumps({"ok": True, "status": "already_current", "current_schema": current,
                               "target_schema": target_version, "database_changed": False}, sort_keys=True))
             return 0
-        if target_version != args.expected_schema + 1:
+        if args.expected_schema not in {24, 25} or target_version != 26:
             raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
         if not args.apply:
             print(json.dumps({"ok": True, "status": "dry_run", "current_schema": current,

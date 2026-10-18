@@ -24,6 +24,7 @@ def _run_pipeline_for_state(
     routing: dict[str, Any],
     subjects: list[dict[str, Any]],
     extra: dict[str, Any] | None = None,
+    core_intent_revision: int | None = None,
 ) -> dict[str, Any]:
     extra_payload = dict(extra or {})
     if not isinstance(extra_payload.get("core_bypass"), dict):
@@ -39,6 +40,7 @@ def _run_pipeline_for_state(
             "subjects": subjects,
             "extra": extra_payload,
         },
+        core_intent_revision=core_intent_revision,
     )
 
 
@@ -48,6 +50,7 @@ def _run_pipeline_for_manifest(
     reason: str,
     input_data: dict[str, Any],
     manifest: dict[str, Any],
+    core_intent_revision: int | None = None,
 ) -> dict[str, Any]:
     return _facade_attr("run_apply_pipeline")(
         job_id=job_id,
@@ -55,6 +58,7 @@ def _run_pipeline_for_manifest(
         mode=ApplyMode.APPLY,
         input_data=input_data,
         prebuilt_manifest=manifest,
+        core_intent_revision=core_intent_revision,
     )
 
 

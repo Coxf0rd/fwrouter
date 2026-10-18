@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.events import write_audit_event
@@ -261,6 +262,7 @@ def _ensure_optional_module_for_explicit_operation(module_name: str) -> dict[str
     return get_module_state(module_name)
 
 
+@xray_writer_guarded
 def _update_module_state(
     module_name: str,
     *,
@@ -297,6 +299,9 @@ def _update_module_state(
     values.append(module_name)
 
     with db_session() as connection:
+        if module_name == "core":
+            from fwrouter_api.services.core_intent import advance_core_intent_revision
+            advance_core_intent_revision(connection)
         previous = connection.execute(
             "SELECT desired_state FROM modules WHERE module_name = ?",
             (module_name,),
@@ -331,6 +336,7 @@ def _update_module_state(
     return module
 
 
+@xray_writer_guarded
 def set_module_lifecycle_mode(
     module_name: str,
     lifecycle_mode: str,
@@ -354,7 +360,10 @@ def set_module_lifecycle_mode(
         )
 
     runtime_state = "not_configured" if normalized_mode == "none" else current["runtime_state"]
-    apply_state = "clean" if normalized_mode == "none" else current["apply_state"]
+    apply_state = (
+        "pending" if module_name == "core" and current.get("desired_state") == "enabled"
+        else ("clean" if normalized_mode == "none" else current["apply_state"])
+    )
     status_text = (
         f"Module {module_name} lifecycle mode set to {normalized_mode}."
         if normalized_mode != "none"
@@ -362,6 +371,9 @@ def set_module_lifecycle_mode(
     )
 
     with db_session() as connection:
+        if module_name == "core":
+            from fwrouter_api.services.core_intent import advance_core_intent_revision
+            advance_core_intent_revision(connection)
         previous = connection.execute(
             "SELECT lifecycle_mode FROM modules WHERE module_name = ?",
             (module_name,),

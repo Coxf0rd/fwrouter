@@ -14,6 +14,7 @@
 8. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_drift_py.md`
 9. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_pipeline_py.md`
 10. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_commits_py.md`
+10a. `opt_fwrouter_api_fwrouter_api_services_core_intent_py.md`
 11. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_public_py.md`
 12. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_handler_common_py.md`
 13. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_global_handlers_py.md`
@@ -92,6 +93,7 @@
 63. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_validation_py.md`
 64. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_plan_py.md`
 65. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_import_py.md`
+65a. `opt_fwrouter_api_fwrouter_api_services_core_intent_py.md`
 66. `opt_fwrouter_api_fwrouter_api_routes_system_py.md`
 66a. `opt_fwrouter_api_fwrouter_api_routes_state_py.md`
 66b. `opt_fwrouter_api_fwrouter_api_routes_reconcile_py.md`

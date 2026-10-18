@@ -5,6 +5,7 @@ import subprocess
 from datetime import datetime, timezone
 from typing import Any
 
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.jobs import JobLockConflictError
@@ -67,19 +68,60 @@ def _load_bypass_setting() -> dict[str, Any] | None:
     return _json_loads(row["value_json"])
 
 
+def _begin_core_bypass_apply() -> int:
+    """Fence a bypass apply before rendering its owned manifest."""
+    from fwrouter_api.services.core_intent import advance_core_intent_revision
+
+    with db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        module = connection.execute(
+            "SELECT desired_state, lifecycle_mode FROM modules WHERE module_name='core'",
+        ).fetchone()
+        if module is None or tuple(module) != ("enabled", "managed"):
+            raise RuntimeError("CORE_INTENT_UNAVAILABLE")
+        revision = advance_core_intent_revision(connection)
+        connection.execute(
+            "UPDATE modules SET apply_state='pending', error_code=NULL, error_message=NULL, "
+            "status_text='Core bypass apply is in progress.', updated_at=CURRENT_TIMESTAMP "
+            "WHERE module_name='core'",
+        )
+        return revision
+
+
 def _save_bypass_setting(
     state: dict[str, Any],
     *,
     requested_by: str,
     job_id: str,
+    expected_revision: int,
+    expected_previous_enabled: bool,
+    apply_id: str,
 ) -> bool:
+    """Publish bypass intent and its matching apply under one Core CAS."""
     with db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+        if read_core_intent_revision(connection) != expected_revision:
+            return False
+        module = connection.execute(
+            "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+        ).fetchone()
+        if module is None or tuple(module) != ("enabled", "managed", "pending"):
+            return False
         row = connection.execute(
             "SELECT value_json FROM settings WHERE key = ?",
             (BYPASS_SETTINGS_KEY,),
         ).fetchone()
         previous = _json_loads(row["value_json"]) if row is not None else None
         previous_enabled = bool((previous or {}).get("enabled"))
+        if previous_enabled != expected_previous_enabled:
+            return False
+        latest = connection.execute(
+            "SELECT status, core_intent_revision FROM apply_versions WHERE apply_id=?",
+            (apply_id,),
+        ).fetchone()
+        if latest is None or latest["status"] != "applied" or latest["core_intent_revision"] != expected_revision:
+            return False
         changed = previous_enabled != bool(state.get("enabled"))
         connection.execute(
             """
@@ -91,6 +133,20 @@ def _save_bypass_setting(
             """,
             (BYPASS_SETTINGS_KEY, _json_dumps(state)),
         )
+        if state.get("enabled") is True:
+            connection.execute(
+                "UPDATE modules SET runtime_state='paused', apply_state='clean', "
+                "status_text='FWRouter core is in intentional bypass mode; dataplane is direct-safe.', "
+                "error_code=NULL, error_message=NULL, updated_at=CURRENT_TIMESTAMP "
+                "WHERE module_name='core' AND apply_state='pending'",
+            )
+        else:
+            connection.execute(
+                "UPDATE modules SET runtime_state='running', apply_state='pending', "
+                "status_text='Core bypass disabled; waiting for fresh native Core proof.', "
+                "error_code=NULL, error_message=NULL, updated_at=CURRENT_TIMESTAMP "
+                "WHERE module_name='core' AND apply_state='pending'",
+            )
         if changed:
             enabled = bool(state.get("enabled"))
             action = "core_bypass_enabled" if enabled else "core_bypass_disabled"
@@ -171,7 +227,13 @@ def _update_module_runtime(
     status_text: str,
     error_code: str | None = None,
     error_message: str | None = None,
+    expected_module_state: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    if module_name == "core":
+        # This writer records bypass-recovery observations, not a Core authority
+        # apply receipt. A successful observation stays pending until the
+        # canonical owner settles it; failures retain their existing contract.
+        apply_state = "failed" if apply_state == "failed" else "pending"
     updates = [
         "runtime_state = ?",
         "apply_state = ?",
@@ -192,14 +254,22 @@ def _update_module_runtime(
         updates.insert(0, "desired_state = ?")
         values.insert(0, desired_state)
 
+    where = "module_name = ?"
     values.append(module_name)
+    if expected_module_state is not None:
+        for column in ("desired_state", "lifecycle_mode", "runtime_state", "apply_state", "status_text"):
+            where += f" AND {column} IS ?"
+            values.append(expected_module_state.get(column))
 
     with db_session() as connection:
+        if module_name == "core":
+            from fwrouter_api.services.core_intent import advance_core_intent_revision
+            advance_core_intent_revision(connection)
         connection.execute(
             f"""
             UPDATE modules
             SET {", ".join(updates)}
-            WHERE module_name = ?
+            WHERE {where}
             """,
             values,
         )
@@ -234,13 +304,7 @@ def _set_bypass_module_runtime() -> dict[str, dict[str, Any] | None]:
     }
     updated: dict[str, dict[str, Any] | None] = {}
 
-    updated["core"] = _update_module_runtime(
-        "core",
-        desired_state="enabled",
-        runtime_state="paused",
-        apply_state="clean",
-        status_text="FWRouter core is in intentional bypass mode; dataplane is direct-safe.",
-    )
+    updated["core"] = modules.get("core")
 
     for module_name in DEPENDENT_MODULES:
         current = modules.get(module_name) or {}
@@ -274,17 +338,16 @@ def _restore_module_runtime(previous_runtime: dict[str, Any] | None) -> dict[str
     )
     updated: dict[str, dict[str, Any] | None] = {}
 
-    updated["core"] = _update_module_runtime(
-        "core",
-        desired_state="enabled",
-        runtime_state="running",
-        apply_state="clean",
-        status_text="FWRouter core apply path is active.",
-    )
+    updated["core"] = modules.get("core")
 
     for module_name in DEPENDENT_MODULES:
         current = modules.get(module_name) or {}
         snapshot = snapshot_modules.get(module_name, {})
+        if snapshot.get("desired_state") != current.get("desired_state"):
+            # A newer dependent-module intent owns its runtime. Do not restore
+            # the pre-bypass observation over that newer request.
+            updated[module_name] = current or None
+            continue
         default_runtime = _dependent_bypass_runtime(
             str(current.get("desired_state")) if current.get("desired_state") is not None else None
         )
@@ -298,21 +361,43 @@ def _restore_module_runtime(previous_runtime: dict[str, Any] | None) -> dict[str
                 if snapshot.get("status_text")
                 else f"Module {module_name} runtime restored after FWRouter core bypass."
             ),
+            expected_module_state=current,
         )
 
     return updated
 
 
-def _mark_core_failure(error_code: str, error_message: str) -> dict[str, Any] | None:
-    return _update_module_runtime(
-        "core",
-        desired_state="enabled",
-        runtime_state="paused" if is_core_bypass_enabled() else "failed",
-        apply_state="failed",
-        status_text=error_message,
-        error_code=error_code,
-        error_message=error_message,
-    )
+def _mark_core_failure(
+    error_code: str, error_message: str, *, expected_revision: int,
+) -> dict[str, Any] | None:
+    """Record failure only while this bypass operation still owns Core intent."""
+    from fwrouter_api.services.core_intent import advance_core_intent_revision, read_core_intent_revision
+
+    with db_session() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if read_core_intent_revision(connection) != expected_revision:
+            return None
+        row = connection.execute(
+            "SELECT desired_state, lifecycle_mode FROM modules WHERE module_name='core'",
+        ).fetchone()
+        if row is None or tuple(row) != ("enabled", "managed"):
+            return None
+        advance_core_intent_revision(connection)
+        bypass_row = connection.execute(
+            "SELECT value_json FROM settings WHERE key=?", (BYPASS_SETTINGS_KEY,),
+        ).fetchone()
+        bypass_state = _json_loads(bypass_row["value_json"]) if bypass_row is not None else None
+        runtime_state = "paused" if bool((bypass_state or {}).get("enabled")) else "failed"
+        connection.execute(
+            "UPDATE modules SET runtime_state=?, apply_state='failed', status_text=?, "
+            "error_code=?, error_message=?, updated_at=CURRENT_TIMESTAMP "
+            "WHERE module_name='core' AND desired_state='enabled' AND lifecycle_mode='managed'",
+            (runtime_state, error_message, error_code, error_message),
+        )
+        module = connection.execute(
+            "SELECT * FROM modules WHERE module_name='core'",
+        ).fetchone()
+        return dict(module) if module is not None else None
 
 
 def _run_core_bypass_apply(
@@ -321,6 +406,7 @@ def _run_core_bypass_apply(
     requested_by: str,
     reason: str,
     enabled: bool,
+    core_intent_revision: int,
 ) -> dict[str, Any]:
     from fwrouter_api.services.apply import ApplyMode, run_apply_pipeline
 
@@ -345,9 +431,11 @@ def _run_core_bypass_apply(
                 }
             },
         },
+        core_intent_revision=core_intent_revision,
     )
 
 
+@xray_writer_guarded
 def enable_core_bypass(
     *,
     job_id: str,
@@ -365,11 +453,19 @@ def enable_core_bypass(
         }
 
     previous_runtime = _snapshot_previous_runtime()
+    try:
+        core_revision = _begin_core_bypass_apply()
+    except (RuntimeError, ValueError):
+        return {
+            "job_status": "failed", "error_code": "CORE_INTENT_UNAVAILABLE",
+            "error_message": "Core intent could not be fenced for bypass apply.", "bypass": state,
+        }
     apply_result = _run_core_bypass_apply(
         job_id=job_id,
         requested_by=requested_by,
         reason=reason,
         enabled=True,
+        core_intent_revision=core_revision,
     )
 
     if not apply_result["ok"]:
@@ -378,6 +474,7 @@ def enable_core_bypass(
             apply_result["dataplane"]["error_message"]
             or apply_result["dataplane"]["message"]
             or "Failed to enable core bypass.",
+            expected_revision=core_revision,
         )
         return {
             "job_status": "failed",
@@ -396,7 +493,16 @@ def enable_core_bypass(
         "reason": reason,
         "previous_runtime": previous_runtime,
     }
-    _save_bypass_setting(updated_state, requested_by=requested_by, job_id=job_id)
+    if not _save_bypass_setting(
+        updated_state, requested_by=requested_by, job_id=job_id,
+        expected_revision=core_revision, expected_previous_enabled=False,
+        apply_id=str(apply_result.get("apply_id") or ""),
+    ):
+        return {
+            "job_status": "failed", "error_code": "CORE_INTENT_STALE",
+            "error_message": "Core intent changed during bypass apply; bypass publication was refused.",
+            "bypass": get_core_bypass_state(), "apply": apply_result,
+        }
     modules = _set_bypass_module_runtime()
 
     return {
@@ -423,6 +529,7 @@ def _live_core_bypass_active() -> bool:
     return "fwrouter core bypass" in (completed.stdout or "")
 
 
+@xray_writer_guarded
 def disable_core_bypass(
     *,
     job_id: str,
@@ -440,11 +547,21 @@ def disable_core_bypass(
             "bypass": state,
         }
 
+    try:
+        core_revision = _begin_core_bypass_apply()
+    except (RuntimeError, ValueError):
+        return {
+            "job_status": "failed", "error_code": "CORE_INTENT_UNAVAILABLE",
+            "error_message": "Core intent could not be fenced for bypass apply.", "bypass": state,
+        }
+    from fwrouter_api.services.core_intent import read_core_runtime_context
+    runtime_context = read_core_runtime_context()
     apply_result = _run_core_bypass_apply(
         job_id=job_id,
         requested_by=requested_by,
         reason=reason,
         enabled=False,
+        core_intent_revision=core_revision,
     )
 
     if not apply_result["ok"]:
@@ -454,6 +571,7 @@ def disable_core_bypass(
             apply_result["dataplane"]["error_message"]
             or apply_result["dataplane"]["message"]
             or "Failed to disable core bypass.",
+            expected_revision=core_revision,
         )
         return {
             "job_status": "failed",
@@ -477,7 +595,45 @@ def disable_core_bypass(
         "reason": reason,
         "previous_runtime": None,
     }
-    _save_bypass_setting(cleared_state, requested_by=requested_by, job_id=job_id)
+    apply_id = str(apply_result.get("apply_id") or "")
+    if not _save_bypass_setting(
+        cleared_state, requested_by=requested_by, job_id=job_id,
+        expected_revision=core_revision,
+        expected_previous_enabled=bool(state.get("enabled")), apply_id=apply_id,
+    ):
+        return {
+            "job_status": "failed", "error_code": "CORE_INTENT_STALE",
+            "error_message": "Core intent changed during bypass apply; bypass publication was refused.",
+            "bypass": get_core_bypass_state(), "apply": apply_result,
+        }
+    if runtime_context is None:
+        _mark_core_failure(
+            "CORE_NATIVE_PROOF_UNVERIFIED",
+            "Core runtime context could not be fenced after bypass disable.",
+            expected_revision=core_revision,
+        )
+        return {
+            "job_status": "failed", "error_code": "CORE_NATIVE_PROOF_UNVERIFIED",
+            "error_message": "Core runtime context could not be fenced after bypass disable.",
+            "bypass": get_core_bypass_state(), "apply": apply_result,
+        }
+    from fwrouter_api.services.xray_subscription_service import _collect_legacy_admission_core_native_proof
+    proof = _collect_legacy_admission_core_native_proof()
+    from fwrouter_api.services.core_intent import settle_core_enable_after_proof
+    if not settle_core_enable_after_proof(
+        expected_revision=core_revision, apply_id=apply_id, proof=proof,
+        expected_runtime_context=runtime_context,
+    ):
+        _mark_core_failure(
+            "CORE_NATIVE_PROOF_UNVERIFIED",
+            "Fresh Core native proof did not match the bypass-disable apply.",
+            expected_revision=core_revision,
+        )
+        return {
+            "job_status": "failed", "error_code": "CORE_NATIVE_PROOF_UNVERIFIED",
+            "error_message": "Fresh Core native proof did not match the bypass-disable apply.",
+            "bypass": get_core_bypass_state(), "apply": apply_result,
+        }
     modules = _restore_module_runtime(previous_runtime)
 
     return {

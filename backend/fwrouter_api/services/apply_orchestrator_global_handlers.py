@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
+from fwrouter_api.db.connection import db_session
+
 from fwrouter_api.services import apply_orchestrator as orchestrator
 from fwrouter_api.services.apply_orchestrator_handler_common import (
     _reconcile_vpn_runtime_for_apply,
@@ -9,6 +12,7 @@ from fwrouter_api.services.apply_orchestrator_handler_common import (
 )
 
 
+@xray_writer_guarded
 def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     requested_by = str(job.get("requested_by") or "api")
     mode = str(payload.get("mode") or "").strip().lower()
@@ -22,6 +26,65 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             message="Global mode must be one of: direct, selective, vpn.",
         )
 
+    core_revision: int | None = None
+    core_enable_pending = False
+    core_module_snapshot: tuple[str, str, str] | None = None
+    core_runtime_context: dict[str, str] | None = None
+    with db_session() as connection:
+        core = connection.execute(
+            "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+        ).fetchone()
+        if core is not None:
+            from fwrouter_api.services.core_intent import read_core_intent_revision
+            core_module_snapshot = (
+                str(core["desired_state"]), str(core["lifecycle_mode"]), str(core["apply_state"]),
+            )
+            try:
+                core_revision = read_core_intent_revision(connection)
+            except ValueError:
+                return orchestrator._build_failure_result(
+                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                    requested_by=requested_by, stage="fence", code="CORE_INTENT_REVISION_INVALID",
+                    message="Core intent revision is unavailable; apply was not started.",
+                )
+            bypass = connection.execute(
+                "SELECT value_json FROM settings WHERE key='core.bypass'",
+            ).fetchone()
+            bypass_enabled = False
+            if bypass is not None:
+                import json
+                try:
+                    decoded = json.loads(str(bypass["value_json"]))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    decoded = None
+                if not isinstance(decoded, dict) or type(decoded.get("enabled", False)) is not bool:
+                    return orchestrator._build_failure_result(
+                        intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                        requested_by=requested_by, stage="fence", code="CORE_BYPASS_STATE_INVALID",
+                        message="Core bypass state is unavailable; apply was not started.",
+                    )
+                bypass_enabled = bool(decoded.get("enabled"))
+            core_enable_pending = bool(
+                core["desired_state"] == "enabled" and core["lifecycle_mode"] == "managed"
+                and core["apply_state"] != "clean"
+            )
+            if bypass_enabled and core_enable_pending:
+                return orchestrator._build_failure_result(
+                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                    requested_by=requested_by, stage="fence", code="CORE_BYPASS_ACTIVE",
+                    message="Core bypass is active; Core enable apply was not started.",
+                )
+
+    if core_enable_pending:
+        from fwrouter_api.services.core_intent import read_core_runtime_context
+        core_runtime_context = read_core_runtime_context()
+        if core_runtime_context is None:
+            return orchestrator._build_failure_result(
+                intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                requested_by=requested_by, stage="fence", code="CORE_RUNTIME_CONTEXT_UNAVAILABLE",
+                message="Core runtime context cannot be fenced; Core remains pending.",
+            )
+
     routing = orchestrator.get_routing_snapshot()
     drift = orchestrator._current_routing_drift(routing=routing)
     artifact_drift = orchestrator._applied_manifest_routing_drift(routing=routing)
@@ -30,6 +93,7 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         and str(routing.get("apply_state")) == "clean"
         and not drift["detected"]
         and not artifact_drift["detected"]
+        and not core_enable_pending
     ):
         return orchestrator._build_success_result(
             intent=orchestrator.INTENT_SET_GLOBAL_MODE,
@@ -129,6 +193,7 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                 input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode,
                         "repair_owned_table": bool((drift.get("live_artifact_consistency") or {}).get("detected"))},
             ),
+            core_intent_revision=core_revision,
         )
     else:
         user_overrides = orchestrator._load_user_override_map()
@@ -155,6 +220,7 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             routing=future_routing,
             subjects=subjects,
             extra={"affected_subject_ids": affected_subjects},
+            core_intent_revision=core_revision,
         )
 
     if not apply_result["ok"]:
@@ -172,12 +238,48 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         return result
 
     orchestrator.touch_job_running(str(job["job_id"]))
-    committed = orchestrator._commit_global_mode(
-        mode=mode,
-        requested_by=requested_by,
-        job_id=str(job["job_id"]),
-        apply_id=apply_result.get("apply_id"),
-    )
+    if core_revision is not None:
+        from fwrouter_api.services.core_intent import assert_core_intent_snapshot_current
+        with db_session() as connection:
+            if not assert_core_intent_snapshot_current(connection, core_revision, core_module_snapshot):
+                return orchestrator._build_failure_result(
+                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                    requested_by=requested_by, stage="fence", code="CORE_INTENT_STALE",
+                    message="Core intent changed during apply; routing was not committed.",
+                    apply_id=apply_result.get("apply_id"),
+                )
+    try:
+        committed = orchestrator._commit_global_mode(
+            mode=mode,
+            requested_by=requested_by,
+            job_id=str(job["job_id"]),
+            apply_id=apply_result.get("apply_id"),
+            expected_core_revision=core_revision,
+            expected_apply_id=str(apply_result.get("apply_id") or ""),
+            expected_core_snapshot=core_module_snapshot,
+        )
+    except RuntimeError:
+        return orchestrator._build_failure_result(
+            intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+            requested_by=requested_by, stage="fence", code="CORE_INTENT_STALE",
+            message="Core intent changed before routing commit.",
+            apply_id=apply_result.get("apply_id"),
+        )
+    if core_enable_pending and core_revision is not None:
+        from fwrouter_api.services.core_intent import settle_core_enable_after_proof
+        from fwrouter_api.services.xray_subscription_service import _collect_legacy_admission_core_native_proof
+        proof = _collect_legacy_admission_core_native_proof()
+        if not settle_core_enable_after_proof(
+            expected_revision=core_revision,
+            apply_id=str(apply_result.get("apply_id") or ""), proof=proof,
+            expected_runtime_context=core_runtime_context or {},
+        ):
+            return orchestrator._build_failure_result(
+                intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                requested_by=requested_by, stage="native_proof", code="CORE_NATIVE_PROOF_UNVERIFIED",
+                message="Fresh Core native proof did not match the current owned apply; Core remains pending.",
+                apply_id=apply_result.get("apply_id"), details={"proof_reason": proof.get("reason")},
+            )
     orchestrator._sync_subject_server_override_statuses(subjects)
     return orchestrator._build_success_result(
         intent=orchestrator.INTENT_SET_GLOBAL_MODE,

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import tempfile
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -816,6 +819,7 @@ def test_apply_pipeline_hot_swaps_global_mode_classify_chain(
     isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     initialize_database()
     _enable_vpn_module()
     job = _create_apply_job()
@@ -2389,16 +2393,126 @@ def test_apply_pipeline_apply_mode_records_owned_table_success(
 
     with db_session() as connection:
         row = connection.execute(
-            "SELECT job_id, status, summary_json FROM apply_versions WHERE apply_id = ?",
+            "SELECT job_id, status, summary_json, core_intent_revision "
+            "FROM apply_versions WHERE apply_id = ?",
             (result["apply_id"],),
         ).fetchone()
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+        current_revision = read_core_intent_revision(connection)
 
     assert row is not None
     assert row["job_id"] == job["job_id"]
     assert row["status"] == "applied"
+    assert row["core_intent_revision"] == current_revision
     assert "inet fwrouter_v2" in str(row["summary_json"])
     assert "global_policy_v1" in str(row["summary_json"])
     assert json.loads(Path(manifest_paths["current_manifest_path"]).read_text(encoding="utf-8"))["plan_id"] == result["apply_id"]
+
+
+def test_apply_pipeline_rejects_stale_explicit_core_revision_before_native_mutation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    job = _create_apply_job()
+    with db_session() as connection:
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+        current_revision = read_core_intent_revision(connection)
+
+    native_calls: list[str] = []
+
+    class _ForbiddenAdapter:
+        def check(self, plan):  # noqa: ANN001
+            native_calls.append("check")
+            raise AssertionError("stale intent reached native check")
+
+        def apply(self, plan):  # noqa: ANN001
+            native_calls.append("apply")
+            raise AssertionError("stale intent reached native apply")
+
+    monkeypatch.setattr(apply_service, "DEFAULT_DATAPLANE_ADAPTER", _ForbiddenAdapter())
+    result = run_apply_pipeline(
+        job_id=str(job["job_id"]), reason="stale-core-revision", mode=ApplyMode.APPLY,
+        input_data={"source": "pytest"}, core_intent_revision=current_revision + 1,
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "fence"
+    assert result["dataplane"]["error_code"] == "CORE_INTENT_STALE"
+    assert native_calls == []
+
+
+def test_core_intent_writer_waits_until_native_apply_window_finishes(
+    monkeypatch, tmp_path: Path, isolated_host_observations,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _enable_vpn_module()
+    job = _create_apply_job()
+    fake_runner = _FakeRunner({
+        "dataplane_check": [_success_check_result(table_exists=False)],
+        "dataplane_apply": [_success_apply_result("missing")],
+    })
+    native_started = threading.Event()
+    release_native = threading.Event()
+    writer_finished = threading.Event()
+    thread_errors: list[BaseException] = []
+    original_run = fake_runner.run
+
+    def blocking_run(script_id: str, **kwargs):  # noqa: ANN003
+        if script_id == "dataplane_apply":
+            native_started.set()
+            assert release_native.wait(timeout=5), "test did not release native apply"
+        return original_run(script_id, **kwargs)
+
+    monkeypatch.setattr(fake_runner, "run", blocking_run)
+    monkeypatch.setattr(
+        apply_service, "DEFAULT_DATAPLANE_ADAPTER", NftOwnedTableAdapter(runner=fake_runner),
+    )
+    monkeypatch.setattr(apply_service, "probe_live_global_mode", lambda: _live_mode_probe("direct"))
+
+    apply_results: list[dict[str, Any]] = []
+
+    def run_apply() -> None:
+        try:
+            apply_results.append(run_apply_pipeline(
+                job_id=str(job["job_id"]), reason="writer-exclusion", mode=ApplyMode.APPLY,
+                input_data={"source": "pytest"},
+            ))
+        except BaseException as exc:  # surfaced in the owning test thread
+            thread_errors.append(exc)
+
+    def change_core_intent() -> None:
+        try:
+            from fwrouter_api.services.modules import set_module_desired_state
+            set_module_desired_state("core", "disabled", requested_by="pytest-race", run_now=False)
+        except BaseException as exc:  # surfaced in the owning test thread
+            thread_errors.append(exc)
+        finally:
+            writer_finished.set()
+
+    apply_thread = threading.Thread(target=run_apply)
+    apply_thread.start()
+    assert native_started.wait(timeout=5), "apply did not reach its native window"
+    writer_thread = threading.Thread(target=change_core_intent)
+    writer_thread.start()
+    assert not writer_finished.wait(timeout=0.1), "Core intent writer crossed active native apply"
+    release_native.set()
+    apply_thread.join(timeout=10)
+    writer_thread.join(timeout=10)
+
+    assert not apply_thread.is_alive() and not writer_thread.is_alive()
+    assert not thread_errors, thread_errors
+    assert len(apply_results) == 1 and apply_results[0]["ok"] is True
+    assert writer_finished.is_set()
+    with db_session() as connection:
+        receipt = connection.execute(
+            "SELECT core_intent_revision FROM apply_versions WHERE apply_id=?",
+            (apply_results[0]["apply_id"],),
+        ).fetchone()
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+        current_revision = read_core_intent_revision(connection)
+    assert receipt is not None and receipt["core_intent_revision"] < current_revision
 
 
 def test_apply_pipeline_skips_global_profile_prewarm_for_selective_default(
@@ -3077,6 +3191,7 @@ def test_apply_pipeline_subject_only_fast_apply_hot_swaps_classify_chain(
     isolated_host_observations,
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     initialize_database()
     _enable_vpn_module()
     job = _create_apply_job()

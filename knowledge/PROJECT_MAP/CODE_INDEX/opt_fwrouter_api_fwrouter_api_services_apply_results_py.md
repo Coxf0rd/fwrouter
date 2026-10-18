@@ -16,3 +16,4 @@
 
 - Не выполняет dataplane side effects и rollback, только финализирует уже собранный result DTO.
 - Для совместимости с facade monkeypatch hooks prewarm callable читается через `fwrouter_api.services.apply`, если facade загружен.
+- Apply receipts store `core_intent_revision` only for canonical successful apply mode. Legacy and dry-run generations retain NULL and cannot prove current Core intent.

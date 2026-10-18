@@ -5,7 +5,7 @@ from collections.abc import Iterable as Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "25"
+EXPECTED_SCHEMA_VERSION = "26"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "subscription_node_identities": {
@@ -78,6 +78,10 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
             "apply_state text not null default 'clean'",
             "check (runtime_state in ('not_configured', 'running', 'stopped', 'failed', 'degraded', 'paused'))",
         ),
+    },
+    "apply_versions": {
+        "columns": {"apply_id", "manifest_path", "status", "created_at", "core_intent_revision"},
+        "sql_contains": ("create table apply_versions", "apply_id text primary key"),
     },
     "external_connections": {
         "columns": {

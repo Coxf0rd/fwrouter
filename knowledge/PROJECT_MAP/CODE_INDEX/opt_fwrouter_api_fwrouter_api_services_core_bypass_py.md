@@ -24,3 +24,4 @@ apply/job events continue to describe runtime outcomes.
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+Bypass-setting and Core runtime/recovery writes advance the shared Core intent revision; bypass writes pair that fence with the settings mutation in one SQLite transaction.

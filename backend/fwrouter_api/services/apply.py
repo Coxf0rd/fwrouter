@@ -10,6 +10,7 @@ from fwrouter_api.adapters.dataplane import (
     DataplanePlan,
     DataplaneResult as DataplaneResult,
 )
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
 from fwrouter_api.db.connection import db_session as db_session
 from fwrouter_api.services.dataplane_status import get_dataplane_capability as get_dataplane_capability
 from fwrouter_api.services.dataplane_status import build_bypass_runtime_enforcement
@@ -72,6 +73,33 @@ from fwrouter_api.services.apply_results import (
 )
 
 
+@xray_writer_guarded
+def _core_intent_fence_failure(
+    *, job_id: str, reason: str, mode: ApplyMode, code: str, message: str,
+) -> dict[str, Any]:
+    operation = (
+        DataplaneOperation.APPLY.value
+        if mode == ApplyMode.APPLY else DataplaneOperation.CHECK.value
+    )
+    return {
+        "ok": False,
+        "apply_id": None,
+        "job_id": job_id,
+        "mode": mode.value,
+        "reason": reason,
+        "stage": "fence",
+        "dataplane": {
+            "ok": False,
+            "operation": operation,
+            "message": message,
+            "error_code": code,
+            "error_message": message,
+            "details": {"stage": "core_intent_fence"},
+        },
+    }
+
+
+@xray_writer_guarded
 def run_apply_pipeline(
     *,
     job_id: str,
@@ -80,8 +108,27 @@ def run_apply_pipeline(
     input_data: dict[str, Any] | None = None,
     manifest_state: dict[str, Any] | None = None,
     prebuilt_manifest: dict[str, Any] | None = None,
+    core_intent_revision: int | None = None,
 ) -> dict[str, Any]:
     """Run Wave 2 dataplane pipeline for the FWRouter-owned nftables table only."""
+    from fwrouter_api.services.core_intent import read_core_intent_revision
+
+    try:
+        with db_session() as connection:
+            current_core_revision = read_core_intent_revision(connection)
+    except ValueError:
+        return _core_intent_fence_failure(
+            job_id=job_id, reason=reason, mode=mode,
+            code="CORE_INTENT_REVISION_INVALID",
+            message="Core intent revision is unavailable; apply was not started.",
+        )
+    if core_intent_revision is not None and core_intent_revision != current_core_revision:
+        return _core_intent_fence_failure(
+            job_id=job_id, reason=reason, mode=mode,
+            code="CORE_INTENT_STALE",
+            message="Core intent changed before apply; runtime mutation was not started.",
+        )
+    core_intent_revision = current_core_revision
     _ensure_job_context(job_id)
     if prebuilt_manifest is not None:
         from fwrouter_api.services.provider_recovery import emergency_override
@@ -602,6 +649,7 @@ def run_apply_pipeline(
         manifest_paths=manifest_paths,
         result_runtime_enforcement=result_runtime_enforcement,
         rollback_result=rollback_result,
+        core_intent_revision=core_intent_revision,
     )
     write_apply_result_log(
         result=result,

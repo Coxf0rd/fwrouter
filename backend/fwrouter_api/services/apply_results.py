@@ -71,6 +71,7 @@ def persist_apply_result(
     manifest_paths: dict[str, Any],
     result_runtime_enforcement: dict[str, Any],
     rollback_result: dict[str, Any] | None,
+    core_intent_revision: int | None = None,
 ) -> None:
     write_job_json_artifact(job_id, "dataplane/result.json", result)
     atomic_write_json(result_manifest_path, result)
@@ -83,17 +84,21 @@ def persist_apply_result(
                 job_id,
                 manifest_path,
                 artifact_dir,
+                created_at,
                 promoted_at,
                 status,
                 summary_json
+                , core_intent_revision
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'), ?, ?, ?, ?)
             ON CONFLICT(apply_id) DO UPDATE SET
                 manifest_path = excluded.manifest_path,
                 artifact_dir = excluded.artifact_dir,
+                created_at = excluded.created_at,
                 promoted_at = excluded.promoted_at,
                 status = excluded.status,
                 summary_json = excluded.summary_json
+                , core_intent_revision = excluded.core_intent_revision
             """,
             (
                 plan["apply_id"],
@@ -122,6 +127,7 @@ def persist_apply_result(
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
+                core_intent_revision if result["ok"] and mode.value == "apply" else None,
             ),
         )
 

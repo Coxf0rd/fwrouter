@@ -623,6 +623,7 @@ CREATE TABLE IF NOT EXISTS apply_versions (
     promoted_at TEXT,
     status TEXT NOT NULL,
     summary_json TEXT,
+    core_intent_revision INTEGER,
     CHECK (status IN ('generated', 'applied', 'rolled_back', 'failed')),
     FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE SET NULL
 );
@@ -739,22 +740,26 @@ CREATE INDEX IF NOT EXISTS idx_provider_evidence_latest
     ON provider_evidence(source_ref, evidence_kind, scope_key, observed_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '25', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '26', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at
 WHERE schema_meta.value <> excluded.value;
+
+INSERT OR IGNORE INTO settings (key, value_json, updated_at)
+VALUES ('core.intent_revision', '0', CURRENT_TIMESTAMP);
 
 INSERT OR IGNORE INTO modules (
     module_name,
     desired_state,
     lifecycle_mode,
     runtime_state,
+    apply_state,
     status_text
 )
 VALUES
-    ('core', 'enabled', 'managed', 'not_configured', 'FWRouter core is not initialized yet.'),
-    ('vpn', 'enabled', 'managed', 'not_configured', 'VPN module is not initialized yet.'),
-    ('watchdog', 'enabled', 'managed', 'not_configured', 'Watchdog is not initialized yet.'),
-    ('selector', 'enabled', 'managed', 'not_configured', 'VPN auto-selector is not initialized yet.'),
-    ('subscription', 'enabled', 'managed', 'not_configured', 'Subscription module is not initialized yet.');
+    ('core', 'enabled', 'managed', 'not_configured', 'clean', 'FWRouter core is not initialized yet.'),
+    ('vpn', 'enabled', 'managed', 'not_configured', 'clean', 'VPN module is not initialized yet.'),
+    ('watchdog', 'enabled', 'managed', 'not_configured', 'clean', 'Watchdog is not initialized yet.'),
+    ('selector', 'enabled', 'managed', 'not_configured', 'clean', 'VPN auto-selector is not initialized yet.'),
+    ('subscription', 'enabled', 'managed', 'not_configured', 'clean', 'Subscription module is not initialized yet.');
