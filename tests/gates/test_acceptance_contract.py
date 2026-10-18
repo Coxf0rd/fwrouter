@@ -1619,13 +1619,13 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((27, 12, 2), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((27, 12, 3), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
         with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
             launcher.expected_acceptance_nodeids("functional")
-        self.assertEqual(41, len(ordinary | provider | packet))
+        self.assertEqual(42, len(ordinary | provider | packet))
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(
                 [{"nodeid": nodeid, "status": "passed",
@@ -5325,17 +5325,23 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/application_acceptance/test_packet_dataplane.py::"
             "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"
         )
+        legacy_nodeid = (
+            "tests/application_acceptance/test_packet_dataplane.py::"
+            "test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh"
+        )
         scale_nodeid = (
             "tests/application_acceptance/test_runtime_scale.py::"
             "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
         )
-        self.assertEqual({nodeid, scale_nodeid}, launcher.expected_acceptance_nodeids("packet-diagnostic"))
+        expected_nodes = {nodeid, legacy_nodeid, scale_nodeid}
+        self.assertEqual(expected_nodes, launcher.expected_acceptance_nodeids("packet-diagnostic"))
         with self.assertRaises(launcher.NotRun):
             launcher.expected_acceptance_nodeids("packet-diagnostic-extra")
-        expected_nodes = {nodeid, scale_nodeid}
         failed = [
             {"nodeid": nodeid, "status": "failed",
              "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}},
+            {"nodeid": legacy_nodeid, "status": "passed",
+             "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}},
             {"nodeid": scale_nodeid, "status": "passed",
              "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}},
         ]

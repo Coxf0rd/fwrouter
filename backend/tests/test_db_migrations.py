@@ -12,6 +12,7 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db import migrations
 from fwrouter_api.db.connection import (
     connect,
+    db_session,
     get_cached_schema_state,
     get_schema_path,
     initialize_database,
@@ -570,6 +571,92 @@ def _schema_version() -> str:
         )
 
 
+@pytest.mark.no_database_autoinit
+@pytest.mark.parametrize("failure_phase", ["before", "after"])
+def test_v25_to26_failure_rolls_back_and_can_reenter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure_phase: str
+) -> None:
+    """A failed 25->26 upgrade must not strand DDL ahead of its version marker."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    checkpoint = get_settings().paths.state_dir / "xray" / ".generation" / "generation-checkpoint.json"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_text('{"fixture":"preserve"}\n', encoding="utf-8")
+    with _connect_raw() as connection:
+        connection.execute("UPDATE schema_meta SET value='25' WHERE key='schema_version'")
+        connection.execute("ALTER TABLE apply_versions DROP COLUMN core_intent_revision")
+        connection.execute("DELETE FROM settings WHERE key='core.intent_revision'")
+        connection.execute(
+            "INSERT INTO settings (key, value_json) VALUES "
+            "('subscriptions.native_generation.v1', '{\"digest\":\"synthetic-marker\"}')"
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_identities "
+            "(identity_id, origin_server_id, current_server_id, revision, provenance_sha256) "
+            "VALUES ('migration-fixture-id', 'migration-origin', 'migration-current', 1, ?) ",
+            ("a" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_aliases (server_id, identity_id) "
+            "VALUES ('migration-current', 'migration-fixture-id')"
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_credentials (scope, identity_id, client_uuid, client_email) "
+            "VALUES ('synthetic', 'migration-fixture-id', "
+            "'00000000-0000-4000-8000-000000000026', 'migration@fixture.invalid')"
+        )
+        connection.execute(
+            "UPDATE modules SET desired_state='enabled', lifecycle_mode='managed', "
+            "runtime_state='running', apply_state='clean' WHERE module_name='core'"
+        )
+        connection.execute(
+            "INSERT INTO apply_versions (apply_id, manifest_path, status) "
+            "VALUES ('legacy-receipt', '/synthetic/manifest.json', 'applied')"
+        )
+    original = migrations._migrate_25_to_26
+
+    def fail_after_migration_ddl(connection: sqlite3.Connection) -> None:
+        if failure_phase == "after":
+            original(connection)
+        raise RuntimeError(f"synthetic failure {failure_phase} 25-to-26 migration body")
+
+    # The dataclass stores the callable captured in MIGRATIONS; inject at the
+    # runner boundary to fail after the real migration body, before versioning.
+    monkeypatch.setattr(migrations, "MIGRATIONS", tuple(
+        migrations.SchemaMigration(item.from_version, item.to_version, fail_after_migration_ddl)
+        if item.from_version == 25 else item for item in migrations.MIGRATIONS
+    ))
+    with pytest.raises(RuntimeError, match=f"synthetic failure {failure_phase}"):
+        with db_session() as connection:
+            migrations.run_missing_migrations(connection)
+
+    with _connect_raw() as connection:
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "25"
+        assert "core_intent_revision" not in migrations._columns(connection, "apply_versions")
+        assert connection.execute("SELECT COUNT(*) FROM settings WHERE key='core.intent_revision'").fetchone()[0] == 0
+        assert connection.execute("SELECT apply_state FROM modules WHERE module_name='core'").fetchone()[0] == "clean"
+        assert connection.execute("SELECT status FROM apply_versions WHERE apply_id='legacy-receipt'").fetchone()[0] == "applied"
+        assert connection.execute("SELECT value_json FROM settings WHERE key='subscriptions.native_generation.v1'").fetchone()[0] == '{"digest":"synthetic-marker"}'
+        assert connection.execute("SELECT client_email FROM subscription_node_credentials WHERE identity_id='migration-fixture-id'").fetchone()[0] == "migration@fixture.invalid"
+    assert checkpoint.read_text(encoding="utf-8") == '{"fixture":"preserve"}\n'
+
+    monkeypatch.setattr(migrations, "MIGRATIONS", tuple(
+        migrations.SchemaMigration(item.from_version, item.to_version, original)
+        if item.from_version == 25 else item for item in migrations.MIGRATIONS
+    ))
+    with _connect_raw() as connection:
+        assert [(item.from_version, item.to_version) for item in migrations.run_missing_migrations(connection)] == [(25, 26)]
+    with _connect_raw() as connection:
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "26"
+        assert "core_intent_revision" in migrations._columns(connection, "apply_versions")
+        assert connection.execute("SELECT core_intent_revision FROM apply_versions WHERE apply_id='legacy-receipt'").fetchone()[0] is None
+        assert connection.execute("SELECT value_json FROM settings WHERE key='core.intent_revision'").fetchone()[0] == "0"
+        assert connection.execute("SELECT apply_state FROM modules WHERE module_name='core'").fetchone()[0] == "pending"
+        assert connection.execute("SELECT value_json FROM settings WHERE key='subscriptions.native_generation.v1'").fetchone()[0] == '{"digest":"synthetic-marker"}'
+        assert connection.execute("SELECT client_email FROM subscription_node_credentials WHERE identity_id='migration-fixture-id'").fetchone()[0] == "migration@fixture.invalid"
+    assert checkpoint.read_text(encoding="utf-8") == '{"fixture":"preserve"}\n'
+
+
 def _table_rows(connection: sqlite3.Connection, table_name: str) -> list[dict[str, object]]:
     columns = [str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table_name})")]
     order_by = ", ".join(columns)
@@ -839,6 +926,92 @@ def test_database_upgrade_cli_is_explicit_backed_up_and_idempotent(
 
     with _connect_raw() as connection:
         rows_after_upgrade = _table_snapshot(connection, legacy_tables)
+    assert main(["database", "upgrade", "--expected-schema", "26"]) == 0
+    current = json.loads(capsys.readouterr().out)
+    assert current["status"] == "already_current" and current["database_changed"] is False
+    assert len(list(backups.glob("*.bak"))) == 1
+    with _connect_raw() as connection:
+        assert _table_snapshot(connection, legacy_tables) == rows_after_upgrade
+
+
+@pytest.mark.no_database_autoinit
+def test_database_upgrade_cli_accepts_structural_schema25_and_preserves_identity_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with _connect_raw() as connection:
+        connection.execute("UPDATE schema_meta SET value='25' WHERE key='schema_version'")
+        connection.execute("ALTER TABLE apply_versions DROP COLUMN core_intent_revision")
+        connection.execute("DELETE FROM settings WHERE key='core.intent_revision'")
+        connection.execute(
+            "INSERT INTO subscription_node_identities "
+            "(identity_id, origin_server_id, current_server_id, revision, provenance_sha256) "
+            "VALUES ('cli25-fixture-id', 'cli25-origin', 'cli25-current', 1, ?)",
+            ("b" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_aliases (server_id, identity_id) "
+            "VALUES ('cli25-current', 'cli25-fixture-id')"
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_credentials (scope, identity_id, client_uuid, client_email) "
+            "VALUES ('synthetic', 'cli25-fixture-id', "
+            "'00000000-0000-4000-8000-000000000025', 'cli25@fixture.invalid')"
+        )
+        connection.execute(
+            "UPDATE modules SET desired_state='enabled', lifecycle_mode='managed', "
+            "runtime_state='running', apply_state='clean' WHERE module_name='core'"
+        )
+        legacy_tables = [
+            str(row[0]) for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' AND name <> 'schema_meta' ORDER BY name"
+            )
+        ]
+        before_rows = _table_snapshot(connection, legacy_tables)
+
+    from fwrouter_api.cli import main
+    from fwrouter_api.db.connection import get_db_path
+    db_path = get_db_path()
+    backups = db_path.parent / "backups"
+    assert main(["database", "upgrade", "--expected-schema", "25"]) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run["status"] == "dry_run" and dry_run["database_changed"] is False
+    assert not backups.exists()
+    with _connect_raw() as connection:
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "25"
+        assert _table_snapshot(connection, legacy_tables) == before_rows
+
+    assert main(["database", "upgrade", "--expected-schema", "25", "--apply"]) == 1
+    refused = json.loads(capsys.readouterr().out)
+    assert refused["error_code"] == "DATABASE_OFFLINE_CONFIRMATION_REQUIRED"
+    assert not backups.exists()
+
+    assert main([
+        "database", "upgrade", "--expected-schema", "25", "--apply", "--confirm-offline",
+    ]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["status"] == "applied" and applied["database_changed"] is True
+    backup_path = Path(applied["backup_path"])
+    assert backup_path.is_file() and backup_path.stat().st_mode & 0o777 == 0o600
+    assert hashlib.sha256(backup_path.read_bytes()).hexdigest() == applied["backup_sha256"]
+    with sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True) as backup:
+        assert backup.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "25"
+    with _connect_raw() as connection:
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "26"
+        after_rows = _table_snapshot(connection, legacy_tables)
+        assert {name: rows for name, rows in after_rows.items() if name not in {"settings", "modules"}} == {
+            name: rows for name, rows in before_rows.items() if name not in {"settings", "modules"}
+        }
+        assert connection.execute(
+            "SELECT client_email FROM subscription_node_credentials WHERE identity_id='cli25-fixture-id'",
+        ).fetchone()[0] == "cli25@fixture.invalid"
+        assert next(row for row in after_rows["modules"] if row["module_name"] == "core")["apply_state"] == "pending"
+
+    rows_after_upgrade = after_rows
     assert main(["database", "upgrade", "--expected-schema", "26"]) == 0
     current = json.loads(capsys.readouterr().out)
     assert current["status"] == "already_current" and current["database_changed"] is False

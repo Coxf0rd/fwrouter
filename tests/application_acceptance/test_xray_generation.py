@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import http.client
-import http.server
 import json
 import os
 import re
@@ -19,6 +18,7 @@ from uuid import NAMESPACE_DNS, uuid5
 import yaml
 
 from .http_support import http_json
+from .synthetic_subscription import SyntheticSubscriptionSource, synthetic_vless_profile
 from .xray_support import (
     active_identities,
     assert_applied_bindings,
@@ -128,57 +128,6 @@ def _synthetic_file_fingerprint(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-class _SyntheticSubscriptionSource:
-    """Serve a mutable synthetic profile on a suite-owned loopback socket."""
-
-    def __init__(self, payload: dict) -> None:
-        self._lock = threading.Lock()
-        self._body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        self._request_count = 0
-        source = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                if self.path != "/synthetic-subscription":
-                    self.send_error(404)
-                    return
-                with source._lock:
-                    source._request_count += 1
-                    body = source._body
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, fmt: str, *args) -> None:
-                return
-
-        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._server.daemon_threads = False
-        self._server.block_on_close = True
-        self._thread = threading.Thread(
-            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True,
-        )
-        self._thread.start()
-        self.url = f"http://127.0.0.1:{self._server.server_port}/synthetic-subscription"
-
-    def replace(self, payload: dict) -> None:
-        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        with self._lock:
-            self._body = body
-
-    def snapshot_requests(self) -> int:
-        with self._lock:
-            return self._request_count
-
-    def close(self) -> None:
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=3)
-        assert not self._thread.is_alive(), "synthetic subscription source did not stop"
-
-
 def _snapshot_provider_worker_logs(root):
     """Capture identity and byte offsets for this suite-owned worker log set."""
     root_info = root.lstat()
@@ -238,44 +187,6 @@ def _provider_worker_records_since(root, snapshot):
             if isinstance(record, dict):
                 records.append(record)
     return records
-
-
-def _synthetic_vless_profile(*, short_id_suffix: str, include_third_member: bool) -> dict:
-    def outbound(index: int) -> dict:
-        return {
-            "tag": f"synthetic-member-{index}",
-            "protocol": "vless",
-            "settings": {"vnext": [{
-                "address": f"synthetic-member-{index}.example.invalid",
-                "port": 443,
-                "users": [{
-                    "id": str(uuid5(NAMESPACE_DNS, f"pending-generation-member-{index}")),
-                    "encryption": "none",
-                    "flow": "xtls-rprx-vision",
-                }],
-            }]},
-            "streamSettings": {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "serverName": f"synthetic-member-{index}.example.invalid",
-                    "publicKey": "CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                    "shortId": f"{index + 1:02x}" * 8 if not short_id_suffix else f"{index + 1:02x}{short_id_suffix}",
-                    "fingerprint": "chrome",
-                },
-            },
-        }
-
-    count = 3 if include_third_member else 2
-    return {
-        "remarks": "acceptance-pending-generation-profile",
-        "outbounds": [outbound(index) for index in range(count)] + [
-            {"tag": "direct", "protocol": "freedom"},
-            {"tag": "reject", "protocol": "blackhole"},
-            {"tag": "dns", "protocol": "dns"},
-        ],
-        "routing": {"rules": [{"type": "field", "outboundTag": "direct"}]},
-    }
 
 
 def test_email_client_generation_persists_and_matches_native_after_worker_restart(acceptance_stack):
@@ -441,7 +352,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
 
     def profile(*, changed_short_ids: bool, add_member: bool) -> dict:
         suffix = "a1b2c3d4e5f607" if changed_short_ids else ""
-        return _synthetic_vless_profile(short_id_suffix=suffix, include_third_member=add_member)
+        return synthetic_vless_profile(short_id_suffix=suffix, include_third_member=add_member)
 
     def add_profile_member(value: dict, index: int) -> dict:
         """Create strict ordered growth while preserving every existing outbound."""
@@ -550,7 +461,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
             for item in sorted(directory.iterdir()) if item.is_file() and not item.is_symlink()
         }
 
-    source = _SyntheticSubscriptionSource(profile(changed_short_ids=False, add_member=False))
+    source = SyntheticSubscriptionSource(profile(changed_short_ids=False, add_member=False))
     try:
         initial = import_source(source.url)
         assert initial.get("ok") is True, {
@@ -619,6 +530,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         restarted_worker, restarted_api = stack["start_worker"]()
         stack["worker"], stack["api"] = restarted_worker, restarted_api
         assert_generation_routing(restarted_api)
+
         assert generation_state(restarted_api) == pending
         recovery_code, recovery = http_json(
             f"{restarted_api}/__acceptance/xray/startup-generation-recovery",
@@ -1069,6 +981,79 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert set(loaded_identities(native)) >= baseline_pairs
         assert sum(1 for pair in loaded_identities(native) if pair in baseline_pairs) == 78
 
+        def controller_state_fingerprint() -> dict[str, tuple[int, str]]:
+            observed = {}
+            for path in ("/proxies/vpn-global", "/proxies/vpn-auto"):
+                status, body = http_json(f"http://127.0.0.1:5200{path}")
+                encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+                observed[path] = (status, hashlib.sha256(encoded).hexdigest())
+            return observed
+
+        def selective_native_fingerprint() -> dict[str, Any]:
+            mounted_xray, _launch = native_config_bytes(native)
+            bindings_path = state / "xray" / "fwrouter-bindings.json"
+            return {
+                "xray_active": hashlib.sha256(active_xray.read_bytes()).hexdigest(),
+                "xray_mounted": hashlib.sha256(mounted_xray).hexdigest(),
+                "xray_loaded": hashlib.sha256(
+                    json.dumps(loaded_identities(native), separators=(",", ":")).encode()
+                ).hexdigest(),
+                "xray_bindings": hashlib.sha256(bindings_path.read_bytes()).hexdigest(),
+                "xray_last_good": _synthetic_file_tree_fingerprint(state / "last-good" / "xray"),
+                "mihomo_active": hashlib.sha256(active_mihomo.read_bytes()).hexdigest(),
+                "mihomo_generated": _synthetic_file_tree_fingerprint(
+                    state / "generated" / "mihomo", exclude_relative_paths=("reconcile-state.json",),
+                ),
+                "mihomo_last_good": last_good_mihomo_snapshot(),
+                "xray_incarnation": (native.process.pid, native.started_at),
+                "mihomo_incarnation": (native.mihomo_process.pid, native.mihomo_started_at),
+                "xray_reload_calls": native.reload_calls,
+                "mihomo_controller": controller_state_fingerprint(),
+            }
+
+        native_before_selective_apply = selective_native_fingerprint()
+
+        # Build the historical legacy preimage only after pending-generation
+        # recovery has completed and verified inventory is settled. Keep the
+        # selective/VPN policy applied before disabling Core or removing its
+        # verified-generation marker.
+        for routing_payload in (
+            {"selective_default": "vpn", "requested_by": "hosted-acceptance", "run_now": True},
+            {"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True},
+        ):
+            selective_code, selective_result = http_json(
+                f"{restarted_api}/routing/global", method="POST", payload=routing_payload, timeout=45,
+            )
+            assert selective_code == 200 and selective_result.get("ok") is True, selective_result
+            selective_job = await_job(restarted_api, selective_result)
+            assert selective_job.get("status") == "success", selective_job
+        selective_code, selective_state = http_json(f"{restarted_api}/routing/global")
+        assert selective_code == 200 and selective_state.get("ok") is True, selective_state
+        selective_data = selective_state.get("data") if isinstance(selective_state.get("data"), dict) else {}
+        selective_routing = selective_data.get("routing") if isinstance(selective_data.get("routing"), dict) else {}
+        selective_enforcement = (
+            selective_data.get("runtime_enforcement")
+            if isinstance(selective_data.get("runtime_enforcement"), dict) else {}
+        )
+        assert selective_routing.get("desired_mode") == "selective", selective_routing
+        assert selective_routing.get("applied_mode") == "selective", selective_routing
+        assert selective_routing.get("selective_default") == "vpn", selective_routing
+        assert selective_enforcement.get("active_mode_matches_intent") is True, selective_enforcement
+        assert selective_enforcement.get("traffic_enforcement_guaranteed") is True, selective_enforcement
+        assert selective_enforcement.get("missing_runtime_requirements") == [], selective_enforcement
+        assert selective_enforcement.get("supported_modes", {}).get("vpn") is True, selective_enforcement
+        applied_manifest = json.loads(
+            (state / "generated" / "dataplane" / "applied-manifest.json").read_text(encoding="utf-8")
+        )
+        applied_routing = applied_manifest.get("routing_global_state")
+        assert isinstance(applied_routing, dict), applied_manifest
+        assert applied_routing.get("desired_mode") == "selective", applied_routing
+        assert applied_routing.get("selective_default") == "vpn", applied_routing
+        assert selective_native_fingerprint() == native_before_selective_apply, {
+            "before": native_before_selective_apply,
+            "after": selective_native_fingerprint(),
+        }
+
         # Model the historical 69ec419 state by removing only the generation
         # marker from this suite-owned DB. Inventory, identity mappings,
         # credentials, snapshots and native processes remain the real isolated
@@ -1096,14 +1081,6 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert state_before_admission.get("status") == "unknown"
         assert state_before_admission.get("reason") == "verified_generation_missing"
         assert state_before_admission.get("inventory_count") == generation_digest["inventory_count"]
-
-        def controller_state_fingerprint() -> dict[str, tuple[int, str]]:
-            observed = {}
-            for path in ("/proxies/vpn-global", "/proxies/vpn-auto"):
-                status, body = http_json(f"http://127.0.0.1:5200{path}")
-                encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-                observed[path] = (status, hashlib.sha256(encoded).hexdigest())
-            return observed
 
         def native_state_fingerprint() -> dict[str, Any]:
             xray_native, _xray_launch = native_config_bytes(native)
@@ -1243,7 +1220,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
 
         core_apply_code, core_apply = http_json(
             f"{stack['api']}/routing/global", method="POST",
-            payload={"mode": "direct", "requested_by": "hosted-acceptance", "run_now": True},
+            payload={"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True},
             timeout=30,
         )
         assert core_apply_code == 200 and core_apply.get("ok") is True, core_apply

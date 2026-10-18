@@ -6,7 +6,11 @@ import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
+from fastapi.testclient import TestClient
+
 from fwrouter_api import main
+from fwrouter_api.db.connection import db_session
+from fwrouter_api.jobs.manager import get_default_job_manager
 
 
 def test_v21_startup_scrubs_configured_jsonl_before_schedulers(
@@ -115,3 +119,70 @@ def test_v21_startup_scrubs_configured_jsonl_before_schedulers(
     assert sentinel not in event_path.read_text(encoding="utf-8")
     assert sequence[:3] == ["bootstrap", "scrub", "register_handlers"]
     assert "start_maintenance_scheduler" in sequence
+
+
+def test_maintenance_lifespan_skips_bootstrap_registration_and_background_workers(
+    monkeypatch,
+) -> None:
+    """The explicit maintenance API mode exposes routes without startup work."""
+    sequence: list[str] = []
+
+    def forbidden(name: str):
+        def fail(*_args, **_kwargs):
+            sequence.append(name)
+            raise AssertionError(f"maintenance lifespan invoked {name}")
+        return fail
+
+    for name in (
+        "bootstrap_backend", "scrub_jsonl_files", "register_extended_handlers",
+        "start_maintenance_scheduler", "start_member_probe_scheduler",
+        "start_active_observation_scheduler", "start_subject_inventory_scheduler",
+        "start_external_collector_scheduler", "start_runtime_convergence_scheduler",
+        "start_watchdog_scheduler", "resume_runtime_read_models_prewarm",
+        "prime_runtime_read_models_async",
+    ):
+        monkeypatch.setattr(main, name, forbidden(name))
+    for name in (
+        "stop_maintenance_scheduler", "stop_member_probe_scheduler",
+        "stop_active_observation_scheduler", "stop_subject_inventory_scheduler",
+        "stop_external_collector_scheduler", "stop_runtime_convergence_scheduler",
+        "stop_watchdog_scheduler",
+    ):
+        monkeypatch.setattr(main, name, forbidden(name))
+
+    app = main.create_app(enable_startup_tasks=False)
+    route_paths = {route.path for route in app.routes}
+    assert "/api/v2/modules/{module_name}/desired-state" in route_paths
+    assert "/api/v2/routing/global" in route_paths
+
+    async def exercise_lifespan() -> None:
+        async with app.router.lifespan_context(app):
+            assert sequence == []
+
+    asyncio.run(exercise_lifespan())
+    assert sequence == []
+
+    # Exercise the real route and lazy default registration. The owned unit
+    # harness denies process execution before any dataplane/native operation;
+    # that expected failure proves the real handler ran without mocking it.
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v2/routing/global",
+            json={"mode": "direct", "requested_by": "pytest-maintenance", "run_now": False},
+        )
+    assert response.status_code == 200
+    response_body = response.json()
+    job = response_body.get("data", {}).get("job", {})
+    assert response_body.get("ok") is True and job.get("job_type") == "apply_mutation", response_body
+    manager = get_default_job_manager()
+    assert manager._get_handler("apply_mutation") is not None
+    assert manager.wait_for_idle(timeout_seconds=5) is True
+    with db_session() as connection:
+        finished_job = connection.execute(
+            "SELECT status, error_code, error_message FROM jobs WHERE job_id=?",
+            (job.get("job_id"),),
+        ).fetchone()
+    assert finished_job is not None
+    assert finished_job[0] == "failed", tuple(finished_job) if finished_job else None
+    assert finished_job[1] == "JOB_HANDLER_FAILED"
+    assert "tests deny process execution" in str(finished_job[2])

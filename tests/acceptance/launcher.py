@@ -135,6 +135,7 @@ _RUNTIME_SCALE_DIAGNOSTIC_SUITE = "runtime-scale-diagnostic"
 _IDENTITY_DIAGNOSTIC_SUITE = "identity-diagnostic"
 _PACKET_DIAGNOSTIC_NODEIDS = (
     "tests/application_acceptance/test_packet_dataplane.py::test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks",
+    "tests/application_acceptance/test_packet_dataplane.py::test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh",
     "tests/application_acceptance/test_runtime_scale.py::test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load",
 )
 _RUNTIME_SCALE_DIAGNOSTIC_NODEIDS = (
@@ -2468,9 +2469,9 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         functional = {row["nodeid"] for row in rows if row["suite"] == "functional"}
         packet = {row["nodeid"] for row in rows if row["suite"] == "packet"}
         provider = set(_PROVIDER_COHORT_NODEIDS)
-        if (len(functional) != 39 or len(packet) != 2 or len(provider) != 12
+        if (len(functional) != 39 or len(packet) != 3 or len(provider) != 12
                 or not provider <= functional or functional & packet):
-            raise NotRun("functional profile partitions differ from the reviewed 39+2 inventory")
+            raise NotRun("functional profile partitions differ from the reviewed 39+3 inventory")
         selected = functional - provider
         if len(selected) != 27 or selected & provider or selected | provider != functional:
             raise NotRun("ordinary/provider profile partitions are not disjoint and exhaustive")

@@ -5,8 +5,10 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import selectors
 import socket
+import sqlite3
 import stat
 import struct
 import subprocess
@@ -22,8 +24,16 @@ import yaml
 
 from .http_support import http_json
 from .joined_support import await_core_job
+from .synthetic_subscription import SyntheticSubscriptionSource, synthetic_vless_profile
 from .test_core_provider_mihomo import _configure_provider, _enable_owned_mihomo_runtime_state, _seed_source
-from .xray_support import assert_mihomo_launch_matches_active
+from .xray_support import (
+    assert_mihomo_launch_matches_active,
+    assert_native_matches_active,
+    await_job,
+    enable_vpn_from_synthetic_subscription,
+    loaded_identities,
+    native_config_bytes,
+)
 
 
 CLIENT_IP = "10.240.0.2"
@@ -91,6 +101,368 @@ def _record_dns53_flow_failure(record_property: Any, receipt: Any) -> bool:
         return False
     record_property("dns53_flow_failure", encoded)
     return True
+
+
+@pytest.mark.packet
+def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh(acceptance_stack):
+    """Normal packet-profile startup preserves an explicitly admitted selective/VPN legacy inventory."""
+    stack = acceptance_stack
+    state, native, source_bridge = stack["state"], stack["native"], stack["provider_bridge"]
+    api = stack["api"]
+    source = SyntheticSubscriptionSource(synthetic_vless_profile())
+
+    def post_apply(payload: dict[str, Any]) -> dict[str, Any]:
+        status, result = http_json(f"{api}/routing/global", method="POST", payload=payload, timeout=45)
+        assert status == 200 and result.get("ok") is True, result
+        job = await_job(api, result)
+        assert job.get("status") == "success", job
+        return job
+
+    def native_fingerprint() -> dict[str, Any]:
+        xray_bytes, _launch = native_config_bytes(native)
+        loaded = loaded_identities(native)
+        active_mihomo = state / "generated" / "mihomo" / "config.yaml"
+        bindings_path = state / "xray" / "fwrouter-bindings.json"
+        return {
+            "xray_active": hashlib.sha256((state / "xray" / "config.json").read_bytes()).hexdigest(),
+            "xray_mounted": hashlib.sha256(xray_bytes).hexdigest(),
+            "xray_loaded": hashlib.sha256(json.dumps(loaded, separators=(",", ":")).encode()).hexdigest(),
+            "xray_loaded_identity_count": len(loaded),
+            "xray_bindings": hashlib.sha256(bindings_path.read_bytes()).hexdigest(),
+            "xray_last_good": _packet_tree_fingerprint(state / "last-good" / "xray"),
+            "mihomo_active": hashlib.sha256(active_mihomo.read_bytes()).hexdigest(),
+            "mihomo_generated": _packet_tree_fingerprint(
+                state / "generated" / "mihomo", excluded={"reconcile-state.json"},
+            ),
+            "mihomo_last_good": _packet_tree_fingerprint(state / "last-good" / "mihomo"),
+            "xray_incarnation": (native.process.pid, native.started_at),
+            "mihomo_incarnation": (native.mihomo_process.pid, native.mihomo_started_at),
+            "xray_reload_calls": native.reload_calls,
+        }
+
+    def durable_fingerprint() -> dict[str, Any]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        try:
+            values = {
+                table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2")]
+                for table in (
+                    "subscription_node_identities", "subscription_node_aliases",
+                    "subscription_node_credentials", "subscription_node_credential_history",
+                    "subscription_node_identity_transitions",
+                )
+            }
+            values["core"] = {
+                "revision": connection.execute(
+                    "SELECT value_json FROM settings WHERE key='core.intent_revision'",
+                ).fetchone(),
+                "module": connection.execute(
+                    "SELECT desired_state, lifecycle_mode, runtime_state, apply_state "
+                    "FROM modules WHERE module_name='core'",
+                ).fetchone(),
+                "receipt": connection.execute(
+                    "SELECT apply_id, status, core_intent_revision FROM apply_versions "
+                    "ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+                ).fetchone(),
+            }
+            return {
+                "sha256": hashlib.sha256(json.dumps(values, sort_keys=True, default=list).encode()).hexdigest(),
+                "identity_rows": len(values["subscription_node_identities"]),
+                "credential_rows": len(values["subscription_node_credentials"]),
+                "credential_history_rows": len(values["subscription_node_credential_history"]),
+            }
+        finally:
+            connection.close()
+
+    def subject_bootstrap_fingerprint() -> dict[str, tuple[tuple[Any, ...], ...]]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        try:
+            return {
+                table: tuple(tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1"))
+                for table in ("subjects", "subject_fwrouter", "subject_host")
+            }
+        finally:
+            connection.close()
+
+    def assert_builtin_bootstrap_rows(
+        before: dict[str, tuple[tuple[Any, ...], ...]],
+        after: dict[str, tuple[tuple[Any, ...], ...]],
+    ) -> None:
+        # These are the two documented rows owned by ensure_builtin_system_subjects.
+        builtin_ids = {"fwrouter:global", "host:ssh"}
+        before_subjects = {row[0]: row for row in before["subjects"]}
+        after_subjects = {row[0]: row for row in after["subjects"]}
+        assert set(after_subjects) == set(before_subjects) | builtin_ids, {
+            "before_ids": sorted(before_subjects), "after_ids": sorted(after_subjects),
+        }
+        assert all(after_subjects[key] == row for key, row in before_subjects.items()), {
+            key: (row, after_subjects.get(key)) for key, row in before_subjects.items()
+            if after_subjects.get(key) != row
+        }
+        for subject_id, subject_type, role, display_name in (
+            ("fwrouter:global", "fwrouter", "router_core", "FWRouter global traffic"),
+            ("host:ssh", "host", "host_runtime", "SSH daemon"),
+        ):
+            row = after_subjects[subject_id]
+            assert (row[1], row[2], row[3], row[4], row[5], row[7], row[8], row[9], row[10], row[11], row[12]) == (
+                subject_type, role, subject_type, subject_id, display_name,
+                "direct", "direct", "clean", "running", 1, 0,
+            ), {"subject_id": subject_id, "row": row}
+            expected_metadata = (
+                {"source": "system_subjects", "component_name": "global"}
+                if subject_id == "fwrouter:global" else {
+                    "source": "system_subjects", "systemd_unit": "ssh.service",
+                    "listen_proto": "tcp", "listen_port": 22, "kind": "management",
+                }
+            )
+            assert json.loads(row[18]) == expected_metadata, {"subject_id": subject_id, "metadata": row[18]}
+        for table in ("subject_fwrouter", "subject_host"):
+            before_rows = {row[0]: row for row in before[table]}
+            after_rows = {row[0]: row for row in after[table]}
+            assert set(after_rows) == set(before_rows) | builtin_ids.intersection(
+                {"fwrouter:global" if table == "subject_fwrouter" else "host:ssh"},
+            ), {"table": table, "before_ids": sorted(before_rows), "after_ids": sorted(after_rows)}
+            assert all(after_rows[key] == row for key, row in before_rows.items()), table
+        global_detail = {row[0]: row for row in after["subject_fwrouter"]}["fwrouter:global"]
+        host_detail = {row[0]: row for row in after["subject_host"]}["host:ssh"]
+        assert (global_detail[1], json.loads(global_detail[2])) == (
+            "global", {"source": "system_subjects"},
+        ), global_detail
+        assert (host_detail[1], host_detail[2], host_detail[3], host_detail[4], host_detail[5],
+                json.loads(host_detail[6])) == (
+            "ssh.service", "tcp", 22, "sshd", "SSH daemon",
+            {"source": "system_subjects", "kind": "management"},
+        ), host_detail
+
+    def generation(api_url: str) -> dict[str, Any]:
+        status, result = http_json(f"{api_url}/__acceptance/subscription/native-generation")
+        assert status == 200 and result.get("ok") is True, result
+        value = result.get("state")
+        assert isinstance(value, dict), result
+        return value
+
+    try:
+        code, imported = http_json(
+            f"{api}/subscription", method="POST",
+            payload={"urls": [source.url], "requested_by": "hosted-acceptance-synthetic"}, timeout=90,
+        )
+        assert code == 200 and imported.get("ok") is True, imported
+        enable_vpn_from_synthetic_subscription(api, state, source.url)
+        verified = generation(api)
+        assert verified.get("status") == "verified", verified
+        assert verified.get("candidate_digest") == verified.get("verified_digest"), verified
+        assert_native_matches_active(native, state / "xray" / "config.json")
+        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
+
+        post_apply({"selective_default": "vpn", "requested_by": "hosted-acceptance", "run_now": True})
+        post_apply({"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True})
+        status, routing_result = http_json(f"{api}/routing/global")
+        routing = routing_result.get("data", {}).get("routing", {})
+        enforcement = routing_result.get("data", {}).get("runtime_enforcement", {})
+        assert status == 200 and routing_result.get("ok") is True
+        assert (routing.get("desired_mode"), routing.get("applied_mode"), routing.get("selective_default")) == (
+            "selective", "selective", "vpn",
+        ), routing
+        assert enforcement.get("traffic_enforcement_guaranteed") is True, enforcement
+        assert enforcement.get("supported_modes", {}).get("vpn") is True, enforcement
+
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            assert connection.execute(
+                "DELETE FROM settings WHERE key='subscriptions.native_generation.v1'",
+            ).rowcount == 1
+            connection.commit()
+        finally:
+            connection.close()
+        digest_code, digest_result = http_json(
+            f"{api}/__acceptance/subscription/legacy-inventory-digest",
+        )
+        expected_digest = digest_result.get("digest")
+        assert digest_code == 200 and digest_result.get("ok") is True
+        assert isinstance(expected_digest, str) and re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+        disabled_code, disabled = http_json(
+            f"{api}/modules/core/desired-state", method="POST",
+            payload={"desired_state": "disabled", "requested_by": "hosted-acceptance", "run_now": False},
+        )
+        enabled_code, enabled = http_json(
+            f"{api}/modules/core/desired-state", method="POST",
+            payload={"desired_state": "enabled", "requested_by": "hosted-acceptance", "run_now": False},
+        )
+        assert disabled_code == enabled_code == 200 and disabled.get("ok") and enabled.get("ok")
+        pending = enabled.get("data", {}).get("module", {})
+        assert pending.get("desired_state") == "enabled" and pending.get("apply_state") == "pending", pending
+        post_apply({"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True})
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        try:
+            core_revision_row = connection.execute(
+                "SELECT value_json FROM settings WHERE key='core.intent_revision'",
+            ).fetchone()
+            core_module_row = connection.execute(
+                "SELECT desired_state, apply_state FROM modules WHERE module_name='core'",
+            ).fetchone()
+            core_receipt_row = connection.execute(
+                "SELECT core_intent_revision FROM apply_versions "
+                "ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+            ).fetchone()
+        finally:
+            connection.close()
+        assert core_revision_row and core_module_row == ("enabled", "clean") and core_receipt_row
+        assert int(core_receipt_row[0]) == int(json.loads(core_revision_row[0])), {
+            "module": core_module_row, "receipt_revision": core_receipt_row,
+            "intent_revision": core_revision_row,
+        }
+
+        calls_before_admission = source_bridge.snapshot_calls()
+        requests_before_admission = source.snapshot_requests()
+        admission_code, admission = http_json(
+            f"{api}/__acceptance/subscription/admit-legacy-inventory", method="POST",
+            payload={"expected_digest": expected_digest}, timeout=90,
+        )
+        assert admission_code == 200 and admission.get("ok") is True, admission
+        assert (admission.get("status") == "verified" and admission.get("digest") == expected_digest
+                and admission.get("proof_receipt_written") is True), admission
+        assert admission.get("mutation_attempts") == {
+            "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0,
+        }, admission
+        assert generation(api).get("status") == "verified"
+        assert source_bridge.snapshot_calls() == calls_before_admission
+        assert source.snapshot_requests() == requests_before_admission
+        assert (state / "xray" / ".generation" / "generation-checkpoint.json").exists() is False
+        receipt_path = state / "generated" / "mihomo" / "reconcile-state.json"
+
+        def mihomo_receipt_semantics() -> dict[str, Any]:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            incarnation = native.rpc("mihomo_incarnation", {}).get("details", {}).get("stdout", "").strip()
+            return {
+                "active_config_hash": receipt.get("active_config_hash"),
+                "runtime_incarnation": receipt.get("runtime_incarnation"),
+                "version": receipt.get("version"),
+                "udp_policy_version": receipt.get("udp_policy_version"),
+                "native_proof": (
+                    receipt.get("native_top_level_rules_match"),
+                    receipt.get("native_selector_membership_match"),
+                    receipt.get("subrule_config_guard_match"),
+                ),
+                "runtime_incarnation_readback": incarnation,
+            }
+
+        receipt_before_startup = mihomo_receipt_semantics()
+        before_startup_native = native_fingerprint()
+        before_startup_durable = durable_fingerprint()
+        before_startup_subjects = subject_bootstrap_fingerprint()
+        marker_before_startup = generation(api)
+
+        previous_worker = stack["worker"]
+        previous_worker.terminate()
+        previous_worker.wait(timeout=5)
+        worker, restarted_api = stack["start_worker"](startup_tasks=True, startup_recovery=True)
+        stack["worker"], stack["api"] = worker, restarted_api
+
+        assert generation(restarted_api) == marker_before_startup
+        assert native_fingerprint() == before_startup_native
+        assert durable_fingerprint() == before_startup_durable
+        after_first_startup_subjects = subject_bootstrap_fingerprint()
+        assert_builtin_bootstrap_rows(before_startup_subjects, after_first_startup_subjects)
+        assert source_bridge.snapshot_calls() == calls_before_admission
+        assert source.snapshot_requests() == requests_before_admission
+        assert_native_matches_active(native, state / "xray" / "config.json")
+        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
+        assert mihomo_receipt_semantics() == receipt_before_startup
+        receipt_after_startup = mihomo_receipt_semantics()
+        assert receipt_after_startup.get("active_config_hash") == hashlib.sha256(
+            (state / "generated" / "mihomo" / "config.yaml").read_bytes()
+        ).hexdigest(), receipt_after_startup
+        assert receipt_after_startup.get("runtime_incarnation") == receipt_after_startup.get(
+            "runtime_incarnation_readback",
+        ), receipt_after_startup
+        assert receipt_after_startup.get("native_proof") == (True, True, True), receipt_after_startup
+        report_code, bootstrap_report = http_json(
+            f"{restarted_api}/__acceptance/bootstrap/report",
+        )
+        assert report_code == 200 and bootstrap_report.get("completed") is True, bootstrap_report
+        assert bootstrap_report.get("recovery_enabled") is True and bootstrap_report.get("foundation_ok") is True
+        live_recovery = bootstrap_report.get("live_recovery", {})
+        intended = bootstrap_report.get("apply_reconcile", {}).get("intended_routing", {})
+        scoped = bootstrap_report.get("apply_reconcile", {}).get("scoped_subject_routing", {})
+        xray_recovery = bootstrap_report.get("apply_reconcile", {}).get("xray_subscription_profiles", {})
+        dns_reconcile = bootstrap_report.get("apply_reconcile", {}).get("dnsmasq_reconcile", {})
+        live_routing = live_recovery.get("live_routing", {})
+        selector = live_recovery.get("selector", {})
+        assert live_routing.get("recovery_required") is False and live_routing.get("recovered") is False
+        assert selector.get("ok") is True and selector.get("restored") is True
+        assert selector.get("changed") is False and selector.get("skipped") is False, selector
+        assert (intended.get("mode_matches") is True and intended.get("reapply_required") is False
+                and intended.get("reapplied") is False), intended
+        assert (scoped.get("classify_probe_ok") is True and scoped.get("reapply_required") is False
+                and scoped.get("reapplied") is False and scoped.get("persisted_scoped_subjects_count") == 0), scoped
+        assert (xray_recovery.get("ok") is True
+                and xray_recovery.get("status") in {"success", "noop", "skipped"}
+                and xray_recovery.get("error_code") is None), xray_recovery
+        assert dns_reconcile.get("ok") is True, dns_reconcile
+        assert bootstrap_report.get("dns_fixture") == {
+            "configured": True, "daemon_running": True, "daemon_uid_matches": True,
+        }, bootstrap_report
+
+        # A second ordinary startup must be idempotent after the one exact,
+        # documented first-run built-in subject initialization above.
+        stable_native = native_fingerprint()
+        stable_durable = durable_fingerprint()
+        stable_subjects = subject_bootstrap_fingerprint()
+        stable_marker = generation(restarted_api)
+        previous_worker = stack["worker"]
+        previous_worker.terminate()
+        previous_worker.wait(timeout=5)
+        worker, restarted_api = stack["start_worker"](startup_tasks=True, startup_recovery=True)
+        stack["worker"], stack["api"] = worker, restarted_api
+        assert generation(restarted_api) == stable_marker
+        assert native_fingerprint() == stable_native
+        assert durable_fingerprint() == stable_durable
+        assert subject_bootstrap_fingerprint() == stable_subjects
+        assert source_bridge.snapshot_calls() == calls_before_admission
+        assert source.snapshot_requests() == requests_before_admission
+        report_code, second_report = http_json(f"{restarted_api}/__acceptance/bootstrap/report")
+        assert report_code == 200 and second_report.get("completed") is True, second_report
+        second_intended = second_report.get("apply_reconcile", {}).get("intended_routing", {})
+        second_scoped = second_report.get("apply_reconcile", {}).get("scoped_subject_routing", {})
+        second_xray = second_report.get("apply_reconcile", {}).get("xray_subscription_profiles", {})
+        second_dns = second_report.get("apply_reconcile", {}).get("dnsmasq_reconcile", {})
+        second_live = second_report.get("live_recovery", {})
+        second_live_routing = second_live.get("live_routing", {})
+        second_selector = second_live.get("selector", {})
+        assert second_report.get("recovery_enabled") is True and second_report.get("foundation_ok") is True
+        assert second_live_routing.get("recovery_required") is False and second_live_routing.get("recovered") is False
+        assert second_selector.get("ok") is True and second_selector.get("restored") is True
+        assert second_selector.get("changed") is False and second_selector.get("skipped") is False
+        assert (second_intended.get("mode_matches") is True and second_intended.get("reapply_required") is False
+                and second_intended.get("reapplied") is False), second_intended
+        assert (second_scoped.get("classify_probe_ok") is True and second_scoped.get("reapply_required") is False
+                and second_scoped.get("reapplied") is False
+                and second_scoped.get("persisted_scoped_subjects_count") == 0), second_scoped
+        assert (second_xray.get("ok") is True
+                and second_xray.get("status") in {"success", "noop", "skipped"}
+                and second_xray.get("error_code") is None), second_xray
+        assert second_dns.get("ok") is True, second_dns
+        assert second_report.get("dns_fixture") == {
+            "configured": True, "daemon_running": True, "daemon_uid_matches": True,
+        }, second_report
+    finally:
+        source.close()
+
+
+def _packet_tree_fingerprint(root: Path, *, excluded: set[str] | None = None) -> tuple[tuple[str, str], ...]:
+    excluded_paths = excluded or set()
+    if not root.exists():
+        return ()
+    entries = []
+    for path in sorted(root.rglob("*")):
+        assert not path.is_symlink(), f"unexpected packet qualification symlink: {path.name}"
+        if path.is_dir():
+            continue
+        assert path.is_file(), f"unexpected packet qualification artifact: {path.name}"
+        relative = path.relative_to(root).as_posix()
+        if relative not in excluded_paths:
+            entries.append((relative, hashlib.sha256(path.read_bytes()).hexdigest()))
+    return tuple(entries)
 
 
 def _role_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None,
