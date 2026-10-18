@@ -13,6 +13,12 @@ from fwrouter_api.services.dataplane_nft_render import render_owned_table_candid
 _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME = provider_recovery._prepare_verified_reentry_runtime
 
 
+def test_recovery_pending_writer_remains_a_module_patch_seam():
+    from fwrouter_api.services import watchdog_failure_state
+
+    assert provider_recovery.set_recovery_pending is watchdog_failure_state.set_recovery_pending
+
+
 def _install_pending_state(monkeypatch, pending=None):
     state = {"pending": pending}
 
