@@ -38,6 +38,10 @@
     "backend/tests/test_xray.py::test_identity_reference_preimage_rejects_malformed_projection_before_cleanup",
     "backend/tests/test_xray.py::test_vpn_auto_stage_exception_compensates_new_identity_intent",
     "backend/tests/test_xray.py::test_vpn_auto_source_fence_change_preserves_unverified_identity_intent",
-    "backend/tests/test_xray.py::test_vpn_auto_external_reference_blocks_identity_compensation"
+    "backend/tests/test_xray.py::test_vpn_auto_external_reference_blocks_identity_compensation",
+    "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[success]",
+    "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[receipt_failure]",
+    "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[readback_failure]",
+    "backend/tests/test_xray.py::test_failed_generation_after_inventory_sync_restores_scoped_derived_rows"
   ]
 }

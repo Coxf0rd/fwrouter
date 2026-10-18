@@ -1,5 +1,9 @@
 # Roadmap decision register — reconciled 2026-10-16
 
+## R1 qualification candidate — 2026-10-18
+
+D-10 recovery evidence follow-up uses main6a5fad2/CI39123313392 PASS. See [four-case qualification](../../audits/xray_last_good_qualification_2026-10-18/REPORT.md): the failure is a policy-unproven component fixture, not evidence that native safety checks should be bypassed. Original assertions remain; exact41-node qualified selection and real native rollback/readback receipts are required at final HEAD. Pending those receipts, prior closure/Stage5 BLOCKED remains the current verified status; upon qualified evidence R1 may resolve and bounded closure/Stage5 readiness may be reassessed without starting Stage5 or deployment. D-12, long-soak and separate production/release gates remain unchanged.
+
 ## Current operational disposition — 2026-10-18
 
 This dated assessment supersedes older PLANNED/DRAFT operational checkpoints below without rewriting their evidence. Main c85c0c8 / CI39118473301 SUCCESS1897/0/0; PR15–22 merged. D-10 Packages1–3 implemented and bounded acceptance recorded; overall closure and Stage5 remain BLOCKED on the named qualified recovery-evidence disposition, not on every deferred optimization. See [closure audit](../../audits/operational_closure_2026-10-18/REPORT.md) for the single residual-risk assessment linked to the existing Stage6 legacy register. D-11 cache bounds are admission estimates, not strict RSS; caller mutation, inflight/follower waits and type/id reuse remain explicit limits. D-12 remains open: preserve40/45/120/20 budgets; main25.7397s versus PR22 43.8025s does not prove a speedup. Long-soak DEFERRED/NOT RUN with bounded plan. Production remains last-observed69ec419; later recovery deployment/admission is BLOCKED pending separate authorized proof, not implied by sourceCI. ExternalE2E/fullDebianHost remain separate release gates. No Stage5 work authorized here.

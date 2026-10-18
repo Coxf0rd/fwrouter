@@ -27,7 +27,7 @@ COORDINATOR_ROOT = "/tmp/fwrouter-qcp-test-root"
 COORDINATOR_MARKER = ".fwrouter-gate-test-root-owned"
 COORDINATOR_MARKER_CONTENT = "FWROUTER_GATE_TEST_ROOT_V1\n"
 PYTEST_WORKDIR = "/workspace/backend"
-EXPECTED_TOTAL = 37
+EXPECTED_TOTAL = 41
 SMALL_OUTPUT_LIMIT = 64 * 1024
 DIAGNOSTIC_LIMIT = 4096
 MAX_JUNIT_BYTES = launcher.MAX_RECEIPT_BYTES
@@ -35,7 +35,7 @@ QUALIFIED_CHILD_NODE_FILES = {
     "backend/tests/test_protocol_native_validation.py": 20,
     "backend/tests/test_traffic_accounting.py": 1,
     "backend/tests/test_vpn_auto_writer_guard.py": 1,
-    "backend/tests/test_xray.py": 12,
+    "backend/tests/test_xray.py": 16,
     "backend/tests/test_xray_default_runner_archive.py": 3,
 }
 _QUALIFIED_CHILD_NODEID = re.compile(
@@ -442,7 +442,7 @@ def _read_junit(path: Path) -> dict[str, Any]:
     protocol_ids = [node for node in expected if node.startswith("backend/tests/test_protocol_native_validation.py::")]
     if (len(expected) != EXPECTED_TOTAL or len(protocol_ids) != 20
             or len(statuses) != EXPECTED_TOTAL or set(statuses) != expected):
-        errors.append("observed node IDs differ from the checked-in exact 20 protocol plus 17 supporting cohort contract")
+        errors.append("observed node IDs differ from the checked-in exact 20 protocol plus 21 supporting cohort contract")
     counts = {name: sum(status == name for status in statuses.values())
               for name in ("passed", "failed", "skipped")}
     if counts["failed"] or counts["skipped"]:

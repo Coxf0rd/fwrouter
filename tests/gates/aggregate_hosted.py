@@ -18,6 +18,17 @@ import provision  # noqa: E402
 import launcher as acceptance_launcher  # noqa: E402
 
 
+QCP_EXPECTED_PROTOCOL_CASES = 20
+QCP_EXPECTED_FILE_COUNTS = {
+    "backend/tests/test_protocol_native_validation.py": 20,
+    "backend/tests/test_traffic_accounting.py": 1,
+    "backend/tests/test_vpn_auto_writer_guard.py": 1,
+    "backend/tests/test_xray.py": 16,
+    "backend/tests/test_xray_default_runner_archive.py": 3,
+}
+QCP_EXPECTED_TOTAL = sum(QCP_EXPECTED_FILE_COUNTS.values())
+
+
 def read_json(path: Path, *, maximum: int = 8 * 1024 * 1024) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > maximum:
         raise gate.GateError(f"evidence is missing, unsafe, or oversized: {path.name}")
@@ -349,21 +360,52 @@ def validate_qcp_receipt(path: Path, plan: dict[str, Any], runtime_inputs: dict[
         problems.append("qualified-child receipt nonce is invalid")
     if receipt.get("cleanup") != "owned_resources_removed":
         problems.append("qualified-child owned-resource cleanup is not confirmed")
-    if (len(statuses) != 37 or any(value != "passed" for value in statuses.values())
-            or tests.get("tests") != 37 or tests.get("failed") != 0 or tests.get("skipped") != 0
-            or tests.get("contract_valid") is not True):
-        problems.append("qualified-child did not report 37 passing exact node IDs")
-        statuses = {}
-    if not isinstance(expected_ids, list) or set(expected_ids) != set(statuses) or len(expected_ids) != len(set(expected_ids)):
-        problems.append("qualified-child expected ID registry differs from observed node IDs")
+
     scenario_path = ROOT / "tests/acceptance/qualified-child-scenarios.json"
     scenario = read_json(scenario_path)
-    expected_qcp = scenario.get("nodeids", [])
+    expected_qcp = scenario.get("nodeids")
+    scenario_ids_valid = (
+        isinstance(expected_qcp, list)
+        and all(isinstance(nodeid, str) for nodeid in expected_qcp)
+        and len(expected_qcp) == QCP_EXPECTED_TOTAL
+        and len(expected_qcp) == len(set(expected_qcp))
+    )
+    scenario_counts: dict[str, int] = {}
+    if scenario_ids_valid:
+        for nodeid in expected_qcp:
+            path_id = nodeid.split("::", 1)[0]
+            scenario_counts[path_id] = scenario_counts.get(path_id, 0) + 1
     if (scenario.get("schema") != "fwrouter-qualified-child-scenarios/v1"
-            or scenario.get("protocol_case_count") != 20
-            or len(expected_qcp) != 37 or len(expected_qcp) != len(set(expected_qcp))
-            or set(statuses) != set(expected_qcp)):
-        problems.append("qualified-child exact IDs differ from the checked-in 20 protocol plus 17 supporting scenario contract")
+            or scenario.get("protocol_case_count") != QCP_EXPECTED_PROTOCOL_CASES
+            or not scenario_ids_valid
+            or scenario_counts != QCP_EXPECTED_FILE_COUNTS
+            or sum(nodeid.startswith(
+                "backend/tests/test_protocol_native_validation.py::") for nodeid in expected_qcp)
+            != QCP_EXPECTED_PROTOCOL_CASES):
+        problems.append(
+            "qualified-child exact IDs differ from the checked-in 20 protocol plus 21 supporting scenario contract"
+        )
+
+    expected_set = set(expected_qcp) if scenario_ids_valid else set()
+    if (len(statuses) != QCP_EXPECTED_TOTAL
+            or set(statuses) != expected_set
+            or any(value != "passed" for value in statuses.values())
+            or tests.get("tests") != QCP_EXPECTED_TOTAL
+            or tests.get("failed") != 0
+            or tests.get("skipped") != 0
+            or tests.get("contract_valid") is not True):
+        problems.append(
+            f"qualified-child did not report {QCP_EXPECTED_TOTAL} passing exact node IDs"
+        )
+        statuses = {}
+    expected_receipt_ids_valid = (
+        isinstance(expected_ids, list)
+        and all(isinstance(nodeid, str) for nodeid in expected_ids)
+        and len(expected_ids) == len(set(expected_ids))
+    )
+    if (not expected_receipt_ids_valid or set(expected_ids) != set(statuses)
+            or set(expected_ids) != expected_set):
+        problems.append("qualified-child expected ID registry differs from observed node IDs")
 
     profile_path = path.with_name("profile.json")
     profile = read_json(profile_path)

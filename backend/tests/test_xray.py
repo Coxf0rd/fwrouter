@@ -2755,6 +2755,10 @@ def test_failed_new_generation_restores_last_good_runtime_and_public_snapshot(
             )
         }
 
+    # The component runner does not own a native Mihomo parser. Supply a
+    # policy-valid synthetic preimage so rollback reaches the contract under
+    # test; native parsing remains separately exercised by the qualified lane.
+    _seed_safe_rollback_mihomo_preimage()
     _seed_subscription_identity(slug="new-generation", token="new-generation")
     publish_rollback_receipt = xray_subscription_service._publish_xray_generation_rollback_mihomo_udp_receipt
     receipt_attempts = []
@@ -2868,6 +2872,7 @@ def test_failed_generation_after_inventory_sync_restores_scoped_derived_rows(mon
     _patch_xray_adapters(monkeypatch, adapter)
     first = xray_service.reconcile_xray_subscription_profile_nodes(requested_by="pytest")
     assert first["ok"] is True
+    _seed_safe_rollback_mihomo_preimage()
 
     original_node = list_desired_subscription_xray_clients("derived-base")[0]
     with db_session() as connection:
@@ -3004,6 +3009,20 @@ def _rollback_routing_snapshot() -> dict[str, object]:
     routing = xray_subscription_service._capture_generation_auto_selection().get("routing")
     assert isinstance(routing, dict), "rollback policy fixture requires persisted routing state"
     return routing
+
+
+def _seed_safe_rollback_mihomo_preimage() -> None:
+    """Give component rollback cases the policy-valid preimage their contract requires."""
+    from fwrouter_api.services import mihomo_config
+
+    config_path = Path(mihomo_config._resolved_base_config_path())
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        __import__("yaml").safe_dump(
+            _rollback_mihomo_config(_rollback_routing_snapshot()), sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_generation_rollback_refuses_unsafe_mihomo_preimage_before_any_active_write(monkeypatch, tmp_path: Path) -> None:

@@ -1,5 +1,11 @@
 # FWRouter — active roadmap
 
+## R1 Xray last-good qualification candidate — 2026-10-18
+
+PR23 merged6a5fad2; actual mainCI39123313392 SUCCESS1897/0/0 and main smoke PASS. The [R1 qualification report](audits/xray_last_good_qualification_2026-10-18/REPORT.md) reproduces all four original failures and identifies a missing policy-valid Mihomo preimage in the component fixture. Recovery correctly rejected an unproven policy; production logic and original assertions are unchanged. Corrected synthetic fixtures pass the four scenarios and adjacent refusal/concurrency guards locally. Existing qualified-child selection expands37→41, preserving every prior ID and all resource/confinement limits; exact JUnit coverage and complementary real-native last-good readback remain mandatory.
+
+At this source checkpoint, final independent review/hosted qualification is pending; R1 and Operational Closure/Stage5 must not be called closed from local mocks. If final exact-HEAD receipts confirm all four IDs, real-native recovery and cleanup, R1 is QUALIFIED/RESOLVED and bounded Operational Closure becomes ACCEPTABLE, Stage5 READY for a separately authorized task. The local FINAL_HANDOFF and PR record the final source-bound result without rewriting historical reports. Production deployment remains NOT AUTHORIZED/NOT RUN. The four-case evidence gap, not every deferred candidate or release gate, controls this reassessment. Canonical publication remains a separately prepared proposal, not an overwrite.
+
 ## Operational closure audit — 2026-10-18
 
 Assessment baseline: main `c85c0c8f83e7015226af5d39d6e291ae15c5df86`, PR22 single-parent squash; actual main CI [39118473301](https://github.com/Coxf0rd/fwrouter/actions/runs/39118473301) SUCCESS,1897/0/0, main smoke PASS. PR22 CI39116773203 separately qualified337b188. PR15–22 are merged; Ruff debt951→0 is closed in source/CI scope, not a new cleanup task.
