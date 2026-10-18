@@ -39,13 +39,60 @@ def _rows_digest(rows):
 
 
 def _assert_existing_database_rows_preserved(before, after):
-    """Compare every pre-migration row on columns that existed before upgrade."""
+    """Compare existing rows, allowing only the owned Core legacy invalidation."""
     assert set(before) <= set(after)
     for table_name, (old_columns, old_rows) in before.items():
         new_columns, new_rows = after[table_name]
         assert set(old_columns) <= set(new_columns), f"{table_name} existing columns were removed"
         old_positions = tuple(range(len(old_columns)))
         new_positions = tuple(new_columns.index(name) for name in old_columns)
+        if table_name == "modules" and "module_name" in old_columns:
+            module_index = old_columns.index("module_name")
+            apply_index = old_columns.index("apply_state")
+            desired_index = old_columns.index("desired_state")
+            updated_index = old_columns.index("updated_at")
+            before_core = next(row for row in old_rows if row[module_index] == "core")
+            after_core = next(
+                row
+                for row in new_rows
+                if row[new_columns.index("module_name")] == "core"
+            )
+            projected_core = tuple(after_core[new_columns.index(name)] for name in old_columns)
+            # Schema 25 generations cannot be attributed to the new apply fence.
+            # Migration 25->26 preserves Core intent/state but invalidates its
+            # applied status when enabled, requiring an owner apply before admission.
+            assert projected_core[desired_index] == before_core[desired_index]
+            expected_apply_state = (
+                "pending" if before_core[desired_index] == "enabled" else before_core[apply_index]
+            )
+            assert projected_core[apply_index] == expected_apply_state
+            if before_core[desired_index] == "disabled":
+                assert projected_core[updated_index] == before_core[updated_index]
+            assert all(
+                projected_core[index] == before_core[index]
+                for index in range(len(old_columns))
+                if index not in {apply_index, updated_index}
+            ), "Core migration changed fields outside apply invalidation"
+
+            def without_core(rows, module_col):
+                return [row for row in rows if row[module_col] != "core"]
+
+            old_rows = without_core(old_rows, module_index)
+            new_rows = without_core(new_rows, new_columns.index("module_name"))
+        if table_name == "settings" and "key" in old_columns and "value_json" in old_columns:
+            key_index = old_columns.index("key")
+            value_index = old_columns.index("value_json")
+            old_revision = next(
+                row[value_index]
+                for row in old_rows
+                if row[key_index] == "core.intent_revision"
+            )
+            new_revision = next(
+                row[new_columns.index("value_json")]
+                for row in new_rows
+                if row[new_columns.index("key")] == "core.intent_revision"
+            )
+            assert new_revision == old_revision, "migration changed the existing Core intent revision"
         old_projection = sorted(
             repr(tuple(row[index] for index in old_positions)) for row in old_rows
         )
@@ -58,16 +105,21 @@ def _assert_existing_database_rows_preserved(before, after):
 
 
 def test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state(acceptance_stack):
-    """Probe the v23 provider-column contract against the current schema-25 app DB.
+    """Probe the v23 provider-column contract against the current app DB.
 
     The acceptance worker is provisioned with the current schema. This test removes
     the v24 provider column and uses the v23 marker to exercise the supported
     provider migration path; it is not a complete historical-v23 database fixture.
-    The genuine schema-24-to-25 preimage and downgrade refusal are covered by the
-    isolated migration/CLI contract tests.
+    Its historical node ID remains stable for the fixed diagnostic suite. The
+    genuine schema-24 preimage, sequential upgrades through the current version,
+    row preservation, idempotence, and downgrade refusal are covered by isolated
+    migration tests.
     """
     stack = acceptance_stack
     from fwrouter_api.db.connection import initialize_database
+    from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION
+
+    expected_schema_version = str(EXPECTED_SCHEMA_VERSION)
     before_native = loaded_identities(stack["native"])
     path = _owned_database(stack)
     stack["worker"].terminate()
@@ -87,7 +139,7 @@ def test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state(
         }
         before_rows = _database_rows(connection, preexisting_tables)
     first = initialize_database()
-    assert first["ok"] is True and first["actual_schema_version"] == "25", first
+    assert first["ok"] is True and first["actual_schema_version"] == expected_schema_version, first
     with sqlite3.connect(path) as connection:
         binding = connection.execute("SELECT enabled,current_member_id,allow_automatic_member_switch FROM provider_bindings WHERE source_ref=?", (source,)).fetchone()
         secret = connection.execute("SELECT api_key FROM provider_credentials WHERE source_ref=?", (source,)).fetchone()
@@ -112,11 +164,11 @@ def test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state(
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
         assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
     second = initialize_database()
-    assert second["ok"] is True and second["actual_schema_version"] == "25", second
+    assert second["ok"] is True and second["actual_schema_version"] == expected_schema_version, second
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT value FROM schema_meta WHERE key='schema_version'"
-        ).fetchone() == ("25",)
+        ).fetchone() == (expected_schema_version,)
         after_second_rows = _database_rows(connection, existing_tables - {"schema_meta"})
         assert set(after_second_rows) == set(after_first_rows)
         for table_name in sorted(after_first_rows):
