@@ -1,5 +1,11 @@
 # Roadmap decision register — reconciled 2026-10-16
 
+## Current operational disposition — 2026-10-18
+
+This dated assessment supersedes older PLANNED/DRAFT operational checkpoints below without rewriting their evidence. Main c85c0c8 / CI39118473301 SUCCESS1897/0/0; PR15–22 merged. D-10 Packages1–3 implemented and bounded acceptance recorded; overall closure and Stage5 remain BLOCKED on the named qualified recovery-evidence disposition, not on every deferred optimization. See [closure audit](../../audits/operational_closure_2026-10-18/REPORT.md) for the single residual-risk assessment linked to the existing Stage6 legacy register. D-11 cache bounds are admission estimates, not strict RSS; caller mutation, inflight/follower waits and type/id reuse remain explicit limits. D-12 remains open: preserve40/45/120/20 budgets; main25.7397s versus PR22 43.8025s does not prove a speedup. Long-soak DEFERRED/NOT RUN with bounded plan. Production remains last-observed69ec419; later recovery deployment/admission is BLOCKED pending separate authorized proof, not implied by sourceCI. ExternalE2E/fullDebianHost remain separate release gates. No Stage5 work authorized here.
+
+Historical decisions follow; their dates/scopes remain unchanged.
+
 ## Operational Packages2/3 implementation — current source checkpoint 2026-10-16
 
 PR15 remains DRAFT. Package2 source was qualified at526221c by fullCI38826004751 (1679/0/0), but user explicitly authorized actual Package3 implementation afterward; closure-by-DEFER was corrected. Package3 now implements no-change JSONL output elimination with mandatory full scan and source-drift checks, and existing-helper/chunked Xray subject+override projections. Independent Package3 QA105PASS. Changed-file scrub CPU and batch transient-memory overhead are explicitly measured in the [implementation report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/PACKAGE3_IMPLEMENTATION.md). Conditional chmod and unsupported extra native/I/O candidates remain DEFERRED.

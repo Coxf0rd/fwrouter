@@ -1,6 +1,19 @@
 # FWRouter — active roadmap
 
-## Operational Packages2/3 implementation — current source checkpoint 2026-10-16
+## Operational closure audit — 2026-10-18
+
+Assessment baseline: main `c85c0c8f83e7015226af5d39d6e291ae15c5df86`, PR22 single-parent squash; actual main CI [39118473301](https://github.com/Coxf0rd/fwrouter/actions/runs/39118473301) SUCCESS,1897/0/0, main smoke PASS. PR22 CI39116773203 separately qualified337b188. PR15–22 are merged; Ruff debt951→0 is closed in source/CI scope, not a new cleanup task.
+
+**OPERATIONAL CLOSURE BLOCKED; STAGE 5 BLOCKED pending the qualified recovery-evidence disposition in the [closure audit](audits/operational_closure_2026-10-18/REPORT.md).** Packages1–3 are accepted in their demonstrated source/CI/historical bounded-rollout scope. This does not reopen their implementation or authorize new optimizations. Four broader local Xray last-good recovery assertions remain unqualified: they fail identically on unchanged baseline under the same unqualified runner and are absent from the selected37-node qualified cohort. Obtain a qualified isolated result or an evidence-backed applicability/owner disposition before claiming the recovery exit criterion. No proven new source regression is asserted. External E2E, complete Debian host acceptance and long-soak remain separate gates, not automatic Stage5 prerequisites.
+
+Latest saved production baseline is69ec419, not current main; PR18 preflight stopped before deployment on legacy-generation admission. PR19 implements a proof-only source path, but its production execution/deployment remains separately authorized and NOT RUN. No fresh production state was inspected for this audit. Original78 identities/durable mapping and27 host files are supported by historical receipts only.
+
+D-12 remains open: PR22 startup43.8025s and main25.7397s are different hosted observations, not a measured speedup. Eight of nine matched diagnostic attempts hit45s and retain FAIL; causality UNKNOWN. Preserve40s advisory/45s hosted hard ceiling and120s/20s source systemd budgets. Long-term stability DEFERRED to an explicitly bounded natural-load plan; no leak, physical SSD wear reduction or whole-production CPU saving established.
+
+Canonical publication is a proposal only: the canonical file was read and hashed, not overwritten. Older pending patches remain intact. The proposed canonical patch is retained locally with its exact base hash; this Git mirror records the reviewed proposal, not an assertion that the canonical file has already changed. Historical checkpoints below retain their original wording.
+
+
+## Historical Operational Packages2/3 implementation checkpoint — 2026-10-16
 
 PR15 remains DRAFT. Package2 source was qualified at526221c by fullCI38826004751 (1679/0/0), but user explicitly authorized actual Package3 implementation afterward; closure-by-DEFER was corrected. Package3 now implements no-change JSONL output elimination with mandatory full scan and source-drift checks, and existing-helper/chunked Xray subject+override projections. Independent Package3 QA105PASS. Changed-file scrub CPU and batch transient-memory overhead are explicitly measured in the [implementation report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/PACKAGE3_IMPLEMENTATION.md). Conditional chmod and unsupported extra native/I/O candidates remain DEFERRED.
 
@@ -9,7 +22,7 @@ PR14 was user-merged as2d53daf while implementation was underway. Its newer road
 
 Canonical: `/решения/roadmap/fwrouter/ROADMAP.md`. Relative links are resolved from the Git mirror `knowledge/ROADMAP.md`.
 
-## Current state — reconciled 2026-10-16
+## Historical accepted state — reconciled 2026-10-16
 
 PR11 ccc576c, PR12 baafbf2 and PR13 3f96e1e are MERGED. Production is exact `3f96e1e73be0e0fc25208a406ecc9ff259f6480f`; Package1 ACCEPTED in bounded deployed/live scope. CI milestone CLOSED; CD DEFERRED. API/Gateway/workers/timers active,78 original identities and27 protected host files retained; Core/native parity,DNS/Rescue/Tailscale and observed fail-closed state preserved. [Current evidence and risks](audits/operational_roadmap_legacy_2026-10-16/REPORT.md).
 
@@ -23,10 +36,10 @@ Exact pre-reconciliation [canonical](history/operational_reconciliation_2026-10-
 
 ## Active execution order
 
-Keep the existing sequence. Package1 is accepted in bounded source/CI/deployment/live scope. Remaining Operational packages require separate authorization; this documentation does not start them.
+Keep the existing sequence. Packages1–3 implementation and bounded acceptance are recorded above; closure remains blocked only by the named evidence disposition. This audit does not start Stage5 or any optimization.
 
 1. **Test Architecture & CI Stabilization — CLOSED.** Preserve accepted scope and real event evidence.
-2. **Operational Performance Fixes — IN PROGRESS; Package1 ACCEPTED in bounded scope.** Current-code audits complete within declared limits. Package2 PLANNED, Package3 CONDITIONAL; neither authorized for implementation. Preserve6004400; new packages are not historical package numbers.
+2. **Operational Performance Fixes — CLOSURE BLOCKED.** Packages1–3 implemented/accepted in demonstrated scope; qualified recovery-evidence disposition outstanding. Residual risks and deferred candidates retain their existing owners.
 3. **Stage 5 — Configuration and Persistence Contracts.** After accepted Operational Performance Fixes.
 4. **Database Architecture & Integrity Audit.** After supported config/persistence contracts.
 5. **Evidence-based Database fixes.** Only proven audit findings.
@@ -80,16 +93,16 @@ Use [Test Architecture contract](PROJECT_MAP/TEST_ARCHITECTURE_AND_CICD_FOUNDATI
 
 ## Operational Performance Fixes — remaining packages
 
-P1, IN PROGRESS. Package1 ACCEPTED in confirmed source/CI/deployment/bounded-live scope. [Package1 source report](audits/operational_package1_2026-10-16/REPORT.md), [deployment handoff](audits/operational_package1_production_2026-10-16/FINAL_HANDOFF.md) and [current reconciliation/legacy register](audits/operational_roadmap_legacy_2026-10-16/REPORT.md). Historical branch `stage/operational-performance-fixes@6004400` remains evidence only; its packages1/2/3 do not identify this current sequence. No cherry-pick/replay.
+P1, CLOSURE BLOCKED on the qualified recovery-evidence disposition above. Packages1–3 accepted within their demonstrated scope. Package1 ACCEPTED in confirmed source/CI/deployment/bounded-live scope. [Package1 source report](audits/operational_package1_2026-10-16/REPORT.md), [deployment handoff](audits/operational_package1_production_2026-10-16/FINAL_HANDOFF.md) and [current reconciliation/legacy register](audits/operational_roadmap_legacy_2026-10-16/REPORT.md). Historical branch `stage/operational-performance-fixes@6004400` remains evidence only; its packages1/2/3 do not identify this current sequence. No cherry-pick/replay.
 
 | Current package | Status / priority / owner | Entry and dependencies | Completion and evidence |
 |---|---|---|---|
 |1 CPU / configured reads / sanitizer|ACCEPTED bounded scope; Operational,P1|PR13 merged3f96e1e, exact mainCI38804147992|1660/0/0; deployed442 backend files,78 identities,27 protected files and native/Core state preserved;47/47 health over460s,6/6 parallel reads,noOOM. Synthetic196→45.7ms and34.45MB→1.5KB; sanitizer CPU−60–87%; not measured production savings |
-|2 Cache Lifecycle|PLANNED; Operational,P1; separate user approval required|Fresh unchanged synthetic baseline; inventory per-owner key cardinality/value bytes, source revision/incarnation and connection scope; no automatic implementation|Bound entry count/retained bytes, expired-entry release, bounded eviction and TTL; revision-aware invalidation, concurrent leader/follower/error behavior, multi-module/connection independence, changed/deleted configs, restart reconstruction; same native proof/CAS/fences. Matched CPU/RAM/time before/after, targeted and full required CI/native/recovery scope |
-|3 DB / Native / I/O|CONDITIONAL; Operational,P1/P2|Package2 decision plus operation-owner cost evidence; each candidate root cause, effect and safety review|Explicit IMPLEMENT / DEFER / NOT REQUIRED per repeated chmod/PRAGMA, DB/native projections/readback, scrub/temp copies, redundant SSD writes/config generation and expensive health models. Preserve SQLite durability/WAL/fsync/transaction and last-good; no generic writer queue/cache replacing proof. Measure actual per-owner CPU/SQL/fsync/I/O separately from block/NAND writes |
-|Long-term Resource Stability|CONDITIONAL observation; Operational,P1|Approved low-overhead natural-load plan; no stress or forced refresh|RSS/PSS/cgroup/cache cardinality, CPU peaks,daily jobs,SSD writes and health-tail attribution. Record execute/defer disposition and window. No memory-leak/SSD-wear claim from snapshots; unrun long-soak remains NOT RUN |
+|2 Cache Lifecycle|ACCEPTED bounded source/CI/rollout; Operational,P1|PR15 69ec419, combined CI1690/0/0 and bounded600s rollout|256-entry LRU,32MiB total/24MiB entry admission estimates,TTL/eviction/scoped clear and inflight fencing. Mutable/caller-held graphs, unbounded follower wait and type/id reuse remain explicit residual limits; not strict RSS/native-proof guarantees |
+|3 DB / Native / I/O|IMPLEMENTED selected candidates; residual candidates DEFERRED, Operational,P1/P2|PR15 69ec419; PR16 65f5c9f comparison/diagnostic fixes qualified separately|Unchanged JSONL output eliminated with full scan; Xray projections batched; canonical no-op SQL writes avoided. Conditional chmod/extra readback/I/O reuse deferred for insufficient benefit evidence. SQLite durability,WAL,fsync,transactions,last-good and native proof unchanged |
+|Long-term Resource Stability|DEFERRED observation; D-10/P1|Separately approved natural-load plan on a pinned deployed version, no stress/forced refresh|24–72h bounded low-rate RSS/PSS/cgroup/cache-cardinality/CPU/I/O sampling including daily jobs; specify stop thresholds and ownership. NOT RUN now; no leak/SSD-wear claim |
 
-Package2 is ready for separate design/implementation authorization, not started. Old deep-audit A/B/C labels are historical candidate groupings: C1/C2→currentPackage1; C5→Package2; C3/C4/C6/C7 and evidence-backed others→conditionalPackage3. Startup scrub I/O was explicitly excluded from Package1. Single-flight follower deadlines require a reviewed failure/publication contract, not a silent cache optimization.
+Package2 and selected Package3 candidates are implemented, not planned work. The closure audit disposes their limits and remaining candidates; no automatic next source package. Old deep-audit labels remain historical, not current package numbering.
 
 Closure requires: acceptedPackage1; Package2 decision and applicable acceptance; explicit Package3 IMPLEMENT/DEFER/NOT REQUIRED; disposition of performance-relevant legacy candidates in the single Stage6-owned register; residual CPU/RAM/SSD risks evaluated; actual comparable baseline/results; applicable staging/native/fullCI and recovery evidence; no functional/security regressions. Optional long-term work needs explicit execute/defer disposition. NOT RUN is never PASS. Only then Stage5 opens. No new stages or parallel cleanup backlog.
 
