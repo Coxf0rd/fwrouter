@@ -170,6 +170,14 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert job.get("status") == "success", job
         return job
 
+    def mutation_apply_id(job: dict[str, Any]) -> str:
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        mutation = result.get("mutation") if isinstance(result.get("mutation"), dict) else {}
+        apply_id = mutation.get("apply_id")
+        assert (job.get("status") == "success" and result.get("job_status") == "success"
+                and mutation.get("ok") is True and isinstance(apply_id, str) and apply_id), job
+        return apply_id
+
     def native_fingerprint() -> dict[str, Any]:
         xray_bytes, _launch = native_config_bytes(native)
         loaded = loaded_identities(native)
@@ -192,7 +200,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             "xray_reload_calls": native.reload_calls,
         }
 
-    def durable_fingerprint() -> dict[str, Any]:
+    def durable_fingerprint(core_apply_id: str) -> dict[str, Any]:
         connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
         try:
             values = {
@@ -212,8 +220,8 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
                     "FROM modules WHERE module_name='core'",
                 ).fetchone(),
                 "receipt": connection.execute(
-                    "SELECT apply_id, status, core_intent_revision FROM apply_versions "
-                    "ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+                    "SELECT apply_id, status, core_intent_revision FROM apply_versions WHERE apply_id=?",
+                    (core_apply_id,),
                 ).fetchone(),
             }
             return {
@@ -313,6 +321,185 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             for row in rules
             if isinstance(row, dict) and row.get("source") == "protected" and row.get("action") == "DIRECT"
         )
+
+    def _nft_set_text_contains_ipv4(nft_text: str, set_name: str, address: str) -> bool:
+        set_match = re.search(
+            rf"(?ms)^\s*set\s+{re.escape(set_name)}\s*\{{(?P<body>.*?)^\s*\}}",
+            nft_text,
+        )
+        values: list[str] = []
+        if set_match is not None:
+            elements_match = re.search(r"elements\s*=\s*\{([^}]*)\}", set_match.group("body"))
+            if elements_match is not None:
+                values.extend(elements_match.group(1).split(","))
+        values.extend(re.findall(
+            rf"(?m)^\s*add element inet {re.escape(CORE_NFT_TABLE)} {re.escape(set_name)} "
+            r"\{([^}]*)\}\s*$",
+            nft_text,
+        ))
+        target = ipaddress.ip_address(address)
+        for raw_value in values:
+            value = raw_value.strip()
+            if not value:
+                continue
+            try:
+                if target in ipaddress.ip_network(value, strict=False):
+                    return True
+            except ValueError:
+                continue
+        return False
+
+    def native_global_rule_set_membership() -> dict[str, bool]:
+        try:
+            result = subprocess.run(
+                ("/usr/sbin/nft", "-j", "list", "table", "inet", CORE_NFT_TABLE),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=3, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AssertionError("global ruleset native readback did not complete within its bound") from exc
+        if (result.returncode or len(result.stdout) > MAX_CORE_NFT_JSON
+                or len(result.stderr) > 4096):
+            raise AssertionError("global ruleset native readback failed or exceeded its fixed byte bound")
+        try:
+            nftables = json.loads(result.stdout).get("nftables")
+        except (UnicodeError, json.JSONDecodeError, AttributeError) as exc:
+            raise AssertionError("global ruleset native readback was not valid nft JSON") from exc
+        if not isinstance(nftables, list):
+            raise AssertionError("global ruleset native readback has an invalid nftables shape")
+
+        sets: dict[str, list[Any]] = {}
+        for item in nftables:
+            entry = item.get("set") if isinstance(item, dict) else None
+            if (not isinstance(entry, dict) or entry.get("family") != "inet"
+                    or entry.get("table") != CORE_NFT_TABLE
+                    or entry.get("name") not in {"vpn_ipv4", "direct_ipv4", "protected_ipv4"}):
+                continue
+            name = str(entry["name"])
+            assert name not in sets, f"duplicate native FWRouter set readback: {name}"
+            elements = entry.get("elem")
+            assert isinstance(elements, list), f"native FWRouter set has invalid elements: {name}"
+            sets[name] = elements
+
+        def contains(name: str, address: str) -> bool:
+            target = ipaddress.ip_address(address)
+            for raw_element in sets.get(name, []):
+                element = raw_element
+                if isinstance(element, dict) and isinstance(element.get("elem"), (dict, str)):
+                    element = element["elem"]
+                if isinstance(element, dict) and isinstance(element.get("prefix"), dict):
+                    prefix = element["prefix"]
+                    value = prefix.get("addr")
+                    length = prefix.get("len")
+                    if isinstance(value, str) and type(length) is int:
+                        element = f"{value}/{length}"
+                if not isinstance(element, str):
+                    continue
+                try:
+                    if target in ipaddress.ip_network(element, strict=False):
+                        return True
+                except ValueError:
+                    continue
+            return False
+
+        assert set(sets) == {"vpn_ipv4", "direct_ipv4", "protected_ipv4"}, sorted(sets)
+        protected_readback = _core_protected_exception_readback()
+        return {
+            "manual_vpn_ipv4": contains("vpn_ipv4", "198.51.100.77"),
+            "manual_direct_ipv4": contains("direct_ipv4", "203.0.113.53"),
+            "protected_vip_ipv4": contains("protected_ipv4", PROTECTED_VIP),
+            "protected_classify_rule": protected_readback.get("classifier_bypass_installed") is True,
+        }
+
+    def global_rules_source_fingerprint(
+        expected_apply_id: str,
+        *,
+        previous_applied_mode: str,
+    ) -> dict[str, Any]:
+        rules_path = state / "generated" / "rules" / "effective-rules.json"
+        assert rules_path.stat().st_size <= MAX_CORE_NFT_JSON, "canonical effective rules exceeded its byte bound"
+        rules_bytes = rules_path.read_bytes()
+        try:
+            artifact = json.loads(rules_bytes)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise AssertionError("canonical effective rules were not valid JSON") from exc
+        rows = artifact.get("rules") if isinstance(artifact, dict) else None
+        assert isinstance(rows, list), {"effective_rules_shape": type(rows).__name__}
+        manual_pairs = sorted(
+            (row.get("action"), row.get("value"))
+            for row in rows
+            if isinstance(row, dict) and row.get("source") == "manual"
+        )
+        assert artifact.get("selective_default") == "vpn", artifact
+        assert manual_pairs == [
+            ("DIRECT", "203.0.113.53"), ("VPN", "198.51.100.77"),
+        ], manual_pairs
+        protected = protected_direct_rows()
+        assert protected, "canonical rules lost protected DIRECT rows"
+
+        dataplane_dir = state / "generated" / "dataplane"
+        manifest_paths = {
+            "candidate": dataplane_dir / "candidate-manifest.json",
+            "applied": dataplane_dir / "applied-manifest.json",
+        }
+        for label, path in manifest_paths.items():
+            value = json.loads(path.read_text(encoding="utf-8"))
+            routing_state = value.get("routing_global_state")
+            assert value.get("plan_id") == expected_apply_id, {"manifest": label, "plan_id": value.get("plan_id")}
+            assert (isinstance(routing_state, dict)
+                    and routing_state.get("desired_mode") == "selective"
+                    and routing_state.get("applied_mode") == previous_applied_mode
+                    and routing_state.get("selective_default") == "vpn"), {
+                "manifest": label, "routing": routing_state,
+            }
+
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        try:
+            receipt = connection.execute(
+                "SELECT status, core_intent_revision FROM apply_versions WHERE apply_id=?",
+                (expected_apply_id,),
+            ).fetchone()
+            revision_row = connection.execute(
+                "SELECT value_json FROM settings WHERE key='core.intent_revision'",
+            ).fetchone()
+        finally:
+            connection.close()
+        assert receipt and receipt[0] == "applied" and revision_row, {
+            "apply_id": expected_apply_id, "receipt": receipt,
+        }
+        assert receipt[1] == int(json.loads(revision_row[0])), {
+            "apply_id": expected_apply_id, "receipt_revision": receipt[1],
+            "current_revision": revision_row[0],
+        }
+
+        nft_paths = {
+            "candidate": dataplane_dir / "candidate.nft",
+            "applied": dataplane_dir / "applied.nft",
+            "last_good": state / "last-good" / "dataplane" / "last-good.nft",
+        }
+        nft_hashes: dict[str, str] = {}
+        for label, path in nft_paths.items():
+            assert path.stat().st_size <= MAX_CORE_NFT_JSON, {
+                "nft_artifact": label, "bytes": path.stat().st_size,
+            }
+            content = path.read_bytes()
+            try:
+                nft_text = content.decode("utf-8")
+            except UnicodeError as exc:
+                raise AssertionError(f"rendered {label} nft artifact was not UTF-8") from exc
+            assert _nft_set_text_contains_ipv4(nft_text, "vpn_ipv4", "198.51.100.77"), label
+            assert _nft_set_text_contains_ipv4(nft_text, "direct_ipv4", "203.0.113.53"), label
+            nft_hashes[label] = hashlib.sha256(content).hexdigest()
+        assert nft_hashes["candidate"] == nft_hashes["applied"] == nft_hashes["last_good"], nft_hashes
+        native_membership = native_global_rule_set_membership()
+        assert all(native_membership.values()), native_membership
+        return {
+            "effective_rules_sha256": hashlib.sha256(rules_bytes).hexdigest(),
+            "protected_direct_sha256": hashlib.sha256("\n".join(protected).encode("utf-8")).hexdigest(),
+            "manual_rule_pairs": manual_pairs,
+            "nft_sha256": nft_hashes,
+            "native_membership": native_membership,
+        }
 
     try:
         # The synthetic profile uses deliberately non-routable .invalid
@@ -440,7 +627,9 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
                 "proxy-groups": direct_mihomo_config.get("proxy-groups"),
             }, sort_keys=True, separators=(",", ":"),
         ).encode()).hexdigest()
-        post_apply({"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True})
+        selective_mode_job = post_apply(
+            {"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True},
+        )
         assert protected_direct_rows() == protected_direct_baseline
         native_after_selective_apply = native_fingerprint()
         assert all(native_after_selective_apply.get(key) == native_before_selective_mode.get(key)
@@ -528,17 +717,16 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             (state / "generated" / "dataplane" / "applied-manifest.json").read_text(encoding="utf-8"),
         )
         applied_routing = applied_manifest.get("routing_global_state")
-        applied_rules = ((applied_manifest.get("extra") or {}).get("rules_effective")
-                         if isinstance(applied_manifest.get("extra"), dict) else None)
-        applied_rule_rows = applied_rules.get("rules") if isinstance(applied_rules, dict) else None
-        assert isinstance(applied_routing, dict) and applied_routing.get("desired_mode") == "selective", applied_manifest
-        assert isinstance(applied_rules, dict) and applied_rules.get("selective_default") == "vpn", applied_rules
-        assert isinstance(applied_rule_rows, list) and all(any(
-            row.get("action") == action and row.get("value") == value
-            for row in applied_rule_rows if isinstance(row, dict)
-        ) for action, value in (("VPN", "198.51.100.77"), ("DIRECT", "203.0.113.53"))), applied_rules
-        assert any(row.get("source") == "protected" and row.get("action") == "DIRECT"
-                   for row in applied_rule_rows if isinstance(row, dict)), applied_rules
+        selective_apply_id = mutation_apply_id(selective_mode_job)
+        assert applied_manifest.get("plan_id") == selective_apply_id, applied_manifest
+        assert (isinstance(applied_routing, dict)
+                and applied_routing.get("desired_mode") == "selective"
+                and applied_routing.get("applied_mode") == initial_routing.get("applied_mode")
+                and applied_routing.get("selective_default") == "vpn"), applied_manifest
+        rules_source_baseline = global_rules_source_fingerprint(
+            selective_apply_id,
+            previous_applied_mode=str(initial_routing.get("applied_mode")),
+        )
 
         connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
         try:
@@ -565,7 +753,14 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert disabled_code == enabled_code == 200 and disabled.get("ok") and enabled.get("ok")
         pending = enabled.get("data", {}).get("module", {})
         assert pending.get("desired_state") == "enabled" and pending.get("apply_state") == "pending", pending
-        post_apply({"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True})
+        core_apply_job = post_apply(
+            {"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True},
+        )
+        core_apply_id = mutation_apply_id(core_apply_job)
+        assert global_rules_source_fingerprint(
+            core_apply_id,
+            previous_applied_mode="selective",
+        ) == rules_source_baseline
         assert protected_direct_rows() == protected_direct_baseline
         assert native_fingerprint() == native_after_selective_apply, {
             "before_core_enable_apply": native_after_selective_apply,
@@ -581,16 +776,25 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
                 "SELECT desired_state, apply_state FROM modules WHERE module_name='core'",
             ).fetchone()
             core_receipt_row = connection.execute(
-                "SELECT core_intent_revision FROM apply_versions "
-                "ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+                "SELECT apply_id, status, core_intent_revision FROM apply_versions WHERE apply_id=?",
+                (core_apply_id,),
             ).fetchone()
         finally:
             connection.close()
         assert core_revision_row and core_module_row == ("enabled", "clean") and core_receipt_row
-        assert int(core_receipt_row[0]) == int(json.loads(core_revision_row[0])), {
-            "module": core_module_row, "receipt_revision": core_receipt_row,
+        assert (core_receipt_row[0] == core_apply_id and core_receipt_row[1] == "applied"
+                and core_receipt_row[2] == int(json.loads(core_revision_row[0]))), {
+            "module": core_module_row, "receipt": core_receipt_row,
             "intent_revision": core_revision_row,
         }
+        core_applied_manifest = json.loads(
+            (state / "generated" / "dataplane" / "applied-manifest.json").read_text(encoding="utf-8"),
+        )
+        assert core_applied_manifest.get("plan_id") == core_apply_id, core_applied_manifest
+        assert global_rules_source_fingerprint(
+            core_apply_id,
+            previous_applied_mode="selective",
+        ) == rules_source_baseline
 
         calls_before_admission = source_bridge.snapshot_calls()
         requests_before_admission = source.snapshot_requests()
@@ -629,7 +833,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
 
         receipt_before_startup = mihomo_receipt_semantics()
         before_startup_native = native_fingerprint()
-        before_startup_durable = durable_fingerprint()
+        before_startup_durable = durable_fingerprint(core_apply_id)
         before_startup_subjects = subject_bootstrap_fingerprint()
         marker_before_startup = generation(api)
 
@@ -640,8 +844,12 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         stack["worker"], stack["api"] = worker, restarted_api
 
         assert generation(restarted_api) == marker_before_startup
+        assert global_rules_source_fingerprint(
+            core_apply_id,
+            previous_applied_mode="selective",
+        ) == rules_source_baseline
         assert native_fingerprint() == before_startup_native
-        assert durable_fingerprint() == before_startup_durable
+        assert durable_fingerprint(core_apply_id) == before_startup_durable
         assert protected_direct_rows() == protected_direct_baseline
         after_first_startup_subjects = subject_bootstrap_fingerprint()
         assert_builtin_bootstrap_rows(before_startup_subjects, after_first_startup_subjects)
@@ -689,7 +897,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         # A second ordinary startup must be idempotent after the one exact,
         # documented first-run built-in subject initialization above.
         stable_native = native_fingerprint()
-        stable_durable = durable_fingerprint()
+        stable_durable = durable_fingerprint(core_apply_id)
         stable_subjects = subject_bootstrap_fingerprint()
         stable_marker = generation(restarted_api)
         previous_worker = stack["worker"]
@@ -698,8 +906,12 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         worker, restarted_api = stack["start_worker"](startup_tasks=True, startup_recovery=True)
         stack["worker"], stack["api"] = worker, restarted_api
         assert generation(restarted_api) == stable_marker
+        assert global_rules_source_fingerprint(
+            core_apply_id,
+            previous_applied_mode="selective",
+        ) == rules_source_baseline
         assert native_fingerprint() == stable_native
-        assert durable_fingerprint() == stable_durable
+        assert durable_fingerprint(core_apply_id) == stable_durable
         assert subject_bootstrap_fingerprint() == stable_subjects
         assert source_bridge.snapshot_calls() == calls_before_admission
         assert source.snapshot_requests() == requests_before_admission
