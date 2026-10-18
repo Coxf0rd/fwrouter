@@ -241,11 +241,67 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         return value
 
     try:
+        # The synthetic profile uses deliberately non-routable .invalid
+        # endpoints. Keep refresh independent of connectivity by using the
+        # established fixed-without-target owner state, which explicitly skips
+        # post-refresh auto-selection rather than probing those endpoints.
+        post_apply({"mode": "direct", "requested_by": "hosted-acceptance", "run_now": True})
+        post_apply({"server_mode": "fixed", "requested_by": "hosted-acceptance", "run_now": True})
+        routing_code, routing_response = http_json(f"{api}/routing/global")
+        initial_routing = ((routing_response.get("data") or {}).get("routing") or {})
+        assert routing_code == 200 and routing_response.get("ok") is True, routing_response
+        assert (initial_routing.get("desired_mode"), initial_routing.get("applied_mode"),
+                initial_routing.get("server_mode"), initial_routing.get("desired_fixed_server_id"),
+                initial_routing.get("applied_fixed_server_id")) == ("direct", "direct", "fixed", None, None), initial_routing
+
+        # Seed a real IP-only rules artifact and native owned-table foundation
+        # through the rules owner. The destinations are isolated documentation
+        # ranges; this proves policy installation, not external VPN connectivity.
+        synthetic_rules = "VPN 198.51.100.77\nDIRECT 203.0.113.53"
+        native_before_rules_fixture = native_fingerprint()
+        rules_code, rules_saved = http_json(
+            f"{api}/rules/manual", method="POST", payload={"text": synthetic_rules},
+        )
+        assert rules_code == 200 and rules_saved.get("ok") is True, rules_saved
+        rules_apply_code, rules_apply = http_json(
+            f"{api}/rules/manual/apply", method="POST",
+            payload={"requested_by": "hosted-acceptance-selective-fixture", "run_now": True}, timeout=90,
+        )
+        rules_job = await_core_job(api, rules_apply, timeout_seconds=90)
+        assert rules_apply_code == 200 and rules_apply.get("ok") is True, rules_apply
+        assert isinstance(rules_job, dict) and rules_job.get("status") == "success", rules_job
+        rules_artifact = json.loads((state / "generated" / "rules" / "effective-rules.json").read_text(
+            encoding="utf-8",
+        ))
+        effective_rules = rules_artifact.get("rules") if isinstance(rules_artifact, dict) else None
+        assert isinstance(effective_rules, list) and effective_rules, rules_artifact
+        assert any(item.get("action") == "VPN" and item.get("value") == "198.51.100.77"
+                   for item in effective_rules if isinstance(item, dict)), rules_artifact
+        assert any(item.get("action") == "DIRECT" and item.get("value") == "203.0.113.53"
+                   for item in effective_rules if isinstance(item, dict)), rules_artifact
+        assert any(item.get("source") == "protected" and item.get("action") == "DIRECT"
+                   for item in effective_rules if isinstance(item, dict)), rules_artifact
+        native_after_rules_fixture = native_fingerprint()
+        xray_native_fields = {
+            "xray_active", "xray_mounted", "xray_loaded", "xray_bindings", "xray_last_good",
+            "xray_incarnation", "xray_reload_calls",
+        }
+        assert all(native_after_rules_fixture.get(key) == native_before_rules_fixture.get(key)
+                   for key in xray_native_fields), {
+            key: (native_before_rules_fixture.get(key), native_after_rules_fixture.get(key))
+            for key in sorted(xray_native_fields)
+            if native_after_rules_fixture.get(key) != native_before_rules_fixture.get(key)
+        }
+        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
+
         code, imported = http_json(
             f"{api}/subscription", method="POST",
             payload={"urls": [source.url], "requested_by": "hosted-acceptance-synthetic"}, timeout=90,
         )
         assert code == 200 and imported.get("ok") is True, imported
+        imported_data = imported.get("data") if isinstance(imported.get("data"), dict) else {}
+        auto_select = imported_data.get("auto_select")
+        assert isinstance(auto_select, dict) and auto_select.get("status") == "skipped_no_fixed_target", imported
         enable_vpn_from_synthetic_subscription(api, state, source.url)
         verified = generation(api)
         assert verified.get("status") == "verified", verified
@@ -253,8 +309,63 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert_native_matches_active(native, state / "xray" / "config.json")
         assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
 
+        native_before_selective_default = native_fingerprint()
         post_apply({"selective_default": "vpn", "requested_by": "hosted-acceptance", "run_now": True})
+        assert native_fingerprint() == native_before_selective_default, {
+            "before": native_before_selective_default,
+            "after": native_fingerprint(),
+            "contract": "global direct selective-default update leaves runtime unchanged",
+        }
+        native_before_selective_mode = native_fingerprint()
+        direct_mihomo_config = yaml.safe_load(
+            (state / "generated" / "mihomo" / "config.yaml").read_text(encoding="utf-8"),
+        )
+        direct_subrules = direct_mihomo_config.get("sub-rules") if isinstance(direct_mihomo_config, dict) else None
+        direct_transparent_rules = direct_subrules.get("fwrouter-transparent") if isinstance(direct_subrules, dict) else None
+        assert isinstance(direct_transparent_rules, list) and direct_transparent_rules[-1] == "MATCH,DIRECT", {
+            "transparent_fallback": (
+                direct_transparent_rules[-1]
+                if isinstance(direct_transparent_rules, list) and direct_transparent_rules else None
+            ),
+        }
+        mihomo_proxy_surface_before = hashlib.sha256(json.dumps(
+            {
+                "proxies": direct_mihomo_config.get("proxies"),
+                "proxy-groups": direct_mihomo_config.get("proxy-groups"),
+            }, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
         post_apply({"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True})
+        native_after_selective_apply = native_fingerprint()
+        assert all(native_after_selective_apply.get(key) == native_before_selective_mode.get(key)
+                   for key in xray_native_fields), {
+            key: (native_before_selective_mode.get(key), native_after_selective_apply.get(key))
+            for key in sorted(xray_native_fields)
+            if native_after_selective_apply.get(key) != native_before_selective_mode.get(key)
+        }
+        selective_config_path = state / "generated" / "mihomo" / "config.yaml"
+        assert_mihomo_launch_matches_active(native, selective_config_path)
+        selective_mihomo_config = yaml.safe_load(selective_config_path.read_text(encoding="utf-8"))
+        selective_subrules = selective_mihomo_config.get("sub-rules") if isinstance(selective_mihomo_config, dict) else None
+        transparent_rules = selective_subrules.get("fwrouter-transparent") if isinstance(selective_subrules, dict) else None
+        mihomo_proxy_surface_after = hashlib.sha256(json.dumps(
+            {
+                "proxies": selective_mihomo_config.get("proxies"),
+                "proxy-groups": selective_mihomo_config.get("proxy-groups"),
+            }, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        assert mihomo_proxy_surface_after == mihomo_proxy_surface_before, {
+            "proxies_proxy_groups_sha256_before": mihomo_proxy_surface_before,
+            "proxies_proxy_groups_sha256_after": mihomo_proxy_surface_after,
+        }
+        assert isinstance(transparent_rules, list) and transparent_rules[-1] == "MATCH,vpn-global", {
+            "transparent_fallback": transparent_rules[-1] if isinstance(transparent_rules, list) and transparent_rules else None,
+        }
+        selective_fwrouter_metadata = selective_mihomo_config.get("fwrouter") if isinstance(selective_mihomo_config, dict) else None
+        assert isinstance(selective_fwrouter_metadata, dict)
+        assert selective_fwrouter_metadata.get("transparent_final_match_rule") == "MATCH,vpn-global", {
+            "transparent_final_match_rule": selective_fwrouter_metadata.get("transparent_final_match_rule"),
+            "selective_default": selective_fwrouter_metadata.get("resolved_selective_default"),
+        }
         status, routing_result = http_json(f"{api}/routing/global")
         routing = routing_result.get("data", {}).get("routing", {})
         enforcement = routing_result.get("data", {}).get("runtime_enforcement", {})
@@ -263,7 +374,64 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             "selective", "selective", "vpn",
         ), routing
         assert enforcement.get("traffic_enforcement_guaranteed") is True, enforcement
+        assert enforcement.get("enforcement_level") == "global_selective_enforced", enforcement
+        assert enforcement.get("active_mode_matches_intent") is True, enforcement
+        assert enforcement.get("selective_vpn_policy_ready") is True, enforcement
+        assert enforcement.get("vpn_egress_ready") is False, enforcement
+        egress_unknown_codes = {
+            "mihomo_global_egress_binding_unknown",
+            "vpn_external_path_not_verified",
+        }
+        missing_requirements = enforcement.get("missing_runtime_requirements")
+        assert isinstance(missing_requirements, list), enforcement
+        assert "vpn_external_path_not_verified" in missing_requirements, enforcement
+        assert "vpn_udp_fail_closed_policy_unconfirmed" not in missing_requirements, enforcement
+        assert set(missing_requirements) <= egress_unknown_codes, enforcement
         assert enforcement.get("supported_modes", {}).get("vpn") is True, enforcement
+        runtime_code, runtime_response = http_json(f"{api}/runtime")
+        runtime = ((runtime_response.get("data") or {}).get("runtime") or {})
+        dataplane = runtime.get("dataplane") if isinstance(runtime.get("dataplane"), dict) else {}
+        live_payload = dataplane.get("details") if isinstance(dataplane.get("details"), dict) else {}
+        live_chains = live_payload.get("required_chains") if isinstance(live_payload.get("required_chains"), dict) else {}
+        assert runtime_code == 200 and runtime_response.get("ok") is True, runtime_response
+        assert live_payload.get("ok") is True and live_payload.get("table_exists") is True, live_payload
+        assert live_chains and all(value is True for value in live_chains.values()), live_chains
+        mihomo_code, mihomo_response = http_json(f"{api}/mihomo")
+        mihomo = (((mihomo_response.get("data") or {}).get("mihomo"))
+                  if isinstance(mihomo_response.get("data"), dict) else {})
+        mihomo_details = mihomo.get("details") if isinstance(mihomo, dict) else {}
+        vpn_policy = mihomo_details.get("vpn_udp_policy") if isinstance(mihomo_details, dict) else {}
+        selectors = mihomo_details.get("selectors") if isinstance(mihomo_details, dict) else {}
+        assert mihomo_code == 200 and mihomo_response.get("ok") is True, mihomo_response
+        assert isinstance(vpn_policy, dict) and all(vpn_policy.get(key) is True for key in (
+            "policy_installed", "wiring_proven", "reconcile_receipt_matches",
+            "native_top_level_rules_match", "selector_membership_matches", "guarded_rules_match",
+        )), vpn_policy
+        assert isinstance(selectors, dict), mihomo_details
+        vpn_auto_targets = selectors.get("vpn_auto_targets")
+        vpn_global_targets = selectors.get("vpn_global_targets")
+        assert isinstance(vpn_auto_targets, list) and vpn_auto_targets, selectors
+        assert isinstance(vpn_global_targets, list) and vpn_global_targets, selectors
+        assert "REJECT" in [str(item).upper() for item in vpn_auto_targets], selectors
+        assert "REJECT" in [str(item).upper() for item in vpn_global_targets], selectors
+        assert "DIRECT" not in [str(item).upper() for item in vpn_auto_targets], selectors
+        assert "DIRECT" not in [str(item).upper() for item in vpn_global_targets], selectors
+        assert selectors.get("vpn_global_now") == "vpn-auto", selectors
+        applied_manifest = json.loads(
+            (state / "generated" / "dataplane" / "applied-manifest.json").read_text(encoding="utf-8"),
+        )
+        applied_routing = applied_manifest.get("routing_global_state")
+        applied_rules = ((applied_manifest.get("extra") or {}).get("rules_effective")
+                         if isinstance(applied_manifest.get("extra"), dict) else None)
+        applied_rule_rows = applied_rules.get("rules") if isinstance(applied_rules, dict) else None
+        assert isinstance(applied_routing, dict) and applied_routing.get("desired_mode") == "selective", applied_manifest
+        assert isinstance(applied_rules, dict) and applied_rules.get("selective_default") == "vpn", applied_rules
+        assert isinstance(applied_rule_rows, list) and all(any(
+            row.get("action") == action and row.get("value") == value
+            for row in applied_rule_rows if isinstance(row, dict)
+        ) for action, value in (("VPN", "198.51.100.77"), ("DIRECT", "203.0.113.53"))), applied_rules
+        assert any(row.get("source") == "protected" and row.get("action") == "DIRECT"
+                   for row in applied_rule_rows if isinstance(row, dict)), applied_rules
 
         connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
         try:
@@ -291,6 +459,11 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         pending = enabled.get("data", {}).get("module", {})
         assert pending.get("desired_state") == "enabled" and pending.get("apply_state") == "pending", pending
         post_apply({"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True})
+        assert native_fingerprint() == native_after_selective_apply, {
+            "before_core_enable_apply": native_after_selective_apply,
+            "after_core_enable_apply": native_fingerprint(),
+            "contract": "same-mode Core apply preserves Xray and Mihomo native state",
+        }
         connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
         try:
             core_revision_row = connection.execute(

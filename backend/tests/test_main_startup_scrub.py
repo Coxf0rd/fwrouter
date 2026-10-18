@@ -168,21 +168,28 @@ def test_maintenance_lifespan_skips_bootstrap_registration_and_background_worker
     with TestClient(app) as client:
         response = client.post(
             "/api/v2/routing/global",
-            json={"mode": "direct", "requested_by": "pytest-maintenance", "run_now": False},
+            json={"mode": "direct", "requested_by": "pytest-maintenance", "run_now": True},
         )
     assert response.status_code == 200
     response_body = response.json()
     job = response_body.get("data", {}).get("job", {})
-    assert response_body.get("ok") is True and job.get("job_type") == "apply_mutation", response_body
+    assert response_body.get("ok") is False, response_body
+    assert job.get("job_type") == "apply_mutation", response_body
+    job_id = job.get("job_id")
+    assert isinstance(job_id, str) and job_id, response_body
+    assert response_body.get("error", {}).get("code") == "JOB_HANDLER_FAILED", response_body
+    assert response_body.get("error", {}).get("job_type") == "apply_mutation", response_body
+    assert response_body.get("error", {}).get("job_id") == job_id, response_body
+    assert "tests deny process execution" in response_body.get("error", {}).get("message", ""), response_body
     manager = get_default_job_manager()
     assert manager._get_handler("apply_mutation") is not None
-    assert manager.wait_for_idle(timeout_seconds=5) is True
     with db_session() as connection:
         finished_job = connection.execute(
-            "SELECT status, error_code, error_message FROM jobs WHERE job_id=?",
-            (job.get("job_id"),),
+            "SELECT job_type, status, error_code, error_message FROM jobs WHERE job_id=?",
+            (job_id,),
         ).fetchone()
     assert finished_job is not None
-    assert finished_job[0] == "failed", tuple(finished_job) if finished_job else None
-    assert finished_job[1] == "JOB_HANDLER_FAILED"
-    assert "tests deny process execution" in str(finished_job[2])
+    assert finished_job[0] == "apply_mutation", tuple(finished_job)
+    assert finished_job[1] == "failed", tuple(finished_job)
+    assert finished_job[2] == "JOB_HANDLER_FAILED", tuple(finished_job)
+    assert "tests deny process execution" in str(finished_job[3])

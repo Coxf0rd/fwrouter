@@ -31,10 +31,11 @@ jobs:
         if: >-
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
-          github.event.pull_request.head.ref == 'fix/api-runtime-health-scale-stability'
+          (github.event.pull_request.head.ref == 'fix/api-runtime-health-scale-stability' ||
+           github.event.pull_request.head.ref == 'test/deployment-blockers-qualification')
         run: |
           set -euo pipefail
-          if git log -1 --format=%B | grep -Eq -- 'ci:validate-(identities|final-fixes|packet)'; then
+          if git log -1 --format=%B | grep -Eq -- 'ci:validate-(identities|final-fixes|packet|cohort)'; then
             echo 'Targeted qualification requested; full required CI NOT RUN. Normal final push required.' >&2
             exit 1
           fi
