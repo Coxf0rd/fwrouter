@@ -33,6 +33,9 @@ LAUNCHER_CLEANUP_GRACE_SECONDS = 30
 LAUNCHER_TERMINATE_GRACE_SECONDS = 5
 LAUNCHER_KILL_WAIT_SECONDS = 5
 SUITE = "runtime-scale-diagnostic"
+WORKLOAD_CONFIG_BYTES = 20_722_965
+WORKLOAD_CONFIG_SHA256 = "1a9639e07f481ab7d99382afedb3bbc0af2731e50439691e30c7f4dd2fc48df3"
+WORKLOAD_TRANSPARENT_SUBRULE_BYTES = 10_560_545
 REVIEWED_HARNESS_PATCH_SHA256 = "715b4917a24e3a54b5bfd455da1572dec0e1aff0bda077a09963cf7bd7e0e023"
 REVIEWED_CONFTEST_LINT_PATCH_SHA256 = "76b7b5a15c32f4a003f0da6d6648a3a99cced64c22769c3eb5d81e276bfe2cd9"
 HARNESS_LINT_FILES = (
@@ -311,17 +314,62 @@ def _cleanup_confirmed(report: dict[str, Any]) -> bool:
 
 
 def _workload_projection(metrics: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract frozen workload identity and observed resource ceilings."""
+    """Extract frozen workload identity and any available resource observations."""
     if metrics.get("schema") != "fwrouter-runtime-scale-metrics/v1":
         return None
+    startup_ready = metrics.get("startup_ready")
+    if not isinstance(startup_ready, bool):
+        return None
     waves = metrics.get("wave_resource_observations")
+    if waves is None and startup_ready is False:
+        waves = []
     limits, config, source = (metrics.get("startup_limits_seconds"), metrics.get("config"),
                               metrics.get("subscription_source"))
-    if (not isinstance(waves, list) or not waves
-            or not all(isinstance(value, dict) for value in (limits, config, source))):
+    if not isinstance(waves, list) or not all(isinstance(value, dict) for value in (limits, config, source)):
+        return None
+    if (limits.get("hard_deadline") != HARD_STARTUP_SECONDS
+            or limits.get("engineering_target") != ENGINEERING_TARGET_SECONDS
+            or any(isinstance(limits.get(key), bool) for key in ("hard_deadline", "engineering_target"))):
+        return None
+    config_bytes = config.get("config_bytes")
+    config_sha256 = config.get("config_sha256")
+    top_level_count = config.get("top_level_rule_count")
+    subrule_bytes = config.get("transparent_subrule_bytes")
+    subrule_count = config.get("transparent_subrule_count")
+    selector_targets = config.get("selector_targets")
+    if (type(config_bytes) is not int or config_bytes != WORKLOAD_CONFIG_BYTES
+            or config_sha256 != WORKLOAD_CONFIG_SHA256
+            or top_level_count != 199_257 or isinstance(top_level_count, bool)
+            or type(subrule_bytes) is not int or subrule_bytes != WORKLOAD_TRANSPARENT_SUBRULE_BYTES
+            or subrule_count != top_level_count or isinstance(subrule_count, bool)
+            or config.get("full_vpn_fallback") != ["MATCH,vpn-global", "NETWORK,udp,REJECT"]
+            or selector_targets != {"vpn-auto": ["REJECT"],
+                                    "vpn-global": ["vpn-auto", "REJECT"]}):
+        return None
+    expected_source = {"native_clients": 82, "profile_accounts": 7, "profile_nodes": 70,
+                       "fixed_external_clients": 2, "internal_vpn_auto_clients": 10}
+    if any(type(source.get(key)) is not int or source.get(key) != value
+           for key, value in expected_source.items()):
+        return None
+    if (metrics.get("subscription_profile_accounts") != expected_source["profile_accounts"]
+            or metrics.get("subscription_profile_nodes") != expected_source["profile_nodes"]
+            or any(isinstance(metrics.get(key), bool) for key in
+                   ("subscription_profile_accounts", "subscription_profile_nodes"))):
+        return None
+    if startup_ready and any(type(metrics.get(key)) is not int or metrics.get(key) != expected
+                             for key, expected in {
+                                 "runtime_verified_profile_snapshots": 7,
+                                 "fixed_external_clients": 2,
+                                 "internal_vpn_auto_clients": 10,
+                                 "applied_profile_bindings": 82,
+                                 "synthetic_xray_loaded_clients": 82,
+                                 "synthetic_xray_identities_preserved": 82,
+                             }.items()):
         return None
     wave_ceilings = []
     previous_oom_events = None
+    if not waves and startup_ready:
+        return None
     for wave in waves:
         before, after = wave.get("before"), wave.get("after")
         if not isinstance(before, dict) or not isinstance(after, dict):
@@ -362,6 +410,7 @@ def _workload_projection(metrics: dict[str, Any]) -> dict[str, Any] | None:
         "synthetic_xray_loaded_clients": metrics.get("synthetic_xray_loaded_clients"),
         "synthetic_xray_identities_preserved": metrics.get("synthetic_xray_identities_preserved"),
         "startup_limits_seconds": limits,
+        "wave_resource_observation_status": "observed" if wave_ceilings else "unavailable_readiness_failed",
         "wave_resource_ceilings": wave_ceilings,
     }
 
@@ -447,22 +496,64 @@ def _numeric_distribution(values: list[object]) -> dict[str, Any]:
             "max": max(numbers) if numbers else None}
 
 
+def _native_input_bindings_valid(input_manifest: dict[str, Any], report: dict[str, Any],
+                                 profile: dict[str, Any]) -> bool:
+    """Bind report and profile native hashes to their distinct manifest meanings."""
+    native = input_manifest.get("native")
+    chromium = input_manifest.get("chromium")
+    reported = report.get("binary_sha256")
+    if (not isinstance(native, dict) or not isinstance(chromium, dict)
+            or not isinstance(reported, dict)):
+        return False
+    expected = {name: native.get(name, {}).get("binary_sha256")
+                for name in ("xray", "mihomo") if isinstance(native.get(name), dict)}
+    if len(expected) != 2 or any(reported.get(name) != value for name, value in expected.items()):
+        return False
+    bundle_sha = chromium.get("bundle_sha256")
+    executable_sha = chromium.get("executable_sha256")
+    profile_chromium = profile.get("chromium")
+    if (not isinstance(profile_chromium, dict) or not isinstance(bundle_sha, str)
+            or not isinstance(executable_sha, str)
+            or reported.get("chromium") != bundle_sha
+            or profile_chromium.get("bundle_sha256") != bundle_sha
+            or profile_chromium.get("sha256") != executable_sha):
+        return False
+    if any(not isinstance(profile.get(name), dict)
+           or profile[name].get("sha256") != expected[name] for name in expected):
+        return False
+    return all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+               for value in [*expected.values(), bundle_sha, executable_sha])
+
+
 def _arm_summary(outcomes: list[dict[str, Any]]) -> dict[str, Any]:
     result = {}
     for arm in ("old-qualified", "main-baseline", "candidate"):
         rows = [row for row in outcomes if row.get("arm") == arm]
         metrics = [row.get("runtime_metrics") for row in rows]
+        completed = [item for item in metrics if isinstance(item, dict)
+                     and item.get("startup_ready") is True
+                     and isinstance(item.get("startup_wall_seconds"), (int, float))
+                     and not isinstance(item.get("startup_wall_seconds"), bool)
+                     and item["startup_wall_seconds"] < HARD_STARTUP_SECONDS]
+        failed_readiness = [item for item in metrics if isinstance(item, dict)
+                            and item.get("startup_ready") is False]
         result[arm] = {
             "attempts": len(rows),
             "startup_wall_seconds": _numeric_distribution([
-                item.get("startup_wall_seconds") if isinstance(item, dict) else None for item in metrics]),
+                item.get("startup_wall_seconds") for item in completed]),
             "api_process_cpu_seconds_at_readiness": _numeric_distribution([
-                item.get("api_process_cpu_seconds_at_readiness") if isinstance(item, dict) else None
-                for item in metrics]),
+                item.get("api_process_cpu_seconds_at_readiness") for item in completed]),
+            "completed_startup_count": len(completed),
+            "readiness_failed_count": len(failed_readiness),
+            "deadline_elapsed_seconds": _numeric_distribution([
+                item.get("startup_wall_seconds") for item in failed_readiness]),
+            "api_process_cpu_seconds_at_readiness_deadline": _numeric_distribution([
+                item.get("api_process_cpu_seconds_at_readiness_deadline")
+                for item in failed_readiness]),
             "engineering_target_met_count": sum(
-                isinstance(item, dict) and isinstance(item.get("startup_wall_seconds"), (int, float))
+                isinstance(item.get("startup_wall_seconds"), (int, float))
                 and not isinstance(item.get("startup_wall_seconds"), bool)
-                and item["startup_wall_seconds"] < ENGINEERING_TARGET_SECONDS for item in metrics),
+                and item["startup_wall_seconds"] < ENGINEERING_TARGET_SECONDS for item in completed),
         }
     return result
 
@@ -505,12 +596,10 @@ def run_comparison(repo: Path, runner_temp: Path, candidate_sha: str, plan_diges
     if (not isinstance(native_inputs, dict) or not isinstance(chromium_input, dict)
             or any(not isinstance(native_inputs.get(name), dict) for name in ("xray", "mihomo"))):
         raise ComparisonError("provisioned runtime receipt has invalid native/browser input records")
-    expected_binaries = {
-        name: native_inputs[name].get("binary_sha256") for name in ("xray", "mihomo")
-    }
-    expected_binaries["chromium"] = chromium_input.get("executable_sha256")
-    if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
-           for value in expected_binaries.values()):
+    expected_binaries = {name: native_inputs[name].get("binary_sha256") for name in ("xray", "mihomo")}
+    expected_binaries["chromium"] = chromium_input.get("bundle_sha256")
+    if (any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+            for value in [*expected_binaries.values(), chromium_input.get("executable_sha256")])):
         raise ComparisonError("provisioned runtime receipt lacks fixed native/browser binary hashes")
     root = runner_temp / "phase-d-startup-comparison"
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -631,10 +720,7 @@ def run_comparison(repo: Path, runner_temp: Path, candidate_sha: str, plan_diges
             workload_binding_valid = workload_projection is not None
             native_binding_valid = (
                 report.get("base_image") == input_manifest["dependency_image"]
-                and isinstance(report.get("binary_sha256"), dict)
-                and all(report["binary_sha256"].get(name) == value
-                        for name, value in expected_binaries.items())
-            )
+                and _native_input_bindings_valid(input_manifest, report, profile))
             if profile_projection:
                 profile_projections.append(profile_projection)
             if workload_projection is not None:

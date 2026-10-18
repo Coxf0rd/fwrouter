@@ -402,14 +402,19 @@ class AcceptanceContractTests(unittest.TestCase):
                     "oom": 0, "oom_kill": 0, "oom_group_kill": 0}}},
                 "after": {"cgroup": {"max": 2560 * 1024 ** 2, "events": {
                     "oom": 0, "oom_kill": 0, "oom_group_kill": 0}}}}
-        metrics = {"schema": "fwrouter-runtime-scale-metrics/v1",
+        metrics = {"schema": "fwrouter-runtime-scale-metrics/v1", "startup_ready": True,
                    "startup_limits_seconds": {"hard_deadline": 45.0,
                                                "engineering_target": 40.0},
-                   "config": {"config_bytes": 100, "config_sha256": "a" * 64,
-                              "top_level_rule_count": 10, "transparent_subrule_bytes": 50,
-                              "transparent_subrule_count": 10},
+                   "config": {"config_bytes": 20_722_965,
+                              "config_sha256": startup_comparison.WORKLOAD_CONFIG_SHA256,
+                              "top_level_rule_count": 199_257, "transparent_subrule_bytes": 10_560_545,
+                              "transparent_subrule_count": 199_257,
+                              "full_vpn_fallback": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+                              "selector_targets": {"vpn-auto": ["REJECT"],
+                                                   "vpn-global": ["vpn-auto", "REJECT"]}},
                    "subscription_source": {"native_clients": 82, "profile_accounts": 7,
-                                           "profile_nodes": 70},
+                                           "profile_nodes": 70, "fixed_external_clients": 2,
+                                           "internal_vpn_auto_clients": 10},
                    "subscription_profile_accounts": 7, "subscription_profile_nodes": 70,
                    "runtime_verified_profile_snapshots": 7, "fixed_external_clients": 2,
                    "internal_vpn_auto_clients": 10, "applied_profile_bindings": 82,
@@ -431,13 +436,20 @@ class AcceptanceContractTests(unittest.TestCase):
                                  "events": {"oom": 0, "oom_kill": 0,
                                             "oom_group_kill": 0}}}
                 for side in ("before", "after")}
-        metrics = {"schema": "fwrouter-runtime-scale-metrics/v1",
+        metrics = {"schema": "fwrouter-runtime-scale-metrics/v1", "startup_ready": True,
                    "startup_limits_seconds": {"hard_deadline": 45.0,
                                                "engineering_target": 40.0},
-                   "config": {"config_sha256": "a" * 64, "config_bytes": 200,
-                              "top_level_rule_count": 100},
+                   "config": {"config_sha256": startup_comparison.WORKLOAD_CONFIG_SHA256,
+                              "config_bytes": 20_722_965,
+                              "top_level_rule_count": 199_257,
+                              "transparent_subrule_bytes": 10_560_545,
+                              "transparent_subrule_count": 199_257,
+                              "full_vpn_fallback": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+                              "selector_targets": {"vpn-auto": ["REJECT"],
+                                                   "vpn-global": ["vpn-auto", "REJECT"]}},
                    "subscription_source": {"native_clients": 82, "profile_accounts": 7,
-                                           "profile_nodes": 70},
+                                           "profile_nodes": 70, "fixed_external_clients": 2,
+                                           "internal_vpn_auto_clients": 10},
                    "subscription_profile_accounts": 7, "subscription_profile_nodes": 70,
                    "runtime_verified_profile_snapshots": 7, "fixed_external_clients": 2,
                    "internal_vpn_auto_clients": 10, "applied_profile_bindings": 82,
@@ -450,6 +462,9 @@ class AcceptanceContractTests(unittest.TestCase):
         changed = json.loads(json.dumps(metrics))
         changed["config"]["config_sha256"] = "b" * 64
         self.assertNotEqual(projection, startup_comparison._workload_projection(changed))
+        incomplete_success = json.loads(json.dumps(metrics))
+        incomplete_success.pop("applied_profile_bindings")
+        self.assertIsNone(startup_comparison._workload_projection(incomplete_success))
 
     def test_startup_comparison_summarizes_samples_and_low_overhead_runner_counters(self):
         before = {"cgroup_v2": {
@@ -471,6 +486,88 @@ class AcceptanceContractTests(unittest.TestCase):
                          startup_comparison._numeric_distribution([26, 34, 44]))
         self.assertEqual({"n": 0, "min": None, "median": None, "max": None},
                          startup_comparison._numeric_distribution([None, True]))
+
+    def test_startup_comparison_native_input_schema_binds_chromium_bundle_and_executable(self):
+        manifest = {"native": {name: {"binary_sha256": digit * 64}
+                               for name, digit in (("xray", "a"), ("mihomo", "b"))},
+                    "chromium": {"bundle_sha256": "c" * 64, "executable_sha256": "d" * 64}}
+        report = {"binary_sha256": {"xray": "a" * 64, "mihomo": "b" * 64,
+                                     "chromium": "c" * 64}}
+        profile = {"chromium": {"bundle_sha256": "c" * 64, "sha256": "d" * 64},
+                   "xray": {"sha256": "a" * 64}, "mihomo": {"sha256": "b" * 64}}
+        self.assertTrue(startup_comparison._native_input_bindings_valid(manifest, report, profile))
+        for target, key, value in ((report["binary_sha256"], "chromium", "d" * 64),
+                                   (profile["chromium"], "bundle_sha256", "e" * 64),
+                                   (profile["chromium"], "sha256", None)):
+            changed = copy.deepcopy(profile)
+            target_profile = changed["chromium"]
+            if target is report["binary_sha256"]:
+                changed_report = {"binary_sha256": {**report["binary_sha256"], key: value}}
+            else:
+                target_profile[key] = value
+                changed_report = report
+            self.assertFalse(startup_comparison._native_input_bindings_valid(
+                manifest, changed_report, changed))
+        self.assertFalse(startup_comparison._native_input_bindings_valid(
+            manifest, {"binary_sha256": {}}, profile))
+
+    def test_startup_comparison_deadline_censored_attempts_are_not_completed_samples(self):
+        outcomes = [
+            {"arm": "old-qualified", "runtime_metrics": {
+                "startup_ready": True, "startup_wall_seconds": 44.8,
+                "api_process_cpu_seconds_at_readiness": 35.0}},
+            {"arm": "old-qualified", "runtime_metrics": {
+                "startup_ready": False, "startup_wall_seconds": 45.01,
+                "api_process_cpu_seconds_at_readiness_deadline": 34.9}},
+            {"arm": "old-qualified", "runtime_metrics": {
+                "startup_ready": False, "startup_wall_seconds": 45.0,
+                "api_process_cpu_seconds_at_readiness_deadline": 35.1}},
+        ]
+        result = startup_comparison._arm_summary(outcomes)["old-qualified"]
+        self.assertEqual(1, result["completed_startup_count"])
+        self.assertEqual(2, result["readiness_failed_count"])
+        self.assertEqual({"n": 1, "min": 44.8, "median": 44.8, "max": 44.8},
+                         result["startup_wall_seconds"])
+        self.assertEqual(2, result["deadline_elapsed_seconds"]["n"])
+        self.assertEqual(45.0, result["deadline_elapsed_seconds"]["min"])
+        self.assertAlmostEqual(45.005, result["deadline_elapsed_seconds"]["median"])
+        self.assertEqual(45.01, result["deadline_elapsed_seconds"]["max"])
+        self.assertEqual(0, result["engineering_target_met_count"])
+
+    def test_startup_comparison_failed_readiness_keeps_workload_identity_without_resource_proof(self):
+        metrics = {"schema": "fwrouter-runtime-scale-metrics/v1", "startup_ready": False,
+                   "startup_limits_seconds": {"hard_deadline": 45.0, "engineering_target": 40.0},
+                   "config": {"config_bytes": 20_722_965,
+                              "config_sha256": startup_comparison.WORKLOAD_CONFIG_SHA256,
+                              "top_level_rule_count": 199_257, "transparent_subrule_bytes": 10_560_545,
+                              "transparent_subrule_count": 199_257,
+                              "full_vpn_fallback": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+                              "selector_targets": {"vpn-auto": ["REJECT"],
+                                                   "vpn-global": ["vpn-auto", "REJECT"]}},
+                   "subscription_source": {"native_clients": 82, "profile_accounts": 7,
+                                           "profile_nodes": 70, "fixed_external_clients": 2,
+                                           "internal_vpn_auto_clients": 10},
+                   "subscription_profile_accounts": 7, "subscription_profile_nodes": 70,
+                   "wave_resource_observations": None}
+        projection = startup_comparison._workload_projection(metrics)
+        self.assertIsNotNone(projection)
+        self.assertEqual("unavailable_readiness_failed", projection["wave_resource_observation_status"])
+        self.assertEqual([], projection["wave_resource_ceilings"])
+        for key in ("startup_limits_seconds", "config", "subscription_source"):
+            malformed = copy.deepcopy(metrics)
+            malformed[key] = {}
+            self.assertIsNone(startup_comparison._workload_projection(malformed), key)
+        malformed = copy.deepcopy(metrics)
+        malformed["config"]["config_sha256"] = "invalid"
+        self.assertIsNone(startup_comparison._workload_projection(malformed))
+        malformed = copy.deepcopy(metrics)
+        malformed["config"]["selector_targets"] = {"vpn-auto": "REJECT"}
+        self.assertIsNone(startup_comparison._workload_projection(malformed))
+        malformed = copy.deepcopy(metrics)
+        malformed["subscription_source"]["native_clients"] = "82"
+        self.assertIsNone(startup_comparison._workload_projection(malformed))
+        metrics["startup_ready"] = True
+        self.assertIsNone(startup_comparison._workload_projection(metrics))
 
     def test_startup_comparison_workflow_is_exact_branch_marker_and_reuses_qualified_inputs(self):
         workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
