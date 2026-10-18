@@ -15,6 +15,16 @@ from fwrouter_api.services import subscription, xray_subscription_service
 CONFIRMATION = "PROOF_ONLY_LEGACY_ADMISSION"
 
 
+@pytest.fixture(autouse=True)
+def _stub_core_runtime_context(monkeypatch):
+    """Unit tests never probe this host's boot or network namespace identity."""
+    from fwrouter_api.services import core_intent
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "123",
+    })
+
+
 def test_synthetic_vpn_enable_requires_only_owned_loopback_source_before_public_call(monkeypatch, tmp_path):
     """The acceptance lifecycle helper must reject any non-owned refresh input before API mutation."""
     import sqlite3
@@ -158,9 +168,11 @@ def _seed_legacy_inventory() -> str:
             "ON CONFLICT(id) DO UPDATE SET desired_mode='direct', applied_mode='direct', apply_state='clean'",
         )
         connection.execute(
-            "INSERT INTO apply_versions (apply_id, manifest_path, status, created_at) "
-            "VALUES ('synthetic-applied-generation', '/tmp/manifest.json', 'applied', '2099') "
-            "ON CONFLICT(apply_id) DO UPDATE SET status='applied', created_at='2099'",
+            "INSERT INTO apply_versions (apply_id, manifest_path, status, created_at, core_intent_revision) "
+            "SELECT 'synthetic-applied-generation', '/tmp/manifest.json', 'applied', '2099', "
+            "CAST(value_json AS INTEGER) FROM settings WHERE key='core.intent_revision' "
+            "ON CONFLICT(apply_id) DO UPDATE SET status='applied', created_at='2099', "
+            "core_intent_revision=excluded.core_intent_revision",
         )
         connection.execute(
             """INSERT INTO servers (server_id, server_name, provider_name, raw_json, inventory_state)
@@ -1277,6 +1289,7 @@ def test_core_admission_gate_uses_owned_apply_not_runtime_observation(monkeypatc
     _seed_legacy_inventory()
     from types import SimpleNamespace
     from fwrouter_api.services import apply_results
+    from fwrouter_api.services.core_intent import read_core_intent_revision
 
     with db_session() as connection:
         connection.execute(
@@ -1287,6 +1300,7 @@ def test_core_admission_gate_uses_owned_apply_not_runtime_observation(monkeypatc
             "INSERT INTO jobs (job_id, job_type, status) VALUES (?, 'apply', 'success')",
             ("synthetic-real-apply-job",),
         )
+        core_revision = read_core_intent_revision(connection)
     monkeypatch.setattr(apply_results, "write_apply_result_log", lambda **_kwargs: None)
     monkeypatch.setattr(apply_results, "write_job_json_artifact", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(apply_results, "atomic_write_json", lambda *_args, **_kwargs: None)
@@ -1314,6 +1328,7 @@ def test_core_admission_gate_uses_owned_apply_not_runtime_observation(monkeypatc
             "enforcement_level": "global_direct_enforced",
         },
         rollback_result=None,
+        core_intent_revision=core_revision,
     )
 
     with db_session() as connection:

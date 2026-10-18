@@ -70,6 +70,7 @@ def _export_settings_rows() -> list[dict[str, Any]]:
         """
         SELECT key, value_json, updated_at
         FROM settings
+        WHERE key != 'core.intent_revision'
         ORDER BY key
         """
     )

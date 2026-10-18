@@ -305,6 +305,17 @@ def test_control_plane_import_restores_snapshot_with_runtime_normalization(
             params={"include_secrets": "true", "write_file": "false"},
         )
         snapshot = export_response.json()["data"]["snapshot"]
+        assert all(
+            setting.get("key") != "core.intent_revision"
+            for setting in snapshot["state"].get("settings", [])
+        ), "local Core intent fence must never be exported"
+        snapshot["state"].setdefault("settings", []).append(
+            {"key": "core.intent_revision", "value": 999999999, "updated_at": "foreign"}
+        )
+        with db_session() as connection:
+            local_core_revision_before_import = int(connection.execute(
+                "SELECT value_json FROM settings WHERE key='core.intent_revision'",
+            ).fetchone()[0])
         for setting in snapshot["state"].get("settings", []):
             if setting.get("key") == "routing.auto_selection_revision":
                 setting["value"] = 1
@@ -368,6 +379,9 @@ def test_control_plane_import_restores_snapshot_with_runtime_normalization(
         fence_provenance = connection.execute(
             "SELECT value_json FROM settings WHERE key='routing.auto_selection_provenance'"
         ).fetchone()
+        local_core_revision_after_import = int(connection.execute(
+            "SELECT value_json FROM settings WHERE key='core.intent_revision'",
+        ).fetchone()[0])
 
     assert subject_row is not None
     assert subject_row["desired_mode"] == "vpn"
@@ -384,6 +398,8 @@ def test_control_plane_import_restores_snapshot_with_runtime_normalization(
     assert subscription_row is not None
     assert json.loads(fence_revision["value_json"]) >= 7
     assert json.loads(fence_provenance["value_json"])["decision_id"] == "local-fence"
+    assert local_core_revision_after_import > local_core_revision_before_import
+    assert local_core_revision_after_import != 999999999
     assert subscription_row["url"] == "https://secret.example/subscription"
 
     rules_texts = get_manual_rules_texts()

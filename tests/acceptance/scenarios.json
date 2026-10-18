@@ -149,7 +149,7 @@
       "nodeid": "tests/application_acceptance/test_database_application.py::test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state",
       "suite": "functional",
       "level": "L3",
-      "contract": "Probe the v23 provider-column contract against the current schema-25 app DB.\n\nThe acceptance worker is provisioned with the current schema. This test removes\nthe v24 provider column and uses the v23 marker to exercise the supported\nprovider migration path; it is not a complete historical-v23 database fixture.\nThe genuine schema-24-to-25 preimage and downgrade refusal are covered by the\nisolated migration/CLI contract tests."
+      "contract": "Probe the v23 provider-column contract against the current app DB.\n\nThe acceptance worker is provisioned with the current schema. This test removes\nthe v24 provider column and uses the v23 marker to exercise the supported\nprovider migration path; it is not a complete historical-v23 database fixture.\nIts historical node ID remains stable for the fixed diagnostic suite. The\ngenuine schema-24 preimage, sequential upgrades through the current version,\nrow preservation, idempotence, and downgrade refusal are covered by isolated\nmigration tests."
     },
     {
       "nodeid": "tests/application_acceptance/test_database_application.py::test_application_database_transaction_rollback_is_visible_after_restart",

@@ -1,9 +1,11 @@
 from __future__ import annotations
 from _test_support import configure_test_state_dir as _configure_env
-from fwrouter_api.db.connection import initialize_database
+from fwrouter_api.db.connection import db_session, initialize_database
 
 
+import hashlib
 import json
+import threading
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -20,6 +22,7 @@ from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.main import create_app
 from fwrouter_api.services.core_bypass import get_core_bypass_state, submit_core_bypass_job
 from fwrouter_api.services.modules import get_module_state, set_module_desired_state
+from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.runtime import get_runtime_summary
 from fwrouter_api.services.system_summary import build_system_summary
 from fwrouter_api.services.watchdog import run_vpn_watchdog_auto_check
@@ -47,6 +50,70 @@ def _core_bypass_job_failure_context(job: dict) -> dict[str, str | None]:
         "dataplane_error_code": _bounded(dataplane.get("error_code")),
         "dataplane_error_message": _bounded(dataplane.get("error_message") or dataplane.get("message")),
     }
+
+
+def _stub_core_native_proof(monkeypatch) -> None:
+    """Keep local bypass tests synthetic; never inspect this host's runtime context."""
+    runtime_context = {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "123",
+    }
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET desired_mode='direct', applied_mode='direct', "
+            "apply_state='clean' WHERE id=1",
+        )
+    monkeypatch.setattr(
+        "fwrouter_api.services.core_intent.read_core_runtime_context", lambda: runtime_context,
+    )
+
+    def applied_manifest() -> dict:
+        with db_session() as connection:
+            apply = connection.execute(
+                "SELECT apply_id FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+            ).fetchone()
+            routing = connection.execute(
+                "SELECT desired_mode, applied_mode, selective_default, server_mode, "
+                "desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
+                "active_auto_server_id FROM routing_global_state WHERE id=1",
+            ).fetchone()
+        return {
+            "plan_id": apply["apply_id"] if apply is not None else "",
+            "routing_global_state": dict(routing) if routing is not None else {},
+        }
+
+    def manifest_hash(manifest: dict) -> str:
+        return hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":"), default=str).encode(),
+        ).hexdigest()
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_global._read_applied_manifest_uncached", applied_manifest,
+    )
+
+    def collect_proof() -> dict:
+        manifest = applied_manifest()
+        mode = str(manifest["routing_global_state"]["applied_mode"])
+        return {
+            "ok": True,
+            "apply_id": manifest["plan_id"],
+            "manifest_hash": manifest_hash(manifest),
+            "traffic_enforcement_guaranteed": True,
+            "active_mode_matches_intent": True,
+            "enforcement_level": {
+                "direct": "global_direct_enforced",
+                "selective": "global_selective_enforced",
+                "vpn": "global_vpn_enforced",
+            }[mode],
+            "live_global_mode": mode,
+            "runtime_context": runtime_context,
+        }
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service._collect_legacy_admission_core_native_proof",
+        collect_proof,
+    )
 
 
 class _FailingApplyAdapter:
@@ -238,17 +305,17 @@ def test_core_bypass_enable_and_disable_roundtrip(
     monkeypatch.setenv("FWROUTER_WATCHDOG_SCHEDULER_ENABLED", "true")
     get_settings.cache_clear()
     initialize_database()
+    _stub_core_native_proof(monkeypatch)
     adapter = _install_successful_unit_apply(monkeypatch)
     register_extended_handlers(get_default_job_manager())
     set_module_desired_state("watchdog", "enabled", run_now=False)
-
     enable_job = submit_core_bypass_job(
         action="enable",
         requested_by="pytest",
         run_now=True,
     )
 
-    assert enable_job["status"] == "success"
+    assert enable_job["status"] == "success", enable_job
     assert adapter.calls == ["check", "apply"]
     assert adapter.observed_bypass is True
     assert get_core_bypass_state()["enabled"] is True
@@ -276,6 +343,71 @@ def test_core_bypass_enable_and_disable_roundtrip(
     assert get_module_state("core")["runtime_state"] == "running"
     assert get_module_state("watchdog")["desired_state"] == "enabled"
     assert get_module_state("watchdog")["runtime_state"] == "paused"
+
+
+def test_bypass_restore_serializes_dependent_intent_and_does_not_resurrect_snapshot(
+    monkeypatch, tmp_path: Path, isolated_host_observations,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _stub_core_native_proof(monkeypatch)
+    adapter = _install_successful_unit_apply(monkeypatch)
+    register_extended_handlers(get_default_job_manager())
+    set_module_desired_state("watchdog", "enabled", requested_by="pytest", run_now=False)
+    enabled = submit_core_bypass_job(action="enable", requested_by="pytest", run_now=True)
+    assert enabled["status"] == "success", _core_bypass_job_failure_context(enabled)
+
+    native_started = threading.Event()
+    release_native = threading.Event()
+    dependent_write_finished = threading.Event()
+    thread_errors: list[BaseException] = []
+    original_apply = adapter.apply
+    apply_count = 0
+
+    def blocking_apply(plan):  # noqa: ANN001
+        nonlocal apply_count
+        apply_count += 1
+        result = original_apply(plan)
+        if apply_count == 1:
+            native_started.set()
+            assert release_native.wait(timeout=5), "test did not release bypass apply"
+        return result
+
+    monkeypatch.setattr(adapter, "apply", blocking_apply)
+    disable_results: list[dict] = []
+
+    def disable_bypass() -> None:
+        try:
+            disable_results.append(submit_core_bypass_job(
+                action="disable", requested_by="pytest", run_now=True,
+            ))
+        except BaseException as exc:  # surfaced in the owning test thread
+            thread_errors.append(exc)
+
+    def disable_watchdog() -> None:
+        try:
+            set_module_desired_state("watchdog", "disabled", requested_by="concurrent-api", run_now=False)
+        except BaseException as exc:  # surfaced in the owning test thread
+            thread_errors.append(exc)
+        finally:
+            dependent_write_finished.set()
+
+    bypass_thread = threading.Thread(target=disable_bypass)
+    bypass_thread.start()
+    assert native_started.wait(timeout=5), "bypass did not reach native apply"
+    writer_thread = threading.Thread(target=disable_watchdog)
+    writer_thread.start()
+    assert not dependent_write_finished.wait(timeout=0.1), "dependent intent crossed bypass apply"
+    release_native.set()
+    bypass_thread.join(timeout=10)
+    writer_thread.join(timeout=10)
+
+    assert not bypass_thread.is_alive() and not writer_thread.is_alive()
+    assert not thread_errors, thread_errors
+    assert len(disable_results) == 1 and disable_results[0]["status"] == "success"
+    watchdog = get_module_state("watchdog")
+    assert watchdog["desired_state"] == "disabled"
+    assert watchdog["runtime_state"] == "stopped"
 
 
 def test_core_bypass_failed_disable_keeps_bypass_enabled(
@@ -315,6 +447,45 @@ def test_core_bypass_failed_disable_keeps_bypass_enabled(
         },
     }
     assert get_module_state("core")["runtime_state"] == "paused"
+
+
+def test_core_bypass_completion_cannot_resurrect_newer_module_intent(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    set_module_desired_state("core", "enabled", run_now=False)
+    monkeypatch.setattr(core_bypass_service, "_live_core_bypass_active", lambda: True)
+    monkeypatch.setattr(
+        "fwrouter_api.services.core_intent.read_core_runtime_context",
+        lambda: {"boot_id": "00000000-0000-0000-0000-000000000001", "network_namespace_inode": "123"},
+    )
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO settings(key, value_json) VALUES('core.bypass', '{\"enabled\":true}') "
+            "ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
+        )
+
+    def stale_apply(**kwargs) -> dict:
+        with db_session() as connection:
+            connection.execute(
+                "INSERT INTO apply_versions(apply_id, manifest_path, status, created_at, core_intent_revision) "
+                "VALUES('stale-bypass-apply', '/synthetic/stale-bypass.json', 'applied', "
+                "datetime('now', '+1 day'), ?)",
+                (kwargs["core_intent_revision"],),
+            )
+        set_module_desired_state("core", "disabled", requested_by="concurrent-api", run_now=False)
+        return {
+            "ok": True, "apply_id": "stale-bypass-apply",
+            "dataplane": {"message": "applied", "error_code": None, "error_message": None},
+        }
+
+    monkeypatch.setattr(core_bypass_service, "_run_core_bypass_apply", stale_apply)
+    result = core_bypass_service.disable_core_bypass(job_id="stale-bypass-job", requested_by="pytest")
+
+    assert result["job_status"] == "failed"
+    assert result["error_code"] == "CORE_INTENT_STALE"
+    assert get_core_bypass_state()["enabled"] is True
+    assert get_module_state("core")["desired_state"] == "disabled"
 
 
 def test_core_bypass_api_contract(

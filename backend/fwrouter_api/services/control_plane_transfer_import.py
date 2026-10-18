@@ -290,6 +290,10 @@ def import_control_plane_snapshot(
         for row in (state.get("modules") or [])
         if isinstance(row, dict)
     ]
+    # Imported runtime observations and apply history are not local proof.
+    for module in modules:
+        if module.get("module_name") == "core" and module.get("desired_state") == "enabled":
+            module["apply_state"] = "pending"
     routing = _normalized_routing_row(
         state.get("routing_global_state") if isinstance(state.get("routing_global_state"), dict) else None,
         normalize_runtime_state=normalize_runtime_state,
@@ -321,6 +325,7 @@ def import_control_plane_snapshot(
     )
     settings_rows = [row for row in settings_rows if str(row.get("key") or "") not in {
         SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY,
+        "core.intent_revision",
     }]
     servers = [dict(row) for row in (state.get("servers") or []) if isinstance(row, dict)]
     custom_https_proxy_rows = [
@@ -347,6 +352,8 @@ def import_control_plane_snapshot(
 
     selection_reconcile_required = False
     with db_session() as connection:
+        from fwrouter_api.services.core_intent import advance_core_intent_revision
+        advance_core_intent_revision(connection)
         before_pool_signature = selection_pool_signature(connection)
         local_revision = read_selection_revision(connection)
         local_routing = connection.execute(
@@ -375,8 +382,8 @@ def import_control_plane_snapshot(
         ):
             connection.execute(f"DELETE FROM {table}")
         connection.execute(
-            "DELETE FROM settings WHERE key NOT IN (?, ?)",
-            (SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY),
+            "DELETE FROM settings WHERE key NOT IN (?, ?, ?)",
+            (SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY, "core.intent_revision"),
         )
 
         _insert_rows(

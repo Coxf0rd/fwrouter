@@ -1415,6 +1415,23 @@ def _migrate_24_to_25(connection: sqlite3.Connection) -> None:
     create_identity_schema(connection)
 
 
+def _migrate_25_to_26(connection: sqlite3.Connection) -> None:
+    if _table_exists(connection, "apply_versions") and "core_intent_revision" not in _columns(connection, "apply_versions"):
+        connection.execute("ALTER TABLE apply_versions ADD COLUMN core_intent_revision INTEGER")
+    if _table_exists(connection, "settings"):
+        connection.execute(
+            "INSERT OR IGNORE INTO settings (key, value_json, updated_at) "
+            "VALUES ('core.intent_revision', '0', CURRENT_TIMESTAMP)"
+        )
+    # Old generations cannot be attributed to the new durable intent fence.
+    # An enabled legacy Core must therefore receive a fresh owner apply.
+    if _table_exists(connection, "modules"):
+        connection.execute(
+        "UPDATE modules SET apply_state='pending', updated_at=CURRENT_TIMESTAMP "
+        "WHERE module_name='core' AND desired_state='enabled'"
+        )
+
+
 MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(7, 8, _migrate_7_to_8),
     SchemaMigration(8, 9, _migrate_8_to_9),
@@ -1434,6 +1451,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(22, 23, _migrate_22_to_23),
     SchemaMigration(23, 24, _migrate_23_to_24),
     SchemaMigration(24, 25, _migrate_24_to_25),
+    SchemaMigration(25, 26, _migrate_25_to_26),
 )
 
 

@@ -70,3 +70,4 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 ### Generation recovery status — 2026-10-04
 
 Source commits `001c6e9`, `95f54c1`, `5728d85`, `a139e66` implement fenced current-state recovery, native loaded-identity/config readback, safe terminal receipt/checkpoint closure, and deferred staged publication. Live verification covered the current 78-identity generation and a later no-op refresh; changed-input live acceptance remains open. The original October 2 exception cause remains unproven. See the [recovery report](/srv/fwrouter/knowledge/audits/xray_generation_recovery_2026-10-04/REPORT.md).
+Proof-only Core admission includes the durable Core intent revision in source/runtime fingerprints and rejects legacy or stale apply rows whose nullable revision binding does not match current intent. The Core native proof records boot/network-namespace context; Xray/Mihomo incarnation checks remain separate inventory-admission fences.

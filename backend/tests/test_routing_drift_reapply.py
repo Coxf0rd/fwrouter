@@ -1,11 +1,15 @@
 from __future__ import annotations
 from _test_support import configure_test_state_dir_and_clear_live_probe_cache as _configure_env
 
+import hashlib
+import json
+import threading
 from pathlib import Path
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import apply_orchestrator as orchestrator
+from fwrouter_api.services.modules import get_module_state, set_module_desired_state
 from fwrouter_api.services.servers import ensure_routing_global_state
 
 
@@ -28,6 +32,326 @@ def _seed_selective_routing() -> None:
             WHERE id = 1
             """
         )
+
+
+def _mock_owned_apply(kwargs: dict[str, object], apply_id: str) -> dict[str, object]:
+    """Persist the receipt that a successful native pipeline would own."""
+    revision = kwargs.get("core_intent_revision")
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO apply_versions(apply_id, manifest_path, status, core_intent_revision) "
+            "VALUES (?, ?, 'applied', ?)",
+            (apply_id, f"/synthetic/{apply_id}.json", revision),
+        )
+    return {
+        "ok": True,
+        "apply_id": apply_id,
+        "dataplane": {"message": "ok", "error_code": None, "error_message": None},
+    }
+
+
+def _proof_manifest(apply_id: str) -> dict[str, object]:
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT desired_mode, applied_mode, selective_default, server_mode, "
+            "desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
+            "active_auto_server_id FROM routing_global_state WHERE id=1",
+        ).fetchone()
+    return {"plan_id": apply_id, "routing_global_state": dict(row)}
+
+
+def _proof_manifest_hash(manifest: dict[str, object]) -> str:
+    return hashlib.sha256(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"),
+    ).hexdigest()
+
+
+def test_same_global_mode_runs_apply_when_core_enable_is_pending(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    set_module_desired_state("core", "disabled", requested_by="pytest", run_now=False)
+    set_module_desired_state("core", "enabled", requested_by="pytest", run_now=False)
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET desired_mode='direct', applied_mode='direct', "
+            "apply_state='clean' WHERE id=1"
+        )
+    monkeypatch.setattr(
+        orchestrator,
+        "get_routing_snapshot",
+        lambda: {
+            "desired_mode": "direct", "applied_mode": "direct", "apply_state": "clean",
+            "server_mode": "fixed", "desired_fixed_server_id": None,
+            "applied_fixed_server_id": None,
+        },
+    )
+
+    pipeline_calls: list[dict[str, object]] = []
+    from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+
+    monkeypatch.setattr(orchestrator, "_current_routing_drift", lambda **_kwargs: {"detected": False})
+    monkeypatch.setattr(orchestrator, "_applied_manifest_routing_drift", lambda **_kwargs: {"detected": False})
+    def _successful_owned_apply(**kwargs):
+        assert xray_writer_guard_is_held()
+        pipeline_calls.append(kwargs)
+        with db_session() as connection:
+            connection.execute(
+                "INSERT INTO apply_versions(apply_id, manifest_path, status, core_intent_revision) "
+                "VALUES('fresh-core-enable-apply', '/synthetic/fresh.json', 'applied', ?)",
+                (kwargs["core_intent_revision"],),
+            )
+        return {
+            "ok": True,
+            "apply_id": "fresh-core-enable-apply",
+            "dataplane": {"message": "ok", "error_code": None, "error_message": None},
+        }
+    monkeypatch.setattr(orchestrator, "_run_pipeline_for_state", _successful_owned_apply)
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service._collect_legacy_admission_core_native_proof",
+        lambda: {
+            "ok": True, "apply_id": "fresh-core-enable-apply",
+            "manifest_hash": "synthetic-proof-hash",
+            "traffic_enforcement_guaranteed": True,
+            "active_mode_matches_intent": True,
+            "enforcement_level": "global_direct_enforced",
+            "live_global_mode": "direct",
+            "runtime_context": {"boot_id": "00000000-0000-0000-0000-000000000001", "network_namespace_inode": "123"},
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.core_intent.read_core_runtime_context",
+        lambda: {"boot_id": "00000000-0000-0000-0000-000000000001", "network_namespace_inode": "123"},
+    )
+    monkeypatch.setattr(orchestrator, "validate_global_mode_request", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(orchestrator, "touch_job_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(orchestrator, "load_precompiled_global_mode_profile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(orchestrator, "_load_user_override_map", lambda: {})
+    monkeypatch.setattr(orchestrator, "_load_server_override_map", lambda: {})
+    monkeypatch.setattr(orchestrator, "_load_subjects_with_overrides", lambda **_kwargs: [])
+    monkeypatch.setattr(orchestrator, "_sync_subject_server_override_statuses", lambda *_args: None)
+    proof_manifest = _proof_manifest("fresh-core-enable-apply")
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_global._read_applied_manifest_uncached",
+        lambda: proof_manifest,
+    )
+    setter_started = threading.Event()
+    setter_finished = threading.Event()
+    setter_errors: list[BaseException] = []
+    setter_threads: list[threading.Thread] = []
+
+    def _proof_during_owned_global_operation():
+        assert xray_writer_guard_is_held(), "global operation released shared writer exclusion before proof"
+
+        def change_intent() -> None:
+            setter_started.set()
+            try:
+                set_module_desired_state("core", "disabled", requested_by="concurrent-test", run_now=False)
+            except BaseException as exc:  # surfaced in the owning test thread
+                setter_errors.append(exc)
+            finally:
+                setter_finished.set()
+
+        writer = threading.Thread(target=change_intent)
+        setter_threads.append(writer)
+        writer.start()
+        assert setter_started.wait(timeout=2)
+        assert not setter_finished.wait(timeout=0.1), "Core intent writer crossed global native/proof window"
+        return {
+            "ok": True, "apply_id": "fresh-core-enable-apply",
+            "manifest_hash": _proof_manifest_hash(proof_manifest),
+            "traffic_enforcement_guaranteed": True, "active_mode_matches_intent": True,
+            "enforcement_level": "global_direct_enforced", "live_global_mode": "direct",
+            "runtime_context": {"boot_id": "00000000-0000-0000-0000-000000000001", "network_namespace_inode": "123"},
+        }
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service._collect_legacy_admission_core_native_proof",
+        _proof_during_owned_global_operation,
+    )
+
+    result = orchestrator._execute_set_global_mode(
+        {"job_id": "job-core-enable", "requested_by": "pytest"}, {"mode": "direct"},
+    )
+    # The writer resumes only after the global handler has settled the proof.
+    assert setter_finished.wait(timeout=3)
+    for writer in setter_threads:
+        writer.join(timeout=2)
+        assert not writer.is_alive()
+    assert not setter_errors, setter_errors
+
+    assert result["ok"] is True
+    assert len(pipeline_calls) == 1
+    assert pipeline_calls[0]["core_intent_revision"] is not None
+    assert get_module_state("core")["desired_state"] == "disabled"
+
+
+def test_core_settlement_rejects_changed_runtime_context(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    set_module_desired_state("core", "enabled", requested_by="pytest", run_now=False)
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET desired_mode='direct', applied_mode='direct', "
+            "apply_state='clean' WHERE id=1"
+        )
+        connection.execute(
+            "INSERT INTO apply_versions(apply_id, manifest_path, status, core_intent_revision) "
+            "SELECT 'runtime-context-generation', '/synthetic/context.json', 'applied', "
+            "CAST(json_extract(value_json, '$') AS INTEGER) FROM settings WHERE key='core.intent_revision'"
+        )
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+        revision = read_core_intent_revision(connection)
+    expected_context = {"boot_id": "00000000-0000-0000-0000-000000000001", "network_namespace_inode": "123"}
+    changed_context = {**expected_context, "network_namespace_inode": "456"}
+    monkeypatch.setattr(
+        "fwrouter_api.services.core_intent.read_core_runtime_context", lambda: changed_context,
+    )
+    from fwrouter_api.services.core_intent import settle_core_enable_after_proof
+    proof = {
+        "ok": True, "apply_id": "runtime-context-generation", "manifest_hash": "synthetic",
+        "traffic_enforcement_guaranteed": True, "active_mode_matches_intent": True,
+        "enforcement_level": "global_direct_enforced", "live_global_mode": "direct",
+        "runtime_context": expected_context,
+    }
+    assert not settle_core_enable_after_proof(
+        expected_revision=revision, apply_id="runtime-context-generation", proof=proof,
+        expected_runtime_context=expected_context,
+    )
+    assert get_module_state("core")["apply_state"] == "pending"
+
+
+def test_core_settlement_holds_write_fence_across_check_and_update(monkeypatch, tmp_path: Path) -> None:
+    import sqlite3
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    set_module_desired_state("core", "enabled", requested_by="pytest", run_now=False)
+    expected_context = {"boot_id": "00000000-0000-0000-0000-000000000001", "network_namespace_inode": "123"}
+    monkeypatch.setattr(
+        "fwrouter_api.services.core_intent.read_core_runtime_context", lambda: expected_context,
+    )
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET desired_mode='direct', applied_mode='direct', "
+            "apply_state='clean' WHERE id=1"
+        )
+        connection.execute(
+            "INSERT INTO apply_versions(apply_id, manifest_path, status, created_at, core_intent_revision) "
+            "SELECT 'settlement-lock-generation', '/synthetic/lock.json', 'applied', "
+            "datetime('now', '+1 day'), "
+            "CAST(value_json AS INTEGER) FROM settings WHERE key='core.intent_revision'"
+        )
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+        revision = read_core_intent_revision(connection)
+        latest_receipt = connection.execute(
+            "SELECT apply_id, status, core_intent_revision FROM apply_versions "
+            "ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+        ).fetchone()
+        assert tuple(latest_receipt) == ("settlement-lock-generation", "applied", revision)
+        routing_receipt = connection.execute(
+            "SELECT desired_mode, applied_mode, apply_state FROM routing_global_state WHERE id=1",
+        ).fetchone()
+        assert tuple(routing_receipt) == ("direct", "direct", "clean")
+        assert connection.execute(
+            "SELECT apply_id FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+        ).fetchone()["apply_id"] == "settlement-lock-generation"
+        from fwrouter_api.services.core_intent import assert_core_intent_current
+        assert assert_core_intent_current(connection, revision)
+
+    from fwrouter_api.services import core_intent
+    original_assert = core_intent.assert_core_intent_current
+    competing_writer_blocked: list[bool] = []
+    proof_manifest = _proof_manifest("settlement-lock-generation")
+    monkeypatch.setattr(
+        "fwrouter_api.services.dataplane_global._read_applied_manifest_uncached",
+        lambda: proof_manifest,
+    )
+
+    def assert_with_competing_writer(connection, expected_revision, *, require_pending=True):
+        contender = sqlite3.connect(get_settings().paths.db_path, timeout=0)
+        try:
+            contender.execute("PRAGMA busy_timeout=0")
+            try:
+                contender.execute(
+                    "UPDATE settings SET value_json='999' WHERE key='core.intent_revision'",
+                )
+                contender.commit()
+                competing_writer_blocked.append(False)
+            except sqlite3.OperationalError as exc:
+                assert "locked" in str(exc).lower()
+                competing_writer_blocked.append(True)
+        finally:
+            contender.close()
+        return original_assert(connection, expected_revision, require_pending=require_pending)
+
+    monkeypatch.setattr(core_intent, "assert_core_intent_current", assert_with_competing_writer)
+    proof = {
+        "ok": True, "apply_id": "settlement-lock-generation",
+        "manifest_hash": _proof_manifest_hash(proof_manifest),
+        "traffic_enforcement_guaranteed": True, "active_mode_matches_intent": True,
+        "enforcement_level": "global_direct_enforced", "live_global_mode": "direct",
+        "runtime_context": expected_context,
+    }
+    assert core_intent.settle_core_enable_after_proof(
+        expected_revision=revision, apply_id="settlement-lock-generation", proof=proof,
+        expected_runtime_context=expected_context,
+    )
+    assert competing_writer_blocked == [True]
+    assert get_module_state("core")["apply_state"] == "clean"
+
+
+def test_core_enable_apply_rejects_disable_reenable_aba_before_route_commit(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    set_module_desired_state("core", "disabled", requested_by="pytest", run_now=False)
+    set_module_desired_state("core", "enabled", requested_by="pytest", run_now=False)
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET desired_mode='direct', applied_mode='direct', "
+            "apply_state='clean' WHERE id=1"
+        )
+    monkeypatch.setattr(orchestrator, "get_routing_snapshot", lambda: {
+        "desired_mode": "direct", "applied_mode": "direct", "apply_state": "clean",
+        "server_mode": "fixed", "desired_fixed_server_id": None, "applied_fixed_server_id": None,
+    })
+    monkeypatch.setattr(orchestrator, "_current_routing_drift", lambda **_kwargs: {"detected": False})
+    monkeypatch.setattr(orchestrator, "_applied_manifest_routing_drift", lambda **_kwargs: {"detected": False})
+    monkeypatch.setattr(orchestrator, "validate_global_mode_request", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(orchestrator, "touch_job_running", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(orchestrator, "load_precompiled_global_mode_profile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(orchestrator, "_load_user_override_map", lambda: {})
+    monkeypatch.setattr(orchestrator, "_load_server_override_map", lambda: {})
+    monkeypatch.setattr(orchestrator, "_load_subjects_with_overrides", lambda **_kwargs: [])
+    route_commits: list[dict[str, object]] = []
+    monkeypatch.setattr(orchestrator, "_commit_global_mode", lambda **kwargs: route_commits.append(kwargs))
+
+    def stale_apply(**kwargs):
+        with db_session() as connection:
+            connection.execute(
+                "INSERT INTO apply_versions(apply_id, manifest_path, status, core_intent_revision) "
+                "VALUES('stale-core-generation', '/synthetic/stale.json', 'applied', ?)",
+                (kwargs["core_intent_revision"],),
+            )
+        set_module_desired_state("core", "disabled", requested_by="race", run_now=False)
+        set_module_desired_state("core", "enabled", requested_by="race", run_now=False)
+        return {
+            "ok": True, "apply_id": "stale-core-generation",
+            "dataplane": {"message": "ok", "error_code": None, "error_message": None},
+        }
+    monkeypatch.setattr(orchestrator, "_run_pipeline_for_state", stale_apply)
+
+    result = orchestrator._execute_set_global_mode(
+        {"job_id": "job-core-aba", "requested_by": "pytest"}, {"mode": "direct"},
+    )
+    assert result["ok"] is False
+    assert result["code"] == "CORE_INTENT_STALE"
+    assert route_commits == []
+    assert get_module_state("core")["apply_state"] == "pending"
 
 
 def test_set_global_mode_reapplies_when_live_dataplane_drift_is_detected(monkeypatch, tmp_path: Path) -> None:
@@ -57,11 +381,7 @@ def test_set_global_mode_reapplies_when_live_dataplane_drift_is_detected(monkeyp
     monkeypatch.setattr(
         orchestrator,
         "_run_pipeline_for_state",
-        lambda **kwargs: pipeline_calls.append(kwargs) or {
-            "ok": True,
-            "apply_id": "apply-1",
-            "dataplane": {"message": "ok", "error_code": None, "error_message": None},
-        },
+        lambda **kwargs: pipeline_calls.append(kwargs) or _mock_owned_apply(kwargs, "apply-1"),
     )
     monkeypatch.setattr(
         orchestrator,
@@ -127,11 +447,7 @@ def test_set_global_mode_reapplies_when_live_applied_nft_markers_are_stale(
     monkeypatch.setattr(
         orchestrator,
         "_run_pipeline_for_state",
-        lambda **kwargs: pipeline_calls.append(kwargs) or {
-            "ok": True,
-            "apply_id": "apply-marker-drift",
-            "dataplane": {"message": "ok", "error_code": None, "error_message": None},
-        },
+        lambda **kwargs: pipeline_calls.append(kwargs) or _mock_owned_apply(kwargs, "apply-marker-drift"),
     )
     monkeypatch.setattr(
         orchestrator,
@@ -454,11 +770,7 @@ def test_set_global_direct_skips_mihomo_reconcile(monkeypatch, tmp_path: Path) -
     monkeypatch.setattr(
         orchestrator,
         "_run_pipeline_for_state",
-        lambda **kwargs: pipeline_calls.append(kwargs) or {
-            "ok": True,
-            "apply_id": "apply-direct",
-            "dataplane": {"message": "ok", "error_code": None, "error_message": None},
-        },
+        lambda **kwargs: pipeline_calls.append(kwargs) or _mock_owned_apply(kwargs, "apply-direct"),
     )
 
     result = orchestrator._execute_set_global_mode(
@@ -519,11 +831,7 @@ def test_set_global_mode_uses_precompiled_profile_when_available(monkeypatch, tm
     monkeypatch.setattr(
         orchestrator,
         "_run_pipeline_for_manifest",
-        lambda **kwargs: pipeline_calls.append(kwargs) or {
-            "ok": True,
-            "apply_id": "apply-precompiled",
-            "dataplane": {"message": "ok", "error_code": None, "error_message": None},
-        },
+        lambda **kwargs: pipeline_calls.append(kwargs) or _mock_owned_apply(kwargs, "apply-precompiled"),
     )
     monkeypatch.setattr(
         orchestrator,
@@ -599,11 +907,7 @@ def test_set_global_mode_skips_mihomo_reconcile_when_runtime_already_matches(
     monkeypatch.setattr(
         orchestrator,
         "_run_pipeline_for_manifest",
-        lambda **kwargs: {
-            "ok": True,
-            "apply_id": "apply-runtime-matches",
-            "dataplane": {"message": "ok", "error_code": None, "error_message": None},
-        },
+        lambda **kwargs: _mock_owned_apply(kwargs, "apply-runtime-matches"),
     )
     monkeypatch.setattr(orchestrator, "_sync_subject_server_override_statuses", lambda subjects: None)
 
@@ -664,11 +968,7 @@ def test_set_global_mode_reapplies_when_applied_manifest_routing_is_stale(
     monkeypatch.setattr(
         orchestrator,
         "_run_pipeline_for_state",
-        lambda **kwargs: pipeline_calls.append(kwargs) or {
-            "ok": True,
-            "apply_id": "apply-3",
-            "dataplane": {"message": "ok", "error_code": None, "error_message": None},
-        },
+        lambda **kwargs: pipeline_calls.append(kwargs) or _mock_owned_apply(kwargs, "apply-3"),
     )
     monkeypatch.setattr(
         orchestrator,

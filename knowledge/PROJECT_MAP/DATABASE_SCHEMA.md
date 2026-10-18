@@ -12,7 +12,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `23` (deployed 2026-10-01; drift zero)
+- current expected schema version: `26`
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -21,6 +21,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 
 - `schema_meta`: schema version and schema-level markers.
 - `settings`: JSON key/value control-plane settings, including bypass/runtime options and compatibility display settings.
+- `settings.key='core.intent_revision'`: local monotonic Core intent fence. It is initialized at zero, is never imported from another control plane, and advances atomically with Core desired/lifecycle/bypass/import writes. Malformed or missing values block Core apply completion.
 - `external_connections`: persistent registry for `external_management`, `external_vpn_module`, `external_network_source`, and `display_only` connections. `connection_id` is the primary key, `system_id` is a non-unique compatibility/display identifier, and `value_json` stores the normalized connection contract.
 - `external_connection_generated_state`: generated/per-connection state keyed by `connection_id`; rows are cascade-deleted with their connection.
 - `external_connection_migrations`: one-time external-registry migration markers for explicit external-registry compatibility moves. Provider discovery does not promote runtime subjects into persistent connection instances.
@@ -48,6 +49,8 @@ All subjects remain in the shared inventory, but generic behavior must use `subj
 ### Routing And Runtime
 
 Routing state tables track global mode intent, apply status, artifacts, selector state, and runtime summary inputs. If live dataplane is enforced but module state says `not_configured`, that is drift and must be normalized or explicitly reported.
+
+`apply_versions.core_intent_revision` (schema 26) binds a canonical global apply receipt to the local Core intent revision. It is nullable for pre-26 generations and those legacy rows never prove a current Core apply. A Core enable request remains pending until the existing global apply owner commits the exact current generation, then confirms fresh native enforcement in the same boot/network namespace and atomically settles that revision. Same-mode routing no-op does not settle Core. Explicit enable is required to renew an enabled legacy state with a NULL/stale binding; startup does not infer or manufacture proof.
 
 ### Server Inventory And Subscription Membership
 
@@ -101,6 +104,7 @@ Traffic tables store raw snapshots, computed deltas, monthly aggregates, and att
 ## Migration Rules
 
 - Schema upgrades use explicit sequential migrations `N -> N+1`; the runner applies only missing versions and updates `schema_meta.schema_version` after each successful step.
+- Schema 26 adds the nullable Core revision binding and local revision setting. Migration 25→26 retains legacy apply rows as NULL, initializes the local counter without importing remote provenance, and marks enabled Core pending so an explicit canonical apply is required. The offline upgrade CLI supports canonical 24→26 and 25→26 preimages with protected backups.
 - Maintenance/delete paths that remove parent rows must use the shared DB connection with `PRAGMA foreign_keys=ON`; otherwise current schema actions like `apply_versions.job_id -> jobs.job_id ON DELETE SET NULL` and `subscription_clients.account_id -> subscription_accounts.account_id ON DELETE CASCADE` will not fire.
 - External subscription profile deletion waits for successful Xray runtime convergence before deleting the exact `subscription_accounts` row; FK cascade then removes owned `subscription_clients` and `subscription_profile_snapshots`. Failed convergence preserves those rows for retry.
 - Fresh DB bootstrap creates current schema/version directly from `schema.sql`.

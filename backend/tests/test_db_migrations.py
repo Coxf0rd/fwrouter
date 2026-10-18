@@ -73,7 +73,7 @@ def test_v20_to21_scrubs_operational_credentials_idempotently(monkeypatch, tmp_p
     technical_records = [json.loads(line) for line in technical_path.read_text(encoding="utf-8").splitlines()]
 
     assert [(item.from_version, item.to_version) for item in applied] == [
-        (20, 21), (21, 22), (22, 23), (23, 24), (24, 25),
+        (20, 21), (21, 22), (22, 23), (23, 24), (24, 25), (25, 26),
     ]
     assert applied_again == []
     assert "user:pass" not in first["message"]
@@ -505,7 +505,7 @@ def _insert_legacy_data(connection: sqlite3.Connection, version: int) -> None:
 
 
 def _install_genuine_schema_24(connection: sqlite3.Connection) -> None:
-    """Build the full current schema and remove only the additive v25 tables."""
+    """Build the v24 preimage from current canonical schema, removing later additions."""
     connection.executescript(get_schema_path().read_text(encoding="utf-8"))
     # The v25 identity tables reference each other. Drop children before parents
     # so this fixture remains valid with foreign-key enforcement enabled.
@@ -517,6 +517,8 @@ def _install_genuine_schema_24(connection: sqlite3.Connection) -> None:
         "subscription_node_identities",
     ):
         connection.execute(f"DROP TABLE {table}")
+    connection.execute("ALTER TABLE apply_versions DROP COLUMN core_intent_revision")
+    connection.execute("DELETE FROM settings WHERE key='core.intent_revision'")
     connection.execute(
         "UPDATE schema_meta SET value = '24' WHERE key = 'schema_version'"
     )
@@ -553,7 +555,7 @@ def _install_genuine_schema_24(connection: sqlite3.Connection) -> None:
     assert all(
         info["ok"]
         for name, info in state["tables"].items()
-        if name not in identity_tables
+        if name not in identity_tables and name != "apply_versions"
     )
     assert connection.execute("SELECT COUNT(*) FROM subjects").fetchone()[0] == 78
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -702,6 +704,7 @@ def test_upgrade_runs_sequential_migrations(monkeypatch, tmp_path: Path) -> None
         (22, 23),
         (23, 24),
         (24, 25),
+        (25, 26),
     ]
     assert schema_state["ok"] is True
     assert _schema_version() == str(migrations.CURRENT_SCHEMA_VERSION)
@@ -725,7 +728,7 @@ def test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting
         ]
         before = _table_snapshot(connection, legacy_tables)
         applied = migrations.run_missing_migrations(connection)
-        assert [(item.from_version, item.to_version) for item in applied] == [(24, 25)]
+        assert [(item.from_version, item.to_version) for item in applied] == [(24, 25), (25, 26)]
         after = _table_snapshot(connection, legacy_tables)
         identity_tables = {
             str(row["name"])
@@ -746,7 +749,7 @@ def test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting
         upgraded_snapshot = _table_snapshot(connection, legacy_tables)
         assert upgraded_snapshot == after
 
-        # A v24 binary must fail closed before it can mutate a v25 database.
+        # A v24 binary must fail closed before it can mutate a v26 database.
         before_old_code = {
             name: _table_rows(connection, name)
             for name in sorted(legacy_tables + [
@@ -773,7 +776,11 @@ def test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting
             ])
         }
         assert after_old_code == before_old_code
-        assert before == after
+        assert {name: rows for name, rows in before.items() if name not in {"settings", "modules"}} == {
+            name: rows for name, rows in after.items() if name not in {"settings", "modules"}
+        }
+        assert any(row.get("key") == "core.intent_revision" for row in after.get("settings", []))
+        assert next(row for row in after["modules"] if row["module_name"] == "core")["apply_state"] == "pending"
 
 
 @pytest.mark.no_database_autoinit
@@ -821,13 +828,18 @@ def test_database_upgrade_cli_is_explicit_backed_up_and_idempotent(
     with sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True) as backup:
         assert backup.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "24"
     with _connect_raw() as connection:
-        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "25"
-        assert _table_snapshot(connection, legacy_tables) == before_rows
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "26"
+        after_rows = _table_snapshot(connection, legacy_tables)
+        assert {name: rows for name, rows in after_rows.items() if name not in {"settings", "modules"}} == {
+            name: rows for name, rows in before_rows.items() if name not in {"settings", "modules"}
+        }
+        assert any(row.get("key") == "core.intent_revision" for row in after_rows.get("settings", []))
+        assert next(row for row in after_rows["modules"] if row["module_name"] == "core")["apply_state"] == "pending"
         assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
     with _connect_raw() as connection:
         rows_after_upgrade = _table_snapshot(connection, legacy_tables)
-    assert main(["database", "upgrade", "--expected-schema", "25"]) == 0
+    assert main(["database", "upgrade", "--expected-schema", "26"]) == 0
     current = json.loads(capsys.readouterr().out)
     assert current["status"] == "already_current" and current["database_changed"] is False
     assert len(list(backups.glob("*.bak"))) == 1
@@ -1191,7 +1203,7 @@ def test_subscription_identity_migration_preserves_references_and_membership(
 
     assert [(item.from_version, item.to_version) for item in applied] == [
         (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18),
-        (18, 19), (19, 20), (20, 21), (21, 22), (22, 23), (23, 24), (24, 25),
+        (18, 19), (19, 20), (20, 21), (21, 22), (22, 23), (23, 24), (24, 25), (25, 26),
     ]
     assert old_server is None
     assert server["server_name"] == old_id
@@ -1268,6 +1280,24 @@ def test_cached_schema_inspection_preserves_drift_without_migrating(
             "SELECT value FROM schema_meta WHERE key = 'schema_version'"
         ).fetchone()[0]
     assert version == "23"
+
+
+def test_schema_inspection_detects_missing_core_apply_revision_column(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with connect() as connection:
+        connection.execute("ALTER TABLE apply_versions DROP COLUMN core_intent_revision")
+
+    with connect() as connection:
+        state = inspect_database_schema(connection)
+
+    assert state["actual_schema_version"] == "26"
+    assert state["ok"] is False
+    assert state["tables"]["apply_versions"]["ok"] is False
+    assert "core_intent_revision" in state["tables"]["apply_versions"]["missing_columns"]
 
 
 def test_health_reports_unavailable_for_missing_database_without_creating_it(

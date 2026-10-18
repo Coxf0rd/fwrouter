@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from fwrouter_api.db.connection import connect, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.main import app
 from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services import xray as xray_service
@@ -39,6 +40,47 @@ def test_modules_schema_defaults_lifecycle_modes(monkeypatch, tmp_path: Path) ->
     assert rows["watchdog"] == "managed"
     assert "xray" not in rows
     assert "tailscale" not in rows
+
+
+def test_core_explicit_requests_advance_revision_even_when_repeated(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services.core_intent import read_core_intent_revision
+    from fwrouter_api.services.modules import set_module_desired_state
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        before = read_core_intent_revision(connection)
+    disabled = set_module_desired_state("core", "disabled", requested_by="pytest", run_now=False)
+    first_enable = set_module_desired_state("core", "enabled", requested_by="pytest", run_now=False)
+    second_enable = set_module_desired_state("core", "enabled", requested_by="pytest", run_now=False)
+    with db_session() as connection:
+        after = read_core_intent_revision(connection)
+    assert disabled["module"]["apply_state"] == "clean"
+    assert first_enable["module"]["apply_state"] == "pending"
+    assert second_enable["module"]["apply_state"] == "pending"
+    assert after == before + 3
+
+
+def test_malformed_core_revision_fails_closed_without_desired_state_write(monkeypatch, tmp_path: Path) -> None:
+    import pytest
+    from fwrouter_api.services.core_intent import read_core_intent_revision
+    from fwrouter_api.services.modules import set_module_desired_state
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE settings SET value_json='true' WHERE key='core.intent_revision'",
+        )
+    with pytest.raises(ValueError, match="CORE_INTENT_REVISION_INVALID"):
+        set_module_desired_state("core", "enabled", requested_by="pytest", run_now=False)
+    with db_session() as connection:
+        state = connection.execute(
+            "SELECT desired_state, apply_state FROM modules WHERE module_name='core'",
+        ).fetchone()
+        with pytest.raises(ValueError, match="CORE_INTENT_REVISION_INVALID"):
+            read_core_intent_revision(connection)
+    assert tuple(state) == ("enabled", "clean")
 
 
 def test_set_module_lifecycle_mode_marks_absent_integration(monkeypatch, tmp_path: Path) -> None:

@@ -1219,6 +1219,74 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         assert mihomo_proof_receipt_state() == mihomo_receipt_before_admission
         assert source.snapshot_requests() == subscription_source_requests_before_admission
 
+        # Requalify Core against this already populated, marker-missing legacy
+        # inventory. The request must remain pending until the canonical owner
+        # performs a fresh same-mode apply; the apply may update Core-owned
+        # manifests, but it must not touch Xray/Mihomo, inventory or providers.
+        disabled_code, disabled = http_json(
+            f"{stack['api']}/modules/core/desired-state", method="POST",
+            payload={"desired_state": "disabled", "requested_by": "hosted-acceptance", "run_now": False},
+        )
+        assert disabled_code == 200 and disabled.get("ok") is True, disabled
+        enabled_code, enabled = http_json(
+            f"{stack['api']}/modules/core/desired-state", method="POST",
+            payload={"desired_state": "enabled", "requested_by": "hosted-acceptance", "run_now": False},
+        )
+        assert enabled_code == 200 and enabled.get("ok") is True, enabled
+        module_result = enabled.get("data") if isinstance(enabled.get("data"), dict) else {}
+        pending_module = module_result.get("module") if isinstance(module_result.get("module"), dict) else {}
+        assert pending_module.get("desired_state") == "enabled", pending_module
+        assert pending_module.get("apply_state") == "pending", pending_module
+        assert generation_state(restarted_api) == state_before_admission
+        assert stack["provider_bridge"].snapshot_calls() == provider_calls_before_admission
+        assert source.snapshot_requests() == subscription_source_requests_before_admission
+
+        core_apply_code, core_apply = http_json(
+            f"{stack['api']}/routing/global", method="POST",
+            payload={"mode": "direct", "requested_by": "hosted-acceptance", "run_now": True},
+            timeout=30,
+        )
+        assert core_apply_code == 200 and core_apply.get("ok") is True, core_apply
+        core_apply_job = await_job(stack["api"], core_apply)
+        assert core_apply_job.get("status") == "success", core_apply_job
+        core_apply_receipt = sqlite3.connect(state / "fwrouter.db")
+        try:
+            core_revision = core_apply_receipt.execute(
+                "SELECT value_json FROM settings WHERE key='core.intent_revision'",
+            ).fetchone()
+            latest_core_apply = core_apply_receipt.execute(
+                "SELECT core_intent_revision FROM apply_versions "
+                "ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+            ).fetchone()
+            settled_module = core_apply_receipt.execute(
+                "SELECT apply_state FROM modules WHERE module_name='core'",
+            ).fetchone()
+        finally:
+            core_apply_receipt.close()
+        assert core_revision and latest_core_apply
+        assert int(latest_core_apply[0]) == int(json.loads(core_revision[0]))
+        assert settled_module == ("clean",)
+        assert generation_state(restarted_api) == state_before_admission
+        native_after_core_apply = native_state_fingerprint()
+        for untouched_runtime in (
+            "xray_active", "xray_mounted", "xray_loaded", "xray_bindings",
+            "mihomo_active", "mihomo_generated", "mihomo_last_good", "xray_last_good",
+            "xray_incarnation", "mihomo_incarnation", "xray_reload_calls", "mihomo_controller",
+        ):
+            assert native_after_core_apply[untouched_runtime] == native_before_admission[untouched_runtime], {
+                "runtime": untouched_runtime,
+                "before": native_before_admission[untouched_runtime],
+                "after": native_after_core_apply[untouched_runtime],
+            }
+        assert _synthetic_table_fingerprints(state / "fwrouter.db") == persistence_before_admission
+        assert mihomo_proof_receipt_state() == mihomo_receipt_before_admission
+        assert stack["provider_bridge"].snapshot_calls() == provider_calls_before_admission
+        assert source.snapshot_requests() == subscription_source_requests_before_admission
+        # Proof-only admission below starts from the post-apply baseline. The
+        # only permissible runtime delta was the Core-owned apply receipt.
+        native_before_admission = native_after_core_apply
+        persistence_before_admission = _synthetic_table_fingerprints(state / "fwrouter.db")
+
         def admit_legacy_inventory(api: str) -> tuple[int, dict]:
             return http_json(
                 f"{api}/__acceptance/subscription/admit-legacy-inventory",

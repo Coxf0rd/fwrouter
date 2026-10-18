@@ -15,4 +15,5 @@ Builds control-plane snapshots from SQLite state, rules artifacts, subjects, sub
 ## Notes
 
 - `include_secrets=false` must redact subscription URLs and custom HTTPS proxy credentials.
+- The local `core.intent_revision` fence is excluded from exports; it must remain monotonic and owned by this installation.
 - File export writes only through the transfer directory.

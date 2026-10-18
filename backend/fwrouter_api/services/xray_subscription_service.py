@@ -1702,11 +1702,11 @@ def _legacy_admission_source_fingerprint(connection: sqlite3.Connection | None =
             ).fetchall()],
             [dict(row) for row in active.execute(
                 "SELECT key, value_json FROM settings "
-                "WHERE key IN ('routing.auto_selection_provenance', 'vpn_auto_exclusive_source_ref', 'core.bypass') "
+                "WHERE key IN ('routing.auto_selection_provenance', 'vpn_auto_exclusive_source_ref', 'core.bypass', 'core.intent_revision') "
                 "ORDER BY key"
             ).fetchall()],
             [dict(row) for row in active.execute(
-                "SELECT apply_id, job_id, status, created_at, promoted_at "
+                "SELECT apply_id, job_id, status, created_at, promoted_at, core_intent_revision "
                 "FROM apply_versions ORDER BY apply_id"
             ).fetchall()],
             [dict(row) for row in active.execute(
@@ -1733,8 +1733,20 @@ def _legacy_admission_core_runtime_snapshot(connection: sqlite3.Connection | Non
     )
     if connection is None:
         with db_session() as active:
-            return [dict(row) for row in active.execute(query).fetchall()]
-    return [dict(row) for row in connection.execute(query).fetchall()]
+            rows = [dict(row) for row in active.execute(query).fetchall()]
+            from fwrouter_api.services.core_intent import read_core_intent_revision
+            try:
+                revision = read_core_intent_revision(active)
+            except ValueError:
+                revision = None
+            return [*rows, {"core_intent_revision": revision}]
+    rows = [dict(row) for row in connection.execute(query).fetchall()]
+    from fwrouter_api.services.core_intent import read_core_intent_revision
+    try:
+        revision = read_core_intent_revision(connection)
+    except ValueError:
+        revision = None
+    return [*rows, {"core_intent_revision": revision}]
 
 
 def _legacy_admission_core_runtime_fingerprint(connection: sqlite3.Connection | None = None) -> str:
@@ -1770,9 +1782,16 @@ def _legacy_admission_core_unavailable_reason(connection: sqlite3.Connection | N
         "SELECT desired_mode, applied_mode, apply_state FROM routing_global_state WHERE id=1",
     ).fetchone()
     latest_apply = connection.execute(
-        "SELECT apply_id, status FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+        "SELECT apply_id, status, core_intent_revision FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
     ).fetchone()
     if latest_apply is None or latest_apply["status"] != "applied":
+        return "core_applied_generation_unowned"
+    from fwrouter_api.services.core_intent import read_core_intent_revision
+    try:
+        current_revision = read_core_intent_revision(connection)
+    except ValueError:
+        return "core_intent_revision_unverifiable"
+    if latest_apply["core_intent_revision"] != current_revision:
         return "core_applied_generation_unowned"
     if (
         core is None or core["desired_state"] != "enabled" or core["lifecycle_mode"] != "managed"
@@ -1802,8 +1821,12 @@ def _collect_legacy_admission_core_native_proof() -> dict[str, Any]:
     """
     from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
     from fwrouter_api.services.live_probe_cache import get_live_probe_cache
+    from fwrouter_api.services.core_intent import read_core_runtime_context
 
     try:
+        runtime_context_before = read_core_runtime_context()
+        if runtime_context_before is None:
+            return {"ok": False, "reason": "core_runtime_context_unavailable"}
         manifest = get_live_probe_cache(
             "dataplane_global.applied_manifest", ttl_seconds=5.0,
             loader=dataplane_global._read_applied_manifest_uncached, force_refresh=True,
@@ -1822,11 +1845,16 @@ def _collect_legacy_admission_core_native_proof() -> dict[str, Any]:
                 "active_auto_server_id, apply_state FROM routing_global_state WHERE id=1",
             ).fetchone()
             owned_apply = connection.execute(
-                "SELECT status FROM apply_versions WHERE apply_id=?", (manifest_apply_id,),
+                "SELECT status, core_intent_revision FROM apply_versions WHERE apply_id=?", (manifest_apply_id,),
             ).fetchone()
             latest_apply = connection.execute(
-                "SELECT apply_id, status FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+                "SELECT apply_id, status, core_intent_revision FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
             ).fetchone()
+            from fwrouter_api.services.core_intent import read_core_intent_revision
+            try:
+                core_revision = read_core_intent_revision(connection)
+            except ValueError:
+                return {"ok": False, "reason": "core_intent_revision_unverifiable"}
             routing = dict(routing_row) if routing_row is not None else None
         if routing is None or routing["apply_state"] != "clean":
             return {"ok": False, "reason": "core_routing_state_unverified"}
@@ -1834,6 +1862,8 @@ def _collect_legacy_admission_core_native_proof() -> dict[str, Any]:
             owned_apply is None or owned_apply["status"] != "applied"
             or latest_apply is None or latest_apply["status"] != "applied"
             or str(latest_apply["apply_id"]) != manifest_apply_id
+            or latest_apply["core_intent_revision"] != core_revision
+            or owned_apply["core_intent_revision"] != core_revision
         ):
             return {"ok": False, "reason": "core_applied_generation_unowned"}
         manifest_routing = manifest.get("routing_global_state")
@@ -1880,6 +1910,9 @@ def _collect_legacy_admission_core_native_proof() -> dict[str, Any]:
         manifest_hash = hashlib.sha256(
             json.dumps(manifest, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"),
         ).hexdigest()
+        runtime_context_after = read_core_runtime_context()
+        if runtime_context_after is None or runtime_context_after != runtime_context_before:
+            return {"ok": False, "reason": "core_runtime_context_changed"}
         return {
             "ok": True,
             "apply_id": manifest_apply_id,
@@ -1889,6 +1922,7 @@ def _collect_legacy_admission_core_native_proof() -> dict[str, Any]:
             "active_mode_matches_intent": True,
             "live_global_mode": mode,
             "live_selective_default": enforcement.get("live_selective_default"),
+            "runtime_context": runtime_context_after,
         }
     except Exception:
         return {"ok": False, "reason": "core_native_readback_unavailable"}

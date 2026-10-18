@@ -13,3 +13,4 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.
 
 Changed global mode, server mode, and selective-default SQLite commits also write their typed INFO/audit event in the same transaction. Equality/no-op commits do not write an audit row; runtime apply result is logged separately.
+Global mode commit optionally holds an immediate SQLite write transaction while rechecking the exact Core module snapshot, monotonic intent revision and latest owned apply binding.

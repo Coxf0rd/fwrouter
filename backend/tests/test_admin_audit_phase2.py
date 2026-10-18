@@ -6,7 +6,9 @@ from pathlib import Path
 from fwrouter_api.adapters.subscription import DEFAULT_SUBSCRIPTION_ADAPTER
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
-from fwrouter_api.services.core_bypass import _save_bypass_setting, enable_core_bypass
+from fwrouter_api.services import core_bypass as core_bypass_service
+from fwrouter_api.services.core_bypass import enable_core_bypass
+from fwrouter_api.services.modules import set_module_desired_state
 from fwrouter_api.services.subscription import refresh_subscription_inventory_batch, save_subscription_url
 from fwrouter_api.services.subscription_profiles import disable_subscription_identity, ensure_subscription_identity
 
@@ -196,13 +198,65 @@ def test_subscription_identity_disable_audits_actual_change_without_token(monkey
 def test_core_bypass_audit_contract_and_noop(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
 
-    _save_bypass_setting({"enabled": True}, requested_by="operator", job_id="job-enable")
-    _save_bypass_setting({"enabled": True, "reason": "metadata-only"}, requested_by="operator", job_id="job-repeat")
+    set_module_desired_state("core", "enabled", requested_by="operator", run_now=False)
+
+    def synthetic_owned_apply(**kwargs) -> dict[str, object]:
+        apply_id = "audit-test-core-bypass-apply"
+        with db_session() as connection:
+            connection.execute(
+                "INSERT INTO apply_versions(apply_id, manifest_path, status, core_intent_revision) "
+                "VALUES (?, ?, 'applied', ?)",
+                (apply_id, "/synthetic/audit-test-core-bypass.json", kwargs["core_intent_revision"]),
+            )
+        return {
+            "ok": True,
+            "apply_id": apply_id,
+            "dataplane": {"message": "synthetic owned apply", "error_code": None, "error_message": None},
+        }
+
+    monkeypatch.setattr(core_bypass_service, "_run_core_bypass_apply", synthetic_owned_apply)
+    changed = enable_core_bypass(job_id="job-enable", requested_by="operator")
+    assert changed["already_enabled"] is False
+
+    with db_session() as connection:
+        settings_before_noop = connection.execute(
+            "SELECT value_json, updated_at FROM settings WHERE key='core.bypass'",
+        ).fetchone()
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+        revision_before_noop = read_core_intent_revision(connection)
+    logs_before_noop = len(_events())
+
     noop = enable_core_bypass(job_id="job-public-noop", requested_by="operator")
+    assert noop["already_enabled"] is True
+
+    with db_session() as connection:
+        settings_after_noop = connection.execute(
+            "SELECT value_json, updated_at FROM settings WHERE key='core.bypass'",
+        ).fetchone()
+        revision_after_noop = read_core_intent_revision(connection)
+
+    # A failed stale CAS is not a successful configuration audit either.
+    assert core_bypass_service._save_bypass_setting(
+        {"enabled": False},
+        requested_by="operator",
+        job_id="job-stale-cas",
+        expected_revision=revision_before_noop - 1,
+        expected_previous_enabled=True,
+        apply_id="audit-test-core-bypass-apply",
+    ) is False
+    with db_session() as connection:
+        settings_after_stale_cas = connection.execute(
+            "SELECT value_json, updated_at FROM settings WHERE key='core.bypass'",
+        ).fetchone()
+        revision_after_stale_cas = read_core_intent_revision(connection)
 
     audit = [event for event in _events() if event["details"].get("event_code") == "core.bypass_enabled"]
     assert len(audit) == 1
-    assert noop["already_enabled"] is True
+    assert len(_events()) == logs_before_noop
+    assert tuple(settings_after_noop) == tuple(settings_before_noop)
+    assert revision_after_noop == revision_before_noop
+    assert tuple(settings_after_stale_cas) == tuple(settings_before_noop)
+    assert revision_after_stale_cas == revision_before_noop
     details = audit[0]["details"]
     assert details["event_category"] == "audit"
     assert details["severity"] == "info"
