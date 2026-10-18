@@ -1,11 +1,85 @@
 import hashlib
 
 from fwrouter_api.services import apply_orchestrator as orchestrator
+from fwrouter_api.services import apply_orchestrator_public as public_api
 from fwrouter_api.services import apply_orchestrator_server_handlers as server_handlers
 from fwrouter_api.services import rules, rules_state
 from fwrouter_api.services.apply_orchestrator import _commit_manual_rules_apply
 from fwrouter_api.services.apply_orchestrator_rules_handlers import _execute_apply_manual_rules
 from fwrouter_api.services.rules import validate_manual_rules
+
+
+def test_apply_orchestrator_preserves_explicit_facade_exports():
+    expected_private_runtime_attrs = {
+        "INTENT_APPLY_MANUAL_RULES",
+        "INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE",
+        "INTENT_CLEAR_SUBJECT_USER_MODE",
+        "INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME",
+        "INTENT_SET_GLOBAL_MODE",
+        "INTENT_SET_GLOBAL_SERVER_MODE",
+        "INTENT_SET_SELECTIVE_DEFAULT",
+        "INTENT_SET_SUBJECT_ADMIN_MODE",
+        "INTENT_SET_SUBJECT_SERVER_OVERRIDE",
+        "INTENT_SET_SUBJECT_USER_MODE",
+        "JOB_TYPE_APPLY_MUTATION",
+        "LOCK_APPLY",
+        "LOCK_RULES",
+        "LOCK_RULES_APPLY",
+        "GLOBAL_ROUTING_DRIFT_CODE",
+        "GLOBAL_ARTIFACT_DRIFT_CODE",
+        "LIVE_DATAPLANE_ARTIFACT_DRIFT_CODE",
+        "DEFAULT_MIHOMO_ADAPTER",
+        "_build_failure_result",
+        "_current_routing_drift",
+        "_run_pipeline_for_state",
+        "external_vpn_mihomo_reconcile_skip",
+        "get_default_job_manager",
+        "reconcile_mihomo_runtime",
+        "write_operational_log",
+        "write_technical_log",
+    }
+    expected_public_star_exports = {
+        "ADMIN_MODES_BY_SUBJECT_TYPE", "Any", "ApplyMode", "ApplyOrchestrator",
+        "DEFAULT_MIHOMO_ADAPTER", "GLOBAL_ARTIFACT_DRIFT_CODE", "GLOBAL_ROUTING_DRIFT_CODE",
+        "INTENT_APPLY_MANUAL_RULES", "INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE",
+        "INTENT_CLEAR_SUBJECT_USER_MODE", "INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME",
+        "INTENT_SET_GLOBAL_MODE", "INTENT_SET_GLOBAL_SERVER_MODE", "INTENT_SET_SELECTIVE_DEFAULT",
+        "INTENT_SET_SUBJECT_ADMIN_MODE", "INTENT_SET_SUBJECT_SERVER_OVERRIDE",
+        "INTENT_SET_SUBJECT_USER_MODE", "JOB_TYPE_APPLY_MUTATION", "JobLockConflictError",
+        "LIVE_DATAPLANE_ARTIFACT_DRIFT_CODE", "LOCK_APPLY", "LOCK_RULES", "LOCK_RULES_APPLY",
+        "SERVER_OVERRIDE_SUBJECT_TYPES", "USER_MODES", "USER_OVERRIDE_TTL_DAYS",
+        "VIRTUAL_XRAY_VPN_AUTO_SERVER_ID", "applied_nft_markers_match_live",
+        "apply_global_mode_immediately", "apply_manual_rules", "build_runtime_enforcement_state",
+        "clear_subject_server_override", "clear_subject_user_mode", "effective_rules_with_selective_default",
+        "enrich_subject_with_effective_state", "ensure_routing_global_state", "execute_apply_mutation",
+        "explicit_external_client_allows_virtual_vpn_auto", "explicit_external_client_runtime_binding",
+        "external_vpn_mihomo_reconcile_skip", "finalize_manual_rules_apply", "get_core_bypass_state",
+        "get_dataplane_capability", "get_default_job_manager", "get_job", "get_manual_rules_texts",
+        "get_routing_global_state", "get_routing_snapshot", "get_server", "get_subject",
+        "get_subject_server_override", "get_subject_with_effective_state",
+        "is_explicit_external_client_subject_type", "list_subjects", "load_precompiled_global_mode_profile",
+        "mark_rules_job_failed", "mark_rules_job_running",
+        "materialize_explicit_external_client_runtime_bindings", "materialize_precompiled_manifest",
+        "materialize_xray_runtime_bindings", "mihomo_runtime_satisfies_routing",
+        "prepare_manual_rules_candidate", "probe_live_global_mode", "read_applied_manifest",
+        "read_effective_rules_artifact", "reconcile_current_routing_if_drift", "reconcile_mihomo_runtime",
+        "reconcile_mihomo_selective_default_fast", "repair_global_direct_runtime",
+        "repair_global_direct_runtime_sync", "run_apply_mutation", "run_apply_pipeline", "set_global_mode",
+        "set_selective_default", "set_subject_admin_mode", "set_subject_mode",
+        "set_subject_server_override", "set_subject_user_mode", "subject_follows_global_mode",
+        "subject_selector_name", "submit_apply_mutation", "sync_active_selective_default", "touch_job_running",
+        "update_subject_server_override_apply_status", "validate_global_mode_request", "validate_manual_rules",
+        "write_operational_log", "write_technical_log",
+    }
+
+    namespace: dict[str, object] = {}
+    exec("from fwrouter_api.services.apply_orchestrator import *", namespace)
+
+    assert set(orchestrator.__all__) == expected_public_star_exports
+    assert set(namespace) - {"__builtins__"} == expected_public_star_exports
+    assert all(hasattr(orchestrator, name) for name in expected_private_runtime_attrs)
+    assert orchestrator.ApplyOrchestrator is public_api.ApplyOrchestrator
+    assert orchestrator.set_global_mode is public_api.set_global_mode
 
 
 def test_subject_server_override_reconciles_missing_selector(monkeypatch):

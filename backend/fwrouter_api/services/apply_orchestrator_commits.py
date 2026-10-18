@@ -1,69 +1,26 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
-from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.adapters.xray_common import xray_writer_guarded
-from fwrouter_api.services.apply import ApplyMode, run_apply_pipeline
-from fwrouter_api.services.artifacts import write_job_json_artifact
-from fwrouter_api.services.core_bypass import get_core_bypass_state
 from fwrouter_api.services.custom_servers import VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
-from fwrouter_api.services.dataplane_global import (
-    read_applied_manifest,
-    read_effective_rules_artifact,
-    validate_global_mode_request,
-)
-from fwrouter_api.services.dataplane_live import applied_nft_markers_match_live, probe_live_global_mode
-from fwrouter_api.services.dataplane_status import build_runtime_enforcement_state, get_dataplane_capability
-from fwrouter_api.services.external_vpn import external_vpn_mihomo_reconcile_skip
-from fwrouter_api.services.global_mode_profiles import load_precompiled_global_mode_profile, materialize_precompiled_manifest
-from fwrouter_api.services.jobs import get_job, touch_job_running
-from fwrouter_api.services.logs import write_operational_log, write_technical_log
-from fwrouter_api.services.mihomo_config import (
-    mihomo_runtime_satisfies_routing,
-    reconcile_mihomo_runtime,
-    reconcile_mihomo_selective_default_fast,
-    subject_selector_name,
-)
-from fwrouter_api.services.rules import (
-    effective_rules_with_selective_default,
-    finalize_manual_rules_apply,
-    get_manual_rules_texts,
-    mark_rules_job_failed,
-    mark_rules_job_running,
-    prepare_manual_rules_candidate,
-    sync_active_selective_default,
-)
 from fwrouter_api.services.servers import (
-    clear_subject_server_override,
     ensure_routing_global_state,
     get_routing_global_state,
     get_server,
-    get_subject_server_override,
-    set_subject_server_override,
-    update_subject_server_override_apply_status,
 )
 from fwrouter_api.services.subject_policy import (
     ADMIN_MODES_BY_SUBJECT_TYPE,
     USER_MODES,
     USER_OVERRIDE_TTL_DAYS,
-    enrich_subject_with_effective_state,
-    get_routing_snapshot,
-    get_subject_with_effective_state,
 )
 from fwrouter_api.services.subject_taxonomy import (
     SERVER_OVERRIDE_SUBJECT_TYPES,
     explicit_external_client_allows_virtual_vpn_auto,
-    explicit_external_client_runtime_binding,
     is_explicit_external_client_subject_type,
     subject_follows_global_mode,
 )
-from fwrouter_api.services.subjects import get_subject, list_subjects
-from fwrouter_api.services.xray import materialize_xray_runtime_bindings
-from fwrouter_api.services.apply_orchestrator_constants import *
 
 
 def _validate_subject_user_mode(subject: dict[str, Any], mode: str) -> dict[str, str] | None:

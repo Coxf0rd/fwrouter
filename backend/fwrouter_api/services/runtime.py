@@ -4,9 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fwrouter_api.adapters.dataplane import (
-    DEFAULT_DATAPLANE_ADAPTER,
-    DataplaneOperation,
-    DataplanePlan,
+    # Test fixtures replace this established module-level adapter seam.
+    DEFAULT_DATAPLANE_ADAPTER as DEFAULT_DATAPLANE_ADAPTER,
 )
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.adapters.scripts import DEFAULT_SCRIPT_RUNNER
@@ -244,18 +243,6 @@ def _build_runtime_summary() -> dict[str, Any]:
         subscription_state = future_subscription_state.result()
         modules = future_modules.result()
         live_dataplane_payload = future_live_dataplane_payload.result()
-
-    applied_manifest_path = settings.paths.generated_dir / "dataplane" / "applied-manifest.json"
-    candidate_manifest_path = settings.paths.generated_dir / "dataplane" / "candidate-manifest.json"
-    last_good_nft_path = settings.paths.state_dir / "last-good" / "dataplane" / "last-good.nft"
-    candidate_nft_path = settings.paths.generated_dir / "dataplane" / "candidate.nft"
-
-    if applied_manifest_path.exists() and last_good_nft_path.exists():
-        dataplane_generated_path = str(last_good_nft_path)
-        dataplane_manifest_path = str(applied_manifest_path)
-    else:
-        dataplane_generated_path = str(candidate_nft_path)
-        dataplane_manifest_path = str(candidate_manifest_path)
 
     subscription_status = str(subscription_state.get("status") or "not_configured")
     subscription_error_code = subscription_state.get("error_code")

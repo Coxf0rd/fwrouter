@@ -41,7 +41,7 @@ from fwrouter_api.adapters.xray import (
 )
 from fwrouter_api.adapters.xray_common import xray_writer_guard
 from fwrouter_api.adapters.xray_common import XRAY_EXPLICIT_DIRECT_OUTBOUND_TAG, XRAY_FALLBACK_OUTBOUND_TAG
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.main import create_app

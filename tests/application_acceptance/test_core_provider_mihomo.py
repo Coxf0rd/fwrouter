@@ -1032,7 +1032,7 @@ def test_provider_status_controls_real_core_apply_and_native_mihomo_parity(accep
     api, bridge = stack["api"], stack["provider_bridge"]
     _enable_owned_mihomo_runtime_state()
     source_ref = _seed_source(stack)
-    binding = _configure_provider(api, source_ref)
+    _configure_provider(api, source_ref)
     bridge.set_mode(mode)
     before_config = (stack["state"] / "generated" / "mihomo" / "config.yaml").read_bytes()
     code, accepted = http_json(

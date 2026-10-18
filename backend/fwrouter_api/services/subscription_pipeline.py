@@ -865,37 +865,6 @@ def _apply_prepared_subscription_refresh_under_xray_guard(
             if result["applied"]
             else "Subscription refresh completed with no runtime changes after verification."
         )
-        details = {
-            "stage": result["stage"],
-            "outcome": result["outcome"],
-            "runtime_verified": result["runtime_verified"],
-            "intent_saved": result["intent_saved"],
-            "last_good_retained": result["last_good_retained"],
-            "applied": result["applied"],
-            "promoted": result["promoted"],
-            "container_restarted": result["container_restarted"],
-            "reconcile_action": reconcile_action,
-            "reconcile_reason": reconcile_reason,
-            "auto_select": auto_select.get("status"),
-            "xray_profile_reconcile": {
-                "status": xray_profile_reconcile.get("status"),
-                "nodes_count": xray_profile_reconcile.get("nodes_count"),
-                "created_count": xray_profile_reconcile.get("created_count"),
-                "deleted_count": xray_profile_reconcile.get("deleted_count"),
-                "error_code": xray_profile_reconcile.get("error_code"),
-            },
-            "xray_vpn_auto_reconcile": {
-                "status": xray_vpn_auto_reconcile.get("status"),
-                "created_count": xray_vpn_auto_reconcile.get("created_count"),
-                "deleted_count": xray_vpn_auto_reconcile.get("deleted_count"),
-                "error_code": xray_vpn_auto_reconcile.get("error_code"),
-            },
-            "final_mihomo_reconcile": {
-                "ok": (final_reconcile or {}).get("ok"),
-                "reconcile_reason": (final_reconcile or {}).get("reconcile_reason"),
-            },
-            "timings_ms": result.get("timings_ms"),
-        }
         _write_subscription_terminal_event(result)
         write_technical_log(
             component="subscription",
