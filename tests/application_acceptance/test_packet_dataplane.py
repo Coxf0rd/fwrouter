@@ -24,6 +24,7 @@ import yaml
 
 from .http_support import http_json
 from .joined_support import await_core_job
+from .native_runner import _redact_diagnostic
 from .synthetic_subscription import SyntheticSubscriptionSource, synthetic_vless_profile
 from .test_core_provider_mihomo import _configure_provider, _enable_owned_mihomo_runtime_state, _seed_source
 from .xray_support import (
@@ -58,6 +59,57 @@ CORE_NFT_TABLE = "fwrouter_v2"
 ROUTER_GUARD_TABLE = "fwrouter_packet_guard"
 MAX_CORE_NFT_JSON = 1024 * 1024
 MAX_PHASE_DIAGNOSTIC_BYTES = 4096
+_DIAGNOSTIC_URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,15}://[^\s\"'<>]+")
+
+
+def _rules_apply_failure_diagnostic(
+    response: dict[str, Any],
+    status: int,
+    *,
+    protected: tuple[str, ...],
+    phase: str,
+    terminal_job: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    response_job = data.get("job") if isinstance(data.get("job"), dict) else {}
+    job = terminal_job if isinstance(terminal_job, dict) else response_job
+    error = response.get("error") if isinstance(response.get("error"), dict) else {}
+    if not error and isinstance(data.get("error"), dict):
+        error = data["error"]
+    raw_message = error.get("message") or job.get("error_message") or ""
+    safe_message = _redact_diagnostic(str(raw_message), limit=512)
+    safe_message = _DIAGNOSTIC_URL.sub("[URL]", safe_message)
+    for value in protected:
+        if value:
+            for protected_value in (value, *value.splitlines()):
+                safe_message = safe_message.replace(protected_value, "[REDACTED]")
+    safe_message = "".join(character if character.isprintable() or character in "\n\t" else " "
+                             for character in safe_message)
+    exception_class = error.get("exception_class") or error.get("error_class") \
+        or job.get("exception_class") or job.get("error_class")
+    if not isinstance(exception_class, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", exception_class):
+        exception_class = None
+    def safe_token(value: Any) -> str | None:
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", value) else None
+
+    return {
+        "http_status": status,
+        "failure_phase": phase,
+        "error_code": safe_token(error.get("code")),
+        "job_type": safe_token(job.get("job_type")),
+        "job_status": safe_token(job.get("status")),
+        "job_error_code": safe_token(job.get("error_code")),
+        "exception_class": exception_class,
+        "error_message": safe_message,
+    }
+
+
+def _serialize_rules_apply_failure(summary: dict[str, Any]) -> str:
+    encoded = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 2048:
+        summary = {**summary, "error_message": _redact_diagnostic(summary.get("error_message", ""), limit=128)}
+        encoded = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    return encoded
 
 
 def _record_dns53_probe_failure(record_property: Any, receipt: Any) -> bool:
@@ -254,9 +306,26 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
                 initial_routing.get("server_mode"), initial_routing.get("desired_fixed_server_id"),
                 initial_routing.get("applied_fixed_server_id")) == ("direct", "direct", "fixed", None, None), initial_routing
 
-        # Seed a real IP-only rules artifact and native owned-table foundation
-        # through the rules owner. The destinations are isolated documentation
-        # ranges; this proves policy installation, not external VPN connectivity.
+        code, imported = http_json(
+            f"{api}/subscription", method="POST",
+            payload={"urls": [source.url], "requested_by": "hosted-acceptance-synthetic"}, timeout=90,
+        )
+        assert code == 200 and imported.get("ok") is True, imported
+        imported_data = imported.get("data") if isinstance(imported.get("data"), dict) else {}
+        auto_select = imported_data.get("auto_select")
+        assert isinstance(auto_select, dict) and auto_select.get("status") == "skipped_no_fixed_target", imported
+        enable_vpn_from_synthetic_subscription(api, state, source.url)
+        verified = generation(api)
+        assert verified.get("status") == "verified", verified
+        assert verified.get("candidate_digest") == verified.get("verified_digest"), verified
+        assert_native_matches_active(native, state / "xray" / "config.json")
+        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
+        bindings_path = state / "xray" / "fwrouter-bindings.json"
+        assert bindings_path.is_file(), "managed synthetic Xray enable did not materialize runtime bindings"
+
+        # Capture Xray state only after the real managed lifecycle established
+        # its bindings. Seed the rules artifact through its owner; these
+        # documentation-range destinations do not prove external VPN access.
         synthetic_rules = "VPN 198.51.100.77\nDIRECT 203.0.113.53"
         native_before_rules_fixture = native_fingerprint()
         rules_code, rules_saved = http_json(
@@ -267,9 +336,24 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             f"{api}/rules/manual/apply", method="POST",
             payload={"requested_by": "hosted-acceptance-selective-fixture", "run_now": True}, timeout=90,
         )
-        rules_job = await_core_job(api, rules_apply, timeout_seconds=90)
-        assert rules_apply_code == 200 and rules_apply.get("ok") is True, rules_apply
-        assert isinstance(rules_job, dict) and rules_job.get("status") == "success", rules_job
+        if rules_apply_code != 200 or rules_apply.get("ok") is not True:
+            failure = _rules_apply_failure_diagnostic(
+                rules_apply, rules_apply_code, protected=(synthetic_rules, source.url), phase="api_response",
+            )
+            raise AssertionError(_serialize_rules_apply_failure(failure))
+        try:
+            rules_job = await_core_job(api, rules_apply, timeout_seconds=90)
+        except AssertionError:
+            failure = _rules_apply_failure_diagnostic(
+                rules_apply, rules_apply_code, protected=(synthetic_rules, source.url), phase="job_wait",
+            )
+            raise AssertionError(_serialize_rules_apply_failure(failure)) from None
+        if not isinstance(rules_job, dict) or rules_job.get("status") != "success":
+            failure = _rules_apply_failure_diagnostic(
+                rules_apply, rules_apply_code, protected=(synthetic_rules, source.url),
+                phase="terminal_job", terminal_job=rules_job if isinstance(rules_job, dict) else None,
+            )
+            raise AssertionError(_serialize_rules_apply_failure(failure))
         rules_artifact = json.loads((state / "generated" / "rules" / "effective-rules.json").read_text(
             encoding="utf-8",
         ))
@@ -292,21 +376,6 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             for key in sorted(xray_native_fields)
             if native_after_rules_fixture.get(key) != native_before_rules_fixture.get(key)
         }
-        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
-
-        code, imported = http_json(
-            f"{api}/subscription", method="POST",
-            payload={"urls": [source.url], "requested_by": "hosted-acceptance-synthetic"}, timeout=90,
-        )
-        assert code == 200 and imported.get("ok") is True, imported
-        imported_data = imported.get("data") if isinstance(imported.get("data"), dict) else {}
-        auto_select = imported_data.get("auto_select")
-        assert isinstance(auto_select, dict) and auto_select.get("status") == "skipped_no_fixed_target", imported
-        enable_vpn_from_synthetic_subscription(api, state, source.url)
-        verified = generation(api)
-        assert verified.get("status") == "verified", verified
-        assert verified.get("candidate_digest") == verified.get("verified_digest"), verified
-        assert_native_matches_active(native, state / "xray" / "config.json")
         assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
 
         native_before_selective_default = native_fingerprint()

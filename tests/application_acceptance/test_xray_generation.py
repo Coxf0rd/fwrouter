@@ -18,6 +18,7 @@ from uuid import NAMESPACE_DNS, uuid5
 import yaml
 
 from .http_support import http_json
+from .native_runner import _redact_diagnostic
 from .synthetic_subscription import SyntheticSubscriptionSource, synthetic_vless_profile
 from .xray_support import (
     active_identities,
@@ -35,6 +36,57 @@ from .xray_support import (
 _PROVIDER_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
 _PROVIDER_WORKER_LOG_MAX_FILES = 16
 _PROVIDER_WORKER_LOG_MAX_APPEND_BYTES = 64 * 1024
+_DIAGNOSTIC_URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,15}://[^\s\"'<>]+")
+
+
+def _rules_apply_failure_diagnostic(
+    response: dict[str, Any],
+    status: int,
+    *,
+    protected: tuple[str, ...],
+    phase: str,
+    terminal_job: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    response_job = data.get("job") if isinstance(data.get("job"), dict) else {}
+    job = terminal_job if isinstance(terminal_job, dict) else response_job
+    error = response.get("error") if isinstance(response.get("error"), dict) else {}
+    if not error and isinstance(data.get("error"), dict):
+        error = data["error"]
+    raw_message = error.get("message") or job.get("error_message") or ""
+    safe_message = _redact_diagnostic(str(raw_message), limit=512)
+    safe_message = _DIAGNOSTIC_URL.sub("[URL]", safe_message)
+    for value in protected:
+        if value:
+            for protected_value in (value, *value.splitlines()):
+                safe_message = safe_message.replace(protected_value, "[REDACTED]")
+    safe_message = "".join(character if character.isprintable() or character in "\n\t" else " "
+                             for character in safe_message)
+    exception_class = error.get("exception_class") or error.get("error_class") \
+        or job.get("exception_class") or job.get("error_class")
+    if not isinstance(exception_class, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", exception_class):
+        exception_class = None
+    def safe_token(value: Any) -> str | None:
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", value) else None
+
+    return {
+        "http_status": status,
+        "failure_phase": phase,
+        "error_code": safe_token(error.get("code")),
+        "job_type": safe_token(job.get("job_type")),
+        "job_status": safe_token(job.get("status")),
+        "job_error_code": safe_token(job.get("error_code")),
+        "exception_class": exception_class,
+        "error_message": safe_message,
+    }
+
+
+def _serialize_rules_apply_failure(summary: dict[str, Any]) -> str:
+    encoded = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 2048:
+        summary = {**summary, "error_message": _redact_diagnostic(summary.get("error_message", ""), limit=128)}
+        encoded = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    return encoded
 
 
 def current_xray_subject_identity_pairs(database_path: Path) -> set[tuple[str, str]]:
@@ -1027,9 +1079,24 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
             payload={"requested_by": "hosted-acceptance-selective-fixture", "run_now": True},
             timeout=90,
         )
-        rules_job = await_job(restarted_api, rules_apply)
-        assert rules_apply_code == 200 and rules_apply.get("ok") is True, rules_apply
-        assert rules_job.get("status") == "success", rules_job
+        if rules_apply_code != 200 or rules_apply.get("ok") is not True:
+            failure = _rules_apply_failure_diagnostic(
+                rules_apply, rules_apply_code, protected=(synthetic_rules, source.url), phase="api_response",
+            )
+            raise AssertionError(_serialize_rules_apply_failure(failure))
+        try:
+            rules_job = await_job(restarted_api, rules_apply)
+        except AssertionError:
+            failure = _rules_apply_failure_diagnostic(
+                rules_apply, rules_apply_code, protected=(synthetic_rules, source.url), phase="job_wait",
+            )
+            raise AssertionError(_serialize_rules_apply_failure(failure)) from None
+        if rules_job.get("status") != "success":
+            failure = _rules_apply_failure_diagnostic(
+                rules_apply, rules_apply_code, protected=(synthetic_rules, source.url),
+                phase="terminal_job", terminal_job=rules_job,
+            )
+            raise AssertionError(_serialize_rules_apply_failure(failure))
         rules_artifact_path = state / "generated" / "rules" / "effective-rules.json"
         rules_artifact = json.loads(rules_artifact_path.read_text(encoding="utf-8"))
         effective_rules = rules_artifact.get("rules") if isinstance(rules_artifact, dict) else None
