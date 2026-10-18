@@ -486,16 +486,9 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert enforcement.get("enforcement_level") == "global_selective_enforced", enforcement
         assert enforcement.get("active_mode_matches_intent") is True, enforcement
         assert enforcement.get("selective_vpn_policy_ready") is True, enforcement
-        assert enforcement.get("vpn_egress_ready") is False, enforcement
-        egress_unknown_codes = {
-            "mihomo_global_egress_binding_unknown",
-            "vpn_external_path_not_verified",
-        }
+        assert enforcement.get("vpn_egress_ready") is True, enforcement
         missing_requirements = enforcement.get("missing_runtime_requirements")
-        assert isinstance(missing_requirements, list), enforcement
-        assert "vpn_external_path_not_verified" in missing_requirements, enforcement
-        assert "vpn_udp_fail_closed_policy_unconfirmed" not in missing_requirements, enforcement
-        assert set(missing_requirements) <= egress_unknown_codes, enforcement
+        assert isinstance(missing_requirements, list) and missing_requirements == [], enforcement
         assert enforcement.get("supported_modes", {}).get("vpn") is True, enforcement
         runtime_code, runtime_response = http_json(f"{api}/runtime")
         runtime = ((runtime_response.get("data") or {}).get("runtime") or {})
@@ -504,6 +497,11 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         live_chains = live_payload.get("required_chains") if isinstance(live_payload.get("required_chains"), dict) else {}
         assert runtime_code == 200 and runtime_response.get("ok") is True, runtime_response
         assert live_payload.get("ok") is True and live_payload.get("table_exists") is True, live_payload
+        # These host-script flags prove owned policy-routing readiness; they do not
+        # prove an external client transport or VPN endpoint connectivity.
+        assert live_payload.get("vpn_policy_required") is True, live_payload
+        assert live_payload.get("vpn_contract_ready") is True, live_payload
+        assert live_payload.get("vpn_external_path_verified") is True, live_payload
         assert live_chains and all(value is True for value in live_chains.values()), live_chains
         mihomo_code, mihomo_response = http_json(f"{api}/mihomo")
         mihomo = (((mihomo_response.get("data") or {}).get("mihomo"))
