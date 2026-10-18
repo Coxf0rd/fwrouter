@@ -292,6 +292,28 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert isinstance(value, dict), result
         return value
 
+    def assert_owned_dns_daemon(api_url: str) -> None:
+        status_code, status = http_json(f"{api_url}/__acceptance/dns53/status")
+        assert status_code == 200, {"status": status_code}
+        for field in (
+            "configured", "daemon_running", "daemon_uid_matches", "native_process_arguments_match",
+            "dns_capture_ok", "rescue0_allowlisted", "rescue0_role_excluded_from_discovery",
+            "dhcp_forces_router_dns", "dhcp_excludes_rescue_vip", "local_hosts_exclude_rescue_vip",
+            "dns_capture_excludes_rescue0", "router_lan_hostname_query_ok",
+        ):
+            assert status.get(field) is True, {"field": field, "status": status}
+
+    def protected_direct_rows() -> list[str]:
+        rules_path = state / "generated" / "rules" / "effective-rules.json"
+        artifact = json.loads(rules_path.read_text(encoding="utf-8"))
+        rules = artifact.get("rules") if isinstance(artifact, dict) else None
+        assert isinstance(rules, list), {"effective_rules_shape": type(rules).__name__}
+        return sorted(
+            json.dumps(row, sort_keys=True, separators=(",", ":"))
+            for row in rules
+            if isinstance(row, dict) and row.get("source") == "protected" and row.get("action") == "DIRECT"
+        )
+
     try:
         # The synthetic profile uses deliberately non-routable .invalid
         # endpoints. Keep refresh independent of connectivity by using the
@@ -322,6 +344,18 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
         bindings_path = state / "xray" / "fwrouter-bindings.json"
         assert bindings_path.is_file(), "managed synthetic Xray enable did not materialize runtime bindings"
+
+        # Manual rules apply performs the real DNSmasq reconciliation as part
+        # of finalization. Prepare the already-qualified packet fixture first:
+        # it redirects generated files into this suite's owned directory and
+        # supplies the real pinned daemon while leaving the read-only root intact.
+        dns_fixture_code, dns_fixture = http_json(f"{api}/__acceptance/dns53/configure", method="POST")
+        assert (dns_fixture_code == 200 and dns_fixture.get("ok") is True
+                and dns_fixture.get("fixture_configured") is True
+                and dns_fixture.get("daemon_running") is False
+                and dns_fixture.get("nftset_support") is True
+                and isinstance(dns_fixture.get("dnsmasq_version"), str)
+                and dns_fixture["dnsmasq_version"].startswith("Dnsmasq version 2.90")), dns_fixture
 
         # Capture Xray state only after the real managed lifecycle established
         # its bindings. Seed the rules artifact through its owner; these
@@ -365,6 +399,9 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
                    for item in effective_rules if isinstance(item, dict)), rules_artifact
         assert any(item.get("source") == "protected" and item.get("action") == "DIRECT"
                    for item in effective_rules if isinstance(item, dict)), rules_artifact
+        protected_direct_baseline = protected_direct_rows()
+        assert protected_direct_baseline, "rules owner did not emit canonical protected DIRECT rows"
+        assert_owned_dns_daemon(api)
         native_after_rules_fixture = native_fingerprint()
         xray_native_fields = {
             "xray_active", "xray_mounted", "xray_loaded", "xray_bindings", "xray_last_good",
@@ -404,6 +441,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             }, sort_keys=True, separators=(",", ":"),
         ).encode()).hexdigest()
         post_apply({"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True})
+        assert protected_direct_rows() == protected_direct_baseline
         native_after_selective_apply = native_fingerprint()
         assert all(native_after_selective_apply.get(key) == native_before_selective_mode.get(key)
                    for key in xray_native_fields), {
@@ -528,6 +566,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         pending = enabled.get("data", {}).get("module", {})
         assert pending.get("desired_state") == "enabled" and pending.get("apply_state") == "pending", pending
         post_apply({"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True})
+        assert protected_direct_rows() == protected_direct_baseline
         assert native_fingerprint() == native_after_selective_apply, {
             "before_core_enable_apply": native_after_selective_apply,
             "after_core_enable_apply": native_fingerprint(),
@@ -603,6 +642,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert generation(restarted_api) == marker_before_startup
         assert native_fingerprint() == before_startup_native
         assert durable_fingerprint() == before_startup_durable
+        assert protected_direct_rows() == protected_direct_baseline
         after_first_startup_subjects = subject_bootstrap_fingerprint()
         assert_builtin_bootstrap_rows(before_startup_subjects, after_first_startup_subjects)
         assert source_bridge.snapshot_calls() == calls_before_admission
@@ -644,6 +684,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert bootstrap_report.get("dns_fixture") == {
             "configured": True, "daemon_running": True, "daemon_uid_matches": True,
         }, bootstrap_report
+        assert_owned_dns_daemon(restarted_api)
 
         # A second ordinary startup must be idempotent after the one exact,
         # documented first-run built-in subject initialization above.
@@ -684,9 +725,11 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
                 and second_xray.get("status") in {"success", "noop", "skipped"}
                 and second_xray.get("error_code") is None), second_xray
         assert second_dns.get("ok") is True, second_dns
+        assert protected_direct_rows() == protected_direct_baseline
         assert second_report.get("dns_fixture") == {
             "configured": True, "daemon_running": True, "daemon_uid_matches": True,
         }, second_report
+        assert_owned_dns_daemon(restarted_api)
     finally:
         source.close()
 
