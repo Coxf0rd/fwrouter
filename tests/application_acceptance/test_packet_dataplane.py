@@ -464,8 +464,10 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             "proxies_proxy_groups_sha256_before": mihomo_proxy_surface_before,
             "proxies_proxy_groups_sha256_after": mihomo_proxy_surface_after,
         }
-        assert isinstance(transparent_rules, list) and transparent_rules[-1] == "MATCH,vpn-global", {
-            "transparent_fallback": transparent_rules[-1] if isinstance(transparent_rules, list) and transparent_rules else None,
+        assert isinstance(transparent_rules, list) and transparent_rules[-2:] == [
+            "MATCH,vpn-global", "NETWORK,udp,REJECT",
+        ], {
+            "transparent_policy_tail": transparent_rules[-2:] if isinstance(transparent_rules, list) else None,
         }
         selective_fwrouter_metadata = selective_mihomo_config.get("fwrouter") if isinstance(selective_mihomo_config, dict) else None
         assert isinstance(selective_fwrouter_metadata, dict)
