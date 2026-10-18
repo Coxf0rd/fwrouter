@@ -3539,22 +3539,48 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("safe stdout", captured.exception.evidence["stdout"])
         self.assertNotIn("hidden", captured.exception.evidence["stderr"])
 
-    def test_qualified_child_junit_normalizes_only_expected_tests_prefix(self):
+    def test_qualified_child_junit_requires_exact_selected_nodes_and_pass_status(self):
         scenarios = json.loads(qualified_child.ROOT.joinpath(
             "tests/acceptance/qualified-child-scenarios.json").read_text(encoding="utf-8"))
+        expected = set(scenarios["nodeids"])
+        required_recovery = {
+            "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[success]",
+            "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[receipt_failure]",
+            "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[readback_failure]",
+            "backend/tests/test_xray.py::test_failed_generation_after_inventory_sync_restores_scoped_derived_rows",
+        }
+        self.assertTrue(required_recovery <= expected)
         with tempfile.TemporaryDirectory(prefix="fwrouter-qualified-child-junit-") as temp:
             path = Path(temp) / "report.xml"
-            root = ET.Element("testsuite")
-            for nodeid in scenarios["nodeids"]:
-                identity, name = nodeid.split("::", 1)
-                classname = Path(identity).stem
-                ET.SubElement(root, "testcase", {
-                    "classname": f"tests.{classname}", "name": name,
-                })
-            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
-            observed = qualified_child._read_junit(path)
-            self.assertTrue(observed["contract_valid"])
-            self.assertEqual(set(scenarios["nodeids"]), set(observed["node_status"]))
+
+            def write_report(nodeids, *, skipped=()):
+                root = ET.Element("testsuite")
+                for nodeid in nodeids:
+                    identity, name = nodeid.split("::", 1)
+                    classname = Path(identity).stem
+                    case = ET.SubElement(root, "testcase", {
+                        "classname": f"tests.{classname}", "name": name,
+                    })
+                    if nodeid in skipped:
+                        ET.SubElement(case, "skipped", {"message": "unexpected skip"})
+                ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+                return qualified_child._read_junit(path)
+
+            complete = write_report(scenarios["nodeids"])
+            self.assertTrue(complete["contract_valid"])
+            self.assertEqual(expected, set(complete["node_status"]))
+            self.assertTrue(required_recovery <= set(complete["node_status"]))
+
+            omitted_node = (
+                "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[success]"
+            )
+            missing = write_report([node for node in scenarios["nodeids"] if node != omitted_node])
+            self.assertFalse(missing["contract_valid"])
+            skipped = write_report(scenarios["nodeids"], skipped={omitted_node})
+            self.assertFalse(skipped["contract_valid"])
+            with self.assertRaisesRegex(qualified_child.launcher.NotRun, "unrecognized test identity"):
+                write_report([*scenarios["nodeids"],
+                              "backend/tests/test_xray.py::test_unreviewed_generation_case"])
 
             root = ET.Element("testsuite")
             ET.SubElement(root, "testcase", {
@@ -3573,7 +3599,7 @@ class AcceptanceContractTests(unittest.TestCase):
             encoding="utf-8"))
         expected = [nodeid.removeprefix("backend/") for nodeid in scenarios["nodeids"]]
         self.assertEqual(expected, qualified_child._qualified_child_pytest_selectors())
-        self.assertEqual(37, len(expected))
+        self.assertEqual(41, len(expected))
         self.assertTrue(all("::" in selector for selector in expected))
         required_xray_nodes = {
             "tests/test_xray.py::test_profile_generation_preserves_specific_nested_native_validation_failure",
@@ -3587,6 +3613,10 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/test_xray.py::test_vpn_auto_stage_exception_compensates_new_identity_intent",
             "tests/test_xray.py::test_vpn_auto_source_fence_change_preserves_unverified_identity_intent",
             "tests/test_xray.py::test_vpn_auto_external_reference_blocks_identity_compensation",
+            "tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[success]",
+            "tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[receipt_failure]",
+            "tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[readback_failure]",
+            "tests/test_xray.py::test_failed_generation_after_inventory_sync_restores_scoped_derived_rows",
         }
         self.assertTrue(required_xray_nodes <= set(expected))
 
