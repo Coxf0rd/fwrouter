@@ -8,7 +8,10 @@ from typing import Any
 import time
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.watchdog_failure_state import get_recovery_pending, set_recovery_pending
+from fwrouter_api.services.watchdog_failure_state import (
+    get_recovery_pending,
+    set_recovery_pending as set_recovery_pending,
+)
 
 _REENTRY = ContextVar("provider_verified_reentry", default=False)
 
@@ -171,7 +174,7 @@ def _recovery_context_matches(controller: Any, snapshot: dict[str, Any], *,
             # Lightweight test controllers do not expose the production adapter.
             state = controller.get_state()
             runtime_readback = None
-    except Exception as exc:
+    except Exception:
         return False
     expected_fence = snapshot["selection_fence"]
     if fence != expected_fence or pool != snapshot["pool"]:

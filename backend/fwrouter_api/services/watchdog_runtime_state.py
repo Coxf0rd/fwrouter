@@ -54,7 +54,7 @@ def empty_watchdog_runtime_state() -> dict[str, Any]:
     }
 
 
-def load_watchdog_runtime_state() -> dict[str, Any]:
+def load_watchdog_runtime_state(*, strict: bool = False) -> dict[str, Any]:
     try:
         with db_session() as connection:
             row = connection.execute(
@@ -78,6 +78,8 @@ def load_watchdog_runtime_state() -> dict[str, Any]:
                 """
             ).fetchone()
     except Exception:
+        if strict:
+            raise
         return empty_watchdog_runtime_state()
     if row is None:
         return empty_watchdog_runtime_state()
@@ -111,7 +113,18 @@ def update_watchdog_runtime_state(
     last_idle_probe_at: Any = _UNSET,
     last_idle_probe_server_id: Any = _UNSET,
     last_idle_probe_status: Any = _UNSET,
-) -> dict[str, Any]:
+    expected_failure_candidate: Any = _UNSET,
+    expected_path_key: Any = _UNSET,
+    expected_last_processed_decision_id: Any = _UNSET,
+) -> dict[str, Any] | None:
+    conditional = any(
+        value is not _UNSET
+        for value in (
+            expected_failure_candidate,
+            expected_path_key,
+            expected_last_processed_decision_id,
+        )
+    )
     try:
         ensure_watchdog_runtime_state_row()
         assignments: list[str] = []
@@ -152,12 +165,26 @@ def update_watchdog_runtime_state(
         if not assignments:
             return load_watchdog_runtime_state()
         assignments.append("updated_at = CURRENT_TIMESTAMP")
-        params.append(WATCHDOG_STATE_ROW_ID)
+        where = ["id = ?"]
+        where_params: list[Any] = [WATCHDOG_STATE_ROW_ID]
+        if expected_failure_candidate is not _UNSET:
+            where.append("failure_candidate_json IS ?")
+            where_params.append(_json_dumps_dict(expected_failure_candidate))
+        if expected_path_key is not _UNSET:
+            where.append("path_key IS ?")
+            where_params.append(expected_path_key)
+        if expected_last_processed_decision_id is not _UNSET:
+            where.append("last_processed_decision_id IS ?")
+            where_params.append(expected_last_processed_decision_id)
         with db_session() as connection:
-            connection.execute(
-                f"UPDATE watchdog_state SET {', '.join(assignments)} WHERE id = ?",
-                tuple(params),
+            cursor = connection.execute(
+                f"UPDATE watchdog_state SET {', '.join(assignments)} WHERE {' AND '.join(where)}",
+                tuple(params + where_params),
             )
+            if conditional and cursor.rowcount != 1:
+                return None
     except Exception:
+        if conditional:
+            return None
         return load_watchdog_runtime_state()
     return load_watchdog_runtime_state()

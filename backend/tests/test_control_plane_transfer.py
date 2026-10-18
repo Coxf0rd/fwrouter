@@ -14,7 +14,7 @@ from fwrouter_api.adapters.subscription import (
     SubscriptionRefreshStatus,
     SubscriptionServer,
 )
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.main import create_app
 from fwrouter_api.services.rules import get_manual_rules_texts, save_manual_draft
 from fwrouter_api.services.subscription import (

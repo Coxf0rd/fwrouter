@@ -222,7 +222,6 @@ class SmokeContractTests(unittest.TestCase):
     def test_cli_requires_explicit_json_paths_and_forwards_empty_allowlist(self):
         import contextlib
         import io
-        import json
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temp:
             validators = Path(temp) / "validators.json"

@@ -3,7 +3,6 @@ from _test_support import configure_test_state_dir as _configure_env
 from fwrouter_api.db.connection import initialize_database
 
 
-import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -17,7 +16,7 @@ import fwrouter_api.services.scoped_egress as scoped_egress_service
 import fwrouter_api.services.subject_policy as subject_policy_service
 from fwrouter_api.adapters.dataplane import DataplaneOperation, DataplaneResult
 from fwrouter_api.adapters.mihomo import MihomoApplyResult, MihomoHealth, MihomoRuntimeState
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.extended_handlers import register_extended_handlers
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.main import create_app

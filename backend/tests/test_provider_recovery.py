@@ -13,6 +13,12 @@ from fwrouter_api.services.dataplane_nft_render import render_owned_table_candid
 _REAL_PREPARE_VERIFIED_REENTRY_RUNTIME = provider_recovery._prepare_verified_reentry_runtime
 
 
+def test_recovery_pending_writer_remains_a_module_patch_seam():
+    from fwrouter_api.services import watchdog_failure_state
+
+    assert provider_recovery.set_recovery_pending is watchdog_failure_state.set_recovery_pending
+
+
 def _install_pending_state(monkeypatch, pending=None):
     state = {"pending": pending}
 
@@ -999,7 +1005,6 @@ def test_real_recovery_snapshot_fences_revision_exclusive_runtime_and_pending(mo
     monkeypatch.setattr(provider_recovery, "get_recovery_pending", lambda: pending_state["value"])
     monkeypatch.setattr(provider_recovery, "_runtime_incarnation", lambda: "runtime-a")
     from fwrouter_api.services import selector
-    from types import SimpleNamespace
     from fwrouter_api.services.provider_managed import provider_runtime_member_id
     runtime_member = provider_runtime_member_id({"provider_id": "stealthsurf", "source_ref": source_ref}, "member-1", "hysteria2")
     with db_session() as conn:
@@ -1998,7 +2003,6 @@ def test_ambiguous_confirmation_uses_sql_owned_pipeline_receipt(monkeypatch, tmp
     adapter = Adapter()
     monkeypatch.setattr("fwrouter_api.services.provider_adapters.provider_adapter", lambda *_args, **_kwargs: adapter)
     receipts = []
-    original_refresh = subscription_pipeline.refresh_subscription
     def commit_inventory(_source_ref):
         with db_session() as conn:
             current = provider_managed.binding_for(source_ref)

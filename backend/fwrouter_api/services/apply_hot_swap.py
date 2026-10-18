@@ -140,7 +140,7 @@ def _verify_fast_subject_apply(context: dict[str, Any]) -> dict[str, Any]:
                 or f'scoped selective degraded block VPN IPv4: {subject_id}' in raw_chain
             )
         default_branch = (
-            f'scoped selective default ' in raw_chain and subject_id in raw_chain
+            'scoped selective default ' in raw_chain and subject_id in raw_chain
         ) or f'scoped selective degraded default direct: {subject_id}' in raw_chain
         ok = direct_branch in raw_chain and vpn_branch and default_branch
 

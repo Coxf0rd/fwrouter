@@ -4,7 +4,6 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 
 
-import json
 from pathlib import Path
 
 from fwrouter_api.services.runtime import get_runtime_summary, get_scoped_egress_runtime_summary

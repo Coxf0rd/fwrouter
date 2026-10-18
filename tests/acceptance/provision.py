@@ -137,7 +137,6 @@ def extract_native(name: str, archive_path: Path, destination: Path) -> None:
 
 def make_chromium_bundle(archive_path: Path, destination: Path) -> tuple[str, int]:
     """Normalize the Playwright zip's chrome-linux root to launcher's chrome-linux64."""
-    digest_source = hashlib.sha256()
     total = 0
     count = 0
     with zipfile.ZipFile(archive_path) as archive, destination.open("xb") as output:

@@ -221,7 +221,6 @@ def switch_best() -> None:
         return current.get("current_server_id") == expected_id
 
     wait_until("best auto server switch", confirmed)
-    current = router_summary()
     logical_name = (
         transition.get("active_after_name")
         or transition.get("selected_server_name")

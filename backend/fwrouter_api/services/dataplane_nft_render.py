@@ -105,10 +105,6 @@ def render_owned_table_candidate(
 
     preflight = manifest.get("global_preflight") if isinstance(manifest, dict) else {}
     vpn_contour = preflight.get("vpn_contour") if isinstance(preflight, dict) else {}
-    profile = preflight.get("profile") if isinstance(preflight, dict) else {}
-    mihomo_profile = profile.get("mihomo") if isinstance(profile, dict) else {}
-    contour_profile = mihomo_profile.get("contours") if isinstance(mihomo_profile, dict) else {}
-
     rules_effective = _resolve_rules_effective_artifact(
         manifest,
         rules_effective_loader=rules_effective_loader,
@@ -133,7 +129,6 @@ def render_owned_table_candidate(
         if isinstance(vpn_contour, dict)
         else "0x00000200"
     )
-    selective_path_kind = str(contour_profile.get("selective_path_kind") or "ip_only").strip().lower()
     selective_vpn_policy_ready = bool(preflight.get("selective_vpn_policy_ready", False))
     selective_degraded = bool(preflight.get("selective_degraded", False))
     scoped_vpn_sets = _build_scoped_vpn_sets(manifest)

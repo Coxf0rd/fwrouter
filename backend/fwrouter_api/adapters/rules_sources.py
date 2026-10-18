@@ -329,7 +329,6 @@ class RulesSourceAdapter:
         if commit_metadata is None:
             return None
 
-        settings = get_settings()
         commit = str(commit_metadata.get("commit") or "").strip()
         commit_date = str(commit_metadata.get("commit_date") or "").strip() or None
         resolved_ref = str(commit_metadata.get("resolved_ref") or spec.ref or "HEAD")

@@ -30,3 +30,7 @@ ruff check --config ruff.toml --select F,E9 --target-version py311 --ignore-noqa
 ```
 
 Do not run a repository-wide `F` or broad style/format pass and call the result a clean baseline. Current untouched files contain pre-existing unused-name/style debt; this gate deliberately prevents new debt in changed files while global critical-name checks remain enabled.
+
+The safe-debt cleanup package records its source-only before/after counts and deferred ownership review in the [Package1 report](audits/ruff_debt_safe_package1_2026-10-18/REPORT.md). Historical baseline reports remain unchanged; a reduced finding count does not imply all remaining imports are unnecessary.
+
+The [complex import/definition contract report](audits/ruff_complex_contracts_2026-10-18/REPORT.md) and [remaining findings register](audits/ruff_complex_contracts_2026-10-18/REMAINING_FINDINGS.md) supersede earlier debt counts in the same PR while preserving their historical evidence. Explicit facade exports preserve the baseline namespace; they are not blanket lint exemptions.
