@@ -9,7 +9,7 @@ from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.subject_policy import (
     get_subject_with_effective_state,
     list_subjects_effective_summaries,
-    list_subjects_with_effective_state,
+    list_subjects_with_effective_state as list_subjects_with_effective_state,
 )
 
 

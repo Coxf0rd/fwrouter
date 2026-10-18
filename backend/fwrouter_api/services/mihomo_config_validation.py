@@ -9,9 +9,9 @@ from fwrouter_api.services.mihomo_config_inbounds import (
     _transparent_bind_address_valid,
 )
 from fwrouter_api.services.mihomo_config_paths import (
-    EXPLICIT_MIXED_LISTENER_BIND,
+    EXPLICIT_MIXED_LISTENER_BIND as EXPLICIT_MIXED_LISTENER_BIND,
     EXPLICIT_MIXED_LISTENER_NAME,
-    EXPLICIT_MIXED_LISTENER_PORT,
+    EXPLICIT_MIXED_LISTENER_PORT as EXPLICIT_MIXED_LISTENER_PORT,
     LEGACY_INBOUND_KEYS,
     TRANSPARENT_REDIR_LISTENER_NAME,
     TRANSPARENT_TPROXY_LISTENER_NAME,

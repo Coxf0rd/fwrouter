@@ -9,7 +9,6 @@ from fwrouter_api.services.ui_display_settings_common import (
     UI_SYSTEM_VISIBILITY_DEFAULTS,
     _json_dumps,
     _json_loads,
-    _normalize_custom_external_systems,
     _slugify_system_id,
 )
 

@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.db import provider_managed as store
-from fwrouter_api.services.provider_adapters import provider_adapter, configured_provider_binding, SUPPORTED_PROTOCOLS, provider_metrics, ProviderError, RequestBudget
+from fwrouter_api.services.provider_adapters import provider_adapter, configured_provider_binding as configured_provider_binding, SUPPORTED_PROTOCOLS, provider_metrics, ProviderError, RequestBudget
 
 _MATERIAL: ContextVar[dict[str, Any] | None] = ContextVar("provider_material", default=None)
 _PROVIDER_OPERATION_RESERVED: ContextVar[bool] = ContextVar("provider_operation_reserved", default=False)

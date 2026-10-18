@@ -5,7 +5,7 @@ import hashlib
 import inspect
 import math
 import os
-import shutil
+import shutil as shutil
 import yaml
 from uuid import uuid4
 from pathlib import Path

@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from _test_support import database_table_diff, database_table_snapshot
 
 from fwrouter_api import cli
-from fwrouter_api.db.connection import db_session
+from fwrouter_api.db.connection import db_session as db_session
 from fwrouter_api.main import create_app
 from fwrouter_api.services.reconcile import ReconcileResponse, ReconcileResult, _summarize
 

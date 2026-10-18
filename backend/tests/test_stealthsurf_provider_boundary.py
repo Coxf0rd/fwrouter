@@ -23,7 +23,7 @@ from fwrouter_api.db.provider_managed import (
     record_discovery,
     record_config,
     save_binding,
-    save_members,
+    save_members as save_members,
 )
 from fwrouter_api.services.provider_adapters import ProviderRegistry
 

@@ -15,20 +15,9 @@ from fwrouter_api.services.xray_clients import (
     update_xray_client_alias,
     xray_service_call,
 )
-from fwrouter_api.services.xray_common import (
-    _reload_failed_result,
-    _strip_raw_payload,
-    _xray_client_create_preflight,
-    _xray_managed_runtime_blocked,
-)
 from fwrouter_api.services.xray_materialize import materialize_xray_runtime_bindings
 from fwrouter_api.services.xray_status import get_xray_status
 from fwrouter_api.services.xray_subscription_service import (
-    _full_xray_client_uri,
-    _is_subscription_profile_email,
-    _upsert_xray_subject_server_override,
-    _vpn_auto_servers_for_xray_subscription,
-    _vpn_auto_xray_client_email,
     delete_xray_subscription_profile,
     export_subscription_profile_text,
     export_xray_subscription,

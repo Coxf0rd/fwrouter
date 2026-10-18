@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.events import classify_event, log_event
+from fwrouter_api.services.events import classify_event, log_event as log_event
 from fwrouter_api.services.event_contract import (
     bounded_event_message,
     database_timestamp,

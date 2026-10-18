@@ -2,7 +2,7 @@ name: Phase D branch validation (temporary)
 
 on:
   push:
-    branches: [stage/test-architecture-ci-stabilization, fix/api-runtime-health-scale-stability, fix/startup-scale-concurrent-disconnect, fix/proof-only-legacy-admission]
+    branches: [stage/test-architecture-ci-stabilization, fix/api-runtime-health-scale-stability, fix/startup-scale-concurrent-disconnect, fix/proof-only-legacy-admission, cleanup/ruff-completion-startup-audit]
 
 permissions:
   contents: read
@@ -24,6 +24,7 @@ jobs:
       - id: stage
         env:
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          GITHUB_REF: ${{ github.ref }}
         run: |
           python3 - <<'PY'
           import os
@@ -51,6 +52,7 @@ jobs:
               "ci:validate-unit-residual": "unit-residual",
               "ci:validate-unit-acceptance-tail": "unit-acceptance-tail",
               "ci:validate-identities": "identity-diagnostic",
+              "ci:validate-startup-comparison": "startup-comparison",
               "ci:validate-final-fixes": "final-regressions-diagnostic",
           }
           message = os.environ.get("HEAD_COMMIT_MESSAGE", "")
@@ -59,6 +61,10 @@ jobs:
               print("Commit message may contain only one ci:validate-* marker", file=sys.stderr)
               raise SystemExit(2)
           stage = selected[0] if selected else "preflight"
+          if (stage == "startup-comparison"
+                  and os.environ.get("GITHUB_REF") != "refs/heads/cleanup/ruff-completion-startup-audit"):
+              print("startup comparison is restricted to its exact authorized branch", file=sys.stderr)
+              raise SystemExit(2)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"stage={stage}\n")
           print(f"Selected controlled validation stage: {stage}")
@@ -154,7 +160,7 @@ jobs:
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
       - name: Check full Phase D delta syntax and whitespace from fixed checkpoint
         env:
-          PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/proof-only-legacy-admission' && '9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || ((needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345') }}
+          PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/proof-only-legacy-admission' && '9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || (needs.select-stage.outputs.stage == 'startup-comparison' && '47cfd63fc220f2890e140da27ff54c91a8a2c7a1') || ((needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345') }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
@@ -662,10 +668,11 @@ jobs:
        needs.select-stage.outputs.stage == 'kernel-recovery-diagnostic' ||
        needs.select-stage.outputs.stage == 'packet-diagnostic' ||
        needs.select-stage.outputs.stage == 'identity-diagnostic' ||
+       needs.select-stage.outputs.stage == 'startup-comparison' ||
        needs.select-stage.outputs.stage == 'final-regressions-diagnostic' ||
        needs.select-stage.outputs.stage == 'targets')
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ needs.select-stage.outputs.stage == 'startup-comparison' && 120 || 30 }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -680,7 +687,7 @@ jobs:
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
       - name: Bind diagnostic to fixed source and complete Phase D plan
         env:
-          PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/proof-only-legacy-admission' && '9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || ((needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345') }}
+          PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/proof-only-legacy-admission' && '9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || (needs.select-stage.outputs.stage == 'startup-comparison' && '47cfd63fc220f2890e140da27ff54c91a8a2c7a1') || ((needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345') }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
@@ -699,7 +706,7 @@ jobs:
           cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" \
             "$RUNNER_TEMP/phase-diagnostic-runtime-inputs.json"
       - name: Run the fixed application/native diagnostic or kernel preflight
-        if: needs.select-stage.outputs.stage != 'identity-diagnostic'
+        if: needs.select-stage.outputs.stage != 'identity-diagnostic' && needs.select-stage.outputs.stage != 'startup-comparison'
         env:
           VALIDATION_STAGE: ${{ needs.select-stage.outputs.stage }}
         run: |
@@ -855,6 +862,18 @@ jobs:
           print(json.dumps(result, sort_keys=True))
           raise SystemExit(bool(errors))
           PY
+      - name: Run matched hosted startup comparison across three immutable sources
+        if: needs.select-stage.outputs.stage == 'startup-comparison'
+        env:
+          CANDIDATE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python tests/acceptance/startup_comparison.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --runner-temp "$RUNNER_TEMP" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --plan-digest "$FWROUTER_ACCEPTANCE_PLAN_DIGEST" \
+            --runtime-inputs "$RUNNER_TEMP/phase-diagnostic-runtime-inputs.json"
       - name: Validate the strict application/native smoke receipt
         if: success() && needs.select-stage.outputs.stage == 'minimal'
         env:
@@ -930,6 +949,7 @@ jobs:
           name: phase-d-xray-diagnostic-${{ github.sha }}
           path: |
             ${{ runner.temp }}/phase-d-identities/**
+            ${{ runner.temp }}/phase-d-startup-comparison/**
             ${{ runner.temp }}/phase-d-diagnostic-plan-copy.json
             ${{ runner.temp }}/phase-diagnostic-*.log
             ${{ runner.temp }}/phase-diagnostic-runtime-inputs.json

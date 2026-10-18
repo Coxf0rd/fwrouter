@@ -280,6 +280,11 @@ class GateContractTests(unittest.TestCase):
             "github.ref == 'refs/heads/fix/proof-only-legacy-admission' && "
             "'9a48562ab347f6e5324f24504cec1ecbc9f48f7c'"))
         self.assertIn(
+            "needs.select-stage.outputs.stage == 'startup-comparison' && "
+            "'47cfd63fc220f2890e140da27ff54c91a8a2c7a1'",
+            workflow,
+        )
+        self.assertIn(
             "PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/proof-only-legacy-admission' && "
             "'9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || "
             "'6bdf37e9c73b5728b8d50e971f34d848610eb345' }}", workflow)
@@ -480,15 +485,42 @@ class GateContractTests(unittest.TestCase):
         ruff_rows = [row for row in uv_lock["package"] if row["name"] == "ruff"]
         self.assertEqual(["0.17.0"], [row["version"] for row in ruff_rows])
 
-    def test_global_name_check_uses_only_tracked_maintained_python_and_f821_family(self) -> None:
+    def test_global_static_check_uses_only_tracked_maintained_python_and_full_rules(self) -> None:
         paths = ["backend/main.py", "tests/test_main.py"]
         with tempfile.TemporaryDirectory(prefix="fwrouter-global-f821-contract-") as temp, \
              mock.patch.object(gate, "tracked_maintained_python_paths", return_value=paths), \
              mock.patch.object(gate, "check_ruff_paths", return_value=[]) as checker:
             self.assertEqual([], gate.check_tracked_python_undefined_names(Path(temp)))
         checker.assert_called_once_with(
-            paths, mock.ANY, rules="F821,F822,F823", label="F821,F822,F823",
+            paths, mock.ANY, rules="F,E9", label="F,E9",
         )
+
+    def test_global_static_canaries_reject_unused_names_and_invalid_syntax(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix=".fwrouter-global-static-canary-", dir=gate.ROOT,
+        ) as temp:
+            root = Path(temp)
+            fixtures = {
+                "valid.py": "value = 1\nprint(value)\n",
+                "unused_import.py": "import json  # noqa: F401\n",
+                "unused_local.py": "def sample():\n    value = 1  # noqa: F841\n",
+                "unbound_local.py": "value = 1\ndef sample():\n    value += 1\n",
+                "syntax_error.py": "def incomplete(:\n    pass\n",
+            }
+            for name, source in fixtures.items():
+                (root / name).write_text(source, encoding="utf-8")
+
+            paths = [f"{root.name}/{name}" for name in fixtures]
+            owned = root / "owned"
+            owned.mkdir()
+            with mock.patch.object(gate, "tracked_maintained_python_paths", return_value=paths):
+                problems = gate.check_tracked_python_undefined_names(owned)
+
+            detail = " ".join(problems)
+            self.assertIn("F401", detail)
+            self.assertIn("F841", detail)
+            self.assertIn("F823", detail)
+            self.assertIn("invalid-syntax", detail)
 
     def test_changed_python_inventory_rejects_symlinks_and_path_escape(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fwrouter-static-path-safety-") as temp:

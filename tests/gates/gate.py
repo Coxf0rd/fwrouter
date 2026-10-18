@@ -36,7 +36,7 @@ MAX_REPORT_BYTES = 8 * 1024 * 1024
 RUFF_VERSION = "0.17.0"
 RUFF_CONFIG = ROOT / "ruff.toml"
 RUFF_CHANGED_RULES = "F,E9"
-RUFF_GLOBAL_RULES = "F821,F822,F823"
+RUFF_GLOBAL_RULES = "F,E9"
 MAX_RUFF_PATHS = 512
 MAX_RUFF_OUTPUT_BYTES = 32768
 LEVELS = {f"L{i}" for i in range(8)}
@@ -1589,7 +1589,7 @@ def verify_ruff_static_behavior(owned: Path) -> list[str]:
             "unused_import.py": "import json  # noqa: F401\n",
             "unused_local.py": "def unused_value():\n    value = 42  # noqa: F841\n",
             "missing_export.py": '__all__ = ["missing_symbol"]\n',
-            "unbound_local.py": "def unbound():\n    print(value)\n    value = 1\n",
+            "unbound_local.py": "value = 1\ndef unbound():\n    value += 1\n",
             "syntax_error.py": "def incomplete(:\n    pass\n",
         }
         for name, source in fixtures.items():

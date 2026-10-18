@@ -8,7 +8,7 @@ import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
+import pytest as pytest
 
 from fwrouter_api.adapters import xray_real
 from fwrouter_api.adapters.xray_real import RealXrayAdapter

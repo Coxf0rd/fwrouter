@@ -7,7 +7,6 @@ from fwrouter_api.services.rules_state_files import get_manual_rules_texts
 from fwrouter_api.services.rules_state_metadata import _upsert_ruleset_metadata
 from fwrouter_api.services.rules_state_store import (
     _rules_state_with_updates,
-    _upsert_rules_state_record,
     get_rules_state,
 )
 

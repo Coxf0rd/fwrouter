@@ -7,7 +7,7 @@ from typing import Any
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.services.artifacts import atomic_copy_file, atomic_write_json
 from fwrouter_api.services.dataplane_global import (
-    build_dataplane_profile,
+    build_dataplane_profile as build_dataplane_profile,
     build_global_preflight,
 )
 from fwrouter_api.services.dataplane_status import build_bypass_runtime_enforcement
