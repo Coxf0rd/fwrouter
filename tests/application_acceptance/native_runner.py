@@ -15,7 +15,6 @@ import tempfile
 import threading
 import time
 import urllib.request
-from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any

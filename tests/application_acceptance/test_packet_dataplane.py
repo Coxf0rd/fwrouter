@@ -3307,7 +3307,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
         expect_success=False,
     )
     unsupported_tcp_phase = _probe_vpn_tcp_regression(stack, "vpn-tcp-after-unsupported", record_property)
-    supported_again = _refresh_packet_capability(
+    _refresh_packet_capability(
         stack, api, bridge, source_ref, "true", "supported", logical_id, original_member_id, record_property,
     )
 
@@ -3361,7 +3361,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
             "after": preferences_after_empty_pool,
         },
     }
-    restored_pool_native = _assert_packet_runtime(stack, mode="vpn", policy_required=True)
+    _assert_packet_runtime(stack, mode="vpn", policy_required=True)
 
     code, policy = http_json(f"{api}/subscription/sources/{source_ref}/provider/configuration",
                              method="POST", payload={"allow_automatic_member_switch": False})

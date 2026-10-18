@@ -23,9 +23,9 @@ from fwrouter_api.adapters.xray_common import (
     XRAY_INBOUND_TAG,
     XRAY_LOG_ROOT,
     XRAY_MANAGED_DNS_OUTBOUND_TAG,
-    XRAY_PUBLIC_HOST,
+    XRAY_PUBLIC_HOST as XRAY_PUBLIC_HOST,
     XRAY_PUBLIC_PATH,
-    XRAY_PUBLIC_PORT,
+    XRAY_PUBLIC_PORT as XRAY_PUBLIC_PORT,
     XRAY_TRANSPORT,
     XrayAdapter,
     XrayAdapterError,
@@ -1002,12 +1002,6 @@ class RealXrayAdapter(XrayAdapter):
             for item in desired_clients
             if str(item.get("email") or "").strip()
         }
-        existing_by_email = {
-            str(client.email or "").strip().lower(): client
-            for client in clients
-            if str(client.email or "").strip()
-        }
-
         created: list[dict[str, Any]] = []
         deleted: list[dict[str, Any]] = []
         recreated: list[dict[str, Any]] = []

@@ -10,7 +10,36 @@ from fwrouter_api.services.external_source_observations import (
 from fwrouter_api.services.live_probe_cache import peek_live_probe_cache
 from fwrouter_api.services.servers import get_routing_global_state
 from fwrouter_api.services.ui_display_settings import _system_visible
-from fwrouter_api.services.ui_state_common import *
+from fwrouter_api.services.ui_state_common import (
+    DEFAULT_TRAFFIC_PANEL_KEYS,
+    KINDS_BY_INVENTORY_ROLE,
+    TRAFFIC_METRIC_KEYS,
+    _active_user_override_modes,
+    _activity_state,
+    _aggregate_subject_health,
+    _display_system_id_for_external_network_source,
+    _domain_category_for_inventory_role,
+    _human_xray_email,
+    _implementation_label_for_kind,
+    _latest_text,
+    _localpart,
+    _normalize_inventory_role,
+    _panel_traffic_metrics,
+    _row_bool,
+    _subject_health_by_subject_for_ui,
+    _subject_traffic_metric_keys,
+    _subscription_client_for_group,
+    _subscription_client_map,
+    _subscription_client_recent,
+    _subscription_group_token,
+    _traffic_maps,
+    _xray_group_mode,
+    _xray_internal,
+    _xray_legacy_subscription_shadow,
+    _xray_opaque_subscription_label,
+    _xray_service_subject,
+    _xray_subscription_group,
+)
 from fwrouter_api.services.ui_text import _ui_text_title
 from fwrouter_api.services.ui_state_settings import get_ui_display_settings
 
@@ -323,7 +352,6 @@ def list_ui_settings_inventory(
                         if not subscription_client:
                             continue
                         group_label = str(subscription_client.get("display_name") or "").strip() or group_label
-                        subscription_recent = _subscription_client_recent(subscription_client)
                         bucket = grouped_xray.setdefault(
                             group_subject_id,
                             {

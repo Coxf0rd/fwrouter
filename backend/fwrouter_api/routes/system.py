@@ -25,7 +25,7 @@ def health() -> ApiResponse:
         schema_state = get_cached_schema_state()
         schema_summary = summarize_schema_state(schema_state)
         db_status = "healthy" if schema_summary["ok"] else "failed"
-    except sqlite3.Error as exc:
+    except sqlite3.Error:
         db_status = "failed"
         db_unavailable = True
         logger.exception("Database health check failed")
@@ -69,7 +69,7 @@ def system_summary() -> ApiResponse:
         data = build_system_summary(schema_state=schema_state)
         # Filesystem layout is an operator diagnostic and is not part of the public API contract.
         data.pop("paths", None)
-    except sqlite3.Error as exc:
+    except sqlite3.Error:
         settings = get_settings()
         logger.exception("System summary database query failed")
         return ApiResponse(

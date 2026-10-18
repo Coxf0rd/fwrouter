@@ -294,7 +294,7 @@ def test_scheduler_critical_drift_bypasses_quiet_window(monkeypatch) -> None:
 def test_startup_bypass_clears_only_after_full_success(monkeypatch) -> None:
     from fwrouter_api.services import bootstrap
 
-    marked = _mark()
+    _mark()
     success = {
         "ok": True,
         "status": "success",
@@ -319,7 +319,7 @@ def test_startup_bypass_clears_only_after_full_success(monkeypatch) -> None:
 def test_authoritative_subscription_bypass_clears_only_after_final_profile_promotion(monkeypatch) -> None:
     from fwrouter_api.services import subscription_pipeline
 
-    marked = _mark()
+    _mark()
     full_success = {
         "ok": True,
         "runtime_verified": True,

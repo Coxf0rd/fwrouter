@@ -6,10 +6,11 @@ from fwrouter_api.db.connection import initialize_database
 import json
 from pathlib import Path
 from datetime import datetime, timezone
+from threading import Event, Thread, current_thread
 from types import SimpleNamespace
 import pytest
 
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.logs import list_technical_logs
 from fwrouter_api.services.modules import get_module_state, set_module_desired_state
@@ -1849,6 +1850,396 @@ def test_watchdog_post_reselect_single_stall_reaches_refresh_with_real_confirmat
     result = run_vpn_watchdog_auto_check(allow_switch=True, traffic_window_seconds=300)
     assert result["status"] == "failover_applied"
     assert calls == ["full_refresh", "selector"]
+
+
+def test_idle_active_failure_does_not_replace_durable_pending_recovery(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import watchdog_failure_state
+
+    pending = {
+        "phase": "provider_recovery",
+        "generation": "synthetic-generation-1",
+        "attempt_id": "synthetic-attempt-1",
+        "path_key": "runtime:synthetic-server",
+        "traffic_decision_id": "synthetic-stall-1",
+    }
+    set_recovery_pending(pending)
+    before = get_recovery_pending()
+    before_candidate = watchdog_failure_state.load_watchdog_runtime_state()["failure_candidate"]
+    assert before == pending
+    assert before_candidate["kind"] == "traffic_recovery"
+
+    result = watchdog_failure_state.idle_active_failure_confirmation(
+        active_server_id="synthetic-server",
+        active_check={"status": "failed", "checked_at": "2026-07-01T00:01:00+00:00"},
+        traffic_signal={
+            "last_collected_at": "2026-07-01T00:01:00+00:00",
+            "decision_id": "synthetic-idle-check-1",
+            "response_observed": False,
+            "outbound_observed": False,
+        },
+        confirm_seconds=60,
+        bad_checks_required=2,
+        window_checks=2,
+        window_bad_checks=2,
+        path_key="runtime:synthetic-server",
+        now_fn=lambda: datetime(2026, 7, 1, 0, 1, tzinfo=timezone.utc),
+        parse_timestamp=lambda value: datetime.fromisoformat(value) if value else None,
+    )
+
+    assert result["confirmed"] is False
+    assert result["reason"] == "recovery_pending"
+    # Re-read SQLite rather than the in-process candidate: pending recovery
+    # ownership and the complete owner candidate must survive this observation.
+    assert get_recovery_pending() == pending
+    assert watchdog_failure_state.load_watchdog_runtime_state()["failure_candidate"] == before_candidate
+
+    next_pending = {**pending, "phase": "traffic_verifying", "traffic_decision_id": "synthetic-stall-2"}
+    assert watchdog_failure_state.compare_and_set_recovery_pending(pending, next_pending) is True
+    assert get_recovery_pending() == next_pending
+
+
+def test_active_quality_snapshot_cas_preserves_concurrent_recovery_marker(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import watchdog_failure_state
+
+    snapshot_loaded = Event()
+    allow_active_write = Event()
+    active_result: dict[str, object] = {}
+    active_errors: list[BaseException] = []
+    original_load = watchdog_failure_state.load_watchdog_runtime_state
+    cached_candidate_before = watchdog_failure_state.get_traffic_failure_candidate()
+
+    def delayed_active_read(**kwargs):
+        state = original_load(**kwargs)
+        if current_thread().name == "watchdog-active-quality-race":
+            snapshot_loaded.set()
+            if not allow_active_write.wait(timeout=5):
+                raise AssertionError("timed out waiting to resume active-quality snapshot")
+        return state
+
+    monkeypatch.setattr(watchdog_failure_state, "load_watchdog_runtime_state", delayed_active_read)
+
+    def run_active_confirmation() -> None:
+        try:
+            active_result["value"] = watchdog_failure_state.idle_active_failure_confirmation(
+                active_server_id="synthetic-server",
+                active_check={"status": "failed", "checked_at": "2026-07-01T00:01:00+00:00"},
+                traffic_signal={
+                    "last_collected_at": "2026-07-01T00:01:00+00:00",
+                    "decision_id": "synthetic-idle-race-1",
+                    "response_observed": False,
+                    "outbound_observed": False,
+                },
+                confirm_seconds=60,
+                bad_checks_required=2,
+                window_checks=2,
+                window_bad_checks=2,
+                path_key="runtime:synthetic-server",
+                now_fn=lambda: datetime(2026, 7, 1, 0, 1, tzinfo=timezone.utc),
+                parse_timestamp=lambda value: datetime.fromisoformat(value) if value else None,
+            )
+        except BaseException as exc:  # propagate worker failures to the test thread
+            active_errors.append(exc)
+
+    active_thread = Thread(target=run_active_confirmation, name="watchdog-active-quality-race")
+    active_thread.start()
+    try:
+        assert snapshot_loaded.wait(timeout=5), "active-quality read did not reach the race barrier"
+        pending = {
+            "phase": "provider_recovery",
+            "generation": "synthetic-generation-race",
+            "attempt_id": "synthetic-attempt-race",
+            "path_key": "runtime:synthetic-server",
+            "traffic_decision_id": "synthetic-stall-race-1",
+        }
+        watchdog_failure_state.set_recovery_pending(pending)
+        advanced_pending = {**pending, "phase": "traffic_verifying", "traffic_decision_id": "synthetic-stall-race-2"}
+        assert watchdog_failure_state.compare_and_set_recovery_pending(pending, advanced_pending) is True
+    finally:
+        allow_active_write.set()
+        active_thread.join(timeout=5)
+
+    assert not active_thread.is_alive(), "active-quality worker did not finish"
+    assert active_errors == []
+    result = active_result["value"]
+    assert isinstance(result, dict)
+    assert result["confirmed"] is False
+    assert result["pending"] is False
+    assert result["reason"] == "watchdog_state_changed"
+    # Concurrent publication and provider-owned CAS advancement must both
+    # survive the stale active-quality snapshot's attempted write.
+    persisted = original_load()
+    assert persisted["failure_candidate"]["kind"] == "traffic_recovery"
+    assert persisted["failure_candidate"]["recovery_pending"] == advanced_pending
+    assert watchdog_failure_state.get_recovery_pending() == advanced_pending
+    assert watchdog_failure_state.get_traffic_failure_candidate() == cached_candidate_before
+
+
+def test_active_quality_recovery_snapshot_cas_preserves_concurrent_marker(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import watchdog_failure_state
+    from fwrouter_api.services.watchdog_runtime_state import update_watchdog_runtime_state
+
+    active_candidate = {
+        "kind": "active_quality_degraded",
+        "path_key": "runtime:synthetic-server",
+        "server_id": "synthetic-server",
+        "first_seen_at": "2026-07-01T00:00:00+00:00",
+        "last_seen_at": "2026-07-01T00:00:00+00:00",
+        "decision_id": "synthetic-idle-degraded-1",
+        "bad_checks": 1,
+        "good_checks": 0,
+        "quality_checks": [{
+            "checked_at": "2026-07-01T00:00:00+00:00",
+            "decision_id": "synthetic-idle-degraded-1",
+            "degraded": True,
+        }],
+    }
+    update_watchdog_runtime_state(
+        path_key="runtime:synthetic-server",
+        failure_candidate=active_candidate,
+        last_processed_decision_id="synthetic-idle-degraded-1",
+    )
+    watchdog_failure_state.set_traffic_failure_candidate(active_candidate)
+
+    snapshot_loaded = Event()
+    allow_recovery_write = Event()
+    recovery_result: dict[str, object] = {}
+    recovery_errors: list[BaseException] = []
+    original_load = watchdog_failure_state.load_watchdog_runtime_state
+    cached_candidate_before = watchdog_failure_state.get_traffic_failure_candidate()
+
+    def delayed_recovery_read(**kwargs):
+        state = original_load(**kwargs)
+        if current_thread().name == "watchdog-quality-recovery-race":
+            snapshot_loaded.set()
+            if not allow_recovery_write.wait(timeout=5):
+                raise AssertionError("timed out waiting to resume active-quality recovery snapshot")
+        return state
+
+    monkeypatch.setattr(watchdog_failure_state, "load_watchdog_runtime_state", delayed_recovery_read)
+
+    def run_recovery_confirmation() -> None:
+        try:
+            recovery_result["value"] = watchdog_failure_state.active_quality_recovery_confirmation(
+                active_server_id="synthetic-server",
+                traffic_signal={
+                    "decision_id": "synthetic-idle-recovery-1",
+                    "last_collected_at": "2026-07-01T00:01:00+00:00",
+                    "response_observed": True,
+                    "outbound_observed": True,
+                },
+                recovery_checks_required=2,
+                window_checks=3,
+                path_key="runtime:synthetic-server",
+                now_fn=lambda: datetime(2026, 7, 1, 0, 1, tzinfo=timezone.utc),
+            )
+        except BaseException as exc:  # propagate worker failures to the test thread
+            recovery_errors.append(exc)
+
+    recovery_thread = Thread(target=run_recovery_confirmation, name="watchdog-quality-recovery-race")
+    recovery_thread.start()
+    try:
+        assert snapshot_loaded.wait(timeout=5), "active-quality recovery read missed the race barrier"
+        pending = {
+            "phase": "provider_recovery",
+            "generation": "synthetic-generation-recovery-race",
+            "attempt_id": "synthetic-attempt-recovery-race",
+            "path_key": "runtime:synthetic-server",
+            "traffic_decision_id": "synthetic-recovery-stall-1",
+        }
+        watchdog_failure_state.set_recovery_pending(pending)
+        advanced_pending = {**pending, "phase": "traffic_verifying", "traffic_decision_id": "synthetic-recovery-stall-2"}
+        assert watchdog_failure_state.compare_and_set_recovery_pending(pending, advanced_pending) is True
+    finally:
+        allow_recovery_write.set()
+        recovery_thread.join(timeout=5)
+
+    assert not recovery_thread.is_alive(), "active-quality recovery worker did not finish"
+    assert recovery_errors == []
+    result = recovery_result["value"]
+    assert isinstance(result, dict)
+    assert result["recovered"] is False
+    assert result["pending"] is False
+    assert result["reason"] == "watchdog_state_changed"
+    persisted = original_load()
+    assert persisted["failure_candidate"]["kind"] == "active_quality_degraded"
+    assert persisted["failure_candidate"]["recovery_pending"] == advanced_pending
+    assert watchdog_failure_state.get_recovery_pending() == advanced_pending
+    assert watchdog_failure_state.get_traffic_failure_candidate() == cached_candidate_before
+
+
+def test_active_quality_paths_leave_preexisting_recovery_marker_owned(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import watchdog_failure_state
+    from fwrouter_api.services.watchdog_runtime_state import update_watchdog_runtime_state
+
+    active_candidate = {
+        "kind": "active_quality_degraded",
+        "path_key": "runtime:synthetic-server",
+        "server_id": "synthetic-server",
+        "first_seen_at": "2026-07-01T00:00:00+00:00",
+        "last_seen_at": "2026-07-01T00:00:00+00:00",
+        "decision_id": "synthetic-idle-degraded-1",
+        "bad_checks": 1,
+        "good_checks": 0,
+        "quality_checks": [{
+            "checked_at": "2026-07-01T00:00:00+00:00",
+            "decision_id": "synthetic-idle-degraded-1",
+            "degraded": True,
+        }],
+    }
+    update_watchdog_runtime_state(
+        path_key="runtime:synthetic-server",
+        failure_candidate=active_candidate,
+        last_processed_decision_id="synthetic-idle-degraded-1",
+    )
+    watchdog_failure_state.set_traffic_failure_candidate(active_candidate)
+    pending = {
+        "phase": "provider_recovery",
+        "generation": "synthetic-generation-existing-marker",
+        "attempt_id": "synthetic-attempt-existing-marker",
+        "path_key": "runtime:synthetic-server",
+        "traffic_decision_id": "synthetic-stall-existing-marker",
+    }
+    watchdog_failure_state.set_recovery_pending(pending)
+    before = watchdog_failure_state.load_watchdog_runtime_state()["failure_candidate"]
+
+    degraded = watchdog_failure_state.idle_active_failure_confirmation(
+        active_server_id="synthetic-server",
+        active_check={"status": "failed", "checked_at": "2026-07-01T00:01:00+00:00"},
+        traffic_signal={
+            "last_collected_at": "2026-07-01T00:01:00+00:00",
+            "decision_id": "synthetic-idle-check-existing-marker",
+            "response_observed": False,
+            "outbound_observed": False,
+        },
+        confirm_seconds=60,
+        bad_checks_required=2,
+        window_checks=2,
+        window_bad_checks=2,
+        path_key="runtime:synthetic-server",
+        now_fn=lambda: datetime(2026, 7, 1, 0, 1, tzinfo=timezone.utc),
+        parse_timestamp=lambda value: datetime.fromisoformat(value) if value else None,
+    )
+    recovered = watchdog_failure_state.active_quality_recovery_confirmation(
+        active_server_id="synthetic-server",
+        traffic_signal={
+            "decision_id": "synthetic-recovery-check-existing-marker",
+            "last_collected_at": "2026-07-01T00:01:00+00:00",
+            "response_observed": True,
+            "outbound_observed": True,
+        },
+        recovery_checks_required=1,
+        window_checks=2,
+        path_key="runtime:synthetic-server",
+        now_fn=lambda: datetime(2026, 7, 1, 0, 1, tzinfo=timezone.utc),
+    )
+
+    assert degraded["confirmed"] is False
+    assert degraded["reason"] == "recovery_pending"
+    assert recovered["recovered"] is False
+    assert recovered["reason"] == "recovery_pending"
+    assert watchdog_failure_state.load_watchdog_runtime_state()["failure_candidate"] == before
+    assert watchdog_failure_state.get_recovery_pending() == pending
+
+
+def test_conditional_watchdog_state_update_fails_closed_on_database_error(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import watchdog_runtime_state
+
+    def fail_before_write():
+        raise RuntimeError("synthetic database unavailable")
+
+    monkeypatch.setattr(watchdog_runtime_state, "ensure_watchdog_runtime_state_row", fail_before_write)
+    assert watchdog_runtime_state.update_watchdog_runtime_state(
+        path_key="runtime:synthetic-server",
+        failure_candidate={"kind": "active_quality_degraded"},
+        last_processed_decision_id="synthetic-decision-1",
+        expected_failure_candidate=None,
+        expected_path_key=None,
+        expected_last_processed_decision_id=None,
+    ) is None
+
+
+def test_active_quality_reads_fail_closed_without_using_cached_candidate(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import watchdog_failure_state, watchdog_runtime_state
+    from fwrouter_api.services.watchdog_runtime_state import update_watchdog_runtime_state
+
+    candidate = {
+        "kind": "active_quality_degraded",
+        "path_key": "runtime:synthetic-server",
+        "server_id": "synthetic-server",
+        "first_seen_at": "2026-07-01T00:00:00+00:00",
+        "last_seen_at": "2026-07-01T00:00:00+00:00",
+        "decision_id": "synthetic-idle-degraded-1",
+        "bad_checks": 1,
+        "good_checks": 0,
+        "quality_checks": [{
+            "checked_at": "2026-07-01T00:00:00+00:00",
+            "decision_id": "synthetic-idle-degraded-1",
+            "degraded": True,
+        }],
+    }
+    update_watchdog_runtime_state(
+        path_key="runtime:synthetic-server",
+        failure_candidate=candidate,
+        last_processed_decision_id="synthetic-idle-degraded-1",
+    )
+    watchdog_failure_state.set_traffic_failure_candidate(candidate)
+    cached_before = watchdog_failure_state.get_traffic_failure_candidate()
+    durable_before = watchdog_failure_state.load_watchdog_runtime_state()
+
+    def unavailable_db_session():
+        raise RuntimeError("synthetic database read unavailable")
+
+    with monkeypatch.context() as failing_database:
+        failing_database.setattr(watchdog_runtime_state, "db_session", unavailable_db_session)
+        degraded = watchdog_failure_state.idle_active_failure_confirmation(
+            active_server_id="synthetic-server",
+            active_check={"status": "failed", "checked_at": "2026-07-01T00:01:00+00:00"},
+            traffic_signal={
+                "last_collected_at": "2026-07-01T00:01:00+00:00",
+                "decision_id": "synthetic-idle-read-error-1",
+                "response_observed": False,
+                "outbound_observed": False,
+            },
+            confirm_seconds=60,
+            bad_checks_required=2,
+            window_checks=2,
+            window_bad_checks=2,
+            path_key="runtime:synthetic-server",
+            now_fn=lambda: datetime(2026, 7, 1, 0, 1, tzinfo=timezone.utc),
+            parse_timestamp=lambda value: datetime.fromisoformat(value) if value else None,
+        )
+        recovered = watchdog_failure_state.active_quality_recovery_confirmation(
+            active_server_id="synthetic-server",
+            traffic_signal={
+                "decision_id": "synthetic-recovery-read-error-1",
+                "last_collected_at": "2026-07-01T00:01:00+00:00",
+                "response_observed": True,
+                "outbound_observed": True,
+            },
+            recovery_checks_required=2,
+            window_checks=3,
+            path_key="runtime:synthetic-server",
+            now_fn=lambda: datetime(2026, 7, 1, 0, 1, tzinfo=timezone.utc),
+        )
+
+    assert degraded["confirmed"] is False
+    assert degraded["reason"] == "watchdog_state_unavailable"
+    assert recovered["recovered"] is False
+    assert recovered["reason"] == "watchdog_state_unavailable"
+    assert watchdog_failure_state.load_watchdog_runtime_state() == durable_before
+    assert watchdog_failure_state.get_traffic_failure_candidate() == cached_before
 
 
 def test_watchdog_recovery_phase_survives_restart_and_waits_for_distinct_traffic(

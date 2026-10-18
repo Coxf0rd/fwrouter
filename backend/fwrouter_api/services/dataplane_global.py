@@ -4,7 +4,6 @@ import json
 import ipaddress
 import sqlite3
 import subprocess
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -834,7 +833,6 @@ def build_applied_runtime_enforcement(
         "selective": bool(resolved_preflight["can_enforce_global_selective"]),
         "vpn": bool(resolved_preflight["can_enforce_global_vpn"]),
     }
-    selective_degraded = bool(resolved_preflight.get("selective_degraded"))
     active_mode_matches_intent = True
     live_mode = None
     live_selective_default = None

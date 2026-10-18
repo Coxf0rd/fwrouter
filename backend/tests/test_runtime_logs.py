@@ -1,7 +1,6 @@
 from __future__ import annotations
 from _test_support import configure_test_state_dir as _configure_env
 
-import json
 from pathlib import Path
 
 import pytest

@@ -487,11 +487,11 @@ def test_build_mihomo_config_scopes_subject_server_override_to_vpn_rules_only(
     selector_name = mihomo_config_service.subject_selector_name("lan:desktop")
     assert transparent_rules[:2] == [
         f"AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,instagram.com)),{selector_name}",
-        f"AND,((NETWORK,udp),(AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,instagram.com)))),REJECT",
+        "AND,((NETWORK,udp),(AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,instagram.com)))),REJECT",
     ]
     assert transparent_rules[2:4] == [
         f"AND,((SRC-IP-CIDR,192.168.0.51/32),(IP-CIDR,203.0.113.0/24)),{selector_name}",
-        f"AND,((NETWORK,udp),(AND,((SRC-IP-CIDR,192.168.0.51/32),(IP-CIDR,203.0.113.0/24)))),REJECT",
+        "AND,((NETWORK,udp),(AND,((SRC-IP-CIDR,192.168.0.51/32),(IP-CIDR,203.0.113.0/24)))),REJECT",
     ]
     assert f"AND,((SRC-IP-CIDR,192.168.0.51/32),(DOMAIN-SUFFIX,ru)),{selector_name}" not in transparent_rules
     assert not any(rule.startswith("SRC-IP-CIDR,192.168.0.51/32,") for rule in transparent_rules)
@@ -499,7 +499,7 @@ def test_build_mihomo_config_scopes_subject_server_override_to_vpn_rules_only(
     actual_full_vpn_rules = config["sub-rules"]["fwrouter-full-vpn"]
     expected_full_vpn_rules = [
         f"SRC-IP-CIDR,192.168.0.51/32,{selector_name}",
-        f"AND,((NETWORK,udp),(SRC-IP-CIDR,192.168.0.51/32)),REJECT",
+        "AND,((NETWORK,udp),(SRC-IP-CIDR,192.168.0.51/32)),REJECT",
         "MATCH,vpn-global",
         "NETWORK,udp,REJECT",
     ]

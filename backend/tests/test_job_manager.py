@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path
 
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import JobManager
 from fwrouter_api.services.apply_orchestrator import (
     INTENT_SET_GLOBAL_MODE,

@@ -1353,7 +1353,6 @@ def test_xray_reviewed_identity_migration_preserves_credentials_through_refresh_
     """Reviewed profile continuity reaches native Xray only through a fresh fenced generation."""
     stack = acceptance_stack
     state, native = stack["state"], stack["native"]
-    source_url = "https://identity.acceptance.invalid/subscription"
     tokens = [f"identity-public-{index}@acceptance.invalid" for index in range(7)]
     active_path = state / "xray" / "config.json"
 
