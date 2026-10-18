@@ -6,7 +6,7 @@ from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.auto_eligibility import provider_managed_legacy_sql, provider_internal_member_sql
-from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
+from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto as explicit_external_client_allows_virtual_vpn_auto
 
 
 VIRTUAL_XRAY_VPN_AUTO_SERVER_ID = "virtual:xray:vpn-auto"

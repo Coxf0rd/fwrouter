@@ -15,7 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
-from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT, XrayClient
+from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH as XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT as XRAY_PUBLIC_PORT, XrayClient
 from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guard_is_held, xray_writer_guarded
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
@@ -38,7 +38,6 @@ from fwrouter_api.services.subscription_profiles import (
 from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.xray_client_state import (
     _client_alias_map,
-    _set_local_alias,
     _sync_xray_inventory,
     _xray_subject_for_client,
     cleanup_xray_client_projection,
@@ -840,7 +839,7 @@ def _vpn_auto_servers_for_xray_subscription() -> list[dict[str, Any]]:
             """
         ).fetchall()
         proxy_rows = connection.execute(
-            f"""
+            """
             SELECT s.server_id, s.server_name, s.raw_json, ps.status AS ping_status, ps.last_ping_ms
             FROM servers AS s
             JOIN server_preferences AS p ON p.server_id = s.server_id
@@ -2185,8 +2184,6 @@ def _legacy_admission_runtime_fence_facts(admission: Any) -> dict[str, bool]:
         from fwrouter_api.services import mihomo_config
         from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
         from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
-        from fwrouter_api.services import dataplane_global
-        from fwrouter_api.services.live_probe_cache import get_live_probe_cache
         with db_session() as connection:
             core_fingerprint = _legacy_admission_core_runtime_fingerprint(connection)
             core_unavailable = _legacy_admission_core_unavailable_reason(connection)
@@ -3412,7 +3409,7 @@ def _update_xray_generation_checkpoint(
 
 
 def _capture_generation_auto_selection() -> dict[str, Any]:
-    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_fence
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
     with db_session() as connection:
         routing = connection.execute(
             "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, "
@@ -4472,7 +4469,6 @@ def _xray_generation_snapshots_changed(checkpoint_path: Path) -> bool:
 
 
 def _record_xray_generation_snapshot_postimage(checkpoint_path: Path) -> None:
-    from fwrouter_api.services.artifacts import atomic_write_text
 
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     tokens = list((data.get("subscription_snapshots") or {}).keys())
@@ -5366,7 +5362,6 @@ def reconcile_xray_subscription_profile_nodes(
 ) -> dict[str, Any]:
     """Run staged generation as guarded apply, unguarded verification, guarded publish."""
     with xray_writer_guard(timeout_seconds=30.0):
-        from fwrouter_api.services.artifacts import atomic_write_text
         from fwrouter_api.services import mihomo_config
         result = _reconcile_xray_subscription_profile_nodes_guarded(
             requested_by=requested_by, materialize=materialize,
@@ -5989,7 +5984,6 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
     pre_publication_verification = None
     if callable(verification_callback):
         if _defer_selection_verification and staged_generation is not None:
-            from fwrouter_api.services.artifacts import atomic_write_text
             checkpoint_data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
             checkpoint_data["selection_operation_id"] = checkpoint_data.get("generation_id")
             _atomic_write_private_checkpoint(checkpoint_path, json.dumps(checkpoint_data, sort_keys=True))

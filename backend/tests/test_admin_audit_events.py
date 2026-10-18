@@ -13,7 +13,7 @@ from fwrouter_api.services.apply_orchestrator_commits import (
     _stage_subject_admin_mode,
 )
 from fwrouter_api.services.apply_orchestrator_results import _log_mutation_result
-from fwrouter_api.services.events import create_event_context, list_recent_events, write_audit_event
+from fwrouter_api.services.events import create_event_context, list_recent_events as list_recent_events, write_audit_event
 from fwrouter_api.services.event_contract import reset_event_context, set_event_context
 from fwrouter_api.services.modules import set_module_desired_state, set_module_lifecycle_mode
 from fwrouter_api.services import server_preferences

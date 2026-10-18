@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fwrouter_api.core.config import get_settings
-from fwrouter_api.services.artifacts import atomic_write_text
+from fwrouter_api.services.artifacts import atomic_write_text as atomic_write_text
 
 
 def _utc_now() -> datetime:

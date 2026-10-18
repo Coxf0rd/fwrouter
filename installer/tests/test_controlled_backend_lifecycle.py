@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
+import os as os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace

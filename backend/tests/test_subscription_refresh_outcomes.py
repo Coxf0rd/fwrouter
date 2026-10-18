@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from fwrouter_api.services import mihomo_config as _mihomo_config  # initialize reconcile exports before test imports
 from fwrouter_api.services import mihomo_reconcile, subscription_pipeline, subscription_refresh_job
 from fwrouter_api.services.events import CORE_EVENT_CODE_CATALOG
 from fwrouter_api.services.ui_state_logs import UI_OPERATIONAL_EVENT_MESSAGES

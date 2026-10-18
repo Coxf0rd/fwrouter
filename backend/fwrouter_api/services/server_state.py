@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
+import json as json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.adapters.xray_common import xray_writer_guard
-from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
+from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto as explicit_external_client_allows_virtual_vpn_auto
 
 
 VIRTUAL_XRAY_VPN_AUTO_SERVER_ID = "virtual:xray:vpn-auto"

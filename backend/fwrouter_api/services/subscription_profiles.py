@@ -4,7 +4,7 @@ import base64
 import hashlib
 import json
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote as quote, urlencode, urlsplit, urlunsplit
 from uuid import NAMESPACE_DNS, uuid5
 
 from fwrouter_api.core.config import get_settings
@@ -628,7 +628,7 @@ def _subscription_servers() -> list[dict[str, Any]]:
             """
         ).fetchall()
         proxy_rows = connection.execute(
-            f"""
+            """
             SELECT s.server_id, s.server_name
             FROM servers AS s
             JOIN server_preferences AS p ON p.server_id = s.server_id

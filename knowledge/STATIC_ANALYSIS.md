@@ -4,8 +4,8 @@ FWRouter uses Ruff 0.17.0 for a bounded, fail-closed static check in the existin
 
 The policy has two scopes:
 
-- All tracked maintained Python files are checked for undefined names (`F821`) and invalid `__all__`/local-variable references (`F822`, `F823`). The 38 tracked `knowledge/**` audit/history scripts are excluded because they are evidence tooling, not maintained application/test source.
-- Every changed Python file is checked in full for Ruff `F` and `E9` rules. Inline `noqa` cannot suppress the gate. This means an edit to a file with old unused-import/local-variable findings must resolve those findings in the touched file; unchanged historical findings are not treated as a clean global `F` baseline.
+- All tracked maintained Python files are checked for the complete selected Ruff `F` and `E9` rules, including unused imports/locals, undefined names and invalid export/local references. The 38 tracked `knowledge/**` audit/history scripts are excluded because they are evidence tooling, not maintained application/test source.
+- Every changed Python file is checked in full for Ruff `F` and `E9` rules. Inline `noqa` cannot suppress the gate. This also covers deliberately changed historical scripts. The maintained-source baseline is now clean, so an unused import/local cannot return unnoticed in an untouched maintained file.
 
 The gate pins Ruff through the hash-locked `tests/gates/requirements-ci.txt`, checks the exact executable version, supplies the root [`ruff.toml`](../ruff.toml) explicitly, and uses bounded path count, timeout, and diagnostic output. This prevents nested project configuration or `noqa` comments from silently weakening CI. Ruff detects undefined names and unused imports/variables; it does not prove that dynamically loaded modules, runtime attributes, or application-level contracts resolve correctly. Type-checking is deferred based on the measured feasibility results in the [static-analysis foundation report](audits/static_analysis_foundation_2026-10-18/REPORT.md); no type-check gate is implied.
 
@@ -29,8 +29,10 @@ To inspect a particular touched file with the same strict changed-file rules:
 ruff check --config ruff.toml --select F,E9 --target-version py311 --ignore-noqa --no-cache -- path/to/file.py
 ```
 
-Do not run a repository-wide `F` or broad style/format pass and call the result a clean baseline. Current untouched files contain pre-existing unused-name/style debt; this gate deliberately prevents new debt in changed files while global critical-name checks remain enabled.
+The Ruff completion package establishes a clean global maintained-source `F/E9` baseline; it does not enable broad style/format rules or recursive checks of historical/private evidence. Earlier audit counts remain historical evidence. Retained module exports use explicit, tested contracts rather than blanket ignores.
 
 The safe-debt cleanup package records its source-only before/after counts and deferred ownership review in the [Package1 report](audits/ruff_debt_safe_package1_2026-10-18/REPORT.md). Historical baseline reports remain unchanged; a reduced finding count does not imply all remaining imports are unnecessary.
 
 The [complex import/definition contract report](audits/ruff_complex_contracts_2026-10-18/REPORT.md) and [remaining findings register](audits/ruff_complex_contracts_2026-10-18/REMAINING_FINDINGS.md) supersede earlier debt counts in the same PR while preserving their historical evidence. Explicit facade exports preserve the baseline namespace; they are not blanket lint exemptions.
+
+The [completion and startup investigation report](audits/ruff_completion_startup_2026-10-18/REPORT.md) records the final baseline and source/benchmark boundaries. Hosted startup diagnostics do not authorize production operations or prove performance gains from unrelated CI snapshots.

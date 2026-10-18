@@ -14,7 +14,7 @@ from fwrouter_api.adapters.xray_common import XrayApplyResult
 from fwrouter_api.services.server_subject_overrides import sync_applied_runtime_binding_override_statuses
 from fwrouter_api.services.xray_bindings import (
     collect_xray_client_mode_directives,
-    collect_xray_runtime_bindings,
+    collect_xray_runtime_bindings as collect_xray_runtime_bindings,
 )
 from fwrouter_api.services.xray_common import _strip_raw_payload, _xray_adapter, _xray_facade_attr, _xray_managed_runtime_blocked
 

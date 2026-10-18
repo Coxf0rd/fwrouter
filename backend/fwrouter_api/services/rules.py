@@ -1,66 +1,53 @@
 from __future__ import annotations
 
-import json
+import json as json
 from pathlib import Path
 from typing import Any
 
 from fwrouter_api.adapters.rules_sources import (
-    DEFAULT_RULES_SOURCE_ADAPTER,
-    RulesSourceFetchError,
+    DEFAULT_RULES_SOURCE_ADAPTER as DEFAULT_RULES_SOURCE_ADAPTER,
+    RulesSourceFetchError as RulesSourceFetchError,
     RulesSourcePayload,
 )
-from fwrouter_api.core.config import get_settings
-from fwrouter_api.db.connection import db_session
-from fwrouter_api.jobs.manager import get_default_job_manager
-from fwrouter_api.services.apply import ApplyMode, run_apply_pipeline
+from fwrouter_api.core.config import get_settings as get_settings
+from fwrouter_api.db.connection import db_session as db_session
+from fwrouter_api.jobs.manager import get_default_job_manager as get_default_job_manager
+from fwrouter_api.services.apply import ApplyMode as ApplyMode, run_apply_pipeline as run_apply_pipeline
 from fwrouter_api.services.artifacts import (
-    atomic_write_json,
-    atomic_write_text,
-    write_job_json_artifact,
-    write_job_text_artifact,
+    atomic_write_json as atomic_write_json,
+    atomic_write_text as atomic_write_text,
+    write_job_json_artifact as write_job_json_artifact,
+    write_job_text_artifact as write_job_text_artifact,
 )
-from fwrouter_api.services.jobs import JobLockConflictError
-from fwrouter_api.services.logs import write_operational_log
-from fwrouter_api.services.mihomo_config import reconcile_mihomo_runtime
+from fwrouter_api.services.jobs import JobLockConflictError as JobLockConflictError
+from fwrouter_api.services.logs import write_operational_log as write_operational_log
+from fwrouter_api.services.mihomo_config import reconcile_mihomo_runtime as reconcile_mihomo_runtime
 
 
 from fwrouter_api.services.rules_compile import (
-    BIG_VPN_BROAD_AGGREGATE_PATHS,
-    DOMAIN_LABEL_RE,
-    DOMAIN_RE,
-    JOB_TYPE_RULES_FULL_UPDATE,
-    LOCK_RULES_APPLY,
-    PROTECTED_LOCAL_NETWORKS,
-    PROTECTED_SERVICE_DOMAINS,
-    RULESET_BIG_DIRECT,
-    RULESET_BIG_VPN,
-    RULESET_EFFECTIVE,
-    RULESET_MANUAL,
-    RULESET_ORDER,
-    RULESET_STATIC_DIRECT,
-    RULES_PIPELINE_VERSION,
-    RULE_ACTION_ALIASES,
-    RULE_ACTIONS,
-    _build_rule_entry,
-    _classify_big_vpn_source,
-    _collapse_rule_networks,
-    _compile_large_list_rules,
-    _configured_rules_sources,
-    _extract_explicit_source_paths,
-    _is_protected_local,
-    _network_for_rule,
-    _normalize_domain_name,
-    _normalize_large_list_value,
-    _normalize_rule_value,
-    _protected_rules,
-    _rules_from_validation,
-    _suffix_subsumed,
-    _utc_now_iso,
-    _validate_big_vpn_source_policy,
-    build_effective_rules_artifact,
-    render_effective_rules_text,
-    validate_manual_rules,
-    validate_value_list,
+    BIG_VPN_BROAD_AGGREGATE_PATHS as BIG_VPN_BROAD_AGGREGATE_PATHS,
+    DOMAIN_LABEL_RE as DOMAIN_LABEL_RE,
+    DOMAIN_RE as DOMAIN_RE,
+    JOB_TYPE_RULES_FULL_UPDATE as JOB_TYPE_RULES_FULL_UPDATE,
+    LOCK_RULES_APPLY as LOCK_RULES_APPLY,
+    PROTECTED_LOCAL_NETWORKS as PROTECTED_LOCAL_NETWORKS,
+    PROTECTED_SERVICE_DOMAINS as PROTECTED_SERVICE_DOMAINS,
+    RULESET_BIG_DIRECT as RULESET_BIG_DIRECT,
+    RULESET_BIG_VPN as RULESET_BIG_VPN,
+    RULESET_EFFECTIVE as RULESET_EFFECTIVE,
+    RULESET_MANUAL as RULESET_MANUAL,
+    RULESET_ORDER as RULESET_ORDER,
+    RULESET_STATIC_DIRECT as RULESET_STATIC_DIRECT,
+    RULES_PIPELINE_VERSION as RULES_PIPELINE_VERSION,
+    RULE_ACTION_ALIASES as RULE_ACTION_ALIASES,
+    RULE_ACTIONS as RULE_ACTIONS,
+    _configured_rules_sources as _configured_rules_sources,
+    _utc_now_iso as _utc_now_iso,
+    _validate_big_vpn_source_policy as _validate_big_vpn_source_policy,
+    build_effective_rules_artifact as build_effective_rules_artifact,
+    render_effective_rules_text as render_effective_rules_text,
+    validate_manual_rules as validate_manual_rules,
+    validate_value_list as validate_value_list,
 )
 
 def _default_rules_paths() -> dict[str, Path]:

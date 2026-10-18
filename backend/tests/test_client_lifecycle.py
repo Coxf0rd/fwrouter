@@ -8,14 +8,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from fwrouter_api.adapters.xray import RealXrayAdapter, XrayApplyResult, XrayClient
+from fwrouter_api.adapters.xray import RealXrayAdapter, XrayApplyResult, XrayClient as XrayClient
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.main import create_app
 from fwrouter_api.services import subject_inventory as inventory_service
 from fwrouter_api.services import xray as xray_service
 from fwrouter_api.services import xray_runtime_state as xray_runtime_state_service
-from fwrouter_api.services import xray_subscription_service
+from fwrouter_api.services import xray_subscription_service as xray_subscription_service
 from fwrouter_api.adapters import xray as xray_adapter
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 from fwrouter_api.services.maintenance import repair_orphan_subscription_clients

@@ -7,14 +7,14 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from fastapi import APIRouter, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field as Field
 
 from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.action_contract import build_job_action_response
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.services.xray import (
-    delete_xray_client,
-    delete_xray_subscription_profile,
+    delete_xray_client as delete_xray_client,
+    delete_xray_subscription_profile as delete_xray_subscription_profile,
     export_xray_subscription,
     export_subscription_profile_text,
     export_xray_subscription_text,

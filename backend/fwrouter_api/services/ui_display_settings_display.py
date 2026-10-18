@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import json as json
 from typing import Any
 
 from fwrouter_api.db.connection import db_session

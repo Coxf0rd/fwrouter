@@ -134,7 +134,7 @@ def test_worker_sigkill_at_generated_checkpoint_phase_recovers_profile_and_nativ
     assert_mihomo_launch_matches_active(stack["native"], stack["state"] / "generated" / "mihomo" / "config.yaml")
     assert any(email == token for _, email in loaded_identities(stack["native"]))
 
-    from .xray_support import assert_applied_bindings, read_subscription_rows
+    from .xray_support import assert_applied_bindings
     rows = read_subscription_rows(stack["state"], token)
     assert len(rows["accounts"]) == 1 and rows["accounts"][0]["enabled"] == 1, rows
     assert len(rows["clients"]) == 1 and rows["clients"][0]["enabled"] == 1, rows
@@ -300,7 +300,6 @@ def test_recovery_does_not_resurrect_profile_deleted_after_generation_checkpoint
     assert delete_code == 200 and deletion.get("ok") is True, deletion
     deleted_job = await_job(restarted_api, deletion)
     assert deleted_job.get("status") == "success", deleted_job
-    rows = read_subscription_rows(stack["state"], token)
     assert all(email != token for _client_uuid, email in loaded_identities(stack["native"]))
     deleted_active = (stack["state"] / "xray" / "config.json").read_bytes()
 

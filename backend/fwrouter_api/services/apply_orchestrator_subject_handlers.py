@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.services import apply_orchestrator as orchestrator
-from fwrouter_api.services.apply_orchestrator_handler_common import _subject_needs_mihomo_selector_from_committed
 from fwrouter_api.services.subject_taxonomy import subject_follows_global_mode
 
 

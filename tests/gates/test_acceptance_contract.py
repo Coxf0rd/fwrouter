@@ -18,6 +18,7 @@ import zipfile
 import stat
 import sys
 import socket
+import subprocess
 import time
 from urllib.parse import urlparse, urlsplit
 from unittest import mock
@@ -51,6 +52,12 @@ PROVISION_SPEC = importlib.util.spec_from_file_location("fwrouter_acceptance_pro
 assert PROVISION_SPEC and PROVISION_SPEC.loader
 provision = importlib.util.module_from_spec(PROVISION_SPEC)
 PROVISION_SPEC.loader.exec_module(provision)
+STARTUP_COMPARISON_PATH = Path(__file__).parents[1] / "acceptance" / "startup_comparison.py"
+STARTUP_COMPARISON_SPEC = importlib.util.spec_from_file_location(
+    "fwrouter_startup_comparison_contract", STARTUP_COMPARISON_PATH)
+assert STARTUP_COMPARISON_SPEC and STARTUP_COMPARISON_SPEC.loader
+startup_comparison = importlib.util.module_from_spec(STARTUP_COMPARISON_SPEC)
+STARTUP_COMPARISON_SPEC.loader.exec_module(startup_comparison)
 AGGREGATE_PATH = Path(__file__).with_name("aggregate_hosted.py")
 AGGREGATE_SPEC = importlib.util.spec_from_file_location("fwrouter_hosted_aggregate_contract", AGGREGATE_PATH)
 assert AGGREGATE_SPEC and AGGREGATE_SPEC.loader
@@ -204,6 +211,300 @@ def _extract_bounded_generation_checkpoint_facts():
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_startup_comparison_has_three_distinct_immutable_arms_and_nine_runs(self):
+        candidate = "c" * 40
+        schedule = startup_comparison.comparison_schedule(candidate)
+        self.assertEqual(9, len(schedule))
+        self.assertEqual({"old-qualified", "main-baseline", "candidate"},
+                         {row["arm"] for row in schedule})
+        self.assertEqual("4f0c43cecb3b7515be111fe169038ecdbdad6df0",
+                         startup_comparison.OLD_QUALIFIED_SHA)
+        self.assertEqual({"old-qualified": 3, "main-baseline": 3, "candidate": 3}, {
+            arm: sum(row["arm"] == arm for row in schedule)
+            for arm in ("old-qualified", "main-baseline", "candidate")
+        })
+        self.assertEqual([1, 2, 3, 3, 1, 2, 2, 3, 1], [
+            {"old-qualified": 1, "main-baseline": 2, "candidate": 3}[row["arm"]]
+            for row in schedule
+        ])
+        with self.assertRaises(startup_comparison.ComparisonError):
+            startup_comparison.comparison_schedule(startup_comparison.MAIN_BASELINE_SHA)
+        with self.assertRaises(startup_comparison.ComparisonError):
+            startup_comparison.comparison_schedule("not-a-full-sha")
+
+    def test_startup_comparison_command_and_report_bind_source_plan_and_scope(self):
+        checkout = Path("/tmp/owned-startup-arm")
+        self.assertEqual([
+            sys.executable, str(checkout / "tests/acceptance/launcher.py"),
+            "--run", "--suite", "runtime-scale-diagnostic",
+        ], startup_comparison._launcher_command(sys.executable, checkout))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.json"
+            report = {"suite": "runtime-scale-diagnostic", "source_revision": "a" * 40,
+                      "plan_digest": "b" * 64, "suite_nonce": "nonce-1",
+                      "scope": "hosted-kernel-packet", "status": "passed"}
+            path.write_text(json.dumps(report), encoding="utf-8")
+            self.assertEqual(report, startup_comparison._parse_report(
+                path, expected_sha="a" * 40, plan_digest="b" * 64))
+            with self.assertRaises(startup_comparison.ComparisonError):
+                startup_comparison._parse_report(path, expected_sha="c" * 40, plan_digest="b" * 64)
+
+    def test_startup_comparison_candidate_must_descend_from_the_fixed_main_arm(self):
+        repo = Path("/tmp/startup-comparison-repo")
+        candidate = "c" * 40
+        with mock.patch.object(startup_comparison, "_run", return_value="") as run:
+            startup_comparison._validate_candidate_lineage(repo, candidate)
+        self.assertEqual([
+            mock.call(["git", "cat-file", "-e", f"{candidate}^{{commit}}"], cwd=repo),
+            mock.call(["git", "merge-base", "--is-ancestor",
+                       startup_comparison.MAIN_BASELINE_SHA, candidate], cwd=repo),
+        ], run.call_args_list)
+        with mock.patch.object(startup_comparison, "_run",
+                               side_effect=startup_comparison.ComparisonError("not ancestor")):
+            with self.assertRaisesRegex(startup_comparison.ComparisonError, "descend"):
+                startup_comparison._validate_candidate_lineage(repo, candidate)
+
+    def test_startup_comparison_old_arm_is_pinned_to_the_original_measured_source_tree(self):
+        repo = Path("/tmp/startup-comparison-repo")
+        with mock.patch.object(startup_comparison, "_run", side_effect=[
+                startup_comparison.QUALIFIED_OLD_TREE_OID,
+                startup_comparison.QUALIFIED_OLD_TREE_OID]) as run:
+            provenance = startup_comparison._validate_old_arm_tree(repo)
+        self.assertEqual(startup_comparison.OLD_QUALIFIED_SHA,
+                         provenance["comparison_arm_commit"])
+        self.assertEqual(startup_comparison.ORIGINAL_QUALIFIED_SHA,
+                         provenance["original_measured_commit"])
+        self.assertIn("source-tree equivalent", provenance["timing_attribution"])
+        self.assertEqual(2, run.call_count)
+        with mock.patch.object(startup_comparison, "_run", side_effect=[
+                "wrong-tree", startup_comparison.QUALIFIED_OLD_TREE_OID]):
+            with self.assertRaisesRegex(startup_comparison.ComparisonError, "reviewed source tree"):
+                startup_comparison._validate_old_arm_tree(repo)
+
+    def test_startup_comparison_per_arm_workspace_satisfies_the_real_path_predicate(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-startup-worktrees-") as temporary:
+            root = Path(temporary)
+            original_workspace = root / "original-checkout"
+            arm_workspace = root / "_temp/phase-d-startup-comparison/source-arms/old-qualified"
+            original_workspace.mkdir(parents=True)
+            arm_workspace.mkdir(parents=True)
+            base_environment = {"GITHUB_WORKSPACE": str(original_workspace), "RUNNER_TEMP": "/tmp/temp",
+                                "GITHUB_ACTIONS": "true", "EXTRA_ENV": "preserved"}
+            with mock.patch.object(launcher, "ROOT", arm_workspace):
+                self.assertFalse(launcher._under(launcher.ROOT,
+                                                 Path(base_environment["GITHUB_WORKSPACE"])))
+                child_environment = startup_comparison._launcher_environment(
+                    base_environment, arm_workspace)
+                self.assertTrue(launcher._under(
+                    launcher.ROOT, Path(child_environment["GITHUB_WORKSPACE"])))
+            self.assertEqual(str(arm_workspace.resolve()), child_environment["GITHUB_WORKSPACE"])
+            self.assertEqual("/tmp/temp", child_environment["RUNNER_TEMP"])
+            self.assertEqual("true", child_environment["GITHUB_ACTIONS"])
+            self.assertEqual("preserved", child_environment["EXTRA_ENV"])
+            expected_environment = dict(base_environment)
+            expected_environment["GITHUB_WORKSPACE"] = str(arm_workspace.resolve())
+            self.assertEqual(expected_environment, child_environment)
+            self.assertEqual(arm_workspace.stat().st_dev, Path(child_environment["GITHUB_WORKSPACE"]).stat().st_dev)
+            self.assertEqual(arm_workspace.stat().st_uid, Path(child_environment["GITHUB_WORKSPACE"]).stat().st_uid)
+            self.assertFalse(arm_workspace.stat().st_mode & 0o022)
+
+    def test_startup_comparison_failure_continues_only_after_confirmed_cleanup(self):
+        safe_failure = {"cleanup": "owned_resources_removed", "temporary_artifacts_removed": True}
+        unsafe = {"cleanup": "unknown", "temporary_artifacts_removed": False,
+                  "cleanup_unconfirmed": ["container:router"]}
+        self.assertTrue(startup_comparison._cleanup_confirmed(safe_failure))
+        self.assertFalse(startup_comparison._cleanup_confirmed(unsafe))
+        self.assertEqual(9, startup_comparison.MAX_ATTEMPTS)
+        self.assertEqual(3, startup_comparison.ATTEMPT_COUNT_PER_ARM)
+
+    def test_startup_comparison_timeout_interrupts_launcher_for_cleanup_then_stops_schedule(self):
+        events = []
+
+        class GracefulProcess:
+            pid = 1234
+            returncode = None
+
+            def communicate(self, timeout):
+                events.append(("communicate", timeout))
+                if len([event for event in events if event[0] == "communicate"]) == 1:
+                    raise subprocess.TimeoutExpired(["launcher"], timeout,
+                                                    output=b"partial stdout", stderr=b"partial stderr")
+                self.returncode = -startup_comparison.signal.SIGINT
+                return b"complete stdout", b"complete stderr"
+
+            def send_signal(self, value):
+                events.append(("launcher-signal", value))
+
+        def factory(argv, **kwargs):
+            self.assertTrue(kwargs["start_new_session"])
+            self.assertIs(subprocess.PIPE, kwargs["stdout"])
+            self.assertIs(subprocess.PIPE, kwargs["stderr"])
+            return GracefulProcess()
+
+        completed, timeout = startup_comparison._run_launcher(
+            ["launcher"], cwd=Path("/tmp"), env={}, timeout=10, cleanup_grace=30,
+            popen_factory=factory)
+        self.assertTrue(timeout["deadline_exceeded"])
+        self.assertTrue(timeout["interrupt_sent"])
+        self.assertTrue(timeout["launcher_exited"])
+        self.assertFalse(timeout["terminate_group_sent"])
+        self.assertEqual(b"complete stdout", completed.stdout)
+        self.assertEqual([("communicate", 10),
+                          ("launcher-signal", startup_comparison.signal.SIGINT),
+                          ("communicate", 30)], events)
+        attempts = []
+        for item in startup_comparison.comparison_schedule("c" * 40):
+            attempts.append(item)
+            if not startup_comparison._may_continue_attempts(
+                    orchestration_deadline_exceeded=True, cleanup_confirmed=True):
+                break
+        self.assertEqual(1, len(attempts))
+
+    def test_startup_comparison_timeout_escalates_only_owned_process_group(self):
+        events = []
+
+        class StuckProcess:
+            pid = 9876
+            returncode = None
+
+            def communicate(self, timeout):
+                events.append(("communicate", timeout))
+                if len([event for event in events if event[0] == "communicate"]) <= 3:
+                    raise subprocess.TimeoutExpired(["launcher"], timeout, output=b"partial")
+                self.returncode = -startup_comparison.signal.SIGKILL
+                return b"after kill", b""
+
+            def send_signal(self, value):
+                events.append(("launcher-signal", value))
+
+        def factory(argv, **kwargs):
+            self.assertTrue(kwargs["start_new_session"])
+            return StuckProcess()
+
+        def killpg(pid, value):
+            events.append(("group-signal", pid, value))
+
+        with mock.patch.object(startup_comparison.os, "killpg", side_effect=killpg):
+            completed, timeout = startup_comparison._run_launcher(
+                ["launcher"], cwd=Path("/tmp"), env={}, timeout=10, cleanup_grace=30,
+                terminate_grace=5, kill_wait=5, popen_factory=factory)
+        self.assertTrue(timeout["terminate_group_sent"])
+        self.assertTrue(timeout["kill_group_sent"])
+        self.assertEqual([("group-signal", 9876, startup_comparison.signal.SIGTERM),
+                          ("group-signal", 9876, startup_comparison.signal.SIGKILL)],
+                         [event for event in events if event[0] == "group-signal"])
+        self.assertEqual(b"after kill", completed.stdout)
+        self.assertFalse(startup_comparison._may_continue_attempts(
+            orchestration_deadline_exceeded=timeout["deadline_exceeded"], cleanup_confirmed=True))
+
+    def test_startup_comparison_requires_observed_memory_cap_and_oom_stability(self):
+        wave = {"before": {"cgroup": {"max": 2560 * 1024 ** 2, "events": {
+                    "oom": 0, "oom_kill": 0, "oom_group_kill": 0}}},
+                "after": {"cgroup": {"max": 2560 * 1024 ** 2, "events": {
+                    "oom": 0, "oom_kill": 0, "oom_group_kill": 0}}}}
+        metrics = {"schema": "fwrouter-runtime-scale-metrics/v1",
+                   "startup_limits_seconds": {"hard_deadline": 45.0,
+                                               "engineering_target": 40.0},
+                   "config": {"config_bytes": 100, "config_sha256": "a" * 64,
+                              "top_level_rule_count": 10, "transparent_subrule_bytes": 50,
+                              "transparent_subrule_count": 10},
+                   "subscription_source": {"native_clients": 82, "profile_accounts": 7,
+                                           "profile_nodes": 70},
+                   "subscription_profile_accounts": 7, "subscription_profile_nodes": 70,
+                   "runtime_verified_profile_snapshots": 7, "fixed_external_clients": 2,
+                   "internal_vpn_auto_clients": 10, "applied_profile_bindings": 82,
+                   "synthetic_xray_loaded_clients": 82,
+                   "synthetic_xray_identities_preserved": 82,
+                   "wave_resource_observations": [wave]}
+        projection = startup_comparison._workload_projection(metrics)
+        self.assertIsNotNone(projection)
+        self.assertEqual(2560 * 1024 ** 2, projection["wave_resource_ceilings"][0]["max_bytes"])
+        changed_cap = json.loads(json.dumps(metrics))
+        changed_cap["wave_resource_observations"][0]["after"]["cgroup"]["max"] -= 1
+        self.assertIsNone(startup_comparison._workload_projection(changed_cap))
+        changed_oom = json.loads(json.dumps(metrics))
+        changed_oom["wave_resource_observations"][0]["after"]["cgroup"]["events"]["oom_kill"] += 1
+        self.assertIsNone(startup_comparison._workload_projection(changed_oom))
+
+    def test_startup_comparison_workload_projection_captures_config_profiles_and_bindings(self):
+        wave = {side: {"cgroup": {"max": startup_comparison.CONTAINER_MEMORY_LIMIT_BYTES,
+                                 "events": {"oom": 0, "oom_kill": 0,
+                                            "oom_group_kill": 0}}}
+                for side in ("before", "after")}
+        metrics = {"schema": "fwrouter-runtime-scale-metrics/v1",
+                   "startup_limits_seconds": {"hard_deadline": 45.0,
+                                               "engineering_target": 40.0},
+                   "config": {"config_sha256": "a" * 64, "config_bytes": 200,
+                              "top_level_rule_count": 100},
+                   "subscription_source": {"native_clients": 82, "profile_accounts": 7,
+                                           "profile_nodes": 70},
+                   "subscription_profile_accounts": 7, "subscription_profile_nodes": 70,
+                   "runtime_verified_profile_snapshots": 7, "fixed_external_clients": 2,
+                   "internal_vpn_auto_clients": 10, "applied_profile_bindings": 82,
+                   "synthetic_xray_loaded_clients": 82,
+                   "synthetic_xray_identities_preserved": 82,
+                   "wave_resource_observations": [wave]}
+        projection = startup_comparison._workload_projection(metrics)
+        self.assertEqual(82, projection["applied_profile_bindings"])
+        self.assertEqual(70, projection["subscription_profile_nodes"])
+        changed = json.loads(json.dumps(metrics))
+        changed["config"]["config_sha256"] = "b" * 64
+        self.assertNotEqual(projection, startup_comparison._workload_projection(changed))
+
+    def test_startup_comparison_summarizes_samples_and_low_overhead_runner_counters(self):
+        before = {"cgroup_v2": {
+            "cpu.stat": "usage_usec 10\nnr_throttled 2\nthrottled_usec 5\n",
+            "memory.events": "oom 0\noom_kill 0\n",
+            "io.stat": "8:0 rbytes=10 wbytes=4\n",
+        }}
+        after = {"cgroup_v2": {
+            "cpu.stat": "usage_usec 24\nnr_throttled 5\nthrottled_usec 11\n",
+            "memory.events": "oom 0\noom_kill 1\n",
+            "io.stat": "8:0 rbytes=40 wbytes=14\n",
+        }}
+        self.assertEqual({"cpu.stat": {"usage_usec": 14, "nr_throttled": 3,
+                                       "throttled_usec": 6},
+                          "memory.events": {"oom_kill": 1, "oom": 0},
+                          "io.stat": {"8:0.rbytes": 30, "8:0.wbytes": 10}},
+                         startup_comparison._runner_counter_deltas(before, after))
+        self.assertEqual({"n": 3, "min": 26.0, "median": 34.0, "max": 44.0},
+                         startup_comparison._numeric_distribution([26, 34, 44]))
+        self.assertEqual({"n": 0, "min": None, "median": None, "max": None},
+                         startup_comparison._numeric_distribution([None, True]))
+
+    def test_startup_comparison_workflow_is_exact_branch_marker_and_reuses_qualified_inputs(self):
+        workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("cleanup/ruff-completion-startup-audit", workflow.split("permissions:", 1)[0])
+        self.assertIn('"ci:validate-startup-comparison": "startup-comparison"', workflow)
+        self.assertIn('GITHUB_REF: ${{ github.ref }}', workflow)
+        self.assertIn('os.environ.get("GITHUB_REF") != "refs/heads/cleanup/ruff-completion-startup-audit"',
+                      workflow)
+        self.assertIn("needs.select-stage.outputs.stage == 'startup-comparison'", workflow)
+        self.assertIn("tests/acceptance/startup_comparison.py", workflow)
+        self.assertIn("${{ runner.temp }}/phase-d-startup-comparison/**", workflow)
+        self.assertIn("Provision exact hosted Xray/Mihomo/browser inputs", workflow)
+        self.assertIn("FWROUTER_ACCEPTANCE_PLAN_DIGEST", workflow)
+        self.assertEqual(2, workflow.count(
+            "needs.select-stage.outputs.stage == 'startup-comparison' && "
+            "'47cfd63fc220f2890e140da27ff54c91a8a2c7a1'"))
+        self.assertEqual(2, workflow.count(
+            "((needs.select-stage.outputs.stage == 'identity-diagnostic' || "
+            "needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || "
+            "needs.select-stage.outputs.stage == 'packet-diagnostic') && "
+            "'1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || "
+            "'6bdf37e9c73b5728b8d50e971f34d848610eb345')"))
+        self.assertIn('if: needs.select-stage.outputs.stage != \'identity-diagnostic\' && needs.select-stage.outputs.stage != \'startup-comparison\'',
+                      workflow)
+        self.assertEqual(45, startup_comparison.HARD_STARTUP_SECONDS)
+        self.assertEqual(40, startup_comparison.ENGINEERING_TARGET_SECONDS)
+        self.assertEqual(2560 * 1024 ** 2, startup_comparison.CONTAINER_MEMORY_LIMIT_BYTES)
+        self.assertEqual("runtime-scale-diagnostic", startup_comparison.SUITE)
+        self.assertIn("timeout-minutes: ${{ needs.select-stage.outputs.stage == 'startup-comparison' && 120 || 30 }}",
+                      workflow)
+        self.assertIn('"source_manifest_sha256": source_manifest_hashes[item["arm"]]',
+                      STARTUP_COMPARISON_PATH.read_text(encoding="utf-8"))
+
     def test_browser_resource_snapshot_is_bounded_allowlisted_and_uses_unknown_for_missing_data(self):
         helpers = _extract_browser_resource_helpers()
         with tempfile.TemporaryDirectory() as temporary:

@@ -657,7 +657,6 @@ def pytest_sessionfinish(session, exitstatus):
         return
     receipt_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     diagnostic_records = getattr(config, "_fwrouter_diagnostic_records", [])
-    from .native_runner import DIAGNOSTIC_TOTAL_LIMIT
     diagnostic_payloads = {
         "native-process-diagnostics.json": {"schema": "fwrouter-native-process-diagnostics/v1",
                                             "records": [{"nodeid": row["nodeid"], "status": row["status"],

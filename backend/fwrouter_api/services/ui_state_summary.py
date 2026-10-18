@@ -20,7 +20,7 @@ from fwrouter_api.services.xray import get_xray_status
 from fwrouter_api.services.ui_display_settings import _display_systems
 from fwrouter_api.services.ui_state_clients import _ui_workspace_counts
 from fwrouter_api.services.ui_state_common import _active_job, _job_summary, _system_subject_counts
-from fwrouter_api.services.ui_state_inventory import list_ui_settings_inventory
+from fwrouter_api.services.ui_state_inventory import list_ui_settings_inventory as list_ui_settings_inventory
 from fwrouter_api.services.ui_state_logs import _summarize_log_event, summarize_ui_log_events
 from fwrouter_api.services.ui_state_settings import get_ui_display_settings
 

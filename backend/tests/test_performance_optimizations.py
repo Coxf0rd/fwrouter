@@ -2,12 +2,16 @@ from __future__ import annotations
 from _test_support import configure_test_state_dir as _configure_env
 
 import json
+from importlib import import_module
 from pathlib import Path
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import logical_topology
-from fwrouter_api.services import mihomo_config as _mihomo_config
+
+# Preserve the historical import order that initializes the Mihomo facade before
+# importing the reconciler which imports that facade back.
+import_module("fwrouter_api.services.mihomo_config")
 from fwrouter_api.services import mihomo_reconcile as mihomo_reconcile_service
 from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint_service
 from fwrouter_api.services import subscription_pipeline
@@ -357,3 +361,52 @@ def test_subscription_timings_are_stage_specific_and_technical_log_is_compact(mo
     assert "refresh" not in details
     assert "candidate" not in details
     assert "timings_ms" in details
+
+
+# Fixed module-level names present on the baseline application facades before cleanup.
+PUBLIC_FACADE_BINDINGS = {
+    'fwrouter_api.adapters.xray': ('XRAY_API_PORT', 'XRAY_API_TAG', 'XRAY_COMPOSE_PATH', 'XRAY_CONTAINER_NAME', 'XRAY_FALLBACK_OUTBOUND_TAG', 'XRAY_INBOUND_TAG', 'XRAY_LOG_ROOT', 'XRAY_MANAGED_DNS_OUTBOUND_TAG', 'XRAY_TRANSPORT'),
+    'fwrouter_api.db.schema_state': ('Iterable',),
+    'fwrouter_api.routes.xray': ('Field', 'delete_xray_client', 'delete_xray_subscription_profile'),
+    'fwrouter_api.services.apply': ('DataplaneResult', 'db_session', 'get_dataplane_capability', 'prime_runtime_read_models_async', 'subprocess', 'update_job_running_result'),
+    'fwrouter_api.services.dataplane_nft': ('CONTROL_PLANE_INPUT_PORTS', 'OWNED_TABLE', 'REQUIRED_CHAINS', 'ROOT_UID', 'STATIC_SECURE_DNS_BYPASS_IPV4', 'get_dataplane_artifact_paths', 'promote_last_good', 'utc_timestamp'),
+    'fwrouter_api.services.logs': ('log_event',),
+    'fwrouter_api.services.logs_retention': ('atomic_write_text',),
+    'fwrouter_api.services.mihomo_config': ('APPLIED_MANIFEST_PATH', 'BASE_CONFIG_PATH', 'DEFAULT_FULL_VPN_TCP_REDIR_PORT', 'DEFAULT_FULL_VPN_UDP_TPROXY_PORT', 'DEFAULT_TRANSPARENT_TCP_REDIR_PORT', 'DEFAULT_TRANSPARENT_UDP_TPROXY_PORT', 'FULL_VPN_REDIR_LISTENER_NAME', 'FULL_VPN_TPROXY_LISTENER_NAME', 'LEGACY_INBOUND_KEYS', 'MIHOMO_CANDIDATE_CONFIG_PATH', 'SUBJECT_SELECTOR_PREFIX', 'TRANSPARENT_BIND_ADDRESS', 'TRANSPARENT_REDIR_LISTENER_NAME', 'TRANSPARENT_TPROXY_PROXY_NAME', 'XRAY_MIHOMO_LISTENER_PREFIX', 'get_mihomo_config_status', 'managed_runtime_operation_blocked', 'mihomo_runtime_satisfies_routing', 'promote_mihomo_candidate_config', 'reconcile_mihomo_runtime', 'reconcile_mihomo_selective_default_fast', 'resolve_runtime_proxy_rows', 'restart_mihomo_container', 'subject_selector_name', 'validate_and_promote_mihomo_candidate_config', 'yaml'),
+    'fwrouter_api.services.mihomo_config_validation': ('EXPLICIT_MIXED_LISTENER_BIND', 'EXPLICIT_MIXED_LISTENER_PORT'),
+    'fwrouter_api.services.mihomo_reconcile': ('shutil',),
+    'fwrouter_api.services.mihomo_reconcile_fingerprint': ('os',),
+    'fwrouter_api.services.provider_managed': ('configured_provider_binding',),
+    'fwrouter_api.services.routing_manifest': ('build_dataplane_profile',),
+    'fwrouter_api.services.rules': ('ApplyMode', 'BIG_VPN_BROAD_AGGREGATE_PATHS', 'DEFAULT_RULES_SOURCE_ADAPTER', 'DOMAIN_LABEL_RE', 'DOMAIN_RE', 'JOB_TYPE_RULES_FULL_UPDATE', 'JobLockConflictError', 'LOCK_RULES_APPLY', 'PROTECTED_LOCAL_NETWORKS', 'PROTECTED_SERVICE_DOMAINS', 'RULESET_BIG_DIRECT', 'RULESET_BIG_VPN', 'RULESET_EFFECTIVE', 'RULESET_MANUAL', 'RULESET_ORDER', 'RULESET_STATIC_DIRECT', 'RULES_PIPELINE_VERSION', 'RULE_ACTIONS', 'RULE_ACTION_ALIASES', 'RulesSourceFetchError', 'atomic_write_json', 'atomic_write_text', 'build_effective_rules_artifact', 'db_session', 'get_default_job_manager', 'get_settings', 'json', 'reconcile_mihomo_runtime', 'render_effective_rules_text', 'run_apply_pipeline', 'validate_manual_rules', 'validate_value_list', 'write_job_json_artifact', 'write_job_text_artifact', 'write_operational_log'),
+    'fwrouter_api.services.server_global_selection': ('explicit_external_client_allows_virtual_vpn_auto',),
+    'fwrouter_api.services.server_inventory': ('explicit_external_client_allows_virtual_vpn_auto',),
+    'fwrouter_api.services.server_preferences': ('explicit_external_client_allows_virtual_vpn_auto', 'json'),
+    'fwrouter_api.services.server_state': ('explicit_external_client_allows_virtual_vpn_auto', 'json'),
+    'fwrouter_api.services.server_subject_overrides': ('json',),
+    'fwrouter_api.services.servers': ('apply_global_auto_server', 'apply_global_fixed_server', 'clear_global_fixed_server', 'clear_subject_server_override', 'ensure_routing_global_state', 'expire_global_fixed_server', 'get_routing_global_state', 'get_server', 'get_subject_server_override', 'list_servers', 'reconcile_current_routing_if_drift', 'set_global_fixed_server', 'set_global_mode', 'set_selective_default', 'set_subject_server_override', 'submit_global_fixed_server_apply_job', 'sync_servers_from_mihomo', 'update_subject_server_override_apply_status'),
+    'fwrouter_api.services.subscription_profiles': ('quote',),
+    'fwrouter_api.services.system_subjects': ('list_subjects_with_effective_state',),
+    'fwrouter_api.services.ui_display_settings': ('DEFAULT_EXTERNAL_COLLECTOR_INTERVAL_SECONDS', 'EXTERNAL_CAPABILITY_KEYS', 'EXTERNAL_COLLECTOR_BASE_KEYS', 'EXTERNAL_COLLECTOR_MODE_KEYS', 'EXTERNAL_CONNECTION_TYPES', 'EXTERNAL_ENDPOINT_KEYS', 'EXTERNAL_INTEGRATION_MODES', 'EXTERNAL_LOCATIONS', 'EXTERNAL_REFRESH_MODES', 'UI_DISPLAY_SETTINGS_KEY', 'UI_DISPLAY_SYSTEMS', 'UI_SYSTEM_VISIBILITY_DEFAULTS'),
+    'fwrouter_api.services.ui_display_settings_display': ('json',),
+    'fwrouter_api.services.ui_state': ('DEFAULT_TRAFFIC_PANEL_KEYS', 'INVENTORY_ROLE_ALIASES', 'INVENTORY_ROLE_BY_KIND', 'KINDS_BY_INVENTORY_ROLE', 'TRAFFIC_METRIC_KEYS', 'XRAY_INTERNAL_PREFIXES', 'XRAY_SUBSCRIPTION_ACTIVE_WINDOW_SECONDS', 'get_ui_display_settings', 'save_ui_display_settings'),
+    'fwrouter_api.services.ui_state_summary': ('list_ui_settings_inventory',),
+    'fwrouter_api.services.xray_materialize': ('collect_xray_runtime_bindings',),
+    'fwrouter_api.services.xray_subscription_service': ('XRAY_PUBLIC_PATH', 'XRAY_PUBLIC_PORT'),
+}
+
+# Private names with tracked downstream imports/attribute lookups are explicit seams.
+PRIVATE_FACADE_SEAMS = {
+    'fwrouter_api.services.mihomo_config': ('_build_fallback_rule', '_build_transparent_fallback_rule', '_configs_equal', '_iso8601_mtime', '_resolved_base_config_path', '_resolved_last_good_mihomo_dir', '_summarize_candidate', '_summarize_config_status'),
+    'fwrouter_api.services.rules': ('_configured_rules_sources', '_utc_now_iso', '_validate_big_vpn_source_policy'),
+    'fwrouter_api.services.ui_display_settings': ('_display_systems', '_json_loads', '_normalize_system_visibility', '_system_visible'),
+    'fwrouter_api.services.ui_state': ('_month_key', '_summarize_log_event'),
+}
+
+
+def test_existing_facade_bindings_remain_available() -> None:
+    for modules in (PUBLIC_FACADE_BINDINGS, PRIVATE_FACADE_SEAMS):
+        for module_name, names in modules.items():
+            module = import_module(module_name)
+            missing = [name for name in names if not hasattr(module, name)]
+            assert not missing, f"{module_name} lost existing bindings: {missing}"

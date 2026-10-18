@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import subprocess
+import subprocess as subprocess
 import time
 from typing import Any
 
@@ -8,10 +8,10 @@ from fwrouter_api.adapters.dataplane import (
     DEFAULT_DATAPLANE_ADAPTER,
     DataplaneOperation,
     DataplanePlan,
-    DataplaneResult,
+    DataplaneResult as DataplaneResult,
 )
-from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.dataplane_status import get_dataplane_capability
+from fwrouter_api.db.connection import db_session as db_session
+from fwrouter_api.services.dataplane_status import get_dataplane_capability as get_dataplane_capability
 from fwrouter_api.services.dataplane_status import build_bypass_runtime_enforcement
 from fwrouter_api.services.dataplane_global import (
     build_applied_runtime_enforcement,
@@ -30,9 +30,9 @@ from fwrouter_api.services.artifacts import (
 from fwrouter_api.services.dnsmasq import inspect_dnsmasq_selective_status, reconcile_dnsmasq_rules
 from fwrouter_api.services.jobs import (
     touch_job_running,
-    update_job_running_result,
+    update_job_running_result as update_job_running_result,
 )
-from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async
+from fwrouter_api.services.runtime_prewarm import prime_runtime_read_models_async as prime_runtime_read_models_async
 from fwrouter_api.services.routing_manifest import (
     build_dataplane_manifest,
     build_dataplane_manifest_from_state,
