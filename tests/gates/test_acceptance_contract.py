@@ -219,6 +219,7 @@ def _extract_xray_bindings_startup_comparison():
         "_xray_bindings_startup_projection", "_assert_xray_bindings_startup_equivalent",
         "_subscription_profile_snapshot_projection", "_assert_subscription_profile_startup_equivalent",
         "_assert_subject_overrides_startup_equivalent",
+        "_assert_subject_inventory_startup_equivalent",
     }
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
     assert {function.name for function in functions} == wanted
@@ -230,6 +231,123 @@ def _extract_xray_bindings_startup_comparison():
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_startup_subject_inventory_allows_only_monotonic_xray_observation_timestamps(self):
+        compare = _extract_xray_bindings_startup_comparison()[
+            "_assert_subject_inventory_startup_equivalent"
+        ]
+        before = [{
+            "subject_id": "xray:client-a",
+            "subject_type": "explicit_external_client",
+            "subject_role": "vless_client",
+            "implementation_kind": "xray",
+            "stable_key": "xray:client-a",
+            "display_name": "Client A",
+            "alias": "retained alias",
+            "desired_mode": "enabled",
+            "applied_mode": "enabled",
+            "apply_state": "clean",
+            "runtime_state": "active",
+            "is_active": 1,
+            "is_deleted": 0,
+            "last_seen_at": "2026-10-19 09:00:00",
+            "metadata_json": json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T10:00:00+00:00",
+                "future_metadata": {"owner": "preserved"},
+            }, sort_keys=True),
+            "created_at": "2026-10-19 08:00:00",
+            "updated_at": "2026-10-19 10:00:00",
+        }]
+        after = copy.deepcopy(before)
+        after[0]["metadata_json"] = json.dumps({
+            "source": "xray_adapter", "provider": "xray",
+            "collected_at": "2026-10-19T10:00:01+00:00",
+            "future_metadata": {"owner": "preserved"},
+        }, sort_keys=True)
+        after[0]["updated_at"] = "2026-10-19 10:00:01"
+        builtin_rows = [
+            {
+                "subject_id": "fwrouter:global",
+                "subject_type": "fwrouter",
+                "implementation_kind": "fwrouter",
+                "desired_mode": "direct",
+                "metadata_json": json.dumps({"source": "system_subjects"}),
+                "updated_at": "2026-10-19 10:00:00",
+            },
+            {
+                "subject_id": "host:ssh",
+                "subject_type": "host",
+                "implementation_kind": "host",
+                "desired_mode": "direct",
+                "metadata_json": json.dumps({"source": "system_subjects"}),
+                "updated_at": "2026-10-19 10:00:00",
+            },
+        ]
+        first_after = [*after, *builtin_rows]
+        compare(before, first_after, allowed_added_ids={"fwrouter:global", "host:ssh"})
+        compare(first_after, first_after)
+        with self.assertRaises(AssertionError):
+            compare(before, first_after)
+        with self.assertRaises(AssertionError):
+            compare(before, first_after, allowed_added_ids={"arbitrary:subject"})
+        with self.assertRaises(AssertionError):
+            compare(first_after, after)
+
+        invalid_updates = {
+            "identity": lambda row: row.update(subject_id="xray:other"),
+            "intent": lambda row: row.update(desired_mode="direct"),
+            "runtime": lambda row: row.update(runtime_state="inactive"),
+            "alias": lambda row: row.update(alias="changed alias"),
+            "provider_metadata": lambda row: row["metadata_json"],
+            "unknown_metadata": lambda row: row.update(metadata_json=json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T10:00:01+00:00",
+                "future_metadata": {"owner": "changed"},
+            }, sort_keys=True)),
+            "nested_timestamp_like_data": lambda row: row.update(metadata_json=json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T10:00:01+00:00",
+                "future_metadata": {"collected_at": "semantic-data-changed"},
+            }, sort_keys=True)),
+        }
+        for name, update in invalid_updates.items():
+            with self.subTest(name=name):
+                changed = copy.deepcopy(after)
+                if name == "provider_metadata":
+                    changed[0]["metadata_json"] = json.dumps({
+                        "source": "xray_adapter", "provider": "other",
+                        "collected_at": "2026-10-19T10:00:01+00:00",
+                        "future_metadata": {"owner": "preserved"},
+                    }, sort_keys=True)
+                else:
+                    update(changed[0])
+                with self.assertRaises(AssertionError):
+                    compare(before, changed)
+
+        invalid_timestamps = (
+            {**after[0], "updated_at": "2026-10-19 09:59:59"},
+            {**after[0], "updated_at": "2026-10-19T10:00:01+00:00"},
+            {**after[0], "metadata_json": json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T11:00:01+01:00",
+                "future_metadata": {"owner": "preserved"},
+            })},
+            {**after[0], "metadata_json": json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T09:59:59+00:00",
+                "future_metadata": {"owner": "preserved"},
+            })},
+        )
+        for changed_row in invalid_timestamps:
+            with self.subTest(timestamp=changed_row):
+                with self.assertRaises(AssertionError):
+                    compare(before, [changed_row])
+
+        changed_builtin = copy.deepcopy(first_after)
+        changed_builtin[1]["desired_mode"] = "vpn"
+        with self.assertRaises(AssertionError):
+            compare(first_after, changed_builtin)
+
     def test_startup_xray_binding_comparison_allows_only_monotonic_utc_metadata(self):
         compare = _extract_xray_bindings_startup_comparison()["_assert_xray_bindings_startup_equivalent"]
         before = {

@@ -231,6 +231,92 @@ def _assert_subject_overrides_startup_equivalent(
             raise AssertionError("Server subject override timestamp changed without an owner update.")
 
 
+def _assert_subject_inventory_startup_equivalent(
+    before_rows: Any,
+    after_rows: Any,
+    *,
+    allowed_added_ids: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    """Allow only the observation timestamps refreshed by explicit Xray inventory."""
+    if (not isinstance(before_rows, (list, tuple)) or not isinstance(after_rows, (list, tuple))
+            or not all(isinstance(row, dict) for row in before_rows)
+            or not all(isinstance(row, dict) for row in after_rows)):
+        raise AssertionError("Subject inventory rows have an invalid shape.")
+    before_by_id = {row.get("subject_id"): dict(row) for row in before_rows}
+    after_by_id = {row.get("subject_id"): dict(row) for row in after_rows}
+    if (len(before_by_id) != len(before_rows) or len(after_by_id) != len(after_rows)
+            or None in before_by_id or None in after_by_id):
+        raise AssertionError("Subject inventory identities are invalid across startup.")
+    if not isinstance(allowed_added_ids, (set, frozenset)) or not all(
+        isinstance(subject_id, str) for subject_id in allowed_added_ids
+    ):
+        raise AssertionError("Allowed bootstrap subject additions have an invalid shape.")
+    if not allowed_added_ids <= {"fwrouter:global", "host:ssh"}:
+        raise AssertionError("Only documented built-in subjects may be added during startup.")
+    added_ids = after_by_id.keys() - before_by_id.keys()
+    removed_ids = before_by_id.keys() - after_by_id.keys()
+    if removed_ids or added_ids != allowed_added_ids:
+        raise AssertionError("Subject inventory identities changed outside allowed bootstrap additions.")
+
+    def parse_sqlite_utc(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", value):
+            raise AssertionError(f"Subject inventory timestamp is missing or malformed: {field}.")
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise AssertionError(f"Subject inventory timestamp is malformed: {field}.") from exc
+
+    def parse_metadata_utc(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or "T" not in value:
+            raise AssertionError(f"Subject inventory timestamp is missing or malformed: {field}.")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise AssertionError(f"Subject inventory timestamp is malformed: {field}.") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+            raise AssertionError(f"Subject inventory timestamp is not UTC: {field}.")
+        return parsed
+
+    for subject_id, before in before_by_id.items():
+        after = after_by_id[subject_id]
+        if before.keys() != after.keys():
+            raise AssertionError(f"Subject inventory columns changed: {subject_id}.")
+        is_xray = (
+            before.get("subject_type") == "explicit_external_client"
+            and before.get("implementation_kind") == "xray"
+        )
+        if not is_xray:
+            if before != after:
+                raise AssertionError(f"Non-Xray subject changed across startup: {subject_id}.")
+            continue
+
+        try:
+            before_metadata = json.loads(before.get("metadata_json"))
+            after_metadata = json.loads(after.get("metadata_json"))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise AssertionError(f"Xray subject metadata is not valid JSON: {subject_id}.") from exc
+        if not isinstance(before_metadata, dict) or not isinstance(after_metadata, dict):
+            raise AssertionError(f"Xray subject metadata is not an object: {subject_id}.")
+
+        before_updated = parse_sqlite_utc(before.get("updated_at"), f"{subject_id}.updated_at")
+        after_updated = parse_sqlite_utc(after.get("updated_at"), f"{subject_id}.updated_at")
+        before_collected = parse_metadata_utc(
+            before_metadata.get("collected_at"), f"{subject_id}.metadata.collected_at",
+        )
+        after_collected = parse_metadata_utc(
+            after_metadata.get("collected_at"), f"{subject_id}.metadata.collected_at",
+        )
+        if after_updated < before_updated or after_collected < before_collected:
+            raise AssertionError(f"Xray subject observation timestamp moved backwards: {subject_id}.")
+
+        before_metadata.pop("collected_at")
+        after_metadata.pop("collected_at")
+        before_semantic = {key: value for key, value in before.items() if key not in {"updated_at", "metadata_json"}}
+        after_semantic = {key: value for key, value in after.items() if key not in {"updated_at", "metadata_json"}}
+        if before_semantic != after_semantic or before_metadata != after_metadata:
+            raise AssertionError(f"Xray subject changed outside observation timestamps: {subject_id}.")
+
+
 def _rules_apply_failure_diagnostic(
     response: dict[str, Any],
     status: int,
@@ -491,6 +577,14 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         finally:
             connection.close()
 
+    def subject_inventory_rows() -> list[dict[str, Any]]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        connection.row_factory = sqlite3.Row
+        try:
+            return [dict(row) for row in connection.execute("SELECT * FROM subjects ORDER BY subject_id")]
+        finally:
+            connection.close()
+
     def assert_builtin_bootstrap_rows(
         before: dict[str, tuple[tuple[Any, ...], ...]],
         after: dict[str, tuple[tuple[Any, ...], ...]],
@@ -502,9 +596,13 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert set(after_subjects) == set(before_subjects) | builtin_ids, {
             "before_ids": sorted(before_subjects), "after_ids": sorted(after_subjects),
         }
-        assert all(after_subjects[key] == row for key, row in before_subjects.items()), {
+        stable_subjects = {
+            key: row for key, row in before_subjects.items()
+            if not (row[1] == "explicit_external_client" and row[3] == "xray")
+        }
+        assert all(after_subjects[key] == row for key, row in stable_subjects.items()), {
             key: (row, after_subjects.get(key)) for key, row in before_subjects.items()
-            if after_subjects.get(key) != row
+            if key in stable_subjects and after_subjects.get(key) != row
         }
         for subject_id, subject_type, role, display_name in (
             ("fwrouter:global", "fwrouter", "router_core", "FWRouter global traffic"),
@@ -1284,6 +1382,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         before_startup_server_overrides, before_startup_user_overrides = subject_override_rows()
         before_startup_durable = durable_fingerprint(core_apply_id)
         before_startup_subjects = subject_bootstrap_fingerprint()
+        before_startup_inventory_rows = subject_inventory_rows()
         marker_before_startup = generation(api)
 
         previous_worker = stack["worker"]
@@ -1315,6 +1414,15 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert protected_direct_rows() == protected_direct_baseline
         after_first_startup_subjects = subject_bootstrap_fingerprint()
         assert_builtin_bootstrap_rows(before_startup_subjects, after_first_startup_subjects)
+        builtin_subject_ids = {"fwrouter:global", "host:ssh"}
+        allowed_bootstrap_additions = builtin_subject_ids - {
+            row["subject_id"] for row in before_startup_inventory_rows
+        }
+        _assert_subject_inventory_startup_equivalent(
+            before_startup_inventory_rows,
+            subject_inventory_rows(),
+            allowed_added_ids=allowed_bootstrap_additions,
+        )
         assert source_bridge.snapshot_calls() == calls_before_admission
         assert source.snapshot_requests() == requests_before_admission
         assert_native_matches_active(native, state / "xray" / "config.json")
@@ -1369,6 +1477,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         stable_server_overrides, stable_user_overrides = subject_override_rows()
         stable_durable = durable_fingerprint(core_apply_id)
         stable_subjects = subject_bootstrap_fingerprint()
+        stable_inventory_rows = subject_inventory_rows()
         stable_marker = generation(restarted_api)
         previous_worker = stack["worker"]
         previous_worker.terminate()
@@ -1395,7 +1504,9 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert packet_selection_snapshot(restarted_api) == packet_selective_selection_baseline
         assert after_second_startup_native == stable_native
         assert durable_fingerprint(core_apply_id) == stable_durable
-        assert subject_bootstrap_fingerprint() == stable_subjects
+        after_second_startup_subjects = subject_bootstrap_fingerprint()
+        assert_builtin_bootstrap_rows(stable_subjects, after_second_startup_subjects)
+        _assert_subject_inventory_startup_equivalent(stable_inventory_rows, subject_inventory_rows())
         assert source_bridge.snapshot_calls() == calls_before_admission
         assert source.snapshot_requests() == requests_before_admission
         report_code, second_report = http_json(f"{restarted_api}/__acceptance/bootstrap/report")

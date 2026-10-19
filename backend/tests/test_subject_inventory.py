@@ -5,8 +5,10 @@ from fwrouter_api.db.connection import initialize_database
 
 import json
 from pathlib import Path
+from typing import Any
 
 from fwrouter_api.db.connection import db_session
+from fwrouter_api.adapters.xray import XrayClient
 from fwrouter_api.services.external_connections_registry import upsert_external_connection_record
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
 from fwrouter_api.services.subjects import find_subject_by_ip, list_subjects, update_subject_alias
@@ -690,6 +692,102 @@ def test_subject_inventory_successful_empty_xray_discovery_marks_clients_missing
     assert result["stale_counts"]["explicit_external_client"] == 1
     assert subject["is_active"] is False
     assert subject["runtime_state"] == "inactive"
+
+
+def test_subject_inventory_xray_observations_refresh_only_collection_timestamps(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    monkeypatch.setattr(
+        "fwrouter_api.services.subject_inventory._discover_lan_records",
+        lambda: [],
+    )
+    observations = iter((
+        "2026-10-19T10:00:01+00:00",
+        "2026-10-19T10:00:02+00:00",
+    ))
+    monkeypatch.setattr(
+        "fwrouter_api.services.subject_inventory._utc_timestamp",
+        lambda: next(observations),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.subject_inventory.DEFAULT_XRAY_ADAPTER.list_clients",
+        lambda: [XrayClient(
+            client_id="client-a",
+            client_uuid="uuid-a",
+            email="client-a@example.test",
+            alias="adapter alias",
+            enabled=True,
+            raw={"fixture": "synthetic"},
+        )],
+    )
+
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO subjects (
+                subject_id, subject_type, subject_role, implementation_kind, stable_key,
+                display_name, alias, desired_mode, applied_mode, apply_state, runtime_state,
+                is_active, is_deleted, last_seen_at, metadata_json, updated_at
+            ) VALUES (
+                'xray:uuid-a', 'explicit_external_client', 'vless_client', 'xray', 'xray:uuid-a',
+                'Client A', 'operator alias', 'direct', 'direct', 'clean', 'active',
+                1, 0, '2026-10-19 09:00:00',
+                json_object('source', 'xray_adapter', 'provider', 'xray',
+                            'collected_at', '2026-10-19T10:00:00+00:00'),
+                '2000-01-01 00:00:00'
+            )
+            """
+        )
+
+    def subject_row() -> dict[str, Any]:
+        with db_session() as connection:
+            row = connection.execute(
+                "SELECT * FROM subjects WHERE subject_id='xray:uuid-a'",
+            ).fetchone()
+            assert row is not None
+            return dict(row)
+
+    before = subject_row()
+    first_result = sync_subject_inventory(
+        requested_by="startup-xray-fixture",
+        discover_docker=False,
+        discover_host=False,
+        discover_xray=True,
+    )
+    first = subject_row()
+    second_result = sync_subject_inventory(
+        requested_by="startup-xray-fixture",
+        discover_docker=False,
+        discover_host=False,
+        discover_xray=True,
+    )
+    second = subject_row()
+
+    assert first_result["ok"] is True and second_result["ok"] is True
+    assert first["updated_at"] > before["updated_at"]
+    assert second["updated_at"] >= first["updated_at"]
+    assert json.loads(first["metadata_json"])["collected_at"] == "2026-10-19T10:00:01+00:00"
+    assert json.loads(second["metadata_json"])["collected_at"] == "2026-10-19T10:00:02+00:00"
+    for previous, observed in ((first, second),):
+        previous_metadata = json.loads(previous["metadata_json"])
+        observed_metadata = json.loads(observed["metadata_json"])
+        assert previous_metadata.keys() == observed_metadata.keys()
+        previous_metadata.pop("collected_at")
+        observed_metadata.pop("collected_at")
+        assert previous_metadata == observed_metadata
+        assert {
+            key: value for key, value in previous.items()
+            if key not in {"updated_at", "metadata_json"}
+        } == {
+            key: value for key, value in observed.items()
+            if key not in {"updated_at", "metadata_json"}
+        }
+    assert second["alias"] == "operator alias"
+    assert second["desired_mode"] == "direct" and second["applied_mode"] == "direct"
+    assert second["apply_state"] == "clean" and second["last_seen_at"] == "2026-10-19 09:00:00"
 
 
 def test_subject_inventory_sync_tombstones_inactive_legacy_compose_docker_subject(
