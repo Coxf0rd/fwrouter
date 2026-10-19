@@ -884,24 +884,6 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
         imported_data = imported.get("data") if isinstance(imported.get("data"), dict) else {}
         auto_select = imported_data.get("auto_select")
         assert isinstance(auto_select, dict) and auto_select.get("status") == "skipped_no_fixed_target", imported
-        enable_vpn_from_synthetic_subscription(api, state, source.url)
-        assert source.snapshot_requests() == 4, {
-            "managed_vpn_owner_additional_synthetic_source_requests": source.snapshot_requests(),
-        }
-        assert source_bridge.snapshot_calls() == provider_calls_before_fixture, {
-            "provider_bridge_calls_after_managed_vpn_enable": True,
-        }
-        verified = generation(api)
-        assert verified.get("status") == "verified", verified
-        assert verified.get("candidate_digest") == verified.get("verified_digest"), verified
-        assert_native_matches_active(native, state / "xray" / "config.json")
-        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
-        bindings_path = state / "xray" / "fwrouter-bindings.json"
-        assert bindings_path.is_file(), "managed synthetic Xray enable did not materialize runtime bindings"
-
-        before_fixed_transition_native = native_fingerprint() if fixed_target else None
-        before_fixed_transition_durable = durable_fingerprint("") if fixed_target else None
-
         # Resolve the imported candidate read-only, then establish eligibility
         # and selection exclusively through public owner APIs.
         connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
@@ -931,6 +913,34 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
             "owned_port": ENDPOINT_SELECTOR_PORT,
         }
         packet_target_id = packet_target_ids[0]
+
+        if fixed_target:
+            # Establish initial synthetic intent before the legitimate generation
+            # owner publishes Xray bindings. Changing eligibility afterwards
+            # would create real drift which strict admission must reject.
+            preference_code, preference = http_json(
+                f"{api}/servers/{packet_target_id}/preferences", method="PATCH",
+                payload={"vpn_auto": False, "global_list": False, "reconcile_mihomo": True,
+                         "requested_by": "hosted-fixed-owner-fixture"},
+            )
+            assert preference_code == 200 and preference.get("ok") is True, preference
+        enable_vpn_from_synthetic_subscription(api, state, source.url)
+        assert source.snapshot_requests() == 4, {
+            "managed_vpn_owner_additional_synthetic_source_requests": source.snapshot_requests(),
+        }
+        assert source_bridge.snapshot_calls() == provider_calls_before_fixture, {
+            "provider_bridge_calls_after_managed_vpn_enable": True,
+        }
+        verified = generation(api)
+        assert verified.get("status") == "verified", verified
+        assert verified.get("candidate_digest") == verified.get("verified_digest"), verified
+        assert_native_matches_active(native, state / "xray" / "config.json")
+        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
+        bindings_path = state / "xray" / "fwrouter-bindings.json"
+        assert bindings_path.is_file(), "managed synthetic Xray enable did not materialize runtime bindings"
+
+        before_fixed_transition_native = native_fingerprint() if fixed_target else None
+        before_fixed_transition_durable = durable_fingerprint("") if fixed_target else None
 
         def packet_selection_snapshot(api_url: str) -> dict[str, Any]:
             status_code, response = http_json(f"{api_url}/selector/vpn-auto/state")
@@ -990,14 +1000,6 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
         from fwrouter_api.services.logical_topology import get_logical_runtime_name
         packet_runtime_name = get_logical_runtime_name(packet_target_id)
         if fixed_target:
-            # Keep both eligibility flags false: selection must materialize the
-            # approved active target without smuggling it into the auto pool.
-            preference_code, preference = http_json(
-                f"{api}/servers/{packet_target_id}/preferences", method="PATCH",
-                payload={"vpn_auto": False, "global_list": False, "reconcile_mihomo": True,
-                         "requested_by": "hosted-fixed-owner-fixture"},
-            )
-            assert preference_code == 200 and preference.get("ok") is True, preference
             fixed_code, fixed_response = http_json(
                 f"{api}/routing/global/fixed-server", method="POST",
                 payload={"server_id": packet_target_id, "confirm_switch": True,
