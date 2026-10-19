@@ -434,9 +434,18 @@ def _packet_selectable_vless_profile() -> dict[str, Any]:
 
 
 @pytest.mark.packet
-def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh(acceptance_stack):
+def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh(acceptance_stack, record_property):
     """Normal packet-profile startup preserves an explicitly admitted selective/VPN legacy inventory."""
-    stack = acceptance_stack
+    _run_verified_legacy_startup_lifecycle(acceptance_stack, fixed_target=False, record_property=record_property)
+
+
+@pytest.mark.packet
+def test_fixed_legacy_admission_survives_two_normal_startups(acceptance_stack, record_property):
+    """An off-list active fixed target survives owned apply, strict admission and two startups."""
+    _run_verified_legacy_startup_lifecycle(acceptance_stack, fixed_target=True, record_property=record_property)
+
+
+def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_property):
     state, native, source_bridge = stack["state"], stack["native"], stack["provider_bridge"]
     api = stack["api"]
     assert stack["profile"].get("profile") == "hosted-kernel-packet"
@@ -890,8 +899,11 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         bindings_path = state / "xray" / "fwrouter-bindings.json"
         assert bindings_path.is_file(), "managed synthetic Xray enable did not materialize runtime bindings"
 
-        # Resolve the imported candidate read-only, then establish eligibility,
-        # auto mode, and selection exclusively through public owner APIs.
+        before_fixed_transition_native = native_fingerprint() if fixed_target else None
+        before_fixed_transition_durable = durable_fingerprint("") if fixed_target else None
+
+        # Resolve the imported candidate read-only, then establish eligibility
+        # and selection exclusively through public owner APIs.
         connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
         try:
             connection.execute("PRAGMA query_only=ON")
@@ -940,6 +952,26 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
                 "fenced_active_server_id": fence.get("active_server_id"),
                 "fenced_provenance_server_id": fence.get("provenance_server_id"),
             }
+            if fixed_target:
+                routing_status, routing_response = http_json(f"{api_url}/routing/global")
+                fixed_routing = routing_response.get("data", {}).get("routing", {})
+                native_status, native_global = http_json("http://127.0.0.1:5200/proxies/vpn-global")
+                assert (status_code == routing_status == native_status == 200
+                        and response.get("ok") is True and routing_response.get("ok") is True
+                        and snapshot.get("server_mode") == "fixed"
+                        and fixed_routing.get("desired_fixed_server_id") == packet_target_id
+                        and fixed_routing.get("applied_fixed_server_id") == packet_target_id
+                        and fixed_routing.get("apply_state") == "clean"
+                        and snapshot.get("vpn_global_now") == packet_runtime_name
+                        and native_global.get("now") == packet_runtime_name
+                        and packet_runtime_name in native_global.get("all", [])
+                        and snapshot.get("runtime_vpn_auto_contains_target") is False
+                        and type(snapshot.get("selection_revision")) is int), {
+                    "routing": fixed_routing, "selection": snapshot, "native_global": native_global,
+                }
+                snapshot["fixed_target_id"] = fixed_routing["desired_fixed_server_id"]
+                snapshot["fixed_until"] = fixed_routing.get("fixed_server_until")
+                return snapshot
             assert (status_code == 200 and response.get("ok") is True
                     and snapshot.get("server_mode") == "auto"
                     and snapshot.get("active_auto_server_id") == packet_target_id
@@ -955,60 +987,85 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             }
             return snapshot
 
-        preference_code, preference = http_json(
-            f"{api}/servers/{packet_target_id}/preferences", method="PATCH",
-            payload={"vpn_auto": True, "vpn_auto_priority": 1, "reconcile_mihomo": True,
-                     "requested_by": "hosted-acceptance-packet-legacy-fixture"},
-        )
-        preference_data = preference.get("data") if isinstance(preference, dict) else None
-        server_preferences = (preference_data.get("server_preferences")
-                              if isinstance(preference_data, dict) else None)
-        preference_server = server_preferences.get("server") if isinstance(server_preferences, dict) else None
-        preferences = preference_server.get("preferences") if isinstance(preference_server, dict) else None
-        preferences = preferences if isinstance(preferences, dict) else {}
-        assert (preference_code == 200 and preference.get("ok") is True
-                and preferences.get("vpn_auto") is True
-                and preferences.get("vpn_auto_priority") == 1), {
-            "preference_status": preference_code,
-            "vpn_auto_enabled": preferences.get("vpn_auto") is True,
-            "priority": preferences.get("vpn_auto_priority"),
-        }
-        selector_code, selector_response = http_json(
-            f"{api}/selector/vpn-auto/switch", method="POST",
-            payload={"confirm_switch": True, "exclude_active": False, "update_ping_state": False,
-                     "limit": 20, "timeout_ms": 1000,
-                     "reason": "hosted_packet_legacy_selectable_fixture"}, timeout=90,
-        )
-        selector_data = selector_response.get("data") if isinstance(selector_response, dict) else None
-        selector_result = selector_data.get("selector") if isinstance(selector_data, dict) else None
-        selector_result = selector_result if isinstance(selector_result, dict) else {}
-        assert (selector_code == 200 and selector_response.get("ok") is True
-                and selector_result.get("ok") is True and selector_result.get("selected_server_id") == packet_target_id
-                and selector_result.get("active_after") == packet_target_id
-                and selector_result.get("selection_outcome") in {"selected", "noop"}), {
-            "selector_status": selector_code,
-            "selected_owned_packet_target": selector_result.get("selected_server_id") == packet_target_id,
-            "active_owned_packet_target": selector_result.get("active_after") == packet_target_id,
-            "selection_outcome": selector_result.get("selection_outcome"),
-        }
-        post_apply({"server_mode": "auto", "requested_by": "hosted-acceptance", "run_now": True})
-        routing_code, routing_response = http_json(f"{api}/routing/global")
-        routing_data = routing_response.get("data") if isinstance(routing_response, dict) else None
-        routing_projection = routing_data.get("routing") if isinstance(routing_data, dict) else None
-        routing_projection = routing_projection if isinstance(routing_projection, dict) else {}
-        assert (routing_code == 200 and routing_response.get("ok") is True
-                and routing_projection.get("server_mode") == "auto"
-                and routing_projection.get("desired_mode") == "direct"
-                and routing_projection.get("applied_mode") == "direct"), routing_response
-        selector_runtime_code, selector_runtime = http_json("http://127.0.0.1:5200/proxies/vpn-auto")
         from fwrouter_api.services.logical_topology import get_logical_runtime_name
         packet_runtime_name = get_logical_runtime_name(packet_target_id)
-        assert (selector_runtime_code == 200 and selector_runtime.get("now") == packet_runtime_name), {
-            "native_selector_status": selector_runtime_code,
-            "native_target_matches_owned_packet_candidate": (
-                isinstance(selector_runtime, dict) and selector_runtime.get("now") == packet_runtime_name
-            ),
-        }
+        if fixed_target:
+            # Keep both eligibility flags false: selection must materialize the
+            # approved active target without smuggling it into the auto pool.
+            preference_code, preference = http_json(
+                f"{api}/servers/{packet_target_id}/preferences", method="PATCH",
+                payload={"vpn_auto": False, "global_list": False, "reconcile_mihomo": True,
+                         "requested_by": "hosted-fixed-owner-fixture"},
+            )
+            assert preference_code == 200 and preference.get("ok") is True, preference
+            fixed_code, fixed_response = http_json(
+                f"{api}/routing/global/fixed-server", method="POST",
+                payload={"server_id": packet_target_id, "confirm_switch": True,
+                         "post_check": True, "requested_by": "hosted-fixed-owner-fixture"}, timeout=90,
+            )
+            assert fixed_code == 200 and fixed_response.get("ok") is True, fixed_response
+            fixed_job = await_job(api, fixed_response)
+            assert fixed_job.get("status") == "success", fixed_job
+            routing_code, routing_response = http_json(f"{api}/routing/global")
+            routing_projection = routing_response.get("data", {}).get("routing", {})
+            assert (routing_code == 200 and routing_response.get("ok") is True
+                    and routing_projection.get("desired_mode") == "direct"
+                    and routing_projection.get("applied_mode") == "direct"), routing_response
+        else:
+            preference_code, preference = http_json(
+                f"{api}/servers/{packet_target_id}/preferences", method="PATCH",
+                payload={"vpn_auto": True, "vpn_auto_priority": 1, "reconcile_mihomo": True,
+                         "requested_by": "hosted-acceptance-packet-legacy-fixture"},
+            )
+            preference_data = preference.get("data") if isinstance(preference, dict) else None
+            server_preferences = (preference_data.get("server_preferences")
+                                  if isinstance(preference_data, dict) else None)
+            preference_server = server_preferences.get("server") if isinstance(server_preferences, dict) else None
+            preferences = preference_server.get("preferences") if isinstance(preference_server, dict) else None
+            preferences = preferences if isinstance(preferences, dict) else {}
+            assert (preference_code == 200 and preference.get("ok") is True
+                    and preferences.get("vpn_auto") is True
+                    and preferences.get("vpn_auto_priority") == 1), {
+                "preference_status": preference_code,
+                "vpn_auto_enabled": preferences.get("vpn_auto") is True,
+                "priority": preferences.get("vpn_auto_priority"),
+            }
+            selector_code, selector_response = http_json(
+                f"{api}/selector/vpn-auto/switch", method="POST",
+                payload={"confirm_switch": True, "exclude_active": False, "update_ping_state": False,
+                         "limit": 20, "timeout_ms": 1000,
+                         "reason": "hosted_packet_legacy_selectable_fixture"}, timeout=90,
+            )
+            selector_data = selector_response.get("data") if isinstance(selector_response, dict) else None
+            selector_result = selector_data.get("selector") if isinstance(selector_data, dict) else None
+            selector_result = selector_result if isinstance(selector_result, dict) else {}
+            assert (selector_code == 200 and selector_response.get("ok") is True
+                    and selector_result.get("ok") is True and selector_result.get("selected_server_id") == packet_target_id
+                    and selector_result.get("active_after") == packet_target_id
+                    and selector_result.get("selection_outcome") in {"selected", "noop"}), {
+                "selector_status": selector_code,
+                "selected_owned_packet_target": selector_result.get("selected_server_id") == packet_target_id,
+                "active_owned_packet_target": selector_result.get("active_after") == packet_target_id,
+                "selection_outcome": selector_result.get("selection_outcome"),
+            }
+            post_apply({"server_mode": "auto", "requested_by": "hosted-acceptance", "run_now": True})
+            routing_code, routing_response = http_json(f"{api}/routing/global")
+            routing_data = routing_response.get("data") if isinstance(routing_response, dict) else None
+            routing_projection = routing_data.get("routing") if isinstance(routing_data, dict) else None
+            routing_projection = routing_projection if isinstance(routing_projection, dict) else {}
+            assert (routing_code == 200 and routing_response.get("ok") is True
+                    and routing_projection.get("server_mode") == "auto"
+                    and routing_projection.get("desired_mode") == "direct"
+                    and routing_projection.get("applied_mode") == "direct"), routing_response
+            selector_runtime_code, selector_runtime = http_json("http://127.0.0.1:5200/proxies/vpn-auto")
+            from fwrouter_api.services.logical_topology import get_logical_runtime_name
+            packet_runtime_name = get_logical_runtime_name(packet_target_id)
+            assert (selector_runtime_code == 200 and selector_runtime.get("now") == packet_runtime_name), {
+                "native_selector_status": selector_runtime_code,
+                "native_target_matches_owned_packet_candidate": (
+                    isinstance(selector_runtime, dict) and selector_runtime.get("now") == packet_runtime_name
+                ),
+            }
         packet_selection_baseline = packet_selection_snapshot(api)
         packet_config = yaml.safe_load((state / "generated" / "mihomo" / "config.yaml").read_bytes())
         packet_proxies = packet_config.get("proxies") if isinstance(packet_config, dict) else None
@@ -1034,7 +1091,8 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         vpn_auto_group = ([row for row in packet_groups if isinstance(row, dict)
                            and row.get("name") == "vpn-auto"] if isinstance(packet_groups, list) else [])
         vpn_auto_members = vpn_auto_group[0].get("proxies") if len(vpn_auto_group) == 1 else None
-        assert (isinstance(vpn_auto_members, list) and packet_runtime_name in vpn_auto_members), {
+        assert (isinstance(vpn_auto_members, list)
+                and (packet_runtime_name in vpn_auto_members) is (not fixed_target)), {
             "vpn_auto_group_contains_owned_logical_target": (
                 isinstance(vpn_auto_members, list) and packet_runtime_name in vpn_auto_members
             ),
@@ -1049,6 +1107,23 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert source.snapshot_requests() == 4, {
             "synthetic_source_requests_during_fixture_setup": source.snapshot_requests(),
         }
+
+        if fixed_target:
+            after_fixed_transition_native = native_fingerprint()
+            fixed_protected_fields = {
+                "xray_active", "xray_mounted", "xray_loaded", "xray_loaded_identity_count",
+                "xray_bindings", "xray_last_good", "xray_incarnation", "xray_reload_calls",
+            }
+            assert all(after_fixed_transition_native[key] == before_fixed_transition_native[key]
+                       for key in fixed_protected_fields), {
+                "fixed_apply_changed_xray_fields": sorted(
+                    key for key in fixed_protected_fields
+                    if after_fixed_transition_native[key] != before_fixed_transition_native[key]
+                ),
+            }
+            assert durable_fingerprint("") == before_fixed_transition_durable, {
+                "contract": "fixed generation/apply preserves identities, credentials and Core intent",
+            }
 
         # Manual rules apply performs the real DNSmasq reconciliation as part
         # of finalization. Prepare the already-qualified packet fixture first:
@@ -1252,7 +1327,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert "REJECT" in [str(item).upper() for item in vpn_global_targets], selectors
         assert "DIRECT" not in [str(item).upper() for item in vpn_auto_targets], selectors
         assert "DIRECT" not in [str(item).upper() for item in vpn_global_targets], selectors
-        assert selectors.get("vpn_global_now") == "vpn-auto", selectors
+        assert selectors.get("vpn_global_now") == (packet_runtime_name if fixed_target else "vpn-auto"), selectors
         applied_manifest = json.loads(
             (state / "generated" / "dataplane" / "applied-manifest.json").read_text(encoding="utf-8"),
         )
@@ -1542,6 +1617,19 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             "configured": True, "daemon_running": True, "daemon_uid_matches": True,
         }, second_report
         assert_owned_dns_daemon(restarted_api)
+        record_property("legacy_startup_lifecycle", json.dumps({
+            "schema": "fwrouter-legacy-startup-lifecycle/v1",
+            "server_mode": "fixed" if fixed_target else "auto",
+            "normal_startups_completed": 2,
+            "native_unchanged": True,
+            "durable_identity_mapping_unchanged": True,
+            "identity_rows": before_startup_durable["identity_rows"],
+            "credential_rows": before_startup_durable["credential_rows"],
+            "inventory_digest": expected_digest,
+            "core_apply_id": core_apply_id,
+            "selection_revision": packet_selective_selection_baseline["selection_revision"],
+            "proof_receipt_written": admission["proof_receipt_written"],
+        }, sort_keys=True, separators=(",", ":")))
     finally:
         source.close()
 

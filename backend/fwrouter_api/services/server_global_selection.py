@@ -16,7 +16,7 @@ GLOBAL_FIXED_SERVER_TTL_HOURS = 24
 
 from fwrouter_api.services.server_state import ensure_routing_global_state, get_routing_global_state
 from fwrouter_api.services.events import safe_human_label
-from fwrouter_api.adapters.xray_common import xray_writer_guarded
+from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guarded
 
 
 def _get_active_server_row(server_id: str) -> Any | None:
@@ -126,6 +126,191 @@ def _event_server_label(connection: Any, server_id: str | None) -> str | None:
     return safe_human_label(row["server_name"]) if row else None
 
 
+def _capture_fixed_apply_context(routing: dict[str, Any]) -> dict[str, Any] | None:
+    from fwrouter_api.services.core_intent import read_core_intent_revision, read_core_runtime_context
+    from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+    from fwrouter_api.services.mihomo_reconcile import _file_hash, current_mihomo_input_fingerprint
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    core_context = read_core_runtime_context()
+    incarnation = get_mihomo_runtime_incarnation(timeout_seconds=5.0)
+    if not core_context or not incarnation:
+        return None
+    with db_session() as connection:
+        revision = read_selection_revision(connection)
+        core_revision = read_core_intent_revision(connection)
+        core_row = connection.execute(
+            "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'"
+        ).fetchone()
+        if core_row is None:
+            return None
+        core_snapshot = tuple(str(core_row[key]) for key in ("desired_state", "lifecycle_mode", "apply_state"))
+    fingerprint = current_mihomo_input_fingerprint(routing)
+    if not isinstance(fingerprint, dict) or not fingerprint.get("hash"):
+        return None
+    return {
+        "selection_revision": revision,
+        "core_revision": core_revision,
+        "core_snapshot": core_snapshot,
+        "core_runtime_context": core_context,
+        "runtime_incarnation": incarnation,
+        "input_hash": str(fingerprint["hash"]),
+        "active_config_hash": _file_hash(_resolved_base_config_path()),
+    }
+
+
+def _fixed_apply_token_matches(
+    *,
+    server_id: str,
+    fixed_until: str,
+    token: dict[str, Any],
+    expected_selection_revision: int | None = None,
+    require_runtime_identity: bool = True,
+    require_active_config: bool = True,
+) -> bool:
+    from fwrouter_api.services.core_intent import (
+        assert_core_intent_snapshot_current,
+        read_core_runtime_context,
+    )
+    from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+    from fwrouter_api.services.mihomo_reconcile import _file_hash, current_mihomo_input_fingerprint
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    try:
+        with db_session() as connection:
+            row = connection.execute(
+                """SELECT desired_mode, applied_mode, selective_default, server_mode,
+                          desired_fixed_server_id, applied_fixed_server_id, fixed_server_until,
+                          active_auto_server_id, apply_state, error_code, error_message, updated_at,
+                          datetime(fixed_server_until) IS NOT NULL
+                            AND datetime(fixed_server_until) > CURRENT_TIMESTAMP AS ttl_live
+                   FROM routing_global_state WHERE id=1"""
+            ).fetchone()
+            expected_revision = (
+                token.get("selection_revision")
+                if expected_selection_revision is None
+                else expected_selection_revision
+            )
+            if row is None or read_selection_revision(connection) != expected_revision:
+                return False
+            if not assert_core_intent_snapshot_current(
+                connection,
+                int(token["core_revision"]),
+                tuple(token["core_snapshot"]),
+            ):
+                return False
+            if (
+                str(row["server_mode"] or "auto") != "fixed"
+                or str(row["desired_fixed_server_id"] or "") != server_id
+                or str(row["fixed_server_until"] or "") != fixed_until
+                or str(row["apply_state"] or "") not in {"pending", "applying"}
+                or row["error_code"] is not None
+                or row["error_message"] is not None
+                or not bool(row["ttl_live"])
+            ):
+                return False
+            persisted_routing = {
+                "desired_mode": str(row["desired_mode"] or "direct"),
+                "applied_mode": row["applied_mode"],
+                "selective_default": str(row["selective_default"] or "direct"),
+                "server_mode": str(row["server_mode"] or "auto"),
+                # Keep nullable intent fields byte-for-byte equivalent to the
+                # routing snapshot used when the input fingerprint was bound.
+                # Converting SQLite NULL to an empty string changes that
+                # fingerprint and makes every legitimate fixed token stale.
+                "desired_fixed_server_id": row["desired_fixed_server_id"],
+                "applied_fixed_server_id": row["applied_fixed_server_id"],
+                "fixed_server_until": row["fixed_server_until"],
+                "active_auto_server_id": row["active_auto_server_id"],
+                "apply_state": str(row["apply_state"] or ""),
+                "error_code": row["error_code"],
+                "error_message": row["error_message"],
+                "updated_at": row["updated_at"],
+            }
+        current_input = current_mihomo_input_fingerprint(persisted_routing)
+        return bool(
+            read_core_runtime_context() == token.get("core_runtime_context")
+            and (
+                not require_runtime_identity
+                or get_mihomo_runtime_incarnation(timeout_seconds=5.0) == token.get("runtime_incarnation")
+            )
+            and (
+                not require_active_config
+                or _file_hash(_resolved_base_config_path()) == token.get("active_config_hash")
+            )
+            and isinstance(current_input, dict)
+            and current_input.get("hash") == token.get("input_hash")
+        )
+    except (KeyError, TypeError, ValueError, OSError):
+        return False
+
+
+def _fixed_materialization_callback(routing: dict[str, Any], token: dict[str, Any]):
+    from fwrouter_api.services.mihomo_config_status import mihomo_runtime_fixed_target_materialized
+
+    def verify(*, operation_id: str, expected_selection_revision: int) -> dict[str, Any]:
+        original_revision = token.get("selection_revision")
+        revision_owned = expected_selection_revision in {
+            original_revision,
+            original_revision + 1 if type(original_revision) is int else None,
+        }
+        intent_current = bool(
+            revision_owned
+            and _fixed_apply_token_matches(
+                server_id=str(routing.get("desired_fixed_server_id") or ""),
+                fixed_until=str(routing.get("fixed_server_until") or ""),
+                token=token,
+                expected_selection_revision=expected_selection_revision,
+                require_runtime_identity=False,
+                require_active_config=False,
+            )
+        )
+        result = (
+            mihomo_runtime_fixed_target_materialized(routing)
+            if intent_current
+            else {"ok": False, "reason": "fixed_intent_superseded"}
+        )
+        return {
+            **result,
+            "ok": bool(result.get("ok") and intent_current),
+            "operation_id": operation_id,
+            "selection_revision": expected_selection_revision,
+            "selected_fixed_target": False,
+        }
+
+    return verify
+
+
+def _materialize_fixed_server_generation(
+    routing: dict[str, Any], *, token: dict[str, Any], job_id: str,
+) -> dict[str, Any]:
+    """Revalidate the captured fixed intent and serialize its generation owner."""
+    from fwrouter_api.services.mihomo_reconcile import reconcile_mihomo_runtime
+
+    server_id = str(routing.get("desired_fixed_server_id") or "")
+    fixed_until = str(routing.get("fixed_server_until") or "")
+    with xray_writer_guard(timeout_seconds=30.0):
+        if not _fixed_apply_token_matches(
+            server_id=server_id,
+            fixed_until=fixed_until,
+            token=token,
+        ):
+            return {
+                "ok": False,
+                "stage": "fixed_intent_revalidation",
+                "error_code": "GLOBAL_FIXED_SERVER_STALE",
+                "error_message": "Fixed intent changed before managed generation began.",
+                "last_good_retained": True,
+            }
+        return reconcile_mihomo_runtime(
+            routing=routing,
+            job_id=job_id,
+            verification_callback=_fixed_materialization_callback(routing, token),
+        )
+
+
 @xray_writer_guarded
 def set_global_fixed_server(
     server_id: str,
@@ -183,9 +368,12 @@ def set_global_fixed_server(
         )
         previous_mode = str(previous["server_mode"] or "auto") if previous else "auto"
         previous_server_id = str(previous["desired_fixed_server_id"] or "") if previous else ""
+        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+        current_revision = read_selection_revision(connection)
+        selection_revision = advance_selection_revision(connection, expected_revision=current_revision)
+        if selection_revision is None:
+            raise RuntimeError("Fixed-server intent changed while its selection fence was being reserved.")
         if previous_mode != "fixed" or previous_server_id != server_id:
-            from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
-            advance_selection_revision(connection)
             from fwrouter_api.services.event_contract import current_event_context
             from fwrouter_api.services.events import create_event_context, write_audit_event
 
@@ -220,7 +408,8 @@ def set_global_fixed_server(
     return {
         "ok": True,
         "requested_by": requested_by,
-        "routing": get_routing_global_state(),
+        "routing": get_routing_global_state(expire_ttl=False),
+        "selection_revision": selection_revision,
         "server": validation["server"],
     }
 
@@ -256,9 +445,12 @@ def clear_global_fixed_server(
         )
         previous_mode = str(previous["server_mode"] or "auto") if previous else "auto"
         previous_server_id = str(previous["desired_fixed_server_id"] or "") if previous else ""
+        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+        current_revision = read_selection_revision(connection)
+        selection_revision = advance_selection_revision(connection, expected_revision=current_revision)
+        if selection_revision is None:
+            raise RuntimeError("Global auto intent changed while its selection fence was being reserved.")
         if previous_mode == "fixed" or previous_server_id:
-            from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
-            advance_selection_revision(connection)
             from fwrouter_api.services.event_contract import current_event_context
             from fwrouter_api.services.events import create_event_context, write_audit_event
 
@@ -290,22 +482,33 @@ def clear_global_fixed_server(
     return {
         "ok": True,
         "requested_by": requested_by,
-        "routing": get_routing_global_state(),
+        "routing": get_routing_global_state(expire_ttl=False),
+        "selection_revision": selection_revision,
     }
 
 
 @xray_writer_guarded
-def _restore_global_routing_state(previous_state: dict[str, Any]) -> dict[str, Any]:
-    """Restore global routing row after failed fixed-server apply."""
+def _restore_global_routing_state(
+    previous_state: dict[str, Any],
+    *,
+    expected_revision: int,
+    expected_server_id: str | None,
+    expected_fixed_until: str | None,
+    expected_server_mode: str = "fixed",
+    expected_apply_states: tuple[str, ...] = ("pending", "applying"),
+) -> dict[str, Any]:
+    """CAS-restore only the fixed operation whose intent still owns the row."""
 
     ensure_routing_global_state()
 
     with db_session() as connection:
-        current = connection.execute(
-            "SELECT server_mode, desired_fixed_server_id FROM routing_global_state WHERE id=1"
-        ).fetchone()
-        connection.execute(
-            """
+        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+
+        if read_selection_revision(connection) != expected_revision:
+            return {"ok": False, "error_code": "GLOBAL_FIXED_SERVER_STALE", "routing": get_routing_global_state(expire_ttl=False)}
+        apply_placeholders = ",".join("?" for _ in expected_apply_states)
+        changed = connection.execute(
+            f"""
             UPDATE routing_global_state
             SET
                 desired_mode = ?,
@@ -320,6 +523,10 @@ def _restore_global_routing_state(previous_state: dict[str, Any]) -> dict[str, A
                 error_message = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
+              AND server_mode = ?
+              AND desired_fixed_server_id IS ?
+              AND fixed_server_until IS ?
+              AND apply_state IN ({apply_placeholders})
             """,
             (
                 previous_state["desired_mode"],
@@ -332,24 +539,21 @@ def _restore_global_routing_state(previous_state: dict[str, Any]) -> dict[str, A
                 previous_state["apply_state"],
                 previous_state["error_code"],
                 previous_state["error_message"],
+                expected_server_mode,
+                expected_server_id,
+                expected_fixed_until,
+                *expected_apply_states,
             ),
         )
-        current_policy = (
-            str(current["server_mode"] or "auto"),
-            str(current["desired_fixed_server_id"] or ""),
-        ) if current else ("auto", "")
-        restored_policy = (
-            str(previous_state.get("server_mode") or "auto"),
-            str(previous_state.get("desired_fixed_server_id") or ""),
-        )
-        if current_policy != restored_policy:
-            from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
-            advance_selection_revision(connection)
+        if changed.rowcount != 1:
+            return {"ok": False, "error_code": "GLOBAL_FIXED_SERVER_STALE", "routing": get_routing_global_state(expire_ttl=False)}
+        if advance_selection_revision(connection, expected_revision=expected_revision) is None:
+            raise RuntimeError("Selection revision changed while restoring fixed-server intent.")
 
-    restored = get_routing_global_state()
+    restored = get_routing_global_state(expire_ttl=False)
     if restored is None:
         raise RuntimeError("Failed to restore routing_global_state")
-    return restored
+    return {"ok": True, "routing": restored}
 
 
 def apply_global_fixed_server(
@@ -427,37 +631,17 @@ def apply_global_fixed_server(
             "error_message": validation["error_message"],
         }
 
-    pre_check = check_server_delay(
-        server_id,
-        update_state=True,
-        checked_by=f"global_fixed_pre_check:{requested_by}",
-        timeout_ms=timeout_ms,
-    )
+    pre_check = None
 
-    if not pre_check["ok"]:
-        return {
-            "ok": False,
-            "requested_by": requested_by,
-            "management_attribution": attribution,
-            "server_id": server_id,
-            "active_before": active_before,
-            "routing_before": previous_state,
-            "routing_after": previous_state,
-            "server": validation["server"],
-            "pre_check": pre_check,
-            "apply_result": None,
-            "post_check": None,
-            "rolled_back": False,
-            "post_check_failed_no_rollback": False,
-            "error_code": "GLOBAL_FIXED_SERVER_PRE_CHECK_FAILED",
-            "error_message": pre_check["error_message"] or "Global fixed server pre-check failed.",
-        }
-
-    desired = set_global_fixed_server(
-        server_id,
-        requested_by=requested_by,
-        job_id=job_id,
-    )
+    with xray_writer_guard(timeout_seconds=30.0):
+        previous_state = get_routing_global_state(expire_ttl=False) or previous_state
+        active_before = DEFAULT_MIHOMO_ADAPTER.get_active_server_id()
+        desired = set_global_fixed_server(server_id, requested_by=requested_by, job_id=job_id)
+        token = (
+            _capture_fixed_apply_context(desired["routing"])
+            if desired.get("ok") and isinstance(desired.get("routing"), dict)
+            else None
+        )
 
     if not desired["ok"]:
         return {
@@ -467,7 +651,7 @@ def apply_global_fixed_server(
             "server_id": server_id,
             "active_before": active_before,
             "routing_before": previous_state,
-            "routing_after": get_routing_global_state(),
+            "routing_after": get_routing_global_state(expire_ttl=False),
             "server": validation["server"],
             "pre_check": pre_check,
             "apply_result": None,
@@ -478,33 +662,236 @@ def apply_global_fixed_server(
             "error_message": desired["error_message"],
         }
 
-    mihomo_target = _mihomo_target_for_server(validation["server"], server_id)
-    apply_result = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector(
-        "vpn-global",
-        mihomo_target,
-    )
-
-    if not apply_result.ok:
-        restored = _restore_global_routing_state(previous_state)
-
+    if token is None:
         return {
-            "ok": False,
-            "requested_by": requested_by,
-            "management_attribution": attribution,
-            "server_id": server_id,
+            "ok": False, "requested_by": requested_by,
+            "management_attribution": attribution, "server_id": server_id,
+            "active_before": active_before, "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": None, "post_check": None, "rolled_back": False,
+            "post_check_failed_no_rollback": False,
+            "error_code": "GLOBAL_FIXED_SERVER_FENCE_UNAVAILABLE",
+            "error_message": "Fixed routing intent could not be bound to the current runtime context.",
+        }
+
+    materialized = _materialize_fixed_server_generation(
+        desired["routing"], token=token, job_id=job_id or "global-fixed-server",
+    )
+    generation_fence = materialized.get("reentry_generation_fence")
+    before_revision = token.get("selection_revision")
+    after_revision = generation_fence.get("selection_revision") if isinstance(generation_fence, dict) else None
+    unchanged_config = bool(generation_fence.get("unchanged_config")) if isinstance(generation_fence, dict) else False
+    active_hash = generation_fence.get("active_config_hash") if isinstance(generation_fence, dict) else None
+    receipt_valid = bool(
+        isinstance(generation_fence, dict)
+        and materialized.get("ok") is True
+        and isinstance(materialized.get("operation_id"), str)
+        and materialized.get("operation_id")
+        and generation_fence.get("schema") == "mihomo-reentry-generation-fence/v1"
+        and generation_fence.get("operation_id") == materialized.get("operation_id")
+        and generation_fence.get("job_id") == materialized.get("job_id")
+        and type(generation_fence.get("before_revision")) is int
+        and generation_fence.get("before_revision") == before_revision
+        and type(after_revision) is int
+        and after_revision == (before_revision if unchanged_config else before_revision + 1)
+        and isinstance(generation_fence.get("runtime_incarnation"), str)
+        and generation_fence.get("runtime_incarnation")
+        and isinstance(active_hash, str)
+        and len(active_hash) == 64
+        and all(char in "0123456789abcdef" for char in active_hash)
+        and generation_fence.get("native_proof_verified") is True
+        and generation_fence.get("publication_verified") is True
+        and (
+            not unchanged_config
+            or (
+                generation_fence.get("runtime_incarnation") == token.get("runtime_incarnation")
+                and active_hash == token.get("active_config_hash")
+            )
+        )
+    )
+    if not receipt_valid:
+        materialized = {**materialized, "ok": False, "error_code": "MIHOMO_GENERATION_RECEIPT_INVALID"}
+    else:
+        token.update({
+            "selection_revision": after_revision,
+            "runtime_incarnation": generation_fence["runtime_incarnation"],
+            "active_config_hash": active_hash,
+        })
+    if materialized.get("stage") == "fixed_intent_revalidation":
+        return {
+            "ok": False, "requested_by": requested_by,
+            "management_attribution": attribution, "server_id": server_id,
             "active_before": active_before,
             "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
             "routing_before": previous_state,
-            "routing_after": restored,
-            "server": validation["server"],
-            "pre_check": pre_check,
-            "apply_result": apply_result.to_dict(),
-            "mihomo_target": mihomo_target,
-            "post_check": None,
-            "rolled_back": True,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": None, "mihomo_reconcile": materialized,
+            "post_check": None, "rolled_back": False,
             "post_check_failed_no_rollback": False,
-            "error_code": apply_result.error_code or "GLOBAL_FIXED_SERVER_APPLY_FAILED",
-            "error_message": apply_result.error_message or apply_result.message,
+            "error_code": "GLOBAL_FIXED_SERVER_STALE",
+            "error_message": materialized.get("error_message"),
+        }
+    if not materialized.get("ok"):
+        return {
+            "ok": False, "requested_by": requested_by,
+            "management_attribution": attribution, "server_id": server_id,
+            "active_before": active_before, "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": None, "mihomo_reconcile": materialized,
+            "post_check": None, "rolled_back": False,
+            "post_check_failed_no_rollback": False,
+            "error_code": "MIHOMO_RECONCILE_FAILED",
+            "error_message": "Fixed target could not be materialized and verified in the managed runtime.",
+        }
+
+    from fwrouter_api.services.mihomo_config_status import mihomo_runtime_fixed_target_materialized
+
+    materialized_proof = mihomo_runtime_fixed_target_materialized(desired["routing"])
+    mihomo_target = str(materialized_proof.get("fixed_runtime_target") or "")
+    if not materialized_proof.get("ok") or not mihomo_target:
+        return {
+            "ok": False, "requested_by": requested_by,
+            "management_attribution": attribution, "server_id": server_id,
+            "active_before": active_before, "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": None, "mihomo_reconcile": materialized,
+            "fixed_materialization_proof": materialized_proof,
+            "post_check": None, "rolled_back": False,
+            "post_check_failed_no_rollback": False,
+            "error_code": "GLOBAL_FIXED_SERVER_MATERIALIZATION_UNVERIFIED",
+            "error_message": "Fixed target membership is not proven by the current managed runtime.",
+        }
+
+    # Probe only after the fixed proxy has been reconciled into the active
+    # Mihomo config; this supports full-inventory fixed targets that are not
+    # members of the ordinary auto/global preference pools.
+    pre_check = check_server_delay(
+        server_id,
+        update_state=True,
+        checked_by=f"global_fixed_pre_check:{requested_by}",
+        timeout_ms=timeout_ms,
+    )
+    if not pre_check.get("ok"):
+        with xray_writer_guard(timeout_seconds=30.0):
+            if _fixed_apply_token_matches(
+                server_id=server_id,
+                fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+                token=token,
+            ):
+                with db_session() as connection:
+                    connection.execute(
+                        """UPDATE routing_global_state SET apply_state='failed', error_code=?,
+                                  error_message=?, updated_at=CURRENT_TIMESTAMP
+                           WHERE id=1 AND server_mode='fixed' AND desired_fixed_server_id=?
+                             AND fixed_server_until=? AND apply_state='pending'""",
+                        (
+                            "GLOBAL_FIXED_SERVER_PRE_CHECK_FAILED",
+                            pre_check.get("error_message") or "Global fixed server pre-check failed.",
+                            server_id,
+                            desired["routing"].get("fixed_server_until"),
+                        ),
+                    )
+        return {
+            "ok": False, "requested_by": requested_by,
+            "management_attribution": attribution, "server_id": server_id,
+            "active_before": active_before,
+            "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": None, "post_check": None, "rolled_back": False,
+            "post_check_failed_no_rollback": False,
+            "error_code": "GLOBAL_FIXED_SERVER_PRE_CHECK_FAILED",
+            "error_message": pre_check.get("error_message") or "Global fixed server pre-check failed.",
+        }
+
+    with xray_writer_guard(timeout_seconds=30.0):
+        if not _fixed_apply_token_matches(server_id=server_id, fixed_until=str(desired["routing"].get("fixed_server_until") or ""), token=token):
+            apply_result = None
+            stale_before_native = True
+        else:
+            current_proof = mihomo_runtime_fixed_target_materialized(desired["routing"])
+            if not current_proof.get("ok") or current_proof.get("fixed_runtime_target") != mihomo_target:
+                apply_result = None
+                stale_before_native = True
+            else:
+                stale_before_native = False
+                apply_result = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector("vpn-global", mihomo_target)
+                if apply_result.ok:
+                    selected_proof = mihomo_runtime_fixed_target_materialized(
+                        desired["routing"], require_selected=True,
+                    )
+                    if not selected_proof.get("ok") or not _fixed_apply_token_matches(
+                        server_id=server_id,
+                        fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+                        token=token,
+                    ):
+                        apply_result = None
+                        stale_before_native = True
+                else:
+                    selected_proof = None
+
+    if stale_before_native or apply_result is None:
+        return {
+            "ok": False, "requested_by": requested_by,
+            "management_attribution": attribution, "server_id": server_id,
+            "active_before": active_before,
+            "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+            "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": apply_result.to_dict() if apply_result else None,
+            "post_check": None, "rolled_back": False,
+            "post_check_failed_no_rollback": False,
+            "error_code": "GLOBAL_FIXED_SERVER_STALE",
+            "error_message": "Fixed routing changed during runtime verification; no completion was recorded.",
+        }
+
+    if not apply_result.ok or not selected_proof.get("ok"):
+        failure_code = apply_result.error_code if not apply_result.ok else "GLOBAL_FIXED_SERVER_NATIVE_PROOF_FAILED"
+        failure_message = apply_result.error_message or apply_result.message if not apply_result.ok else "Fixed target native selection was not verified."
+        rollback = None
+        with xray_writer_guard(timeout_seconds=30.0):
+            if _fixed_apply_token_matches(
+                server_id=server_id,
+                fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+                token=token,
+            ):
+                # Restore prior durable intent only when the adapter confirms
+                # that the failed native request left the active selector as it
+                # was. A partial or uncertain effect remains explicitly failed.
+                if not apply_result.ok and DEFAULT_MIHOMO_ADAPTER.get_active_server_id() == active_before:
+                    rollback = _restore_global_routing_state(
+                        previous_state,
+                        expected_revision=int(token["selection_revision"]),
+                        expected_server_id=server_id,
+                        expected_fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+                    )
+                if rollback is None or not rollback.get("ok"):
+                    with db_session() as connection:
+                        connection.execute(
+                            """UPDATE routing_global_state SET apply_state='failed', error_code=?,
+                                      error_message=?, updated_at=CURRENT_TIMESTAMP
+                               WHERE id=1 AND server_mode='fixed' AND desired_fixed_server_id=?
+                                 AND fixed_server_until=? AND apply_state='pending'""",
+                            (failure_code, failure_message, server_id, desired["routing"].get("fixed_server_until")),
+                        )
+        return {
+            "ok": False, "requested_by": requested_by,
+            "management_attribution": attribution, "server_id": server_id,
+            "active_before": active_before,
+            "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+            "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": apply_result.to_dict(),
+            "fixed_materialization_proof": selected_proof,
+            "post_check": None, "rolled_back": bool(rollback and rollback.get("ok")),
+            "post_check_failed_no_rollback": False,
+            "error_code": failure_code, "error_message": failure_message,
         }
 
     post_check_result = None
@@ -532,8 +919,53 @@ def apply_global_fixed_server(
             else "Global fixed server post-check failed."
         )
 
-    with db_session() as connection:
-        connection.execute(
+    with xray_writer_guard(timeout_seconds=30.0), db_session() as connection:
+        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+        if not _fixed_apply_token_matches(
+            server_id=server_id,
+            fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+            token=token,
+        ):
+            return {
+                "ok": False, "requested_by": requested_by,
+                "management_attribution": attribution, "server_id": server_id,
+                "active_before": active_before,
+                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+                "routing_before": previous_state,
+                "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": "GLOBAL_FIXED_SERVER_STALE",
+                "error_message": "Fixed routing changed before completion; state remains unverified.",
+            }
+        final_native_proof = mihomo_runtime_fixed_target_materialized(
+            desired["routing"], require_selected=True,
+        )
+        if (
+            not final_native_proof.get("ok")
+            or final_native_proof.get("fixed_runtime_target") != mihomo_target
+            or not _fixed_apply_token_matches(
+                server_id=server_id,
+                fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+                token=token,
+            )
+        ):
+            return {
+                "ok": False, "requested_by": requested_by,
+                "management_attribution": attribution, "server_id": server_id,
+                "active_before": active_before,
+                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+                "routing_before": previous_state,
+                "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "fixed_materialization_proof": final_native_proof,
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": "GLOBAL_FIXED_SERVER_NATIVE_PROOF_FAILED",
+                "error_message": "Fixed target no longer matches native runtime readback at completion.",
+            }
+        changed = connection.execute(
             """
             UPDATE routing_global_state
             SET
@@ -545,7 +977,8 @@ def apply_global_fixed_server(
                 error_code = ?,
                 error_message = ?,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1
+            WHERE id = 1 AND server_mode='fixed' AND desired_fixed_server_id=?
+              AND fixed_server_until=? AND apply_state='pending'
             """,
             (
                 server_id,
@@ -554,8 +987,41 @@ def apply_global_fixed_server(
                 apply_state,
                 error_code,
                 error_message,
+                server_id,
+                desired["routing"].get("fixed_server_until"),
             ),
         )
+        if changed.rowcount != 1:
+            return {
+                "ok": False, "requested_by": requested_by,
+                "management_attribution": attribution, "server_id": server_id,
+                "active_before": active_before,
+                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+                "routing_before": previous_state,
+                "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": "GLOBAL_FIXED_SERVER_STALE",
+                "error_message": "Fixed routing intent no longer owns completion.",
+            }
+        if advance_selection_revision(
+            connection, expected_revision=token["selection_revision"],
+        ) is None:
+            connection.rollback()
+            return {
+                "ok": False, "requested_by": requested_by,
+                "management_attribution": attribution, "server_id": server_id,
+                "active_before": active_before,
+                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+                "routing_before": previous_state,
+                "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": "GLOBAL_FIXED_SERVER_STALE",
+                "error_message": "Fixed routing completion lost its selection revision fence.",
+            }
 
     routing_after = get_routing_global_state()
 
@@ -692,6 +1158,87 @@ def submit_global_fixed_server_apply_job(
     return manager.start_job(job["job_id"]) or job
 
 
+@xray_writer_guarded
+def _global_auto_intent_matches(token: dict[str, Any], *, expected_revision: int | None = None) -> bool:
+    from fwrouter_api.services.core_intent import (
+        assert_core_intent_snapshot_current,
+        read_core_runtime_context,
+    )
+    from fwrouter_api.services.mihomo_reconcile import current_mihomo_input_fingerprint
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    try:
+        with db_session() as connection:
+            row = connection.execute(
+                """SELECT desired_mode, applied_mode, selective_default, server_mode,
+                          desired_fixed_server_id, applied_fixed_server_id, fixed_server_until,
+                          active_auto_server_id, apply_state, error_code, error_message, updated_at
+                   FROM routing_global_state WHERE id=1"""
+            ).fetchone()
+            revision = read_selection_revision(connection)
+            if (
+                row is None
+                or revision != (expected_revision if expected_revision is not None else token.get("selection_revision"))
+                or not assert_core_intent_snapshot_current(
+                    connection, int(token["core_revision"]), tuple(token["core_snapshot"]),
+                )
+            ):
+                return False
+            if (
+                str(row["server_mode"] or "auto") != "auto"
+                or row["desired_fixed_server_id"] is not None
+                or row["applied_fixed_server_id"] is not None
+                or row["fixed_server_until"] is not None
+                or str(row["apply_state"] or "") != "pending"
+                or row["error_code"] is not None
+                or row["error_message"] is not None
+            ):
+                return False
+            persisted_routing = {key: row[key] for key in (
+                "desired_mode", "applied_mode", "selective_default", "server_mode",
+                "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until",
+                "active_auto_server_id", "apply_state", "error_code", "error_message", "updated_at",
+            )}
+        fingerprint = current_mihomo_input_fingerprint(persisted_routing)
+        return bool(
+            isinstance(fingerprint, dict)
+            and fingerprint.get("hash") == token.get("input_hash")
+            and read_core_runtime_context() == token.get("core_runtime_context")
+        )
+    except (KeyError, TypeError, ValueError, OSError):
+        return False
+
+
+def _global_auto_materialization_callback(token: dict[str, Any]):
+    def verify(*, operation_id: str, expected_selection_revision: int) -> dict[str, Any]:
+        owned_revision = int(token.get("selection_revision", -1))
+        revision_is_reconcile_owned = expected_selection_revision in {owned_revision, owned_revision + 1}
+        current = revision_is_reconcile_owned and _global_auto_intent_matches(
+            token, expected_revision=expected_selection_revision,
+        )
+        return {
+            "ok": bool(current),
+            "operation_id": operation_id,
+            "selection_revision": expected_selection_revision,
+            "selected_fixed_target": False,
+        }
+
+    return verify
+
+
+def _global_auto_apply_token_matches(token: dict[str, Any]) -> bool:
+    from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+    from fwrouter_api.services.mihomo_reconcile import _file_hash
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+
+    return bool(
+        _global_auto_intent_matches(token)
+        and get_mihomo_runtime_incarnation(timeout_seconds=5.0) == token.get("runtime_incarnation")
+        and _file_hash(_resolved_base_config_path()) == token.get("active_config_hash")
+    )
+
+
+@xray_writer_guarded
 def apply_global_auto_server(
     *,
     requested_by: str = "admin",
@@ -737,14 +1284,97 @@ def apply_global_auto_server(
     active_before = DEFAULT_MIHOMO_ADAPTER.get_active_server_id()
 
     desired = clear_global_fixed_server(requested_by=requested_by, job_id=job_id)
+    if not desired.get("ok") or not isinstance(desired.get("routing"), dict):
+        return {"ok": False, "error_code": "GLOBAL_AUTO_INTENT_FAILED", "desired_result": desired}
 
-    apply_result = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector(
-        "vpn-global",
-        "vpn-auto",
+    token = _capture_fixed_apply_context(desired["routing"])
+    if token is None:
+        return {
+            "ok": False, "requested_by": requested_by,
+            "management_attribution": attribution,
+            "active_before": active_before,
+            "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+            "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "desired_result": desired,
+            "apply_result": None,
+            "rolled_back": False,
+            "error_code": "GLOBAL_AUTO_FENCE_UNAVAILABLE",
+            "error_message": "Auto routing intent could not be bound to current runtime context.",
+        }
+
+    from fwrouter_api.services.mihomo_reconcile import reconcile_mihomo_runtime
+
+    materialized = reconcile_mihomo_runtime(
+        routing=desired["routing"], job_id=job_id or "global-auto-server",
+        verification_callback=_global_auto_materialization_callback(token),
     )
+    receipt = materialized.get("reentry_generation_fence")
+    before_revision = token.get("selection_revision")
+    unchanged_config = bool(receipt.get("unchanged_config")) if isinstance(receipt, dict) else False
+    after_revision = receipt.get("selection_revision") if isinstance(receipt, dict) else None
+    receipt_valid = bool(
+        materialized.get("ok") is True
+        and isinstance(materialized.get("operation_id"), str)
+        and materialized.get("operation_id")
+        and isinstance(receipt, dict)
+        and receipt.get("schema") == "mihomo-reentry-generation-fence/v1"
+        and receipt.get("operation_id") == materialized.get("operation_id")
+        and receipt.get("job_id") == materialized.get("job_id")
+        and type(receipt.get("before_revision")) is int
+        and receipt.get("before_revision") == before_revision
+        and type(after_revision) is int
+        and after_revision == (before_revision if unchanged_config else before_revision + 1)
+        and isinstance(receipt.get("runtime_incarnation"), str)
+        and receipt.get("runtime_incarnation")
+        and isinstance(receipt.get("active_config_hash"), str)
+        and receipt.get("native_proof_verified") is True
+        and receipt.get("publication_verified") is True
+    )
+    if not receipt_valid:
+        return {
+            "ok": False, "requested_by": requested_by,
+            "management_attribution": attribution,
+            "active_before": active_before,
+            "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+            "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "desired_result": desired,
+            "mihomo_reconcile": materialized,
+            "apply_result": None,
+            "rolled_back": False,
+            "error_code": "MIHOMO_RECONCILE_FAILED",
+            "error_message": "Auto selector membership could not be materialized and verified.",
+        }
+    token.update({
+        "selection_revision": after_revision,
+        "runtime_incarnation": receipt["runtime_incarnation"],
+        "active_config_hash": receipt["active_config_hash"],
+    })
 
-    if not apply_result.ok:
-        restored = _restore_global_routing_state(previous_state)
+    apply_result = None
+    final_proof: dict[str, Any] | None = None
+    with xray_writer_guard(timeout_seconds=30.0):
+        if _global_auto_apply_token_matches(token):
+            apply_result = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector("vpn-global", "vpn-auto")
+            if apply_result.ok:
+                from fwrouter_api.services.mihomo_config_status import mihomo_runtime_satisfies_routing
+
+                final_proof = mihomo_runtime_satisfies_routing(desired["routing"])
+                if not final_proof.get("ok") or not _global_auto_apply_token_matches(token):
+                    apply_result = None
+
+    if apply_result is None or not apply_result.ok or not final_proof or not final_proof.get("ok"):
+        with xray_writer_guard(timeout_seconds=30.0), db_session() as connection:
+            if _global_auto_apply_token_matches(token):
+                connection.execute(
+                    """UPDATE routing_global_state SET apply_state='failed',
+                              error_code='GLOBAL_AUTO_NATIVE_PROOF_FAILED',
+                              error_message='Auto selector state could not be verified.',
+                              updated_at=CURRENT_TIMESTAMP
+                       WHERE id=1 AND server_mode='auto' AND desired_fixed_server_id IS NULL
+                         AND fixed_server_until IS NULL AND apply_state='pending'"""
+                )
         return {
             "ok": False,
             "requested_by": requested_by,
@@ -752,30 +1382,56 @@ def apply_global_auto_server(
             "active_before": active_before,
             "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
             "routing_before": previous_state,
-            "routing_after": restored,
+            "routing_after": get_routing_global_state(expire_ttl=False),
             "desired_result": desired,
-            "apply_result": apply_result.to_dict(),
-            "rolled_back": True,
-            "error_code": apply_result.error_code or "GLOBAL_AUTO_APPLY_FAILED",
-            "error_message": apply_result.error_message or apply_result.message,
+            "mihomo_reconcile": materialized,
+            "apply_result": apply_result.to_dict() if apply_result else None,
+            "fixed_materialization_proof": final_proof,
+            "rolled_back": False,
+            "error_code": "GLOBAL_AUTO_NATIVE_PROOF_FAILED",
+            "error_message": "Auto selector state could not be verified; intent remains unclean.",
         }
 
-    with db_session() as connection:
-        connection.execute(
-            """
-            UPDATE routing_global_state
-            SET
-                server_mode = 'auto',
-                desired_fixed_server_id = NULL,
-                applied_fixed_server_id = NULL,
-                fixed_server_until = NULL,
-                apply_state = 'clean',
-                error_code = NULL,
-                error_message = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1
-            """,
+    with xray_writer_guard(timeout_seconds=30.0), db_session() as connection:
+        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+        if not _global_auto_apply_token_matches(token):
+            return {
+                "ok": False, "requested_by": requested_by,
+                "management_attribution": attribution,
+                "active_before": active_before,
+                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+                "routing_before": previous_state,
+                "routing_after": get_routing_global_state(expire_ttl=False),
+                "desired_result": desired,
+                "apply_result": apply_result.to_dict(),
+                "rolled_back": False,
+                "error_code": "GLOBAL_AUTO_STALE",
+                "error_message": "Auto routing intent changed before completion.",
+            }
+        changed = connection.execute(
+            """UPDATE routing_global_state SET apply_state='clean', error_code=NULL,
+                      error_message=NULL, updated_at=CURRENT_TIMESTAMP
+               WHERE id=1 AND server_mode='auto' AND desired_fixed_server_id IS NULL
+                 AND applied_fixed_server_id IS NULL AND fixed_server_until IS NULL
+                 AND apply_state='pending' AND error_code IS NULL AND error_message IS NULL"""
         )
+        if changed.rowcount != 1 or advance_selection_revision(
+            connection, expected_revision=token["selection_revision"],
+        ) is None:
+            connection.rollback()
+            return {
+                "ok": False, "requested_by": requested_by,
+                "management_attribution": attribution,
+                "active_before": active_before,
+                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+                "routing_before": previous_state,
+                "routing_after": get_routing_global_state(expire_ttl=False),
+                "desired_result": desired,
+                "apply_result": apply_result.to_dict(),
+                "rolled_back": False,
+                "error_code": "GLOBAL_AUTO_STALE",
+                "error_message": "Auto routing intent changed during completion.",
+            }
 
     routing_after = get_routing_global_state()
 

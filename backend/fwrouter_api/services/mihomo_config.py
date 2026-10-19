@@ -61,6 +61,7 @@ from fwrouter_api.services.mihomo_config_inbounds import (
 )
 from fwrouter_api.services.mihomo_config_proxies import (
     _ensure_selector_groups,
+    _fixed_runtime_target,
     _merge_runtime_proxies,
 )
 from fwrouter_api.services.mihomo_config_rules import (
@@ -138,13 +139,19 @@ def build_mihomo_config(
         for assignment in handoff_assignments
         if str(assignment.get("selected_server_id") or "").strip()
     }
+    fixed_runtime_target = _fixed_runtime_target(routing)
     base_config["rules"] = list(rules)
     base_config["proxies"] = _merge_runtime_proxies(
         base_config,
+        routing=routing,
         required_last_good_names=required_last_good_handoff_proxies,
         required_last_good_server_ids=required_last_good_handoff_server_ids,
     )
-    base_config["proxy-groups"] = _ensure_selector_groups(base_config)
+    base_config["proxy-groups"] = _ensure_selector_groups(
+        base_config,
+        routing=routing,
+        fixed_runtime_target=fixed_runtime_target,
+    )
     sub_rules = base_config.get("sub-rules")
     if not isinstance(sub_rules, dict):
         sub_rules = {}
@@ -342,7 +349,17 @@ def validate_mihomo_candidate_config(
     elif not structural["vpn_global_present"]:
         error_code = "MIHOMO_VPN_GLOBAL_MISSING"
         stderr_tail = "Candidate Mihomo config is missing vpn-global selector."
-    elif not structural["vpn_global_has_vpn_auto"]:
+    elif (
+        str((routing or {}).get("server_mode") or "auto").strip().lower() == "fixed"
+        and not structural.get("fixed_targetless_direct_compat")
+        and not structural.get("fixed_global_membership_ok")
+    ):
+        error_code = "MIHOMO_FIXED_GLOBAL_MEMBERSHIP_INVALID"
+        stderr_tail = "Fixed vpn-global selector must contain only REJECT and its canonical fixed target."
+    elif (
+        str((routing or {}).get("server_mode") or "auto").strip().lower() != "fixed"
+        and not structural["vpn_global_has_vpn_auto"]
+    ):
         error_code = "MIHOMO_VPN_GLOBAL_MISWIRED"
         stderr_tail = "vpn-global selector does not include vpn-auto."
     elif not structural["selector_groups_ok"]:
@@ -404,6 +421,7 @@ def validate_mihomo_candidate_config(
         "vpn_auto_present": structural["vpn_auto_present"],
         "vpn_global_present": structural["vpn_global_present"],
         "vpn_global_has_vpn_auto": structural["vpn_global_has_vpn_auto"],
+        "fixed_global_membership_ok": structural["fixed_global_membership_ok"],
         "selector_groups_ok": structural["selector_groups_ok"],
         "mixed_listener_count": structural["mixed_listener_count"],
         "mixed_listener_bind": structural["mixed_listener_bind"],

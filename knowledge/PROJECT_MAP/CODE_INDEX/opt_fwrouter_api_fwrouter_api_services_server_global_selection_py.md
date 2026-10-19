@@ -20,9 +20,19 @@ logs for global fixed/auto changes.
 
 - Keep persistent `server_id` separate from the Mihomo selector target.
 - Restore auto mode with the canonical persisted auto `server_id`; runtime names remain observations.
-- Preserve rollback behavior when runtime apply fails.
+- Restore previous state only with current owner/CAS and native preimage proof; uncertain or superseded effects must not claim rollback or success.
 - Keep Xray VPN-auto virtual server handling explicit.
 
 ## Audit behavior (2026-09-27)
 
 Administrative fixed-server intent writes `routing.global_fixed_server_changed` atomically with the SQLite mutation. It records only a hashed server reference; repeated same-selection and already-auto clear operations emit no audit event.
+
+
+## Fixed generation/fencing source contract (2026-10-19)
+
+Fixed targets remain selectable outside auto/global-list preferences. Their
+native membership is prepared by the existing Mihomo generation owner before
+probing/selecting them. Fixed/auto native effects share the writer guard with
+generic mode operations and revision-fenced TTL/recovery paths. Completion must
+reject changed intent, source, runtime incarnation or native proof. Preparation
+receipts do not prove final routing, and no missing inventory marker is bypassed.

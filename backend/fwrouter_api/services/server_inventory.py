@@ -161,6 +161,7 @@ def list_servers(
     limit: int = 500,
     include_provider_legacy: bool = False,
     observe_runtime: bool = False,
+    server_ids: set[str] | list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Return VPN server inventory with preferences and ping state.
 
@@ -185,6 +186,11 @@ def list_servers(
     if global_list is not None:
         where.append("COALESCE(p.global_list, 1) = ?")
         params.append(1 if global_list else 0)
+
+    selected_ids = sorted({str(item).strip() for item in (server_ids or ()) if str(item).strip()})
+    if selected_ids:
+        where.append(f"s.server_id IN ({', '.join('?' for _ in selected_ids)})")
+        params.extend(selected_ids)
 
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 

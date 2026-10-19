@@ -291,6 +291,7 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
     )
 
 
+@xray_writer_guarded
 def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     requested_by = str(job.get("requested_by") or "api")
     server_mode = str(payload.get("server_mode") or "").strip().lower()

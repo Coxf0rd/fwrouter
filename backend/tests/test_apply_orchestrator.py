@@ -227,3 +227,48 @@ def test_mark_rules_job_success_forwards_audit_change_without_mutating_it(monkey
         {"job_id": "job-2", "update_type": "manual_apply", "audit_change": None},
     ]
     assert captured[0]["audit_change"] is audit_change
+
+
+def test_generic_server_mode_holds_shared_owner_across_native_and_commit(monkeypatch):
+    """Generic mode apply must not interleave the fixed owner between native effect and commit."""
+    from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services import apply_orchestrator_global_handlers as handlers
+    from fwrouter_api.services.server_state import ensure_routing_global_state
+
+    ensure_routing_global_state()
+    phases = []
+
+    def owned_phase(name, value):
+        assert xray_writer_guard_is_held(), name
+        phases.append(name)
+        return value
+
+    monkeypatch.setattr(orchestrator, "_current_routing_drift", lambda **kwargs: {"detected": False})
+    monkeypatch.setattr(orchestrator, "_applied_manifest_routing_drift", lambda **kwargs: {"detected": False})
+    monkeypatch.setattr(orchestrator, "validate_global_mode_request", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(orchestrator, "touch_job_running", lambda *args: None)
+    monkeypatch.setattr(handlers, "_reconcile_vpn_runtime_for_apply",
+                        lambda **kwargs: owned_phase("generation", {"ok": True}))
+    monkeypatch.setattr(orchestrator, "_load_user_override_map", lambda: {})
+    monkeypatch.setattr(orchestrator, "_load_server_override_map", lambda: {})
+    monkeypatch.setattr(orchestrator, "_load_subjects_with_overrides", lambda **kwargs: [])
+    monkeypatch.setattr(orchestrator, "_run_pipeline_for_state",
+                        lambda **kwargs: owned_phase("native_effect", {"ok": True, "apply_id": None}))
+    real_commit = orchestrator._commit_global_server_mode
+
+    def commit(**kwargs):
+        owned_phase("commit", None)
+        return real_commit(**kwargs)
+
+    monkeypatch.setattr(orchestrator, "_commit_global_server_mode", commit)
+    monkeypatch.setattr(orchestrator, "_build_success_result", lambda **kwargs: {"ok": True, **kwargs})
+    result = handlers._execute_set_global_server_mode(
+        {"job_id": "synthetic-generic-fixed", "requested_by": "pytest"}, {"server_mode": "fixed"},
+    )
+    assert result["ok"] is True
+    assert phases == ["generation", "native_effect", "commit"]
+    assert xray_writer_guard_is_held() is False
+    with db_session() as connection:
+        row = connection.execute("SELECT server_mode FROM routing_global_state WHERE id=1").fetchone()
+    assert row["server_mode"] == "fixed"

@@ -95,7 +95,12 @@ def _validate_candidate_structure(
         _runtime_proxy_inventory_count,
     )
     from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
-    from fwrouter_api.services.mihomo_config_proxies import _ensure_selector_groups
+    from fwrouter_api.services.mihomo_config_proxies import (
+        _ensure_selector_groups,
+        _fixed_routing_server_id,
+        _fixed_targetless_direct_compat,
+        _fixed_runtime_target,
+    )
 
     rules = candidate_config.get("rules") if isinstance(candidate_config.get("rules"), list) else []
     proxies = candidate_config.get("proxies") if isinstance(candidate_config.get("proxies"), list) else []
@@ -138,7 +143,7 @@ def _validate_candidate_structure(
         for group in groups
         if isinstance(group, dict) and str(group.get("name") or "").strip()
     }
-    expected_groups = _ensure_selector_groups(candidate_config)
+    expected_groups = _ensure_selector_groups(candidate_config, routing=routing)
     expected_owned_groups = {
         str(group.get("name") or ""): group
         for group in expected_groups
@@ -153,6 +158,17 @@ def _validate_candidate_structure(
     )
     vpn_auto_targets = group_by_name.get("vpn-auto", {}).get("proxies", [])
     vpn_global_targets = group_by_name.get("vpn-global", {}).get("proxies", [])
+    fixed_server_id = _fixed_routing_server_id(routing)
+    fixed_mode = str((routing or {}).get("server_mode") or "auto").strip().lower() == "fixed"
+    fixed_targetless_direct_compat = _fixed_targetless_direct_compat(routing)
+    fixed_target_required = bool(fixed_server_id)
+    fixed_runtime_target = _fixed_runtime_target(routing) if fixed_server_id else None
+    fixed_global_membership_ok = bool(
+        fixed_server_id
+        and fixed_runtime_target
+        and vpn_global_targets == ["REJECT", fixed_runtime_target]
+    )
+    fixed_targetless_intent_supported = bool(not fixed_mode or fixed_target_required or fixed_targetless_direct_compat)
     selector_groups_ok = selector_groups_ok and (
         isinstance(vpn_auto_targets, list)
         and bool(vpn_auto_targets)
@@ -160,8 +176,14 @@ def _validate_candidate_structure(
         and "DIRECT" not in vpn_auto_targets
         and isinstance(vpn_global_targets, list)
         and bool(vpn_global_targets)
-        and vpn_global_targets[-1] == "REJECT"
         and "DIRECT" not in vpn_global_targets
+        and (
+            fixed_global_membership_ok
+            if fixed_target_required
+            else False
+            if fixed_mode and not fixed_targetless_direct_compat
+            else vpn_global_targets[-1] == "REJECT" and "vpn-auto" in vpn_global_targets
+        )
     )
 
     vpn_global_has_vpn_auto = False
@@ -315,6 +337,10 @@ def _validate_candidate_structure(
         "vpn_auto_present": vpn_auto_present,
         "vpn_global_present": vpn_global_present,
         "vpn_global_has_vpn_auto": vpn_global_has_vpn_auto,
+        "fixed_global_membership_ok": fixed_global_membership_ok,
+        "fixed_global_membership_required": fixed_target_required,
+        "fixed_targetless_direct_compat": fixed_targetless_direct_compat,
+        "fixed_targetless_intent_supported": fixed_targetless_intent_supported,
         "selector_groups_ok": selector_groups_ok,
         "mixed_listener_count": len(mixed_listeners),
         "mixed_listener_bind": mixed_listener_bind,

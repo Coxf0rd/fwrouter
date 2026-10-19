@@ -63,7 +63,7 @@ is not qualified by the auto-mode check.
 
 ## Server Selection
 
-- Runtime `proxies` include active servers with `global_list=1` or `vpn_auto=1`.
+- Runtime `proxies` include active servers with `global_list=1` or `vpn_auto=1`, plus the explicitly approved active fixed target independently of those flags.
 - `vpn-auto` contains auto candidates plus `DIRECT`.
 - `vpn-global` contains `vpn-auto`, manual global-list targets, and `DIRECT`.
 - A JSON `logical_profile` remains one user-visible server. Its persisted
@@ -198,3 +198,33 @@ the current input fingerprint and candidate file hash still match; structural
 candidate validation remains mandatory before promotion or restart. The
 pipeline exposes compact `timings_ms` stage data for operational diagnostics;
 preparation and apply totals use distinct keys.
+
+
+## Fixed generation and publication contract (source branch, 2026-10-19)
+
+The admin fixed API retains the full active independent inventory as its target
+domain; auto/global-list preference flags are not admission criteria for that
+API. The existing generation owner materializes the explicitly selected target
+without adding it to the independent auto pool. With a concrete fixed intent,
+`vpn-global` has only the canonical fixed target and `REJECT`, with `REJECT` as
+the safe default. Auto/global-list alternatives cannot be retained from a native
+selector cache during a pending fixed generation. The independent `vpn-auto`
+group and scoped consumers remain available. Returning to auto materializes its
+normal membership through the same generation owner before selection.
+
+Fixed apply reserves the shared selection revision, binds Core intent/runtime
+context and the owned generation receipt, and revalidates around native effect,
+unlocked probes and durable completion. Startup must refuse unsettled,
+mismatched, expired or malformed fixed state rather than replay an older applied
+target. A failed operation may restore a preimage only while still owning the
+fence and with sufficient native proof; uncertain effects remain explicitly
+unverified. Enabled, pending and materialized membership are distinct from a
+confirmed applied fixed selection.
+
+Inventory verification and explicit proof-only legacy admission remain owned by
+the existing subscription generation mechanism. Missing markers do not permit
+native generation preparation. Older loaded fixed layouts with auto/global
+alternatives are not automatically accepted by this contract: exact current
+candidate/native proof may remain blocked and requires separate disposition.
+Source/native qualification and production acceptance are separate gates; this
+section does not authorize or claim production deployment.

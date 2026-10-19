@@ -796,8 +796,7 @@ def restore_mihomo_selector_state(
     resolved_routing = dict(routing or ensure_routing_global_state() or {})
     server_mode = str(resolved_routing.get("server_mode") or "auto").strip().lower()
     fixed_server_id = str(
-        resolved_routing.get("applied_fixed_server_id")
-        or resolved_routing.get("desired_fixed_server_id")
+        resolved_routing.get("desired_fixed_server_id")
         or ""
     ).strip()
     active_auto_server_id = str(resolved_routing.get("active_auto_server_id") or "").strip()
@@ -841,6 +840,87 @@ def restore_mihomo_selector_state(
         result["skip_reason"] = "vpn_runtime_selector_unsupported"
         result["mihomo_runtime_state"] = runtime_state
         return result
+
+    fixed_materialization = None
+    fixed_revision = None
+    fixed_core_revision = None
+    fixed_core_context = None
+    fixed_runtime_incarnation = None
+    if server_mode == "fixed":
+        from fwrouter_api.services.mihomo_config_status import mihomo_runtime_fixed_target_materialized
+        from fwrouter_api.services.core_intent import read_core_intent_revision, read_core_runtime_context
+        from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+        fixed_core_context = read_core_runtime_context()
+        fixed_runtime_incarnation = get_mihomo_runtime_incarnation(timeout_seconds=5.0)
+        if fixed_core_context is None or not fixed_runtime_incarnation:
+            result.update({
+                "ok": False, "blocked": True,
+                "skip_reason": "fixed_runtime_context_unavailable",
+                "vpn_global_restore": {"ok": False, "blocked": True,
+                                        "error_code": "FIXED_RUNTIME_CONTEXT_UNAVAILABLE"},
+            })
+            return result
+        with db_session() as connection:
+            fixed_revision = read_selection_revision(connection)
+            fixed_core_revision = read_core_intent_revision(connection)
+            persisted = connection.execute(
+                """SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id,
+                          fixed_server_until, apply_state, error_code, error_message,
+                          datetime(fixed_server_until) IS NOT NULL
+                            AND datetime(fixed_server_until) > CURRENT_TIMESTAMP AS ttl_live
+                   FROM routing_global_state WHERE id=1"""
+            ).fetchone()
+        settled = bool(
+            persisted is not None
+            and str(persisted["server_mode"] or "auto") == "fixed"
+            and str(persisted["desired_fixed_server_id"] or "")
+            and str(persisted["desired_fixed_server_id"] or "")
+            == str(persisted["applied_fixed_server_id"] or "")
+            and str(persisted["desired_fixed_server_id"] or "") == fixed_server_id
+            and str(persisted["apply_state"] or "") == "clean"
+            and persisted["error_code"] is None
+            and persisted["error_message"] is None
+            and bool(persisted["ttl_live"])
+        )
+        if not settled:
+            result.update({
+                "ok": False, "blocked": True,
+                "skip_reason": "fixed_routing_intent_unsettled",
+                "vpn_global_restore": {"ok": False, "blocked": True,
+                                        "error_code": "FIXED_ROUTING_INTENT_UNSETTLED"},
+            })
+            result["mihomo_runtime_state"] = runtime_state
+            return result
+        if str(runtime_adapter.get("adapter_id") or "") != "mihomo":
+            result.update({
+                "ok": False, "blocked": True,
+                "skip_reason": "fixed_runtime_proof_unsupported",
+                "vpn_global_restore": {"ok": False, "blocked": True,
+                                        "error_code": "FIXED_RUNTIME_PROOF_UNSUPPORTED"},
+            })
+            return result
+        fixed_materialization = mihomo_runtime_fixed_target_materialized(resolved_routing)
+        if not fixed_materialization.get("ok"):
+            result.update({
+                "ok": False, "blocked": True,
+                "skip_reason": "fixed_runtime_membership_unverified",
+                "vpn_global_restore": {"ok": False, "blocked": True,
+                                        "error_code": "FIXED_RUNTIME_MEMBERSHIP_UNVERIFIED",
+                                        "details": fixed_materialization},
+            })
+            return result
+        fixed_server_id = str(fixed_materialization.get("fixed_runtime_target") or "")
+        if not fixed_server_id:
+            result.update({
+                "ok": False, "blocked": True,
+                "skip_reason": "fixed_runtime_mapping_unresolved",
+                "vpn_global_restore": {"ok": False, "blocked": True,
+                                        "error_code": "FIXED_RUNTIME_MAPPING_UNRESOLVED"},
+            })
+            return result
+        result["requested_vpn_global_target"] = fixed_server_id
 
     eligible_candidates = _load_selector_candidates()
     eligible_ids = {str(item.get("server_id") or "") for item in eligible_candidates}
@@ -895,13 +975,75 @@ def restore_mihomo_selector_state(
             "requested_server_id": active_auto_server_id or None,
         }
 
-    vpn_global_target = result["requested_vpn_global_target"]
-    apply_global = runtime_operations.apply_server_to_selector(
-        "vpn-global",
-        str(vpn_global_target),
-    )
-    result["vpn_global_restore"] = apply_global.to_dict()
-    result["ok"] = bool(result["vpn_auto_restore"]["ok"]) and bool(apply_global.ok)
+    vpn_global_target = fixed_server_id if server_mode == "fixed" else "vpn-auto"
+    if server_mode == "fixed":
+        from fwrouter_api.services.mihomo_config_status import mihomo_runtime_fixed_target_materialized
+        from fwrouter_api.services.core_intent import read_core_intent_revision, read_core_runtime_context
+        from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+        with xray_writer_guard(timeout_seconds=30.0):
+            with db_session() as connection:
+                current_revision = read_selection_revision(connection)
+                current_core_revision = read_core_intent_revision(connection)
+                current = connection.execute(
+                    """SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id,
+                              fixed_server_until, apply_state, error_code, error_message,
+                              datetime(fixed_server_until) IS NOT NULL
+                                AND datetime(fixed_server_until) > CURRENT_TIMESTAMP AS ttl_live
+                       FROM routing_global_state WHERE id=1"""
+                ).fetchone()
+            same_intent = bool(
+                current_revision == fixed_revision
+                and current_core_revision == fixed_core_revision
+                and read_core_runtime_context() == fixed_core_context
+                and get_mihomo_runtime_incarnation(timeout_seconds=5.0) == fixed_runtime_incarnation
+                and current is not None
+                and str(current["server_mode"] or "auto") == "fixed"
+                and str(current["desired_fixed_server_id"] or "") == str(current["applied_fixed_server_id"] or "") == str(resolved_routing.get("desired_fixed_server_id") or "")
+                and current["fixed_server_until"] == resolved_routing.get("fixed_server_until")
+                and str(current["apply_state"] or "") == "clean"
+                and current["error_code"] is None and current["error_message"] is None
+                and bool(current["ttl_live"])
+            )
+            fresh_proof = mihomo_runtime_fixed_target_materialized(resolved_routing)
+            if not same_intent or not fresh_proof.get("ok") or fresh_proof.get("fixed_runtime_target") != vpn_global_target:
+                apply_global = None
+                result["vpn_global_restore"] = {
+                    "ok": False, "blocked": True,
+                    "error_code": "FIXED_ROUTING_FENCE_CHANGED",
+                }
+            elif fresh_proof.get("vpn_global_now") == vpn_global_target:
+                apply_global = None
+                result["vpn_global_restore"] = {
+                    "ok": True, "changed": False, "active_server_id": vpn_global_target,
+                }
+            else:
+                apply_global = runtime_operations.apply_server_to_selector("vpn-global", vpn_global_target)
+                readback = mihomo_runtime_fixed_target_materialized(
+                    resolved_routing, require_selected=True,
+                ) if apply_global.ok else {"ok": False}
+                with db_session() as connection:
+                    post_revision = read_selection_revision(connection)
+                    post_core_revision = read_core_intent_revision(connection)
+                if (
+                    not readback.get("ok")
+                    or post_revision != fixed_revision
+                    or post_core_revision != fixed_core_revision
+                    or read_core_runtime_context() != fixed_core_context
+                    or get_mihomo_runtime_incarnation(timeout_seconds=5.0) != fixed_runtime_incarnation
+                ):
+                    result["vpn_global_restore"] = {
+                        **apply_global.to_dict(), "ok": False,
+                        "error_code": "FIXED_RUNTIME_SELECTION_UNVERIFIED",
+                    }
+                else:
+                    result["vpn_global_restore"] = apply_global.to_dict()
+    else:
+        apply_global = runtime_operations.apply_server_to_selector("vpn-global", str(vpn_global_target))
+        result["vpn_global_restore"] = apply_global.to_dict()
+    global_ok = bool(result["vpn_global_restore"].get("ok"))
+    result["ok"] = bool(result["vpn_auto_restore"]["ok"]) and global_ok
     return result
 
 

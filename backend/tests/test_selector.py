@@ -117,6 +117,79 @@ def _seed_global_auto_state(active_auto_server_id: str | None = None) -> None:
         )
 
 
+def _install_synthetic_generation_owner(monkeypatch, tmp_path: Path) -> None:
+    """Provide a stable managed-owner receipt for endpoint orchestration tests."""
+    import hashlib
+
+    from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_reconcile, mihomo_runtime
+
+    context = {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    }
+    incarnation = "synthetic-test-incarnation"
+    base_config = tmp_path / "managed-mihomo.yaml"
+    base_config.write_text("proxy-groups: []\n", encoding="utf-8")
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: dict(context))
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: incarnation)
+    monkeypatch.setattr(mihomo_reconcile, "_mihomo_incarnation", lambda: incarnation)
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: str(base_config))
+    monkeypatch.setattr(
+        mihomo_config_paths,
+        "_resolved_candidate_config_path",
+        lambda: str(tmp_path / "managed-mihomo-candidate.yaml"),
+    )
+
+    def fake_reconcile(*, routing, job_id, verification_callback):
+        with db_session() as connection:
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+            revision = read_selection_revision(connection)
+        operation_id = "synthetic-owner-operation"
+        verification = verification_callback(
+            operation_id=operation_id,
+            expected_selection_revision=revision,
+        )
+        config_hash = hashlib.sha256(base_config.read_bytes()).hexdigest()
+        return {
+            "ok": bool(verification.get("ok")),
+            "operation_id": operation_id,
+            "job_id": job_id,
+            "verification_callback_result": verification,
+            "reentry_generation_fence": {
+                "schema": "mihomo-reentry-generation-fence/v1",
+                "operation_id": operation_id,
+                "job_id": job_id,
+                "before_revision": revision,
+                "selection_revision": revision,
+                "runtime_incarnation": incarnation,
+                "active_config_hash": config_hash,
+                "native_proof_verified": True,
+                "publication_verified": True,
+                "unchanged_config": True,
+            },
+        }
+
+    monkeypatch.setattr(mihomo_reconcile, "reconcile_mihomo_runtime", fake_reconcile)
+    from fwrouter_api.services import mihomo_config_status
+
+    monkeypatch.setattr(
+        mihomo_config_status,
+        "mihomo_runtime_satisfies_routing",
+        lambda _routing: {"ok": True, "reason": "synthetic isolated owner proof"},
+    )
+    monkeypatch.setattr(
+        mihomo_config_status,
+        "mihomo_runtime_fixed_target_materialized",
+        lambda routing, require_selected=False: {
+            "ok": True,
+            "fixed_runtime_target": "Fixed Display [ab12cd34]",
+            "vpn_global_now": "REJECT",
+            "selected_fixed_target": bool(require_selected),
+        },
+    )
+
+
 def _seed_ping_state(
     server_id: str,
     *,
@@ -360,7 +433,7 @@ def test_select_vpn_auto_server_uses_registered_fake_runtime_adapter(
         post_check=False,
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["runtime_adapter_id"] == "fake-vpn-runtime"
     assert result["selected_server_id"] == "srv-2"
     assert result["active_after"] == "srv-2"
@@ -946,7 +1019,17 @@ def test_restore_mihomo_selector_state_uses_fixed_server_without_vpn_auto_restor
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
-    _seed_server("srv-fixed")
+    _seed_server(
+        "srv-fixed",
+        server_name="Fixed Runtime",
+        raw_json={
+            "name": "Fixed Runtime",
+            "type": "socks5",
+            "server": "198.18.0.10",
+            "port": 12345,
+            "_fwrouter_runtime_name": "Fixed Runtime",
+        },
+    )
     _seed_server("srv-auto")
     ensure_routing_global_state()
     with db_session() as connection:
@@ -960,6 +1043,7 @@ def test_restore_mihomo_selector_state_uses_fixed_server_without_vpn_auto_restor
                 desired_fixed_server_id = 'srv-fixed',
                 applied_fixed_server_id = 'srv-fixed',
                 active_auto_server_id = 'srv-auto',
+                fixed_server_until = datetime('now', '+1 day'),
                 apply_state = 'clean',
                 error_code = NULL,
                 error_message = NULL,
@@ -969,14 +1053,53 @@ def test_restore_mihomo_selector_state_uses_fixed_server_without_vpn_auto_restor
         )
 
     calls: list[tuple[str, str]] = []
+    state = {"vpn-global": "REJECT"}
+    import yaml
+    from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_config_status, mihomo_runtime
+    from fwrouter_api.services.server_state import get_routing_global_state
+
+    routing = get_routing_global_state(expire_ttl=False)
+    config = __import__("fwrouter_api.services.mihomo_config", fromlist=["build_mihomo_config"]).build_mihomo_config(
+        routing, xray_handoff_assignments=[],
+    )
+    config_path = tmp_path / "mihomo-fixed.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: str(config_path))
+    monkeypatch.setattr(mihomo_config_status, "_resolved_base_config_path", lambda: str(config_path))
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "fixed-restore-runtime")
+
+    def health():
+        groups = {
+            str(group.get("name")): list(group.get("proxies") or [])
+            for group in config.get("proxy-groups", [])
+            if isinstance(group, dict)
+        }
+        return SimpleNamespace(
+            runtime_state="running",
+            active_server_id=state["vpn-global"],
+            details={"selectors": {
+                "vpn_global_exists": True,
+                "vpn_global_has_vpn_auto": "vpn-auto" in groups.get("vpn-global", []),
+                "vpn_global_targets": groups.get("vpn-global", []),
+                "vpn_auto_targets": groups.get("vpn-auto", []),
+                "vpn_global_now": state["vpn-global"],
+                "vpn_global_selected_target": state["vpn-global"],
+            }},
+        )
 
     monkeypatch.setattr(
         "fwrouter_api.services.runtime_adapters.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
-            health=lambda: SimpleNamespace(runtime_state="running"),
+            health=health,
             list_servers=lambda: [SimpleNamespace(server_id="srv-fixed")],
             apply_server_to_selector=lambda selector_name, server_id: (
-                calls.append((selector_name, server_id)) or SimpleNamespace(
+                    calls.append((selector_name, server_id))
+                    or state.update({selector_name: server_id})
+                    or SimpleNamespace(
                     ok=True,
                     active_server_id=server_id,
                     to_dict=lambda: {
@@ -988,11 +1111,12 @@ def test_restore_mihomo_selector_state_uses_fixed_server_without_vpn_auto_restor
             ),
         ),
     )
+    monkeypatch.setattr(mihomo_config_status.DEFAULT_MIHOMO_ADAPTER, "health", health)
 
     result = restore_mihomo_selector_state(requested_by="pytest-fixed")
 
     assert result["ok"] is True
-    assert calls == [("vpn-global", "srv-fixed")]
+    assert calls == [("vpn-global", "Fixed Runtime")]
     assert result["vpn_auto_restore"]["skipped"] is True
 
 
@@ -1465,6 +1589,7 @@ def test_apply_global_auto_server_persists_active_auto_server_id(
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    _install_synthetic_generation_owner(monkeypatch, tmp_path)
     _seed_server("srv-auto")
     _seed_server("srv-fixed")
     _seed_global_auto_state("srv-auto")
@@ -1503,15 +1628,16 @@ def test_apply_global_auto_server_persists_active_auto_server_id(
     result = apply_global_auto_server(requested_by="pytest")
     routing = get_routing_global_state()
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert routing is not None
     assert routing["server_mode"] == "auto"
     assert routing["active_auto_server_id"] == "srv-auto"
 
 
-def test_apply_global_auto_server_failure_restores_fixed_intent_after_runtime_attempt(monkeypatch, tmp_path: Path) -> None:
+def test_apply_global_auto_server_failure_keeps_new_auto_intent_unverified(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    _install_synthetic_generation_owner(monkeypatch, tmp_path)
     _seed_server("srv-auto")
     _seed_server("srv-fixed")
     _seed_global_auto_state("srv-auto")
@@ -1539,11 +1665,12 @@ def test_apply_global_auto_server_failure_restores_fixed_intent_after_runtime_at
     routing = get_routing_global_state()
 
     assert result["ok"] is False
-    assert result["rolled_back"] is True
+    assert result["rolled_back"] is False, result
     assert attempts == [("vpn-global", "vpn-auto")]
-    assert routing["server_mode"] == "fixed"
-    assert routing["desired_fixed_server_id"] == "srv-fixed"
-    assert routing["applied_fixed_server_id"] == "srv-fixed"
+    assert routing["server_mode"] == "auto"
+    assert routing["desired_fixed_server_id"] is None
+    assert routing["applied_fixed_server_id"] is None
+    assert routing["apply_state"] == "failed"
 
 
 def test_apply_global_auto_server_keeps_canonical_auto_server_id_when_runtime_name_differs(
@@ -1552,6 +1679,7 @@ def test_apply_global_auto_server_keeps_canonical_auto_server_id_when_runtime_na
 ) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    _install_synthetic_generation_owner(monkeypatch, tmp_path)
     _seed_server("srv-auto")
     _seed_server("srv-fixed")
     _seed_global_auto_state("srv-auto")
@@ -1590,7 +1718,7 @@ def test_apply_global_auto_server_keeps_canonical_auto_server_id_when_runtime_na
     result = apply_global_auto_server(requested_by="pytest")
     routing = get_routing_global_state()
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert routing is not None
     assert routing["active_auto_server_id"] == "srv-auto"
 
@@ -1633,6 +1761,7 @@ def test_global_fixed_server_expires_after_backend_ttl(monkeypatch, tmp_path: Pa
 def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    _install_synthetic_generation_owner(monkeypatch, tmp_path)
     _seed_server(
         "sub:fixed",
         server_name="Fixed Display",
@@ -1919,6 +2048,7 @@ def test_priority_eligibility_boundary_reconciles_xray_but_zero_to_one_does_not(
 def test_admin_fixed_server_precheck_failure_is_structured_job_error(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    _install_synthetic_generation_owner(monkeypatch, tmp_path)
     _seed_server("srv-fixed")
     client = _client()
 

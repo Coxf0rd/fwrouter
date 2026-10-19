@@ -169,7 +169,7 @@ def test_mihomo_runtime_matching_scalar_metadata_keeps_policy_and_native_checks(
     monkeypatch.setattr(
         mihomo_config_status_service,
         "_ensure_selector_groups",
-        lambda active: active["proxy-groups"],
+        lambda active, **_kwargs: active["proxy-groups"],
     )
     monkeypatch.setattr(
         mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
@@ -298,7 +298,7 @@ def test_mihomo_runtime_resolves_auto_logical_target_to_unique_generated_name(
         },
         "proxy-groups": [],
     }
-    config["proxy-groups"] = mihomo_config_status_service._ensure_selector_groups(config)
+    config["proxy-groups"] = mihomo_config_status_service._ensure_selector_groups(config, routing=routing)
     groups_by_name = {group["name"]: group for group in config["proxy-groups"]}
     auto_targets = groups_by_name["vpn-auto"]["proxies"]
     global_targets = groups_by_name["vpn-global"]["proxies"]
@@ -1413,7 +1413,8 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
     *,
     format_only_candidate: bool,
     native_proof_ok: bool,
-) -> None:
+    verification_callback_ok: bool | None = None,
+) -> dict:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._mihomo_incarnation", lambda: "pytest-runtime")
@@ -1482,9 +1483,27 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         "transparent_state_consistency_ok": True,
     })
 
-    result = mihomo_config_service.reconcile_mihomo_runtime({"selective_default": "direct"})
+    with db_session() as connection:
+        revision_before = read_selection_revision(connection)
+    verification_callback = None
+    if verification_callback_ok is not None:
+        def verification_callback(*, operation_id: str, expected_selection_revision: int) -> dict:
+            return {
+                "ok": verification_callback_ok,
+                "operation_id": operation_id,
+                "selection_revision": expected_selection_revision,
+            }
 
-    if native_proof_ok:
+    result = mihomo_config_service.reconcile_mihomo_runtime(
+        {"selective_default": "direct"},
+        verification_callback=verification_callback,
+    )
+
+    if verification_callback_ok is False:
+        assert result["ok"] is False
+        assert result["stage"] == "verification"
+        assert result.get("reentry_generation_fence") is None
+    elif native_proof_ok:
         assert result["ok"] is True
         assert result["reconcile_action"] == "none"
         assert result["reconcile_reason"] == "unchanged_config"
@@ -1492,12 +1511,22 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         assert result["candidate"]["rules_count"] == len(candidate_config["rules"])
         assert "base_config" not in (result["config"] or {})
         assert "candidate_config" not in (result["config"] or {})
+        if verification_callback_ok is True:
+            fence = result.get("reentry_generation_fence")
+            assert isinstance(fence, dict)
+            assert fence["operation_id"] == result["operation_id"]
+            assert fence["before_revision"] == revision_before
+            assert fence["selection_revision"] == revision_before
+            assert fence["unchanged_config"] is True
+            assert fence["native_proof_verified"] is True
+            assert fence["publication_verified"] is True
     else:
         assert result["ok"] is False
         assert result["stage"] == "native_udp_policy_readback"
         assert result["reconcile_reason"] == "native_policy_or_fence_unconfirmed"
     assert restart_calls == []
-    assert native_proof_calls
+    assert bool(native_proof_calls) == (verification_callback_ok is not False)
+    return result
 
 
 def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
@@ -1511,6 +1540,28 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         format_only_candidate=False,
         native_proof_ok=True,
     )
+
+
+def test_unchanged_reconcile_returns_only_same_revision_owner_receipt(monkeypatch, tmp_path: Path) -> None:
+    result = _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=False,
+        native_proof_ok=True,
+        verification_callback_ok=True,
+    )
+    assert result["reentry_generation_fence"]["selection_revision"] == result["reentry_generation_fence"]["before_revision"]
+
+
+def test_unchanged_reconcile_refuses_receipt_when_owner_readback_fails(monkeypatch, tmp_path: Path) -> None:
+    result = _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=False,
+        native_proof_ok=True,
+        verification_callback_ok=False,
+    )
+    assert result.get("reentry_generation_fence") is None
 
 
 @pytest.mark.parametrize("format_only_candidate", [False, True])

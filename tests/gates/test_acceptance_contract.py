@@ -1897,13 +1897,13 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((27, 12, 3), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((27, 12, 4), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
         with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
             launcher.expected_acceptance_nodeids("functional")
-        self.assertEqual(42, len(ordinary | provider | packet))
+        self.assertEqual(43, len(ordinary | provider | packet))
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(
                 [{"nodeid": nodeid, "status": "passed",
@@ -5648,7 +5648,8 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/application_acceptance/test_runtime_scale.py::"
             "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
         )
-        expected_nodes = {nodeid, legacy_nodeid, scale_nodeid}
+        fixed_nodeid = "tests/application_acceptance/test_packet_dataplane.py::test_fixed_legacy_admission_survives_two_normal_startups"
+        expected_nodes = {nodeid, legacy_nodeid, fixed_nodeid, scale_nodeid}
         self.assertEqual(expected_nodes, launcher.expected_acceptance_nodeids("packet-diagnostic"))
         with self.assertRaises(launcher.NotRun):
             launcher.expected_acceptance_nodeids("packet-diagnostic-extra")
@@ -5658,6 +5659,8 @@ class AcceptanceContractTests(unittest.TestCase):
             {"nodeid": legacy_nodeid, "status": "passed",
              "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}},
             {"nodeid": scale_nodeid, "status": "passed",
+             "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}},
+            {"nodeid": fixed_nodeid, "status": "passed",
              "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}},
         ]
         launcher.validate_suite_node_receipt(failed, "packet-diagnostic", sorted(expected_nodes))

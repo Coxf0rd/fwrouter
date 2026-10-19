@@ -454,7 +454,14 @@ def _config_has_failclosed_udp_policy(config_text: str) -> bool:
         return False
     for name in owned:
         targets = groups[name].get("proxies")
-        if not isinstance(targets, list) or not targets or targets[-1] != "REJECT" or "DIRECT" in targets:
+        if not isinstance(targets, list) or not targets or "DIRECT" in targets:
+            return False
+        fixed_global_default = False
+        if name == "vpn-global" and len(targets) == 2 and targets[0] == "REJECT":
+            from fwrouter_api.adapters.mihomo import NON_SERVER_PROXY_TARGETS
+
+            fixed_global_default = str(targets[1]) not in NON_SERVER_PROXY_TARGETS
+        if targets[-1] != "REJECT" and not fixed_global_default:
             return False
     from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
 
@@ -741,12 +748,16 @@ def reconcile_mihomo_runtime(
                 verification.get("selection_revision")
                 if verification is not None else expected_selection_revision
             )
-            if type(owned_revision) is not int or not _selection_publication_still_owned(
+            if (
+                type(owned_revision) is not int
+                or owned_revision != expected_selection_revision
+                or not _selection_publication_still_owned(
                 operation_id=operation_id, expected_revision=owned_revision,
                 expected_incarnation=runtime_incarnation_before,
                 expected_input_hash=(input_fingerprint or {}).get("hash"),
                 expected_active_hash=active_config_hash_before,
                 routing=routing_dict, verification=verification,
+                )
             ):
                 return {"ok": False, "stage": "generation_publication_revalidation",
                         "reconcile_reason": "selection_or_runtime_superseded",
@@ -776,10 +787,25 @@ def reconcile_mihomo_runtime(
                 return {"ok": False, "stage": "native_udp_policy_receipt",
                         "reconcile_reason": "receipt_fence_mismatch",
                         "last_good_retained": True}
+            if not _selection_publication_still_owned(
+                operation_id=operation_id, expected_revision=expected_selection_revision,
+                expected_incarnation=runtime_incarnation_before,
+                expected_input_hash=(input_fingerprint or {}).get("hash"),
+                expected_active_hash=active_config_hash_before,
+                routing=routing_dict, verification=verification,
+            ):
+                return {
+                    "ok": False,
+                    "stage": "generation_publication_revalidation",
+                    "error_code": "MIHOMO_GENERATION_STALE_AFTER_RECEIPT",
+                    "reconcile_reason": "selection_or_runtime_superseded",
+                    "last_good_retained": True,
+                }
         base_path = config._resolved_base_config_path()
         candidate_path = config._resolved_candidate_config_path()
         return {
             "ok": True,
+            "operation_id": operation_id,
             "job_id": job_id,
             "candidate": {
                 "skipped": True,
@@ -804,6 +830,18 @@ def reconcile_mihomo_runtime(
             "reconcile_action": "none",
             "reconcile_reason": "input_fingerprint_unchanged",
             "verification_callback_result": verification,
+            "reentry_generation_fence": ({
+                "schema": "mihomo-reentry-generation-fence/v1",
+                "operation_id": operation_id,
+                "job_id": job_id,
+                "before_revision": expected_selection_revision,
+                "selection_revision": expected_selection_revision,
+                "runtime_incarnation": runtime_incarnation_before,
+                "active_config_hash": active_config_hash_before,
+                "native_proof_verified": native_proof.get("ok") is True,
+                "publication_verified": True,
+                "unchanged_config": True,
+            } if verification is not None else None),
             "last_good_retained": True,
             "state_consistency_ok": True,
             "input_fingerprint": {
@@ -916,6 +954,7 @@ def reconcile_mihomo_runtime(
         result = {
             "ok": verification is None or bool(verification.get("ok")),
             "stage": "verification" if verification is not None and not verification.get("ok") else None,
+            "operation_id": operation_id,
             "verification_callback_result": verification,
             "last_good_retained": True,
             "job_id": job_id,
@@ -989,6 +1028,23 @@ def reconcile_mihomo_runtime(
                             result.update({"ok": False, "stage": "native_udp_policy_receipt",
                                            "reconcile_reason": "receipt_fence_mismatch",
                                            "last_good_retained": True})
+                        elif verification is not None and result.get("ok"):
+                            result["reentry_generation_fence"] = {
+                                "schema": "mihomo-reentry-generation-fence/v1",
+                                "operation_id": operation_id,
+                                "job_id": job_id,
+                                "before_revision": expected_selection_revision,
+                                "selection_revision": owned_revision,
+                                "runtime_incarnation": runtime_incarnation_before,
+                                "active_config_hash": active_config_hash_before,
+                                "native_proof_verified": native_proof.get("ok") is True,
+                                "publication_verified": True,
+                                "unchanged_config": True,
+                            }
+                    elif verification is not None:
+                        result.update({"ok": False, "stage": "native_udp_policy_receipt",
+                                       "reconcile_reason": "input_fingerprint_unavailable",
+                                       "last_good_retained": True})
         return result
 
     restart_action = "force_recreate"

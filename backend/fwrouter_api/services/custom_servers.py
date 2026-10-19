@@ -427,23 +427,43 @@ def resolve_mihomo_runtime_proxy_rows(
     *,
     inventory_state: str | None = "active",
     limit: int = 1000,
+    explicit_server_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return proxy rows that must exist in generated Mihomo runtime config."""
+    """Return proxy rows required by runtime pools or explicit fixed routing.
+
+    Explicit fixed targets are selected from the active independent inventory
+    even when neither vpn-auto nor global-list preferences include them.
+    """
 
     custom_rows = _fetch_custom_https_proxy_rows()
     resolved: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    for server in list_servers(
+    selected_ids = {str(server_id).strip() for server_id in (explicit_server_ids or set()) if str(server_id).strip()}
+    servers = list_servers(
         inventory_state=inventory_state,
         limit=limit,
-    ):
+    )
+    listed_ids = {str(server.get("server_id") or "").strip() for server in servers}
+    missing_selected_ids = selected_ids - listed_ids
+    if missing_selected_ids:
+        servers.extend(
+            list_servers(
+                inventory_state=inventory_state,
+                limit=len(missing_selected_ids),
+                server_ids=missing_selected_ids,
+            )
+        )
+    for server in servers:
         if server.get("provider_managed_legacy") or server.get("provider_internal_member"):
             continue
         preferences = server.get("preferences") if isinstance(server.get("preferences"), dict) else {}
         include = bool(preferences.get("global_list", True)) or bool(preferences.get("vpn_auto"))
-        if not include:
-            continue
         server_id = str(server.get("server_id") or "").strip()
+        explicitly_selected = server_id in selected_ids
+        if explicitly_selected and str(preferences.get("manually_deleted_at") or "").strip():
+            continue
+        if not include and not explicitly_selected:
+            continue
         if not server_id or server_id in seen_ids:
             continue
         seen_ids.add(server_id)

@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, NON_SERVER_PROXY_TARGETS
+from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.mihomo_config_paths import (
     FULL_VPN_RULE_NAME,
     TRANSPARENT_TPROXY_RULE_NAME,
@@ -21,7 +22,11 @@ from fwrouter_api.services.mihomo_config_rules import (
     _build_transparent_fallback_rule,
     _resolved_selective_default,
 )
-from fwrouter_api.services.mihomo_config_proxies import _ensure_selector_groups
+from fwrouter_api.services.mihomo_config_proxies import (
+    _ensure_selector_groups,
+    _fixed_routing_server_id,
+    _fixed_targetless_direct_compat,
+)
 from fwrouter_api.services.custom_servers import resolve_mihomo_runtime_proxy_rows
 
 
@@ -61,6 +66,170 @@ def _resolve_active_auto_runtime_target(
             if aliases > 1:
                 return None
     return runtime_target
+
+
+def _resolve_active_fixed_runtime_target(logical_server_id: str, *, expected_targets: set[str]) -> str | None:
+    """Resolve the persisted fixed ID through the unique active runtime mapping."""
+    rows = resolve_mihomo_runtime_proxy_rows(
+        inventory_state="active",
+        limit=1000,
+        explicit_server_ids={logical_server_id},
+    )
+    matches: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or str(row.get("server_id") or "").strip() != logical_server_id:
+            continue
+        raw = row.get("raw")
+        if not isinstance(raw, dict):
+            continue
+        target = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or "").strip()
+        if target:
+            matches.append(target)
+    if len(matches) != 1:
+        return None
+    target = matches[0]
+    if target in NON_SERVER_PROXY_TARGETS or target not in expected_targets:
+        return None
+    aliases = sum(
+        1
+        for row in rows
+        if isinstance(row, dict)
+        and isinstance(row.get("raw"), dict)
+        and str(
+            row["raw"].get("_fwrouter_runtime_name") or row["raw"].get("name") or ""
+        ).strip() == target
+    )
+    return target if aliases == 1 else None
+
+
+def _fixed_intent_is_clean_and_unexpired(routing: dict[str, Any]) -> bool:
+    fixed_id = _fixed_routing_server_id(routing)
+    if (
+        not fixed_id
+        or str(routing.get("applied_fixed_server_id") or "").strip() != fixed_id
+        or str(routing.get("apply_state") or "").strip().lower() != "clean"
+        or routing.get("error_code")
+        or routing.get("error_message")
+    ):
+        return False
+    with db_session() as connection:
+        row = connection.execute(
+            """SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id,
+                      fixed_server_until, apply_state, error_code, error_message,
+                      datetime(fixed_server_until) IS NOT NULL
+                        AND datetime(fixed_server_until) > CURRENT_TIMESTAMP AS ttl_live
+               FROM routing_global_state WHERE id=1"""
+        ).fetchone()
+    if row is None:
+        return False
+    persisted = {
+        "server_mode": str(row["server_mode"] or "auto"),
+        "desired_fixed_server_id": str(row["desired_fixed_server_id"] or ""),
+        "applied_fixed_server_id": str(row["applied_fixed_server_id"] or ""),
+        "fixed_server_until": row["fixed_server_until"],
+        "apply_state": str(row["apply_state"] or ""),
+        "error_code": row["error_code"],
+        "error_message": row["error_message"],
+    }
+    if any(routing.get(key) != value for key, value in persisted.items()):
+        return False
+    return bool(row["ttl_live"])
+
+
+def mihomo_runtime_fixed_target_materialized(
+    routing: dict[str, Any], *, require_selected: bool = False,
+) -> dict[str, Any]:
+    """Prove generated/native membership and optionally exact global selection."""
+    fixed_id = _fixed_routing_server_id(routing)
+    if not fixed_id:
+        return {"ok": False, "reason": "fixed_target_missing"}
+    base_path = _resolved_base_config_path()
+    config = _safe_load_yaml(base_path)
+    if not isinstance(config, dict):
+        return {"ok": False, "reason": "active_config_unavailable"}
+    target = _resolve_active_fixed_runtime_target(
+        fixed_id,
+        expected_targets={
+            str(name).strip()
+            for proxy in (config.get("proxies") or [])
+            if isinstance(proxy, dict)
+            for name in [proxy.get("name")]
+            if str(name or "").strip()
+        },
+    )
+    if not target:
+        return {"ok": False, "reason": "fixed_target_mapping_unresolved"}
+    expected_groups = {
+        str(group.get("name") or ""): list(group.get("proxies") or [])
+        for group in _ensure_selector_groups(config, routing=routing)
+        if isinstance(group, dict)
+        and str(group.get("name") or "") in {"vpn-auto", "vpn-global"}
+    }
+    actual_groups = {
+        str(group.get("name") or ""): list(group.get("proxies") or [])
+        for group in (config.get("proxy-groups") or [])
+        if isinstance(group, dict)
+    }
+    config_membership_ok = bool(
+        target in set(expected_groups.get("vpn-global", []))
+        and all(actual_groups.get(name) == members for name, members in expected_groups.items())
+    )
+    if not config_membership_ok:
+        return {"ok": False, "reason": "fixed_target_config_membership_mismatch"}
+    try:
+        health = DEFAULT_MIHOMO_ADAPTER.health()
+    except Exception:
+        return {"ok": False, "reason": "mihomo_health_unavailable"}
+    runtime_state = str(getattr(health.runtime_state, "value", health.runtime_state))
+    details = health.details if isinstance(health.details, dict) else {}
+    selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
+    native_global = set(selectors.get("vpn_global_targets") or [])
+    native_auto = set(selectors.get("vpn_auto_targets") or [])
+    current_global = str(selectors.get("vpn_global_now") or "").strip()
+    fixed_mode = bool(_fixed_routing_server_id(routing))
+    native_membership_ok = bool(
+        selectors.get("vpn_global_exists")
+        and (
+            selectors.get("vpn_global_has_vpn_auto") is False
+            if fixed_mode
+            else selectors.get("vpn_global_has_vpn_auto") is True
+        )
+        and
+        native_global == set(expected_groups.get("vpn-global", []))
+        and native_auto == set(expected_groups.get("vpn-auto", []))
+        and target in native_global
+        and "REJECT" in native_global
+        and "DIRECT" not in native_global
+        and (
+            native_global == {"REJECT", target}
+            if fixed_mode and target in native_global
+            else not fixed_mode
+        )
+        and "REJECT" in native_auto
+        and "DIRECT" not in native_auto
+        and current_global in native_global
+        and (
+            current_global == target
+            or (not require_selected and current_global == "REJECT")
+        )
+    )
+    selected_ok = bool(
+        not require_selected
+        or (
+            current_global == target
+            and str(selectors.get("vpn_global_selected_target") or "").strip() == target
+        )
+    )
+    return {
+        "ok": runtime_state == "running" and native_membership_ok and selected_ok,
+        "reason": None if runtime_state == "running" and native_membership_ok and selected_ok else "fixed_target_native_membership_unverified",
+        "runtime_state": runtime_state,
+        "config_membership_ok": config_membership_ok,
+        "native_membership_ok": native_membership_ok,
+        "fixed_runtime_target": target,
+        "vpn_global_now": current_global,
+        "selected_fixed_target": selected_ok,
+    }
 
 
 def _config_structural_fingerprint(config: dict[str, Any]) -> dict[str, Any]:
@@ -205,7 +374,10 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
 
     expected_groups = {
         str(group.get("name") or ""): group.get("proxies")
-        for group in _ensure_selector_groups(active_config if isinstance(active_config, dict) else {})
+        for group in _ensure_selector_groups(
+            active_config if isinstance(active_config, dict) else {},
+            routing=routing_dict,
+        )
         if isinstance(group, dict)
         and (str(group.get("name") or "") in {"vpn-auto", "vpn-global"}
              or str(group.get("name") or "").startswith("fwrouter-subject-"))
@@ -238,14 +410,23 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
 
     server_mode = str(routing_dict.get("server_mode") or "auto").strip().lower()
     expected_auto_server = str(routing_dict.get("active_auto_server_id") or "").strip()
-    selector_ok = bool(
+    fixed_id = _fixed_routing_server_id(routing_dict)
+    legacy_targetless_direct = _fixed_targetless_direct_compat(routing_dict)
+    fixed_mode = server_mode == "fixed" and bool(fixed_id)
+    auto_projection = server_mode == "auto" or legacy_targetless_direct
+    global_selector_structure_ok = bool(
         selectors.get("vpn_global_exists")
-        and selectors.get("vpn_global_has_vpn_auto")
-        and str(selectors.get("vpn_global_now") or "").strip() == "vpn-auto"
-        and "REJECT" in set(selectors.get("vpn_auto_targets") or [])
-        and "DIRECT" not in set(selectors.get("vpn_auto_targets") or [])
+        and (
+            selectors.get("vpn_global_has_vpn_auto") is False
+            if fixed_mode
+            else selectors.get("vpn_global_has_vpn_auto") is True
+        )
         and "REJECT" in set(selectors.get("vpn_global_targets") or [])
         and "DIRECT" not in set(selectors.get("vpn_global_targets") or [])
+    )
+    auto_selector_policy_ok = bool(
+        "REJECT" in set(selectors.get("vpn_auto_targets") or [])
+        and "DIRECT" not in set(selectors.get("vpn_auto_targets") or [])
     )
     expected_native_members = {name: set(targets or []) for name, targets in expected_groups.items()}
     runtime_native_members = {
@@ -257,36 +438,53 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
         for name, targets in (selectors.get("subject_selector_targets") or {}).items()
     })
     selector_native_membership_ok = runtime_native_members == expected_native_members
-    if server_mode == "auto" and expected_native_members.get("vpn-auto") == {"REJECT"}:
+    selector_ok = global_selector_structure_ok and auto_selector_policy_ok
+    if auto_projection and expected_native_members.get("vpn-auto") == {"REJECT"}:
         # Persisted automatic-selection intent/provenance can outlive an empty
         # eligible pool. The exact terminal native selection proves a valid
         # fail-closed policy without erasing that intent or claiming egress.
-        selector_ok = selector_ok and (
+        selector_ok = selector_ok and str(selectors.get("vpn_global_now") or "").strip() == "vpn-auto" and (
             str(selectors.get("vpn_auto_now") or "").strip() == "REJECT"
             or str(selectors.get("vpn_auto_selected_target") or "").strip() == "REJECT"
         )
-    elif server_mode == "auto" and expected_auto_server:
+    elif auto_projection and expected_auto_server:
         expected_runtime_target = _resolve_active_auto_runtime_target(
             expected_auto_server,
             expected_targets=expected_native_members.get("vpn-auto", set()),
         )
-        selector_ok = selector_ok and expected_runtime_target is not None and (
+        selector_ok = selector_ok and str(selectors.get("vpn_global_now") or "").strip() == "vpn-auto" and expected_runtime_target is not None and (
             str(selectors.get("vpn_auto_now") or "").strip() == expected_runtime_target
         )
-    elif server_mode == "auto":
+    elif auto_projection:
         # An empty owned pool is a valid installed fail-closed policy only
         # when the selector explicitly resolves to its terminal REJECT target.
-        selector_ok = selector_ok and (
+        selector_ok = selector_ok and str(selectors.get("vpn_global_now") or "").strip() == "vpn-auto" and (
             str(selectors.get("vpn_auto_now") or "").strip() == "REJECT"
             or str(selectors.get("vpn_auto_selected_target") or "").strip() == "REJECT"
         )
+    elif fixed_mode:
+        expected_fixed_target = _resolve_active_fixed_runtime_target(
+            fixed_id,
+            expected_targets=expected_native_members.get("vpn-global", set()),
+        ) if fixed_id else None
+        selector_ok = bool(
+            selector_ok
+            and _fixed_intent_is_clean_and_unexpired(routing_dict)
+            and expected_fixed_target is not None
+            and expected_native_members.get("vpn-global") == {"REJECT", expected_fixed_target}
+            and str(selectors.get("vpn_global_now") or "").strip() == expected_fixed_target
+            and str(selectors.get("vpn_global_selected_target") or "").strip() == expected_fixed_target
+        )
     else:
         selector_ok = False
+    active_global_target = (
+        selectors.get("vpn_global_selected_target") or selectors.get("vpn_global_now")
+        if fixed_mode
+        else selectors.get("vpn_auto_selected_target") or selectors.get("vpn_auto_now")
+    )
     vpn_egress_ready = bool(
         selector_ok
-        and health.active_server_id
-        and str(selectors.get("vpn_auto_selected_target") or selectors.get("vpn_auto_now") or "")
-        not in {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE", "COMPATIBLE"}
+        and str(active_global_target or "") not in NON_SERVER_PROXY_TARGETS
     )
 
     transparent_ok = bool(
