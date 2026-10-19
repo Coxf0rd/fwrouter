@@ -1005,6 +1005,136 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
             )
             assert fixed_code == 200 and fixed_response.get("ok") is True, fixed_response
             fixed_job = await_job(api, fixed_response)
+            if fixed_job.get("status") != "success":
+                # Keep the complete failure phase chain, never configs, IDs or
+                # credentials. This is emitted only for this synthetic job.
+                observations = []
+                allowed = {"ok", "stage", "status", "error_code", "reason",
+                           "reconcile_reason", "reconcile_action", "last_good_retained",
+                           "config_membership_ok", "native_membership_ok",
+                           "logical_group_native_membership_ok", "selected_fixed_target"}
+
+                safe_values = {
+                    'MIHOMO_GENERATION_SELECTOR_PROOF_FAILED',
+                    'fixed_target_native_membership_unverified',
+                    'fixed_intent_superseded',
+                    'fixed_target_config_membership_mismatch',
+                    'fixed_target_mapping_unresolved',
+                    'fixed_target_missing',
+                    'active_config_unavailable',
+                    'mihomo_health_unavailable',
+                    'GLOBAL_AUTO_FENCE_UNAVAILABLE',
+                    'GLOBAL_AUTO_INTENT_FAILED',
+                    'GLOBAL_AUTO_NATIVE_PROOF_FAILED',
+                    'GLOBAL_AUTO_STALE',
+                    'GLOBAL_FIXED_SERVER_FENCE_UNAVAILABLE',
+                    'GLOBAL_FIXED_SERVER_MATERIALIZATION_UNVERIFIED',
+                    'GLOBAL_FIXED_SERVER_NATIVE_PROOF_FAILED',
+                    'GLOBAL_FIXED_SERVER_PRE_CHECK_FAILED',
+                    'GLOBAL_FIXED_SERVER_STALE',
+                    'MIHOMO_CANDIDATE_CHANGED_DURING_PROMOTE',
+                    'MIHOMO_CANDIDATE_COPY_MISMATCH',
+                    'MIHOMO_CANDIDATE_INVALID',
+                    'MIHOMO_CANDIDATE_MISSING',
+                    'MIHOMO_CANDIDATE_PROVENANCE_UNVERIFIED',
+                    'MIHOMO_CANDIDATE_READ_FAILED',
+                    'MIHOMO_CONFIG_VALIDATION_FAILED',
+                    'MIHOMO_CONTROLLER_NOT_READY',
+                    'MIHOMO_FINAL_READBACK_FAILED',
+                    'MIHOMO_GENERATION_RECEIPT_INVALID',
+                    'MIHOMO_GENERATION_STALE',
+                    'MIHOMO_GENERATION_STALE_AFTER_RECEIPT',
+                    'MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION',
+                    'MIHOMO_GENERATION_VERIFICATION_FENCE_REQUIRED',
+                    'MIHOMO_INPUT_REVALIDATION_FAILED',
+                    'MIHOMO_RECONCILE_FAILED',
+                    'MIHOMO_RUNTIME_IDENTITY_UNAVAILABLE',
+                    'SERVER_MANUALLY_DELETED',
+                    'SERVER_NOT_FOUND_OR_INACTIVE',
+                    'SERVER_NOT_USER_SELECTABLE',
+                    'SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED',
+                    'VPN_AUTO_SELECTION_FENCE_INVALID',
+                    'VPN_AUTO_SELECTION_FENCE_REQUIRED',
+                    'VPN_AUTO_SELECTION_REVISION_CONFLICT',
+                    'active_config_changed',
+                    'active_config_unavailable',
+                    'active_runtime_already_matches_routing',
+                    'applied',
+                    'candidate_provenance',
+                    'checkpoint_write_failed',
+                    'clean',
+                    'config_validation',
+                    'failed',
+                    'fixed_intent_revalidation',
+                    'fixed_intent_superseded',
+                    'fixed_target_config_membership_mismatch',
+                    'fixed_target_mapping_unresolved',
+                    'fixed_target_missing',
+                    'fwrouter_metadata_mismatch',
+                    'generation_fence',
+                    'generation_fence_conflict',
+                    'generation_publication_revalidation',
+                    'generation_revalidation',
+                    'generation_snapshot',
+                    'global_direct_does_not_change_mihomo_config',
+                    'input_fingerprint_unavailable',
+                    'input_fingerprint_unchanged',
+                    'inventory_generation_admission',
+                    'inventory_generation_publication_revalidation',
+                    'inventory_generation_stale',
+                    'inventory_generation_unverified',
+                    'managed_runtime_required',
+                    'mihomo_health_failed',
+                    'mihomo_health_unavailable',
+                    'native_policy_or_fence_unconfirmed',
+                    'native_udp_policy_readback',
+                    'native_udp_policy_receipt',
+                    'no_active_config',
+                    'none',
+                    'pending',
+                    'previous_config_not_failclosed_for_vpn_udp',
+                    'receipt_fence_mismatch',
+                    'restart',
+                    'restore_hash_mismatch',
+                    'restore_restart_failed',
+                    'restore_write_failed',
+                    'rollback_context_missing_or_mismatched',
+                    'running',
+                    'selection_or_runtime_superseded',
+                    'selection_revision_changed',
+                    'stale_generation_candidate',
+                    'structural_change',
+                    'success',
+                    'unchanged',
+                    'unchanged_config',
+                    'validation_failed',
+                    'verification',
+                    'verification_callback_not_requested',
+                    'verified_publication_requires_full_reconcile',
+                    'vpn_selector_config_mismatch',
+                }
+
+                def collect_failure(value, path="job", depth=0):
+                    if not isinstance(value, dict) or depth > 8 or len(observations) >= 32:
+                        return
+                    for key, item in value.items():
+                        if not isinstance(key, str) or not re.fullmatch(r"[a-z_]{1,48}", key):
+                            continue
+                        label = path + "." + key
+                        if key in allowed and (type(item) is bool or item is None
+                                               or isinstance(item, str) and item in safe_values):
+                            observations.append((label, item))
+                        elif isinstance(item, dict):
+                            collect_failure(item, label, depth + 1)
+                        if len(observations) >= 32:
+                            break
+
+                collect_failure(fixed_job)
+                encoded = json.dumps(observations, separators=(",", ":"))
+                while len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
+                    observations.pop()
+                    encoded = json.dumps(observations, separators=(",", ":"))
+                record_property("fixed_generation_failure", encoded)
             assert fixed_job.get("status") == "success", fixed_job
             routing_code, routing_response = http_json(f"{api}/routing/global")
             routing_projection = routing_response.get("data", {}).get("routing", {})
