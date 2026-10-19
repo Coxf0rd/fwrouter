@@ -519,7 +519,7 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
         ).encode()).hexdigest()
         return fingerprint, bindings_payload
 
-    def durable_fingerprint(core_apply_id: str) -> dict[str, Any]:
+    def durable_fingerprint(core_apply_id: str, *, identities_only: bool = False) -> dict[str, Any]:
         connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
         try:
             values = {
@@ -543,6 +543,8 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                     (core_apply_id,),
                 ).fetchone(),
             }
+            if identities_only:
+                values.pop("core")
             return {
                 "sha256": hashlib.sha256(json.dumps(values, sort_keys=True, default=list).encode()).hexdigest(),
                 "identity_rows": len(values["subscription_node_identities"]),
@@ -940,8 +942,17 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
         bindings_path = state / "xray" / "fwrouter-bindings.json"
         assert bindings_path.is_file(), "managed synthetic Xray enable did not materialize runtime bindings"
 
+        if fixed_target:
+            # Explicit synthetic operator intent; fixed apply must never enable
+            # a disabled Core on its own. The unified owner completes pending.
+            core_code, core_request = http_json(
+                f"{api}/modules/core/desired-state", method="POST",
+                payload={"desired_state": "enabled", "requested_by": "hosted-fixed-owner-fixture", "run_now": False},
+            )
+            assert core_code == 200 and core_request.get("ok") is True, core_request
+            assert core_request.get("data", {}).get("module", {}).get("desired_state") == "enabled"
         before_fixed_transition_native = native_fingerprint() if fixed_target else None
-        before_fixed_transition_durable = durable_fingerprint("") if fixed_target else None
+        before_fixed_transition_durable = durable_fingerprint("", identities_only=True) if fixed_target else None
 
         def packet_selection_snapshot(api_url: str) -> dict[str, Any]:
             status_code, response = http_json(f"{api_url}/selector/vpn-auto/state")
@@ -1147,6 +1158,23 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                     encoded = json.dumps(observations, separators=(",", ":"))
                 record_property("fixed_generation_failure", encoded)
             assert fixed_job.get("status") == "success", fixed_job
+            fixed_result = fixed_job.get("result") if isinstance(fixed_job.get("result"), dict) else {}
+            fixed_completion = fixed_result.get("global_fixed_server")
+            assert isinstance(fixed_completion, dict) and fixed_completion.get("ok") is True
+            unified_proof = fixed_completion.get("unified_fixed_proof")
+            assert isinstance(unified_proof, dict), "fixed SUCCESS lacks unified owner proof"
+            assert unified_proof.get("mihomo_target") == packet_runtime_name
+            assert unified_proof.get("xray_state") == "verified"
+            assert type(unified_proof.get("pending_revision")) is int
+            assert type(unified_proof.get("selection_revision")) is int
+            for proof_key in ("core_manifest_hash", "mihomo_config_sha256",
+                              "xray_config_sha256", "xray_artifact_sha256"):
+                assert isinstance(unified_proof.get(proof_key), str) and re.fullmatch(
+                    r"[0-9a-f]{64}", unified_proof[proof_key],
+                ), {"missing_or_invalid_unified_proof_field": proof_key}
+            assert all(isinstance(unified_proof.get(key), str) and unified_proof[key] for key in (
+                "core_apply_id", "mihomo_runtime_incarnation", "xray_runtime_incarnation",
+            )), "fixed SUCCESS lacks native incarnation/Core apply ownership"
             routing_code, routing_response = http_json(f"{api}/routing/global")
             routing_projection = routing_response.get("data", {}).get("routing", {})
             assert (routing_code == 200 and routing_response.get("ok") is True
@@ -1251,10 +1279,10 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
 
         if fixed_target:
             after_fixed_transition_native = native_fingerprint()
-            fixed_protected_fields = {
-                "xray_active", "xray_mounted", "xray_loaded", "xray_loaded_identity_count",
-                "xray_bindings", "xray_last_good", "xray_incarnation", "xray_reload_calls",
-            }
+            # Routing-sensitive handoff/config may legitimately change during
+            # the staged generation owner. Identities and durable credentials
+            # must not. Admission/startups below retain exact native fingerprints.
+            fixed_protected_fields = {"xray_loaded", "xray_loaded_identity_count"}
             assert all(after_fixed_transition_native[key] == before_fixed_transition_native[key]
                        for key in fixed_protected_fields), {
                 "fixed_apply_changed_xray_fields": sorted(
@@ -1262,9 +1290,24 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                     if after_fixed_transition_native[key] != before_fixed_transition_native[key]
                 ),
             }
-            assert durable_fingerprint("") == before_fixed_transition_durable, {
-                "contract": "fixed generation/apply preserves identities, credentials and Core intent",
+            assert durable_fingerprint("", identities_only=True) == before_fixed_transition_durable, {
+                "contract": "unified fixed generation preserves all identity and credential mappings/history",
             }
+            connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+            try:
+                assert connection.execute(
+                    "SELECT desired_state, apply_state FROM modules WHERE module_name='core'",
+                ).fetchone() == ("enabled", "clean"), "unified fixed job did not finish Core apply"
+                pending_row = connection.execute(
+                    "SELECT value_json FROM settings WHERE key='xray.vpn_auto_pending'",
+                ).fetchone()
+                assert pending_row, "unified fixed completion lost its durable pending record"
+                pending_completion = json.loads(pending_row[0])
+                assert pending_completion.get("pending") is False
+                assert pending_completion.get("applied_revision") == unified_proof["pending_revision"]
+                assert pending_completion.get("revision") == unified_proof["pending_revision"]
+            finally:
+                connection.close()
 
         # Manual rules apply performs the real DNSmasq reconciliation as part
         # of finalization. Prepare the already-qualified packet fixture first:

@@ -7,6 +7,8 @@ from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.jobs import create_job, mark_job_running, mark_job_success
 from fwrouter_api.services.jobs_retention import cleanup_jobs_retention
 from fwrouter_api.services.rules import get_rules_state
+from fwrouter_api.jobs.manager import JobManager
+from fwrouter_api.services.event_contract import current_event_context, reset_event_context, set_event_context
 
 
 
@@ -107,3 +109,36 @@ def test_cleanup_jobs_retention_preserves_apply_versions_fk_integrity(
     assert result["deleted_jobs_count"] == 1
     assert apply_version["job_id"] is None
     assert fk_violations == []
+
+
+def test_nested_job_context_uses_child_job_id_and_preserves_parent_correlation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    observed: dict[str, str] = {}
+
+    def child_handler(_job):
+        observed.update(current_event_context())
+        return {"ok": True}
+
+    manager.register_handler("nested_context_test", child_handler)
+    parent_context = set_event_context(
+        job_id="parent-job",
+        workflow_id="fixed-workflow",
+        causation_id="parent-request",
+    )
+    try:
+        child = manager.create("nested_context_test", requested_by="pytest")
+        finished = manager.start_job_and_wait(child["job_id"])
+        assert finished is not None
+        assert finished["status"] == "success"
+        assert observed["job_id"] == child["job_id"]
+        assert observed["workflow_id"] == "fixed-workflow"
+        assert observed["causation_id"] == "parent-request"
+        assert current_event_context()["job_id"] == "parent-job"
+    finally:
+        reset_event_context(parent_context)
+
+    assert current_event_context() == {}

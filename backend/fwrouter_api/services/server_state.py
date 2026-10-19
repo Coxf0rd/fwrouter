@@ -101,6 +101,14 @@ def _clear_expired_global_fixed_server_state(row: Any) -> bool:
         if changed.rowcount == 1:
             if advance_selection_revision(connection, expected_revision=revision) is None:
                 raise RuntimeError("VPN-auto selection revision changed during fixed-mode TTL expiry.")
+            from fwrouter_api.services.xray_vpn_auto_pending import mark_xray_vpn_auto_pending
+
+            mark_xray_vpn_auto_pending(
+                connection,
+                trigger="global_fixed_server_ttl_expired",
+                immediate=True,
+                supersede_fixed_workflow=True,
+            )
         cleared = changed.rowcount == 1
 
     if not cleared:

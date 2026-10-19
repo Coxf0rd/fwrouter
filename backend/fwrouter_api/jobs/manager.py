@@ -224,12 +224,13 @@ class JobManager:
             )
 
         inherited_context = job.get("event_context") if isinstance(job.get("event_context"), dict) else {}
-        context_token = set_event_context(
-            **inherited_context,
+        job_context = dict(inherited_context)
+        job_context.update(
             job_id=job_id,
             workflow_id=inherited_context.get("workflow_id") or job_id,
             causation_id=inherited_context.get("causation_id") or inherited_context.get("request_id"),
         )
+        context_token = set_event_context(**job_context)
         try:
             result = handler(job) or {}
         except Exception as exc:

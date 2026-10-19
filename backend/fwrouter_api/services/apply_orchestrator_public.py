@@ -187,10 +187,18 @@ def set_global_mode(
     mode: str,
     *,
     requested_by: str = "api",
+    expected_selection_revision: int | None = None,
+    expected_core_revision: int | None = None,
+    expected_core_snapshot: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     return run_apply_mutation(
         intent=INTENT_SET_GLOBAL_MODE,
-        payload={"mode": mode},
+        payload={
+            "mode": mode,
+            "expected_selection_revision": expected_selection_revision,
+            "expected_core_revision": expected_core_revision,
+            "expected_core_snapshot": list(expected_core_snapshot) if expected_core_snapshot is not None else None,
+        },
         requested_by=requested_by,
     )
 
@@ -249,6 +257,9 @@ def apply_global_mode_immediately(
     mode: str,
     *,
     requested_by: str = "api",
+    expected_selection_revision: int | None = None,
+    expected_core_revision: int | None = None,
+    expected_core_snapshot: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Apply global mode synchronously for startup/bootstrap recovery.
 
@@ -259,7 +270,12 @@ def apply_global_mode_immediately(
 
     return run_apply_mutation(
         intent=INTENT_SET_GLOBAL_MODE,
-        payload={"mode": mode},
+        payload={
+            "mode": mode,
+            "expected_selection_revision": expected_selection_revision,
+            "expected_core_revision": expected_core_revision,
+            "expected_core_snapshot": list(expected_core_snapshot) if expected_core_snapshot is not None else None,
+        },
         requested_by=requested_by,
     )
 

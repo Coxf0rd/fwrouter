@@ -88,6 +88,8 @@ def mark_xray_vpn_auto_pending(
     trigger: str,
     now: datetime | None = None,
     immediate: bool = False,
+    workflow: dict[str, Any] | None = None,
+    supersede_fixed_workflow: bool = False,
 ) -> dict[str, Any]:
     """Record a trailing-debounce revision in the caller's intent transaction."""
 
@@ -95,6 +97,17 @@ def mark_xray_vpn_auto_pending(
     if not bool(getattr(connection, "in_transaction", False)):
         connection.execute("BEGIN IMMEDIATE")
     previous = _load_row(connection) or {}
+    existing_workflow = previous.get("workflow") if isinstance(previous, dict) else None
+    if (
+        previous.get("pending") is True
+        and isinstance(existing_workflow, dict)
+        and existing_workflow.get("kind") == "global_fixed_server"
+        and not supersede_fixed_workflow
+    ):
+        # A generic Xray debounce is not allowed to erase the more specific
+        # fixed-owner workflow or its revision. Its caller may dispatch this
+        # existing revision, which routes through that owner.
+        return dict(previous)
     revision = max(0, int(previous.get("revision") or 0)) + 1
     value = {
         "revision": revision,
@@ -109,6 +122,8 @@ def mark_xray_vpn_auto_pending(
         "next_retry_at": None,
         "applied_revision": int(previous.get("applied_revision") or 0),
     }
+    if workflow is not None:
+        value["workflow"] = dict(workflow)
     _save(connection, value)
     return value
 
@@ -142,7 +157,68 @@ def get_xray_vpn_auto_pending_state() -> dict[str, Any]:
             "next_retry_at",
             "applied_revision",
         )
-    } | {"attempt_count": int(value.get("attempt_count") or 0)}
+    } | {
+        "attempt_count": int(value.get("attempt_count") or 0),
+        "workflow": dict(value["workflow"]) if isinstance(value.get("workflow"), dict) else None,
+    }
+
+
+def pending_fixed_workflow_state() -> dict[str, Any] | None:
+    """Return the durable fixed-server workflow only while its marker owns it."""
+    state = get_xray_vpn_auto_pending_state()
+    workflow = state.get("workflow")
+    if (
+        not state.get("pending")
+        or not isinstance(workflow, dict)
+        or workflow.get("kind") != "global_fixed_server"
+        or type(state.get("revision")) is not int
+    ):
+        return None
+    return {**workflow, "pending_revision": int(state["revision"])}
+
+
+def _complete_revision_in_connection(connection: Any, revision: int) -> bool:
+    state = _load_row(connection)
+    if (
+        not state or not bool(state.get("pending"))
+        or int(state.get("revision") or 0) != int(revision)
+    ):
+        return False
+    state.update({
+        "pending": False,
+        "status": "applied",
+        "due_at": None,
+        "next_retry_at": None,
+        "last_error_code": None,
+        "applied_revision": int(revision),
+        "updated_at": _timestamp(_now()),
+    })
+    state.pop("workflow", None)
+    return _save_if_revision(connection, state, int(revision))
+
+
+def _admission_fixed_workflow_pending(connection: Any | None = None) -> bool:
+    """Fail closed at legacy admission while a unified fixed workflow is pending."""
+    if connection is not None:
+        state = _load_row(connection)
+        workflow = state.get("workflow") if isinstance(state, dict) else None
+        return bool(
+            isinstance(state, dict) and state.get("pending")
+            and isinstance(workflow, dict) and workflow.get("kind") == "global_fixed_server"
+        )
+    return pending_fixed_workflow_state() is not None
+
+
+def _assert_xray_generation_authorized(fixed_workflow_revision: int | None = None) -> bool:
+    """Prevent ordinary Xray generation from bypassing pending fixed phases."""
+    workflow = pending_fixed_workflow_state()
+    if workflow is None:
+        return fixed_workflow_revision is None
+    return (
+        type(fixed_workflow_revision) is int
+        and fixed_workflow_revision == workflow["pending_revision"]
+        and str(workflow.get("phase") or "") in {"core_verified", "xray_verified"}
+    )
 
 
 def pending_is_due(state: dict[str, Any], *, now: datetime | None = None, bypass: bool = False) -> bool:
@@ -337,11 +413,72 @@ def run_xray_vpn_auto_reconcile(
 
     from fwrouter_api.adapters.xray_common import xray_writer_guard
 
+    fixed_workflow = pending_fixed_workflow_state()
+    if fixed_workflow is not None:
+        state = get_xray_vpn_auto_pending_state()
+        revision = int(state.get("revision") or 0)
+        if expected_revision is not None and int(expected_revision) != revision:
+            return {"ok": True, "status": "superseded", "pending": True, "revision": revision}
+        if not pending_is_due(state, bypass=bypass or str(state.get("status") or "") == "deferred"):
+            return {"ok": True, "status": "pending", "pending": True, "revision": revision}
+        owner_job_id = str(fixed_workflow.get("owner_job_id") or "")
+        if owner_job_id:
+            from fwrouter_api.services.jobs import get_job_without_cleanup
+            owner_job = get_job_without_cleanup(owner_job_id)
+            if owner_job and str(owner_job.get("status") or "") in {"queued", "running"}:
+                return {
+                    "ok": True,
+                    "status": "fixed_owner_running",
+                    "pending": True,
+                    "revision": revision,
+                }
+        attempt = _begin_attempt(revision)
+        if attempt is None:
+            return {"ok": True, "status": "superseded", "pending": True}
+        from fwrouter_api.services.server_global_selection import resume_global_fixed_server_workflow
+        try:
+            result = resume_global_fixed_server_workflow(
+                fixed_workflow,
+                requested_by=str(fixed_workflow.get("requested_by") or requested_by),
+            )
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "stage": "fixed_workflow_resume",
+                "error_code": "GLOBAL_FIXED_SERVER_RETRY_EXCEPTION",
+                "error_message": f"Fixed workflow retry raised {type(exc).__name__}.",
+            }
+        current = get_xray_vpn_auto_pending_state()
+        if result.get("ok") is not True and current.get("pending") and int(current.get("revision") or 0) == revision:
+            _finish_revision(
+                revision,
+                ok=False,
+                error_code=str(result.get("error_code") or result.get("stage") or "GLOBAL_FIXED_SERVER_RETRY_FAILED"),
+            )
+            current = get_xray_vpn_auto_pending_state()
+        return {
+            **result,
+            "revision": revision,
+            "pending": bool(current.get("pending")),
+            "superseded": int(current.get("revision") or 0) != revision,
+        }
+
     with xray_writer_guard():
         state = get_xray_vpn_auto_pending_state()
         if not bool(state.get("pending")):
             return {"ok": True, "status": "idle", "pending": False}
         revision = int(state.get("revision") or 0)
+        workflow = state.get("workflow")
+        if isinstance(workflow, dict) and workflow.get("kind") == "global_fixed_server":
+            # The initial owner check can race a fixed-intent reservation while
+            # this generic worker waits for the writer. Recheck after acquiring
+            # the guard and leave attempt state to the fixed dispatcher.
+            return {
+                "ok": True,
+                "status": "fixed_owner_pending",
+                "pending": True,
+                "revision": revision,
+            }
         same_revision = expected_revision is None or int(expected_revision) == revision
         effective_bypass = bool(bypass and same_revision)
         if str(state.get("status") or "") == "deferred":
@@ -433,12 +570,25 @@ def submit_xray_vpn_auto_reconcile(
 
 
 def request_xray_vpn_auto_apply_now(*, requested_by: str) -> dict[str, Any]:
-    with db_session() as connection:
-        state = mark_xray_vpn_auto_pending(
-            connection,
-            trigger="explicit_apply_now",
-            immediate=True,
-        )
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+
+    with xray_writer_guard(timeout_seconds=5.0), db_session() as connection:
+        current = _load_row(connection) or {}
+        workflow = current.get("workflow") if isinstance(current, dict) else None
+        if (
+            current.get("pending") is True
+            and isinstance(workflow, dict)
+            and workflow.get("kind") == "global_fixed_server"
+        ):
+            # Reuse the existing durable owner revision; never replace it with
+            # a generic inventory job that could resume the wrong workflow.
+            state = current
+        else:
+            state = mark_xray_vpn_auto_pending(
+                connection,
+                trigger="explicit_apply_now",
+                immediate=True,
+            )
     return submit_xray_vpn_auto_reconcile(
         requested_by=requested_by,
         bypass=True,

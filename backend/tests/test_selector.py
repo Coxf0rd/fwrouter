@@ -1833,6 +1833,24 @@ def test_global_fixed_server_expires_after_backend_ttl(monkeypatch, tmp_path: Pa
 def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state='disabled', lifecycle_mode='none' WHERE module_name='xray'",
+        )
+    monkeypatch.setattr(
+        "fwrouter_api.services.server_global_selection._fixed_core_readback",
+        lambda: {
+            "ok": True,
+            "apply_id": "synthetic-core-apply",
+            "manifest_hash": "a" * 64,
+            "enforcement_level": "policy_enforced",
+            "live_global_mode": "direct",
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.server_global_selection._fixed_xray_readback",
+        lambda: {"state": "not_applicable", "ok": True},
+    )
     _install_synthetic_generation_owner(monkeypatch, tmp_path)
     _seed_server(
         "sub:fixed",
@@ -1895,7 +1913,7 @@ def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path:
     assert response.status_code == 200
     assert data["job"]["job_type"] == "global_fixed_server_apply"
     assert job is not None
-    assert job["status"] == "success"
+    assert job["status"] == "success", job
     assert job["result"]["global_fixed_server"]["stage"] == "verified"
     assert routing is not None
     assert routing["server_mode"] == "fixed"

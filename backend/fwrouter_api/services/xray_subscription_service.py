@@ -2619,6 +2619,9 @@ def admit_legacy_subscription_inventory(
             )
             from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
             with db_session() as connection:
+                from fwrouter_api.services.xray_vpn_auto_pending import _admission_fixed_workflow_pending
+                if _admission_fixed_workflow_pending(connection):
+                    return {"ok": False, "status": "blocked", "reason": "fixed_server_workflow_pending"}
                 digest, count = _subscription_inventory_digest(connection)
                 state = _read_subscription_native_generation(connection)
                 marker_row = connection.execute(
@@ -5370,17 +5373,67 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
             "selection_restore_revision": owned_selection_revision}
 
 
+def _fixed_workflow_identity_snapshot() -> str | None:
+    """Hash durable Xray identity state only when generation needs no provisioning."""
+    try:
+        from fwrouter_api.services.subscription_node_identity import credentials_for_scope
+        from fwrouter_api.services.subscription_profiles import _subscription_servers
+
+        servers = _subscription_servers()
+        auto_servers = _vpn_auto_servers_for_xray_subscription()
+        with db_session() as connection:
+            identity_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_identities ORDER BY identity_id",
+            )]
+            alias_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_aliases ORDER BY server_id",
+            )]
+            credential_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_credentials ORDER BY scope, identity_id",
+            )]
+            token_rows = connection.execute(
+                "SELECT c.token FROM subscription_clients c JOIN subscription_accounts a "
+                "ON a.account_id=c.account_id WHERE c.enabled=1 AND a.enabled=1 ORDER BY c.token",
+            ).fetchall()
+            aliases = {str(row["server_id"]): str(row["identity_id"]) for row in alias_rows}
+            identities = {str(row["identity_id"]) for row in identity_rows}
+            for server in servers:
+                server_id = str(server.get("server_id") or "")
+                identity_id = aliases.get(server_id)
+                if not server_id or not identity_id or identity_id not in identities:
+                    return None
+                for token in token_rows:
+                    credential = credentials_for_scope(
+                        connection, "subscription:" + str(token["token"]),
+                    ).get(server_id)
+                    if credential is None:
+                        return None
+            auto_credentials = credentials_for_scope(connection, "vpn-auto")
+            for server in auto_servers:
+                credential = auto_credentials.get(str(server.get("server_id") or ""))
+                if credential is None:
+                    return None
+        return hashlib.sha256(json.dumps(
+            {"identities": identity_rows, "aliases": alias_rows, "credentials": credential_rows},
+            sort_keys=True, separators=(",", ":"), default=str,
+        ).encode("utf-8")).hexdigest()
+    except Exception:
+        return None
+
+
 def reconcile_xray_vpn_auto_subscription(
     *,
     requested_by: str = "api",
     verification_callback: Any = None,
     _inventory_admission: Any = None,
+    _fixed_workflow_revision: int | None = None,
 ) -> dict[str, Any]:
     result = reconcile_xray_subscription_profile_nodes(
         requested_by=requested_by,
         include_vpn_auto=True,
         verification_callback=verification_callback,
         _inventory_admission=_inventory_admission,
+        _fixed_workflow_revision=_fixed_workflow_revision,
     )
     return {**result, "profile_reconcile": result}
 
@@ -5391,11 +5444,31 @@ def reconcile_xray_subscription_profile_nodes(
     cleanup_deleted_projections: bool = True, preserve_existing_overrides: bool = False,
     include_vpn_auto: bool = False, verification_callback: Any = None,
     _inventory_admission: Any = None,
+    _fixed_workflow_revision: int | None = None,
     _supersede_checkpoint_sha256: str | None = None,
     _migration_plan_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Run staged generation as guarded apply, unguarded verification, guarded publish."""
     with xray_writer_guard(timeout_seconds=30.0):
+        from fwrouter_api.services.xray_vpn_auto_pending import _assert_xray_generation_authorized
+        if not _assert_xray_generation_authorized(_fixed_workflow_revision):
+            return {
+                "ok": False,
+                "status": "blocked",
+                "stage": "fixed_server_workflow_gate",
+                "error_code": "XRAY_GENERATION_BLOCKED_BY_FIXED_WORKFLOW",
+                "last_good_retained": True,
+            }
+        identity_preimage = None
+        if _fixed_workflow_revision is not None:
+            identity_preimage = _fixed_workflow_identity_snapshot()
+            if identity_preimage is None:
+                return {
+                    "ok": False, "status": "blocked",
+                    "stage": "fixed_workflow_identity_preflight",
+                    "error_code": "FIXED_WORKFLOW_IDENTITY_UNAVAILABLE",
+                    "last_good_retained": True,
+                }
         from fwrouter_api.services import mihomo_config
         result = _reconcile_xray_subscription_profile_nodes_guarded(
             requested_by=requested_by, materialize=materialize,
@@ -5409,6 +5482,15 @@ def reconcile_xray_subscription_profile_nodes(
             _migration_plan_sha256=_migration_plan_sha256,
             _defer_selection_verification=callable(verification_callback),
         )
+        if identity_preimage is not None:
+            identity_postimage = _fixed_workflow_identity_snapshot()
+            if identity_postimage != identity_preimage:
+                return {
+                    "ok": False, "status": "partial",
+                    "stage": "fixed_workflow_identity_readback",
+                    "error_code": "FIXED_WORKFLOW_IDENTITY_CHANGED",
+                    "last_good_retained": True,
+                }
     pending = result.get("_pending_generation") if isinstance(result, dict) else None
     if not isinstance(pending, dict):
         return result

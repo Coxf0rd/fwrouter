@@ -126,6 +126,33 @@ def _event_server_label(connection: Any, server_id: str | None) -> str | None:
     return safe_human_label(row["server_name"]) if row else None
 
 
+def _enabled_managed_core_intent(connection: Any) -> dict[str, Any] | None:
+    """Capture the existing enabled Core intent required by fixed convergence."""
+    import json
+
+    from fwrouter_api.services.core_intent import read_core_intent_revision
+
+    row = connection.execute(
+        "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+    ).fetchone()
+    if row is None or (str(row["desired_state"]), str(row["lifecycle_mode"])) != ("enabled", "managed"):
+        return None
+    bypass = connection.execute("SELECT value_json FROM settings WHERE key='core.bypass'").fetchone()
+    if bypass is not None:
+        try:
+            decoded = json.loads(str(bypass["value_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(decoded, dict) or type(decoded.get("enabled", False)) is not bool or decoded.get("enabled"):
+            return None
+    try:
+        revision = read_core_intent_revision(connection)
+    except ValueError:
+        return None
+    snapshot = tuple(str(row[key]) for key in ("desired_state", "lifecycle_mode", "apply_state"))
+    return {"revision": revision, "snapshot": snapshot}
+
+
 def _capture_fixed_apply_context(routing: dict[str, Any]) -> dict[str, Any] | None:
     from fwrouter_api.services.core_intent import read_core_intent_revision, read_core_runtime_context
     from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
@@ -142,6 +169,56 @@ def _capture_fixed_apply_context(routing: dict[str, Any]) -> dict[str, Any] | No
         core_revision = read_core_intent_revision(connection)
         core_row = connection.execute(
             "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'"
+        ).fetchone()
+        if core_row is None or (str(core_row["desired_state"]), str(core_row["lifecycle_mode"])) != ("enabled", "managed"):
+            return None
+        core_snapshot = tuple(str(core_row[key]) for key in ("desired_state", "lifecycle_mode", "apply_state"))
+        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+        pending = _load_row(connection)
+        workflow = pending.get("workflow") if isinstance(pending, dict) else None
+        if (
+            not isinstance(pending, dict) or pending.get("pending") is not True
+            or not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server"
+            or workflow.get("selection_revision") != revision
+            or workflow.get("server_id") != routing.get("desired_fixed_server_id")
+            or workflow.get("fixed_until") != routing.get("fixed_server_until")
+        ):
+            return None
+        pending_revision = pending.get("revision")
+        if type(pending_revision) is not int:
+            return None
+    fingerprint = current_mihomo_input_fingerprint(routing)
+    if not isinstance(fingerprint, dict) or not fingerprint.get("hash"):
+        return None
+    return {
+        "selection_revision": revision,
+        "pending_revision": pending_revision,
+        "core_revision": core_revision,
+        "core_snapshot": core_snapshot,
+        "core_runtime_context": core_context,
+        "runtime_incarnation": incarnation,
+        "input_hash": str(fingerprint["hash"]),
+        "active_config_hash": _file_hash(_resolved_base_config_path()),
+    }
+
+
+def _capture_global_auto_apply_context(routing: dict[str, Any]) -> dict[str, Any] | None:
+    """Capture the existing auto-apply fences without requiring a fixed marker."""
+    from fwrouter_api.services.core_intent import read_core_intent_revision, read_core_runtime_context
+    from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+    from fwrouter_api.services.mihomo_reconcile import _file_hash, current_mihomo_input_fingerprint
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    core_context = read_core_runtime_context()
+    incarnation = get_mihomo_runtime_incarnation(timeout_seconds=5.0)
+    if not core_context or not incarnation:
+        return None
+    with db_session() as connection:
+        revision = read_selection_revision(connection)
+        core_revision = read_core_intent_revision(connection)
+        core_row = connection.execute(
+            "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
         ).fetchone()
         if core_row is None:
             return None
@@ -195,6 +272,18 @@ def _fixed_apply_token_matches(
             )
             if row is None or read_selection_revision(connection) != expected_revision:
                 return False
+            from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+            pending = _load_row(connection)
+            workflow = pending.get("workflow") if isinstance(pending, dict) else None
+            if (
+                not isinstance(pending, dict) or pending.get("pending") is not True
+                or pending.get("revision") != token.get("pending_revision")
+                or not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server"
+                or workflow.get("selection_revision") != expected_revision
+                or workflow.get("server_id") != server_id
+                or workflow.get("fixed_until") != fixed_until
+            ):
+                return False
             if not assert_core_intent_snapshot_current(
                 connection,
                 int(token["core_revision"]),
@@ -205,7 +294,7 @@ def _fixed_apply_token_matches(
                 str(row["server_mode"] or "auto") != "fixed"
                 or str(row["desired_fixed_server_id"] or "") != server_id
                 or str(row["fixed_server_until"] or "") != fixed_until
-                or str(row["apply_state"] or "") not in {"pending", "applying"}
+                or str(row["apply_state"] or "") not in {"pending", "applying", "clean"}
                 or row["error_code"] is not None
                 or row["error_message"] is not None
                 or not bool(row["ttl_live"])
@@ -312,12 +401,436 @@ def _materialize_fixed_server_generation(
         )
 
 
+def _fixed_workflow_current(revision: int) -> dict[str, Any] | None:
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    with db_session() as connection:
+        row = _load_row(connection)
+    workflow = row.get("workflow") if isinstance(row, dict) else None
+    if (
+        not isinstance(row, dict) or row.get("pending") is not True
+        or type(row.get("revision")) is not int or row["revision"] != revision
+        or not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server"
+    ):
+        return None
+    return {**workflow, "pending_revision": revision}
+
+
+def _refresh_fixed_token_after_core_apply(
+    *, server_id: str, fixed_until: str, token: dict[str, Any],
+) -> bool:
+    """Bind the token to the Core owner's committed routing projection.
+
+    Selection revision, Core intent and Mihomo runtime incarnation remain
+    invariant. Only the persisted applied-mode projection may change as part
+    of the owned Core apply, so recompute its input fingerprint after proving
+    those fences still belong to this workflow.
+    """
+    from fwrouter_api.services.core_intent import read_core_runtime_context, read_core_intent_revision
+    from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+    from fwrouter_api.services.mihomo_reconcile import _file_hash, current_mihomo_input_fingerprint
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    routing = get_routing_global_state(expire_ttl=False)
+    if not isinstance(routing, dict):
+        return False
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+        ).fetchone()
+        pending = _load_row(connection)
+        workflow = pending.get("workflow") if isinstance(pending, dict) else None
+        if (
+            read_selection_revision(connection) != token.get("selection_revision")
+            or read_core_intent_revision(connection) != token.get("core_revision")
+            or row is None
+            or tuple(str(row[key]) for key in ("desired_state", "lifecycle_mode", "apply_state"))
+                != tuple(token.get("core_snapshot") or ())
+            or not isinstance(pending, dict) or pending.get("pending") is not True
+            or pending.get("revision") != token.get("pending_revision")
+            or not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server"
+            or workflow.get("phase") != "core_verified"
+            or workflow.get("server_id") != server_id
+        ):
+            return False
+    if (
+        routing.get("server_mode") != "fixed"
+        or routing.get("desired_fixed_server_id") != server_id
+        or routing.get("applied_fixed_server_id") != server_id
+        or routing.get("fixed_server_until") != fixed_until
+        or routing.get("apply_state") != "clean"
+        or read_core_runtime_context() != token.get("core_runtime_context")
+        or get_mihomo_runtime_incarnation(timeout_seconds=5.0) != token.get("runtime_incarnation")
+        or _file_hash(_resolved_base_config_path()) != token.get("active_config_hash")
+    ):
+        return False
+    fingerprint = current_mihomo_input_fingerprint(routing)
+    if not isinstance(fingerprint, dict) or not isinstance(fingerprint.get("hash"), str):
+        return False
+    token["input_hash"] = str(fingerprint["hash"])
+    return True
+
+
+def _update_fixed_workflow(revision: int, **changes: Any) -> dict[str, Any] | None:
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row, _save_if_revision
+
+    with db_session() as connection:
+        state = _load_row(connection)
+        if (
+            not isinstance(state, dict) or state.get("pending") is not True
+            or type(state.get("revision")) is not int or state["revision"] != revision
+        ):
+            return None
+        workflow = state.get("workflow")
+        if not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server":
+            return None
+        workflow = {**workflow, **changes}
+        state["workflow"] = workflow
+        if not _save_if_revision(connection, state, revision):
+            return None
+    return {**workflow, "pending_revision": revision}
+
+
+def _fixed_xray_readback() -> dict[str, Any]:
+    """Classify Xray source/artifact/config/runtime parity without changing it."""
+    import hashlib
+    from pathlib import Path
+
+    from fwrouter_api.services.xray_bindings import (
+        collect_xray_runtime_bindings, collect_xray_client_mode_directives,
+    )
+    from fwrouter_api.services.xray_materialize import (
+        _verify_active_config_bindings, _verify_active_config_client_modes,
+    )
+    from fwrouter_api.services.xray_runtime_state import _module_state
+    from fwrouter_api.services.xray_subscription_service import _current_bindings_artifact_parity
+    from fwrouter_api.adapters.xray import DEFAULT_XRAY_ADAPTER
+
+    module = _module_state("xray") or {}
+    bindings = collect_xray_runtime_bindings()
+    modes = collect_xray_client_mode_directives()
+    desired_identities = sorted(
+        (str(item.get("client_uuid") or item.get("client_id") or ""), str(item.get("client_email") or ""))
+        for item in [*bindings, *modes]
+    )
+    if any(not client_id or not email for client_id, email in desired_identities):
+        return {"state": "unknown", "reason": "xray_source_identity_incomplete"}
+    desired_identities = sorted(set(desired_identities))
+    managed = (
+        str(module.get("desired_state") or "") == "enabled"
+        and str(module.get("lifecycle_mode") or "") == "managed"
+    )
+    if not managed and not desired_identities:
+        return {"state": "not_applicable", "ok": True}
+    if not managed:
+        return {"state": "unknown", "reason": "xray_module_not_managed_enabled"}
+
+    adapter = DEFAULT_XRAY_ADAPTER
+    try:
+        health = adapter.health()
+        runtime_state = str(getattr(health, "runtime_state", "") or "").lower()
+        if runtime_state.endswith(".running"):
+            runtime_state = "running"
+        if runtime_state != "running":
+            return {"state": "unknown", "reason": "xray_runtime_not_running"}
+        config_path = Path(adapter.config_path)
+        active_hash = hashlib.sha256(config_path.read_bytes()).hexdigest()
+        incarnation = adapter.get_runtime_incarnation()
+        mounted_hash = adapter.get_runtime_config_sha256()
+        loaded = sorted((str(pair[0]), str(pair[1])) for pair in adapter.list_loaded_client_identities())
+    except (OSError, AttributeError, TypeError, ValueError, RuntimeError):
+        return {"state": "unknown", "reason": "xray_runtime_readback_unavailable"}
+    if not incarnation or not mounted_hash:
+        return {"state": "unknown", "reason": "xray_runtime_fence_unavailable"}
+
+    artifact_ok, artifact_hash = _current_bindings_artifact_parity(bindings, modes)
+    if not artifact_hash:
+        return {"state": "unknown", "reason": "xray_bindings_artifact_unavailable"}
+    binding_readback = _verify_active_config_bindings(bindings)
+    mode_readback = _verify_active_config_client_modes(modes)
+    if (
+        not isinstance(binding_readback, dict) or not isinstance(mode_readback, dict)
+        or binding_readback.get("status") not in {"verified", "failed"}
+        or mode_readback.get("status") not in {"verified", "failed"}
+        or binding_readback.get("reason") or mode_readback.get("reason")
+        or binding_readback.get("identity_mismatch") is not None
+        or binding_readback.get("missing_clients")
+        or mode_readback.get("missing_clients")
+        or loaded != desired_identities
+    ):
+        return {
+            "state": "unknown",
+            "reason": "xray_identity_or_config_readback_unproven",
+            "identity_count": len(desired_identities),
+            "loaded_identity_count": len(loaded),
+        }
+    binding_known_drift = bool(
+        binding_readback.get("status") == "failed"
+        and any(binding_readback.get(key) for key in (
+            "missing_outbounds", "invalid_handoffs", "missing_rules",
+            "wrong_api_rules", "wrong_first_match_rules",
+        ))
+    )
+    mode_known_drift = bool(
+        mode_readback.get("status") == "failed"
+        and any(mode_readback.get(key) for key in (
+            "missing_outbounds", "missing_rules", "misordered_rules",
+        ))
+    )
+    if (
+        (binding_readback.get("status") == "verified" and binding_readback.get("ok") is not True)
+        or (mode_readback.get("status") == "verified" and mode_readback.get("ok") is not True)
+        or (binding_readback.get("status") == "failed" and not binding_known_drift)
+        or (mode_readback.get("status") == "failed" and not mode_known_drift)
+    ):
+        return {"state": "unknown", "reason": "xray_config_readback_unclassified"}
+    known_drift = bool(not artifact_ok or active_hash != mounted_hash or binding_known_drift or mode_known_drift)
+    return {
+        "state": "drift" if known_drift else "verified",
+        "ok": not known_drift,
+        "active_config_sha256": active_hash,
+        "runtime_config_sha256": mounted_hash,
+        "runtime_incarnation": str(incarnation),
+        "artifact_sha256": artifact_hash,
+        "identity_count": len(desired_identities),
+        "loaded_identity_count": len(loaded),
+    }
+
+
+def _fixed_core_readback() -> dict[str, Any]:
+    from fwrouter_api.services.xray_subscription_service import _collect_legacy_admission_core_native_proof
+
+    return _collect_legacy_admission_core_native_proof()
+
+
+def _fixed_xray_generation_callback(
+    *, server_id: str, fixed_until: str, token: dict[str, Any],
+):
+    """Bind an Xray generation's Mihomo restart receipt to this fixed intent."""
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services.core_intent import read_core_intent_revision, read_core_runtime_context
+    from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+    from fwrouter_api.services.mihomo_config_status import mihomo_runtime_fixed_target_materialized
+    from fwrouter_api.services.mihomo_reconcile import _file_hash, current_mihomo_input_fingerprint
+    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row, _save_if_revision
+
+    def verify(*, operation_id: str, expected_selection_revision: int) -> dict[str, Any]:
+        if not isinstance(operation_id, str) or not operation_id or type(expected_selection_revision) is not int:
+            return {"ok": False, "error_code": "FIXED_XRAY_GENERATION_RECEIPT_INVALID"}
+        with xray_writer_guard(timeout_seconds=30.0):
+            routing = get_routing_global_state(expire_ttl=False)
+            if not isinstance(routing, dict):
+                return {"ok": False, "error_code": "FIXED_XRAY_ROUTING_UNAVAILABLE"}
+            native = mihomo_runtime_fixed_target_materialized(routing, require_selected=True)
+            core_context = read_core_runtime_context()
+            runtime_incarnation = get_mihomo_runtime_incarnation(timeout_seconds=5.0)
+            config_hash = _file_hash(_resolved_base_config_path())
+            input_fingerprint = current_mihomo_input_fingerprint(routing)
+            if (
+                not native.get("ok") or native.get("fixed_runtime_target") != server_id
+                or routing.get("server_mode") != "fixed"
+                or routing.get("desired_fixed_server_id") != server_id
+                or routing.get("applied_fixed_server_id") != server_id
+                or routing.get("fixed_server_until") != fixed_until
+                or routing.get("apply_state") != "clean"
+                or core_context != token.get("core_runtime_context")
+                or not runtime_incarnation
+                or not isinstance(config_hash, str) or len(config_hash) != 64
+                or not isinstance(input_fingerprint, dict)
+                or not isinstance(input_fingerprint.get("hash"), str)
+            ):
+                return {"ok": False, "error_code": "FIXED_XRAY_MIHOMO_PROOF_FAILED"}
+            with db_session() as connection:
+                row = connection.execute(
+                    "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+                ).fetchone()
+                pending = _load_row(connection)
+                workflow = pending.get("workflow") if isinstance(pending, dict) else None
+                if (
+                    read_selection_revision(connection) != expected_selection_revision
+                    or read_core_intent_revision(connection) != token.get("core_revision")
+                    or row is None
+                    or tuple(str(row[key]) for key in ("desired_state", "lifecycle_mode", "apply_state"))
+                        != tuple(token.get("core_snapshot") or ())
+                    or not isinstance(pending, dict) or pending.get("pending") is not True
+                    or pending.get("revision") != token.get("pending_revision")
+                    or not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server"
+                    or workflow.get("phase") != "core_verified"
+                    or workflow.get("server_id") != server_id
+                    or workflow.get("fixed_until") != fixed_until
+                    or (
+                        workflow.get("selection_revision") != token.get("selection_revision")
+                        and not (
+                            workflow.get("xray_generation_operation_id") == operation_id
+                            and workflow.get("selection_revision") == expected_selection_revision
+                        )
+                    )
+                    or expected_selection_revision < int(token.get("selection_revision") or -1)
+                ):
+                    return {"ok": False, "error_code": "FIXED_XRAY_WORKFLOW_FENCE_CHANGED"}
+                receipt = {
+                    "kind": "global_fixed_server",
+                    "phase": "core_verified",
+                    "selection_revision": expected_selection_revision,
+                    "server_id": server_id,
+                    "fixed_until": fixed_until,
+                    "fixed_pending_revision": int(token["pending_revision"]),
+                    "core_revision": token["core_revision"],
+                    "core_snapshot": list(token["core_snapshot"]),
+                    "mihomo_operation_id": operation_id,
+                    "mihomo_input_sha256": input_fingerprint["hash"],
+                    "mihomo_config_sha256": config_hash,
+                    "mihomo_runtime_incarnation": runtime_incarnation,
+                }
+                workflow.update({
+                    "selection_revision": expected_selection_revision,
+                    "xray_generation_operation_id": operation_id,
+                    "xray_generation_mihomo_input_sha256": input_fingerprint["hash"],
+                    "xray_generation_mihomo_config_sha256": config_hash,
+                    "xray_generation_mihomo_runtime_incarnation": runtime_incarnation,
+                })
+                pending["workflow"] = workflow
+                if not _save_if_revision(connection, pending, int(token["pending_revision"])):
+                    return {"ok": False, "error_code": "FIXED_XRAY_WORKFLOW_CAS_FAILED"}
+            token.update({
+                "selection_revision": expected_selection_revision,
+                "input_hash": str(input_fingerprint["hash"]),
+                "active_config_hash": config_hash,
+                "runtime_incarnation": runtime_incarnation,
+                "xray_generation_operation_id": operation_id,
+            })
+            return {
+                **native,
+                **receipt,
+                "ok": True,
+                "operation_id": operation_id,
+                "selection_revision": expected_selection_revision,
+                "config_membership_ok": True,
+                "native_membership_ok": True,
+                "logical_group_native_membership_ok": True,
+                "vpn_global_now": native.get("vpn_global_now"),
+                "selected_fixed_target": True,
+            }
+
+    return verify
+
+
+def _fixed_xray_generation_receipt_matches(
+    result: dict[str, Any], *, server_id: str, token: dict[str, Any],
+) -> bool:
+    verification = result.get("pre_publication_verification")
+    if (
+        not isinstance(verification, dict)
+        or verification.get("ok") is not True
+        or not isinstance(verification.get("operation_id"), str)
+        or not verification.get("operation_id")
+        or verification.get("operation_id") != token.get("xray_generation_operation_id")
+        or verification.get("selection_revision") != token.get("selection_revision")
+        or verification.get("server_id") != server_id
+        or verification.get("fixed_pending_revision") != token.get("pending_revision")
+        or verification.get("core_revision") != token.get("core_revision")
+        or verification.get("mihomo_input_sha256") != token.get("input_hash")
+        or verification.get("mihomo_config_sha256") != token.get("active_config_hash")
+        or verification.get("mihomo_runtime_incarnation") != token.get("runtime_incarnation")
+    ):
+        return False
+    generation_apply = result.get("generation_apply")
+    final_mihomo = generation_apply.get("final_mihomo") if isinstance(generation_apply, dict) else None
+    if isinstance(final_mihomo, dict):
+        container = final_mihomo.get("container")
+        if not final_mihomo.get("ok"):
+            return False
+        if isinstance(container, dict) and container.get("selection_revision") is not None:
+            if container.get("selection_revision") != token.get("selection_revision"):
+                return False
+    return True
+
+
+def _commit_fixed_mihomo_stage(
+    *, server_id: str, fixed_until: str, token: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Publish the already-proven Mihomo selection as an intermediate state."""
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row, _save_if_revision
+
+    pending_revision = int(token.get("pending_revision") or -1)
+    with xray_writer_guard(timeout_seconds=30.0), db_session() as connection:
+        if not _fixed_apply_token_matches(
+            server_id=server_id, fixed_until=fixed_until, token=token,
+        ):
+            return None
+        row = connection.execute(
+            "SELECT applied_fixed_server_id, apply_state FROM routing_global_state WHERE id=1",
+        ).fetchone()
+        if row is None:
+            return None
+        current_revision = read_selection_revision(connection)
+        if row["applied_fixed_server_id"] == server_id and row["apply_state"] == "clean":
+            next_revision = current_revision
+        else:
+            changed = connection.execute(
+                """UPDATE routing_global_state SET applied_fixed_server_id=?, apply_state='clean',
+                          error_code=NULL, error_message=NULL, updated_at=CURRENT_TIMESTAMP
+                   WHERE id=1 AND server_mode='fixed' AND desired_fixed_server_id=?
+                     AND fixed_server_until=? AND apply_state IN ('pending','applying','clean')""",
+                (server_id, server_id, fixed_until),
+            )
+            if changed.rowcount != 1:
+                return None
+            next_revision = advance_selection_revision(
+                connection, expected_revision=current_revision,
+            )
+            if next_revision is None:
+                connection.rollback()
+                return None
+        pending = _load_row(connection)
+        workflow = pending.get("workflow") if isinstance(pending, dict) else None
+        if (
+            not isinstance(pending, dict) or pending.get("pending") is not True
+            or pending.get("revision") != pending_revision
+            or not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server"
+        ):
+            connection.rollback()
+            return None
+        workflow.update({"phase": "mihomo_verified", "selection_revision": next_revision})
+        pending["workflow"] = workflow
+        if not _save_if_revision(connection, pending, pending_revision):
+            connection.rollback()
+            return None
+    current_routing = get_routing_global_state(expire_ttl=False)
+    if current_routing is None:
+        return None
+    from fwrouter_api.services.mihomo_config_paths import _resolved_base_config_path
+    from fwrouter_api.services.mihomo_reconcile import _file_hash, current_mihomo_input_fingerprint
+    current_input = current_mihomo_input_fingerprint(current_routing)
+    if not isinstance(current_input, dict) or not isinstance(current_input.get("hash"), str):
+        return None
+    with db_session() as connection:
+        core = connection.execute(
+            "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+        ).fetchone()
+    if core is None:
+        return None
+    token.update({
+        "selection_revision": next_revision,
+        "core_snapshot": tuple(str(core[key]) for key in ("desired_state", "lifecycle_mode", "apply_state")),
+        "input_hash": str(current_input["hash"]),
+        "active_config_hash": _file_hash(_resolved_base_config_path()),
+    })
+    return {"routing": current_routing, "selection_revision": next_revision}
+
+
 @xray_writer_guarded
 def set_global_fixed_server(
     server_id: str,
     *,
     requested_by: str = "admin",
     job_id: str | None = None,
+    management_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist admin global fixed server desired state.
 
@@ -338,6 +851,14 @@ def set_global_fixed_server(
         }
 
     with db_session() as connection:
+        core_intent = _enabled_managed_core_intent(connection)
+        if core_intent is None:
+            return {
+                "ok": False,
+                "error_code": "CORE_NOT_ENABLED_MANAGED",
+                "error_message": "Core must be enabled and managed before fixed routing can begin.",
+                "server": validation["server"],
+            }
         previous = connection.execute(
             "SELECT server_mode, desired_fixed_server_id FROM routing_global_state WHERE id = 1"
         ).fetchone()
@@ -374,6 +895,32 @@ def set_global_fixed_server(
         selection_revision = advance_selection_revision(connection, expected_revision=current_revision)
         if selection_revision is None:
             raise RuntimeError("Fixed-server intent changed while its selection fence was being reserved.")
+        from fwrouter_api.services.xray_vpn_auto_pending import mark_xray_vpn_auto_pending
+        pending = mark_xray_vpn_auto_pending(
+            connection,
+            trigger="global_fixed_server",
+            immediate=True,
+            workflow={
+                "kind": "global_fixed_server",
+                "phase": "intent",
+                "owner_job_id": job_id,
+                "requested_by": requested_by,
+                "management_context": {
+                    key: str(value)[:160]
+                    for key, value in (management_context or {}).items()
+                    if key in {"source_type", "client_name", "channel", "actor", "action", "request_id"}
+                    and value is not None
+                },
+                "server_id": server_id,
+                "fixed_until": connection.execute(
+                    "SELECT fixed_server_until FROM routing_global_state WHERE id=1",
+                ).fetchone()["fixed_server_until"],
+                "selection_revision": selection_revision,
+                "core_revision": core_intent["revision"],
+                "core_snapshot": list(core_intent["snapshot"]),
+            },
+            supersede_fixed_workflow=True,
+        )
         if previous_mode != "fixed" or previous_server_id != server_id:
             from fwrouter_api.services.event_contract import current_event_context
             from fwrouter_api.services.events import create_event_context, write_audit_event
@@ -411,6 +958,7 @@ def set_global_fixed_server(
         "requested_by": requested_by,
         "routing": get_routing_global_state(expire_ttl=False),
         "selection_revision": selection_revision,
+        "pending_revision": int(pending["revision"]),
         "server": validation["server"],
     }
 
@@ -451,6 +999,13 @@ def clear_global_fixed_server(
         selection_revision = advance_selection_revision(connection, expected_revision=current_revision)
         if selection_revision is None:
             raise RuntimeError("Global auto intent changed while its selection fence was being reserved.")
+        from fwrouter_api.services.xray_vpn_auto_pending import mark_xray_vpn_auto_pending
+        mark_xray_vpn_auto_pending(
+            connection,
+            trigger="global_fixed_server_cleared",
+            immediate=True,
+            supersede_fixed_workflow=True,
+        )
         if previous_mode == "fixed" or previous_server_id:
             from fwrouter_api.services.event_contract import current_event_context
             from fwrouter_api.services.events import create_event_context, write_audit_event
@@ -565,6 +1120,7 @@ def apply_global_fixed_server(
     job_id: str | None = None,
     timeout_ms: int = 10000,
     post_check: bool = True,
+    _resume_workflow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Pre-check, persist and apply admin global fixed server.
 
@@ -572,8 +1128,8 @@ def apply_global_fixed_server(
     limited by vpn_auto/global_list. Runtime apply switches Mihomo vpn-global,
     not vpn-auto.
 
-    Apply failure rolls back global routing state. Post-check failure does not
-    roll back the successful selector switch.
+    Partial effects remain under the durable pending workflow for owned retry;
+    success is published only after fresh Core, Mihomo, and Xray readback.
     """
 
     from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
@@ -582,6 +1138,10 @@ def apply_global_fixed_server(
         build_management_attribution,
     )
     from fwrouter_api.services.server_ping import check_server_delay
+
+    if management_context is None and isinstance(_resume_workflow, dict):
+        saved_context = _resume_workflow.get("management_context")
+        management_context = saved_context if isinstance(saved_context, dict) else None
 
     attribution = build_management_attribution(
         requested_by=requested_by,
@@ -637,12 +1197,39 @@ def apply_global_fixed_server(
     with xray_writer_guard(timeout_seconds=30.0):
         previous_state = get_routing_global_state(expire_ttl=False) or previous_state
         active_before = DEFAULT_MIHOMO_ADAPTER.get_active_server_id()
-        desired = set_global_fixed_server(server_id, requested_by=requested_by, job_id=job_id)
-        token = (
-            _capture_fixed_apply_context(desired["routing"])
-            if desired.get("ok") and isinstance(desired.get("routing"), dict)
-            else None
-        )
+        if _resume_workflow is None:
+            desired = set_global_fixed_server(
+                server_id, requested_by=requested_by, job_id=job_id,
+                management_context=management_context,
+            )
+            token = (
+                _capture_fixed_apply_context(desired["routing"])
+                if desired.get("ok") and isinstance(desired.get("routing"), dict)
+                else None
+            )
+        else:
+            desired = {
+                "ok": True,
+                "routing": previous_state,
+                "selection_revision": _resume_workflow.get("selection_revision"),
+                "pending_revision": _resume_workflow.get("pending_revision"),
+            }
+            current_workflow = _fixed_workflow_current(int(_resume_workflow.get("pending_revision") or -1))
+            token = _capture_fixed_apply_context(previous_state)
+            if (
+                current_workflow is None
+                or current_workflow.get("server_id") != server_id
+                or current_workflow.get("fixed_until") != previous_state.get("fixed_server_until")
+                or current_workflow.get("selection_revision") != desired["selection_revision"]
+                or token is None
+                or token.get("selection_revision") != desired["selection_revision"]
+                or token.get("pending_revision") != current_workflow.get("pending_revision")
+                or token.get("core_revision") != current_workflow.get("core_revision")
+                or tuple(token.get("core_snapshot") or ()) != tuple(current_workflow.get("core_snapshot") or ())
+            ):
+                desired["ok"] = False
+                desired["error_code"] = "GLOBAL_FIXED_SERVER_STALE"
+                desired["error_message"] = "Persisted fixed workflow fences no longer match current intent."
 
     if not desired["ok"]:
         return {
@@ -674,6 +1261,20 @@ def apply_global_fixed_server(
             "post_check_failed_no_rollback": False,
             "error_code": "GLOBAL_FIXED_SERVER_FENCE_UNAVAILABLE",
             "error_message": "Fixed routing intent could not be bound to the current runtime context.",
+        }
+
+    pending_revision = int(token.get("pending_revision") or 0)
+    workflow = _fixed_workflow_current(pending_revision)
+    if workflow is None or workflow.get("server_id") != server_id:
+        return {
+            "ok": False,
+            "requested_by": requested_by,
+            "server_id": server_id,
+            "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "rolled_back": False,
+            "error_code": "GLOBAL_FIXED_SERVER_WORKFLOW_STALE",
+            "error_message": "Durable fixed workflow marker is missing or superseded.",
         }
 
     materialized = _materialize_fixed_server_generation(
@@ -777,25 +1378,6 @@ def apply_global_fixed_server(
         timeout_ms=timeout_ms,
     )
     if not pre_check.get("ok"):
-        with xray_writer_guard(timeout_seconds=30.0):
-            if _fixed_apply_token_matches(
-                server_id=server_id,
-                fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
-                token=token,
-            ):
-                with db_session() as connection:
-                    connection.execute(
-                        """UPDATE routing_global_state SET apply_state='failed', error_code=?,
-                                  error_message=?, updated_at=CURRENT_TIMESTAMP
-                           WHERE id=1 AND server_mode='fixed' AND desired_fixed_server_id=?
-                             AND fixed_server_until=? AND apply_state='pending'""",
-                        (
-                            "GLOBAL_FIXED_SERVER_PRE_CHECK_FAILED",
-                            pre_check.get("error_message") or "Global fixed server pre-check failed.",
-                            server_id,
-                            desired["routing"].get("fixed_server_until"),
-                        ),
-                    )
         return {
             "ok": False, "requested_by": requested_by,
             "management_attribution": attribution, "server_id": server_id,
@@ -854,32 +1436,6 @@ def apply_global_fixed_server(
     if not apply_result.ok or not selected_proof.get("ok"):
         failure_code = apply_result.error_code if not apply_result.ok else "GLOBAL_FIXED_SERVER_NATIVE_PROOF_FAILED"
         failure_message = apply_result.error_message or apply_result.message if not apply_result.ok else "Fixed target native selection was not verified."
-        rollback = None
-        with xray_writer_guard(timeout_seconds=30.0):
-            if _fixed_apply_token_matches(
-                server_id=server_id,
-                fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
-                token=token,
-            ):
-                # Restore prior durable intent only when the adapter confirms
-                # that the failed native request left the active selector as it
-                # was. A partial or uncertain effect remains explicitly failed.
-                if not apply_result.ok and DEFAULT_MIHOMO_ADAPTER.get_active_server_id() == active_before:
-                    rollback = _restore_global_routing_state(
-                        previous_state,
-                        expected_revision=int(token["selection_revision"]),
-                        expected_server_id=server_id,
-                        expected_fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
-                    )
-                if rollback is None or not rollback.get("ok"):
-                    with db_session() as connection:
-                        connection.execute(
-                            """UPDATE routing_global_state SET apply_state='failed', error_code=?,
-                                      error_message=?, updated_at=CURRENT_TIMESTAMP
-                               WHERE id=1 AND server_mode='fixed' AND desired_fixed_server_id=?
-                                 AND fixed_server_until=? AND apply_state='pending'""",
-                            (failure_code, failure_message, server_id, desired["routing"].get("fixed_server_until")),
-                        )
         return {
             "ok": False, "requested_by": requested_by,
             "management_attribution": attribution, "server_id": server_id,
@@ -890,9 +1446,33 @@ def apply_global_fixed_server(
             "server": validation["server"], "pre_check": pre_check,
             "apply_result": apply_result.to_dict(),
             "fixed_materialization_proof": selected_proof,
-            "post_check": None, "rolled_back": bool(rollback and rollback.get("ok")),
+            "post_check": None, "rolled_back": False,
             "post_check_failed_no_rollback": False,
             "error_code": failure_code, "error_message": failure_message,
+        }
+
+    intermediate = _commit_fixed_mihomo_stage(
+        server_id=server_id,
+        fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+        token=token,
+    )
+    if intermediate is None:
+        return {
+            "ok": False,
+            "requested_by": requested_by,
+            "server_id": server_id,
+            "active_before": active_before,
+            "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
+            "routing_before": previous_state,
+            "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"],
+            "pre_check": pre_check,
+            "apply_result": apply_result.to_dict(),
+            "post_check": None,
+            "rolled_back": False,
+            "post_check_failed_no_rollback": False,
+            "error_code": "GLOBAL_FIXED_SERVER_STALE",
+            "error_message": "Verified Mihomo selection could not publish its fenced intermediate state.",
         }
 
     post_check_result = None
@@ -907,6 +1487,44 @@ def apply_global_fixed_server(
         )
         post_check_failed_no_rollback = not post_check_result["ok"]
 
+    # The optional network probe is deliberately outside the shared writer
+    # lock. Revalidate both ownership and the selected native target before
+    # starting the Core owner; a newer auto intent or selector drift must not
+    # launch a nested Core apply on stale fixed routing.
+    with xray_writer_guard(timeout_seconds=30.0):
+        if not _fixed_apply_token_matches(
+            server_id=server_id,
+            fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+            token=token,
+        ):
+            return {
+                "ok": False, "requested_by": requested_by,
+                "management_attribution": attribution, "server_id": server_id,
+                "routing_before": previous_state,
+                "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": "GLOBAL_FIXED_SERVER_STALE",
+                "error_message": "Fixed workflow was superseded during the unlocked post-check.",
+            }
+        post_probe_native_proof = mihomo_runtime_fixed_target_materialized(
+            get_routing_global_state(expire_ttl=False) or {}, require_selected=True,
+        )
+        if not post_probe_native_proof.get("ok") or post_probe_native_proof.get("fixed_runtime_target") != mihomo_target:
+            return {
+                "ok": False, "requested_by": requested_by,
+                "management_attribution": attribution, "server_id": server_id,
+                "routing_before": previous_state,
+                "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "fixed_materialization_proof": post_probe_native_proof,
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": "GLOBAL_FIXED_SERVER_NATIVE_PROOF_FAILED",
+                "error_message": "Fixed native selection changed during the unlocked post-check.",
+            }
+
     apply_state = "clean"
     error_code = None
     error_message = None
@@ -920,32 +1538,198 @@ def apply_global_fixed_server(
             else "Global fixed server post-check failed."
         )
 
-    with xray_writer_guard(timeout_seconds=30.0), db_session() as connection:
-        from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
-        if not _fixed_apply_token_matches(
-            server_id=server_id,
-            fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
-            token=token,
+    workflow = _fixed_workflow_current(pending_revision) or {}
+    core_proof = _fixed_core_readback()
+    core_apply_result: dict[str, Any] | None = None
+    if core_proof.get("ok") is not True:
+        from fwrouter_api.services.apply_orchestrator_public import apply_global_mode_immediately
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+
+        with db_session() as connection:
+            core_row = connection.execute(
+                "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+            ).fetchone()
+            current_core_revision = read_core_intent_revision(connection)
+            current_core_snapshot = (
+                tuple(str(core_row[key]) for key in ("desired_state", "lifecycle_mode", "apply_state"))
+                if core_row is not None else None
+            )
+        if (
+            current_core_snapshot is None
+            or current_core_snapshot[:2] != ("enabled", "managed")
+            or current_core_revision != workflow.get("core_revision")
+            or current_core_snapshot != tuple(workflow.get("core_snapshot") or ())
         ):
             return {
-                "ok": False, "requested_by": requested_by,
-                "management_attribution": attribution, "server_id": server_id,
-                "active_before": active_before,
-                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
-                "routing_before": previous_state,
-                "routing_after": get_routing_global_state(expire_ttl=False),
+                "ok": False, "requested_by": requested_by, "server_id": server_id,
+                "routing_before": previous_state, "routing_after": get_routing_global_state(expire_ttl=False),
                 "server": validation["server"], "pre_check": pre_check,
                 "apply_result": apply_result.to_dict(), "post_check": post_check_result,
                 "rolled_back": False, "post_check_failed_no_rollback": False,
-                "error_code": "GLOBAL_FIXED_SERVER_STALE",
-                "error_message": "Fixed routing changed before completion; state remains unverified.",
+                "error_code": "CORE_INTENT_STALE",
+                "error_message": "Enabled Core intent changed during fixed routing convergence.",
+                "core_native_proof": core_proof,
             }
-        final_native_proof = mihomo_runtime_fixed_target_materialized(
-            desired["routing"], require_selected=True,
+        mode = str(get_routing_global_state(expire_ttl=False).get("desired_mode") or "").strip().lower()
+        core_apply_result = apply_global_mode_immediately(
+            mode,
+            requested_by=f"global_fixed_server:{requested_by}",
+            expected_selection_revision=int(token["selection_revision"]),
+            expected_core_revision=int(workflow["core_revision"]),
+            expected_core_snapshot=current_core_snapshot,
         )
+        if core_apply_result.get("ok") is not True:
+            return {
+                "ok": False, "requested_by": requested_by, "server_id": server_id,
+                "routing_before": previous_state, "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": str(core_apply_result.get("code") or core_apply_result.get("error_code") or "CORE_APPLY_FAILED"),
+                "error_message": str(core_apply_result.get("message") or core_apply_result.get("error_message") or "Owned Core apply failed."),
+                "core_apply": core_apply_result,
+            }
+        core_proof = _fixed_core_readback()
+        actual_core_apply_id = str(core_apply_result.get("apply_id") or "")
+        if core_proof.get("ok") is not True or (
+            actual_core_apply_id and core_proof.get("apply_id") != actual_core_apply_id
+        ):
+            return {
+                "ok": False, "requested_by": requested_by, "server_id": server_id,
+                "routing_before": previous_state, "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": "CORE_NATIVE_PROOF_UNVERIFIED",
+                "error_message": "Fresh Core proof did not match the owned fixed-workflow apply.",
+                "core_apply": core_apply_result, "core_native_proof": core_proof,
+            }
+    with db_session() as connection:
+        core_row = connection.execute(
+            "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+        ).fetchone()
+    core_snapshot_after = tuple(
+        str(core_row[key]) for key in ("desired_state", "lifecycle_mode", "apply_state")
+    ) if core_row is not None else ()
+    workflow = _update_fixed_workflow(
+        pending_revision,
+        phase="core_verified",
+        core_snapshot=list(core_snapshot_after),
+        core_apply_id=str(core_proof.get("apply_id") or ""),
+        core_manifest_hash=str(core_proof.get("manifest_hash") or ""),
+        core_enforcement_level=str(core_proof.get("enforcement_level") or ""),
+        core_live_mode=str(core_proof.get("live_global_mode") or ""),
+    )
+    if workflow is None:
+        return {
+            "ok": False, "requested_by": requested_by, "server_id": server_id,
+            "routing_before": previous_state, "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+            "rolled_back": False, "post_check_failed_no_rollback": False,
+            "error_code": "GLOBAL_FIXED_SERVER_STALE",
+            "error_message": "Durable fixed workflow changed before Core proof publication.",
+        }
+    token["core_snapshot"] = core_snapshot_after
+    if not _refresh_fixed_token_after_core_apply(
+        server_id=server_id,
+        fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+        token=token,
+    ):
+        return {
+            "ok": False, "requested_by": requested_by, "server_id": server_id,
+            "routing_before": previous_state, "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+            "rolled_back": False, "post_check_failed_no_rollback": False,
+            "error_code": "GLOBAL_FIXED_SERVER_STALE",
+            "error_message": "Owned Core completion could not be rebound to the existing fixed fences.",
+        }
+
+    xray_proof = _fixed_xray_readback()
+    xray_apply_result: dict[str, Any] | None = None
+    if xray_proof.get("state") == "drift":
+        from fwrouter_api.services.xray_subscription_service import reconcile_xray_vpn_auto_subscription
+
+        xray_apply_result = reconcile_xray_vpn_auto_subscription(
+            requested_by=f"global_fixed_server:{requested_by}",
+            _fixed_workflow_revision=pending_revision,
+            verification_callback=_fixed_xray_generation_callback(
+                server_id=server_id,
+                fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+                token=token,
+            ),
+        )
+        if (
+            xray_apply_result.get("ok") is not True
+            or str(xray_apply_result.get("status") or "") != "success"
+            or not _fixed_xray_generation_receipt_matches(
+                xray_apply_result, server_id=server_id, token=token,
+            )
+        ):
+            return {
+                "ok": False, "requested_by": requested_by, "server_id": server_id,
+                "routing_before": previous_state, "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": "XRAY_RECONCILE_FAILED",
+                "error_message": "Owned Xray reconciliation did not complete successfully.",
+                "xray_apply": xray_apply_result,
+            }
+        xray_proof = _fixed_xray_readback()
+    if xray_proof.get("state") not in {"verified", "not_applicable"}:
+        return {
+            "ok": False, "requested_by": requested_by, "server_id": server_id,
+            "routing_before": previous_state, "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+            "rolled_back": False, "post_check_failed_no_rollback": False,
+            "error_code": "XRAY_NATIVE_PROOF_UNVERIFIED",
+            "error_message": "Current Xray source, artifact, active config, or runtime could not be proven.",
+            "xray_native_proof": xray_proof,
+        }
+    workflow = _update_fixed_workflow(
+        pending_revision,
+        phase="xray_verified",
+        xray_state=str(xray_proof.get("state")),
+        xray_runtime_incarnation=xray_proof.get("runtime_incarnation"),
+        xray_config_sha256=xray_proof.get("active_config_sha256"),
+        xray_artifact_sha256=xray_proof.get("artifact_sha256"),
+    )
+    if workflow is None:
+        return {
+            "ok": False, "requested_by": requested_by, "server_id": server_id,
+            "routing_before": previous_state, "routing_after": get_routing_global_state(expire_ttl=False),
+            "server": validation["server"], "pre_check": pre_check,
+            "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+            "rolled_back": False, "post_check_failed_no_rollback": False,
+            "error_code": "GLOBAL_FIXED_SERVER_STALE",
+            "error_message": "Durable fixed workflow changed before Xray proof publication.",
+        }
+
+    # Re-read every owner proof while holding the shared writer fence, then
+    # clear the durable workflow marker in the same transaction that records
+    # completion. Intermediate route state is already truthful and clean; the
+    # pending workflow marker remains the authority until this CAS succeeds.
+    with xray_writer_guard(timeout_seconds=30.0):
+        final_native_proof = mihomo_runtime_fixed_target_materialized(
+            get_routing_global_state(expire_ttl=False) or {}, require_selected=True,
+        )
+        final_core_proof = _fixed_core_readback()
+        final_xray_proof = _fixed_xray_readback()
         if (
             not final_native_proof.get("ok")
             or final_native_proof.get("fixed_runtime_target") != mihomo_target
+            or final_core_proof.get("ok") is not True
+            or final_core_proof.get("apply_id") != workflow.get("core_apply_id")
+            or final_core_proof.get("manifest_hash") != workflow.get("core_manifest_hash")
+            or final_core_proof.get("enforcement_level") != workflow.get("core_enforcement_level")
+            or final_core_proof.get("live_global_mode") != workflow.get("core_live_mode")
+            or final_xray_proof.get("state") != workflow.get("xray_state")
+            or final_xray_proof.get("runtime_incarnation") != workflow.get("xray_runtime_incarnation")
+            or final_xray_proof.get("active_config_sha256") != workflow.get("xray_config_sha256")
+            or final_xray_proof.get("artifact_sha256") != workflow.get("xray_artifact_sha256")
             or not _fixed_apply_token_matches(
                 server_id=server_id,
                 fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
@@ -955,74 +1739,101 @@ def apply_global_fixed_server(
             return {
                 "ok": False, "requested_by": requested_by,
                 "management_attribution": attribution, "server_id": server_id,
-                "active_before": active_before,
-                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
                 "routing_before": previous_state,
                 "routing_after": get_routing_global_state(expire_ttl=False),
                 "server": validation["server"], "pre_check": pre_check,
                 "apply_result": apply_result.to_dict(), "post_check": post_check_result,
                 "fixed_materialization_proof": final_native_proof,
+                "core_native_proof": final_core_proof,
+                "xray_native_proof": final_xray_proof,
                 "rolled_back": False, "post_check_failed_no_rollback": False,
-                "error_code": "GLOBAL_FIXED_SERVER_NATIVE_PROOF_FAILED",
-                "error_message": "Fixed target no longer matches native runtime readback at completion.",
+                "error_code": "GLOBAL_FIXED_SERVER_FINAL_PROOF_FAILED",
+                "error_message": "A required native owner proof changed before fixed workflow completion.",
             }
-        changed = connection.execute(
-            """
-            UPDATE routing_global_state
-            SET
-                server_mode = 'fixed',
-                desired_fixed_server_id = ?,
-                applied_fixed_server_id = ?,
-                fixed_server_until = ?,
-                apply_state = ?,
-                error_code = ?,
-                error_message = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = 1 AND server_mode='fixed' AND desired_fixed_server_id=?
-              AND fixed_server_until=? AND apply_state='pending'
-            """,
-            (
-                server_id,
-                server_id,
-                desired["routing"].get("fixed_server_until"),
-                apply_state,
-                error_code,
-                error_message,
-                server_id,
-                desired["routing"].get("fixed_server_until"),
-            ),
+
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+        from fwrouter_api.services.xray_vpn_auto_pending import (
+            _complete_revision_in_connection, _load_row,
         )
-        if changed.rowcount != 1:
-            return {
-                "ok": False, "requested_by": requested_by,
-                "management_attribution": attribution, "server_id": server_id,
-                "active_before": active_before,
-                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
-                "routing_before": previous_state,
-                "routing_after": get_routing_global_state(expire_ttl=False),
-                "server": validation["server"], "pre_check": pre_check,
-                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
-                "rolled_back": False, "post_check_failed_no_rollback": False,
-                "error_code": "GLOBAL_FIXED_SERVER_STALE",
-                "error_message": "Fixed routing intent no longer owns completion.",
-            }
-        if advance_selection_revision(
-            connection, expected_revision=token["selection_revision"],
-        ) is None:
-            connection.rollback()
-            return {
-                "ok": False, "requested_by": requested_by,
-                "management_attribution": attribution, "server_id": server_id,
-                "active_before": active_before,
-                "active_after": DEFAULT_MIHOMO_ADAPTER.get_active_server_id(),
-                "routing_before": previous_state,
-                "routing_after": get_routing_global_state(expire_ttl=False),
-                "server": validation["server"], "pre_check": pre_check,
-                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
-                "rolled_back": False, "post_check_failed_no_rollback": False,
-                "error_code": "GLOBAL_FIXED_SERVER_STALE",
-                "error_message": "Fixed routing completion lost its selection revision fence.",
-            }
+
+        with db_session() as connection:
+            route = connection.execute(
+                """SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id,
+                          fixed_server_until, apply_state, error_code, error_message,
+                          datetime(fixed_server_until) IS NOT NULL
+                            AND datetime(fixed_server_until) > CURRENT_TIMESTAMP AS ttl_live
+                   FROM routing_global_state WHERE id=1""",
+            ).fetchone()
+            core = connection.execute(
+                "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+            ).fetchone()
+            pending = _load_row(connection)
+            saved_workflow = pending.get("workflow") if isinstance(pending, dict) else None
+            if (
+                route is None
+                or (str(route["server_mode"] or "") != "fixed")
+                or route["desired_fixed_server_id"] != server_id
+                or route["applied_fixed_server_id"] != server_id
+                or route["fixed_server_until"] != desired["routing"].get("fixed_server_until")
+                or str(route["apply_state"] or "") != "clean"
+                or route["error_code"] is not None or route["error_message"] is not None
+                or not bool(route["ttl_live"])
+                or read_selection_revision(connection) != token.get("selection_revision")
+                or read_core_intent_revision(connection) != token.get("core_revision")
+                or core is None
+                or tuple(str(core[key]) for key in ("desired_state", "lifecycle_mode", "apply_state"))
+                    != tuple(token.get("core_snapshot") or ())
+                or tuple(token.get("core_snapshot") or ())[:2] != ("enabled", "managed")
+                or not isinstance(pending, dict) or pending.get("pending") is not True
+                or pending.get("revision") != pending_revision
+                or not isinstance(saved_workflow, dict)
+                or saved_workflow.get("kind") != "global_fixed_server"
+                or saved_workflow.get("phase") != "xray_verified"
+                or saved_workflow.get("server_id") != server_id
+                or saved_workflow.get("fixed_until") != desired["routing"].get("fixed_server_until")
+                or saved_workflow.get("selection_revision") != token.get("selection_revision")
+                or saved_workflow.get("core_revision") != token.get("core_revision")
+                or saved_workflow.get("core_snapshot") != list(token.get("core_snapshot") or ())
+                or saved_workflow.get("core_apply_id") != final_core_proof.get("apply_id")
+                or saved_workflow.get("core_manifest_hash") != final_core_proof.get("manifest_hash")
+                or saved_workflow.get("xray_state") != final_xray_proof.get("state")
+                or saved_workflow.get("xray_config_sha256") != final_xray_proof.get("active_config_sha256")
+                or saved_workflow.get("xray_runtime_incarnation") != final_xray_proof.get("runtime_incarnation")
+                or saved_workflow.get("xray_artifact_sha256") != final_xray_proof.get("artifact_sha256")
+                or not _complete_revision_in_connection(connection, pending_revision)
+            ):
+                connection.rollback()
+                return {
+                    "ok": False, "requested_by": requested_by,
+                    "management_attribution": attribution, "server_id": server_id,
+                    "routing_before": previous_state,
+                    "routing_after": get_routing_global_state(expire_ttl=False),
+                    "server": validation["server"], "pre_check": pre_check,
+                    "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                    "rolled_back": False, "post_check_failed_no_rollback": False,
+                    "error_code": "GLOBAL_FIXED_SERVER_STALE",
+                    "error_message": "Fixed workflow lost an owner fence before atomic completion.",
+                }
+            changed = connection.execute(
+                """UPDATE routing_global_state SET apply_state=?, error_code=?,
+                          error_message=?, updated_at=CURRENT_TIMESTAMP
+                   WHERE id=1 AND server_mode='fixed' AND desired_fixed_server_id=?
+                     AND applied_fixed_server_id=? AND fixed_server_until=? AND apply_state='clean'""",
+                (
+                    apply_state, error_code, error_message, server_id, server_id,
+                    desired["routing"].get("fixed_server_until"),
+                ),
+            )
+            if changed.rowcount != 1:
+                connection.rollback()
+                return {
+                    "ok": False, "requested_by": requested_by, "server_id": server_id,
+                    "routing_before": previous_state,
+                    "routing_after": get_routing_global_state(expire_ttl=False),
+                    "error_code": "GLOBAL_FIXED_SERVER_STALE",
+                    "error_message": "Fixed routing state changed before its completion update.",
+                }
 
     routing_after = get_routing_global_state()
 
@@ -1061,6 +1872,20 @@ def apply_global_fixed_server(
         "post_check_failed_no_rollback": post_check_failed_no_rollback,
         "error_code": error_code,
         "error_message": error_message,
+        "unified_fixed_proof": {
+            "pending_revision": pending_revision,
+            "selection_revision": token["selection_revision"],
+            "core_apply_id": final_core_proof.get("apply_id"),
+            "core_manifest_hash": final_core_proof.get("manifest_hash"),
+            "core_enforcement_level": final_core_proof.get("enforcement_level"),
+            "mihomo_target": mihomo_target,
+            "mihomo_config_sha256": token.get("active_config_hash"),
+            "mihomo_runtime_incarnation": token.get("runtime_incarnation"),
+            "xray_state": final_xray_proof.get("state"),
+            "xray_config_sha256": final_xray_proof.get("active_config_sha256"),
+            "xray_artifact_sha256": final_xray_proof.get("artifact_sha256"),
+            "xray_runtime_incarnation": final_xray_proof.get("runtime_incarnation"),
+        },
     }
 
 
@@ -1129,6 +1954,27 @@ def run_global_fixed_server_apply_job(job: dict[str, Any]) -> dict[str, Any]:
     if not result.get("ok"):
         payload["job_status"] = "failed"
     return payload
+
+
+def resume_global_fixed_server_workflow(
+    workflow: dict[str, Any],
+    *,
+    requested_by: str = "fixed_server_recovery",
+) -> dict[str, Any]:
+    """Resume the existing fixed intent without allocating a new revision."""
+    if not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server":
+        return {"ok": False, "status": "blocked", "error_code": "GLOBAL_FIXED_WORKFLOW_INVALID"}
+    server_id = str(workflow.get("server_id") or "").strip()
+    if not server_id or type(workflow.get("pending_revision")) is not int:
+        return {"ok": False, "status": "blocked", "error_code": "GLOBAL_FIXED_WORKFLOW_INVALID"}
+    context = workflow.get("management_context")
+    return apply_global_fixed_server(
+        server_id,
+        requested_by=str(workflow.get("requested_by") or requested_by),
+        management_context=context if isinstance(context, dict) else None,
+        job_id=str(workflow.get("owner_job_id") or "global-fixed-server-recovery"),
+        _resume_workflow=workflow,
+    )
 
 
 def submit_global_fixed_server_apply_job(
@@ -1288,7 +2134,7 @@ def apply_global_auto_server(
     if not desired.get("ok") or not isinstance(desired.get("routing"), dict):
         return {"ok": False, "error_code": "GLOBAL_AUTO_INTENT_FAILED", "desired_result": desired}
 
-    token = _capture_fixed_apply_context(desired["routing"])
+    token = _capture_global_auto_apply_context(desired["routing"])
     if token is None:
         return {
             "ok": False, "requested_by": requested_by,

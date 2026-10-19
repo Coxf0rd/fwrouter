@@ -236,3 +236,29 @@ verification; packet/Core re-entry acceptance remains incomplete.
 - Gateway depends on API readiness rather than direct Xray readiness.
 - `latest` images increase nondeterministic runtime behavior risk.
 - Non-idempotent config writes can restart clients during accounting/polling.
+
+## Unified fixed completion (source work in progress)
+
+A fixed selection changes the canonical Xray target/source and handoff projection.
+A successful Mihomo selector PUT alone cannot establish Xray/Core consistency.
+The unified fixed job coordinates the existing selection, Core apply and staged
+Xray generation owners; it is not a second generation manager or a physically
+atomic update of independent runtimes.
+
+The fixed intent transaction must retain an owned workflow in the existing Xray
+pending state before native effects. Intermediate routing-selection cleanliness
+does not mean unified completion. Generic startup/generation and legacy admission
+must not bypass an unfinished fixed workflow. Newer auto intent supersedes it
+through the same revisioned persistence mechanism.
+
+Fresh source/artifact/active/native proof may avoid an unnecessary Xray apply.
+Confirmed readable binding drift is reconciled by the existing staged generation
+owner; missing or UNKNOWN proof does not authorize a speculative reload. Original
+identities and durable credential mappings/history remain protected. Core is
+never implicitly enabled. Its threaded apply owner runs without an outer writer
+guard and must enforce expected intent/selection fences before native effects and
+completion. A final fresh proof and CAS govern unified SUCCESS; partial failure
+retains pending/failed intent and existing recovery/last-good protections.
+
+This section describes the approved implementation contract, not completed
+native qualification, merge or production acceptance.

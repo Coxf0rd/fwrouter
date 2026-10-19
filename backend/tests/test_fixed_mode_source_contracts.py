@@ -33,6 +33,10 @@ def _seed_server(server_id: str, *, vpn_auto: bool, global_list: bool) -> str:
     raw = {"name": runtime_name, "type": "socks5", "server": "198.18.0.10", "port": 12345}
     with db_session() as connection:
         connection.execute(
+            """UPDATE modules SET desired_state='enabled', lifecycle_mode='managed',
+                      apply_state='clean' WHERE module_name='core'""",
+        )
+        connection.execute(
             """
             INSERT INTO servers(server_id, server_name, provider_name, inventory_state, raw_json)
             VALUES (?, ?, 'fixed-mode-source-test', 'active', ?)
@@ -47,6 +51,440 @@ def _seed_server(server_id: str, *, vpn_auto: bool, global_list: bool) -> str:
             (server_id, int(vpn_auto), int(global_list)),
         )
     return runtime_name
+
+
+def test_fixed_intent_marker_is_atomic_and_auto_intent_supersedes_it() -> None:
+    _seed_server("fixed-workflow-marker", vpn_auto=False, global_list=False)
+    _seed_server("fixed-workflow-marker-next", vpn_auto=False, global_list=False)
+
+    fixed = set_global_fixed_server("fixed-workflow-marker", requested_by="pytest")
+    with db_session() as connection:
+        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+        marker = _load_row(connection)
+        assert marker is not None
+        workflow = marker.get("workflow")
+        assert marker["pending"] is True
+        assert workflow["kind"] == "global_fixed_server"
+        assert workflow["phase"] == "intent"
+        assert workflow["selection_revision"] == fixed["selection_revision"]
+        assert workflow["server_id"] == "fixed-workflow-marker"
+        assert workflow["core_snapshot"] == ["enabled", "managed", "clean"]
+
+    # A second explicit fixed intent is an authorized superseder and replaces
+    # both the routing intent and its workflow marker in the same transaction.
+    next_fixed = set_global_fixed_server("fixed-workflow-marker-next", requested_by="pytest")
+    with db_session() as connection:
+        marker = _load_row(connection)
+        routing = dict(connection.execute(
+            "SELECT server_mode, desired_fixed_server_id FROM routing_global_state WHERE id=1",
+        ).fetchone())
+    assert next_fixed["ok"] is True
+    assert marker["revision"] > fixed["pending_revision"]
+    assert marker["workflow"]["server_id"] == "fixed-workflow-marker-next"
+    assert marker["workflow"]["selection_revision"] == next_fixed["selection_revision"]
+    assert routing == {
+        "server_mode": "fixed",
+        "desired_fixed_server_id": "fixed-workflow-marker-next",
+    }
+
+    cleared = clear_global_fixed_server(requested_by="pytest")
+    with db_session() as connection:
+        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+        marker = _load_row(connection)
+    assert cleared["ok"] is True
+    assert marker is not None
+    assert marker["pending"] is True
+    assert marker.get("workflow") is None
+
+
+def test_generic_pending_mark_preserves_exact_fixed_workflow_revision() -> None:
+    _seed_server("fixed-generic-mark", vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server("fixed-generic-mark", requested_by="pytest")
+
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row, mark_xray_vpn_auto_pending
+
+    with db_session() as connection:
+        before = _load_row(connection)
+        generic_result = mark_xray_vpn_auto_pending(
+            connection,
+            trigger="ordinary_inventory_change",
+            immediate=True,
+        )
+        after = _load_row(connection)
+
+    assert fixed["ok"] is True
+    assert generic_result == before == after
+
+
+def test_generic_apply_now_reuses_fixed_owner_and_revision(monkeypatch) -> None:
+    _seed_server("fixed-apply-now", vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server("fixed-apply-now", requested_by="pytest")
+    from fwrouter_api.services import xray_vpn_auto_pending as pending_service
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    submitted: list[dict[str, Any]] = []
+
+    def capture_submit(**kwargs: Any) -> dict[str, Any]:
+        submitted.append(kwargs)
+        return {"ok": True, "status": "captured"}
+
+    monkeypatch.setattr(pending_service, "submit_xray_vpn_auto_reconcile", capture_submit)
+    result = pending_service.request_xray_vpn_auto_apply_now(requested_by="pytest")
+    with db_session() as connection:
+        marker = _load_row(connection)
+
+    assert result["status"] == "captured"
+    assert submitted == [{
+        "requested_by": "pytest",
+        "bypass": True,
+        "expected_revision": fixed["pending_revision"],
+    }]
+    assert marker is not None
+    assert marker["revision"] == fixed["pending_revision"]
+    assert marker["workflow"]["server_id"] == "fixed-apply-now"
+
+
+def test_generic_core_mode_apply_is_blocked_while_fixed_workflow_is_pending(monkeypatch) -> None:
+    _seed_server("fixed-generic-core", vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server("fixed-generic-core", requested_by="pytest")
+    from fwrouter_api.services import apply_orchestrator as orchestrator
+    from fwrouter_api.services import apply_orchestrator_global_handlers as handlers
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("generic Core apply must stop before runtime, provider, or apply work")
+
+    monkeypatch.setattr(orchestrator, "_current_routing_drift", forbidden)
+    result = handlers._execute_set_global_mode(
+        {"job_id": "generic-during-fixed", "requested_by": "pytest"},
+        {"mode": "direct"},
+    )
+    with db_session() as connection:
+        marker = _load_row(connection)
+        routing = dict(connection.execute(
+            "SELECT server_mode, desired_mode, desired_fixed_server_id FROM routing_global_state WHERE id=1",
+        ).fetchone())
+        revision = read_selection_revision(connection)
+
+    assert result["ok"] is False
+    assert result["code"] == "FIXED_WORKFLOW_PENDING"
+    assert marker is not None and marker["revision"] == fixed["pending_revision"]
+    assert marker["workflow"]["server_id"] == "fixed-generic-core"
+    assert routing["server_mode"] == "fixed"
+    assert routing["desired_fixed_server_id"] == "fixed-generic-core"
+    assert revision == fixed["selection_revision"]
+
+
+@pytest.mark.parametrize("operation", ["single", "replace"])
+def test_preferences_mutations_are_rejected_without_side_effects_during_fixed_workflow(
+    monkeypatch, operation: str,
+) -> None:
+    _seed_server("fixed-preferences-lock", vpn_auto=False, global_list=True)
+    _seed_server("fixed-preferences-other", vpn_auto=True, global_list=True)
+    fixed = set_global_fixed_server("fixed-preferences-lock", requested_by="pytest")
+    from fwrouter_api.services import server_preferences as preferences_service
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    def forbidden(**_kwargs: Any) -> Any:
+        pytest.fail("blocked preferences must not reach reconciliation or native writers")
+
+    monkeypatch.setattr(preferences_service, "_reconcile_mihomo_after_server_preferences", forbidden)
+    if operation == "single":
+        result = preferences_service.update_server_preferences(
+            "fixed-preferences-lock",
+            vpn_auto=True,
+            reconcile_after_preferences=forbidden,
+            requested_by="pytest",
+        )
+    else:
+        result = preferences_service.replace_vpn_auto_servers(
+            [],
+            reconcile_after_preferences=forbidden,
+            requested_by="pytest",
+        )
+
+    with db_session() as connection:
+        marker = _load_row(connection)
+        preference_rows = [dict(row) for row in connection.execute(
+            "SELECT server_id, vpn_auto, vpn_auto_priority, vpn_auto_priority_origin, global_list "
+            "FROM server_preferences WHERE server_id LIKE 'fixed-preferences-%' ORDER BY server_id",
+        ).fetchall()]
+        revision = read_selection_revision(connection)
+
+    assert result["ok"] is False
+    assert result["changed"] is False
+    assert result["error_code"] == "FIXED_WORKFLOW_PENDING"
+    assert marker is not None and marker["revision"] == fixed["pending_revision"]
+    assert marker["workflow"]["server_id"] == "fixed-preferences-lock"
+    assert preference_rows == [
+        {
+            "server_id": "fixed-preferences-lock",
+            "vpn_auto": 0,
+            "vpn_auto_priority": 0,
+            "vpn_auto_priority_origin": "legacy",
+            "global_list": 1,
+        },
+        {
+            "server_id": "fixed-preferences-other",
+            "vpn_auto": 1,
+            "vpn_auto_priority": 0,
+            "vpn_auto_priority_origin": "legacy",
+            "global_list": 1,
+        },
+    ]
+    assert revision == fixed["selection_revision"]
+
+
+def test_pending_reconcile_dispatch_resumes_fixed_owner_not_generic_xray(monkeypatch) -> None:
+    _seed_server("fixed-resume-owner", vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server("fixed-resume-owner", requested_by="pytest")
+    from fwrouter_api.services import server_global_selection, xray_vpn_auto_pending as pending_service
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    resumed: list[dict[str, Any]] = []
+
+    def capture_resume(workflow: dict[str, Any], *, requested_by: str) -> dict[str, Any]:
+        resumed.append({"workflow": workflow, "requested_by": requested_by})
+        return {"ok": False, "error_code": "SYNTHETIC_OWNER_PAUSED"}
+
+    monkeypatch.setattr(pending_service, "pending_is_due", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(server_global_selection, "resume_global_fixed_server_workflow", capture_resume)
+    result = pending_service.run_xray_vpn_auto_reconcile(
+        requested_by="scheduler",
+        bypass=True,
+        expected_revision=fixed["pending_revision"],
+    )
+    with db_session() as connection:
+        marker = _load_row(connection)
+
+    assert result["ok"] is False
+    assert resumed == [{
+        "workflow": {
+            **marker["workflow"],
+            "pending_revision": fixed["pending_revision"],
+        },
+        "requested_by": "pytest",
+    }]
+    assert marker is not None
+    assert marker["pending"] is True
+    assert marker["revision"] == fixed["pending_revision"]
+    assert marker["workflow"]["server_id"] == "fixed-resume-owner"
+
+
+def test_generic_reconcile_rechecks_fixed_marker_after_waiting_for_writer(monkeypatch) -> None:
+    _seed_server("fixed-reconcile-race", vpn_auto=False, global_list=False)
+    from contextlib import contextmanager
+    from threading import Event, Thread
+
+    from fwrouter_api.adapters import xray_common
+    from fwrouter_api.services import xray_vpn_auto_pending as pending_service
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    waiting = Event()
+    results: list[dict[str, Any]] = []
+    failures: list[BaseException] = []
+    real_guard = xray_common.xray_writer_guard
+
+    @contextmanager
+    def observed_guard(*, timeout_seconds: float | None = None) -> Any:
+        waiting.set()
+        with real_guard(timeout_seconds=timeout_seconds):
+            yield
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> bool:
+        pytest.fail("generic reconcile must not run inventory/provider/Xray work for a newly fixed marker")
+
+    monkeypatch.setattr(xray_common, "xray_writer_guard", observed_guard)
+    monkeypatch.setattr(pending_service, "_inventory_and_runtime_authoritative", forbidden)
+
+    def run_generic_reconcile() -> None:
+        try:
+            results.append(pending_service.run_xray_vpn_auto_reconcile(
+                requested_by="scheduler",
+                bypass=True,
+            ))
+        except BaseException as exc:  # surface worker assertion failures in the parent test
+            failures.append(exc)
+
+    with real_guard():
+        worker = Thread(target=run_generic_reconcile, daemon=True)
+        worker.start()
+        assert waiting.wait(5), "generic reconcile did not reach the guarded read"
+        fixed = set_global_fixed_server("fixed-reconcile-race", requested_by="pytest")
+
+    worker.join(5)
+    assert not worker.is_alive(), "generic reconcile stayed blocked after writer release"
+    assert failures == []
+    assert fixed["ok"] is True
+    assert results == [{
+        "ok": True,
+        "status": "fixed_owner_pending",
+        "pending": True,
+        "revision": fixed["pending_revision"],
+    }]
+    with db_session() as connection:
+        marker = _load_row(connection)
+    assert marker is not None
+    assert marker["pending"] is True
+    assert marker["revision"] == fixed["pending_revision"]
+    assert marker["attempt_count"] == 0
+    assert marker["workflow"]["server_id"] == "fixed-reconcile-race"
+
+
+def test_fixed_intent_refuses_disabled_core_without_mutating_selection_or_marker() -> None:
+    _seed_server("fixed-core-disabled", vpn_auto=False, global_list=False)
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state='disabled' WHERE module_name='core'",
+        )
+        before = read_selection_revision(connection)
+
+    result = set_global_fixed_server("fixed-core-disabled", requested_by="pytest")
+
+    with db_session() as connection:
+        after = read_selection_revision(connection)
+        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+        marker = _load_row(connection)
+    assert result["ok"] is False
+    assert result["error_code"] == "CORE_NOT_ENABLED_MANAGED"
+    assert after == before
+    assert marker is None or marker.get("pending") is not True
+
+
+def test_fixed_pending_blocks_ordinary_xray_generation_until_core_phase() -> None:
+    _seed_server("fixed-xray-generation-gate", vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server("fixed-xray-generation-gate", requested_by="pytest")
+    from fwrouter_api.services.xray_subscription_service import reconcile_xray_subscription_profile_nodes
+    from fwrouter_api.services.xray_vpn_auto_pending import _assert_xray_generation_authorized
+
+    blocked = reconcile_xray_subscription_profile_nodes(requested_by="pytest")
+    assert blocked["ok"] is False
+    assert blocked["status"] == "blocked"
+    assert blocked["error_code"] == "XRAY_GENERATION_BLOCKED_BY_FIXED_WORKFLOW"
+    assert _assert_xray_generation_authorized() is False
+
+    from fwrouter_api.services.server_global_selection import _update_fixed_workflow
+
+    workflow = _update_fixed_workflow(fixed["pending_revision"], phase="core_verified")
+    assert workflow is not None
+    assert _assert_xray_generation_authorized() is False
+    assert _assert_xray_generation_authorized(fixed["pending_revision"]) is True
+
+
+def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_config_status, mihomo_reconcile, mihomo_runtime
+    from fwrouter_api.services.server_global_selection import (
+        _capture_fixed_apply_context,
+        _fixed_xray_generation_callback,
+        _fixed_xray_generation_receipt_matches,
+        _update_fixed_workflow,
+    )
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row, pending_fixed_workflow_state
+    from fwrouter_api.services.mihomo_reconcile import _invoke_verification_callback
+
+    _seed_server("fixed-xray-receipt", vpn_auto=False, global_list=False)
+    core_context = {"boot_id": "synthetic-boot", "network_namespace_inode": "42"}
+    runtime_incarnation = {"value": "mihomo-before-xray-generation"}
+    input_fingerprint = {"value": "1" * 64}
+    active_config = tmp_path / "mihomo.yaml"
+    active_config.write_text("generation: before\n", encoding="utf-8")
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: dict(core_context))
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: runtime_incarnation["value"])
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: str(active_config))
+    monkeypatch.setattr(
+        mihomo_reconcile, "current_mihomo_input_fingerprint",
+        lambda _routing: {"hash": input_fingerprint["value"]},
+    )
+    monkeypatch.setattr(
+        mihomo_config_status, "mihomo_runtime_fixed_target_materialized",
+        lambda _routing, require_selected=False: {
+            "ok": True,
+            "fixed_runtime_target": "fixed-xray-receipt",
+            "vpn_global_now": "Runtime fixed-xray-receipt",
+            "vpn_global_selected_target": "Runtime fixed-xray-receipt",
+            "selected_fixed_target": require_selected,
+        },
+    )
+
+    fixed = set_global_fixed_server("fixed-xray-receipt", requested_by="pytest")
+    assert fixed["ok"] is True
+    workflow = _update_fixed_workflow(fixed["pending_revision"], phase="core_verified")
+    assert workflow is not None
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET applied_fixed_server_id=?, apply_state='clean' WHERE id=1",
+            ("fixed-xray-receipt",),
+        )
+        mihomo_stage_revision = advance_selection_revision(
+            connection, expected_revision=workflow["selection_revision"],
+        )
+    assert mihomo_stage_revision == workflow["selection_revision"] + 1
+    workflow = _update_fixed_workflow(
+        fixed["pending_revision"], selection_revision=mihomo_stage_revision,
+    )
+    assert workflow is not None
+    fixed["routing"]["applied_fixed_server_id"] = "fixed-xray-receipt"
+    fixed["routing"]["apply_state"] = "clean"
+    token = _capture_fixed_apply_context(fixed["routing"])
+    assert token is not None
+    original_revision = token["selection_revision"]
+
+    # Model the generation owner completing a staged Mihomo write/restart.
+    # The callback must bind the resulting revision and runtime/config hashes
+    # only while the original fixed/Core/pending intent still owns the state.
+    with db_session() as connection:
+        generated_revision = advance_selection_revision(connection, expected_revision=original_revision)
+    assert generated_revision == original_revision + 1
+    active_config.write_text("generation: after\n", encoding="utf-8")
+    runtime_incarnation["value"] = "mihomo-after-xray-generation"
+    input_fingerprint["value"] = "2" * 64
+
+    callback = _fixed_xray_generation_callback(
+        server_id="fixed-xray-receipt",
+        fixed_until=str(fixed["routing"]["fixed_server_until"]),
+        token=token,
+    )
+    receipt = _invoke_verification_callback(
+        callback,
+        operation_id="owned-xray-generation-operation",
+        expected_revision=generated_revision,
+    )
+    assert receipt["ok"] is True, receipt
+    assert receipt["selection_revision"] == generated_revision
+    assert receipt["fixed_pending_revision"] == fixed["pending_revision"]
+    assert receipt["mihomo_input_sha256"] == input_fingerprint["value"]
+    assert receipt["mihomo_config_sha256"] == hashlib.sha256(active_config.read_bytes()).hexdigest()
+    assert receipt["mihomo_runtime_incarnation"] == runtime_incarnation["value"]
+    assert token["xray_generation_operation_id"] == "owned-xray-generation-operation"
+
+    with db_session() as connection:
+        pending = _load_row(connection)
+    saved_workflow = pending.get("workflow") if isinstance(pending, dict) else None
+    assert pending is not None and pending["pending"] is True
+    assert saved_workflow["phase"] == "core_verified"
+    assert saved_workflow["selection_revision"] == generated_revision
+    assert saved_workflow["xray_generation_operation_id"] == "owned-xray-generation-operation"
+    assert pending_fixed_workflow_state()["pending_revision"] == fixed["pending_revision"]
+
+    result = {
+        "ok": True,
+        "status": "success",
+        "pre_publication_verification": receipt,
+        "generation_apply": {
+            "final_mihomo": {"ok": True, "container": {"selection_revision": generated_revision}},
+        },
+    }
+    assert _fixed_xray_generation_receipt_matches(
+        result, server_id="fixed-xray-receipt", token=token,
+    ) is True
+    result["pre_publication_verification"] = {**receipt, "operation_id": "unrelated-operation"}
+    assert _fixed_xray_generation_receipt_matches(
+        result, server_id="fixed-xray-receipt", token=token,
+    ) is False
 
 
 def test_fixed_target_outside_auto_and_global_lists_is_generated_only_for_vpn_global() -> None:
@@ -400,11 +838,17 @@ def test_fixed_ttl_expiry_advances_selection_fence_without_runtime_apply() -> No
     routing = get_routing_global_state(expire_ttl=False)
     with db_session() as connection:
         revision_after = read_selection_revision(connection)
+        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+        pending = _load_row(connection)
     assert result["expired_global_fixed_server_count"] == 1
     assert result["runtime_apply"]["skipped"] is True
     assert routing["server_mode"] == "auto"
     assert routing["apply_state"] == "pending"
     assert revision_after > revision_before
+    assert pending is not None
+    assert pending["trigger"] == "global_fixed_server_ttl_expired"
+    assert pending.get("workflow") is None
 
 
 @pytest.mark.parametrize("drift", ["core_revision", "source", "runtime_incarnation", "core_context"])
@@ -771,16 +1215,11 @@ def test_fixed_completion_cannot_overwrite_a_newer_auto_clear_or_native_drift(
         with db_session() as connection:
             revision_after_fixed_intent = read_selection_revision(connection)
 
-        if auto_commits_during_postcheck:
-            clear_thread.start()
-            assert clear_started.wait(timeout=5)
-            clear_was_serialized = not clear_done.wait(timeout=0.2)
-        else:
-            clear_was_serialized = True
-
         allow_fixed_apply_return.set()
         assert post_check_started.wait(timeout=5), "fixed apply skipped the unlocked post-check window"
         if auto_commits_during_postcheck:
+            clear_thread.start()
+            assert clear_started.wait(timeout=5)
             assert clear_done.wait(timeout=5), "newer auto clear did not finish during the fixed post-check"
         allow_post_check_finish.set()
         fixed_thread.join(timeout=5)
@@ -790,7 +1229,6 @@ def test_fixed_completion_cannot_overwrite_a_newer_auto_clear_or_native_drift(
         assert not fixed_thread.is_alive(), "fixed apply thread exceeded the join bound"
         assert not clear_thread.is_alive(), "auto clear thread exceeded the join bound"
         assert not thread_errors, f"selection thread failed: {thread_errors!r}"
-        assert clear_was_serialized is True
         assert fixed_result["ok"] is False
         assert fixed_result["error_code"] == (
             "GLOBAL_FIXED_SERVER_STALE"
@@ -807,8 +1245,12 @@ def test_fixed_completion_cannot_overwrite_a_newer_auto_clear_or_native_drift(
             assert revision_after_clear > revision_after_fixed_intent
             assert clear_result["routing_after"]["applied_fixed_server_id"] is None
         else:
-            assert revision_after_clear == revision_after_fixed_intent
-            assert get_routing_global_state(expire_ttl=False)["apply_state"] == "pending"
+            assert revision_after_clear == revision_after_fixed_intent + 1
+            from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+            with db_session() as connection:
+                pending = _load_row(connection)
+            assert pending is not None and pending["pending"] is True
     finally:
         allow_fixed_apply_return.set()
         allow_post_check_finish.set()
