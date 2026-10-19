@@ -48,6 +48,19 @@ Mandatory VPN selectors are owned by FWRouter and must terminate at `REJECT` whe
 
 Native proof must bind the generated receipt/configuration identity to the runtime incarnation and loaded Mihomo readback; a matching hash or selector readback alone does not prove per-flow rule/sub-rule packet behavior. Packet captures, counters, endpoint observations, and exact native loaded state remain required. Current implementation is a **SOURCE DRAFT**; tests and packet acceptance are **NOT RUN**; production is unchanged; Phase D remains **BLOCKED**. See the canonical [roadmap](../ROADMAP.md#2026-10-11--approved-vpn-udp-contract-source-only).
 
+## Runtime selection identity proof
+
+For an auto-selected server, Core stores the logical server ID while Mihomo
+reports the generated runtime target name. Runtime satisfaction resolves that ID
+through the existing active runtime inventory, requires one unambiguous logical
+row and runtime alias, and verifies exact expected `vpn-auto` membership before
+comparing the native selection. Reserved non-server targets use the adapter's
+case-sensitive `NON_SERVER_PROXY_TARGETS` contract. Missing, ambiguous or stale
+targets do not satisfy the selected-server proof. This comparison does not admit
+inventory, publish generation markers, or trigger native mutation. The existing
+empty-pool terminal-REJECT handling is unchanged; fixed-mode runtime satisfaction
+is not qualified by the auto-mode check.
+
 ## Server Selection
 
 - Runtime `proxies` include active servers with `global_list=1` or `vpn_auto=1`.

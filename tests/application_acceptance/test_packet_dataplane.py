@@ -838,9 +838,31 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
                 "proxy-groups": direct_mihomo_config.get("proxy-groups"),
             }, sort_keys=True, separators=(",", ":"),
         ).encode()).hexdigest()
+        packet_selection_before_selective_mode = packet_selection_snapshot(api)
+        assert packet_selection_before_selective_mode == packet_selection_baseline, {
+            "initial_selector_state_changed_before_selective_mode": True,
+            "initial": packet_selection_baseline,
+            "before_selective_mode": packet_selection_before_selective_mode,
+        }
         selective_mode_job = post_apply(
             {"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True},
         )
+        packet_selective_selection_baseline = packet_selection_snapshot(api)
+        selection_fields = set(packet_selection_before_selective_mode) - {"selection_revision"}
+        assert (packet_selective_selection_baseline["selection_revision"]
+                == packet_selection_before_selective_mode["selection_revision"] + 1
+                and all(packet_selective_selection_baseline[key]
+                        == packet_selection_before_selective_mode[key] for key in selection_fields)), {
+            "selector_identity_or_provenance_changed_during_selective_apply": {
+                key: (packet_selection_before_selective_mode.get(key),
+                      packet_selective_selection_baseline.get(key))
+                for key in sorted(selection_fields)
+                if packet_selective_selection_baseline.get(key) != packet_selection_before_selective_mode.get(key)
+            },
+            "selection_revision_before": packet_selection_before_selective_mode["selection_revision"],
+            "selection_revision_after": packet_selective_selection_baseline["selection_revision"],
+            "expected_revision_increment": 1,
+        }
         assert protected_direct_rows() == protected_direct_baseline
         native_after_selective_apply = native_fingerprint()
         assert all(native_after_selective_apply.get(key) == native_before_selective_mode.get(key)
@@ -972,7 +994,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             core_apply_id,
             previous_applied_mode="selective",
         ) == rules_source_baseline
-        assert packet_selection_snapshot(api) == packet_selection_baseline
+        assert packet_selection_snapshot(api) == packet_selective_selection_baseline
         assert protected_direct_rows() == protected_direct_baseline
         assert native_fingerprint() == native_after_selective_apply, {
             "before_core_enable_apply": native_after_selective_apply,
@@ -1060,7 +1082,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             core_apply_id,
             previous_applied_mode="selective",
         ) == rules_source_baseline
-        assert packet_selection_snapshot(restarted_api) == packet_selection_baseline
+        assert packet_selection_snapshot(restarted_api) == packet_selective_selection_baseline
         assert native_fingerprint() == before_startup_native
         assert durable_fingerprint(core_apply_id) == before_startup_durable
         assert protected_direct_rows() == protected_direct_baseline
@@ -1123,7 +1145,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             core_apply_id,
             previous_applied_mode="selective",
         ) == rules_source_baseline
-        assert packet_selection_snapshot(restarted_api) == packet_selection_baseline
+        assert packet_selection_snapshot(restarted_api) == packet_selective_selection_baseline
         assert native_fingerprint() == stable_native
         assert durable_fingerprint(core_apply_id) == stable_durable
         assert subject_bootstrap_fingerprint() == stable_subjects
