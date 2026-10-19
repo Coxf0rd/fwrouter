@@ -20,6 +20,7 @@ import sys
 import socket
 import subprocess
 import time
+from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlsplit
 from unittest import mock
 import io
@@ -72,6 +73,7 @@ WORKER_PATH = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 APPLICATION_ACCEPTANCE_CONFTEST = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
 APPLICATION_ACCEPTANCE_WORKER = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
 BROWSER_ACCEPTANCE_SOURCE = Path(__file__).parents[1] / "application_acceptance" / "test_browser_locale.py"
+PACKET_ACCEPTANCE_SOURCE = Path(__file__).parents[1] / "application_acceptance" / "test_packet_dataplane.py"
 
 
 def _extract_browser_resource_helpers():
@@ -210,7 +212,283 @@ def _extract_bounded_generation_checkpoint_facts():
     return namespace["_bounded_generation_checkpoint_facts"]
 
 
+def _extract_xray_bindings_startup_comparison():
+    """Load the real pure binding-payload comparator without importing packet fixtures."""
+    tree = ast.parse(PACKET_ACCEPTANCE_SOURCE.read_text(encoding="utf-8"))
+    wanted = {
+        "_xray_bindings_startup_projection", "_assert_xray_bindings_startup_equivalent",
+        "_subscription_profile_snapshot_projection", "_assert_subscription_profile_startup_equivalent",
+        "_assert_subject_overrides_startup_equivalent",
+        "_assert_subject_inventory_startup_equivalent",
+    }
+    functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
+    assert {function.name for function in functions} == wanted
+    namespace = {"Any": Any, "datetime": datetime, "timedelta": timedelta,
+                 "timezone": __import__("datetime").timezone, "re": re, "json": json}
+    module = ast.Module(body=functions, type_ignores=[])
+    exec(compile(module, str(PACKET_ACCEPTANCE_SOURCE), "exec"), namespace)
+    return namespace
+
+
 class AcceptanceContractTests(unittest.TestCase):
+    def test_startup_subject_inventory_allows_only_monotonic_xray_observation_timestamps(self):
+        compare = _extract_xray_bindings_startup_comparison()[
+            "_assert_subject_inventory_startup_equivalent"
+        ]
+        before = [{
+            "subject_id": "xray:client-a",
+            "subject_type": "explicit_external_client",
+            "subject_role": "vless_client",
+            "implementation_kind": "xray",
+            "stable_key": "xray:client-a",
+            "display_name": "Client A",
+            "alias": "retained alias",
+            "desired_mode": "enabled",
+            "applied_mode": "enabled",
+            "apply_state": "clean",
+            "runtime_state": "active",
+            "is_active": 1,
+            "is_deleted": 0,
+            "last_seen_at": "2026-10-19 09:00:00",
+            "metadata_json": json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T10:00:00+00:00",
+                "future_metadata": {"owner": "preserved"},
+            }, sort_keys=True),
+            "created_at": "2026-10-19 08:00:00",
+            "updated_at": "2026-10-19 10:00:00",
+        }]
+        after = copy.deepcopy(before)
+        after[0]["metadata_json"] = json.dumps({
+            "source": "xray_adapter", "provider": "xray",
+            "collected_at": "2026-10-19T10:00:01+00:00",
+            "future_metadata": {"owner": "preserved"},
+        }, sort_keys=True)
+        after[0]["updated_at"] = "2026-10-19 10:00:01"
+        builtin_rows = [
+            {
+                "subject_id": "fwrouter:global",
+                "subject_type": "fwrouter",
+                "implementation_kind": "fwrouter",
+                "desired_mode": "direct",
+                "metadata_json": json.dumps({"source": "system_subjects"}),
+                "updated_at": "2026-10-19 10:00:00",
+            },
+            {
+                "subject_id": "host:ssh",
+                "subject_type": "host",
+                "implementation_kind": "host",
+                "desired_mode": "direct",
+                "metadata_json": json.dumps({"source": "system_subjects"}),
+                "updated_at": "2026-10-19 10:00:00",
+            },
+        ]
+        first_after = [*after, *builtin_rows]
+        compare(before, first_after, allowed_added_ids={"fwrouter:global", "host:ssh"})
+        compare(first_after, first_after)
+        with self.assertRaises(AssertionError):
+            compare(before, first_after)
+        with self.assertRaises(AssertionError):
+            compare(before, first_after, allowed_added_ids={"arbitrary:subject"})
+        with self.assertRaises(AssertionError):
+            compare(first_after, after)
+
+        invalid_updates = {
+            "identity": lambda row: row.update(subject_id="xray:other"),
+            "intent": lambda row: row.update(desired_mode="direct"),
+            "runtime": lambda row: row.update(runtime_state="inactive"),
+            "alias": lambda row: row.update(alias="changed alias"),
+            "provider_metadata": lambda row: row["metadata_json"],
+            "unknown_metadata": lambda row: row.update(metadata_json=json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T10:00:01+00:00",
+                "future_metadata": {"owner": "changed"},
+            }, sort_keys=True)),
+            "nested_timestamp_like_data": lambda row: row.update(metadata_json=json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T10:00:01+00:00",
+                "future_metadata": {"collected_at": "semantic-data-changed"},
+            }, sort_keys=True)),
+        }
+        for name, update in invalid_updates.items():
+            with self.subTest(name=name):
+                changed = copy.deepcopy(after)
+                if name == "provider_metadata":
+                    changed[0]["metadata_json"] = json.dumps({
+                        "source": "xray_adapter", "provider": "other",
+                        "collected_at": "2026-10-19T10:00:01+00:00",
+                        "future_metadata": {"owner": "preserved"},
+                    }, sort_keys=True)
+                else:
+                    update(changed[0])
+                with self.assertRaises(AssertionError):
+                    compare(before, changed)
+
+        invalid_timestamps = (
+            {**after[0], "updated_at": "2026-10-19 09:59:59"},
+            {**after[0], "updated_at": "2026-10-19T10:00:01+00:00"},
+            {**after[0], "metadata_json": json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T11:00:01+01:00",
+                "future_metadata": {"owner": "preserved"},
+            })},
+            {**after[0], "metadata_json": json.dumps({
+                "source": "xray_adapter", "provider": "xray",
+                "collected_at": "2026-10-19T09:59:59+00:00",
+                "future_metadata": {"owner": "preserved"},
+            })},
+        )
+        for changed_row in invalid_timestamps:
+            with self.subTest(timestamp=changed_row):
+                with self.assertRaises(AssertionError):
+                    compare(before, [changed_row])
+
+        changed_builtin = copy.deepcopy(first_after)
+        changed_builtin[1]["desired_mode"] = "vpn"
+        with self.assertRaises(AssertionError):
+            compare(first_after, changed_builtin)
+
+    def test_startup_xray_binding_comparison_allows_only_monotonic_utc_metadata(self):
+        compare = _extract_xray_bindings_startup_comparison()["_assert_xray_bindings_startup_equivalent"]
+        before = {
+            "bindings_version": 1,
+            "generated_at": "2026-10-19T10:00:01.000000+00:00",
+            "bindings_count": 1,
+            "applied_count": 1,
+            "bindings": [{
+                "subject_id": "subject-a",
+                "client_id": "client-a",
+                "selected_server_id": "vpn-global",
+                "status": "applied",
+                "applied_at": "2026-10-19T10:00:00.999000+00:00",
+                "future_binding_field": {"generated_at": "kept-as-semantic-data"},
+            }],
+            "handoff_count": 1,
+            "handoff_listeners": [{"listener_name": "owned-listener", "port": 5301}],
+            "client_modes_count": 1,
+            "client_modes": [{"client_id": "client-a", "effective_mode": "vpn"}],
+            "future_root_field": {"generation": 1},
+        }
+        after = copy.deepcopy(before)
+        after["generated_at"] = "2026-10-19T10:00:02.000000+00:00"
+        after["bindings"][0]["applied_at"] = "2026-10-19T10:00:01.999000+00:00"
+        compare(before, after)
+
+        invalid_updates = {
+            "binding_identity": lambda value: value["bindings"][0].update(subject_id="subject-b"),
+            "binding_status": lambda value: (
+                value["bindings"][0].update(status="pending"), value.update(applied_count=0),
+            ),
+            "handoff": lambda value: value["handoff_listeners"][0].update(port=5302),
+            "counter": lambda value: value.update(handoff_count=2),
+            "unknown_root_field": lambda value: value["future_root_field"].update(generation=2),
+            "nested_timestamp_named_field": lambda value: value["bindings"][0]["future_binding_field"].update(
+                generated_at="different-semantic-value",
+            ),
+        }
+        for name, update in invalid_updates.items():
+            with self.subTest(name=name):
+                changed = copy.deepcopy(after)
+                update(changed)
+                with self.assertRaises(AssertionError):
+                    compare(before, changed)
+
+        invalid_timestamps = (
+            {**after, "generated_at": "2026-10-19T10:00:02"},
+            {**after, "generated_at": "2026-10-19T11:00:02+01:00"},
+            {**after, "generated_at": "not-a-timestamp"},
+            {**after, "generated_at": "2026-10-19T09:59:59+00:00"},
+            {
+                **after,
+                "bindings": [{key: value for key, value in after["bindings"][0].items()
+                              if key != "applied_at"}],
+            },
+        )
+        for index, changed in enumerate(invalid_timestamps):
+            with self.subTest(timestamp_case=index):
+                with self.assertRaises(AssertionError):
+                    compare(before, changed)
+
+    def test_startup_subscription_profile_comparison_preserves_rows_and_only_refreshes_timestamps(self):
+        compare = _extract_xray_bindings_startup_comparison()[
+            "_assert_subscription_profile_startup_equivalent"
+        ]
+        before = [{
+            "token": "fixture-token",
+            "nodes_json": json.dumps([{"server_id": "server-a", "client_uuid": "uuid-a"}], sort_keys=True),
+            "runtime_verified_at": "2026-10-19 10:00:00",
+            "updated_at": "2026-10-19 10:00:00",
+            "future_projection_field": {"owner": "startup"},
+        }]
+        after = copy.deepcopy(before)
+        after[0]["runtime_verified_at"] = "2026-10-19 10:00:01"
+        after[0]["updated_at"] = "2026-10-19 10:00:01"
+        compare(before, after)
+
+        invalid_updates = {
+            "token": lambda row: row.update(token="different-token"),
+            "nodes_json": lambda row: row.update(nodes_json=json.dumps([{"server_id": "other"}])),
+            "unknown_column": lambda row: row["future_projection_field"].update(owner="other"),
+        }
+        for name, update in invalid_updates.items():
+            with self.subTest(name=name):
+                changed = copy.deepcopy(after)
+                update(changed[0])
+                with self.assertRaises(AssertionError):
+                    compare(before, changed)
+
+        invalid_timestamps = (
+            {**after[0], "runtime_verified_at": "not-a-timestamp"},
+            {**after[0], "updated_at": "2026-10-19 09:59:59"},
+            {key: value for key, value in after[0].items() if key != "updated_at"},
+        )
+        for index, changed_row in enumerate(invalid_timestamps):
+            with self.subTest(timestamp_case=index):
+                with self.assertRaises(AssertionError):
+                    compare(before, [changed_row])
+
+    def test_startup_override_comparison_limits_first_owner_update_and_requires_second_startup_stability(self):
+        compare = _extract_xray_bindings_startup_comparison()["_assert_subject_overrides_startup_equivalent"]
+        before_server = [{
+            "subject_id": "subject-a", "selected_server_id": "server-a",
+            "selected_until": "2099-12-31 23:59:59", "apply_state": "clean",
+            "error_code": None, "error_message": None,
+            "requested_by": "subscription-import", "created_by": "subscription-import",
+            "updated_by": "subscription-import", "updated_at": "2026-10-19 10:00:00",
+            "future_override_field": {"owner": "retained"},
+        }]
+        after_server = copy.deepcopy(before_server)
+        after_server[0]["requested_by"] = "startup-xray-vpn-auto-reconcile"
+        after_server[0]["updated_by"] = "startup-xray-vpn-auto-reconcile"
+        after_server[0]["updated_at"] = "2026-10-19 10:00:01"
+        user_rows = [{"subject_id": "subject-a", "override_mode": "direct", "updated_at": "stable"}]
+        compare(before_server, after_server, user_rows, copy.deepcopy(user_rows), allow_first_startup_owner=True)
+        compare(after_server, copy.deepcopy(after_server), user_rows, copy.deepcopy(user_rows),
+                allow_first_startup_owner=False)
+
+        invalid_first_updates = (
+            {**after_server[0], "selected_server_id": "server-b"},
+            {**after_server[0], "created_by": "startup-xray-vpn-auto-reconcile"},
+            {**after_server[0], "requested_by": "different-startup"},
+            {**after_server[0], "future_override_field": {"owner": "changed"}},
+            {**after_server[0], "updated_at": "2026-10-19 09:59:59"},
+            {key: value for key, value in after_server[0].items() if key != "updated_by"},
+        )
+        for index, changed_row in enumerate(invalid_first_updates):
+            with self.subTest(first_startup_case=index):
+                with self.assertRaises(AssertionError):
+                    compare(before_server, [changed_row], user_rows, copy.deepcopy(user_rows),
+                            allow_first_startup_owner=True)
+        changed_user_rows = [{**user_rows[0], "override_mode": "vpn"}]
+        with self.assertRaises(AssertionError):
+            compare(after_server, copy.deepcopy(after_server), user_rows, changed_user_rows,
+                    allow_first_startup_owner=False)
+        changed_second_startup = copy.deepcopy(after_server)
+        changed_second_startup[0]["updated_at"] = "2026-10-19 10:00:02"
+        with self.assertRaises(AssertionError):
+            compare(after_server, changed_second_startup, user_rows, copy.deepcopy(user_rows),
+                    allow_first_startup_owner=False)
+
     def test_startup_comparison_has_three_distinct_immutable_arms_and_nine_runs(self):
         candidate = "c" * 40
         schedule = startup_comparison.comparison_schedule(candidate)
@@ -1619,13 +1897,13 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((27, 12, 2), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((27, 12, 3), (len(ordinary), len(provider), len(packet)))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
         with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
             launcher.expected_acceptance_nodeids("functional")
-        self.assertEqual(41, len(ordinary | provider | packet))
+        self.assertEqual(42, len(ordinary | provider | packet))
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(
                 [{"nodeid": nodeid, "status": "passed",
@@ -3750,12 +4028,29 @@ class AcceptanceContractTests(unittest.TestCase):
         exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
         calls = []
         returned = {"unchanged": True}
+        satisfies_calls = []
+        satisfies_returned = {
+            "ok": False, "reason": "fwrouter_metadata_mismatch",
+            "metadata": {"resolved_selective_default": "secret-runtime-value"},
+            "expected": {"resolved_selective_default": "secret-expected-value"},
+            "selector_ok": False, "transparent_ok": True,
+        }
+        satisfies_failure = RuntimeError("secret exception")
+        raise_satisfies = {"enabled": False}
 
         def original(*args, **kwargs):
             calls.append((args, kwargs))
             return returned
 
-        apply_orchestrator = SimpleNamespace(_build_failure_result=original)
+        def original_satisfies(*args, **kwargs):
+            satisfies_calls.append((args, kwargs))
+            if raise_satisfies["enabled"]:
+                raise satisfies_failure
+            return satisfies_returned
+
+        apply_orchestrator = SimpleNamespace(
+            _build_failure_result=original, mihomo_runtime_satisfies_routing=original_satisfies,
+        )
         services = ModuleType("fwrouter_api.services")
         services.apply_orchestrator = apply_orchestrator
         reconcile = {
@@ -3780,6 +4075,14 @@ class AcceptanceContractTests(unittest.TestCase):
                     "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
                 }), mock.patch("sys.stderr", observed):
             namespace["_install_acceptance_mihomo_reconcile_failure_observer"]()
+            routing = {"active_auto_server_id": "secret-server-id"}
+            self.assertIs(satisfies_returned, apply_orchestrator.mihomo_runtime_satisfies_routing(routing))
+            self.assertEqual([((routing,), {})], satisfies_calls)
+            raise_satisfies["enabled"] = True
+            with self.assertRaises(RuntimeError) as raised:
+                apply_orchestrator.mihomo_runtime_satisfies_routing(routing)
+            self.assertIs(satisfies_failure, raised.exception)
+            self.assertEqual([((routing,), {}), ((routing,), {})], satisfies_calls)
             result = None
             for _ in range(17):
                 result = apply_orchestrator._build_failure_result("sentinel", details=details)
@@ -3798,9 +4101,21 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertNotIn("/private/path", text)
         self.assertNotIn("private message", text)
         self.assertNotIn("private\"", text)
+        self.assertNotIn("secret-runtime-value", text)
+        self.assertNotIn("secret-expected-value", text)
+        self.assertNotIn("secret-server-id", text)
+        self.assertNotIn("secret exception", text)
         records = [json.loads(line.split(" ", 1)[1]) for line in text.splitlines()]
         self.assertEqual(16, len(records))
-        summary = records[0]["summary"]
+        satisfaction = next(record for record in records if record["event"] == "runtime_satisfaction_failure")
+        self.assertEqual({"ok": False, "reason": "fwrouter_metadata_mismatch",
+                          "metadata_comparisons": {"resolved_selective_default": False},
+                          "policy_comparisons": {}, "selector_group_counts": {
+                              "expected": None, "actual": None},
+                          "runtime_state": None,
+                          "predicates": {"selector_ok": False, "transparent_ok": True}},
+                         satisfaction["summary"])
+        summary = next(record["summary"] for record in records if record["event"] == "failure_result_input")
         self.assertEqual("native_udp_policy_readback", summary["stage"])
         self.assertEqual("PROOF_FAILED", summary["error_code"])
         self.assertEqual(0, summary["validation"]["returncode"])
@@ -5325,17 +5640,23 @@ class AcceptanceContractTests(unittest.TestCase):
             "tests/application_acceptance/test_packet_dataplane.py::"
             "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks"
         )
+        legacy_nodeid = (
+            "tests/application_acceptance/test_packet_dataplane.py::"
+            "test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh"
+        )
         scale_nodeid = (
             "tests/application_acceptance/test_runtime_scale.py::"
             "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
         )
-        self.assertEqual({nodeid, scale_nodeid}, launcher.expected_acceptance_nodeids("packet-diagnostic"))
+        expected_nodes = {nodeid, legacy_nodeid, scale_nodeid}
+        self.assertEqual(expected_nodes, launcher.expected_acceptance_nodeids("packet-diagnostic"))
         with self.assertRaises(launcher.NotRun):
             launcher.expected_acceptance_nodeids("packet-diagnostic-extra")
-        expected_nodes = {nodeid, scale_nodeid}
         failed = [
             {"nodeid": nodeid, "status": "failed",
              "phases": {"setup": "passed", "call": "failed", "teardown": "passed"}},
+            {"nodeid": legacy_nodeid, "status": "passed",
+             "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}},
             {"nodeid": scale_nodeid, "status": "passed",
              "phases": {"setup": "passed", "call": "passed", "teardown": "passed"}},
         ]

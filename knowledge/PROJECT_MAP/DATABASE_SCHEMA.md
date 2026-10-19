@@ -52,6 +52,8 @@ Routing state tables track global mode intent, apply status, artifacts, selector
 
 `apply_versions.core_intent_revision` (schema 26) binds a canonical global apply receipt to the local Core intent revision. It is nullable for pre-26 generations and those legacy rows never prove a current Core apply. A Core enable request remains pending until the existing global apply owner commits the exact current generation, then confirms fresh native enforcement in the same boot/network namespace and atomically settles that revision. Same-mode routing no-op does not settle Core. Explicit enable is required to renew an enabled legacy state with a NULL/stale binding; startup does not infer or manufacture proof.
 
+The schema-25-to-26 migration runs its DDL, initial Core intent row, enabled-Core pending transition, and schema marker inside one SQLite savepoint. An exception before release rolls all four back together, so reopening an interrupted upgrade sees a genuine schema-25 preimage and can retry. This transaction boundary is intentionally scoped to 25-to-26; it is not a blanket wrapper for historical migrations with different transaction behavior.
+
 ### Server Inventory And Subscription Membership
 
 - `servers`: canonical server inventory. `server_id` is the primary key. For subscription servers it is a stable identity, not the display name. Duplicate `server_name` values are valid.

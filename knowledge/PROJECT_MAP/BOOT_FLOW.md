@@ -28,6 +28,19 @@ This inventory describes the bundled deployment, not mandatory platform dependen
 4. Optional follower services such as `fwrouter-xray-sub-gateway.service`
 6. timers and regular jobs
 
+## Explicit API maintenance lifespan
+
+`FWROUTER_STARTUP_TASKS_ENABLED=0` keeps the API routers mounted while skipping
+backend bootstrap/database migration, log scrubbing, extended job-handler
+registration, scheduler starts, and read-model prewarm. The default job manager
+still supplies the existing Core desired-state and global-routing apply owners.
+This mode does not stop external systemd gateway services or timers; those must
+already be stopped for an offline controlled migration. The mode is for an
+explicit maintenance window, not a substitute for normal startup qualification.
+It controls only the Python lifespan: any systemd `ExecStartPre` host script
+still runs before the API process and must be reviewed independently for host
+state effects.
+
 Race-condition protections:
 
 - `fwrouter-api.service` has `After/Wants=network-online.target` only, so the core control plane can start without optional runtimes

@@ -1489,8 +1489,23 @@ def run_missing_migrations(connection: sqlite3.Connection) -> list[SchemaMigrati
         migration = by_from_version.get(version)
         if migration is None:
             raise RuntimeError(f"No FWRouter schema migration from version {version}")
-        migration.apply(connection)
-        _set_schema_version(connection, migration.to_version)
+        if migration.from_version == 25 and migration.to_version == 26:
+            # SQLite's legacy transaction mode does not begin a transaction
+            # for ALTER TABLE. Keep this migration's DDL, durable intent
+            # initialization, and schema marker in one rollback boundary.
+            savepoint = "fwrouter_schema_25_to_26"
+            connection.execute(f"SAVEPOINT {savepoint}")
+            try:
+                migration.apply(connection)
+                _set_schema_version(connection, migration.to_version)
+                connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except Exception:
+                connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                raise
+        else:
+            migration.apply(connection)
+            _set_schema_version(connection, migration.to_version)
         connection.commit()
         applied.append(migration)
         version = migration.to_version

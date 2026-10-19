@@ -5,12 +5,15 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import selectors
 import socket
+import sqlite3
 import stat
 import struct
 import subprocess
 import time
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -22,8 +25,17 @@ import yaml
 
 from .http_support import http_json
 from .joined_support import await_core_job
+from .native_runner import _redact_diagnostic
+from .synthetic_subscription import SyntheticSubscriptionSource
 from .test_core_provider_mihomo import _configure_provider, _enable_owned_mihomo_runtime_state, _seed_source
-from .xray_support import assert_mihomo_launch_matches_active
+from .xray_support import (
+    assert_mihomo_launch_matches_active,
+    assert_native_matches_active,
+    await_job,
+    enable_vpn_from_synthetic_subscription,
+    loaded_identities,
+    native_config_bytes,
+)
 
 
 CLIENT_IP = "10.240.0.2"
@@ -48,6 +60,311 @@ CORE_NFT_TABLE = "fwrouter_v2"
 ROUTER_GUARD_TABLE = "fwrouter_packet_guard"
 MAX_CORE_NFT_JSON = 1024 * 1024
 MAX_PHASE_DIAGNOSTIC_BYTES = 4096
+_DIAGNOSTIC_URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,15}://[^\s\"'<>]+")
+
+
+def _xray_bindings_startup_projection(payload: Any) -> tuple[dict[str, Any], list[tuple[str, datetime]]]:
+    """Preserve the complete bindings payload except its two refreshed UTC timestamps."""
+    if not isinstance(payload, dict) or payload.get("bindings_version") != 1:
+        raise AssertionError("Xray bindings payload has an unsupported schema.")
+
+    def parse_utc_timestamp(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or "T" not in value:
+            raise AssertionError(f"Xray bindings timestamp is missing or malformed: {field}.")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise AssertionError(f"Xray bindings timestamp is malformed: {field}.") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+            raise AssertionError(f"Xray bindings timestamp is not UTC: {field}.")
+        return parsed
+
+    bindings = payload.get("bindings")
+    handoffs = payload.get("handoff_listeners")
+    client_modes = payload.get("client_modes")
+    if (not isinstance(bindings, list) or not all(isinstance(row, dict) for row in bindings)
+            or not isinstance(handoffs, list) or not all(isinstance(row, dict) for row in handoffs)
+            or not isinstance(client_modes, list) or not all(isinstance(row, dict) for row in client_modes)):
+        raise AssertionError("Xray bindings payload has an invalid collection shape.")
+    expected_counts = {
+        "bindings_count": len(bindings),
+        "applied_count": sum(row.get("status") == "applied" for row in bindings),
+        "handoff_count": len(handoffs),
+        "client_modes_count": len(client_modes),
+    }
+    if any(type(payload.get(key)) is not int or payload.get(key) != value
+           for key, value in expected_counts.items()):
+        raise AssertionError("Xray bindings payload counters do not match its contents.")
+
+    generated_at = parse_utc_timestamp(payload.get("generated_at"), "generated_at")
+    timestamps = [("generated_at", generated_at)]
+    normalized_bindings = []
+    for index, binding in enumerate(bindings):
+        field = f"bindings[{index}].applied_at"
+        applied_at = parse_utc_timestamp(binding.get("applied_at"), field)
+        if applied_at > generated_at:
+            raise AssertionError(f"Xray bindings timestamp is later than generated_at: {field}.")
+        timestamps.append((field, applied_at))
+        normalized_bindings.append({key: value for key, value in binding.items() if key != "applied_at"})
+
+    normalized = {
+        key: value for key, value in payload.items() if key not in {"generated_at", "bindings"}
+    }
+    normalized["bindings"] = normalized_bindings
+    return normalized, timestamps
+
+
+def _assert_xray_bindings_startup_equivalent(before: Any, after: Any) -> None:
+    before_semantics, before_timestamps = _xray_bindings_startup_projection(before)
+    after_semantics, after_timestamps = _xray_bindings_startup_projection(after)
+    if before_semantics != after_semantics:
+        raise AssertionError("Xray bindings semantic payload changed across startup.")
+    if [field for field, _ in before_timestamps] != [field for field, _ in after_timestamps]:
+        raise AssertionError("Xray bindings timestamp fields changed across startup.")
+    if any(after_time < before_time for (_, before_time), (_, after_time)
+           in zip(before_timestamps, after_timestamps, strict=True)):
+        raise AssertionError("Xray bindings timestamps moved backwards across startup.")
+
+
+def _subscription_profile_snapshot_projection(
+    rows: Any,
+) -> tuple[list[dict[str, Any]], list[tuple[str, datetime]]]:
+    """Keep complete profile rows except their two SQLite UTC verification timestamps."""
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise AssertionError("Subscription profile snapshot rows have an invalid shape.")
+
+    def parse_sqlite_utc_timestamp(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", value):
+            raise AssertionError(f"Subscription profile timestamp is missing or malformed: {field}.")
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise AssertionError(f"Subscription profile timestamp is malformed: {field}.") from exc
+
+    normalized_rows = []
+    timestamps = []
+    for index, row in enumerate(rows):
+        if not isinstance(row.get("token"), str) or not isinstance(row.get("nodes_json"), str):
+            raise AssertionError(f"Subscription profile snapshot identity is invalid at row {index}.")
+        try:
+            nodes = json.loads(row["nodes_json"])
+        except json.JSONDecodeError as exc:
+            raise AssertionError(f"Subscription profile snapshot nodes are invalid at row {index}.") from exc
+        if not isinstance(nodes, list) or not all(isinstance(node, dict) for node in nodes):
+            raise AssertionError(f"Subscription profile snapshot nodes have an invalid shape at row {index}.")
+        verified_at = parse_sqlite_utc_timestamp(row.get("runtime_verified_at"), f"rows[{index}].runtime_verified_at")
+        updated_at = parse_sqlite_utc_timestamp(row.get("updated_at"), f"rows[{index}].updated_at")
+        timestamps.extend((
+            (f"rows[{index}].runtime_verified_at", verified_at),
+            (f"rows[{index}].updated_at", updated_at),
+        ))
+        normalized_rows.append({
+            key: value for key, value in row.items() if key not in {"runtime_verified_at", "updated_at"}
+        })
+    return normalized_rows, timestamps
+
+
+def _assert_subscription_profile_startup_equivalent(before: Any, after: Any) -> None:
+    before_semantics, before_timestamps = _subscription_profile_snapshot_projection(before)
+    after_semantics, after_timestamps = _subscription_profile_snapshot_projection(after)
+    if before_semantics != after_semantics:
+        raise AssertionError("Subscription profile snapshot rows changed across startup.")
+    if [field for field, _ in before_timestamps] != [field for field, _ in after_timestamps]:
+        raise AssertionError("Subscription profile snapshot timestamp fields changed across startup.")
+    if any(after_time < before_time for (_, before_time), (_, after_time)
+           in zip(before_timestamps, after_timestamps, strict=True)):
+        raise AssertionError("Subscription profile snapshot timestamps moved backwards across startup.")
+
+
+def _assert_subject_overrides_startup_equivalent(
+    before_server: Any,
+    after_server: Any,
+    before_user: Any,
+    after_user: Any,
+    *,
+    allow_first_startup_owner: bool,
+) -> None:
+    if before_user != after_user:
+        raise AssertionError("User subject overrides changed across startup.")
+    if not isinstance(before_server, list) or not isinstance(after_server, list):
+        raise AssertionError("Server subject overrides have an invalid shape.")
+    if len(before_server) != len(after_server):
+        raise AssertionError("Server subject override rows changed across startup.")
+
+    def parse_timestamp(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", value):
+            raise AssertionError(f"Server subject override timestamp is malformed: {field}.")
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise AssertionError(f"Server subject override timestamp is malformed: {field}.") from exc
+
+    before_by_id = {row.get("subject_id"): row for row in before_server if isinstance(row, dict)}
+    after_by_id = {row.get("subject_id"): row for row in after_server if isinstance(row, dict)}
+    if (len(before_by_id) != len(before_server) or len(after_by_id) != len(after_server)
+            or set(before_by_id) != set(after_by_id)):
+        raise AssertionError("Server subject override identities changed across startup.")
+    for subject_id, before_row in before_by_id.items():
+        after_row = after_by_id[subject_id]
+        if set(before_row) != set(after_row):
+            raise AssertionError("Server subject override fields changed across startup.")
+        for field in before_row:
+            before_value = before_row[field]
+            after_value = after_row[field]
+            if field in {"requested_by", "updated_by"} and allow_first_startup_owner:
+                if (after_value != before_value
+                        and after_value != "startup-xray-vpn-auto-reconcile"):
+                    raise AssertionError(f"Server subject override owner changed unexpectedly: {field}.")
+            elif field == "updated_at" and allow_first_startup_owner:
+                before_time = parse_timestamp(before_value, f"{subject_id}.before.updated_at")
+                after_time = parse_timestamp(after_value, f"{subject_id}.after.updated_at")
+                if after_time < before_time:
+                    raise AssertionError("Server subject override timestamp moved backwards across startup.")
+            elif before_value != after_value:
+                raise AssertionError(f"Server subject override semantic field changed across startup: {field}.")
+        changed_owner = any(
+            field in before_row and before_row[field] != after_row[field]
+            for field in ("requested_by", "updated_by")
+        )
+        if (allow_first_startup_owner and before_row.get("updated_at") != after_row.get("updated_at")
+                and not changed_owner):
+            raise AssertionError("Server subject override timestamp changed without an owner update.")
+
+
+def _assert_subject_inventory_startup_equivalent(
+    before_rows: Any,
+    after_rows: Any,
+    *,
+    allowed_added_ids: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    """Allow only the observation timestamps refreshed by explicit Xray inventory."""
+    if (not isinstance(before_rows, (list, tuple)) or not isinstance(after_rows, (list, tuple))
+            or not all(isinstance(row, dict) for row in before_rows)
+            or not all(isinstance(row, dict) for row in after_rows)):
+        raise AssertionError("Subject inventory rows have an invalid shape.")
+    before_by_id = {row.get("subject_id"): dict(row) for row in before_rows}
+    after_by_id = {row.get("subject_id"): dict(row) for row in after_rows}
+    if (len(before_by_id) != len(before_rows) or len(after_by_id) != len(after_rows)
+            or None in before_by_id or None in after_by_id):
+        raise AssertionError("Subject inventory identities are invalid across startup.")
+    if not isinstance(allowed_added_ids, (set, frozenset)) or not all(
+        isinstance(subject_id, str) for subject_id in allowed_added_ids
+    ):
+        raise AssertionError("Allowed bootstrap subject additions have an invalid shape.")
+    if not allowed_added_ids <= {"fwrouter:global", "host:ssh"}:
+        raise AssertionError("Only documented built-in subjects may be added during startup.")
+    added_ids = after_by_id.keys() - before_by_id.keys()
+    removed_ids = before_by_id.keys() - after_by_id.keys()
+    if removed_ids or added_ids != allowed_added_ids:
+        raise AssertionError("Subject inventory identities changed outside allowed bootstrap additions.")
+
+    def parse_sqlite_utc(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", value):
+            raise AssertionError(f"Subject inventory timestamp is missing or malformed: {field}.")
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise AssertionError(f"Subject inventory timestamp is malformed: {field}.") from exc
+
+    def parse_metadata_utc(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or "T" not in value:
+            raise AssertionError(f"Subject inventory timestamp is missing or malformed: {field}.")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise AssertionError(f"Subject inventory timestamp is malformed: {field}.") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+            raise AssertionError(f"Subject inventory timestamp is not UTC: {field}.")
+        return parsed
+
+    for subject_id, before in before_by_id.items():
+        after = after_by_id[subject_id]
+        if before.keys() != after.keys():
+            raise AssertionError(f"Subject inventory columns changed: {subject_id}.")
+        is_xray = (
+            before.get("subject_type") == "explicit_external_client"
+            and before.get("implementation_kind") == "xray"
+        )
+        if not is_xray:
+            if before != after:
+                raise AssertionError(f"Non-Xray subject changed across startup: {subject_id}.")
+            continue
+
+        try:
+            before_metadata = json.loads(before.get("metadata_json"))
+            after_metadata = json.loads(after.get("metadata_json"))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise AssertionError(f"Xray subject metadata is not valid JSON: {subject_id}.") from exc
+        if not isinstance(before_metadata, dict) or not isinstance(after_metadata, dict):
+            raise AssertionError(f"Xray subject metadata is not an object: {subject_id}.")
+
+        before_updated = parse_sqlite_utc(before.get("updated_at"), f"{subject_id}.updated_at")
+        after_updated = parse_sqlite_utc(after.get("updated_at"), f"{subject_id}.updated_at")
+        before_collected = parse_metadata_utc(
+            before_metadata.get("collected_at"), f"{subject_id}.metadata.collected_at",
+        )
+        after_collected = parse_metadata_utc(
+            after_metadata.get("collected_at"), f"{subject_id}.metadata.collected_at",
+        )
+        if after_updated < before_updated or after_collected < before_collected:
+            raise AssertionError(f"Xray subject observation timestamp moved backwards: {subject_id}.")
+
+        before_metadata.pop("collected_at")
+        after_metadata.pop("collected_at")
+        before_semantic = {key: value for key, value in before.items() if key not in {"updated_at", "metadata_json"}}
+        after_semantic = {key: value for key, value in after.items() if key not in {"updated_at", "metadata_json"}}
+        if before_semantic != after_semantic or before_metadata != after_metadata:
+            raise AssertionError(f"Xray subject changed outside observation timestamps: {subject_id}.")
+
+
+def _rules_apply_failure_diagnostic(
+    response: dict[str, Any],
+    status: int,
+    *,
+    protected: tuple[str, ...],
+    phase: str,
+    terminal_job: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    response_job = data.get("job") if isinstance(data.get("job"), dict) else {}
+    job = terminal_job if isinstance(terminal_job, dict) else response_job
+    error = response.get("error") if isinstance(response.get("error"), dict) else {}
+    if not error and isinstance(data.get("error"), dict):
+        error = data["error"]
+    raw_message = error.get("message") or job.get("error_message") or ""
+    safe_message = _redact_diagnostic(str(raw_message), limit=512)
+    safe_message = _DIAGNOSTIC_URL.sub("[URL]", safe_message)
+    for value in protected:
+        if value:
+            for protected_value in (value, *value.splitlines()):
+                safe_message = safe_message.replace(protected_value, "[REDACTED]")
+    safe_message = "".join(character if character.isprintable() or character in "\n\t" else " "
+                             for character in safe_message)
+    exception_class = error.get("exception_class") or error.get("error_class") \
+        or job.get("exception_class") or job.get("error_class")
+    if not isinstance(exception_class, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", exception_class):
+        exception_class = None
+    def safe_token(value: Any) -> str | None:
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", value) else None
+
+    return {
+        "http_status": status,
+        "failure_phase": phase,
+        "error_code": safe_token(error.get("code")),
+        "job_type": safe_token(job.get("job_type")),
+        "job_status": safe_token(job.get("status")),
+        "job_error_code": safe_token(job.get("error_code")),
+        "exception_class": exception_class,
+        "error_message": safe_message,
+    }
+
+
+def _serialize_rules_apply_failure(summary: dict[str, Any]) -> str:
+    encoded = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 2048:
+        summary = {**summary, "error_message": _redact_diagnostic(summary.get("error_message", ""), limit=128)}
+        encoded = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    return encoded
 
 
 def _record_dns53_probe_failure(record_property: Any, receipt: Any) -> bool:
@@ -91,6 +408,1158 @@ def _record_dns53_flow_failure(record_property: Any, receipt: Any) -> bool:
         return False
     record_property("dns53_flow_failure", encoded)
     return True
+
+
+def _packet_selectable_vless_profile() -> dict[str, Any]:
+    """Build one synthetic subscription target backed by the owned packet Xray inbound."""
+    return {
+        "remarks": "acceptance-owned-packet-selector-profile",
+        "outbounds": [
+            {
+                "tag": "packet-selector-target",
+                "protocol": "vless",
+                "settings": {"vnext": [{
+                    "address": ENDPOINT_IP,
+                    "port": ENDPOINT_SELECTOR_PORT,
+                    "users": [{"id": SELECTOR_XRAY_ID, "encryption": "none"}],
+                }]},
+                "streamSettings": {"network": "tcp", "security": "none"},
+            },
+            {"tag": "direct", "protocol": "freedom"},
+            {"tag": "reject", "protocol": "blackhole"},
+            {"tag": "dns", "protocol": "dns"},
+        ],
+        "routing": {"rules": [{"type": "field", "outboundTag": "direct"}]},
+    }
+
+
+@pytest.mark.packet
+def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh(acceptance_stack):
+    """Normal packet-profile startup preserves an explicitly admitted selective/VPN legacy inventory."""
+    stack = acceptance_stack
+    state, native, source_bridge = stack["state"], stack["native"], stack["provider_bridge"]
+    api = stack["api"]
+    assert stack["profile"].get("profile") == "hosted-kernel-packet"
+    endpoint_ready = _role_json(f"{ENDPOINT_CONTROL}/ready")
+    endpoint_sockets = endpoint_ready.get("sockets")
+    endpoint_xray = endpoint_ready.get("xray")
+    assert (endpoint_ready.get("ready") is True and endpoint_ready.get("role") == "endpoint"
+            and isinstance(endpoint_sockets, dict) and endpoint_sockets.get("xray_tcp_5302") is True
+            and isinstance(endpoint_xray, dict) and endpoint_xray.get("running") is True
+            and endpoint_xray.get("binary_sha256") == stack["profile"].get("xray", {}).get("sha256")), {
+        "endpoint_ready": endpoint_ready.get("ready") is True,
+        "endpoint_role": endpoint_ready.get("role"),
+        "selector_listener_ready": isinstance(endpoint_sockets, dict)
+        and endpoint_sockets.get("xray_tcp_5302") is True,
+        "xray_binary_matches_profile": isinstance(endpoint_xray, dict)
+        and endpoint_xray.get("binary_sha256") == stack["profile"].get("xray", {}).get("sha256"),
+    }
+    provider_calls_before_fixture = source_bridge.snapshot_calls()
+    source = SyntheticSubscriptionSource(_packet_selectable_vless_profile())
+
+    def post_apply(payload: dict[str, Any]) -> dict[str, Any]:
+        status, result = http_json(f"{api}/routing/global", method="POST", payload=payload, timeout=45)
+        assert status == 200 and result.get("ok") is True, result
+        job = await_job(api, result)
+        assert job.get("status") == "success", job
+        return job
+
+    def mutation_apply_id(job: dict[str, Any]) -> str:
+        result = job.get("result") if isinstance(job.get("result"), dict) else {}
+        mutation = result.get("mutation") if isinstance(result.get("mutation"), dict) else {}
+        apply_id = mutation.get("apply_id")
+        assert (job.get("status") == "success" and result.get("job_status") == "success"
+                and mutation.get("ok") is True and isinstance(apply_id, str) and apply_id), job
+        return apply_id
+
+    def native_fingerprint() -> dict[str, Any]:
+        xray_bytes, _launch = native_config_bytes(native)
+        loaded = loaded_identities(native)
+        active_mihomo = state / "generated" / "mihomo" / "config.yaml"
+        bindings_path = state / "xray" / "fwrouter-bindings.json"
+        return {
+            "xray_active": hashlib.sha256((state / "xray" / "config.json").read_bytes()).hexdigest(),
+            "xray_mounted": hashlib.sha256(xray_bytes).hexdigest(),
+            "xray_loaded": hashlib.sha256(json.dumps(loaded, separators=(",", ":")).encode()).hexdigest(),
+            "xray_loaded_identity_count": len(loaded),
+            "xray_bindings": hashlib.sha256(bindings_path.read_bytes()).hexdigest(),
+            "xray_last_good": _packet_tree_fingerprint(state / "last-good" / "xray"),
+            "mihomo_active": hashlib.sha256(active_mihomo.read_bytes()).hexdigest(),
+            "mihomo_generated": _packet_tree_fingerprint(
+                state / "generated" / "mihomo", excluded={"reconcile-state.json"},
+            ),
+            "mihomo_last_good": _packet_tree_fingerprint(state / "last-good" / "mihomo"),
+            "xray_incarnation": (native.process.pid, native.started_at),
+            "mihomo_incarnation": (native.mihomo_process.pid, native.mihomo_started_at),
+            "xray_reload_calls": native.reload_calls,
+        }
+
+    def startup_native_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
+        bindings_path = state / "xray" / "fwrouter-bindings.json"
+        bindings_bytes_before = bindings_path.read_bytes()
+        try:
+            bindings_payload = json.loads(bindings_bytes_before)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise AssertionError("Xray bindings payload was not valid JSON at startup boundary.") from exc
+        semantics, _timestamps = _xray_bindings_startup_projection(bindings_payload)
+        fingerprint = native_fingerprint()
+        if bindings_path.read_bytes() != bindings_bytes_before:
+            raise AssertionError("Xray bindings payload changed while capturing startup fingerprint.")
+        fingerprint["xray_bindings"] = hashlib.sha256(json.dumps(
+            semantics, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        return fingerprint, bindings_payload
+
+    def durable_fingerprint(core_apply_id: str) -> dict[str, Any]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        try:
+            values = {
+                table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2")]
+                for table in (
+                    "subscription_node_identities", "subscription_node_aliases",
+                    "subscription_node_credentials", "subscription_node_credential_history",
+                    "subscription_node_identity_transitions",
+                )
+            }
+            values["core"] = {
+                "revision": connection.execute(
+                    "SELECT value_json FROM settings WHERE key='core.intent_revision'",
+                ).fetchone(),
+                "module": connection.execute(
+                    "SELECT desired_state, lifecycle_mode, runtime_state, apply_state "
+                    "FROM modules WHERE module_name='core'",
+                ).fetchone(),
+                "receipt": connection.execute(
+                    "SELECT apply_id, status, core_intent_revision FROM apply_versions WHERE apply_id=?",
+                    (core_apply_id,),
+                ).fetchone(),
+            }
+            return {
+                "sha256": hashlib.sha256(json.dumps(values, sort_keys=True, default=list).encode()).hexdigest(),
+                "identity_rows": len(values["subscription_node_identities"]),
+                "credential_rows": len(values["subscription_node_credentials"]),
+                "credential_history_rows": len(values["subscription_node_credential_history"]),
+            }
+        finally:
+            connection.close()
+
+    def subscription_profile_snapshot_rows() -> list[dict[str, Any]]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        connection.row_factory = sqlite3.Row
+        try:
+            return [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_profile_snapshots ORDER BY token",
+            ).fetchall()]
+        finally:
+            connection.close()
+
+    def subject_override_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        connection.row_factory = sqlite3.Row
+        try:
+            server_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subject_server_overrides ORDER BY subject_id",
+            ).fetchall()]
+            user_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subject_user_overrides ORDER BY subject_id",
+            ).fetchall()]
+            return server_rows, user_rows
+        finally:
+            connection.close()
+
+    def subject_bootstrap_fingerprint() -> dict[str, tuple[tuple[Any, ...], ...]]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        try:
+            return {
+                table: tuple(tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1"))
+                for table in ("subjects", "subject_fwrouter", "subject_host")
+            }
+        finally:
+            connection.close()
+
+    def subject_inventory_rows() -> list[dict[str, Any]]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        connection.row_factory = sqlite3.Row
+        try:
+            return [dict(row) for row in connection.execute("SELECT * FROM subjects ORDER BY subject_id")]
+        finally:
+            connection.close()
+
+    def assert_builtin_bootstrap_rows(
+        before: dict[str, tuple[tuple[Any, ...], ...]],
+        after: dict[str, tuple[tuple[Any, ...], ...]],
+    ) -> None:
+        # These are the two documented rows owned by ensure_builtin_system_subjects.
+        builtin_ids = {"fwrouter:global", "host:ssh"}
+        before_subjects = {row[0]: row for row in before["subjects"]}
+        after_subjects = {row[0]: row for row in after["subjects"]}
+        assert set(after_subjects) == set(before_subjects) | builtin_ids, {
+            "before_ids": sorted(before_subjects), "after_ids": sorted(after_subjects),
+        }
+        stable_subjects = {
+            key: row for key, row in before_subjects.items()
+            if not (row[1] == "explicit_external_client" and row[3] == "xray")
+        }
+        assert all(after_subjects[key] == row for key, row in stable_subjects.items()), {
+            key: (row, after_subjects.get(key)) for key, row in before_subjects.items()
+            if key in stable_subjects and after_subjects.get(key) != row
+        }
+        for subject_id, subject_type, role, display_name in (
+            ("fwrouter:global", "fwrouter", "router_core", "FWRouter global traffic"),
+            ("host:ssh", "host", "host_runtime", "SSH daemon"),
+        ):
+            row = after_subjects[subject_id]
+            assert (row[1], row[2], row[3], row[4], row[5], row[7], row[8], row[9], row[10], row[11], row[12]) == (
+                subject_type, role, subject_type, subject_id, display_name,
+                "direct", "direct", "clean", "running", 1, 0,
+            ), {"subject_id": subject_id, "row": row}
+            expected_metadata = (
+                {"source": "system_subjects", "component_name": "global"}
+                if subject_id == "fwrouter:global" else {
+                    "source": "system_subjects", "systemd_unit": "ssh.service",
+                    "listen_proto": "tcp", "listen_port": 22, "kind": "management",
+                }
+            )
+            assert json.loads(row[18]) == expected_metadata, {"subject_id": subject_id, "metadata": row[18]}
+        for table in ("subject_fwrouter", "subject_host"):
+            before_rows = {row[0]: row for row in before[table]}
+            after_rows = {row[0]: row for row in after[table]}
+            assert set(after_rows) == set(before_rows) | builtin_ids.intersection(
+                {"fwrouter:global" if table == "subject_fwrouter" else "host:ssh"},
+            ), {"table": table, "before_ids": sorted(before_rows), "after_ids": sorted(after_rows)}
+            assert all(after_rows[key] == row for key, row in before_rows.items()), table
+        global_detail = {row[0]: row for row in after["subject_fwrouter"]}["fwrouter:global"]
+        host_detail = {row[0]: row for row in after["subject_host"]}["host:ssh"]
+        assert (global_detail[1], json.loads(global_detail[2])) == (
+            "global", {"source": "system_subjects"},
+        ), global_detail
+        assert (host_detail[1], host_detail[2], host_detail[3], host_detail[4], host_detail[5],
+                json.loads(host_detail[6])) == (
+            "ssh.service", "tcp", 22, "sshd", "SSH daemon",
+            {"source": "system_subjects", "kind": "management"},
+        ), host_detail
+
+    def generation(api_url: str) -> dict[str, Any]:
+        status, result = http_json(f"{api_url}/__acceptance/subscription/native-generation")
+        assert status == 200 and result.get("ok") is True, result
+        value = result.get("state")
+        assert isinstance(value, dict), result
+        return value
+
+    def assert_owned_dns_daemon(api_url: str) -> None:
+        status_code, status = http_json(f"{api_url}/__acceptance/dns53/status")
+        assert status_code == 200, {"status": status_code}
+        for field in (
+            "configured", "daemon_running", "daemon_uid_matches", "native_process_arguments_match",
+            "dns_capture_ok", "rescue0_allowlisted", "rescue0_role_excluded_from_discovery",
+            "dhcp_forces_router_dns", "dhcp_excludes_rescue_vip", "local_hosts_exclude_rescue_vip",
+            "dns_capture_excludes_rescue0", "router_lan_hostname_query_ok",
+        ):
+            assert status.get(field) is True, {"field": field, "status": status}
+
+    def protected_direct_rows() -> list[str]:
+        rules_path = state / "generated" / "rules" / "effective-rules.json"
+        artifact = json.loads(rules_path.read_text(encoding="utf-8"))
+        rules = artifact.get("rules") if isinstance(artifact, dict) else None
+        assert isinstance(rules, list), {"effective_rules_shape": type(rules).__name__}
+        return sorted(
+            json.dumps(row, sort_keys=True, separators=(",", ":"))
+            for row in rules
+            if isinstance(row, dict) and row.get("source") == "protected" and row.get("action") == "DIRECT"
+        )
+
+    def _nft_set_text_contains_ipv4(nft_text: str, set_name: str, address: str) -> bool:
+        set_match = re.search(
+            rf"(?ms)^\s*set\s+{re.escape(set_name)}\s*\{{(?P<body>.*?)^\s*\}}",
+            nft_text,
+        )
+        values: list[str] = []
+        if set_match is not None:
+            elements_match = re.search(r"elements\s*=\s*\{([^}]*)\}", set_match.group("body"))
+            if elements_match is not None:
+                values.extend(elements_match.group(1).split(","))
+        values.extend(re.findall(
+            rf"(?m)^\s*add element inet {re.escape(CORE_NFT_TABLE)} {re.escape(set_name)} "
+            r"\{([^}]*)\}\s*$",
+            nft_text,
+        ))
+        target = ipaddress.ip_address(address)
+        for raw_value in values:
+            value = raw_value.strip()
+            if not value:
+                continue
+            try:
+                if target in ipaddress.ip_network(value, strict=False):
+                    return True
+            except ValueError:
+                continue
+        return False
+
+    def native_global_rule_set_membership() -> dict[str, bool]:
+        try:
+            result = subprocess.run(
+                ("/usr/sbin/nft", "-j", "list", "table", "inet", CORE_NFT_TABLE),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=3, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AssertionError("global ruleset native readback did not complete within its bound") from exc
+        if (result.returncode or len(result.stdout) > MAX_CORE_NFT_JSON
+                or len(result.stderr) > 4096):
+            raise AssertionError("global ruleset native readback failed or exceeded its fixed byte bound")
+        try:
+            nftables = json.loads(result.stdout).get("nftables")
+        except (UnicodeError, json.JSONDecodeError, AttributeError) as exc:
+            raise AssertionError("global ruleset native readback was not valid nft JSON") from exc
+        if not isinstance(nftables, list):
+            raise AssertionError("global ruleset native readback has an invalid nftables shape")
+
+        sets: dict[str, list[Any]] = {}
+        for item in nftables:
+            entry = item.get("set") if isinstance(item, dict) else None
+            if (not isinstance(entry, dict) or entry.get("family") != "inet"
+                    or entry.get("table") != CORE_NFT_TABLE
+                    or entry.get("name") not in {"vpn_ipv4", "direct_ipv4", "protected_ipv4"}):
+                continue
+            name = str(entry["name"])
+            assert name not in sets, f"duplicate native FWRouter set readback: {name}"
+            elements = entry.get("elem")
+            assert isinstance(elements, list), f"native FWRouter set has invalid elements: {name}"
+            sets[name] = elements
+
+        def contains(name: str, address: str) -> bool:
+            target = ipaddress.ip_address(address)
+            for raw_element in sets.get(name, []):
+                element = raw_element
+                if isinstance(element, dict) and isinstance(element.get("elem"), (dict, str)):
+                    element = element["elem"]
+                if isinstance(element, dict) and isinstance(element.get("prefix"), dict):
+                    prefix = element["prefix"]
+                    value = prefix.get("addr")
+                    length = prefix.get("len")
+                    if isinstance(value, str) and type(length) is int:
+                        element = f"{value}/{length}"
+                if not isinstance(element, str):
+                    continue
+                try:
+                    if target in ipaddress.ip_network(element, strict=False):
+                        return True
+                except ValueError:
+                    continue
+            return False
+
+        assert set(sets) == {"vpn_ipv4", "direct_ipv4", "protected_ipv4"}, sorted(sets)
+        protected_readback = _core_protected_exception_readback()
+        return {
+            "manual_vpn_ipv4": contains("vpn_ipv4", "198.51.100.77"),
+            "manual_direct_ipv4": contains("direct_ipv4", "203.0.113.53"),
+            "protected_vip_ipv4": contains("protected_ipv4", PROTECTED_VIP),
+            "protected_classify_rule": protected_readback.get("classifier_bypass_installed") is True,
+        }
+
+    def global_rules_source_fingerprint(
+        expected_apply_id: str,
+        *,
+        previous_applied_mode: str,
+    ) -> dict[str, Any]:
+        rules_path = state / "generated" / "rules" / "effective-rules.json"
+        assert rules_path.stat().st_size <= MAX_CORE_NFT_JSON, "canonical effective rules exceeded its byte bound"
+        rules_bytes = rules_path.read_bytes()
+        try:
+            artifact = json.loads(rules_bytes)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise AssertionError("canonical effective rules were not valid JSON") from exc
+        rows = artifact.get("rules") if isinstance(artifact, dict) else None
+        assert isinstance(rows, list), {"effective_rules_shape": type(rows).__name__}
+        manual_pairs = sorted(
+            (row.get("action"), row.get("value"))
+            for row in rows
+            if isinstance(row, dict) and row.get("source") == "manual"
+        )
+        assert artifact.get("selective_default") == "vpn", artifact
+        assert manual_pairs == [
+            ("DIRECT", "203.0.113.53"), ("VPN", "198.51.100.77"),
+        ], manual_pairs
+        protected = protected_direct_rows()
+        assert protected, "canonical rules lost protected DIRECT rows"
+
+        dataplane_dir = state / "generated" / "dataplane"
+        manifest_paths = {
+            "candidate": dataplane_dir / "candidate-manifest.json",
+            "applied": dataplane_dir / "applied-manifest.json",
+        }
+        for label, path in manifest_paths.items():
+            value = json.loads(path.read_text(encoding="utf-8"))
+            routing_state = value.get("routing_global_state")
+            assert value.get("plan_id") == expected_apply_id, {"manifest": label, "plan_id": value.get("plan_id")}
+            assert (isinstance(routing_state, dict)
+                    and routing_state.get("desired_mode") == "selective"
+                    and routing_state.get("applied_mode") == previous_applied_mode
+                    and routing_state.get("selective_default") == "vpn"), {
+                "manifest": label, "routing": routing_state,
+            }
+
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        try:
+            receipt = connection.execute(
+                "SELECT status, core_intent_revision FROM apply_versions WHERE apply_id=?",
+                (expected_apply_id,),
+            ).fetchone()
+            revision_row = connection.execute(
+                "SELECT value_json FROM settings WHERE key='core.intent_revision'",
+            ).fetchone()
+        finally:
+            connection.close()
+        assert receipt and receipt[0] == "applied" and revision_row, {
+            "apply_id": expected_apply_id, "receipt": receipt,
+        }
+        assert receipt[1] == int(json.loads(revision_row[0])), {
+            "apply_id": expected_apply_id, "receipt_revision": receipt[1],
+            "current_revision": revision_row[0],
+        }
+
+        nft_paths = {
+            "candidate": dataplane_dir / "candidate.nft",
+            "applied": dataplane_dir / "applied.nft",
+            "last_good": state / "last-good" / "dataplane" / "last-good.nft",
+        }
+        nft_hashes: dict[str, str] = {}
+        for label, path in nft_paths.items():
+            assert path.stat().st_size <= MAX_CORE_NFT_JSON, {
+                "nft_artifact": label, "bytes": path.stat().st_size,
+            }
+            content = path.read_bytes()
+            try:
+                nft_text = content.decode("utf-8")
+            except UnicodeError as exc:
+                raise AssertionError(f"rendered {label} nft artifact was not UTF-8") from exc
+            assert _nft_set_text_contains_ipv4(nft_text, "vpn_ipv4", "198.51.100.77"), label
+            assert _nft_set_text_contains_ipv4(nft_text, "direct_ipv4", "203.0.113.53"), label
+            nft_hashes[label] = hashlib.sha256(content).hexdigest()
+        assert nft_hashes["candidate"] == nft_hashes["applied"] == nft_hashes["last_good"], nft_hashes
+        native_membership = native_global_rule_set_membership()
+        assert all(native_membership.values()), native_membership
+        return {
+            "effective_rules_sha256": hashlib.sha256(rules_bytes).hexdigest(),
+            "protected_direct_sha256": hashlib.sha256("\n".join(protected).encode("utf-8")).hexdigest(),
+            "manual_rule_pairs": manual_pairs,
+            "nft_sha256": nft_hashes,
+            "native_membership": native_membership,
+        }
+
+    try:
+        # Import under the established fixed-without-target state to avoid
+        # probing before the managed VPN owner has materialized the native
+        # inventory. The single synthetic endpoint below is an owned packet
+        # fixture listener, not an external provider or arbitrary target.
+        post_apply({"mode": "direct", "requested_by": "hosted-acceptance", "run_now": True})
+        post_apply({"server_mode": "fixed", "requested_by": "hosted-acceptance", "run_now": True})
+        routing_code, routing_response = http_json(f"{api}/routing/global")
+        initial_routing = ((routing_response.get("data") or {}).get("routing") or {})
+        assert routing_code == 200 and routing_response.get("ok") is True, routing_response
+        assert (initial_routing.get("desired_mode"), initial_routing.get("applied_mode"),
+                initial_routing.get("server_mode"), initial_routing.get("desired_fixed_server_id"),
+                initial_routing.get("applied_fixed_server_id")) == ("direct", "direct", "fixed", None, None), initial_routing
+
+        code, imported = http_json(
+            f"{api}/subscription", method="POST",
+            payload={"urls": [source.url], "requested_by": "hosted-acceptance-synthetic"}, timeout=90,
+        )
+        assert code == 200 and imported.get("ok") is True, imported
+        assert source.snapshot_requests() == 2, {
+            "import_owner_synthetic_source_requests": source.snapshot_requests(),
+        }
+        assert source_bridge.snapshot_calls() == provider_calls_before_fixture, {
+            "provider_bridge_calls_after_import": True,
+        }
+        imported_data = imported.get("data") if isinstance(imported.get("data"), dict) else {}
+        auto_select = imported_data.get("auto_select")
+        assert isinstance(auto_select, dict) and auto_select.get("status") == "skipped_no_fixed_target", imported
+        enable_vpn_from_synthetic_subscription(api, state, source.url)
+        assert source.snapshot_requests() == 4, {
+            "managed_vpn_owner_additional_synthetic_source_requests": source.snapshot_requests(),
+        }
+        assert source_bridge.snapshot_calls() == provider_calls_before_fixture, {
+            "provider_bridge_calls_after_managed_vpn_enable": True,
+        }
+        verified = generation(api)
+        assert verified.get("status") == "verified", verified
+        assert verified.get("candidate_digest") == verified.get("verified_digest"), verified
+        assert_native_matches_active(native, state / "xray" / "config.json")
+        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
+        bindings_path = state / "xray" / "fwrouter-bindings.json"
+        assert bindings_path.is_file(), "managed synthetic Xray enable did not materialize runtime bindings"
+
+        # Resolve the imported candidate read-only, then establish eligibility,
+        # auto mode, and selection exclusively through public owner APIs.
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        try:
+            connection.execute("PRAGMA query_only=ON")
+            member_rows = connection.execute(
+                "SELECT logical_server_id, member_config_json FROM logical_server_members "
+                "WHERE is_active=1 AND json_extract(member_config_json, '$.server')=? "
+                "AND json_extract(member_config_json, '$.port')=? LIMIT 2",
+                (ENDPOINT_IP, ENDPOINT_SELECTOR_PORT),
+            ).fetchall()
+        finally:
+            connection.close()
+        packet_target_ids = []
+        for logical_server_id, member_config_json in member_rows:
+            try:
+                member_config = json.loads(member_config_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if (isinstance(member_config, dict)
+                    and member_config.get("server") == ENDPOINT_IP
+                    and member_config.get("port") == ENDPOINT_SELECTOR_PORT):
+                packet_target_ids.append(str(logical_server_id))
+        assert len(packet_target_ids) == 1, {
+            "owned_packet_target_count": len(packet_target_ids),
+            "owned_endpoint": ENDPOINT_IP,
+            "owned_port": ENDPOINT_SELECTOR_PORT,
+        }
+        packet_target_id = packet_target_ids[0]
+
+        def packet_selection_snapshot(api_url: str) -> dict[str, Any]:
+            status_code, response = http_json(f"{api_url}/selector/vpn-auto/state")
+            data = response.get("data") if isinstance(response, dict) else None
+            selector_state = data.get("vpn_auto") if isinstance(data, dict) else None
+            selector_state = selector_state if isinstance(selector_state, dict) else {}
+            runtime_selectors = selector_state.get("selector_runtime")
+            runtime_selectors = runtime_selectors if isinstance(runtime_selectors, dict) else {}
+            fence = _read_packet_selection_fence()
+            snapshot = {
+                "server_mode": selector_state.get("server_mode"),
+                "active_auto_server_id": selector_state.get("active_auto_server_id"),
+                "active_auto_target_valid": selector_state.get("active_auto_target_valid"),
+                "runtime_vpn_auto_contains_target": packet_runtime_name
+                in selector_state.get("runtime_vpn_auto_targets", []),
+                "vpn_auto_now": runtime_selectors.get("vpn_auto_now"),
+                "vpn_global_now": runtime_selectors.get("vpn_global_now"),
+                "selection_revision": fence.get("revision"),
+                "fenced_active_server_id": fence.get("active_server_id"),
+                "fenced_provenance_server_id": fence.get("provenance_server_id"),
+            }
+            assert (status_code == 200 and response.get("ok") is True
+                    and snapshot.get("server_mode") == "auto"
+                    and snapshot.get("active_auto_server_id") == packet_target_id
+                    and snapshot.get("active_auto_target_valid") is True
+                    and snapshot.get("runtime_vpn_auto_contains_target") is True
+                    and snapshot.get("vpn_auto_now") == packet_runtime_name
+                    and snapshot.get("vpn_global_now") == "vpn-auto"
+                    and snapshot.get("fenced_active_server_id") == packet_target_id
+                    and snapshot.get("fenced_provenance_server_id") == packet_target_id
+                    and type(snapshot.get("selection_revision")) is int), {
+                "status": status_code,
+                "selection": snapshot,
+            }
+            return snapshot
+
+        preference_code, preference = http_json(
+            f"{api}/servers/{packet_target_id}/preferences", method="PATCH",
+            payload={"vpn_auto": True, "vpn_auto_priority": 1, "reconcile_mihomo": True,
+                     "requested_by": "hosted-acceptance-packet-legacy-fixture"},
+        )
+        preference_data = preference.get("data") if isinstance(preference, dict) else None
+        server_preferences = (preference_data.get("server_preferences")
+                              if isinstance(preference_data, dict) else None)
+        preference_server = server_preferences.get("server") if isinstance(server_preferences, dict) else None
+        preferences = preference_server.get("preferences") if isinstance(preference_server, dict) else None
+        preferences = preferences if isinstance(preferences, dict) else {}
+        assert (preference_code == 200 and preference.get("ok") is True
+                and preferences.get("vpn_auto") is True
+                and preferences.get("vpn_auto_priority") == 1), {
+            "preference_status": preference_code,
+            "vpn_auto_enabled": preferences.get("vpn_auto") is True,
+            "priority": preferences.get("vpn_auto_priority"),
+        }
+        selector_code, selector_response = http_json(
+            f"{api}/selector/vpn-auto/switch", method="POST",
+            payload={"confirm_switch": True, "exclude_active": False, "update_ping_state": False,
+                     "limit": 20, "timeout_ms": 1000,
+                     "reason": "hosted_packet_legacy_selectable_fixture"}, timeout=90,
+        )
+        selector_data = selector_response.get("data") if isinstance(selector_response, dict) else None
+        selector_result = selector_data.get("selector") if isinstance(selector_data, dict) else None
+        selector_result = selector_result if isinstance(selector_result, dict) else {}
+        assert (selector_code == 200 and selector_response.get("ok") is True
+                and selector_result.get("ok") is True and selector_result.get("selected_server_id") == packet_target_id
+                and selector_result.get("active_after") == packet_target_id
+                and selector_result.get("selection_outcome") in {"selected", "noop"}), {
+            "selector_status": selector_code,
+            "selected_owned_packet_target": selector_result.get("selected_server_id") == packet_target_id,
+            "active_owned_packet_target": selector_result.get("active_after") == packet_target_id,
+            "selection_outcome": selector_result.get("selection_outcome"),
+        }
+        post_apply({"server_mode": "auto", "requested_by": "hosted-acceptance", "run_now": True})
+        routing_code, routing_response = http_json(f"{api}/routing/global")
+        routing_data = routing_response.get("data") if isinstance(routing_response, dict) else None
+        routing_projection = routing_data.get("routing") if isinstance(routing_data, dict) else None
+        routing_projection = routing_projection if isinstance(routing_projection, dict) else {}
+        assert (routing_code == 200 and routing_response.get("ok") is True
+                and routing_projection.get("server_mode") == "auto"
+                and routing_projection.get("desired_mode") == "direct"
+                and routing_projection.get("applied_mode") == "direct"), routing_response
+        selector_runtime_code, selector_runtime = http_json("http://127.0.0.1:5200/proxies/vpn-auto")
+        from fwrouter_api.services.logical_topology import get_logical_runtime_name
+        packet_runtime_name = get_logical_runtime_name(packet_target_id)
+        assert (selector_runtime_code == 200 and selector_runtime.get("now") == packet_runtime_name), {
+            "native_selector_status": selector_runtime_code,
+            "native_target_matches_owned_packet_candidate": (
+                isinstance(selector_runtime, dict) and selector_runtime.get("now") == packet_runtime_name
+            ),
+        }
+        packet_selection_baseline = packet_selection_snapshot(api)
+        packet_config = yaml.safe_load((state / "generated" / "mihomo" / "config.yaml").read_bytes())
+        packet_proxies = packet_config.get("proxies") if isinstance(packet_config, dict) else None
+        packet_proxy = ([row for row in packet_proxies if isinstance(row, dict)
+                         and row.get("type") == "vless" and row.get("server") == ENDPOINT_IP
+                         and row.get("port") == ENDPOINT_SELECTOR_PORT]
+                        if isinstance(packet_proxies, list) else [])
+        packet_groups = packet_config.get("proxy-groups") if isinstance(packet_config, dict) else None
+        packet_group = ([row for row in packet_groups if isinstance(row, dict)
+                         and row.get("name") == packet_runtime_name]
+                        if isinstance(packet_groups, list) else [])
+        group_members = packet_group[0].get("proxies") if len(packet_group) == 1 else None
+        assert (len(packet_proxy) == 1 and len(packet_group) == 1
+                and isinstance(group_members, list)
+                and group_members == [packet_proxy[0].get("name")]), {
+            "owned_packet_proxy_count": len(packet_proxy),
+            "owned_logical_group_count": len(packet_group),
+            "logical_group_contains_only_owned_member": bool(
+                len(packet_proxy) == 1 and isinstance(group_members, list)
+                and group_members == [packet_proxy[0].get("name")]
+            ),
+        }
+        vpn_auto_group = ([row for row in packet_groups if isinstance(row, dict)
+                           and row.get("name") == "vpn-auto"] if isinstance(packet_groups, list) else [])
+        vpn_auto_members = vpn_auto_group[0].get("proxies") if len(vpn_auto_group) == 1 else None
+        assert (isinstance(vpn_auto_members, list) and packet_runtime_name in vpn_auto_members), {
+            "vpn_auto_group_contains_owned_logical_target": (
+                isinstance(vpn_auto_members, list) and packet_runtime_name in vpn_auto_members
+            ),
+        }
+        assert_native_matches_active(native, state / "xray" / "config.json")
+        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
+        assert source_bridge.snapshot_calls() == provider_calls_before_fixture, {
+            "provider_bridge_calls_changed_during_fixture_setup": True,
+        }
+        # The adapter uses two bounded request profiles for each owner refresh;
+        # the import and managed-VPN enable account for all four loopback GETs.
+        assert source.snapshot_requests() == 4, {
+            "synthetic_source_requests_during_fixture_setup": source.snapshot_requests(),
+        }
+
+        # Manual rules apply performs the real DNSmasq reconciliation as part
+        # of finalization. Prepare the already-qualified packet fixture first:
+        # it redirects generated files into this suite's owned directory and
+        # supplies the real pinned daemon while leaving the read-only root intact.
+        dns_fixture_code, dns_fixture = http_json(f"{api}/__acceptance/dns53/configure", method="POST")
+        assert (dns_fixture_code == 200 and dns_fixture.get("ok") is True
+                and dns_fixture.get("fixture_configured") is True
+                and dns_fixture.get("daemon_running") is False
+                and dns_fixture.get("nftset_support") is True
+                and isinstance(dns_fixture.get("dnsmasq_version"), str)
+                and dns_fixture["dnsmasq_version"].startswith("Dnsmasq version 2.90")), dns_fixture
+
+        # Capture Xray state only after the real managed lifecycle established
+        # its bindings. Seed the rules artifact through its owner; these
+        # documentation-range destinations do not prove external VPN access.
+        synthetic_rules = "VPN 198.51.100.77\nDIRECT 203.0.113.53"
+        native_before_rules_fixture = native_fingerprint()
+        rules_code, rules_saved = http_json(
+            f"{api}/rules/manual", method="POST", payload={"text": synthetic_rules},
+        )
+        assert rules_code == 200 and rules_saved.get("ok") is True, rules_saved
+        rules_apply_code, rules_apply = http_json(
+            f"{api}/rules/manual/apply", method="POST",
+            payload={"requested_by": "hosted-acceptance-selective-fixture", "run_now": True}, timeout=90,
+        )
+        if rules_apply_code != 200 or rules_apply.get("ok") is not True:
+            failure = _rules_apply_failure_diagnostic(
+                rules_apply, rules_apply_code, protected=(synthetic_rules, source.url), phase="api_response",
+            )
+            raise AssertionError(_serialize_rules_apply_failure(failure))
+        try:
+            rules_job = await_core_job(api, rules_apply, timeout_seconds=90)
+        except AssertionError:
+            failure = _rules_apply_failure_diagnostic(
+                rules_apply, rules_apply_code, protected=(synthetic_rules, source.url), phase="job_wait",
+            )
+            raise AssertionError(_serialize_rules_apply_failure(failure)) from None
+        if not isinstance(rules_job, dict) or rules_job.get("status") != "success":
+            failure = _rules_apply_failure_diagnostic(
+                rules_apply, rules_apply_code, protected=(synthetic_rules, source.url),
+                phase="terminal_job", terminal_job=rules_job if isinstance(rules_job, dict) else None,
+            )
+            raise AssertionError(_serialize_rules_apply_failure(failure))
+        rules_artifact = json.loads((state / "generated" / "rules" / "effective-rules.json").read_text(
+            encoding="utf-8",
+        ))
+        effective_rules = rules_artifact.get("rules") if isinstance(rules_artifact, dict) else None
+        assert isinstance(effective_rules, list) and effective_rules, rules_artifact
+        assert any(item.get("action") == "VPN" and item.get("value") == "198.51.100.77"
+                   for item in effective_rules if isinstance(item, dict)), rules_artifact
+        assert any(item.get("action") == "DIRECT" and item.get("value") == "203.0.113.53"
+                   for item in effective_rules if isinstance(item, dict)), rules_artifact
+        assert any(item.get("source") == "protected" and item.get("action") == "DIRECT"
+                   for item in effective_rules if isinstance(item, dict)), rules_artifact
+        protected_direct_baseline = protected_direct_rows()
+        assert protected_direct_baseline, "rules owner did not emit canonical protected DIRECT rows"
+        assert_owned_dns_daemon(api)
+        native_after_rules_fixture = native_fingerprint()
+        xray_native_fields = {
+            "xray_active", "xray_mounted", "xray_loaded", "xray_bindings", "xray_last_good",
+            "xray_incarnation", "xray_reload_calls",
+        }
+        assert all(native_after_rules_fixture.get(key) == native_before_rules_fixture.get(key)
+                   for key in xray_native_fields), {
+            key: (native_before_rules_fixture.get(key), native_after_rules_fixture.get(key))
+            for key in sorted(xray_native_fields)
+            if native_after_rules_fixture.get(key) != native_before_rules_fixture.get(key)
+        }
+        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
+
+        native_before_selective_default = native_fingerprint()
+        post_apply({"selective_default": "vpn", "requested_by": "hosted-acceptance", "run_now": True})
+        assert native_fingerprint() == native_before_selective_default, {
+            "before": native_before_selective_default,
+            "after": native_fingerprint(),
+            "contract": "global direct selective-default update leaves runtime unchanged",
+        }
+        native_before_selective_mode = native_fingerprint()
+        direct_mihomo_config = yaml.safe_load(
+            (state / "generated" / "mihomo" / "config.yaml").read_text(encoding="utf-8"),
+        )
+        direct_subrules = direct_mihomo_config.get("sub-rules") if isinstance(direct_mihomo_config, dict) else None
+        direct_transparent_rules = direct_subrules.get("fwrouter-transparent") if isinstance(direct_subrules, dict) else None
+        assert isinstance(direct_transparent_rules, list) and direct_transparent_rules[-1] == "MATCH,DIRECT", {
+            "transparent_fallback": (
+                direct_transparent_rules[-1]
+                if isinstance(direct_transparent_rules, list) and direct_transparent_rules else None
+            ),
+        }
+        mihomo_proxy_surface_before = hashlib.sha256(json.dumps(
+            {
+                "proxies": direct_mihomo_config.get("proxies"),
+                "proxy-groups": direct_mihomo_config.get("proxy-groups"),
+            }, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        packet_selection_before_selective_mode = packet_selection_snapshot(api)
+        assert packet_selection_before_selective_mode == packet_selection_baseline, {
+            "initial_selector_state_changed_before_selective_mode": True,
+            "initial": packet_selection_baseline,
+            "before_selective_mode": packet_selection_before_selective_mode,
+        }
+        selective_mode_job = post_apply(
+            {"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True},
+        )
+        packet_selective_selection_baseline = packet_selection_snapshot(api)
+        selection_fields = set(packet_selection_before_selective_mode) - {"selection_revision"}
+        assert (packet_selective_selection_baseline["selection_revision"]
+                == packet_selection_before_selective_mode["selection_revision"] + 1
+                and all(packet_selective_selection_baseline[key]
+                        == packet_selection_before_selective_mode[key] for key in selection_fields)), {
+            "selector_identity_or_provenance_changed_during_selective_apply": {
+                key: (packet_selection_before_selective_mode.get(key),
+                      packet_selective_selection_baseline.get(key))
+                for key in sorted(selection_fields)
+                if packet_selective_selection_baseline.get(key) != packet_selection_before_selective_mode.get(key)
+            },
+            "selection_revision_before": packet_selection_before_selective_mode["selection_revision"],
+            "selection_revision_after": packet_selective_selection_baseline["selection_revision"],
+            "expected_revision_increment": 1,
+        }
+        assert protected_direct_rows() == protected_direct_baseline
+        native_after_selective_apply = native_fingerprint()
+        assert all(native_after_selective_apply.get(key) == native_before_selective_mode.get(key)
+                   for key in xray_native_fields), {
+            key: (native_before_selective_mode.get(key), native_after_selective_apply.get(key))
+            for key in sorted(xray_native_fields)
+            if native_after_selective_apply.get(key) != native_before_selective_mode.get(key)
+        }
+        selective_config_path = state / "generated" / "mihomo" / "config.yaml"
+        assert_mihomo_launch_matches_active(native, selective_config_path)
+        selective_mihomo_config = yaml.safe_load(selective_config_path.read_text(encoding="utf-8"))
+        selective_subrules = selective_mihomo_config.get("sub-rules") if isinstance(selective_mihomo_config, dict) else None
+        transparent_rules = selective_subrules.get("fwrouter-transparent") if isinstance(selective_subrules, dict) else None
+        mihomo_proxy_surface_after = hashlib.sha256(json.dumps(
+            {
+                "proxies": selective_mihomo_config.get("proxies"),
+                "proxy-groups": selective_mihomo_config.get("proxy-groups"),
+            }, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        assert mihomo_proxy_surface_after == mihomo_proxy_surface_before, {
+            "proxies_proxy_groups_sha256_before": mihomo_proxy_surface_before,
+            "proxies_proxy_groups_sha256_after": mihomo_proxy_surface_after,
+        }
+        assert isinstance(transparent_rules, list) and transparent_rules[-2:] == [
+            "MATCH,vpn-global", "NETWORK,udp,REJECT",
+        ], {
+            "transparent_policy_tail": transparent_rules[-2:] if isinstance(transparent_rules, list) else None,
+        }
+        selective_fwrouter_metadata = selective_mihomo_config.get("fwrouter") if isinstance(selective_mihomo_config, dict) else None
+        assert isinstance(selective_fwrouter_metadata, dict)
+        assert selective_fwrouter_metadata.get("transparent_final_match_rule") == "MATCH,vpn-global", {
+            "transparent_final_match_rule": selective_fwrouter_metadata.get("transparent_final_match_rule"),
+            "selective_default": selective_fwrouter_metadata.get("resolved_selective_default"),
+        }
+        status, routing_result = http_json(f"{api}/routing/global")
+        routing = routing_result.get("data", {}).get("routing", {})
+        enforcement = routing_result.get("data", {}).get("runtime_enforcement", {})
+        assert status == 200 and routing_result.get("ok") is True
+        assert (routing.get("desired_mode"), routing.get("applied_mode"), routing.get("selective_default")) == (
+            "selective", "selective", "vpn",
+        ), routing
+        assert enforcement.get("traffic_enforcement_guaranteed") is True, enforcement
+        assert enforcement.get("enforcement_level") == "global_selective_enforced", enforcement
+        assert enforcement.get("active_mode_matches_intent") is True, enforcement
+        assert enforcement.get("selective_vpn_policy_ready") is True, enforcement
+        assert enforcement.get("vpn_egress_ready") is True, enforcement
+        missing_requirements = enforcement.get("missing_runtime_requirements")
+        assert isinstance(missing_requirements, list) and missing_requirements == [], enforcement
+        assert enforcement.get("supported_modes", {}).get("vpn") is True, enforcement
+        runtime_code, runtime_response = http_json(f"{api}/runtime")
+        runtime = ((runtime_response.get("data") or {}).get("runtime") or {})
+        dataplane = runtime.get("dataplane") if isinstance(runtime.get("dataplane"), dict) else {}
+        live_payload = dataplane.get("details") if isinstance(dataplane.get("details"), dict) else {}
+        live_chains = live_payload.get("required_chains") if isinstance(live_payload.get("required_chains"), dict) else {}
+        assert runtime_code == 200 and runtime_response.get("ok") is True, runtime_response
+        assert live_payload.get("ok") is True and live_payload.get("table_exists") is True, live_payload
+        # These host-script flags prove owned policy-routing readiness; they do not
+        # prove an external client transport or VPN endpoint connectivity.
+        assert live_payload.get("vpn_policy_required") is True, live_payload
+        assert live_payload.get("vpn_contract_ready") is True, live_payload
+        assert live_payload.get("vpn_external_path_verified") is True, live_payload
+        assert live_chains and all(value is True for value in live_chains.values()), live_chains
+        mihomo_code, mihomo_response = http_json(f"{api}/mihomo")
+        mihomo = (((mihomo_response.get("data") or {}).get("mihomo"))
+                  if isinstance(mihomo_response.get("data"), dict) else {})
+        mihomo_details = mihomo.get("details") if isinstance(mihomo, dict) else {}
+        vpn_policy = mihomo_details.get("vpn_udp_policy") if isinstance(mihomo_details, dict) else {}
+        selectors = mihomo_details.get("selectors") if isinstance(mihomo_details, dict) else {}
+        assert mihomo_code == 200 and mihomo_response.get("ok") is True, mihomo_response
+        assert isinstance(vpn_policy, dict) and all(vpn_policy.get(key) is True for key in (
+            "policy_installed", "wiring_proven", "reconcile_receipt_matches",
+            "native_top_level_rules_match", "selector_membership_matches", "guarded_rules_match",
+        )), vpn_policy
+        assert isinstance(selectors, dict), mihomo_details
+        vpn_auto_targets = selectors.get("vpn_auto_targets")
+        vpn_global_targets = selectors.get("vpn_global_targets")
+        assert isinstance(vpn_auto_targets, list) and vpn_auto_targets, selectors
+        assert isinstance(vpn_global_targets, list) and vpn_global_targets, selectors
+        assert "REJECT" in [str(item).upper() for item in vpn_auto_targets], selectors
+        assert "REJECT" in [str(item).upper() for item in vpn_global_targets], selectors
+        assert "DIRECT" not in [str(item).upper() for item in vpn_auto_targets], selectors
+        assert "DIRECT" not in [str(item).upper() for item in vpn_global_targets], selectors
+        assert selectors.get("vpn_global_now") == "vpn-auto", selectors
+        applied_manifest = json.loads(
+            (state / "generated" / "dataplane" / "applied-manifest.json").read_text(encoding="utf-8"),
+        )
+        applied_routing = applied_manifest.get("routing_global_state")
+        selective_apply_id = mutation_apply_id(selective_mode_job)
+        assert applied_manifest.get("plan_id") == selective_apply_id, applied_manifest
+        assert (isinstance(applied_routing, dict)
+                and applied_routing.get("desired_mode") == "selective"
+                and applied_routing.get("applied_mode") == initial_routing.get("applied_mode")
+                and applied_routing.get("selective_default") == "vpn"), applied_manifest
+        rules_source_baseline = global_rules_source_fingerprint(
+            selective_apply_id,
+            previous_applied_mode=str(initial_routing.get("applied_mode")),
+        )
+
+        connection = sqlite3.connect(state / "fwrouter.db", timeout=5)
+        try:
+            assert connection.execute(
+                "DELETE FROM settings WHERE key='subscriptions.native_generation.v1'",
+            ).rowcount == 1
+            connection.commit()
+        finally:
+            connection.close()
+        digest_code, digest_result = http_json(
+            f"{api}/__acceptance/subscription/legacy-inventory-digest",
+        )
+        expected_digest = digest_result.get("digest")
+        assert digest_code == 200 and digest_result.get("ok") is True
+        assert isinstance(expected_digest, str) and re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+        disabled_code, disabled = http_json(
+            f"{api}/modules/core/desired-state", method="POST",
+            payload={"desired_state": "disabled", "requested_by": "hosted-acceptance", "run_now": False},
+        )
+        enabled_code, enabled = http_json(
+            f"{api}/modules/core/desired-state", method="POST",
+            payload={"desired_state": "enabled", "requested_by": "hosted-acceptance", "run_now": False},
+        )
+        assert disabled_code == enabled_code == 200 and disabled.get("ok") and enabled.get("ok")
+        pending = enabled.get("data", {}).get("module", {})
+        assert pending.get("desired_state") == "enabled" and pending.get("apply_state") == "pending", pending
+        core_apply_job = post_apply(
+            {"mode": "selective", "requested_by": "hosted-acceptance", "run_now": True},
+        )
+        core_apply_id = mutation_apply_id(core_apply_job)
+        assert global_rules_source_fingerprint(
+            core_apply_id,
+            previous_applied_mode="selective",
+        ) == rules_source_baseline
+        assert packet_selection_snapshot(api) == packet_selective_selection_baseline
+        assert protected_direct_rows() == protected_direct_baseline
+        assert native_fingerprint() == native_after_selective_apply, {
+            "before_core_enable_apply": native_after_selective_apply,
+            "after_core_enable_apply": native_fingerprint(),
+            "contract": "same-mode Core apply preserves Xray and Mihomo native state",
+        }
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        try:
+            core_revision_row = connection.execute(
+                "SELECT value_json FROM settings WHERE key='core.intent_revision'",
+            ).fetchone()
+            core_module_row = connection.execute(
+                "SELECT desired_state, apply_state FROM modules WHERE module_name='core'",
+            ).fetchone()
+            core_receipt_row = connection.execute(
+                "SELECT apply_id, status, core_intent_revision FROM apply_versions WHERE apply_id=?",
+                (core_apply_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        assert core_revision_row and core_module_row == ("enabled", "clean") and core_receipt_row
+        assert (core_receipt_row[0] == core_apply_id and core_receipt_row[1] == "applied"
+                and core_receipt_row[2] == int(json.loads(core_revision_row[0]))), {
+            "module": core_module_row, "receipt": core_receipt_row,
+            "intent_revision": core_revision_row,
+        }
+        core_applied_manifest = json.loads(
+            (state / "generated" / "dataplane" / "applied-manifest.json").read_text(encoding="utf-8"),
+        )
+        assert core_applied_manifest.get("plan_id") == core_apply_id, core_applied_manifest
+        assert global_rules_source_fingerprint(
+            core_apply_id,
+            previous_applied_mode="selective",
+        ) == rules_source_baseline
+
+        native_before_admission = native_fingerprint()
+        calls_before_admission = source_bridge.snapshot_calls()
+        requests_before_admission = source.snapshot_requests()
+        admission_code, admission = http_json(
+            f"{api}/__acceptance/subscription/admit-legacy-inventory", method="POST",
+            payload={"expected_digest": expected_digest}, timeout=90,
+        )
+        assert admission_code == 200 and admission.get("ok") is True, admission
+        assert (admission.get("status") == "verified" and admission.get("digest") == expected_digest
+                and admission.get("proof_receipt_written") is True), admission
+        assert admission.get("mutation_attempts") == {
+            "xray_apply_or_reload": 0, "mihomo_apply_or_reload": 0,
+            "core_dataplane_apply_or_rollback": 0, "unexpected_http_request": 0,
+        }, admission
+        assert generation(api).get("status") == "verified"
+        assert source_bridge.snapshot_calls() == calls_before_admission
+        assert source.snapshot_requests() == requests_before_admission
+        assert native_fingerprint() == native_before_admission, {
+            "contract": "proof-only legacy admission does not change native state or binding bytes",
+        }
+        assert (state / "xray" / ".generation" / "generation-checkpoint.json").exists() is False
+        receipt_path = state / "generated" / "mihomo" / "reconcile-state.json"
+
+        def mihomo_receipt_semantics() -> dict[str, Any]:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            incarnation = native.rpc("mihomo_incarnation", {}).get("details", {}).get("stdout", "").strip()
+            return {
+                "active_config_hash": receipt.get("active_config_hash"),
+                "runtime_incarnation": receipt.get("runtime_incarnation"),
+                "version": receipt.get("version"),
+                "udp_policy_version": receipt.get("udp_policy_version"),
+                "native_proof": (
+                    receipt.get("native_top_level_rules_match"),
+                    receipt.get("native_selector_membership_match"),
+                    receipt.get("subrule_config_guard_match"),
+                ),
+                "runtime_incarnation_readback": incarnation,
+            }
+
+        receipt_before_startup = mihomo_receipt_semantics()
+        before_startup_native, before_startup_bindings = startup_native_snapshot()
+        before_startup_profile_snapshots = subscription_profile_snapshot_rows()
+        before_startup_server_overrides, before_startup_user_overrides = subject_override_rows()
+        before_startup_durable = durable_fingerprint(core_apply_id)
+        before_startup_subjects = subject_bootstrap_fingerprint()
+        before_startup_inventory_rows = subject_inventory_rows()
+        marker_before_startup = generation(api)
+
+        previous_worker = stack["worker"]
+        previous_worker.terminate()
+        previous_worker.wait(timeout=5)
+        worker, restarted_api = stack["start_worker"](startup_tasks=True, startup_recovery=True)
+        stack["worker"], stack["api"] = worker, restarted_api
+
+        after_first_startup_native, after_first_startup_bindings = startup_native_snapshot()
+        _assert_xray_bindings_startup_equivalent(before_startup_bindings, after_first_startup_bindings)
+        after_first_startup_profile_snapshots = subscription_profile_snapshot_rows()
+        _assert_subscription_profile_startup_equivalent(
+            before_startup_profile_snapshots, after_first_startup_profile_snapshots,
+        )
+        after_first_server_overrides, after_first_user_overrides = subject_override_rows()
+        _assert_subject_overrides_startup_equivalent(
+            before_startup_server_overrides, after_first_server_overrides,
+            before_startup_user_overrides, after_first_user_overrides,
+            allow_first_startup_owner=True,
+        )
+        assert generation(restarted_api) == marker_before_startup
+        assert global_rules_source_fingerprint(
+            core_apply_id,
+            previous_applied_mode="selective",
+        ) == rules_source_baseline
+        assert packet_selection_snapshot(restarted_api) == packet_selective_selection_baseline
+        assert after_first_startup_native == before_startup_native
+        assert durable_fingerprint(core_apply_id) == before_startup_durable
+        assert protected_direct_rows() == protected_direct_baseline
+        after_first_startup_subjects = subject_bootstrap_fingerprint()
+        assert_builtin_bootstrap_rows(before_startup_subjects, after_first_startup_subjects)
+        builtin_subject_ids = {"fwrouter:global", "host:ssh"}
+        allowed_bootstrap_additions = builtin_subject_ids - {
+            row["subject_id"] for row in before_startup_inventory_rows
+        }
+        _assert_subject_inventory_startup_equivalent(
+            before_startup_inventory_rows,
+            subject_inventory_rows(),
+            allowed_added_ids=allowed_bootstrap_additions,
+        )
+        assert source_bridge.snapshot_calls() == calls_before_admission
+        assert source.snapshot_requests() == requests_before_admission
+        assert_native_matches_active(native, state / "xray" / "config.json")
+        assert_mihomo_launch_matches_active(native, state / "generated" / "mihomo" / "config.yaml")
+        assert mihomo_receipt_semantics() == receipt_before_startup
+        receipt_after_startup = mihomo_receipt_semantics()
+        assert receipt_after_startup.get("active_config_hash") == hashlib.sha256(
+            (state / "generated" / "mihomo" / "config.yaml").read_bytes()
+        ).hexdigest(), receipt_after_startup
+        assert receipt_after_startup.get("runtime_incarnation") == receipt_after_startup.get(
+            "runtime_incarnation_readback",
+        ), receipt_after_startup
+        assert receipt_after_startup.get("native_proof") == (True, True, True), receipt_after_startup
+        report_code, bootstrap_report = http_json(
+            f"{restarted_api}/__acceptance/bootstrap/report",
+        )
+        assert report_code == 200 and bootstrap_report.get("completed") is True, bootstrap_report
+        assert bootstrap_report.get("recovery_enabled") is True and bootstrap_report.get("foundation_ok") is True
+        live_recovery = bootstrap_report.get("live_recovery", {})
+        intended = bootstrap_report.get("apply_reconcile", {}).get("intended_routing", {})
+        scoped = bootstrap_report.get("apply_reconcile", {}).get("scoped_subject_routing", {})
+        xray_recovery = bootstrap_report.get("apply_reconcile", {}).get("xray_subscription_profiles", {})
+        profile_promotion = xray_recovery.get("public_profile_promote", {})
+        dns_reconcile = bootstrap_report.get("apply_reconcile", {}).get("dnsmasq_reconcile", {})
+        live_routing = live_recovery.get("live_routing", {})
+        selector = live_recovery.get("selector", {})
+        assert live_routing.get("recovery_required") is False and live_routing.get("recovered") is False
+        assert selector.get("ok") is True and selector.get("restored") is True
+        assert selector.get("changed") is False and selector.get("skipped") is False, selector
+        assert (intended.get("mode_matches") is True and intended.get("reapply_required") is False
+                and intended.get("reapplied") is False), intended
+        assert (scoped.get("classify_probe_ok") is True and scoped.get("reapply_required") is False
+                and scoped.get("reapplied") is False and scoped.get("persisted_scoped_subjects_count") == 0), scoped
+        assert (xray_recovery.get("ok") is True
+                and xray_recovery.get("status") in {"success", "noop", "skipped"}
+                and xray_recovery.get("error_code") is None), xray_recovery
+        assert (isinstance(profile_promotion, dict)
+                and type(profile_promotion.get("profiles_count")) is int
+                and profile_promotion.get("profiles_count") >= 0
+                and type(profile_promotion.get("nodes_count")) is int
+                and profile_promotion.get("nodes_count") >= 0), xray_recovery
+        assert dns_reconcile.get("ok") is True, dns_reconcile
+        assert bootstrap_report.get("dns_fixture") == {
+            "configured": True, "daemon_running": True, "daemon_uid_matches": True,
+        }, bootstrap_report
+        assert_owned_dns_daemon(restarted_api)
+
+        # A second ordinary startup must be idempotent after the one exact,
+        # documented first-run built-in subject initialization above.
+        stable_native, stable_bindings = startup_native_snapshot()
+        stable_profile_snapshots = subscription_profile_snapshot_rows()
+        stable_server_overrides, stable_user_overrides = subject_override_rows()
+        stable_durable = durable_fingerprint(core_apply_id)
+        stable_subjects = subject_bootstrap_fingerprint()
+        stable_inventory_rows = subject_inventory_rows()
+        stable_marker = generation(restarted_api)
+        previous_worker = stack["worker"]
+        previous_worker.terminate()
+        previous_worker.wait(timeout=5)
+        worker, restarted_api = stack["start_worker"](startup_tasks=True, startup_recovery=True)
+        stack["worker"], stack["api"] = worker, restarted_api
+        after_second_startup_native, after_second_startup_bindings = startup_native_snapshot()
+        _assert_xray_bindings_startup_equivalent(stable_bindings, after_second_startup_bindings)
+        after_second_startup_profile_snapshots = subscription_profile_snapshot_rows()
+        _assert_subscription_profile_startup_equivalent(
+            stable_profile_snapshots, after_second_startup_profile_snapshots,
+        )
+        after_second_server_overrides, after_second_user_overrides = subject_override_rows()
+        _assert_subject_overrides_startup_equivalent(
+            stable_server_overrides, after_second_server_overrides,
+            stable_user_overrides, after_second_user_overrides,
+            allow_first_startup_owner=False,
+        )
+        assert generation(restarted_api) == stable_marker
+        assert global_rules_source_fingerprint(
+            core_apply_id,
+            previous_applied_mode="selective",
+        ) == rules_source_baseline
+        assert packet_selection_snapshot(restarted_api) == packet_selective_selection_baseline
+        assert after_second_startup_native == stable_native
+        assert durable_fingerprint(core_apply_id) == stable_durable
+        after_second_startup_subjects = subject_bootstrap_fingerprint()
+        assert_builtin_bootstrap_rows(stable_subjects, after_second_startup_subjects)
+        _assert_subject_inventory_startup_equivalent(stable_inventory_rows, subject_inventory_rows())
+        assert source_bridge.snapshot_calls() == calls_before_admission
+        assert source.snapshot_requests() == requests_before_admission
+        report_code, second_report = http_json(f"{restarted_api}/__acceptance/bootstrap/report")
+        assert report_code == 200 and second_report.get("completed") is True, second_report
+        second_intended = second_report.get("apply_reconcile", {}).get("intended_routing", {})
+        second_scoped = second_report.get("apply_reconcile", {}).get("scoped_subject_routing", {})
+        second_xray = second_report.get("apply_reconcile", {}).get("xray_subscription_profiles", {})
+        second_profile_promotion = second_xray.get("public_profile_promote", {})
+        second_dns = second_report.get("apply_reconcile", {}).get("dnsmasq_reconcile", {})
+        second_live = second_report.get("live_recovery", {})
+        second_live_routing = second_live.get("live_routing", {})
+        second_selector = second_live.get("selector", {})
+        assert second_report.get("recovery_enabled") is True and second_report.get("foundation_ok") is True
+        assert second_live_routing.get("recovery_required") is False and second_live_routing.get("recovered") is False
+        assert second_selector.get("ok") is True and second_selector.get("restored") is True
+        assert second_selector.get("changed") is False and second_selector.get("skipped") is False
+        assert (second_intended.get("mode_matches") is True and second_intended.get("reapply_required") is False
+                and second_intended.get("reapplied") is False), second_intended
+        assert (second_scoped.get("classify_probe_ok") is True and second_scoped.get("reapply_required") is False
+                and second_scoped.get("reapplied") is False
+                and second_scoped.get("persisted_scoped_subjects_count") == 0), second_scoped
+        assert (second_xray.get("ok") is True
+                and second_xray.get("status") in {"success", "noop", "skipped"}
+                and second_xray.get("error_code") is None), second_xray
+        assert (isinstance(second_profile_promotion, dict)
+                and type(second_profile_promotion.get("profiles_count")) is int
+                and second_profile_promotion.get("profiles_count") >= 0
+                and type(second_profile_promotion.get("nodes_count")) is int
+                and second_profile_promotion.get("nodes_count") >= 0), second_xray
+        assert second_dns.get("ok") is True, second_dns
+        assert protected_direct_rows() == protected_direct_baseline
+        assert second_report.get("dns_fixture") == {
+            "configured": True, "daemon_running": True, "daemon_uid_matches": True,
+        }, second_report
+        assert_owned_dns_daemon(restarted_api)
+    finally:
+        source.close()
+
+
+def _packet_tree_fingerprint(root: Path, *, excluded: set[str] | None = None) -> tuple[tuple[str, str], ...]:
+    excluded_paths = excluded or set()
+    if not root.exists():
+        return ()
+    entries = []
+    for path in sorted(root.rglob("*")):
+        assert not path.is_symlink(), f"unexpected packet qualification symlink: {path.name}"
+        if path.is_dir():
+            continue
+        assert path.is_file(), f"unexpected packet qualification artifact: {path.name}"
+        relative = path.relative_to(root).as_posix()
+        if relative not in excluded_paths:
+            entries.append((relative, hashlib.sha256(path.read_bytes()).hexdigest()))
+    return tuple(entries)
 
 
 def _role_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None,

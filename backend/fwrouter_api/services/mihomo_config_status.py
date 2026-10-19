@@ -4,7 +4,7 @@ import json
 import os
 from typing import Any
 
-from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
+from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, NON_SERVER_PROXY_TARGETS
 from fwrouter_api.services.mihomo_config_paths import (
     FULL_VPN_RULE_NAME,
     TRANSPARENT_TPROXY_RULE_NAME,
@@ -22,6 +22,45 @@ from fwrouter_api.services.mihomo_config_rules import (
     _resolved_selective_default,
 )
 from fwrouter_api.services.mihomo_config_proxies import _ensure_selector_groups
+from fwrouter_api.services.custom_servers import resolve_mihomo_runtime_proxy_rows
+
+
+def _resolve_active_auto_runtime_target(
+    logical_server_id: str,
+    *,
+    expected_targets: set[str],
+) -> str | None:
+    """Resolve one selected logical ID to its unique generated Mihomo target."""
+    rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
+    matches: list[tuple[dict[str, Any], str]] = []
+    for row in rows:
+        if not isinstance(row, dict) or str(row.get("server_id") or "").strip() != logical_server_id:
+            continue
+        raw = row.get("raw")
+        if not isinstance(raw, dict):
+            continue
+        runtime_target = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or "").strip()
+        if runtime_target:
+            matches.append((raw, runtime_target))
+    if len(matches) != 1:
+        return None
+
+    _raw, runtime_target = matches[0]
+    if runtime_target in NON_SERVER_PROXY_TARGETS:
+        return None
+    if runtime_target not in expected_targets:
+        return None
+    aliases = 0
+    for row in rows:
+        raw = row.get("raw") if isinstance(row, dict) else None
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or "").strip()
+        if name == runtime_target:
+            aliases += 1
+            if aliases > 1:
+                return None
+    return runtime_target
 
 
 def _config_structural_fingerprint(config: dict[str, Any]) -> dict[str, Any]:
@@ -227,7 +266,13 @@ def mihomo_runtime_satisfies_routing(routing: dict[str, Any] | None = None) -> d
             or str(selectors.get("vpn_auto_selected_target") or "").strip() == "REJECT"
         )
     elif server_mode == "auto" and expected_auto_server:
-        selector_ok = selector_ok and str(selectors.get("vpn_auto_now") or "").strip() == expected_auto_server
+        expected_runtime_target = _resolve_active_auto_runtime_target(
+            expected_auto_server,
+            expected_targets=expected_native_members.get("vpn-auto", set()),
+        )
+        selector_ok = selector_ok and expected_runtime_target is not None and (
+            str(selectors.get("vpn_auto_now") or "").strip() == expected_runtime_target
+        )
     elif server_mode == "auto":
         # An empty owned pool is a valid installed fail-closed policy only
         # when the selector explicitly resolves to its terminal REJECT target.

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import http.client
-import http.server
 import json
 import os
 import re
@@ -19,6 +18,7 @@ from uuid import NAMESPACE_DNS, uuid5
 import yaml
 
 from .http_support import http_json
+from .synthetic_subscription import SyntheticSubscriptionSource, synthetic_vless_profile
 from .xray_support import (
     active_identities,
     assert_applied_bindings,
@@ -35,8 +35,6 @@ from .xray_support import (
 _PROVIDER_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
 _PROVIDER_WORKER_LOG_MAX_FILES = 16
 _PROVIDER_WORKER_LOG_MAX_APPEND_BYTES = 64 * 1024
-
-
 def current_xray_subject_identity_pairs(database_path: Path) -> set[tuple[str, str]]:
     """Read the canonical active Xray subject identities from a synthetic DB."""
     connection = sqlite3.connect(database_path, timeout=5)
@@ -128,57 +126,6 @@ def _synthetic_file_fingerprint(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-class _SyntheticSubscriptionSource:
-    """Serve a mutable synthetic profile on a suite-owned loopback socket."""
-
-    def __init__(self, payload: dict) -> None:
-        self._lock = threading.Lock()
-        self._body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        self._request_count = 0
-        source = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                if self.path != "/synthetic-subscription":
-                    self.send_error(404)
-                    return
-                with source._lock:
-                    source._request_count += 1
-                    body = source._body
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, fmt: str, *args) -> None:
-                return
-
-        self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._server.daemon_threads = False
-        self._server.block_on_close = True
-        self._thread = threading.Thread(
-            target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True,
-        )
-        self._thread.start()
-        self.url = f"http://127.0.0.1:{self._server.server_port}/synthetic-subscription"
-
-    def replace(self, payload: dict) -> None:
-        body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        with self._lock:
-            self._body = body
-
-    def snapshot_requests(self) -> int:
-        with self._lock:
-            return self._request_count
-
-    def close(self) -> None:
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=3)
-        assert not self._thread.is_alive(), "synthetic subscription source did not stop"
-
-
 def _snapshot_provider_worker_logs(root):
     """Capture identity and byte offsets for this suite-owned worker log set."""
     root_info = root.lstat()
@@ -238,44 +185,6 @@ def _provider_worker_records_since(root, snapshot):
             if isinstance(record, dict):
                 records.append(record)
     return records
-
-
-def _synthetic_vless_profile(*, short_id_suffix: str, include_third_member: bool) -> dict:
-    def outbound(index: int) -> dict:
-        return {
-            "tag": f"synthetic-member-{index}",
-            "protocol": "vless",
-            "settings": {"vnext": [{
-                "address": f"synthetic-member-{index}.example.invalid",
-                "port": 443,
-                "users": [{
-                    "id": str(uuid5(NAMESPACE_DNS, f"pending-generation-member-{index}")),
-                    "encryption": "none",
-                    "flow": "xtls-rprx-vision",
-                }],
-            }]},
-            "streamSettings": {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "serverName": f"synthetic-member-{index}.example.invalid",
-                    "publicKey": "CQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-                    "shortId": f"{index + 1:02x}" * 8 if not short_id_suffix else f"{index + 1:02x}{short_id_suffix}",
-                    "fingerprint": "chrome",
-                },
-            },
-        }
-
-    count = 3 if include_third_member else 2
-    return {
-        "remarks": "acceptance-pending-generation-profile",
-        "outbounds": [outbound(index) for index in range(count)] + [
-            {"tag": "direct", "protocol": "freedom"},
-            {"tag": "reject", "protocol": "blackhole"},
-            {"tag": "dns", "protocol": "dns"},
-        ],
-        "routing": {"rules": [{"type": "field", "outboundTag": "direct"}]},
-    }
 
 
 def test_email_client_generation_persists_and_matches_native_after_worker_restart(acceptance_stack):
@@ -441,7 +350,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
 
     def profile(*, changed_short_ids: bool, add_member: bool) -> dict:
         suffix = "a1b2c3d4e5f607" if changed_short_ids else ""
-        return _synthetic_vless_profile(short_id_suffix=suffix, include_third_member=add_member)
+        return synthetic_vless_profile(short_id_suffix=suffix, include_third_member=add_member)
 
     def add_profile_member(value: dict, index: int) -> dict:
         """Create strict ordered growth while preserving every existing outbound."""
@@ -550,7 +459,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
             for item in sorted(directory.iterdir()) if item.is_file() and not item.is_symlink()
         }
 
-    source = _SyntheticSubscriptionSource(profile(changed_short_ids=False, add_member=False))
+    source = SyntheticSubscriptionSource(profile(changed_short_ids=False, add_member=False))
     try:
         initial = import_source(source.url)
         assert initial.get("ok") is True, {
@@ -619,6 +528,7 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         restarted_worker, restarted_api = stack["start_worker"]()
         stack["worker"], stack["api"] = restarted_worker, restarted_api
         assert_generation_routing(restarted_api)
+
         assert generation_state(restarted_api) == pending
         recovery_code, recovery = http_json(
             f"{restarted_api}/__acceptance/xray/startup-generation-recovery",

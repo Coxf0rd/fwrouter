@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 import pytest
 
+from fwrouter_api.adapters.mihomo import NON_SERVER_PROXY_TARGETS
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services import mihomo_config as mihomo_config_service
@@ -203,6 +204,251 @@ def test_mihomo_runtime_matching_scalar_metadata_keeps_policy_and_native_checks(
     assert result["selector_native_membership_ok"] is True
     assert result["transparent_ok"] is True
     assert health_calls == [True]
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_ok"),
+    [
+        ("logical_profile_runtime_name", True),
+        ("ordinary_proxy_name", True),
+        ("unknown_logical_id", False),
+        ("missing_logical_id", False),
+        ("duplicate_runtime_alias", False),
+        ("global_only_target", False),
+        ("stale_native_target", False),
+        ("native_logical_id", False),
+        ("empty_reject_pool", True),
+        ("fixed_mode", False),
+    ],
+)
+def test_mihomo_runtime_resolves_auto_logical_target_to_unique_generated_name(
+    monkeypatch,
+    tmp_path: Path,
+    case: str,
+    expected_ok: bool,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    logical_id = "sub:logical-vpn-target"
+    runtime_name = "Logical VPN group [a1b2c3d4]"
+    empty_pool = case == "empty_reject_pool"
+    unknown_id = case == "unknown_logical_id"
+    if not empty_pool and not unknown_id:
+        _seed_runtime_proxy_server(
+            logical_id, server_name="Logical VPN", vpn_auto=case != "global_only_target", global_list=True,
+        )
+        raw = {"name": runtime_name, "type": "socks5", "server": "203.0.113.12", "port": 1080}
+        if case != "ordinary_proxy_name":
+            raw["_fwrouter_runtime_name"] = runtime_name
+        if case not in {"ordinary_proxy_name", "duplicate_runtime_alias"}:
+            raw["_fwrouter_topology"] = {
+                "kind": "logical_profile", "runtime_policy": "fallback",
+                "endpoints": [{"identity": "sub:fixture-member", "runtime": {
+                    "type": "socks5", "server": "203.0.113.13", "port": 1080,
+                }}],
+            }
+        with db_session() as connection:
+            connection.execute(
+                "UPDATE servers SET raw_json = ? WHERE server_id = ?",
+                (json.dumps(raw), logical_id),
+            )
+            if case == "missing_logical_id":
+                connection.execute("UPDATE servers SET inventory_state = 'missing' WHERE server_id = ?", (logical_id,))
+        if case == "duplicate_runtime_alias":
+            _seed_runtime_proxy_server(
+                "other:duplicate-target", server_name="Other VPN", vpn_auto=True, global_list=True,
+            )
+            with db_session() as connection:
+                connection.execute(
+                    "UPDATE servers SET raw_json = ? WHERE server_id = ?",
+                    (json.dumps(raw), "other:duplicate-target"),
+                )
+        if case == "global_only_target":
+            other_runtime_name = "Independent VPN target"
+            _seed_runtime_proxy_server(
+                "other:eligible-target", server_name=other_runtime_name, vpn_auto=True, global_list=True,
+            )
+
+    routing = {
+        "desired_mode": "selective", "applied_mode": "selective",
+        "selective_default": "vpn", "server_mode": "fixed" if case == "fixed_mode" else "auto",
+        "active_auto_server_id": None if empty_pool else "sub:unknown-target" if unknown_id else logical_id,
+    }
+    transparent_rules = ["MATCH,vpn-global", "NETWORK,udp,REJECT"]
+    full_vpn_rules = ["MATCH,vpn-global", "NETWORK,udp,REJECT"]
+    metadata = {
+        "resolved_selective_default": "vpn",
+        "final_match_rule": "MATCH,DIRECT",
+        "transparent_final_match_rule": "MATCH,vpn-global",
+    }
+    runtime_proxies = []
+    if case == "ordinary_proxy_name":
+        runtime_proxies.append({
+            "name": runtime_name, "type": "socks5", "server": "203.0.113.12", "port": 1080,
+        })
+    if case == "global_only_target":
+        runtime_proxies.append({
+            "name": "Independent VPN target", "type": "socks5", "server": "203.0.113.14", "port": 1080,
+        })
+    config = {
+        "proxies": runtime_proxies,
+        "sub-rules": {
+            "fwrouter-transparent": transparent_rules,
+            "fwrouter-full-vpn": full_vpn_rules,
+        },
+        "proxy-groups": [],
+    }
+    config["proxy-groups"] = mihomo_config_status_service._ensure_selector_groups(config)
+    groups_by_name = {group["name"]: group for group in config["proxy-groups"]}
+    auto_targets = groups_by_name["vpn-auto"]["proxies"]
+    global_targets = groups_by_name["vpn-global"]["proxies"]
+    native_now = {
+        "stale_native_target": "stale-native-name",
+        "native_logical_id": logical_id,
+        "empty_reject_pool": "REJECT",
+        "global_only_target": "Independent VPN target",
+    }.get(case, runtime_name)
+    monkeypatch.setattr(mihomo_config_status_service, "_scan_fwrouter_config_metadata", lambda _path: metadata)
+    monkeypatch.setattr(mihomo_config_status_service, "_safe_load_yaml", lambda _path: config)
+    monkeypatch.setattr(
+        mihomo_config_status_service,
+        "_build_mihomo_config_with_source",
+        lambda _routing: ([], {
+            "transparent_rules": transparent_rules,
+            "full_vpn_rules": full_vpn_rules,
+        }),
+    )
+    monkeypatch.setattr(
+        mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
+        "health",
+        lambda: SimpleNamespace(
+            runtime_state="running",
+            active_server_id=runtime_name,
+            details={
+                "selectors": {
+                    "vpn_global_exists": True,
+                    "vpn_global_has_vpn_auto": True,
+                    "vpn_global_now": "vpn-auto",
+                    "vpn_auto_targets": auto_targets,
+                    "vpn_auto_now": native_now,
+                    "vpn_auto_selected_target": native_now,
+                    "vpn_global_targets": global_targets,
+                    "subject_selector_targets": {},
+                },
+                "config": {"fwrouter_contours": {"transparent_vpn": {
+                    "transparent_tcp_ready": True,
+                    "transparent_udp_ready": True,
+                    "transparent_tcp_listener_socket_present": True,
+                    "transparent_udp_listener_socket_present": True,
+                }}},
+            },
+        ),
+    )
+
+    result = mihomo_config_status_service.mihomo_runtime_satisfies_routing(routing)
+
+    assert result["ok"] is expected_ok
+    assert result["selector_ok"] is expected_ok
+    assert result["selector_native_membership_ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("proxy_name", "is_reserved"),
+    [(name, True) for name in sorted(NON_SERVER_PROXY_TARGETS)] + [("reject", False)],
+)
+def test_mihomo_runtime_distinguishes_reserved_alias_from_custom_proxy_name(
+    monkeypatch,
+    tmp_path: Path,
+    proxy_name: str,
+    is_reserved: bool,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    selected_id = f"custom-https:{proxy_name.lower()}"
+    other_id = "ordinary:eligible-vpn"
+    other_name = "Independent eligible VPN"
+    _seed_runtime_proxy_server(
+        selected_id, server_name=proxy_name, vpn_auto=True, global_list=True,
+    )
+    _seed_runtime_proxy_server(other_id, server_name=other_name, vpn_auto=True, global_list=True)
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO server_custom_https_proxy (server_id, proxy_type, host, port) "
+            "VALUES (?, 'socks5', 'proxy.example.test', 1080)",
+            (selected_id,),
+        )
+
+    routing = {
+        "desired_mode": "selective", "applied_mode": "selective",
+        "selective_default": "vpn", "server_mode": "auto",
+        "active_auto_server_id": selected_id,
+    }
+    transparent_rules = ["MATCH,vpn-global", "NETWORK,udp,REJECT"]
+    full_vpn_rules = ["MATCH,vpn-global", "NETWORK,udp,REJECT"]
+    config = {
+        "proxies": [
+            {"name": proxy_name, "type": "socks5", "server": "203.0.113.20", "port": 1080},
+            {"name": other_name, "type": "socks5", "server": "203.0.113.21", "port": 1080},
+        ],
+        "sub-rules": {
+            "fwrouter-transparent": transparent_rules,
+            "fwrouter-full-vpn": full_vpn_rules,
+        },
+        "proxy-groups": [],
+    }
+    config["proxy-groups"] = mihomo_config_status_service._ensure_selector_groups(config)
+    groups_by_name = {group["name"]: group for group in config["proxy-groups"]}
+    auto_targets = groups_by_name["vpn-auto"]["proxies"]
+    global_targets = groups_by_name["vpn-global"]["proxies"]
+    assert other_name in auto_targets
+    assert len(auto_targets) >= 3
+    metadata = {
+        "resolved_selective_default": "vpn",
+        "final_match_rule": "MATCH,DIRECT",
+        "transparent_final_match_rule": "MATCH,vpn-global",
+    }
+    monkeypatch.setattr(mihomo_config_status_service, "_scan_fwrouter_config_metadata", lambda _path: metadata)
+    monkeypatch.setattr(mihomo_config_status_service, "_safe_load_yaml", lambda _path: config)
+    monkeypatch.setattr(
+        mihomo_config_status_service,
+        "_build_mihomo_config_with_source",
+        lambda _routing: ([], {
+            "transparent_rules": transparent_rules,
+            "full_vpn_rules": full_vpn_rules,
+        }),
+    )
+    monkeypatch.setattr(
+        mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
+        "health",
+        lambda: SimpleNamespace(
+            runtime_state="running",
+            active_server_id=proxy_name,
+            details={
+                "selectors": {
+                    "vpn_global_exists": True,
+                    "vpn_global_has_vpn_auto": True,
+                    "vpn_global_now": "vpn-auto",
+                    "vpn_auto_targets": auto_targets,
+                    "vpn_auto_now": proxy_name,
+                    "vpn_auto_selected_target": proxy_name,
+                    "vpn_global_targets": global_targets,
+                    "subject_selector_targets": {},
+                },
+                "config": {"fwrouter_contours": {"transparent_vpn": {
+                    "transparent_tcp_ready": True,
+                    "transparent_udp_ready": True,
+                    "transparent_tcp_listener_socket_present": True,
+                    "transparent_udp_listener_socket_present": True,
+                }}},
+            },
+        ),
+    )
+
+    result = mihomo_config_status_service.mihomo_runtime_satisfies_routing(routing)
+
+    assert result["ok"] is (not is_reserved)
+    assert result["selector_ok"] is (not is_reserved)
+    assert result["selector_native_membership_ok"] is True
 
 
 def _seed_runtime_proxy_server(
