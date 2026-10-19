@@ -564,7 +564,10 @@ def test_fixed_logical_profile_materialization_requires_owned_group_and_native_m
                 "vpn_global_has_vpn_auto": False,
                 "vpn_global_targets": ["REJECT", group_name],
                 "vpn_auto_targets": ["REJECT"],
-                "vpn_global_now": "REJECT",
+                # Real adapter hides non-server REJECT from active identity,
+                # while retaining the raw independently observed selection.
+                "vpn_global_now": None,
+                "vpn_global_selected_target": "REJECT",
             }},
         ),
     )
@@ -590,6 +593,8 @@ def test_fixed_logical_profile_materialization_requires_owned_group_and_native_m
     assert proof["ok"] is True, proof
     assert proof["fixed_runtime_target"] == group_name
     assert proof["logical_group_native_membership_ok"] is True
+    assert proof["selected_fixed_target"] is False
+    assert proof["vpn_global_now"] == "REJECT"
     assert group_readbacks == [group_name]
 
     native_members[:] = [{"runtime_identity": "unexpected-member"}]

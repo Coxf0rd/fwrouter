@@ -187,6 +187,7 @@ def _install_synthetic_generation_owner(monkeypatch, tmp_path: Path) -> None:
             "ok": True,
             "fixed_runtime_target": "Fixed Display [ab12cd34]",
             "vpn_global_now": "REJECT",
+            "vpn_global_selected_target": "REJECT",
             "selected_fixed_target": bool(require_selected),
         },
     )

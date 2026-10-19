@@ -228,7 +228,9 @@ def mihomo_runtime_fixed_target_materialized(
     selectors = details.get("selectors") if isinstance(details.get("selectors"), dict) else {}
     native_global = set(selectors.get("vpn_global_targets") or [])
     native_auto = set(selectors.get("vpn_auto_targets") or [])
-    current_global = str(selectors.get("vpn_global_now") or "").strip()
+    # Active server identity intentionally filters REJECT. Use fresh raw
+    # selector readback, preserving fail-closed REJECT as positive evidence.
+    current_global = str(selectors.get("vpn_global_selected_target") or "").strip()
     fixed_mode = bool(_fixed_routing_server_id(routing))
     native_membership_ok = bool(
         selectors.get("vpn_global_exists")
@@ -256,16 +258,11 @@ def mihomo_runtime_fixed_target_materialized(
             or (not require_selected and current_global == "REJECT")
         )
     )
-    selected_ok = bool(
-        not require_selected
-        or (
-            current_global == target
-            and str(selectors.get("vpn_global_selected_target") or "").strip() == target
-        )
-    )
+    selected_ok = current_global == target
+    selection_requirement_ok = not require_selected or selected_ok
     return {
-        "ok": runtime_state == "running" and native_membership_ok and selected_ok and logical_group_native_membership_ok,
-        "reason": None if runtime_state == "running" and native_membership_ok and selected_ok and logical_group_native_membership_ok else "fixed_target_native_membership_unverified",
+        "ok": runtime_state == "running" and native_membership_ok and selection_requirement_ok and logical_group_native_membership_ok,
+        "reason": None if runtime_state == "running" and native_membership_ok and selection_requirement_ok and logical_group_native_membership_ok else "fixed_target_native_membership_unverified",
         "runtime_state": runtime_state,
         "config_membership_ok": config_membership_ok,
         "native_membership_ok": native_membership_ok,

@@ -1248,3 +1248,10 @@ def test_get_json_stream_parse_and_status_errors_close_stream_without_changing_e
     status_response = status_refs[0]()
     assert status_response is not None and getattr(status_response, "_content", None) is None
     assert status_streams[0].was_closed
+
+
+def test_raw_reject_selector_observation_is_distinct_from_active_server_identity(tmp_path: Path) -> None:
+    adapter = MihomoHttpAdapter(config_path=tmp_path / "config.yaml")
+    proxies = {"vpn-global": {"now": "REJECT", "all": ["REJECT", "fixed-target"]}}
+    assert adapter._selected_proxy_id("vpn-global", proxies=proxies) is None
+    assert adapter._selected_target("vpn-global", proxies=proxies) == "REJECT"
