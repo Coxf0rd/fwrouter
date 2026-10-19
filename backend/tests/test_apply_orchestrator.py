@@ -1,5 +1,7 @@
 import hashlib
 
+import pytest
+
 from fwrouter_api.services import apply_orchestrator as orchestrator
 from fwrouter_api.services import apply_orchestrator_public as public_api
 from fwrouter_api.services import apply_orchestrator_server_handlers as server_handlers
@@ -272,3 +274,45 @@ def test_generic_server_mode_holds_shared_owner_across_native_and_commit(monkeyp
     with db_session() as connection:
         row = connection.execute("SELECT server_mode FROM routing_global_state WHERE id=1").fetchone()
     assert row["server_mode"] == "fixed"
+
+
+@pytest.mark.parametrize("routing_state", ["clean", "pending", "failed", "different_mode"])
+def test_core_pending_same_mode_reads_settled_fixed_intent_not_apply_projection(monkeypatch, routing_state):
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services import core_intent
+    from fwrouter_api.services import apply_orchestrator_global_handlers as handlers
+    from fwrouter_api.services.server_state import ensure_routing_global_state, get_routing_global_state
+    from fwrouter_api.services.mihomo_config_status import _fixed_intent_is_clean_and_unexpired
+
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute("INSERT INTO servers(server_id, server_name, provider_name, inventory_state, raw_json) VALUES ('synthetic-fixed','Synthetic Fixed','pytest','active','{}')")
+        connection.execute("UPDATE modules SET desired_state='enabled', lifecycle_mode='managed', apply_state='pending' WHERE module_name='core'")
+        connection.execute("""UPDATE routing_global_state SET desired_mode='selective', applied_mode='selective',
+                           server_mode='fixed', desired_fixed_server_id='synthetic-fixed',
+                           applied_fixed_server_id='synthetic-fixed', fixed_server_until=datetime('now','+1 day'),
+                           apply_state='clean', error_code=NULL, error_message=NULL WHERE id=1""")
+        if routing_state == "different_mode":
+            connection.execute("UPDATE routing_global_state SET applied_mode='vpn' WHERE id=1")
+        elif routing_state != "clean":
+            connection.execute("UPDATE routing_global_state SET apply_state=? WHERE id=1", (routing_state,))
+    routing = get_routing_global_state(expire_ttl=False)
+    monkeypatch.setattr(core_intent, 'read_core_runtime_context', lambda: {'boot_id': 'test', 'network_namespace_inode': '1'})
+    monkeypatch.setattr(orchestrator, 'get_routing_snapshot', lambda: dict(routing))
+    monkeypatch.setattr(orchestrator, '_current_routing_drift', lambda **kwargs: {'detected': False})
+    monkeypatch.setattr(orchestrator, '_applied_manifest_routing_drift', lambda **kwargs: {'detected': False})
+    monkeypatch.setattr(orchestrator, 'validate_global_mode_request', lambda *args, **kwargs: {'ok': True})
+    monkeypatch.setattr(orchestrator, 'touch_job_running', lambda *args: None)
+
+    def fresh_native_proof(snapshot):
+        if routing_state == "clean":
+            assert snapshot['apply_state'] == 'clean'
+            assert _fixed_intent_is_clean_and_unexpired(snapshot)
+        else:
+            assert snapshot['apply_state'] == 'applying'
+            assert not _fixed_intent_is_clean_and_unexpired(snapshot)
+        raise RuntimeError('SETTLED_FIXED_PROOF_REACHED')
+
+    monkeypatch.setattr(orchestrator, 'mihomo_runtime_satisfies_routing', fresh_native_proof)
+    with pytest.raises(RuntimeError, match='SETTLED_FIXED_PROOF_REACHED'):
+        handlers._execute_set_global_mode({'job_id': 'synthetic', 'requested_by': 'pytest'}, {'mode': 'selective'})

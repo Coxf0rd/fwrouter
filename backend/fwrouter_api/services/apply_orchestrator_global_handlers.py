@@ -145,7 +145,18 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             "reason": "global_direct_does_not_change_mihomo_config",
         }
     else:
-        mihomo_reconcile = orchestrator.mihomo_runtime_satisfies_routing(future_routing)
+        # A same-mode Core enable applies authority, not a new fixed selection.
+        # Its native proof must retain the settled persisted selection snapshot;
+        # the future apply-state is only a planning projection. Real changes
+        # still use future routing and the normal generation owner.
+        readiness_routing = (
+            routing
+            if str(routing.get("server_mode") or "auto") == "fixed"
+            and routing.get("desired_mode") == routing.get("applied_mode") == mode
+            and routing.get("apply_state") == "clean"
+            else future_routing
+        )
+        mihomo_reconcile = orchestrator.mihomo_runtime_satisfies_routing(readiness_routing)
         if mihomo_reconcile.get("ok"):
             mihomo_reconcile = {
                 **mihomo_reconcile,
