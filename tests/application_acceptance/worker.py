@@ -1865,6 +1865,7 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
     from fwrouter_api.services import apply_orchestrator
 
     original = apply_orchestrator._build_failure_result
+    original_satisfies = apply_orchestrator.mihomo_runtime_satisfies_routing
     lock = threading.Lock()
     state = {"records": 0}
     limit = 16
@@ -1930,27 +1931,79 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
         }
         return summary
 
+    def emit(event: str, summary: dict[str, Any]) -> None:
+        with lock:
+            allowed = state["records"] < limit
+            if allowed:
+                state["records"] += 1
+        if not allowed:
+            return
+        try:
+            payload = {"schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
+                       "event": event, "summary": summary}
+            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            if len(encoded.encode("ascii")) <= max_bytes:
+                sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE " + encoded + "\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
+
+    def observed_satisfies(routing: Any = None) -> Any:
+        result = original_satisfies(routing)
+        try:
+            if not isinstance(result, dict) or result.get("ok") is not True:
+                reasons = {
+                    "fwrouter_metadata_mismatch", "vpn_selector_config_mismatch",
+                    "mihomo_health_failed", "active_mihomo_runtime_mismatch",
+                }
+                reason = result.get("reason") if isinstance(result, dict) else None
+                metadata = result.get("metadata") if isinstance(result, dict) else None
+                expected = result.get("expected") if isinstance(result, dict) else None
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                if not isinstance(expected, dict):
+                    expected = {}
+                groups = result.get("actual_groups") if isinstance(result, dict) else None
+                expected_groups = result.get("expected_groups") if isinstance(result, dict) else None
+                summary = {
+                    "ok": result.get("ok") is True if isinstance(result, dict) else False,
+                    "reason": reason if isinstance(reason, str) and reason in reasons else "other",
+                    "metadata_comparisons": {
+                        key: metadata.get(key) == expected.get(key)
+                        for key in ("resolved_selective_default", "final_match_rule",
+                                    "transparent_final_match_rule")
+                        if key in metadata and key in expected
+                    },
+                    "policy_comparisons": {
+                        key: expected.get(key) is True
+                        for key in ("transparent_udp_policy_ok", "full_vpn_udp_policy_ok")
+                        if key in expected
+                    },
+                    "selector_group_counts": {
+                        "expected": min(len(expected_groups), 1000)
+                        if isinstance(expected_groups, dict) else None,
+                        "actual": min(len(groups), 1000) if isinstance(groups, dict) else None,
+                    },
+                    "runtime_state": result.get("runtime_state") if isinstance(result, dict)
+                    and result.get("runtime_state") in {"running", "stopped", "error", "unknown"} else None,
+                    "predicates": safe_flag_map(
+                        result, ("selector_ok", "selector_native_membership_ok", "transparent_ok",
+                                 "metadata_ok", "vpn_egress_ready")),
+                }
+                emit("runtime_satisfaction_failure", summary)
+        except Exception:
+            pass
+        return result
+
     def observed_failure(*args: Any, **kwargs: Any) -> Any:
         details = kwargs.get("details")
         summary = safe_summary(details)
         if summary is not None:
-            with lock:
-                allowed = state["records"] < limit
-                if allowed:
-                    state["records"] += 1
-            if allowed:
-                try:
-                    payload = {"schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
-                               "event": "failure_result_input", "summary": summary}
-                    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-                    if len(encoded.encode("ascii")) <= max_bytes:
-                        sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE " + encoded + "\n")
-                        sys.stderr.flush()
-                except Exception:
-                    pass
+            emit("failure_result_input", summary)
         return original(*args, **kwargs)
 
     apply_orchestrator._build_failure_result = observed_failure
+    apply_orchestrator.mihomo_runtime_satisfies_routing = observed_satisfies
 
 
 def _install_acceptance_recovery_apply_observer() -> None:

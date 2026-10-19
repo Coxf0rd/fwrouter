@@ -3750,12 +3750,29 @@ class AcceptanceContractTests(unittest.TestCase):
         exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
         calls = []
         returned = {"unchanged": True}
+        satisfies_calls = []
+        satisfies_returned = {
+            "ok": False, "reason": "fwrouter_metadata_mismatch",
+            "metadata": {"resolved_selective_default": "secret-runtime-value"},
+            "expected": {"resolved_selective_default": "secret-expected-value"},
+            "selector_ok": False, "transparent_ok": True,
+        }
+        satisfies_failure = RuntimeError("secret exception")
+        raise_satisfies = {"enabled": False}
 
         def original(*args, **kwargs):
             calls.append((args, kwargs))
             return returned
 
-        apply_orchestrator = SimpleNamespace(_build_failure_result=original)
+        def original_satisfies(*args, **kwargs):
+            satisfies_calls.append((args, kwargs))
+            if raise_satisfies["enabled"]:
+                raise satisfies_failure
+            return satisfies_returned
+
+        apply_orchestrator = SimpleNamespace(
+            _build_failure_result=original, mihomo_runtime_satisfies_routing=original_satisfies,
+        )
         services = ModuleType("fwrouter_api.services")
         services.apply_orchestrator = apply_orchestrator
         reconcile = {
@@ -3780,6 +3797,14 @@ class AcceptanceContractTests(unittest.TestCase):
                     "FWROUTER_APPLICATION_ACCEPTANCE_ROOT": "/tmp/fwrouter-application-acceptance",
                 }), mock.patch("sys.stderr", observed):
             namespace["_install_acceptance_mihomo_reconcile_failure_observer"]()
+            routing = {"active_auto_server_id": "secret-server-id"}
+            self.assertIs(satisfies_returned, apply_orchestrator.mihomo_runtime_satisfies_routing(routing))
+            self.assertEqual([((routing,), {})], satisfies_calls)
+            raise_satisfies["enabled"] = True
+            with self.assertRaises(RuntimeError) as raised:
+                apply_orchestrator.mihomo_runtime_satisfies_routing(routing)
+            self.assertIs(satisfies_failure, raised.exception)
+            self.assertEqual([((routing,), {}), ((routing,), {})], satisfies_calls)
             result = None
             for _ in range(17):
                 result = apply_orchestrator._build_failure_result("sentinel", details=details)
@@ -3798,9 +3823,21 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertNotIn("/private/path", text)
         self.assertNotIn("private message", text)
         self.assertNotIn("private\"", text)
+        self.assertNotIn("secret-runtime-value", text)
+        self.assertNotIn("secret-expected-value", text)
+        self.assertNotIn("secret-server-id", text)
+        self.assertNotIn("secret exception", text)
         records = [json.loads(line.split(" ", 1)[1]) for line in text.splitlines()]
         self.assertEqual(16, len(records))
-        summary = records[0]["summary"]
+        satisfaction = next(record for record in records if record["event"] == "runtime_satisfaction_failure")
+        self.assertEqual({"ok": False, "reason": "fwrouter_metadata_mismatch",
+                          "metadata_comparisons": {"resolved_selective_default": False},
+                          "policy_comparisons": {}, "selector_group_counts": {
+                              "expected": None, "actual": None},
+                          "runtime_state": None,
+                          "predicates": {"selector_ok": False, "transparent_ok": True}},
+                         satisfaction["summary"])
+        summary = next(record["summary"] for record in records if record["event"] == "failure_result_input")
         self.assertEqual("native_udp_policy_readback", summary["stage"])
         self.assertEqual("PROOF_FAILED", summary["error_code"])
         self.assertEqual(0, summary["validation"]["returncode"])
