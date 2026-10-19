@@ -915,13 +915,14 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
         packet_target_id = packet_target_ids[0]
 
         if fixed_target:
-            # Establish initial synthetic intent before the legitimate generation
-            # owner publishes Xray bindings. Changing eligibility afterwards
-            # would create real drift which strict admission must reject.
+            # Use the supported manual-only policy before owner generation.
+            # Priority -1 excludes auto selection and Xray auto-client pools;
+            # retaining the flag prevents refresh's empty-pool initial seeding.
+            # Changing eligibility after generation would be actual drift.
             preference_code, preference = http_json(
                 f"{api}/servers/{packet_target_id}/preferences", method="PATCH",
-                payload={"vpn_auto": False, "global_list": False, "reconcile_mihomo": True,
-                         "requested_by": "hosted-fixed-owner-fixture"},
+                payload={"vpn_auto": True, "vpn_auto_priority": -1, "global_list": False,
+                         "reconcile_mihomo": True, "requested_by": "hosted-fixed-owner-fixture"},
             )
             assert preference_code == 200 and preference.get("ok") is True, preference
         enable_vpn_from_synthetic_subscription(api, state, source.url)
@@ -1000,6 +1001,14 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
         from fwrouter_api.services.logical_topology import get_logical_runtime_name
         packet_runtime_name = get_logical_runtime_name(packet_target_id)
         if fixed_target:
+            connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+            try:
+                assert connection.execute(
+                    "SELECT vpn_auto, vpn_auto_priority, global_list FROM server_preferences WHERE server_id=?",
+                    (packet_target_id,),
+                ).fetchone() == (1, -1, 0), "refresh changed manual-only fixed intent"
+            finally:
+                connection.close()
             fixed_code, fixed_response = http_json(
                 f"{api}/routing/global/fixed-server", method="POST",
                 payload={"server_id": packet_target_id, "confirm_switch": True,
