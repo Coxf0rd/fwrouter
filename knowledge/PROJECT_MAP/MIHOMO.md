@@ -221,6 +221,16 @@ fence and with sufficient native proof; uncertain effects remain explicitly
 unverified. Enabled, pending and materialized membership are distinct from a
 confirmed applied fixed selection.
 
+Owned materialization and ordinary restoration have separate obligations. An
+exact-revision generation restart may use its existing owner's verification
+callback to prove fresh config/membership while the fixed selector remains
+`REJECT`; this does not select a server or complete pending intent. Ordinary
+startup/restart still refuses unsettled fixed state. The targetless compatibility
+shape is limited to persisted desired/applied Direct and never establishes fixed
+VPN proof. Active logical-profile fixed targets need their owned group and
+members generated and independently read back, including when explicitly
+selected outside the normal inventory window.
+
 Inventory verification and explicit proof-only legacy admission remain owned by
 the existing subscription generation mechanism. Missing markers do not permit
 native generation preparation. Older loaded fixed layouts with auto/global

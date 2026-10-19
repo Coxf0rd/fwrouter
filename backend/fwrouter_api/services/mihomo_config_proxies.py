@@ -81,8 +81,12 @@ def _logical_profile_members(raw: dict[str, Any], *, logical_runtime_name: str) 
     return members
 
 
-def _logical_profile_groups() -> list[dict[str, Any]]:
-    rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
+def _logical_profile_groups(*, explicit_server_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    rows = resolve_mihomo_runtime_proxy_rows(
+        inventory_state="active",
+        limit=1000,
+        explicit_server_ids=explicit_server_ids,
+    )
     groups: list[dict[str, Any]] = []
     for row in rows:
         raw = row.get("raw") if isinstance(row, dict) else None
@@ -313,7 +317,7 @@ def _merge_runtime_proxies(
     )
     active_logical_group_names = {
         str(group["name"])
-        for group in _logical_profile_groups()
+        for group in _logical_profile_groups(explicit_server_ids=explicit_server_ids)
     }
     inactive_logical_groups = _known_inactive_logical_profile_groups(
         active_group_names=active_logical_group_names,
@@ -599,8 +603,10 @@ def _ensure_selector_groups(
 ) -> list[dict[str, Any]]:
     if fixed_runtime_target is None:
         fixed_runtime_target = _fixed_runtime_target(routing)
+    fixed_server_id = _fixed_routing_server_id(routing)
+    explicit_server_ids = {fixed_server_id} if fixed_server_id else set()
     existing_groups = base_config.get("proxy-groups") if isinstance(base_config.get("proxy-groups"), list) else []
-    logical_profile_groups = _logical_profile_groups()
+    logical_profile_groups = _logical_profile_groups(explicit_server_ids=explicit_server_ids)
     stale_generated_groups = _stale_generated_logical_profile_group_names(
         base_config,
         logical_profile_groups=logical_profile_groups,
@@ -653,7 +659,6 @@ def _ensure_selector_groups(
         "proxies": [*vpn_auto_names, "REJECT"],
     }
 
-    fixed_server_id = _fixed_routing_server_id(routing)
     fixed_mode = str((routing or {}).get("server_mode") or "auto").strip().lower() == "fixed"
     targetless_direct_compat = _fixed_targetless_direct_compat(routing)
     if fixed_server_id:

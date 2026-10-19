@@ -659,6 +659,7 @@ def reconcile_mihomo_runtime(
     job_id: str = "manual",
     prepared_candidate_metadata: dict[str, Any] | None = None,
     verification_callback: Any = None,
+    generation_materialization_callback: Any = None,
     _inventory_admission: Any = None,
 ) -> dict[str, Any]:
     blocked = config.managed_runtime_operation_blocked(
@@ -1116,10 +1117,22 @@ def reconcile_mihomo_runtime(
             _inventory_admission=_inventory_admission,
             _candidate_input_fingerprint=input_fingerprint,
         )
-        restarted = config.restart_mihomo_container(
-            action=restart_action, selection_fenced=True,
-            expected_selection_revision=generation_revision,
-        )
+        restart_kwargs: dict[str, Any] = {
+            "action": restart_action,
+            "selection_fenced": True,
+            "expected_selection_revision": generation_revision,
+        }
+        fixed_server_id = str(routing_dict.get("desired_fixed_server_id") or "").strip()
+        if (
+            str(routing_dict.get("server_mode") or "auto").strip().lower() == "fixed"
+            and fixed_server_id
+            and callable(generation_materialization_callback)
+        ):
+            restart_kwargs.update({
+                "generation_verification_callback": generation_materialization_callback,
+                "operation_id": operation_id,
+            })
+        restarted = config.restart_mihomo_container(**restart_kwargs)
         recovery_checkpoint["runtime_incarnation_after"] = _mihomo_incarnation()
     verification = None
     if bool(promoted.get("ok")) and bool(restarted.get("ok")) and callable(verification_callback):

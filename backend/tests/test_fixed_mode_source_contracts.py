@@ -76,6 +76,93 @@ def test_fixed_target_outside_auto_and_global_lists_is_generated_only_for_vpn_gl
     assert runtime_name not in groups["vpn-auto"]
 
 
+def test_fixed_logical_profile_beyond_default_inventory_limit_gets_owned_group() -> None:
+    from fwrouter_api.services.custom_servers import resolve_mihomo_runtime_proxy_rows
+    from fwrouter_api.services.mihomo_config_proxies import (
+        _ensure_selector_groups,
+        _logical_profile_groups,
+        _merge_runtime_proxies,
+    )
+
+    filler_count = 1000
+    filler_rows = []
+    filler_preferences = []
+    for index in range(filler_count):
+        server_id = f"limit-filler-{index:04d}"
+        server_name = f"00 filler {index:04d}"
+        raw = {"name": server_name, "type": "socks5", "server": "198.18.0.10", "port": 12345}
+        filler_rows.append((server_id, server_name, json.dumps(raw, sort_keys=True)))
+        filler_preferences.append((server_id, 0, 1))
+
+    fixed_id = "zz-fixed-logical-profile"
+    group_name = "Fixed Logical Profile [profile123456]"
+    member_identity = "member-profile-1"
+    member_config = {
+        "type": "vless",
+        "server": "198.18.0.44",
+        "port": 443,
+        "uuid": "00000000-0000-4000-8000-000000000001",
+        "name": "Profile member",
+    }
+    target_raw = {
+        "name": group_name,
+        "_fwrouter_runtime_name": group_name,
+        "_fwrouter_topology": {
+            "kind": "logical_profile",
+            "runtime_policy": "fallback",
+            "endpoints": [{"identity": member_identity, "runtime": member_config}],
+        },
+    }
+    with db_session() as connection:
+        connection.executemany(
+            "INSERT INTO servers(server_id, server_name, provider_name, inventory_state, raw_json) "
+            "VALUES (?, ?, 'synthetic-fixed-profile-test', 'active', ?)",
+            filler_rows,
+        )
+        connection.executemany(
+            "INSERT INTO server_preferences(server_id, vpn_auto, global_list) VALUES (?, ?, ?)",
+            filler_preferences,
+        )
+        connection.execute(
+            "INSERT INTO servers(server_id, server_name, provider_name, inventory_state, raw_json) "
+            "VALUES (?, ?, 'synthetic-fixed-profile-test', 'active', ?)",
+            (fixed_id, group_name, json.dumps(target_raw, sort_keys=True)),
+        )
+        connection.execute(
+            "INSERT INTO server_preferences(server_id, vpn_auto, global_list) VALUES (?, 0, 0)",
+            (fixed_id,),
+        )
+
+    assert not any(group.get("name") == group_name for group in _logical_profile_groups())
+    explicit_rows = resolve_mihomo_runtime_proxy_rows(
+        inventory_state="active",
+        limit=1000,
+        explicit_server_ids={fixed_id},
+    )
+    assert any(row.get("server_id") == fixed_id for row in explicit_rows)
+
+    routing = {
+        "server_mode": "fixed",
+        "desired_fixed_server_id": fixed_id,
+        "applied_fixed_server_id": fixed_id,
+        "desired_mode": "selective",
+        "applied_mode": "selective",
+        "selective_default": "direct",
+    }
+    config = {"proxies": _merge_runtime_proxies({}, routing=routing), "proxy-groups": []}
+    groups = {
+        str(group.get("name")): group
+        for group in _ensure_selector_groups(config, routing=routing)
+        if isinstance(group, dict)
+    }
+    expected_member = f"{group_name} :: {member_identity[:12]}"
+    assert groups[group_name]["proxies"] == [expected_member]
+    assert any(proxy.get("name") == expected_member for proxy in config["proxies"])
+    assert groups["vpn-global"]["proxies"] == ["REJECT", group_name]
+    assert group_name not in groups["vpn-auto"]["proxies"]
+    assert expected_member not in groups["vpn-auto"]["proxies"]
+
+
 @pytest.mark.parametrize(
     "invalid_members",
     [
@@ -574,8 +661,11 @@ def test_fixed_completion_cannot_overwrite_a_newer_auto_clear_or_native_drift(
 
     monkeypatch.setattr(DEFAULT_MIHOMO_ADAPTER, "health", fake_health)
 
-    def synthetic_generation(*, routing, job_id, verification_callback):
+    def synthetic_generation(*, routing, job_id, verification_callback, generation_materialization_callback=None):
         nonlocal config
+        if routing.get("server_mode") == "fixed":
+            assert callable(generation_materialization_callback)
+            assert generation_materialization_callback is not verification_callback
         config = mihomo_config_service.build_mihomo_config(routing, xray_handoff_assignments=[])
         active_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         if str(routing.get("server_mode") or "auto").strip().lower() == "fixed":

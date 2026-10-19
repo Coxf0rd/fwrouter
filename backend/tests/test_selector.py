@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+import pytest
 from _test_support import configure_test_state_dir as _configure_env
 
 import json
@@ -140,7 +142,7 @@ def _install_synthetic_generation_owner(monkeypatch, tmp_path: Path) -> None:
         lambda: str(tmp_path / "managed-mihomo-candidate.yaml"),
     )
 
-    def fake_reconcile(*, routing, job_id, verification_callback):
+    def fake_reconcile(*, routing, job_id, verification_callback, generation_materialization_callback=None):
         with db_session() as connection:
             from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
 
@@ -1118,6 +1120,75 @@ def test_restore_mihomo_selector_state_uses_fixed_server_without_vpn_auto_restor
     assert result["ok"] is True
     assert calls == [("vpn-global", "Fixed Runtime")]
     assert result["vpn_auto_restore"]["skipped"] is True
+
+
+@pytest.mark.parametrize("stale_mode", [None, "selective", "vpn"])
+def test_restore_targetless_fixed_direct_compat_restores_legacy_auto_shaped_selector(monkeypatch, tmp_path: Path, stale_mode) -> None:
+    from fwrouter_api.services import core_intent, mihomo_runtime
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET desired_mode='direct', applied_mode='direct', server_mode='fixed',
+                desired_fixed_server_id=NULL, applied_fixed_server_id=NULL,
+                fixed_server_until=NULL, apply_state='clean',
+                error_code=NULL, error_message=NULL
+            WHERE id=1
+            """
+        )
+
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "legacy-direct-runtime")
+
+    calls: list[tuple[str, str]] = []
+    live = {"vpn-global": "REJECT"}
+
+    class Operations:
+        def health(self):
+            return SimpleNamespace(
+                runtime_state="running",
+                details={"selectors": {
+                    "vpn_global_exists": True,
+                    "vpn_global_targets": ["vpn-auto", "REJECT"],
+                    "vpn_global_now": live["vpn-global"],
+                }},
+            )
+
+        def list_servers(self):
+            return []
+
+        def apply_server_to_selector(self, selector_name: str, server_id: str):
+            calls.append((selector_name, server_id))
+            live[selector_name] = server_id
+            return SimpleNamespace(ok=True, to_dict=lambda: {"ok": True, "active_server_id": server_id})
+
+    monkeypatch.setattr(selector_service, "_active_selector_runtime", lambda: (
+        {"adapter_id": "mihomo", "capabilities": ["health", "list_servers", "apply_selector"]},
+        Operations(),
+    ))
+
+    supplied = get_routing_global_state(expire_ttl=False)
+    if stale_mode:
+        with db_session() as connection:
+            connection.execute("UPDATE routing_global_state SET desired_mode=?, applied_mode=? WHERE id=1", (stale_mode, stale_mode))
+    result = selector_service.restore_mihomo_selector_state(routing=supplied, requested_by="pytest-legacy-direct")
+
+    if stale_mode:
+        assert result["ok"] is False
+        assert calls == []
+        return
+    assert result["ok"] is True, result
+    assert result["vpn_global_restore"]["compatibility_mode"] == "targetless_fixed_direct"
+    assert result["vpn_global_restore"]["selected_fixed_target"] is False
+    assert calls == [("vpn-global", "vpn-auto")]
+    assert live["vpn-global"] == "vpn-auto"
 
 
 def test_select_vpn_auto_server_prefers_priority_when_ping_within_ratio(

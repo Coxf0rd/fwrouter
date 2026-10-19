@@ -799,6 +799,12 @@ def restore_mihomo_selector_state(
         resolved_routing.get("desired_fixed_server_id")
         or ""
     ).strip()
+    from fwrouter_api.services.mihomo_config_proxies import _fixed_targetless_direct_compat
+
+    fixed_targetless_direct_compat = bool(
+        _fixed_targetless_direct_compat(resolved_routing)
+        and not str(resolved_routing.get("applied_fixed_server_id") or "").strip()
+    )
     active_auto_server_id = str(resolved_routing.get("active_auto_server_id") or "").strip()
 
     runtime_adapter, runtime_operations = _active_selector_runtime()
@@ -866,24 +872,38 @@ def restore_mihomo_selector_state(
             fixed_revision = read_selection_revision(connection)
             fixed_core_revision = read_core_intent_revision(connection)
             persisted = connection.execute(
-                """SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id,
+                """SELECT server_mode, desired_mode, applied_mode,
+                          desired_fixed_server_id, applied_fixed_server_id,
                           fixed_server_until, apply_state, error_code, error_message,
                           datetime(fixed_server_until) IS NOT NULL
                             AND datetime(fixed_server_until) > CURRENT_TIMESTAMP AS ttl_live
                    FROM routing_global_state WHERE id=1"""
             ).fetchone()
-        settled = bool(
+        fixed_intent_clean = bool(
             persisted is not None
             and str(persisted["server_mode"] or "auto") == "fixed"
-            and str(persisted["desired_fixed_server_id"] or "")
-            and str(persisted["desired_fixed_server_id"] or "")
-            == str(persisted["applied_fixed_server_id"] or "")
-            and str(persisted["desired_fixed_server_id"] or "") == fixed_server_id
             and str(persisted["apply_state"] or "") == "clean"
             and persisted["error_code"] is None
             and persisted["error_message"] is None
-            and bool(persisted["ttl_live"])
         )
+        if fixed_targetless_direct_compat:
+            settled = bool(
+                fixed_intent_clean
+                and not str(persisted["desired_fixed_server_id"] or "").strip()
+                and not str(persisted["applied_fixed_server_id"] or "").strip()
+                and str(persisted["desired_mode"] or "").strip().lower() == "direct"
+                and str(persisted["applied_mode"] or "").strip().lower() == "direct"
+                and str(resolved_routing.get("applied_fixed_server_id") or "").strip() == ""
+            )
+        else:
+            settled = bool(
+                fixed_intent_clean
+                and str(persisted["desired_fixed_server_id"] or "").strip()
+                and str(persisted["desired_fixed_server_id"] or "")
+                == str(persisted["applied_fixed_server_id"] or "")
+                and str(persisted["desired_fixed_server_id"] or "") == fixed_server_id
+                and bool(persisted["ttl_live"])
+            )
         if not settled:
             result.update({
                 "ok": False, "blocked": True,
@@ -901,26 +921,30 @@ def restore_mihomo_selector_state(
                                         "error_code": "FIXED_RUNTIME_PROOF_UNSUPPORTED"},
             })
             return result
-        fixed_materialization = mihomo_runtime_fixed_target_materialized(resolved_routing)
-        if not fixed_materialization.get("ok"):
-            result.update({
-                "ok": False, "blocked": True,
-                "skip_reason": "fixed_runtime_membership_unverified",
-                "vpn_global_restore": {"ok": False, "blocked": True,
-                                        "error_code": "FIXED_RUNTIME_MEMBERSHIP_UNVERIFIED",
-                                        "details": fixed_materialization},
-            })
-            return result
-        fixed_server_id = str(fixed_materialization.get("fixed_runtime_target") or "")
-        if not fixed_server_id:
-            result.update({
-                "ok": False, "blocked": True,
-                "skip_reason": "fixed_runtime_mapping_unresolved",
-                "vpn_global_restore": {"ok": False, "blocked": True,
-                                        "error_code": "FIXED_RUNTIME_MAPPING_UNRESOLVED"},
-            })
-            return result
-        result["requested_vpn_global_target"] = fixed_server_id
+        if fixed_targetless_direct_compat:
+            result["fixed_targetless_direct_compat"] = True
+            result["requested_vpn_global_target"] = "vpn-auto"
+        else:
+            fixed_materialization = mihomo_runtime_fixed_target_materialized(resolved_routing)
+            if not fixed_materialization.get("ok"):
+                result.update({
+                    "ok": False, "blocked": True,
+                    "skip_reason": "fixed_runtime_membership_unverified",
+                    "vpn_global_restore": {"ok": False, "blocked": True,
+                                            "error_code": "FIXED_RUNTIME_MEMBERSHIP_UNVERIFIED",
+                                            "details": fixed_materialization},
+                })
+                return result
+            fixed_server_id = str(fixed_materialization.get("fixed_runtime_target") or "")
+            if not fixed_server_id:
+                result.update({
+                    "ok": False, "blocked": True,
+                    "skip_reason": "fixed_runtime_mapping_unresolved",
+                    "vpn_global_restore": {"ok": False, "blocked": True,
+                                            "error_code": "FIXED_RUNTIME_MAPPING_UNRESOLVED"},
+                })
+                return result
+            result["requested_vpn_global_target"] = fixed_server_id
 
     eligible_candidates = _load_selector_candidates()
     eligible_ids = {str(item.get("server_id") or "") for item in eligible_candidates}
@@ -974,6 +998,47 @@ def restore_mihomo_selector_state(
             "skip_reason": "vpn_auto_restore_not_required",
             "requested_server_id": active_auto_server_id or None,
         }
+
+    if fixed_targetless_direct_compat:
+        # Direct-only compatibility restores no fixed VPN target. Recheck durable
+        # intent and context under the same writer fence as the selector effect.
+        with xray_writer_guard(timeout_seconds=30.0):
+            def compatibility_current() -> bool:
+                with db_session() as connection:
+                    row = connection.execute("SELECT * FROM routing_global_state WHERE id=1").fetchone()
+                    return bool(
+                        row is not None
+                        and read_selection_revision(connection) == fixed_revision
+                        and read_core_intent_revision(connection) == fixed_core_revision
+                        and _fixed_targetless_direct_compat(dict(row))
+                        and not str(row["applied_fixed_server_id"] or "").strip()
+                        and row["apply_state"] == "clean"
+                        and row["error_code"] is None and row["error_message"] is None
+                        and read_core_runtime_context() == fixed_core_context
+                        and get_mihomo_runtime_incarnation(timeout_seconds=5.0) == fixed_runtime_incarnation
+                    )
+
+            before, _error = _runtime_health_or_error(runtime_adapter, runtime_operations)
+            details = getattr(before, "details", None)
+            selectors = details.get("selectors", {}) if isinstance(details, dict) else {}
+            if not compatibility_current() or "vpn-auto" not in (selectors.get("vpn_global_targets") or []):
+                restored = {"ok": False, "error_code": "FIXED_ROUTING_FENCE_CHANGED"}
+            else:
+                applied = runtime_operations.apply_server_to_selector("vpn-global", "vpn-auto")
+                after, _error = _runtime_health_or_error(runtime_adapter, runtime_operations)
+                details = getattr(after, "details", None)
+                observed = details.get("selectors", {}) if isinstance(details, dict) else {}
+                restored = {
+                    **applied.to_dict(),
+                    "ok": bool(applied.ok and compatibility_current()
+                               and observed.get("vpn_global_now") == "vpn-auto"),
+                }
+            result["vpn_global_restore"] = {
+                **restored, "compatibility_mode": "targetless_fixed_direct",
+                "selected_fixed_target": False,
+            }
+            result["ok"] = bool(restored.get("ok") and result["vpn_auto_restore"]["ok"])
+            return result
 
     vpn_global_target = fixed_server_id if server_mode == "fixed" else "vpn-auto"
     if server_mode == "fixed":

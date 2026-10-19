@@ -499,6 +499,105 @@ def _seed_runtime_proxy_server(
         )
 
 
+def test_fixed_logical_profile_materialization_requires_owned_group_and_native_membership(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import mihomo_config_paths
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    fixed_id = "fixed-logical-proof"
+    group_name = "Fixed Logical Proof [a1b2c3d4e5f6]"
+    member_identity = "endpoint-proof-1"
+    member_name = f"{group_name} :: {member_identity[:12]}"
+    raw = {
+        "name": group_name,
+        "_fwrouter_runtime_name": group_name,
+        "_fwrouter_topology": {
+            "kind": "logical_profile",
+            "runtime_policy": "fallback",
+            "endpoints": [{
+                "identity": member_identity,
+                "runtime": {
+                    "type": "vless",
+                    "server": "198.18.0.44",
+                    "port": 443,
+                    "uuid": "00000000-0000-4000-8000-000000000002",
+                    "name": "Endpoint proof",
+                },
+            }],
+        },
+    }
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers(server_id, server_name, provider_name, inventory_state, raw_json) "
+            "VALUES (?, ?, 'pytest', 'active', ?)",
+            (fixed_id, group_name, json.dumps(raw, sort_keys=True)),
+        )
+        connection.execute(
+            "INSERT INTO server_preferences(server_id, vpn_auto, global_list) VALUES (?, 0, 0)",
+            (fixed_id,),
+        )
+
+    routing = {
+        "server_mode": "fixed",
+        "desired_fixed_server_id": fixed_id,
+        "applied_fixed_server_id": fixed_id,
+        "desired_mode": "selective",
+        "applied_mode": "selective",
+        "selective_default": "direct",
+        "apply_state": "pending",
+    }
+    config = mihomo_config_service.build_mihomo_config(routing, xray_handoff_assignments=[])
+    base_path = tmp_path / "managed-mihomo.yaml"
+    _write_yaml(base_path, config)
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: str(base_path))
+    monkeypatch.setattr(mihomo_config_status_service, "_resolved_base_config_path", lambda: str(base_path))
+    native_members = [{"runtime_identity": member_name}]
+    monkeypatch.setattr(
+        mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
+        "health",
+        lambda: SimpleNamespace(
+            runtime_state="running",
+            details={"selectors": {
+                "vpn_global_exists": True,
+                "vpn_global_has_vpn_auto": False,
+                "vpn_global_targets": ["REJECT", group_name],
+                "vpn_auto_targets": ["REJECT"],
+                "vpn_global_now": "REJECT",
+            }},
+        ),
+    )
+    group_readbacks: list[str] = []
+
+    def read_groups(targets: list[str]) -> list[dict[str, object]]:
+        group_readbacks.extend(targets)
+        return [{
+            "ok": True,
+            "logical_runtime_target": group_name,
+            "members": native_members,
+            "effective_member_runtime_identity": member_name,
+        }]
+
+    monkeypatch.setattr(
+        mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
+        "get_logical_groups_state",
+        read_groups,
+    )
+
+    proof = mihomo_config_status_service.mihomo_runtime_fixed_target_materialized(routing)
+
+    assert proof["ok"] is True, proof
+    assert proof["fixed_runtime_target"] == group_name
+    assert proof["logical_group_native_membership_ok"] is True
+    assert group_readbacks == [group_name]
+
+    native_members[:] = [{"runtime_identity": "unexpected-member"}]
+    wrong_native_membership = mihomo_config_status_service.mihomo_runtime_fixed_target_materialized(routing)
+    assert wrong_native_membership["ok"] is False
+    assert wrong_native_membership["logical_group_native_membership_ok"] is False
+
+
 def _base_candidate() -> dict:
     return {
         "allow-lan": True,
@@ -1414,6 +1513,7 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
     format_only_candidate: bool,
     native_proof_ok: bool,
     verification_callback_ok: bool | None = None,
+    fixed_restart_wiring: bool = False,
 ) -> dict:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1429,10 +1529,20 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
     candidate_config = mihomo_config_service.build_mihomo_config({"selective_default": "direct"})
     base_path = Path(mihomo_config_service._resolved_base_config_path())
     candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
-    _write_yaml(base_path, candidate_config)
+    _write_yaml(base_path, {"rules": ["MATCH,REJECT"]} if fixed_restart_wiring else candidate_config)
     restart_calls: list[str] = []
+    materialization_callback = lambda **kwargs: {"ok": False}
 
-    def _fake_restart_mihomo_container(*, action: str = "restart", heartbeat=None):
+
+    def _fake_restart_mihomo_container(*, action: str = "restart", heartbeat=None, **kwargs):
+        if fixed_restart_wiring:
+            from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+            assert xray_writer_guard_is_held()
+            assert kwargs["selection_fenced"] is True
+            assert type(kwargs["expected_selection_revision"]) is int
+            assert kwargs["generation_verification_callback"] is materialization_callback
+            assert kwargs["operation_id"]
+            raise RuntimeError("FIXED_RESTART_WIRING_REACHED")
         restart_calls.append(action)
         return {"ok": True, "action": action}
 
@@ -1494,6 +1604,15 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
                 "selection_revision": expected_selection_revision,
             }
 
+    if fixed_restart_wiring:
+        monkeypatch.setattr(mihomo_reconcile_service, "promote_mihomo_candidate_config", lambda **kwargs: {"ok": True})
+        with pytest.raises(RuntimeError, match="FIXED_RESTART_WIRING_REACHED"):
+            mihomo_config_service.reconcile_mihomo_runtime(
+                {"selective_default": "direct", "server_mode": "fixed", "desired_fixed_server_id": "synthetic-fixed"},
+                verification_callback=verification_callback,
+                generation_materialization_callback=materialization_callback,
+            )
+        return {}
     result = mihomo_config_service.reconcile_mihomo_runtime(
         {"selective_default": "direct"},
         verification_callback=verification_callback,
@@ -2744,3 +2863,10 @@ def test_checkpoint_policy_safe_loaders_preserve_failclosed_decisions(monkeypatc
     assert decisions() == expected
     monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
     assert decisions() == expected
+
+
+def test_real_reconcile_forwards_separate_fenced_fixed_materialization_callback(monkeypatch, tmp_path: Path) -> None:
+    _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch, tmp_path, format_only_candidate=False, native_proof_ok=True,
+        verification_callback_ok=True, fixed_restart_wiring=True,
+    )

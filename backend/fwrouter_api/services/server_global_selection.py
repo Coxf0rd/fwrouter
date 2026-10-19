@@ -308,6 +308,7 @@ def _materialize_fixed_server_generation(
             routing=routing,
             job_id=job_id,
             verification_callback=_fixed_materialization_callback(routing, token),
+            generation_materialization_callback=_fixed_materialization_callback(routing, token),
         )
 
 

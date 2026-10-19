@@ -26,6 +26,7 @@ from fwrouter_api.services.mihomo_config_proxies import (
     _ensure_selector_groups,
     _fixed_routing_server_id,
     _fixed_targetless_direct_compat,
+    _logical_profile_groups,
 )
 from fwrouter_api.services.custom_servers import resolve_mihomo_runtime_proxy_rows
 
@@ -147,6 +148,12 @@ def mihomo_runtime_fixed_target_materialized(
     config = _safe_load_yaml(base_path)
     if not isinstance(config, dict):
         return {"ok": False, "reason": "active_config_unavailable"}
+    fixed_logical_groups = _logical_profile_groups(explicit_server_ids={fixed_id})
+    fixed_logical_groups_by_name = {
+        str(group.get("name") or ""): group
+        for group in fixed_logical_groups
+        if isinstance(group, dict) and str(group.get("name") or "").strip()
+    }
     target = _resolve_active_fixed_runtime_target(
         fixed_id,
         expected_targets={
@@ -155,7 +162,7 @@ def mihomo_runtime_fixed_target_materialized(
             if isinstance(proxy, dict)
             for name in [proxy.get("name")]
             if str(name or "").strip()
-        },
+        } | set(fixed_logical_groups_by_name),
     )
     if not target:
         return {"ok": False, "reason": "fixed_target_mapping_unresolved"}
@@ -170,9 +177,45 @@ def mihomo_runtime_fixed_target_materialized(
         for group in (config.get("proxy-groups") or [])
         if isinstance(group, dict)
     }
+    logical_group = fixed_logical_groups_by_name.get(target)
+    logical_group_native_membership_ok = True
+    if logical_group is not None:
+        try:
+            group_readbacks = DEFAULT_MIHOMO_ADAPTER.get_logical_groups_state([target])
+        except Exception:
+            group_readbacks = []
+        if not isinstance(group_readbacks, list) or len(group_readbacks) != 1:
+            logical_group_native_membership_ok = False
+        else:
+            group_readback = group_readbacks[0]
+            members = group_readback.get("members") if isinstance(group_readback, dict) else None
+            native_member_names = [
+                str(member.get("runtime_identity") or "").strip()
+                for member in members or []
+                if isinstance(member, dict) and str(member.get("runtime_identity") or "").strip()
+            ] if isinstance(members, list) else []
+            expected_member_names = [str(name).strip() for name in logical_group.get("proxies") or []]
+            logical_group_native_membership_ok = bool(
+                group_readback.get("ok") is True
+                and group_readback.get("logical_runtime_target") == target
+                and native_member_names == expected_member_names
+                and group_readback.get("effective_member_runtime_identity") in expected_member_names
+            )
     config_membership_ok = bool(
         target in set(expected_groups.get("vpn-global", []))
         and all(actual_groups.get(name) == members for name, members in expected_groups.items())
+        and (
+            logical_group is None
+            or actual_groups.get(target) == logical_group.get("proxies")
+            and all(
+                str(member_name) in {
+                    str(proxy.get("name") or "").strip()
+                    for proxy in (config.get("proxies") or [])
+                    if isinstance(proxy, dict)
+                }
+                for member_name in logical_group.get("proxies") or []
+            )
+        )
     )
     if not config_membership_ok:
         return {"ok": False, "reason": "fixed_target_config_membership_mismatch"}
@@ -221,11 +264,12 @@ def mihomo_runtime_fixed_target_materialized(
         )
     )
     return {
-        "ok": runtime_state == "running" and native_membership_ok and selected_ok,
-        "reason": None if runtime_state == "running" and native_membership_ok and selected_ok else "fixed_target_native_membership_unverified",
+        "ok": runtime_state == "running" and native_membership_ok and selected_ok and logical_group_native_membership_ok,
+        "reason": None if runtime_state == "running" and native_membership_ok and selected_ok and logical_group_native_membership_ok else "fixed_target_native_membership_unverified",
         "runtime_state": runtime_state,
         "config_membership_ok": config_membership_ok,
         "native_membership_ok": native_membership_ok,
+        "logical_group_native_membership_ok": logical_group_native_membership_ok,
         "fixed_runtime_target": target,
         "vpn_global_now": current_global,
         "selected_fixed_target": selected_ok,
