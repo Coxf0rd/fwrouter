@@ -559,10 +559,22 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             payload={"urls": [source.url], "requested_by": "hosted-acceptance-synthetic"}, timeout=90,
         )
         assert code == 200 and imported.get("ok") is True, imported
+        assert source.snapshot_requests() == 2, {
+            "import_owner_synthetic_source_requests": source.snapshot_requests(),
+        }
+        assert source_bridge.snapshot_calls() == provider_calls_before_fixture, {
+            "provider_bridge_calls_after_import": True,
+        }
         imported_data = imported.get("data") if isinstance(imported.get("data"), dict) else {}
         auto_select = imported_data.get("auto_select")
         assert isinstance(auto_select, dict) and auto_select.get("status") == "skipped_no_fixed_target", imported
         enable_vpn_from_synthetic_subscription(api, state, source.url)
+        assert source.snapshot_requests() == 4, {
+            "managed_vpn_owner_additional_synthetic_source_requests": source.snapshot_requests(),
+        }
+        assert source_bridge.snapshot_calls() == provider_calls_before_fixture, {
+            "provider_bridge_calls_after_managed_vpn_enable": True,
+        }
         verified = generation(api)
         assert verified.get("status") == "verified", verified
         assert verified.get("candidate_digest") == verified.get("verified_digest"), verified
@@ -725,9 +737,9 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert source_bridge.snapshot_calls() == provider_calls_before_fixture, {
             "provider_bridge_calls_changed_during_fixture_setup": True,
         }
-        # Import and the managed-VPN owner's required refresh each read this
-        # loopback-only source once; neither contacts the provider bridge.
-        assert source.snapshot_requests() == 2, {
+        # The adapter uses two bounded request profiles for each owner refresh;
+        # the import and managed-VPN enable account for all four loopback GETs.
+        assert source.snapshot_requests() == 4, {
             "synthetic_source_requests_during_fixture_setup": source.snapshot_requests(),
         }
 
