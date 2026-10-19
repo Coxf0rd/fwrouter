@@ -1122,9 +1122,9 @@ def reconcile_mihomo_runtime(
             "selection_fenced": True,
             "expected_selection_revision": generation_revision,
         }
-        fixed_server_id = str(routing_dict.get("desired_fixed_server_id") or "").strip()
+        fixed_server_id = str((routing_dict or {}).get("desired_fixed_server_id") or "").strip()
         if (
-            str(routing_dict.get("server_mode") or "auto").strip().lower() == "fixed"
+            str((routing_dict or {}).get("server_mode") or "auto").strip().lower() == "fixed"
             and fixed_server_id
             and callable(generation_materialization_callback)
         ):
