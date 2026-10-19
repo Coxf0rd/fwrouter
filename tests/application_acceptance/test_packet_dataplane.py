@@ -13,6 +13,7 @@ import stat
 import struct
 import subprocess
 import time
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -60,6 +61,174 @@ ROUTER_GUARD_TABLE = "fwrouter_packet_guard"
 MAX_CORE_NFT_JSON = 1024 * 1024
 MAX_PHASE_DIAGNOSTIC_BYTES = 4096
 _DIAGNOSTIC_URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]{1,15}://[^\s\"'<>]+")
+
+
+def _xray_bindings_startup_projection(payload: Any) -> tuple[dict[str, Any], list[tuple[str, datetime]]]:
+    """Preserve the complete bindings payload except its two refreshed UTC timestamps."""
+    if not isinstance(payload, dict) or payload.get("bindings_version") != 1:
+        raise AssertionError("Xray bindings payload has an unsupported schema.")
+
+    def parse_utc_timestamp(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or "T" not in value:
+            raise AssertionError(f"Xray bindings timestamp is missing or malformed: {field}.")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise AssertionError(f"Xray bindings timestamp is malformed: {field}.") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+            raise AssertionError(f"Xray bindings timestamp is not UTC: {field}.")
+        return parsed
+
+    bindings = payload.get("bindings")
+    handoffs = payload.get("handoff_listeners")
+    client_modes = payload.get("client_modes")
+    if (not isinstance(bindings, list) or not all(isinstance(row, dict) for row in bindings)
+            or not isinstance(handoffs, list) or not all(isinstance(row, dict) for row in handoffs)
+            or not isinstance(client_modes, list) or not all(isinstance(row, dict) for row in client_modes)):
+        raise AssertionError("Xray bindings payload has an invalid collection shape.")
+    expected_counts = {
+        "bindings_count": len(bindings),
+        "applied_count": sum(row.get("status") == "applied" for row in bindings),
+        "handoff_count": len(handoffs),
+        "client_modes_count": len(client_modes),
+    }
+    if any(type(payload.get(key)) is not int or payload.get(key) != value
+           for key, value in expected_counts.items()):
+        raise AssertionError("Xray bindings payload counters do not match its contents.")
+
+    generated_at = parse_utc_timestamp(payload.get("generated_at"), "generated_at")
+    timestamps = [("generated_at", generated_at)]
+    normalized_bindings = []
+    for index, binding in enumerate(bindings):
+        field = f"bindings[{index}].applied_at"
+        applied_at = parse_utc_timestamp(binding.get("applied_at"), field)
+        if applied_at > generated_at:
+            raise AssertionError(f"Xray bindings timestamp is later than generated_at: {field}.")
+        timestamps.append((field, applied_at))
+        normalized_bindings.append({key: value for key, value in binding.items() if key != "applied_at"})
+
+    normalized = {
+        key: value for key, value in payload.items() if key not in {"generated_at", "bindings"}
+    }
+    normalized["bindings"] = normalized_bindings
+    return normalized, timestamps
+
+
+def _assert_xray_bindings_startup_equivalent(before: Any, after: Any) -> None:
+    before_semantics, before_timestamps = _xray_bindings_startup_projection(before)
+    after_semantics, after_timestamps = _xray_bindings_startup_projection(after)
+    if before_semantics != after_semantics:
+        raise AssertionError("Xray bindings semantic payload changed across startup.")
+    if [field for field, _ in before_timestamps] != [field for field, _ in after_timestamps]:
+        raise AssertionError("Xray bindings timestamp fields changed across startup.")
+    if any(after_time < before_time for (_, before_time), (_, after_time)
+           in zip(before_timestamps, after_timestamps, strict=True)):
+        raise AssertionError("Xray bindings timestamps moved backwards across startup.")
+
+
+def _subscription_profile_snapshot_projection(
+    rows: Any,
+) -> tuple[list[dict[str, Any]], list[tuple[str, datetime]]]:
+    """Keep complete profile rows except their two SQLite UTC verification timestamps."""
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise AssertionError("Subscription profile snapshot rows have an invalid shape.")
+
+    def parse_sqlite_utc_timestamp(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", value):
+            raise AssertionError(f"Subscription profile timestamp is missing or malformed: {field}.")
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise AssertionError(f"Subscription profile timestamp is malformed: {field}.") from exc
+
+    normalized_rows = []
+    timestamps = []
+    for index, row in enumerate(rows):
+        if not isinstance(row.get("token"), str) or not isinstance(row.get("nodes_json"), str):
+            raise AssertionError(f"Subscription profile snapshot identity is invalid at row {index}.")
+        try:
+            nodes = json.loads(row["nodes_json"])
+        except json.JSONDecodeError as exc:
+            raise AssertionError(f"Subscription profile snapshot nodes are invalid at row {index}.") from exc
+        if not isinstance(nodes, list) or not all(isinstance(node, dict) for node in nodes):
+            raise AssertionError(f"Subscription profile snapshot nodes have an invalid shape at row {index}.")
+        verified_at = parse_sqlite_utc_timestamp(row.get("runtime_verified_at"), f"rows[{index}].runtime_verified_at")
+        updated_at = parse_sqlite_utc_timestamp(row.get("updated_at"), f"rows[{index}].updated_at")
+        timestamps.extend((
+            (f"rows[{index}].runtime_verified_at", verified_at),
+            (f"rows[{index}].updated_at", updated_at),
+        ))
+        normalized_rows.append({
+            key: value for key, value in row.items() if key not in {"runtime_verified_at", "updated_at"}
+        })
+    return normalized_rows, timestamps
+
+
+def _assert_subscription_profile_startup_equivalent(before: Any, after: Any) -> None:
+    before_semantics, before_timestamps = _subscription_profile_snapshot_projection(before)
+    after_semantics, after_timestamps = _subscription_profile_snapshot_projection(after)
+    if before_semantics != after_semantics:
+        raise AssertionError("Subscription profile snapshot rows changed across startup.")
+    if [field for field, _ in before_timestamps] != [field for field, _ in after_timestamps]:
+        raise AssertionError("Subscription profile snapshot timestamp fields changed across startup.")
+    if any(after_time < before_time for (_, before_time), (_, after_time)
+           in zip(before_timestamps, after_timestamps, strict=True)):
+        raise AssertionError("Subscription profile snapshot timestamps moved backwards across startup.")
+
+
+def _assert_subject_overrides_startup_equivalent(
+    before_server: Any,
+    after_server: Any,
+    before_user: Any,
+    after_user: Any,
+    *,
+    allow_first_startup_owner: bool,
+) -> None:
+    if before_user != after_user:
+        raise AssertionError("User subject overrides changed across startup.")
+    if not isinstance(before_server, list) or not isinstance(after_server, list):
+        raise AssertionError("Server subject overrides have an invalid shape.")
+    if len(before_server) != len(after_server):
+        raise AssertionError("Server subject override rows changed across startup.")
+
+    def parse_timestamp(value: Any, field: str) -> datetime:
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", value):
+            raise AssertionError(f"Server subject override timestamp is malformed: {field}.")
+        try:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise AssertionError(f"Server subject override timestamp is malformed: {field}.") from exc
+
+    before_by_id = {row.get("subject_id"): row for row in before_server if isinstance(row, dict)}
+    after_by_id = {row.get("subject_id"): row for row in after_server if isinstance(row, dict)}
+    if (len(before_by_id) != len(before_server) or len(after_by_id) != len(after_server)
+            or set(before_by_id) != set(after_by_id)):
+        raise AssertionError("Server subject override identities changed across startup.")
+    for subject_id, before_row in before_by_id.items():
+        after_row = after_by_id[subject_id]
+        if set(before_row) != set(after_row):
+            raise AssertionError("Server subject override fields changed across startup.")
+        for field in before_row:
+            before_value = before_row[field]
+            after_value = after_row[field]
+            if field in {"requested_by", "updated_by"} and allow_first_startup_owner:
+                if (after_value != before_value
+                        and after_value != "startup-xray-vpn-auto-reconcile"):
+                    raise AssertionError(f"Server subject override owner changed unexpectedly: {field}.")
+            elif field == "updated_at" and allow_first_startup_owner:
+                before_time = parse_timestamp(before_value, f"{subject_id}.before.updated_at")
+                after_time = parse_timestamp(after_value, f"{subject_id}.after.updated_at")
+                if after_time < before_time:
+                    raise AssertionError("Server subject override timestamp moved backwards across startup.")
+            elif before_value != after_value:
+                raise AssertionError(f"Server subject override semantic field changed across startup: {field}.")
+        changed_owner = any(
+            field in before_row and before_row[field] != after_row[field]
+            for field in ("requested_by", "updated_by")
+        )
+        if (allow_first_startup_owner and before_row.get("updated_at") != after_row.get("updated_at")
+                and not changed_owner):
+            raise AssertionError("Server subject override timestamp changed without an owner update.")
 
 
 def _rules_apply_failure_diagnostic(
@@ -239,6 +408,22 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             "xray_reload_calls": native.reload_calls,
         }
 
+    def startup_native_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
+        bindings_path = state / "xray" / "fwrouter-bindings.json"
+        bindings_bytes_before = bindings_path.read_bytes()
+        try:
+            bindings_payload = json.loads(bindings_bytes_before)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise AssertionError("Xray bindings payload was not valid JSON at startup boundary.") from exc
+        semantics, _timestamps = _xray_bindings_startup_projection(bindings_payload)
+        fingerprint = native_fingerprint()
+        if bindings_path.read_bytes() != bindings_bytes_before:
+            raise AssertionError("Xray bindings payload changed while capturing startup fingerprint.")
+        fingerprint["xray_bindings"] = hashlib.sha256(json.dumps(
+            semantics, sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        return fingerprint, bindings_payload
+
     def durable_fingerprint(core_apply_id: str) -> dict[str, Any]:
         connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
         try:
@@ -269,6 +454,30 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
                 "credential_rows": len(values["subscription_node_credentials"]),
                 "credential_history_rows": len(values["subscription_node_credential_history"]),
             }
+        finally:
+            connection.close()
+
+    def subscription_profile_snapshot_rows() -> list[dict[str, Any]]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        connection.row_factory = sqlite3.Row
+        try:
+            return [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_profile_snapshots ORDER BY token",
+            ).fetchall()]
+        finally:
+            connection.close()
+
+    def subject_override_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        connection = sqlite3.connect(f"file:{state / 'fwrouter.db'}?mode=ro", uri=True, timeout=5)
+        connection.row_factory = sqlite3.Row
+        try:
+            server_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subject_server_overrides ORDER BY subject_id",
+            ).fetchall()]
+            user_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subject_user_overrides ORDER BY subject_id",
+            ).fetchall()]
+            return server_rows, user_rows
         finally:
             connection.close()
 
@@ -1030,6 +1239,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             previous_applied_mode="selective",
         ) == rules_source_baseline
 
+        native_before_admission = native_fingerprint()
         calls_before_admission = source_bridge.snapshot_calls()
         requests_before_admission = source.snapshot_requests()
         admission_code, admission = http_json(
@@ -1046,6 +1256,9 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert generation(api).get("status") == "verified"
         assert source_bridge.snapshot_calls() == calls_before_admission
         assert source.snapshot_requests() == requests_before_admission
+        assert native_fingerprint() == native_before_admission, {
+            "contract": "proof-only legacy admission does not change native state or binding bytes",
+        }
         assert (state / "xray" / ".generation" / "generation-checkpoint.json").exists() is False
         receipt_path = state / "generated" / "mihomo" / "reconcile-state.json"
 
@@ -1066,7 +1279,9 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
             }
 
         receipt_before_startup = mihomo_receipt_semantics()
-        before_startup_native = native_fingerprint()
+        before_startup_native, before_startup_bindings = startup_native_snapshot()
+        before_startup_profile_snapshots = subscription_profile_snapshot_rows()
+        before_startup_server_overrides, before_startup_user_overrides = subject_override_rows()
         before_startup_durable = durable_fingerprint(core_apply_id)
         before_startup_subjects = subject_bootstrap_fingerprint()
         marker_before_startup = generation(api)
@@ -1077,13 +1292,25 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         worker, restarted_api = stack["start_worker"](startup_tasks=True, startup_recovery=True)
         stack["worker"], stack["api"] = worker, restarted_api
 
+        after_first_startup_native, after_first_startup_bindings = startup_native_snapshot()
+        _assert_xray_bindings_startup_equivalent(before_startup_bindings, after_first_startup_bindings)
+        after_first_startup_profile_snapshots = subscription_profile_snapshot_rows()
+        _assert_subscription_profile_startup_equivalent(
+            before_startup_profile_snapshots, after_first_startup_profile_snapshots,
+        )
+        after_first_server_overrides, after_first_user_overrides = subject_override_rows()
+        _assert_subject_overrides_startup_equivalent(
+            before_startup_server_overrides, after_first_server_overrides,
+            before_startup_user_overrides, after_first_user_overrides,
+            allow_first_startup_owner=True,
+        )
         assert generation(restarted_api) == marker_before_startup
         assert global_rules_source_fingerprint(
             core_apply_id,
             previous_applied_mode="selective",
         ) == rules_source_baseline
         assert packet_selection_snapshot(restarted_api) == packet_selective_selection_baseline
-        assert native_fingerprint() == before_startup_native
+        assert after_first_startup_native == before_startup_native
         assert durable_fingerprint(core_apply_id) == before_startup_durable
         assert protected_direct_rows() == protected_direct_baseline
         after_first_startup_subjects = subject_bootstrap_fingerprint()
@@ -1110,6 +1337,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         intended = bootstrap_report.get("apply_reconcile", {}).get("intended_routing", {})
         scoped = bootstrap_report.get("apply_reconcile", {}).get("scoped_subject_routing", {})
         xray_recovery = bootstrap_report.get("apply_reconcile", {}).get("xray_subscription_profiles", {})
+        profile_promotion = xray_recovery.get("public_profile_promote", {})
         dns_reconcile = bootstrap_report.get("apply_reconcile", {}).get("dnsmasq_reconcile", {})
         live_routing = live_recovery.get("live_routing", {})
         selector = live_recovery.get("selector", {})
@@ -1123,6 +1351,11 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert (xray_recovery.get("ok") is True
                 and xray_recovery.get("status") in {"success", "noop", "skipped"}
                 and xray_recovery.get("error_code") is None), xray_recovery
+        assert (isinstance(profile_promotion, dict)
+                and type(profile_promotion.get("profiles_count")) is int
+                and profile_promotion.get("profiles_count") >= 0
+                and type(profile_promotion.get("nodes_count")) is int
+                and profile_promotion.get("nodes_count") >= 0), xray_recovery
         assert dns_reconcile.get("ok") is True, dns_reconcile
         assert bootstrap_report.get("dns_fixture") == {
             "configured": True, "daemon_running": True, "daemon_uid_matches": True,
@@ -1131,7 +1364,9 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
 
         # A second ordinary startup must be idempotent after the one exact,
         # documented first-run built-in subject initialization above.
-        stable_native = native_fingerprint()
+        stable_native, stable_bindings = startup_native_snapshot()
+        stable_profile_snapshots = subscription_profile_snapshot_rows()
+        stable_server_overrides, stable_user_overrides = subject_override_rows()
         stable_durable = durable_fingerprint(core_apply_id)
         stable_subjects = subject_bootstrap_fingerprint()
         stable_marker = generation(restarted_api)
@@ -1140,13 +1375,25 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         previous_worker.wait(timeout=5)
         worker, restarted_api = stack["start_worker"](startup_tasks=True, startup_recovery=True)
         stack["worker"], stack["api"] = worker, restarted_api
+        after_second_startup_native, after_second_startup_bindings = startup_native_snapshot()
+        _assert_xray_bindings_startup_equivalent(stable_bindings, after_second_startup_bindings)
+        after_second_startup_profile_snapshots = subscription_profile_snapshot_rows()
+        _assert_subscription_profile_startup_equivalent(
+            stable_profile_snapshots, after_second_startup_profile_snapshots,
+        )
+        after_second_server_overrides, after_second_user_overrides = subject_override_rows()
+        _assert_subject_overrides_startup_equivalent(
+            stable_server_overrides, after_second_server_overrides,
+            stable_user_overrides, after_second_user_overrides,
+            allow_first_startup_owner=False,
+        )
         assert generation(restarted_api) == stable_marker
         assert global_rules_source_fingerprint(
             core_apply_id,
             previous_applied_mode="selective",
         ) == rules_source_baseline
         assert packet_selection_snapshot(restarted_api) == packet_selective_selection_baseline
-        assert native_fingerprint() == stable_native
+        assert after_second_startup_native == stable_native
         assert durable_fingerprint(core_apply_id) == stable_durable
         assert subject_bootstrap_fingerprint() == stable_subjects
         assert source_bridge.snapshot_calls() == calls_before_admission
@@ -1156,6 +1403,7 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         second_intended = second_report.get("apply_reconcile", {}).get("intended_routing", {})
         second_scoped = second_report.get("apply_reconcile", {}).get("scoped_subject_routing", {})
         second_xray = second_report.get("apply_reconcile", {}).get("xray_subscription_profiles", {})
+        second_profile_promotion = second_xray.get("public_profile_promote", {})
         second_dns = second_report.get("apply_reconcile", {}).get("dnsmasq_reconcile", {})
         second_live = second_report.get("live_recovery", {})
         second_live_routing = second_live.get("live_routing", {})
@@ -1172,6 +1420,11 @@ def test_verified_legacy_admission_survives_normal_startup_without_reapply_or_re
         assert (second_xray.get("ok") is True
                 and second_xray.get("status") in {"success", "noop", "skipped"}
                 and second_xray.get("error_code") is None), second_xray
+        assert (isinstance(second_profile_promotion, dict)
+                and type(second_profile_promotion.get("profiles_count")) is int
+                and second_profile_promotion.get("profiles_count") >= 0
+                and type(second_profile_promotion.get("nodes_count")) is int
+                and second_profile_promotion.get("nodes_count") >= 0), second_xray
         assert second_dns.get("ok") is True, second_dns
         assert protected_direct_rows() == protected_direct_baseline
         assert second_report.get("dns_fixture") == {
