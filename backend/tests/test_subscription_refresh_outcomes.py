@@ -549,6 +549,18 @@ def test_failed_readback_uses_confirmed_reconcile_restore_once(monkeypatch, tmp_
     assert restored == [True]
 
 
+def _seed_auto_routing_and_patch_selection_fence(monkeypatch, revision):
+    """Give ordinary-generation orchestration tests a real non-fixed DB state."""
+    from fwrouter_api.services.server_state import ensure_routing_global_state
+
+    ensure_routing_global_state()
+    revision_value = revision if callable(revision) else lambda: revision
+    monkeypatch.setattr(
+        "fwrouter_api.services.vpn_auto_selection_state.read_selection_fence",
+        lambda _connection: {"revision": revision_value(), "decision_id": None},
+    )
+
+
 def test_staged_profile_verification_runs_outside_writer_guard(monkeypatch, tmp_path: Path) -> None:
     import hashlib
     import json
@@ -580,7 +592,7 @@ def test_staged_profile_verification_runs_outside_writer_guard(monkeypatch, tmp_
         }
     })
     monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "c1|t1")
-    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": 5})
+    _seed_auto_routing_and_patch_selection_fence(monkeypatch, 5)
     monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "post-inventory-source")
     monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
     monkeypatch.setattr(profile_service, "_mark_generation_selection_verification_required", lambda _path: None)
@@ -616,7 +628,7 @@ def test_staged_profile_failed_terminal_verification_keeps_own_core_revision_for
             "result_values": {}}
     })
     monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "c2|t2")
-    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": 8})
+    _seed_auto_routing_and_patch_selection_fence(monkeypatch, 8)
     monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "source-2")
     monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
     restored: list[bool] = []
@@ -652,7 +664,7 @@ def test_nonstaged_profile_selection_callback_runs_outside_writer_guard(monkeypa
         }
     })
     monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "container|started")
-    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": 5})
+    _seed_auto_routing_and_patch_selection_fence(monkeypatch, 5)
     monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "post-inventory-source")
     monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
     monkeypatch.setattr(profile_service, "_finalize_nonstaged_profile_publication", lambda _pending, verify: {"ok": True, "verification": verify})
@@ -688,7 +700,7 @@ def test_nonstaged_profile_refuses_publication_after_competing_selection(monkeyp
         }
     })
     monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "container|started")
-    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": state["revision"]})
+    _seed_auto_routing_and_patch_selection_fence(monkeypatch, lambda: state["revision"])
     monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "source-op1")
     monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
     monkeypatch.setattr(profile_service, "_finalize_nonstaged_profile_publication", lambda *_args: published.append(True) or {"ok": True})
@@ -725,7 +737,7 @@ def test_staged_profile_rejects_checkpoint_replaced_by_newer_operation(monkeypat
             "promote_public_profile": True, "result_values": {}}
     })
     monkeypatch.setattr("fwrouter_api.services.mihomo_runtime.get_mihomo_runtime_incarnation", lambda: "c1|t1")
-    monkeypatch.setattr("fwrouter_api.services.vpn_auto_selection_state.read_selection_fence", lambda _conn: {"revision": 5})
+    _seed_auto_routing_and_patch_selection_fence(monkeypatch, 5)
     monkeypatch.setattr(profile_service, "_generation_source_fingerprint", lambda: "derived-1")
     monkeypatch.setattr("fwrouter_api.services.mihomo_config._resolved_base_config_path", lambda: active)
     published: list[bool] = []

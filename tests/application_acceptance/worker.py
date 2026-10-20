@@ -2881,12 +2881,15 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
         return result
 
     def observed_publish(*, expected_mihomo_runtime: str, expected_mihomo_sha: str,
-                         reconcile_reason: str, operation_id: str, owner_matches: Any) -> bool:
+                         reconcile_reason: str, operation_id: str, owner_matches: Any,
+                         routing_snapshot: dict[str, Any] | None = None) -> bool:
+        routing_arguments = {"routing_snapshot": routing_snapshot} if routing_snapshot is not None else {}
         if not getattr(local, "rollback", False) or reconcile_reason != "xray_generation_rollback":
             return original_publish(
                 expected_mihomo_runtime=expected_mihomo_runtime,
                 expected_mihomo_sha=expected_mihomo_sha,
                 reconcile_reason=reconcile_reason, operation_id=operation_id, owner_matches=owner_matches,
+                **routing_arguments,
             )
         # checkpoint_path and expected source/revision are only available to the
         # outer rollback owner; these owner callback observations remain booleans.
@@ -2902,6 +2905,7 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
             expected_mihomo_runtime=expected_mihomo_runtime,
             expected_mihomo_sha=expected_mihomo_sha,
             reconcile_reason=reconcile_reason, operation_id=operation_id, owner_matches=observed_owner,
+            **routing_arguments,
         )
         emit("receipt_publish_result", {
             "ok": bool(result), "owner_callback_count": owner_calls["count"],

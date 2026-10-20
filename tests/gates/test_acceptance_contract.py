@@ -7768,5 +7768,39 @@ class RuntimeScaleFailureDiagnosticsContract(unittest.TestCase):
         self.assertEqual({"worker_returncode": -9}, observation["after"])
 
 
+class SharedReceiptObserverContractTests(unittest.TestCase):
+    def test_actual_observer_forwards_routing_context_and_owner_proof(self):
+        source = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        function = next(node for node in ast.walk(tree)
+                        if isinstance(node, ast.FunctionDef) and node.name == "observed_publish")
+        for rollback in (False, True):
+            for routing in (None, {"server_mode": "fixed", "desired_fixed_server_id": "synthetic"}):
+                with self.subTest(rollback=rollback, routing=routing):
+                    calls, events, owner_calls = [], [], []
+                    def owner(fingerprint):
+                        owner_calls.append(fingerprint)
+                        return fingerprint == "proof-digest"
+                    def publish(**kwargs):
+                        calls.append(kwargs)
+                        return kwargs["owner_matches"]("proof-digest")
+                    namespace = {"Any": Any, "local": SimpleNamespace(rollback=rollback),
+                                 "original_publish": publish,
+                                 "emit": lambda event, facts: events.append((event, facts))}
+                    exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"), namespace)
+                    result = namespace["observed_publish"](
+                        expected_mihomo_runtime="synthetic-incarnation", expected_mihomo_sha="a" * 64,
+                        reconcile_reason="xray_generation_rollback" if rollback else "xray_staged_generation",
+                        operation_id="synthetic-operation", owner_matches=owner, routing_snapshot=routing,
+                    )
+                    self.assertTrue(result)
+                    self.assertEqual(1, len(calls))
+                    self.assertEqual(routing, calls[0].get("routing_snapshot"))
+                    self.assertEqual(["proof-digest"], owner_calls)
+                    if rollback:
+                        self.assertEqual(1, events[0][1]["owner_callback_count"])
+                    self.assertNotIn("desired_fixed_server_id", json.dumps(events))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
