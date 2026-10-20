@@ -1,5 +1,51 @@
 # FWRouter Architecture
 
+## Approved target architecture — 2026-10-20 (planned, not extraction acceptance)
+
+FWRouter Core is a standalone **native Debian/systemd control plane**, not a
+Docker workload. Core alone owns routing authority, authorized user intent,
+policies, durable state, apply/reconcile, revisions/CAS and recovery. Its own
+startup and supported headless administration must not require UI, Docker,
+Xray or Mihomo. These are approved target contracts; the existing coupled
+implementation and historical component descriptions below are not proof
+that every absence scenario is already qualified.
+
+Control clients (UI, API applications and normal API-first CLI), runtime
+adapters, observation/telemetry modules and external integrations have distinct
+roles and may require different interfaces. UI is planned as an independently
+installed/updated Docker frontend, with no direct Core SQLite or native-runtime
+access. Strict local offline maintenance remains a separate privileged path;
+normal management uses the same authorization, jobs, fencing, proof and audit
+contracts. Public API exposure requires a separate security design.
+
+Stage8 defines small versioned boundaries; Stage8A provides registry, SDK,
+capabilities, compatibility and integration contract tests **before Stage7**
+physical extraction. Third-party code defaults to an external process, without
+arbitrary privileged execution or writes to Core SQLite. Common contracts do
+not require common internal implementations. Subscription formats, protocols,
+provider APIs, runtime configuration and lifecycle stay separate specialized
+adapters. No mandatory global canonical subscription/config model or universal
+parser is approved; unsupported fields cannot be silently discarded.
+
+Stage6A designs independent Compose projects by functional group, rather than
+one server-wide stack or necessarily one project per container. Core and
+host-critical networking/Rescue/administrative access stay independent of
+Docker. Physical server-wide migrations wait for stable contracts, extraction
+and applicable host/recovery qualification; unrelated service migration is not
+a Stage7 dependency. Late telemetry is a separate Go/Docker module with scoped
+collectors and bounded delivery/backpressure/retention; it has no routing,
+Core SQLite or intent authority. Core is not being migrated to Go.
+
+Mandatory VPN stays fail-closed, explicit/protected DIRECT is preserved,
+UNKNOWN is distinct from DOWN, and SUCCESS requires applicable fresh native
+proof. Last-good, identities/credentials, ownership and crash/recovery fences
+remain authoritative. Rescue, SSH, DNS/DHCP, Tailscale and strongSwan retain
+independent lifecycle and administrative access. See the [active roadmap](../ROADMAP.md)
+for entry/exit criteria, dependencies and evidence limitations. This decision
+authorizes documentation only: no module implementation, Stage5 or production
+operation follows automatically.
+
+
 `fwrouter` is the control-plane and dataplane wrapper for Linux host network routing. Its core owns global network mode, selective/VPN rules, SQLite intent/state, and kernel state through `nftables`, `ip rule`, `ip route`, and `sysctl`. `mihomo`, `xray`, Docker, and external ingress/egress runtimes are optional integrations layered onto the routing core.
 
 ## Main Components
