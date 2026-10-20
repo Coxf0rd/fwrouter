@@ -412,7 +412,9 @@ def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(monkeypatc
 
     fixed = set_global_fixed_server("fixed-xray-receipt", requested_by="pytest")
     assert fixed["ok"] is True
-    workflow = _update_fixed_workflow(fixed["pending_revision"], phase="core_verified")
+    workflow = _update_fixed_workflow(
+        fixed["pending_revision"], phase="mihomo_verified", mihomo_generation_mode="unchanged",
+    )
     assert workflow is not None
     with db_session() as connection:
         connection.execute(
@@ -424,7 +426,7 @@ def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(monkeypatc
         )
     assert mihomo_stage_revision == workflow["selection_revision"] + 1
     workflow = _update_fixed_workflow(
-        fixed["pending_revision"], selection_revision=mihomo_stage_revision,
+        fixed["pending_revision"], phase="core_verified", selection_revision=mihomo_stage_revision,
     )
     assert workflow is not None
     fixed["routing"]["applied_fixed_server_id"] = "fixed-xray-receipt"
@@ -955,6 +957,271 @@ def test_fixed_apply_rejects_missing_or_mismatched_generation_receipt(
     assert get_routing_global_state(expire_ttl=False)["apply_state"] == "pending"
 
 
+def test_fixed_generation_reservation_receipt_and_resume_use_existing_sqlite_owner(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Exercise the real R -> R+1 handoff and durable receipt in isolated SQLite."""
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_runtime, server_global_selection
+    from fwrouter_api.services.mihomo_reconcile import _write_fixed_generation_checkpoint
+    from fwrouter_api.services.xray_vpn_auto_pending import (
+        _load_row, get_xray_vpn_auto_pending_state, pending_fixed_workflow_state,
+    )
+
+    server_id = "fixed-reservation-rebind"
+    _seed_server(server_id, vpn_auto=False, global_list=False)
+    base_config = tmp_path / "mihomo.yaml"
+    base_config.write_text("before: fixed\n", encoding="utf-8")
+    runtime_incarnation = {"value": "reservation-runtime"}
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: runtime_incarnation["value"])
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: str(base_config))
+    monkeypatch.setattr(mihomo_config_service, "_resolved_last_good_mihomo_dir", lambda: tmp_path / "last-good")
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config_status.mihomo_runtime_fixed_target_materialized",
+        lambda _routing, **_kwargs: {
+            "ok": True,
+            "fixed_runtime_target": "Runtime fixed-reservation-rebind",
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_reconcile.current_mihomo_input_fingerprint",
+        lambda _routing: {"hash": "a" * 64},
+    )
+
+    desired = set_global_fixed_server(server_id, requested_by="pytest")
+    token = server_global_selection._capture_fixed_apply_context(desired["routing"])
+    assert desired["ok"] is True and token is not None
+    source_revision = int(token["selection_revision"])
+    operation_id = "8ab7f539-32af-4cf9-acf3-b75d48b43b7d"
+    candidate_bytes = b"after: fixed\n"
+    candidate_hash = hashlib.sha256(candidate_bytes).hexdigest()
+    checkpoint = _write_fixed_generation_checkpoint(operation_id, base_config.read_bytes())
+    assert checkpoint is not None
+    reservation = {
+        "schema": "mihomo-fixed-generation-reservation/v1",
+        "operation_id": operation_id,
+        "job_id": "fixed-reconcile-test",
+        "before_revision": source_revision,
+        "selection_revision": source_revision + 1,
+        "input_fingerprint_hash": "a" * 64,
+        "candidate_config_hash": candidate_hash,
+        "before_active_config_hash": hashlib.sha256(base_config.read_bytes()).hexdigest(),
+        "before_runtime_incarnation": "reservation-runtime",
+        "checkpoint_ref": checkpoint,
+    }
+    reserve, publish = server_global_selection._fixed_generation_callbacks(desired["routing"], token)
+    with xray_writer_guard(timeout_seconds=5):
+        reserved = reserve(
+            mode="reserve", reservation=reservation,
+            expected_selection_revision=source_revision,
+        )
+        assert reserved == {
+            "ok": True, "before_revision": source_revision,
+            "selection_revision": source_revision + 1,
+        }
+        with db_session() as connection:
+            marker = _load_row(connection)
+        assert marker["workflow"]["phase"] == "mihomo_reserved"
+        assert marker["workflow"]["mihomo_generation_reservation"] == reservation
+
+        resumed_reservation_token = server_global_selection._capture_fixed_apply_context(desired["routing"])
+        assert resumed_reservation_token is not None
+        assert resumed_reservation_token["source_selection_revision"] == source_revision
+        resume_reservation, _resume_publish = server_global_selection._fixed_generation_callbacks(
+            desired["routing"], resumed_reservation_token,
+        )
+        validation = resume_reservation(
+            mode="validate",
+            operation_id=operation_id,
+            expected_selection_revision=source_revision + 1,
+            reservation=reservation,
+            candidate_config_hash=candidate_hash,
+            input_fingerprint_hash="a" * 64,
+            active_config_hash=reservation["before_active_config_hash"],
+            runtime_incarnation="reservation-runtime",
+        )
+        assert validation["ok"] is True, validation
+
+        materialization = server_global_selection._fixed_materialization_callback(desired["routing"], token)(
+            operation_id=operation_id,
+            expected_selection_revision=source_revision + 1,
+        )
+        assert materialization["ok"] is True
+        base_config.write_bytes(candidate_bytes)
+        runtime_incarnation["value"] = "reservation-runtime-after"
+        receipt = {
+            "schema": "mihomo-fixed-generation-receipt/v1",
+            "operation_id": operation_id,
+            "job_id": "fixed-reconcile-test",
+            "before_revision": source_revision,
+            "selection_revision": source_revision + 1,
+            "input_fingerprint_hash": "a" * 64,
+            "candidate_config_hash": candidate_hash,
+            "active_config_hash": candidate_hash,
+            "runtime_incarnation": runtime_incarnation["value"],
+            "native_udp_policy_verified": True,
+            "native_top_level_rules_match": True,
+            "native_selector_membership_matches": True,
+            "guarded_rules_match": True,
+            "publication_verified": True,
+            "unchanged_config": False,
+        }
+        assert publish(
+            operation_id=operation_id,
+            expected_selection_revision=source_revision + 1,
+            receipt=receipt,
+        ) == {"ok": True}
+
+    resumed_token = server_global_selection._capture_fixed_apply_context(desired["routing"])
+    assert resumed_token is not None
+    assert resumed_token["selection_revision"] == source_revision + 1
+    assert resumed_token["source_selection_revision"] == source_revision
+    assert resumed_token["fixed_workflow_phase"] == "mihomo_generation_verified"
+    assert resumed_token["mihomo_generation_receipt"] == receipt
+    assert "mihomo_generation_reservation" not in get_xray_vpn_auto_pending_state()["workflow"]
+    assert pending_fixed_workflow_state()["mihomo_generation_reservation"] == reservation
+    receipt_resume_reservation, _ = server_global_selection._fixed_generation_callbacks(
+        desired["routing"], resumed_token,
+    )
+    with xray_writer_guard(timeout_seconds=5):
+        assert receipt_resume_reservation(
+            mode="validate",
+            operation_id=operation_id,
+            expected_selection_revision=source_revision + 1,
+            reservation=reservation,
+            candidate_config_hash=candidate_hash,
+            input_fingerprint_hash="a" * 64,
+            active_config_hash=candidate_hash,
+            runtime_incarnation="reservation-runtime-after",
+        ) == {"ok": False}
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches",
+        lambda: True,
+    )
+    resumed = server_global_selection._materialize_fixed_server_generation(
+        desired["routing"], token=resumed_token, job_id="fixed-reconcile-resume",
+    )
+    assert resumed["ok"] is True
+    assert resumed["operation_id"] == operation_id
+    assert resumed["reentry_generation_fence"]["selection_revision"] == source_revision + 1
+
+
+def test_fixed_generation_foreign_checkpoint_cannot_reserve_or_advance_revision(monkeypatch) -> None:
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services import core_intent, mihomo_runtime, server_global_selection
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    server_id = "fixed-reservation-rollback"
+    _seed_server(server_id, vpn_auto=False, global_list=False)
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "reservation-runtime")
+    desired = set_global_fixed_server(server_id, requested_by="pytest")
+    token = server_global_selection._capture_fixed_apply_context(desired["routing"])
+    assert token is not None
+    source_revision = token["selection_revision"]
+    reservation = {
+        "schema": "mihomo-fixed-generation-reservation/v1",
+        "operation_id": "8ab7f539-32af-4cf9-acf3-b75d48b43b7d",
+        "before_revision": source_revision,
+        "selection_revision": source_revision + 1,
+        "candidate_config_hash": "b" * 64,
+        "input_fingerprint_hash": token["input_hash"],
+        "before_active_config_hash": token["active_config_hash"],
+        "before_runtime_incarnation": token["runtime_incarnation"],
+        "checkpoint_ref": {"path": "/foreign/checkpoint", "sha256": "c" * 64, "size": 1},
+    }
+    reserve, _publish = server_global_selection._fixed_generation_callbacks(desired["routing"], token)
+    with xray_writer_guard(timeout_seconds=5):
+        result = reserve(
+            mode="reserve", reservation=reservation,
+            expected_selection_revision=source_revision,
+        )
+    with db_session() as connection:
+        assert read_selection_revision(connection) == source_revision
+        marker = _load_row(connection)
+    assert result == {"ok": False}
+    assert marker["workflow"]["phase"] == "intent"
+
+
+def test_fixed_generation_checkpoint_accepts_generated_config_above_base_input_limit(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import mihomo_config, mihomo_reconcile
+    from fwrouter_api.services.mihomo_config_paths import MAX_BASE_CONFIG_BYTES
+
+    monkeypatch.setattr(mihomo_config, "_resolved_last_good_mihomo_dir", lambda: tmp_path / "last-good")
+    accepted_id = "8ab7f539-32af-4cf9-acf3-b75d48b43b7d"
+    payload = b"x" * (MAX_BASE_CONFIG_BYTES + 1024 * 1024)
+    reference = mihomo_reconcile._write_fixed_generation_checkpoint(accepted_id, payload)
+
+    assert reference is not None
+    assert reference["size"] == len(payload)
+    assert mihomo_reconcile._fixed_generation_checkpoint_matches(accepted_id, reference)
+
+
+def test_fixed_generation_pending_cas_failure_rolls_back_selection_reservation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_runtime, server_global_selection
+    from fwrouter_api.services.mihomo_reconcile import _write_fixed_generation_checkpoint
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    server_id = "fixed-reservation-cas-rollback"
+    _seed_server(server_id, vpn_auto=False, global_list=False)
+    base_config = tmp_path / "mihomo.yaml"
+    base_config.write_bytes(b"before\n")
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "reservation-runtime")
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: str(base_config))
+    monkeypatch.setattr(mihomo_config_service, "_resolved_last_good_mihomo_dir", lambda: tmp_path / "last-good")
+    desired = set_global_fixed_server(server_id, requested_by="pytest")
+    token = server_global_selection._capture_fixed_apply_context(desired["routing"])
+    assert token is not None
+    source_revision = token["selection_revision"]
+    operation_id = "8ab7f539-32af-4cf9-acf3-b75d48b43b7d"
+    checkpoint = _write_fixed_generation_checkpoint(operation_id, base_config.read_bytes())
+    assert checkpoint is not None
+    reservation = {
+        "schema": "mihomo-fixed-generation-reservation/v1",
+        "operation_id": operation_id,
+        "before_revision": source_revision,
+        "selection_revision": source_revision + 1,
+        "candidate_config_hash": "b" * 64,
+        "input_fingerprint_hash": token["input_hash"],
+        "before_active_config_hash": token["active_config_hash"],
+        "before_runtime_incarnation": token["runtime_incarnation"],
+        "checkpoint_ref": checkpoint,
+    }
+    from fwrouter_api.services import xray_vpn_auto_pending
+
+    monkeypatch.setattr(xray_vpn_auto_pending, "_save_if_revision", lambda *_args, **_kwargs: False)
+    reserve, _publish = server_global_selection._fixed_generation_callbacks(desired["routing"], token)
+    with xray_writer_guard(timeout_seconds=5):
+        result = reserve(
+            mode="reserve", reservation=reservation,
+            expected_selection_revision=source_revision,
+        )
+    with db_session() as connection:
+        assert read_selection_revision(connection) == source_revision
+        marker = _load_row(connection)
+    assert result == {"ok": False}
+    assert marker["workflow"]["phase"] == "intent"
+
+
 def test_malformed_fixed_ttl_is_rejected_by_proof_token_and_restore(monkeypatch) -> None:
     _seed_server("fixed-malformed-ttl", vpn_auto=False, global_list=False)
     selected = set_global_fixed_server("fixed-malformed-ttl", requested_by="pytest")
@@ -1104,30 +1371,125 @@ def test_fixed_completion_cannot_overwrite_a_newer_auto_clear_or_native_drift(
         )
 
     monkeypatch.setattr(DEFAULT_MIHOMO_ADAPTER, "health", fake_health)
+    monkeypatch.setattr(
+        mihomo_config_status, "mihomo_runtime_fixed_target_materialized",
+        lambda _routing, require_selected=False, **_kwargs: (
+            {
+                "ok": (not require_selected or state["vpn-global"] == runtime_name),
+                "fixed_runtime_target": runtime_name,
+                "config_membership_ok": True,
+                "native_membership_ok": True,
+                "logical_group_native_membership_ok": True,
+                "vpn_global_now": state["vpn-global"],
+                "selected_fixed_target": state["vpn-global"] == runtime_name,
+            }
+        ),
+    )
 
-    def synthetic_generation(*, routing, job_id, verification_callback, generation_materialization_callback=None):
+    def synthetic_generation(
+        *, routing, job_id, verification_callback,
+        generation_materialization_callback=None,
+        generation_reservation_callback=None,
+        generation_completion_callback=None,
+        **_generation_callbacks,
+    ):
         nonlocal config
+        from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+        from fwrouter_api.services.mihomo_reconcile import (
+            _file_hash, _write_fixed_generation_checkpoint,
+            current_mihomo_input_fingerprint,
+        )
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
         if routing.get("server_mode") == "fixed":
             assert callable(generation_materialization_callback)
             assert generation_materialization_callback is not verification_callback
         config = mihomo_config_service.build_mihomo_config(routing, xray_handoff_assignments=[])
-        active_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+        candidate_bytes = yaml.safe_dump(config, sort_keys=False).encode("utf-8")
         if str(routing.get("server_mode") or "auto").strip().lower() == "fixed":
+            assert callable(generation_reservation_callback)
+            assert callable(generation_completion_callback)
+            assert xray_writer_guard_is_held()
+            operation_id = "b58826ea-61e1-4cf0-8b96-5c51402cde11"
+            before_bytes = active_config.read_bytes()
+            checkpoint_ref = _write_fixed_generation_checkpoint(operation_id, before_bytes)
+            assert checkpoint_ref is not None
+            with db_session() as connection:
+                before_revision = read_selection_revision(connection)
+            input_hash = current_mihomo_input_fingerprint(routing)["hash"]
+            reservation = {
+                "schema": "mihomo-fixed-generation-reservation/v1",
+                "operation_id": operation_id,
+                "job_id": job_id,
+                "before_revision": before_revision,
+                "selection_revision": before_revision + 1,
+                "input_fingerprint_hash": input_hash,
+                "candidate_config_hash": hashlib.sha256(candidate_bytes).hexdigest(),
+                "before_active_config_hash": hashlib.sha256(before_bytes).hexdigest(),
+                "before_runtime_incarnation": "synthetic-incarnation",
+                "checkpoint_ref": checkpoint_ref,
+            }
+            reserved = generation_reservation_callback(
+                mode="reserve", reservation=reservation,
+                expected_selection_revision=before_revision,
+            )
+            assert reserved.get("ok") is True, reserved
+            expected_revision = reserved["selection_revision"]
+            active_config.write_bytes(candidate_bytes)
+            verification = generation_materialization_callback(
+                operation_id=operation_id,
+                expected_selection_revision=expected_revision,
+            )
+            assert verification.get("ok") is True, verification
             state["vpn-global"] = "REJECT"
-        with db_session() as connection:
-            expected_revision = read_selection_revision(connection)
-        operation_id = "synthetic-generation"
-        verification = verification_callback(
-            operation_id=operation_id,
-            expected_selection_revision=expected_revision,
-        )
-        return {
-            "ok": bool(verification.get("ok")),
-            "operation_id": operation_id,
-            "job_id": job_id,
-            "reconcile_reason": "input_fingerprint_unchanged",
-            "verification_callback_result": verification,
-            "reentry_generation_fence": {
+            native_proof = mihomo_config_status.mihomo_runtime_fixed_target_materialized(routing)
+            assert native_proof.get("ok") is True, native_proof
+            active_hash = _file_hash(str(active_config))
+            receipt = {
+                "schema": "mihomo-fixed-generation-receipt/v1",
+                "operation_id": operation_id,
+                "job_id": job_id,
+                "before_revision": before_revision,
+                "selection_revision": expected_revision,
+                "input_fingerprint_hash": input_hash,
+                "candidate_config_hash": reservation["candidate_config_hash"],
+                "active_config_hash": active_hash,
+                "runtime_incarnation": "synthetic-incarnation",
+                "native_udp_policy_verified": True,
+                "native_top_level_rules_match": True,
+                "native_selector_membership_matches": True,
+                "guarded_rules_match": True,
+                "publication_verified": True,
+                "unchanged_config": False,
+            }
+            published = generation_completion_callback(
+                operation_id=operation_id,
+                expected_selection_revision=expected_revision,
+                receipt=receipt,
+            )
+            assert published.get("ok") is True, published
+            generation_fence = {
+                "schema": "mihomo-reentry-generation-fence/v1",
+                "operation_id": operation_id,
+                "job_id": job_id,
+                "before_revision": before_revision,
+                "selection_revision": expected_revision,
+                "runtime_incarnation": "synthetic-incarnation",
+                "active_config_hash": active_hash,
+                "native_proof_verified": True,
+                "publication_verified": True,
+                "unchanged_config": False,
+            }
+        else:
+            active_config.write_bytes(candidate_bytes)
+            with db_session() as connection:
+                expected_revision = read_selection_revision(connection)
+            operation_id = "synthetic-generation"
+            verification = verification_callback(
+                operation_id=operation_id,
+                expected_selection_revision=expected_revision,
+            )
+            generation_fence = {
                 "schema": "mihomo-reentry-generation-fence/v1",
                 "operation_id": operation_id,
                 "job_id": job_id,
@@ -1138,7 +1500,14 @@ def test_fixed_completion_cannot_overwrite_a_newer_auto_clear_or_native_drift(
                 "native_proof_verified": True,
                 "publication_verified": True,
                 "unchanged_config": True,
-            },
+            }
+        return {
+            "ok": bool(verification.get("ok")),
+            "operation_id": operation_id,
+            "job_id": job_id,
+            "reconcile_reason": "input_fingerprint_unchanged",
+            "verification_callback_result": verification,
+            "reentry_generation_fence": generation_fence,
         }
 
     monkeypatch.setattr(mihomo_reconcile, "reconcile_mihomo_runtime", synthetic_generation)

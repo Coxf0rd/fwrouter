@@ -143,6 +143,16 @@ def get_xray_vpn_auto_pending_state() -> dict[str, Any]:
             "next_retry_at": None,
             "applied_revision": 0,
         }
+    public_workflow = None
+    raw_workflow = value.get("workflow")
+    if isinstance(raw_workflow, dict):
+        # The durable fixed-generation handoff contains private checkpoint
+        # paths and hashes. API/status projections expose only the existing
+        # workflow contract, never internal recovery artifact references.
+        public_workflow = {
+            key: item for key, item in raw_workflow.items()
+            if key not in {"mihomo_generation_reservation", "mihomo_generation_receipt"}
+        }
     return {
         key: value.get(key)
         for key in (
@@ -159,16 +169,17 @@ def get_xray_vpn_auto_pending_state() -> dict[str, Any]:
         )
     } | {
         "attempt_count": int(value.get("attempt_count") or 0),
-        "workflow": dict(value["workflow"]) if isinstance(value.get("workflow"), dict) else None,
+        "workflow": public_workflow,
     }
 
 
 def pending_fixed_workflow_state() -> dict[str, Any] | None:
-    """Return the durable fixed-server workflow only while its marker owns it."""
-    state = get_xray_vpn_auto_pending_state()
-    workflow = state.get("workflow")
+    """Return the internal fixed workflow, including private recovery refs."""
+    with db_session() as connection:
+        state = _load_row(connection)
+    workflow = state.get("workflow") if isinstance(state, dict) else None
     if (
-        not state.get("pending")
+        not isinstance(state, dict) or not state.get("pending")
         or not isinstance(workflow, dict)
         or workflow.get("kind") != "global_fixed_server"
         or type(state.get("revision")) is not int

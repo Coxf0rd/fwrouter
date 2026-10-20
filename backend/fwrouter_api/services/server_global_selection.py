@@ -16,7 +16,11 @@ GLOBAL_FIXED_SERVER_TTL_HOURS = 24
 
 from fwrouter_api.services.server_state import ensure_routing_global_state, get_routing_global_state
 from fwrouter_api.services.events import safe_human_label
-from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guarded
+from fwrouter_api.adapters.xray_common import (
+    xray_writer_guard,
+    xray_writer_guard_is_held,
+    xray_writer_guarded,
+)
 
 
 def _get_active_server_row(server_id: str) -> Any | None:
@@ -187,10 +191,43 @@ def _capture_fixed_apply_context(routing: dict[str, Any]) -> dict[str, Any] | No
         pending_revision = pending.get("revision")
         if type(pending_revision) is not int:
             return None
+        phase = str(workflow.get("phase") or "")
+        generation_reservation = workflow.get("mihomo_generation_reservation")
+        generation_receipt = workflow.get("mihomo_generation_receipt")
+        if phase in {"mihomo_reserved", "mihomo_generation_verified", "mihomo_verified", "core_verified", "xray_verified"}:
+            expected_revision = (
+                generation_reservation.get("selection_revision")
+                if isinstance(generation_reservation, dict) else None
+            )
+            if phase == "mihomo_reserved":
+                if (
+                    not isinstance(generation_reservation, dict)
+                    or type(expected_revision) is not int or expected_revision > revision
+                    or type(generation_reservation.get("before_revision")) is not int
+                    or generation_reservation.get("before_revision") + 1 != expected_revision
+                    or workflow.get("selection_revision") != revision
+                    or not isinstance(generation_reservation.get("operation_id"), str)
+                ):
+                    return None
+            elif isinstance(generation_reservation, dict):
+                if (
+                    type(expected_revision) is not int or expected_revision > revision
+                    or workflow.get("selection_revision") != revision
+                    or not _fixed_generation_receipt_valid(generation_reservation, generation_receipt)
+                ):
+                    return None
+            elif not (
+                phase in {"mihomo_verified", "core_verified", "xray_verified"}
+                and workflow.get("mihomo_generation_mode") == "unchanged"
+                and workflow.get("selection_revision") == revision
+            ):
+                return None
+        elif phase != "intent":
+            return None
     fingerprint = current_mihomo_input_fingerprint(routing)
     if not isinstance(fingerprint, dict) or not fingerprint.get("hash"):
         return None
-    return {
+    token = {
         "selection_revision": revision,
         "pending_revision": pending_revision,
         "core_revision": core_revision,
@@ -200,6 +237,13 @@ def _capture_fixed_apply_context(routing: dict[str, Any]) -> dict[str, Any] | No
         "input_hash": str(fingerprint["hash"]),
         "active_config_hash": _file_hash(_resolved_base_config_path()),
     }
+    if isinstance(generation_reservation, dict):
+        token["mihomo_generation_reservation"] = dict(generation_reservation)
+        token["source_selection_revision"] = int(generation_reservation["before_revision"])
+        token["fixed_workflow_phase"] = phase
+    if isinstance(generation_receipt, dict):
+        token["mihomo_generation_receipt"] = dict(generation_receipt)
+    return token
 
 
 def _capture_global_auto_apply_context(routing: dict[str, Any]) -> dict[str, Any] | None:
@@ -372,11 +416,258 @@ def _fixed_materialization_callback(routing: dict[str, Any], token: dict[str, An
     return verify
 
 
+def _fixed_generation_callbacks(routing: dict[str, Any], token: dict[str, Any]):
+    """Bind reconcile reservation and verified publication to this fixed owner."""
+    from fwrouter_api.services.core_intent import assert_core_intent_snapshot_current
+    from fwrouter_api.services.mihomo_reconcile import _fixed_generation_checkpoint_matches
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, read_selection_revision
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row, _save_if_revision
+
+    server_id = str(routing.get("desired_fixed_server_id") or "")
+    fixed_until = str(routing.get("fixed_server_until") or "")
+    pending_revision = int(token.get("pending_revision") or -1)
+    source_revision = int(token.get("source_selection_revision", token.get("selection_revision", -1)))
+
+    def _owned_row(connection: Any, selection_revision: int) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        pending = _load_row(connection)
+        workflow = pending.get("workflow") if isinstance(pending, dict) else None
+        route = connection.execute(
+            """SELECT server_mode, desired_fixed_server_id, fixed_server_until, apply_state,
+                      error_code, error_message,
+                      datetime(fixed_server_until) IS NOT NULL
+                        AND datetime(fixed_server_until)>CURRENT_TIMESTAMP AS ttl_live
+               FROM routing_global_state WHERE id=1""",
+        ).fetchone()
+        if (
+            not isinstance(pending, dict) or pending.get("pending") is not True
+            or pending.get("revision") != pending_revision
+            or not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server"
+            or workflow.get("server_id") != server_id or workflow.get("fixed_until") != fixed_until
+            or workflow.get("core_revision") != token.get("core_revision")
+            or workflow.get("core_snapshot") != list(token.get("core_snapshot") or ())
+            or not assert_core_intent_snapshot_current(
+                connection, int(token["core_revision"]), tuple(token["core_snapshot"]),
+            )
+            or route is None or route["server_mode"] != "fixed"
+            or route["desired_fixed_server_id"] != server_id
+            or route["fixed_server_until"] != fixed_until
+            or route["apply_state"] not in {"pending", "applying", "clean"}
+            or route["error_code"] is not None or route["error_message"] is not None
+            or not bool(route["ttl_live"])
+            or read_selection_revision(connection) != selection_revision
+        ):
+            return None
+        return pending, workflow
+
+    def reserve_or_validate(
+        *, mode: str, reservation: dict[str, Any], expected_selection_revision: int,
+        **proof: Any,
+    ) -> dict[str, Any]:
+        if not xray_writer_guard_is_held():
+            return {"ok": False}
+        operation_id = reservation.get("operation_id")
+        if not isinstance(operation_id, str) or not operation_id:
+            return {"ok": False}
+        if not _fixed_generation_checkpoint_matches(operation_id, reservation.get("checkpoint_ref")):
+            return {"ok": False}
+        if mode == "validate":
+            if (
+                expected_selection_revision != reservation.get("selection_revision")
+                or reservation.get("before_revision") != source_revision
+                or proof.get("candidate_config_hash") != reservation.get("candidate_config_hash")
+                or proof.get("input_fingerprint_hash") != reservation.get("input_fingerprint_hash")
+                or proof.get("active_config_hash") not in {
+                    reservation.get("before_active_config_hash"),
+                    reservation.get("candidate_config_hash"),
+                }
+                or not proof.get("runtime_incarnation")
+            ):
+                return {"ok": False}
+            with db_session() as connection:
+                owned = _owned_row(connection, expected_selection_revision)
+                if owned is None:
+                    return {"ok": False}
+                _pending, workflow = owned
+                if (
+                    workflow.get("phase") != "mihomo_reserved"
+                    or workflow.get("selection_revision") != expected_selection_revision
+                    or workflow.get("mihomo_generation_reservation") != reservation
+                ):
+                    return {"ok": False}
+            return {"ok": True, "before_revision": source_revision,
+                    "selection_revision": expected_selection_revision}
+
+        if mode != "reserve" or expected_selection_revision != source_revision:
+            return {"ok": False}
+        if (
+            reservation.get("schema") != "mihomo-fixed-generation-reservation/v1"
+            or reservation.get("before_revision") != source_revision
+            or reservation.get("selection_revision") != source_revision + 1
+            or reservation.get("candidate_config_hash") is None
+            or reservation.get("input_fingerprint_hash") is None
+            or reservation.get("before_active_config_hash") != token.get("active_config_hash")
+            or reservation.get("before_runtime_incarnation") != token.get("runtime_incarnation")
+        ):
+            return {"ok": False}
+        with db_session() as connection:
+            owned = _owned_row(connection, source_revision)
+            if owned is None:
+                return {"ok": False}
+            pending, workflow = owned
+            if (
+                workflow.get("phase") != "intent"
+                or workflow.get("selection_revision") != source_revision
+                or workflow.get("mihomo_generation_reservation") is not None
+            ):
+                return {"ok": False}
+            reserved_revision = advance_selection_revision(
+                connection, expected_revision=source_revision,
+            )
+            if reserved_revision != source_revision + 1:
+                connection.rollback()
+                return {"ok": False}
+            workflow.update({
+                "phase": "mihomo_reserved",
+                "selection_revision": reserved_revision,
+                "mihomo_generation_reservation": reservation,
+            })
+            pending["workflow"] = workflow
+            if not _save_if_revision(connection, pending, pending_revision):
+                connection.rollback()
+                return {"ok": False}
+        token.update({
+            "source_selection_revision": source_revision,
+            "selection_revision": reserved_revision,
+            "mihomo_generation_reservation": dict(reservation),
+            "fixed_workflow_phase": "mihomo_reserved",
+        })
+        return {"ok": True, "before_revision": source_revision,
+                "selection_revision": reserved_revision}
+
+    def publish_verified_receipt(
+        *, operation_id: str, expected_selection_revision: int,
+        receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        reservation = token.get("mihomo_generation_reservation")
+        if (
+            not xray_writer_guard_is_held()
+            or not isinstance(reservation, dict)
+            or operation_id != reservation.get("operation_id")
+            or expected_selection_revision != reservation.get("selection_revision")
+            or receipt.get("operation_id") != operation_id
+            or receipt.get("before_revision") != reservation.get("before_revision")
+            or receipt.get("selection_revision") != expected_selection_revision
+            or receipt.get("input_fingerprint_hash") != reservation.get("input_fingerprint_hash")
+            or receipt.get("candidate_config_hash") != reservation.get("candidate_config_hash")
+            or receipt.get("active_config_hash") not in {
+                reservation.get("candidate_config_hash"),
+                reservation.get("before_active_config_hash"),
+            }
+            or receipt.get("schema") != "mihomo-fixed-generation-receipt/v1"
+            or not isinstance(receipt.get("runtime_incarnation"), str)
+            or not receipt.get("runtime_incarnation")
+            or receipt.get("native_udp_policy_verified") is not True
+            or receipt.get("native_top_level_rules_match") is not True
+            or receipt.get("native_selector_membership_matches") is not True
+            or receipt.get("guarded_rules_match") is not True
+            or receipt.get("publication_verified") is not True
+        ):
+            return {"ok": False}
+        with db_session() as connection:
+            owned = _owned_row(connection, expected_selection_revision)
+            if owned is None:
+                return {"ok": False}
+            pending, workflow = owned
+            if (
+                workflow.get("phase") != "mihomo_reserved"
+                or workflow.get("selection_revision") != expected_selection_revision
+                or workflow.get("mihomo_generation_reservation") != reservation
+                or workflow.get("mihomo_generation_receipt") is not None
+            ):
+                return {"ok": False}
+            workflow.update({
+                "phase": "mihomo_generation_verified",
+                "mihomo_generation_receipt": receipt,
+            })
+            pending["workflow"] = workflow
+            if not _save_if_revision(connection, pending, pending_revision):
+                connection.rollback()
+                return {"ok": False}
+        token["mihomo_generation_receipt"] = dict(receipt)
+        token["fixed_workflow_phase"] = "mihomo_generation_verified"
+        return {"ok": True}
+
+    return reserve_or_validate, publish_verified_receipt
+
+
 def _materialize_fixed_server_generation(
     routing: dict[str, Any], *, token: dict[str, Any], job_id: str,
 ) -> dict[str, Any]:
     """Revalidate the captured fixed intent and serialize its generation owner."""
     from fwrouter_api.services.mihomo_reconcile import reconcile_mihomo_runtime
+
+    phase = str(token.get("fixed_workflow_phase") or "intent")
+    if phase in {"mihomo_generation_verified", "mihomo_verified", "core_verified", "xray_verified"}:
+        from fwrouter_api.services.mihomo_config_status import mihomo_runtime_fixed_target_materialized
+        from fwrouter_api.services.mihomo_reconcile_fingerprint import mihomo_udp_policy_receipt_matches
+
+        reservation = token.get("mihomo_generation_reservation")
+        receipt = token.get("mihomo_generation_receipt")
+        if phase == "mihomo_generation_verified" and (
+            not _fixed_generation_receipt_valid(reservation, receipt)
+            or receipt.get("runtime_incarnation") != token.get("runtime_incarnation")
+            or receipt.get("active_config_hash") != token.get("active_config_hash")
+            or token.get("selection_revision") != receipt.get("selection_revision")
+        ):
+            return {"ok": False, "stage": "generation_resume_receipt", "error_code": "MIHOMO_GENERATION_RECEIPT_INVALID"}
+        selected = phase in {"mihomo_verified", "core_verified", "xray_verified"}
+        proof = mihomo_runtime_fixed_target_materialized(routing, require_selected=selected)
+        if (
+            not proof.get("ok")
+            or not mihomo_udp_policy_receipt_matches()
+            or not _fixed_apply_token_matches(
+                server_id=str(routing.get("desired_fixed_server_id") or ""),
+                fixed_until=str(routing.get("fixed_server_until") or ""),
+                token=token,
+            )
+        ):
+            return {
+                "ok": False, "stage": "generation_resume_readback",
+                "error_code": "MIHOMO_GENERATION_READBACK_UNVERIFIED",
+                "fixed_materialization_proof": proof,
+                "last_good_retained": True,
+            }
+        if isinstance(receipt, dict):
+            operation_id = receipt.get("operation_id")
+            before_revision = receipt.get("before_revision")
+            selected_revision = receipt.get("selection_revision")
+            active_hash = receipt.get("active_config_hash")
+            incarnation = receipt.get("runtime_incarnation")
+        else:
+            operation_id = "unchanged"
+            before_revision = token.get("source_selection_revision", token.get("selection_revision"))
+            selected_revision = before_revision
+            active_hash = token.get("active_config_hash")
+            incarnation = token.get("runtime_incarnation")
+        return {
+            "ok": True,
+            "operation_id": operation_id,
+            "job_id": receipt.get("job_id") if isinstance(receipt, dict) else job_id,
+            "reentry_generation_fence": {
+                "schema": "mihomo-reentry-generation-fence/v1",
+                "operation_id": operation_id,
+                "job_id": receipt.get("job_id") if isinstance(receipt, dict) else job_id,
+                "before_revision": before_revision,
+                "selection_revision": selected_revision,
+                "runtime_incarnation": incarnation,
+                "active_config_hash": active_hash,
+                "native_proof_verified": True,
+                "publication_verified": True,
+                "unchanged_config": not isinstance(receipt, dict),
+            },
+            "last_good_retained": True,
+            "resume_readback": proof,
+        }
 
     server_id = str(routing.get("desired_fixed_server_id") or "")
     fixed_until = str(routing.get("fixed_server_until") or "")
@@ -393,11 +684,16 @@ def _materialize_fixed_server_generation(
                 "error_message": "Fixed intent changed before managed generation began.",
                 "last_good_retained": True,
             }
+        reserve_generation, publish_generation = _fixed_generation_callbacks(routing, token)
+        reservation = token.get("mihomo_generation_reservation")
         return reconcile_mihomo_runtime(
             routing=routing,
             job_id=job_id,
             verification_callback=_fixed_materialization_callback(routing, token),
             generation_materialization_callback=_fixed_materialization_callback(routing, token),
+            generation_reservation_callback=reserve_generation,
+            generation_completion_callback=publish_generation,
+            fixed_generation_reservation=(reservation if isinstance(reservation, dict) else None),
         )
 
 
@@ -414,6 +710,44 @@ def _fixed_workflow_current(revision: int) -> dict[str, Any] | None:
     ):
         return None
     return {**workflow, "pending_revision": revision}
+
+
+def _fixed_generation_receipt_valid(reservation: Any, receipt: Any) -> bool:
+    if not isinstance(reservation, dict) or not isinstance(receipt, dict):
+        return False
+    from fwrouter_api.services.mihomo_reconcile import _fixed_generation_checkpoint_matches
+
+    digest = lambda value: isinstance(value, str) and len(value) == 64 and all(  # noqa: E731
+        character in "0123456789abcdef" for character in value
+    )
+    operation_id = reservation.get("operation_id")
+    return bool(
+        reservation.get("schema") == "mihomo-fixed-generation-reservation/v1"
+        and isinstance(operation_id, str)
+        and type(reservation.get("before_revision")) is int
+        and type(reservation.get("selection_revision")) is int
+        and reservation.get("before_revision") + 1 == reservation.get("selection_revision")
+        and _fixed_generation_checkpoint_matches(operation_id, reservation.get("checkpoint_ref"))
+        and receipt.get("schema") == "mihomo-fixed-generation-receipt/v1"
+        and receipt.get("operation_id") == operation_id
+        and receipt.get("before_revision") == reservation.get("before_revision")
+        and receipt.get("selection_revision") == reservation.get("selection_revision")
+        and receipt.get("input_fingerprint_hash") == reservation.get("input_fingerprint_hash")
+        and receipt.get("candidate_config_hash") == reservation.get("candidate_config_hash")
+        and digest(reservation.get("candidate_config_hash"))
+        and digest(receipt.get("active_config_hash"))
+        and receipt.get("active_config_hash") in {
+            reservation.get("candidate_config_hash"),
+            reservation.get("before_active_config_hash"),
+        }
+        and isinstance(receipt.get("runtime_incarnation"), str)
+        and bool(receipt.get("runtime_incarnation"))
+        and receipt.get("native_udp_policy_verified") is True
+        and receipt.get("native_top_level_rules_match") is True
+        and receipt.get("native_selector_membership_matches") is True
+        and receipt.get("guarded_rules_match") is True
+        and receipt.get("publication_verified") is True
+    )
 
 
 def _refresh_fixed_token_after_core_apply(
@@ -758,6 +1092,14 @@ def _commit_fixed_mihomo_stage(
     from fwrouter_api.services.xray_vpn_auto_pending import _load_row, _save_if_revision
 
     pending_revision = int(token.get("pending_revision") or -1)
+    generation_reservation = token.get("mihomo_generation_reservation")
+    generation_receipt = token.get("mihomo_generation_receipt")
+    phase = str(token.get("fixed_workflow_phase") or "intent")
+    if phase == "mihomo_generation_verified":
+        if not _fixed_generation_receipt_valid(generation_reservation, generation_receipt):
+            return None
+    elif phase != "intent":
+        return None
     with xray_writer_guard(timeout_seconds=30.0), db_session() as connection:
         if not _fixed_apply_token_matches(
             server_id=server_id, fixed_until=fixed_until, token=token,
@@ -793,10 +1135,16 @@ def _commit_fixed_mihomo_stage(
             not isinstance(pending, dict) or pending.get("pending") is not True
             or pending.get("revision") != pending_revision
             or not isinstance(workflow, dict) or workflow.get("kind") != "global_fixed_server"
+            or workflow.get("phase") != phase
+            or workflow.get("selection_revision") != current_revision
+            or workflow.get("mihomo_generation_reservation") != generation_reservation
+            or workflow.get("mihomo_generation_receipt") != generation_receipt
         ):
             connection.rollback()
             return None
         workflow.update({"phase": "mihomo_verified", "selection_revision": next_revision})
+        if generation_reservation is None:
+            workflow["mihomo_generation_mode"] = "unchanged"
         pending["workflow"] = workflow
         if not _save_if_revision(connection, pending, pending_revision):
             connection.rollback()
@@ -817,6 +1165,7 @@ def _commit_fixed_mihomo_stage(
         return None
     token.update({
         "selection_revision": next_revision,
+        "fixed_workflow_phase": "mihomo_verified",
         "core_snapshot": tuple(str(core[key]) for key in ("desired_state", "lifecycle_mode", "apply_state")),
         "input_hash": str(current_input["hash"]),
         "active_config_hash": _file_hash(_resolved_base_config_path()),
@@ -1132,7 +1481,7 @@ def apply_global_fixed_server(
     success is published only after fresh Core, Mihomo, and Xray readback.
     """
 
-    from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
+    from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, MihomoApplyResult
     from fwrouter_api.services.management_attribution import (
         build_incomplete_attribution_error,
         build_management_attribution,
@@ -1263,6 +1612,12 @@ def apply_global_fixed_server(
             "error_message": "Fixed routing intent could not be bound to the current runtime context.",
         }
 
+    phase_at_entry = str(token.get("fixed_workflow_phase") or "intent")
+    fixed_generation_already_verified = phase_at_entry in {
+        "mihomo_generation_verified", "mihomo_verified", "core_verified", "xray_verified",
+    }
+    fixed_stage_already_committed = phase_at_entry in {"mihomo_verified", "core_verified", "xray_verified"}
+
     pending_revision = int(token.get("pending_revision") or 0)
     workflow = _fixed_workflow_current(pending_revision)
     if workflow is None or workflow.get("server_id") != server_id:
@@ -1281,7 +1636,7 @@ def apply_global_fixed_server(
         desired["routing"], token=token, job_id=job_id or "global-fixed-server",
     )
     generation_fence = materialized.get("reentry_generation_fence")
-    before_revision = token.get("selection_revision")
+    before_revision = token.get("source_selection_revision", token.get("selection_revision"))
     after_revision = generation_fence.get("selection_revision") if isinstance(generation_fence, dict) else None
     unchanged_config = bool(generation_fence.get("unchanged_config")) if isinstance(generation_fence, dict) else False
     active_hash = generation_fence.get("active_config_hash") if isinstance(generation_fence, dict) else None
@@ -1315,11 +1670,12 @@ def apply_global_fixed_server(
     if not receipt_valid:
         materialized = {**materialized, "ok": False, "error_code": "MIHOMO_GENERATION_RECEIPT_INVALID"}
     else:
-        token.update({
-            "selection_revision": after_revision,
-            "runtime_incarnation": generation_fence["runtime_incarnation"],
-            "active_config_hash": active_hash,
-        })
+        if str(token.get("fixed_workflow_phase") or "") not in {"mihomo_verified", "core_verified", "xray_verified"}:
+            token.update({
+                "selection_revision": after_revision,
+                "runtime_incarnation": generation_fence["runtime_incarnation"],
+                "active_config_hash": active_hash,
+            })
     if materialized.get("stage") == "fixed_intent_revalidation":
         return {
             "ok": False, "requested_by": requested_by,
@@ -1371,11 +1727,14 @@ def apply_global_fixed_server(
     # Probe only after the fixed proxy has been reconciled into the active
     # Mihomo config; this supports full-inventory fixed targets that are not
     # members of the ordinary auto/global preference pools.
-    pre_check = check_server_delay(
-        server_id,
-        update_state=True,
-        checked_by=f"global_fixed_pre_check:{requested_by}",
-        timeout_ms=timeout_ms,
+    pre_check = (
+        {"ok": True, "skipped": True, "reason": "fixed_workflow_resume_after_mihomo_commit"}
+        if fixed_generation_already_verified else check_server_delay(
+            server_id,
+            update_state=True,
+            checked_by=f"global_fixed_pre_check:{requested_by}",
+            timeout_ms=timeout_ms,
+        )
     )
     if not pre_check.get("ok"):
         return {
@@ -1395,27 +1754,67 @@ def apply_global_fixed_server(
         if not _fixed_apply_token_matches(server_id=server_id, fixed_until=str(desired["routing"].get("fixed_server_until") or ""), token=token):
             apply_result = None
             stale_before_native = True
+            selected_proof = None
+        elif fixed_stage_already_committed:
+            selected_proof = mihomo_runtime_fixed_target_materialized(
+                get_routing_global_state(expire_ttl=False) or {}, require_selected=True,
+            )
+            stale_before_native = not bool(
+                selected_proof.get("ok")
+                and selected_proof.get("fixed_runtime_target") == mihomo_target
+            )
+            apply_result = (
+                MihomoApplyResult(
+                    ok=True,
+                    message="Previously committed fixed selector was re-read without a native write.",
+                    active_server_id=mihomo_target,
+                    details={"resumed_without_native_write": True},
+                )
+                if not stale_before_native else None
+            )
         else:
             current_proof = mihomo_runtime_fixed_target_materialized(desired["routing"])
             if not current_proof.get("ok") or current_proof.get("fixed_runtime_target") != mihomo_target:
                 apply_result = None
                 stale_before_native = True
+                selected_proof = None
             else:
-                stale_before_native = False
-                apply_result = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector("vpn-global", mihomo_target)
-                if apply_result.ok:
-                    selected_proof = mihomo_runtime_fixed_target_materialized(
-                        desired["routing"], require_selected=True,
+                selected_proof = mihomo_runtime_fixed_target_materialized(
+                    desired["routing"], require_selected=True,
+                )
+                if selected_proof.get("ok") and selected_proof.get("fixed_runtime_target") == mihomo_target:
+                    stale_before_native = False
+                    apply_result = MihomoApplyResult(
+                        ok=True,
+                        message="Fixed selector was already selected and was re-read without a native write.",
+                        active_server_id=mihomo_target,
+                        details={"resumed_without_native_write": True},
                     )
-                    if not selected_proof.get("ok") or not _fixed_apply_token_matches(
-                        server_id=server_id,
-                        fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
-                        token=token,
-                    ):
-                        apply_result = None
-                        stale_before_native = True
+                elif (
+                    selected_proof.get("native_membership_ok") is True
+                    and selected_proof.get("logical_group_native_membership_ok") is True
+                    and selected_proof.get("config_membership_ok") is True
+                    and selected_proof.get("fixed_runtime_target") == mihomo_target
+                    and selected_proof.get("vpn_global_now") != mihomo_target
+                ):
+                    stale_before_native = False
+                    apply_result = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector("vpn-global", mihomo_target)
+                    if apply_result.ok:
+                        selected_proof = mihomo_runtime_fixed_target_materialized(
+                            desired["routing"], require_selected=True,
+                        )
+                        if not selected_proof.get("ok") or not _fixed_apply_token_matches(
+                            server_id=server_id,
+                            fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+                            token=token,
+                        ):
+                            apply_result = None
+                            stale_before_native = True
+                    else:
+                        selected_proof = None
                 else:
-                    selected_proof = None
+                    apply_result = None
+                    stale_before_native = True
 
     if stale_before_native or apply_result is None:
         return {
@@ -1451,10 +1850,14 @@ def apply_global_fixed_server(
             "error_code": failure_code, "error_message": failure_message,
         }
 
-    intermediate = _commit_fixed_mihomo_stage(
-        server_id=server_id,
-        fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
-        token=token,
+    intermediate = (
+        {"routing": get_routing_global_state(expire_ttl=False), "selection_revision": token.get("selection_revision")}
+        if fixed_stage_already_committed
+        else _commit_fixed_mihomo_stage(
+            server_id=server_id,
+            fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+            token=token,
+        )
     )
     if intermediate is None:
         return {
@@ -1708,6 +2111,8 @@ def apply_global_fixed_server(
             "error_message": "Durable fixed workflow changed before Xray proof publication.",
         }
 
+    generation_reservation = workflow.get("mihomo_generation_reservation")
+
     # Re-read every owner proof while holding the shared writer fence, then
     # clear the durable workflow marker in the same transaction that records
     # completion. Intermediate route state is already truthful and clean; the
@@ -1835,6 +2240,16 @@ def apply_global_fixed_server(
                     "error_message": "Fixed routing state changed before its completion update.",
                 }
 
+    checkpoint_cleanup: dict[str, bool] | None = None
+    if isinstance(generation_reservation, dict):
+        from fwrouter_api.services.mihomo_reconcile import _cleanup_fixed_generation_checkpoint
+
+        removed = _cleanup_fixed_generation_checkpoint(
+            str(generation_reservation.get("operation_id") or ""),
+            generation_reservation.get("checkpoint_ref"),
+        )
+        checkpoint_cleanup = {"ok": removed, "retained": not removed}
+
     routing_after = get_routing_global_state()
 
     from fwrouter_api.services.logs import write_operational_log
@@ -1886,6 +2301,7 @@ def apply_global_fixed_server(
             "xray_artifact_sha256": final_xray_proof.get("artifact_sha256"),
             "xray_runtime_incarnation": final_xray_proof.get("runtime_incarnation"),
         },
+        "checkpoint_cleanup": checkpoint_cleanup,
     }
 
 

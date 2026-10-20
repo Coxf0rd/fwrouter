@@ -5,10 +5,12 @@ import hashlib
 import inspect
 import math
 import os
+import stat
 import shutil as shutil
+import tempfile
 import yaml
-from uuid import uuid4
 from pathlib import Path
+from uuid import UUID, uuid4
 from typing import Any
 from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
@@ -68,6 +70,149 @@ def _build_config_status_summary(
 MAX_SEMANTIC_YAML_NODES = 100_000
 MAX_SEMANTIC_YAML_DEPTH = 100
 MAX_SEMANTIC_CONFIG_BYTES = 1024 * 1024
+
+
+def _fixed_generation_checkpoint_path(operation_id: str) -> Path | None:
+    """Resolve an operation-keyed checkpoint only inside the protected state dir."""
+    try:
+        canonical_id = str(UUID(operation_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if canonical_id != operation_id:
+        return None
+    directory = config._resolved_last_good_mihomo_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = directory.lstat()
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & 0o077
+        ):
+            return None
+    except OSError:
+        return None
+    return directory / f"fixed-generation-{canonical_id}.yaml"
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _publish_fixed_generation_checkpoint(
+    operation_id: str, writer: Any,
+) -> dict[str, Any] | None:
+    """Stream immutable checkpoint bytes into a protected, no-replace artifact."""
+    path = _fixed_generation_checkpoint_path(operation_id)
+    if path is None:
+        return None
+    if path.exists() or path.is_symlink():
+        return None
+    temporary: Path | None = None
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        temporary = Path(temporary_name)
+        try:
+            while True:
+                chunk = writer()
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    try:
+                        written = os.write(descriptor, view)
+                    except InterruptedError:
+                        continue
+                    if written <= 0:
+                        raise OSError("short write while publishing fixed-generation checkpoint")
+                    view = view[written:]
+                digest.update(chunk)
+                size += len(chunk)
+            if size <= 0:
+                return None
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.link(str(temporary), str(path))
+        os.unlink(str(temporary))
+        temporary = None
+        _fsync_directory(path.parent)
+        return {"path": str(path), "sha256": digest.hexdigest(), "size": size}
+    except OSError:
+        return None
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(str(temporary))
+            except OSError:
+                pass
+
+
+def _write_fixed_generation_checkpoint(operation_id: str, data: bytes) -> dict[str, Any] | None:
+    """Write immutable checkpoint bytes before DB reservation, without overwrite."""
+    if not data:
+        return None
+    path = _fixed_generation_checkpoint_path(operation_id)
+    if path is None:
+        return None
+    digest = hashlib.sha256(data).hexdigest()
+    if path.exists() or path.is_symlink():
+        try:
+            info = path.lstat()
+            if (
+                stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+                and info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o600
+                and info.st_size == len(data) and _file_hash(str(path)) == digest
+            ):
+                return {"path": str(path), "sha256": digest, "size": len(data)}
+        except OSError:
+            pass
+        return None
+    chunks = iter((data, b""))
+    return _publish_fixed_generation_checkpoint(operation_id, lambda: next(chunks))
+
+
+def _fixed_generation_checkpoint_matches(operation_id: str, reference: Any) -> bool:
+    if not isinstance(reference, dict):
+        return False
+    path = _fixed_generation_checkpoint_path(operation_id)
+    if path is None or reference.get("path") != str(path):
+        return False
+    try:
+        info = path.lstat()
+        return bool(
+            stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode)
+            and info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o600
+            and type(reference.get("size")) is int
+            and reference["size"] > 0
+            and path.stat().st_size == reference["size"]
+            and isinstance(reference.get("sha256"), str)
+            and _file_hash(str(path)) == reference["sha256"]
+        )
+    except OSError:
+        return False
+
+
+def _cleanup_fixed_generation_checkpoint(operation_id: str, reference: Any) -> bool:
+    """Remove only the exact operation-owned checkpoint after final completion."""
+    if not _fixed_generation_checkpoint_matches(operation_id, reference):
+        return False
+    path = _fixed_generation_checkpoint_path(operation_id)
+    if path is None:
+        return False
+    try:
+        path.unlink()
+        _fsync_directory(path.parent)
+        return True
+    except OSError:
+        return False
 
 
 def _yaml_tree_is_unambiguous(
@@ -401,18 +546,54 @@ def validate_and_promote_mihomo_candidate_config() -> dict[str, Any]:
 
 def _capture_mihomo_reconcile_checkpoint(
     base_path: str, candidate_path: str, *, routing: dict[str, Any] | None = None,
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     base = Path(base_path)
-    backup = config._resolved_last_good_mihomo_dir() / "config.previous.yaml"
+    backup = (
+        _fixed_generation_checkpoint_path(operation_id)
+        if operation_id is not None else config._resolved_last_good_mihomo_dir() / "config.previous.yaml"
+    )
+    if backup is None:
+        return {"ok": False, "reason": "checkpoint_operation_invalid", "base_path": str(base)}
     if not base.is_file():
         return {"ok": False, "reason": "no_active_config", "base_path": str(base), "backup_path": str(backup)}
-    backup.parent.mkdir(parents=True, exist_ok=True)
-    backup.parent.chmod(0o700)
     try:
-        original = base.read_bytes()
-        old_hash = _file_hash(str(base))
-        atomic_write_text(backup, original.decode("utf-8"))
-        backup.chmod(0o600)
+        if operation_id is not None:
+            before = base.lstat()
+            if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
+                return {"ok": False, "reason": "no_active_config", "base_path": str(base), "backup_path": str(backup)}
+            source_fd = os.open(base, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                opened = os.fstat(source_fd)
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    return {"ok": False, "reason": "checkpoint_source_changed", "base_path": str(base), "backup_path": str(backup)}
+                checkpoint_ref = _publish_fixed_generation_checkpoint(
+                    operation_id, lambda: os.read(source_fd, 1024 * 1024),
+                )
+            finally:
+                os.close(source_fd)
+            after = base.lstat()
+            if checkpoint_ref is None or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+            ) or checkpoint_ref["size"] != before.st_size:
+                return {"ok": False, "reason": "checkpoint_write_failed", "base_path": str(base), "backup_path": str(backup)}
+            old_hash = checkpoint_ref["sha256"]
+            # Policy classification uses the same complete preimage that the
+            # legacy path examined; generated configs have no 4 MiB input cap.
+            original = base.read_bytes()
+            if hashlib.sha256(original).hexdigest() != old_hash:
+                return {"ok": False, "reason": "checkpoint_source_changed", "base_path": str(base), "backup_path": str(backup)}
+        else:
+            original = base.read_bytes()
+            old_hash = hashlib.sha256(original).hexdigest()
+        if operation_id is None:
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            backup.parent.chmod(0o700)
+            atomic_write_text(backup, original.decode("utf-8"))
+            backup.chmod(0o600)
+            checkpoint_ref = {"path": str(backup), "sha256": hashlib.sha256(original).hexdigest(), "size": len(original)}
+        else:
+            assert checkpoint_ref is not None
     except (OSError, UnicodeDecodeError) as exc:
         return {"ok": False, "reason": "checkpoint_write_failed", "error_message": str(exc)}
     try:
@@ -432,6 +613,7 @@ def _capture_mihomo_reconcile_checkpoint(
         "backup_path": str(backup),
         "before_hash": old_hash,
         "candidate_hash": _file_hash(candidate_path),
+        "checkpoint_ref": checkpoint_ref,
         "before_udp_policy_safe": _config_has_failclosed_udp_policy(checkpoint_text),
         "before_mandatory_vpn_policy_required": required_vpn_policy,
     }
@@ -660,6 +842,9 @@ def reconcile_mihomo_runtime(
     prepared_candidate_metadata: dict[str, Any] | None = None,
     verification_callback: Any = None,
     generation_materialization_callback: Any = None,
+    generation_reservation_callback: Any = None,
+    generation_completion_callback: Any = None,
+    fixed_generation_reservation: dict[str, Any] | None = None,
     _inventory_admission: Any = None,
 ) -> dict[str, Any]:
     blocked = config.managed_runtime_operation_blocked(
@@ -708,7 +893,8 @@ def reconcile_mihomo_runtime(
             },
         }
 
-    operation_id = str(uuid4())
+    resume_reservation = fixed_generation_reservation if isinstance(fixed_generation_reservation, dict) else None
+    operation_id = str((resume_reservation or {}).get("operation_id") or uuid4())
     routing_dict = routing if isinstance(routing, dict) else None
     try:
         with db_session() as connection:
@@ -719,22 +905,156 @@ def reconcile_mihomo_runtime(
             "error_code": "VPN_AUTO_SELECTION_FENCE_INVALID",
             "error_message": str(exc), "last_good_retained": True,
         }
+    reservation_source_revision = expected_selection_revision
+    if resume_reservation is not None:
+        if (
+            not callable(generation_reservation_callback)
+            or type(resume_reservation.get("before_revision")) is not int
+            or type(resume_reservation.get("selection_revision")) is not int
+            or resume_reservation.get("selection_revision") != expected_selection_revision
+            or not isinstance(resume_reservation.get("operation_id"), str)
+            or not operation_id
+        ):
+            return {
+                "ok": False, "stage": "generation_resume_reservation",
+                "error_code": "MIHOMO_GENERATION_RESERVATION_INVALID",
+                "last_good_retained": False,
+                "checkpoint_retained": _fixed_generation_checkpoint_matches(
+                    operation_id, resume_reservation.get("checkpoint_ref"),
+                ),
+            }
+        reservation_source_revision = int(resume_reservation["before_revision"])
+        if expected_selection_revision != reservation_source_revision + 1:
+            return {
+                "ok": False, "stage": "generation_resume_reservation",
+                "error_code": "MIHOMO_GENERATION_RESERVATION_INVALID",
+                "last_good_retained": False,
+                "checkpoint_retained": _fixed_generation_checkpoint_matches(
+                    operation_id, resume_reservation.get("checkpoint_ref"),
+                ),
+            }
     runtime_incarnation_before = _mihomo_incarnation()
     if not runtime_incarnation_before:
         return {
             "ok": False, "stage": "generation_snapshot",
             "error_code": "MIHOMO_RUNTIME_IDENTITY_UNAVAILABLE",
             "error_message": "Mihomo runtime incarnation is unavailable; refusing an unfenced generation mutation.",
-            "last_good_retained": True, "operation_id": operation_id,
+            "last_good_retained": resume_reservation is None,
+            "checkpoint_retained": bool(
+                isinstance(resume_reservation, dict)
+                and _fixed_generation_checkpoint_matches(
+                    operation_id, resume_reservation.get("checkpoint_ref"),
+                )
+            ),
+            "operation_id": operation_id,
         }
     base_path = config._resolved_base_config_path()
     active_config_hash_before = _file_hash(base_path)
+
+    def last_good_still_active() -> bool:
+        if resume_reservation is None:
+            return True
+        return bool(
+            active_config_hash_before == resume_reservation.get("before_active_config_hash")
+            and runtime_incarnation_before == resume_reservation.get("before_runtime_incarnation")
+        )
+
+    def fixed_checkpoint_retained() -> bool:
+        return bool(
+            isinstance(resume_reservation, dict)
+            and _fixed_generation_checkpoint_matches(
+                operation_id, resume_reservation.get("checkpoint_ref"),
+            )
+        )
+
     input_fingerprint: dict[str, Any] | None = None
     try:
         input_fingerprint = current_mihomo_input_fingerprint(routing_dict)
     except Exception:
         input_fingerprint = None
-    if input_fingerprint is not None and mihomo_input_unchanged(input_fingerprint):
+    if resume_reservation is not None and (
+        not isinstance(input_fingerprint, dict)
+        or input_fingerprint.get("hash") != resume_reservation.get("input_fingerprint_hash")
+    ):
+        return {
+            "ok": False, "stage": "generation_resume_reservation",
+            "error_code": "MIHOMO_GENERATION_RESERVATION_STALE",
+            "last_good_retained": False,
+            "checkpoint_retained": _fixed_generation_checkpoint_matches(
+                operation_id, resume_reservation.get("checkpoint_ref"),
+            ),
+            "operation_id": operation_id,
+        }
+    if resume_reservation is not None:
+        try:
+            with xray_writer_guard(timeout_seconds=30.0):
+                reservation_result = generation_reservation_callback(
+                    mode="validate",
+                    operation_id=operation_id,
+                    expected_selection_revision=expected_selection_revision,
+                    reservation=resume_reservation,
+                    candidate_config_hash=resume_reservation.get("candidate_config_hash"),
+                    input_fingerprint_hash=(input_fingerprint or {}).get("hash"),
+                    active_config_hash=active_config_hash_before,
+                    runtime_incarnation=runtime_incarnation_before,
+                ) if callable(generation_reservation_callback) else None
+        except Exception:
+            reservation_result = None
+        if (
+            not isinstance(reservation_result, dict)
+            or reservation_result.get("ok") is not True
+            or reservation_result.get("selection_revision") != expected_selection_revision
+        ):
+            return {
+                "ok": False, "stage": "generation_resume_reservation",
+                "error_code": "MIHOMO_GENERATION_RESERVATION_STALE",
+                "last_good_retained": last_good_still_active(),
+                "checkpoint_retained": fixed_checkpoint_retained(),
+                "operation_id": operation_id,
+            }
+    fixed_generation_reserved = resume_reservation is not None
+    fixed_receipt_publication_failed = False
+
+    def publish_fixed_generation_receipt(
+        *, active_hash: str, runtime_incarnation: str, native_proof: dict[str, Any],
+        unchanged_config: bool,
+    ) -> dict[str, Any] | None:
+        if not fixed_generation_reserved or not callable(generation_completion_callback):
+            return None
+        receipt = {
+            "schema": "mihomo-fixed-generation-receipt/v1",
+            "operation_id": operation_id,
+            "job_id": job_id,
+            "before_revision": reservation_source_revision,
+            "selection_revision": expected_selection_revision,
+            "input_fingerprint_hash": (input_fingerprint or {}).get("hash"),
+            "candidate_config_hash": _file_hash(config._resolved_candidate_config_path()),
+            "active_config_hash": active_hash,
+            "runtime_incarnation": runtime_incarnation,
+            "native_udp_policy_verified": native_proof.get("ok") is True,
+            "native_top_level_rules_match": native_proof.get("native_top_level_rules_match") is True,
+            "native_selector_membership_matches": native_proof.get("selector_membership_matches") is True,
+            "guarded_rules_match": native_proof.get("guarded_rules_match") is True,
+            "publication_verified": True,
+            "unchanged_config": bool(unchanged_config),
+        }
+        try:
+            completion = generation_completion_callback(
+                operation_id=operation_id,
+                expected_selection_revision=expected_selection_revision,
+                receipt=receipt,
+            ) if callable(generation_completion_callback) else None
+        except Exception:
+            completion = None
+        if not isinstance(completion, dict) or completion.get("ok") is not True:
+            return None
+        return receipt
+
+    if (
+        resume_reservation is None
+        and input_fingerprint is not None
+        and mihomo_input_unchanged(input_fingerprint)
+    ):
         verification = None
         if callable(verification_callback):
             value = _invoke_verification_callback(
@@ -802,6 +1122,20 @@ def reconcile_mihomo_runtime(
                     "reconcile_reason": "selection_or_runtime_superseded",
                     "last_good_retained": True,
                 }
+            fixed_receipt = None
+            if fixed_generation_reserved:
+                fixed_receipt = publish_fixed_generation_receipt(
+                    active_hash=active_config_hash_before,
+                    runtime_incarnation=runtime_incarnation_before,
+                    native_proof=native_proof,
+                    unchanged_config=False,
+                )
+                if fixed_receipt is None:
+                    return {
+                        "ok": False, "stage": "generation_receipt_publication",
+                        "error_code": "MIHOMO_GENERATION_RECEIPT_PUBLICATION_FAILED",
+                        "last_good_retained": True, "operation_id": operation_id,
+                    }
         base_path = config._resolved_base_config_path()
         candidate_path = config._resolved_candidate_config_path()
         return {
@@ -835,13 +1169,13 @@ def reconcile_mihomo_runtime(
                 "schema": "mihomo-reentry-generation-fence/v1",
                 "operation_id": operation_id,
                 "job_id": job_id,
-                "before_revision": expected_selection_revision,
+                "before_revision": reservation_source_revision,
                 "selection_revision": expected_selection_revision,
                 "runtime_incarnation": runtime_incarnation_before,
                 "active_config_hash": active_config_hash_before,
                 "native_proof_verified": native_proof.get("ok") is True,
                 "publication_verified": True,
-                "unchanged_config": True,
+                "unchanged_config": not fixed_generation_reserved,
             } if verification is not None else None),
             "last_good_retained": True,
             "state_consistency_ok": True,
@@ -887,6 +1221,25 @@ def reconcile_mihomo_runtime(
     candidate_path = str(candidate.get("candidate_path") or config._resolved_candidate_config_path())
     prepared_candidate_hash = _file_hash(candidate_path)
     base_path = config._resolved_base_config_path()
+    if resume_reservation is not None:
+        checkpoint_ref = resume_reservation.get("checkpoint_ref")
+        current_active_hash = _file_hash(base_path)
+        if (
+            not _fixed_generation_checkpoint_matches(operation_id, checkpoint_ref)
+            or prepared_candidate_hash != resume_reservation.get("candidate_config_hash")
+            or (input_fingerprint or {}).get("hash") != resume_reservation.get("input_fingerprint_hash")
+            or current_active_hash not in {
+                resume_reservation.get("before_active_config_hash"),
+                resume_reservation.get("candidate_config_hash"),
+            }
+        ):
+            return {
+                "ok": False, "stage": "generation_resume_reservation",
+                "error_code": "MIHOMO_GENERATION_RESERVATION_STALE",
+                "last_good_retained": last_good_still_active(),
+                "checkpoint_retained": fixed_checkpoint_retained(),
+                "operation_id": operation_id,
+            }
     status_summary = _build_config_status_summary(
         base_path=base_path,
         candidate_path=candidate_path,
@@ -941,6 +1294,16 @@ def reconcile_mihomo_runtime(
         files_match = config._configs_equal(active_config, candidate_config)
         status_summary = config._summarize_config_status(status)
 
+    if (
+        resume_reservation is not None
+        and _file_hash(base_path) == resume_reservation.get("candidate_config_hash")
+        and runtime_incarnation_before == resume_reservation.get("before_runtime_incarnation")
+    ):
+        # Promotion may have completed before a crash while the native restart
+        # did not. Continue the same operation through its restart owner instead
+        # of treating file equality as proof that the runtime loaded it.
+        files_match = False
+
     if files_match:
         verification = None
         if callable(verification_callback):
@@ -957,7 +1320,8 @@ def reconcile_mihomo_runtime(
             "stage": "verification" if verification is not None and not verification.get("ok") else None,
             "operation_id": operation_id,
             "verification_callback_result": verification,
-            "last_good_retained": True,
+            "last_good_retained": last_good_still_active(),
+            "checkpoint_retained": fixed_checkpoint_retained(),
             "job_id": job_id,
             "candidate": candidate_summary,
             "config_validation": config_validation,
@@ -1029,19 +1393,51 @@ def reconcile_mihomo_runtime(
                             result.update({"ok": False, "stage": "native_udp_policy_receipt",
                                            "reconcile_reason": "receipt_fence_mismatch",
                                            "last_good_retained": True})
+                        elif not _selection_publication_still_owned(
+                            operation_id=operation_id,
+                            expected_revision=owned_revision,
+                            expected_incarnation=runtime_incarnation_before,
+                            expected_input_hash=(input_fingerprint or {}).get("hash"),
+                            expected_active_hash=active_config_hash_before,
+                            routing=routing_dict,
+                            verification=verification,
+                        ):
+                            result.update({
+                                "ok": False,
+                                "stage": "generation_publication_revalidation",
+                                "error_code": "MIHOMO_GENERATION_STALE_AFTER_RECEIPT",
+                                "reconcile_reason": "selection_or_runtime_superseded",
+                                "last_good_retained": True,
+                            })
                         elif verification is not None and result.get("ok"):
-                            result["reentry_generation_fence"] = {
-                                "schema": "mihomo-reentry-generation-fence/v1",
-                                "operation_id": operation_id,
-                                "job_id": job_id,
-                                "before_revision": expected_selection_revision,
-                                "selection_revision": owned_revision,
-                                "runtime_incarnation": runtime_incarnation_before,
-                                "active_config_hash": active_config_hash_before,
-                                "native_proof_verified": native_proof.get("ok") is True,
-                                "publication_verified": True,
-                                "unchanged_config": True,
-                            }
+                            fixed_receipt = None
+                            if fixed_generation_reserved:
+                                fixed_receipt = publish_fixed_generation_receipt(
+                                    active_hash=active_config_hash_before,
+                                    runtime_incarnation=runtime_incarnation_before,
+                                    native_proof=native_proof,
+                                    unchanged_config=False,
+                                )
+                                if fixed_receipt is None:
+                                    result.update({
+                                        "ok": False,
+                                        "stage": "generation_receipt_publication",
+                                        "error_code": "MIHOMO_GENERATION_RECEIPT_PUBLICATION_FAILED",
+                                        "last_good_retained": True,
+                                    })
+                            if result.get("ok"):
+                                result["reentry_generation_fence"] = {
+                                    "schema": "mihomo-reentry-generation-fence/v1",
+                                    "operation_id": operation_id,
+                                    "job_id": job_id,
+                                    "before_revision": reservation_source_revision,
+                                    "selection_revision": owned_revision,
+                                    "runtime_incarnation": runtime_incarnation_before,
+                                    "active_config_hash": active_config_hash_before,
+                                    "native_proof_verified": native_proof.get("ok") is True,
+                                    "publication_verified": True,
+                                    "unchanged_config": not fixed_generation_reserved,
+                                }
                     elif verification is not None:
                         result.update({"ok": False, "stage": "native_udp_policy_receipt",
                                        "reconcile_reason": "input_fingerprint_unavailable",
@@ -1069,11 +1465,62 @@ def reconcile_mihomo_runtime(
                 "error_message": str(exc), "last_good_retained": True,
                 "reconcile_action": "none",
             }
-        recovery_checkpoint = (
-            _capture_mihomo_reconcile_checkpoint(base_path, candidate_path, routing=routing_dict)
-            if callable(verification_callback)
-            else {"ok": False, "reason": "verification_callback_not_requested"}
-        )
+        if resume_reservation is not None:
+            checkpoint_ref = resume_reservation.get("checkpoint_ref")
+            if (
+                not _fixed_generation_checkpoint_matches(operation_id, checkpoint_ref)
+                or prepared_candidate_hash != resume_reservation.get("candidate_config_hash")
+                or (input_fingerprint or {}).get("hash") != resume_reservation.get("input_fingerprint_hash")
+            ):
+                return {
+                    "ok": False, "stage": "generation_resume_reservation",
+                    "error_code": "MIHOMO_GENERATION_RESERVATION_STALE",
+                    "last_good_retained": True, "operation_id": operation_id,
+                }
+            current_active_hash = _file_hash(base_path)
+            if current_active_hash not in {
+                resume_reservation.get("before_active_config_hash"), prepared_candidate_hash,
+            }:
+                return {
+                    "ok": False, "stage": "generation_resume_reservation",
+                    "error_code": "MIHOMO_GENERATION_RESERVATION_STALE",
+                    "last_good_retained": True, "operation_id": operation_id,
+                }
+            if (
+                current_active_hash == resume_reservation.get("before_active_config_hash")
+                and current_incarnation != resume_reservation.get("before_runtime_incarnation")
+            ):
+                return {
+                    "ok": False, "stage": "generation_resume_reservation",
+                    "error_code": "MIHOMO_GENERATION_RESERVATION_STALE",
+                    "last_good_retained": True, "operation_id": operation_id,
+                }
+            recovery_checkpoint = {
+                "ok": True,
+                "base_path": base_path,
+                "backup_path": checkpoint_ref["path"],
+                "before_hash": resume_reservation.get("before_active_config_hash"),
+                "candidate_hash": prepared_candidate_hash,
+                "checkpoint_ref": checkpoint_ref,
+                "operation_id": operation_id,
+                "input_fingerprint_hash": input_fingerprint.get("hash"),
+                "runtime_incarnation_before": resume_reservation.get("before_runtime_incarnation"),
+            }
+        else:
+            recovery_checkpoint = (
+                _capture_mihomo_reconcile_checkpoint(
+                    base_path, candidate_path, routing=routing_dict,
+                    operation_id=operation_id if callable(generation_reservation_callback) else None,
+                )
+                if callable(verification_callback)
+                else {"ok": False, "reason": "verification_callback_not_requested"}
+            )
+        if callable(generation_reservation_callback) and not recovery_checkpoint.get("ok"):
+            return {
+                "ok": False, "stage": "generation_checkpoint",
+                "error_code": "MIHOMO_GENERATION_CHECKPOINT_UNAVAILABLE",
+                "last_good_retained": True, "operation_id": operation_id,
+            }
         with db_session() as connection:
             current_revision = read_selection_revision(connection)
             if (
@@ -1081,7 +1528,11 @@ def reconcile_mihomo_runtime(
                 or (input_fingerprint or {}).get("hash") != (current_fingerprint or {}).get("hash")
                 or not prepared_candidate_hash
                 or _file_hash(candidate_path) != prepared_candidate_hash
-                or current_incarnation != runtime_incarnation_before
+                or _file_hash(base_path) != active_config_hash_before
+                or (
+                    resume_reservation is None
+                    and current_incarnation != runtime_incarnation_before
+                )
             ):
                 return {
                     "ok": False, "stage": "generation_revalidation",
@@ -1093,9 +1544,58 @@ def reconcile_mihomo_runtime(
                     "expected_selection_revision": expected_selection_revision,
                     "current_selection_revision": current_revision,
                 }
-            generation_revision = advance_selection_revision(
-                connection, expected_revision=current_revision
-            )
+            if callable(generation_reservation_callback):
+                generation_revision = None
+            else:
+                generation_revision = advance_selection_revision(
+                    connection, expected_revision=current_revision
+                )
+        if callable(generation_reservation_callback):
+            if resume_reservation is not None:
+                reservation_result = generation_reservation_callback(
+                    mode="validate",
+                    operation_id=operation_id,
+                    expected_selection_revision=current_revision,
+                    reservation=resume_reservation,
+                    candidate_config_hash=prepared_candidate_hash,
+                    input_fingerprint_hash=(input_fingerprint or {}).get("hash"),
+                    active_config_hash=_file_hash(base_path),
+                    runtime_incarnation=current_incarnation,
+                )
+            else:
+                reservation = {
+                    "schema": "mihomo-fixed-generation-reservation/v1",
+                    "operation_id": operation_id,
+                    "job_id": job_id,
+                    "before_revision": current_revision,
+                    "selection_revision": current_revision + 1,
+                    "input_fingerprint_hash": (input_fingerprint or {}).get("hash"),
+                    "candidate_config_hash": prepared_candidate_hash,
+                    "before_active_config_hash": active_config_hash_before,
+                    "before_runtime_incarnation": runtime_incarnation_before,
+                    "checkpoint_ref": recovery_checkpoint.get("checkpoint_ref"),
+                }
+                reservation_result = generation_reservation_callback(
+                    mode="reserve", reservation=reservation,
+                    expected_selection_revision=current_revision,
+                )
+            if (
+                not isinstance(reservation_result, dict)
+                or reservation_result.get("ok") is not True
+                or type(reservation_result.get("selection_revision")) is not int
+            ):
+                return {
+                    "ok": False, "stage": "generation_reservation",
+                    "error_code": "MIHOMO_GENERATION_RESERVATION_FAILED",
+                    "last_good_retained": True, "operation_id": operation_id,
+                }
+            generation_revision = int(reservation_result["selection_revision"])
+            fixed_generation_reserved = True
+            reservation_source_revision = int(reservation_result.get("before_revision", reservation_source_revision))
+            if resume_reservation is None:
+                resume_reservation = reservation
+            expected_selection_revision = generation_revision
+
         if generation_revision is None:
             return {
                 "ok": False,
@@ -1162,6 +1662,7 @@ def reconcile_mihomo_runtime(
     publication_revalidation_failed = False
     native_proof: dict[str, Any] = {}
     receipt_written = False
+    fixed_receipt: dict[str, Any] | None = None
     if verified:
         with xray_writer_guard(timeout_seconds=30.0):
             publication_owned = _selection_publication_still_owned(
@@ -1193,23 +1694,62 @@ def reconcile_mihomo_runtime(
                     expected_runtime_incarnation=runtime_incarnation_after,
                 )
                 publication_owned = publication_owned and receipt_written
+            if publication_owned and input_fingerprint is not None:
+                publication_owned = _selection_publication_still_owned(
+                    operation_id=operation_id,
+                    expected_revision=recovery_expected_revision,
+                    expected_incarnation=runtime_incarnation_after,
+                    expected_input_hash=(input_fingerprint or {}).get("hash"),
+                    expected_active_hash=prepared_candidate_hash,
+                    routing=routing_dict,
+                    verification=verification,
+                )
+            if publication_owned and fixed_generation_reserved:
+                fixed_receipt = publish_fixed_generation_receipt(
+                    active_hash=prepared_candidate_hash,
+                    runtime_incarnation=runtime_incarnation_after,
+                    native_proof=native_proof,
+                    unchanged_config=False,
+                )
+                fixed_receipt_publication_failed = fixed_receipt is None
+                publication_owned = fixed_receipt is not None
         if not publication_owned:
             publication_revalidation_failed = True
             verified = False
     if not verified and promoted.get("promoted"):
-        recovery = restore_mihomo_reconcile_checkpoint(
-            recovery_checkpoint,
-            expected_revision=recovery_expected_revision,
-            operation_id=operation_id,
-        )
+        if fixed_generation_reserved:
+            # A fixed workflow is durable across process restart. Do not restore
+            # a prior snapshot or overwrite a newer fixed/auto intent; leave the
+            # operation reserved for exact owner-bound proof/retry.
+            recovery = {
+                "ok": False,
+                "recovered": False,
+                "checkpoint_retained": _fixed_generation_checkpoint_matches(
+                    operation_id, recovery_checkpoint.get("checkpoint_ref"),
+                ),
+                "reason": "fixed_workflow_remains_reserved",
+            }
+        else:
+            recovery = restore_mihomo_reconcile_checkpoint(
+                recovery_checkpoint,
+                expected_revision=recovery_expected_revision,
+                operation_id=operation_id,
+            )
     result = {
         "ok": verified,
         "operation_id": operation_id,
-        "stage": ("generation_publication_revalidation" if publication_revalidation_failed else
-                  ("verification" if verification is not None and not verification.get("ok") else None)),
-        "error_code": "MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION" if publication_revalidation_failed else None,
+        "stage": ("generation_receipt_publication" if fixed_receipt_publication_failed else
+                  ("generation_publication_revalidation" if publication_revalidation_failed else
+                   ("verification" if verification is not None and not verification.get("ok") else None))),
+        "error_code": ("MIHOMO_GENERATION_RECEIPT_PUBLICATION_FAILED" if fixed_receipt_publication_failed else
+                       ("MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION" if publication_revalidation_failed else None)),
         "verification_callback_result": verification,
-        "last_good_retained": bool(recovery.get("ok")) if recovery is not None else (not bool(promoted.get("promoted")) if not promoted.get("ok") else False),
+        "last_good_retained": bool(recovery.get("recovered")) if recovery is not None else (not bool(promoted.get("promoted")) if not promoted.get("ok") else False),
+        "checkpoint_retained": (
+            bool(recovery.get("checkpoint_retained"))
+            if recovery is not None and fixed_generation_reserved
+            else fixed_checkpoint_retained()
+        ),
         "generation_recovery": recovery,
         "job_id": job_id,
         "candidate": candidate_summary,
@@ -1234,12 +1774,13 @@ def reconcile_mihomo_runtime(
             "schema": "mihomo-reentry-generation-fence/v1",
             "operation_id": operation_id,
             "job_id": job_id,
-            "before_revision": expected_selection_revision,
+            "before_revision": reservation_source_revision,
             "selection_revision": recovery_expected_revision,
             "runtime_incarnation": runtime_incarnation_after,
             "active_config_hash": prepared_candidate_hash,
             "native_proof_verified": native_proof.get("ok") is True,
             "publication_verified": True,
+            "unchanged_config": False,
         }
     log_result = {key: value for key, value in result.items()
                   if key not in {"operation_id", "reentry_generation_fence"}}

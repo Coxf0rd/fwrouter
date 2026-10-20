@@ -120,10 +120,12 @@ def _seed_global_auto_state(active_auto_server_id: str | None = None) -> None:
 
 
 def _install_synthetic_generation_owner(monkeypatch, tmp_path: Path) -> None:
-    """Provide a stable managed-owner receipt for endpoint orchestration tests."""
+    """Exercise real fixed generation reservation/publication around fake native I/O."""
     import hashlib
+    from uuid import uuid4
 
     from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_reconcile, mihomo_runtime
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
 
     context = {
         "boot_id": "00000000-0000-0000-0000-000000000001",
@@ -142,38 +144,141 @@ def _install_synthetic_generation_owner(monkeypatch, tmp_path: Path) -> None:
         lambda: str(tmp_path / "managed-mihomo-candidate.yaml"),
     )
 
-    def fake_reconcile(*, routing, job_id, verification_callback, generation_materialization_callback=None):
+    def fake_reconcile(
+        *, routing, job_id, verification_callback, generation_materialization_callback=None,
+        generation_reservation_callback=None, generation_completion_callback=None,
+        fixed_generation_reservation=None,
+    ):
+        assert fixed_generation_reservation is None, "synthetic owner does not model reservation resume"
         with db_session() as connection:
             from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
 
             revision = read_selection_revision(connection)
-        operation_id = "synthetic-owner-operation"
+        operation_id = str(uuid4())
+        config_hash = hashlib.sha256(base_config.read_bytes()).hexdigest()
+        if callable(generation_reservation_callback) and callable(generation_completion_callback):
+            from fwrouter_api.services.server_global_selection import _capture_fixed_apply_context
+
+            owner_token = _capture_fixed_apply_context(routing)
+            assert owner_token is not None
+            assert owner_token["selection_revision"] == revision
+            before_bytes = base_config.read_bytes()
+            candidate_path = Path(mihomo_config_paths._resolved_candidate_config_path())
+            candidate_path.write_bytes(before_bytes)
+            config_hash = hashlib.sha256(before_bytes).hexdigest()
+            checkpoint = mihomo_reconcile._write_fixed_generation_checkpoint(operation_id, before_bytes)
+            assert checkpoint is not None
+            reservation = {
+                "schema": "mihomo-fixed-generation-reservation/v1",
+                "operation_id": operation_id,
+                "job_id": job_id,
+                "before_revision": revision,
+                "selection_revision": revision + 1,
+                "input_fingerprint_hash": owner_token["input_hash"],
+                "candidate_config_hash": config_hash,
+                "before_active_config_hash": owner_token["active_config_hash"],
+                "before_runtime_incarnation": owner_token["runtime_incarnation"],
+                "checkpoint_ref": checkpoint,
+            }
+            with xray_writer_guard(timeout_seconds=30.0):
+                reserved = generation_reservation_callback(
+                    mode="reserve", reservation=reservation,
+                    expected_selection_revision=revision,
+                )
+            assert reserved == {
+                "ok": True, "before_revision": revision,
+                "selection_revision": revision + 1,
+            }
+            revision = revision + 1
+        else:
+            reservation = None
         verification = verification_callback(
             operation_id=operation_id,
             expected_selection_revision=revision,
         )
-        config_hash = hashlib.sha256(base_config.read_bytes()).hexdigest()
+        if reservation is not None:
+            assert verification.get("ok") is True, verification
+        native_proof = {
+            "ok": True,
+            "native_top_level_rules_match": True,
+            "selector_membership_matches": True,
+            "guarded_rules_match": True,
+        }
+        if reservation is not None:
+            with xray_writer_guard(timeout_seconds=30.0):
+                validated = generation_reservation_callback(
+                    mode="validate", reservation=reservation,
+                    expected_selection_revision=revision,
+                    candidate_config_hash=config_hash,
+                    input_fingerprint_hash=reservation["input_fingerprint_hash"],
+                    active_config_hash=owner_token["active_config_hash"],
+                    runtime_incarnation=incarnation,
+                )
+                assert validated == {
+                    "ok": True, "before_revision": revision - 1,
+                    "selection_revision": revision,
+                }
+                receipt = {
+                    "schema": "mihomo-fixed-generation-receipt/v1",
+                    "operation_id": operation_id,
+                    "job_id": job_id,
+                    "before_revision": revision - 1,
+                    "selection_revision": revision,
+                    "input_fingerprint_hash": reservation["input_fingerprint_hash"],
+                    "candidate_config_hash": config_hash,
+                    "active_config_hash": owner_token["active_config_hash"],
+                    "runtime_incarnation": incarnation,
+                    "native_udp_policy_verified": True,
+                    "native_top_level_rules_match": True,
+                    "native_selector_membership_matches": True,
+                    "guarded_rules_match": True,
+                    "publication_verified": True,
+                    "unchanged_config": False,
+                }
+                published = generation_completion_callback(
+                    operation_id=operation_id,
+                    expected_selection_revision=revision,
+                    receipt=receipt,
+                )
+                assert published == {"ok": True}
         return {
             "ok": bool(verification.get("ok")),
             "operation_id": operation_id,
             "job_id": job_id,
             "verification_callback_result": verification,
+            "native_udp_policy_proof": native_proof,
             "reentry_generation_fence": {
                 "schema": "mihomo-reentry-generation-fence/v1",
                 "operation_id": operation_id,
                 "job_id": job_id,
-                "before_revision": revision,
+                "before_revision": revision - 1 if reservation is not None else revision,
                 "selection_revision": revision,
                 "runtime_incarnation": incarnation,
-                "active_config_hash": config_hash,
+                "active_config_hash": reservation["before_active_config_hash"] if reservation is not None else config_hash,
                 "native_proof_verified": True,
                 "publication_verified": True,
-                "unchanged_config": True,
+                "unchanged_config": reservation is None,
             },
         }
 
     monkeypatch.setattr(mihomo_reconcile, "reconcile_mihomo_runtime", fake_reconcile)
     from fwrouter_api.services import mihomo_config_status
+
+    def synthetic_fixed_membership_proof(_routing, *, require_selected=False):
+        from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
+
+        target = "Fixed Display [ab12cd34]"
+        selected = DEFAULT_MIHOMO_ADAPTER.get_active_server_id() == target
+        return {
+            "ok": not require_selected or selected,
+            "fixed_runtime_target": target,
+            "vpn_global_now": target if selected else "REJECT",
+            "vpn_global_selected_target": target if selected else "REJECT",
+            "config_membership_ok": True,
+            "native_membership_ok": True,
+            "logical_group_native_membership_ok": True,
+            "selected_fixed_target": selected,
+        }
 
     monkeypatch.setattr(
         mihomo_config_status,
@@ -183,13 +288,7 @@ def _install_synthetic_generation_owner(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         mihomo_config_status,
         "mihomo_runtime_fixed_target_materialized",
-        lambda routing, require_selected=False: {
-            "ok": True,
-            "fixed_runtime_target": "Fixed Display [ab12cd34]",
-            "vpn_global_now": "REJECT",
-            "vpn_global_selected_target": "REJECT",
-            "selected_fixed_target": bool(require_selected),
-        },
+        synthetic_fixed_membership_proof,
     )
 
 
@@ -1862,27 +1961,30 @@ def test_admin_fixed_server_apply_returns_job_and_success(monkeypatch, tmp_path:
     )
     client = _client()
     applied_targets: list[tuple[str, str]] = []
+    active_server = {"id": "srv-old"}
+
+    def apply_selector(selector_name: str, server_id: str):
+        applied_targets.append((selector_name, server_id))
+        active_server["id"] = server_id
+        return SimpleNamespace(
+            ok=True,
+            error_code=None,
+            error_message=None,
+            message="applied",
+            active_server_id=server_id,
+            to_dict=lambda: {
+                "ok": True,
+                "selector_name": selector_name,
+                "requested_server_id": server_id,
+                "active_server_id": server_id,
+            },
+        )
 
     monkeypatch.setattr(
         "fwrouter_api.adapters.mihomo.DEFAULT_MIHOMO_ADAPTER",
         SimpleNamespace(
-            get_active_server_id=lambda: "srv-old",
-            apply_server_to_selector=lambda selector_name, server_id: (
-                applied_targets.append((selector_name, server_id))
-                or SimpleNamespace(
-                ok=True,
-                error_code=None,
-                error_message=None,
-                message="applied",
-                active_server_id=server_id,
-                to_dict=lambda: {
-                    "ok": True,
-                    "selector_name": selector_name,
-                    "requested_server_id": server_id,
-                    "active_server_id": server_id,
-                },
-                )
-            ),
+            get_active_server_id=lambda: active_server["id"],
+            apply_server_to_selector=apply_selector,
         ),
     )
     monkeypatch.setattr(

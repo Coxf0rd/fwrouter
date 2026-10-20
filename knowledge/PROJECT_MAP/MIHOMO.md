@@ -238,3 +238,25 @@ alternatives are not automatically accepted by this contract: exact current
 candidate/native proof may remain blocked and requires separate disposition.
 Source/native qualification and production acceptance are separate gates; this
 section does not authorize or claim production deployment.
+
+### Fixed-operation revision handoff (under qualification)
+
+A structural generation can reserve the next selection revision before native
+restart. For a unified fixed operation, that reservation and the existing pending
+workflow must advance together in the existing owner's SQLite transaction. The
+workflow retains both the source revision and the exact reserved operation; a
+plain latest-revision match is not ownership evidence.
+
+The existing protected last-good directory holds an immutable operation-keyed
+preimage checkpoint. Its identity/hash belongs to that pending workflow, not to
+generic runtime discovery. Native/publication/fingerprint verification must
+produce a durable exact-operation receipt before the fixed owner commits its
+intermediate selection phase. Resume uses the same operation and fresh proof;
+UNKNOWN, foreign checkpoint or conflicting intent blocks without forced reload
+or stale snapshot compensation. Membership preparation remains distinct from
+selected-target proof and final Core/Mihomo/Xray job completion.
+
+Final workflow completion commits before cleanup of its exact own checkpoint.
+A retained protected orphan is not a new operation's proof. Raw checkpoint
+contents and private paths are not public pending-state data. This section is a
+source contract under qualification, not a deployment or native PASS claim.
