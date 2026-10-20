@@ -77,6 +77,9 @@ def _selector_apply_changed(result: dict[str, Any] | None) -> bool:
         after = details.get("active_after")
     requested = details.get("requested_server_id")
     if before is None and after is None:
+        changed = result.get("changed")
+        if isinstance(changed, bool):
+            return changed
         return bool(result.get("ok")) and not result.get("skipped")
     return before != after and (requested is None or after == requested)
 

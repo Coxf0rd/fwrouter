@@ -694,6 +694,104 @@ def test_recover_startup_mihomo_selector_restores_active_auto_target(monkeypatch
     assert selection["active_server_id"] == "srv-norway"
 
 
+@pytest.mark.parametrize(("result", "expected"), [
+    ({"ok": True, "changed": False}, False),
+    ({"ok": True, "changed": True}, True),
+    ({"ok": True, "changed": False, "details": {
+        "selector_before": "REJECT", "selector_after": "srv-fixed",
+        "requested_server_id": "srv-fixed",
+    }}, True),
+    ({"ok": True, "changed": True, "details": {
+        "selector_before": "srv-fixed", "selector_after": "srv-fixed",
+        "requested_server_id": "srv-fixed",
+    }}, False),
+])
+def test_selector_apply_changed_prefers_state_proof_over_conflicting_flag(result, expected) -> None:
+    from fwrouter_api.services.bootstrap import _selector_apply_changed
+
+    assert _selector_apply_changed(result) is expected
+
+
+@pytest.mark.parametrize(("initial_target", "expected_changed", "expected_puts"), [
+    ("srv-fixed", False, []),
+    ("REJECT", True, [("vpn-global", "srv-fixed")]),
+])
+def test_bootstrap_fixed_selector_restore_reports_actual_change(
+    monkeypatch, tmp_path: Path, initial_target: str, expected_changed: bool,
+    expected_puts: list[tuple[str, str]],
+) -> None:
+    """Bootstrap's report follows the real fixed selector owner's effect/no-op proof."""
+    from fwrouter_api.services import core_intent, mihomo_config_status, mihomo_runtime
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers (server_id, server_name, provider_name, inventory_state) "
+            "VALUES ('srv-fixed', 'srv-fixed', 'pytest', 'active')"
+        )
+        connection.execute(
+            "UPDATE routing_global_state SET desired_mode='vpn', applied_mode='vpn', "
+            "server_mode='fixed', desired_fixed_server_id='srv-fixed', "
+            "applied_fixed_server_id='srv-fixed', fixed_server_until=datetime('now', '+1 day'), "
+            "apply_state='clean', error_code=NULL, error_message=NULL WHERE id=1"
+        )
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "fixed-runtime")
+    live = {"vpn-global": initial_target}
+    applied: list[tuple[str, str]] = []
+
+    def health():
+        return SimpleNamespace(runtime_state="running", details={"selectors": {
+            "vpn_global_now": live["vpn-global"],
+            "vpn_global_targets": ["srv-fixed", "REJECT"],
+        }})
+
+    class RuntimeOperations:
+        def health(self):
+            return health()
+
+        def list_servers(self):
+            return [SimpleNamespace(server_id="srv-fixed")]
+
+        def apply_server_to_selector(self, selector_name: str, server_id: str):
+            applied.append((selector_name, server_id))
+            live[selector_name] = server_id
+            return SimpleNamespace(
+                ok=True,
+                active_server_id=server_id,
+                to_dict=lambda: {"ok": True, "selector_name": selector_name,
+                                 "active_server_id": server_id},
+            )
+
+    operations = RuntimeOperations()
+    runtime_adapter = {
+        "adapter_id": "mihomo",
+        "capabilities": ["health", "list_servers", "apply_selector"],
+    }
+    monkeypatch.setattr(
+        "fwrouter_api.services.selector._active_selector_runtime",
+        lambda: (runtime_adapter, operations),
+    )
+    monkeypatch.setattr(mihomo_config_status, "mihomo_runtime_fixed_target_materialized", lambda *_args, **_kwargs: {
+        "ok": True, "fixed_runtime_target": "srv-fixed", "vpn_global_now": live["vpn-global"],
+        "config_membership_ok": True, "native_membership_ok": True,
+        "logical_group_native_membership_ok": True,
+    })
+
+    result = recover_startup_mihomo_selector()
+
+    assert result["restored"] is True
+    assert result["vpn_global_restore"]["ok"] is True
+    assert result["vpn_global_restore"].get("changed", expected_changed) is expected_changed
+    assert result["changed"] is expected_changed
+    assert applied == expected_puts
+
+
 def test_bootstrap_immediately_cleans_stale_running_jobs(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     _stub_bootstrap_recovery(monkeypatch)
