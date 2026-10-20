@@ -375,11 +375,17 @@ def test_fixed_pending_blocks_ordinary_xray_generation_until_core_phase() -> Non
 
 
 @pytest.mark.parametrize(
-    ("native_runtime_target", "expected_ok"),
-    [("Runtime fixed-xray-receipt", True), ("foreign-runtime-target", False)],
+    ("native_runtime_target", "selected_runtime_target", "selected_fixed_target", "expected_ok"),
+    [
+        ("Runtime fixed-xray-receipt", "REJECT", False, True),
+        ("Runtime fixed-xray-receipt", "Runtime fixed-xray-receipt", True, True),
+        ("foreign-runtime-target", "REJECT", False, False),
+        ("foreign-runtime-target", "Runtime fixed-xray-receipt", True, False),
+    ],
 )
 def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(
-    monkeypatch, tmp_path: Path, native_runtime_target: str, expected_ok: bool,
+    monkeypatch, tmp_path: Path, native_runtime_target: str,
+    selected_runtime_target: str, selected_fixed_target: bool, expected_ok: bool,
 ) -> None:
     from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_config_status, mihomo_reconcile, mihomo_runtime
     from fwrouter_api.services.server_global_selection import (
@@ -420,9 +426,9 @@ def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(
             "config_membership_ok": True,
             "native_membership_ok": True,
             "logical_group_native_membership_ok": True,
-            "vpn_global_now": "REJECT",
-            "vpn_global_selected_target": "REJECT",
-            "selected_fixed_target": False,
+            "vpn_global_now": selected_runtime_target,
+            "vpn_global_selected_target": selected_runtime_target,
+            "selected_fixed_target": selected_fixed_target,
         },
     )
 
@@ -943,6 +949,8 @@ def test_fixed_selection_stale_diagnostics_attribute_existing_fenced_paths(
     """Exercise stale attribution through fixed apply with isolated SQLite intent."""
     server_id = f"fixed-stage-{failure_stage}"
     runtime_name = _seed_server(server_id, vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server(server_id, requested_by="pytest")
+    assert fixed["ok"] is True
     from fwrouter_api.adapters import mihomo as mihomo_adapter_module
     from fwrouter_api.services import (
         core_intent, mihomo_config_paths, mihomo_reconcile, mihomo_runtime,
@@ -1490,6 +1498,432 @@ def test_core_verified_reentry_does_not_restore_unproven_xray_generation(
     assert pending["workflow"]["phase"] == "core_verified"
     assert "xray_generation_operation_id" not in pending["workflow"]
     assert routing == {"applied_fixed_server_id": None, "apply_state": "pending"}
+
+
+def test_fixed_xray_stage_candidates_keep_fixed_selector_membership(monkeypatch, tmp_path: Path) -> None:
+    """Connected staging must render fixed membership before native validation."""
+    import yaml
+
+    from fwrouter_api.services import mihomo_config_inbounds, mihomo_config_paths
+    from fwrouter_api.services import subscription_pipeline
+    from fwrouter_api.services import xray_subscription_service
+    from fwrouter_api.services.xray_subscription_service import _stage_profile_native_candidates
+
+    server_id = "fixed-xray-stage-routing"
+    runtime_name = _seed_server(server_id, vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server(server_id, requested_by="pytest")
+    assert fixed["ok"] is True
+    base_config = tmp_path / "mihomo-base.yaml"
+    base_config.write_text(yaml.safe_dump({
+        "allow-lan": True,
+        "bind-address": "0.0.0.0",
+        "proxies": [],
+        "proxy-groups": [],
+        "rules": ["MATCH,DIRECT"],
+    }), encoding="utf-8")
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: base_config)
+    monkeypatch.setattr(mihomo_config_inbounds, "_resolved_base_config_path", lambda: base_config)
+    monkeypatch.setattr(
+        mihomo_config_inbounds, "_candidate_base_config_paths", lambda: [base_config],
+    )
+    monkeypatch.setattr(
+        mihomo_config_service, "validate_mihomo_candidate_config",
+        lambda **_kwargs: {"ok": True, "structure_checked": True},
+    )
+    monkeypatch.setattr(subscription_pipeline, "resolve_mihomo_validator_image_id", lambda: "test-image")
+    monkeypatch.setattr(
+        subscription_pipeline, "validate_mihomo_candidate_config",
+        lambda _path, *, image_reference=None: {"ok": True, "returncode": 0},
+    )
+
+    class Adapter:
+        config_path = tmp_path / "xray" / "config.json"
+
+        def stage_subscription_generation(self, *, candidate_path: Path, **_kwargs):
+            candidate_path.parent.mkdir(parents=True, exist_ok=True)
+            candidate_path.write_text("{}\\n", encoding="utf-8")
+            return SimpleNamespace(ok=True, details={"candidate_sha256": "x" * 64})
+
+    result = _stage_profile_native_candidates(
+        adapter=Adapter(), desired_clients=[], managed_email_prefixes=[], bindings=[],
+        client_modes=[], assignments=[], routing_snapshot=fixed["routing"],
+    )
+    assert result["ok"] is True, result
+    stage_groups = {}
+    for name in ("transition", "final"):
+        candidate = yaml.safe_load(Path(result["mihomo_candidates"][name]).read_text(encoding="utf-8"))
+        group = next(item for item in candidate["proxy-groups"] if item.get("name") == "vpn-global")
+        stage_groups[name] = group["proxies"]
+    assert stage_groups == {
+        "transition": ["REJECT", runtime_name],
+        "final": ["REJECT", runtime_name],
+    }, stage_groups
+    assert result["fixed_routing_snapshot"] == {
+        key: fixed["routing"].get(key)
+        for key in xray_subscription_service._FIXED_XRAY_ROUTING_FIELDS
+    }
+
+    # Exercise the actual private checkpoint writer with the actual stage
+    # result. The durable operation record must contain only the allowlisted
+    # fixed projection, while ordinary generations retain a null projection.
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    class CheckpointAdapter:
+        config_path = Adapter.config_path
+
+    with db_session() as connection:
+        selection_fence = read_selection_fence(connection)
+    checkpoint_path = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=CheckpointAdapter(), generation_id="fixed-stage-checkpoint",
+        tokens=set(), phase="prepared", source_fingerprint="source-proof",
+        staged_generation=result, managed_email_prefixes=[],
+        fixed_workflow_revision=fixed["pending_revision"],
+        fixed_origin_selection_revision=selection_fence["revision"],
+    )
+    checkpoint_data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint_data["fixed_routing_snapshot"] == result["fixed_routing_snapshot"]
+    assert set(checkpoint_data["fixed_routing_snapshot"]) == set(
+        xray_subscription_service._FIXED_XRAY_ROUTING_FIELDS
+    )
+    checkpoint_path.unlink()
+
+    ordinary = _stage_profile_native_candidates(
+        adapter=Adapter(), desired_clients=[], managed_email_prefixes=[], bindings=[],
+        client_modes=[], assignments=[], routing_snapshot=None,
+    )
+    assert ordinary["ok"] is True
+    assert ordinary["fixed_routing_snapshot"] is None
+    ordinary_checkpoint = xray_subscription_service._write_xray_generation_checkpoint(
+        adapter=CheckpointAdapter(), generation_id="ordinary-stage-checkpoint",
+        tokens=set(), phase="prepared", source_fingerprint="source-proof",
+        staged_generation=ordinary, managed_email_prefixes=[],
+    )
+    ordinary_checkpoint_data = json.loads(ordinary_checkpoint.read_text(encoding="utf-8"))
+    assert ordinary_checkpoint_data["fixed_routing_snapshot"] is None
+    ordinary_checkpoint.unlink()
+
+
+def test_fixed_xray_staged_apply_promotes_restarts_restores_and_publishes_outer_receipt(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Exercise real fixed promotion/restart/selector restore/checkpoint receipt wiring."""
+    import yaml
+
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services import (
+        apply_manifest, dataplane_global, dataplane_nft_artifacts, dataplane_status,
+        dataplane_live, live_probe_cache, mihomo_config, mihomo_config_paths,
+        mihomo_config_status, mihomo_runtime, runtime_adapters, xray_subscription_service,
+    )
+    from fwrouter_api.services.core_intent import read_core_intent_revision
+    from fwrouter_api.services.server_global_selection import (
+        _capture_fixed_apply_context, _fixed_xray_generation_callback, _update_fixed_workflow,
+    )
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    from fwrouter_api.services.xray_subscription_service import (
+        _fixed_xray_routing_projection, _record_xray_generation_selection_revision,
+    )
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+
+    server_id = "fixed-xray-effect-path"
+    runtime_name = _seed_server(server_id, vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server(server_id, requested_by="pytest")
+    assert fixed["ok"] is True
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET applied_fixed_server_id=?, applied_mode=desired_mode, "
+            "apply_state='clean' WHERE id=1",
+            (server_id,),
+        )
+        connection.execute(
+            "INSERT INTO modules(module_name, desired_state, lifecycle_mode, runtime_state, apply_state) "
+            "VALUES ('vpn', 'enabled', 'managed', 'running', 'clean') "
+            "ON CONFLICT(module_name) DO UPDATE SET desired_state='enabled', lifecycle_mode='managed', "
+            "runtime_state='running', apply_state='clean'",
+        )
+        route = dict(connection.execute("SELECT * FROM routing_global_state WHERE id=1").fetchone())
+        selection_revision = read_selection_revision(connection)
+        core_revision = read_core_intent_revision(connection)
+
+    # Seed a real applied manifest and matching apply_versions owner row. Only
+    # the low-level live dataplane probes below stand in for native transport.
+    from types import SimpleNamespace
+    paths = SimpleNamespace(
+        generated_dir=tmp_path / "generated", state_dir=tmp_path / "state", jobs_dir=tmp_path / "jobs",
+    )
+    settings = SimpleNamespace(paths=paths)
+    monkeypatch.setattr(dataplane_nft_artifacts, "get_settings", lambda: settings)
+    monkeypatch.setattr(dataplane_global, "get_settings", lambda: settings)
+    manifest = apply_manifest._materialize_manifest(
+        prebuilt_manifest={"routing_global_state": route, "extra": {"rules_effective": {}}},
+        plan_id="fixed-xray-core-apply", reason="test_fixture", input_data={"scope": "test"},
+    )
+    artifact_paths = dataplane_nft_artifacts.write_candidate_artifacts(
+        job_id="fixed-xray-core-job", apply_id=manifest["plan_id"], manifest=manifest,
+        renderer=lambda _manifest: "table inet fwrouter_v2 {\n}\n",
+    )
+    dataplane_nft_artifacts.promote_last_good(manifest=manifest, artifact_paths=artifact_paths)
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO apply_versions(apply_id, manifest_path, status, created_at, core_intent_revision) "
+            "VALUES (?, ?, 'applied', '2099', ?)",
+            (manifest["plan_id"], artifact_paths["applied_manifest_path"], core_revision),
+        )
+
+    monkeypatch.setattr(dataplane_status, "_read_live_dataplane_payload", lambda: {
+        "table_exists": True,
+        "required_chains": {"fwrouter_classify": True},
+        "artifact_consistency": {"ok": True},
+    })
+    monkeypatch.setattr(dataplane_live, "_probe_live_global_mode_uncached", lambda: {
+        "ok": True, "mode": str(route["desired_mode"]), "selective_default": route["selective_default"],
+    })
+    monkeypatch.setattr(dataplane_live, "probe_live_global_mode", lambda: {
+        "ok": True, "mode": str(route["desired_mode"]), "selective_default": route["selective_default"],
+    })
+    monkeypatch.setattr(dataplane_global, "build_global_preflight", lambda **_kwargs: {
+        "can_enforce_global_direct": True, "can_enforce_global_selective": True,
+        "can_enforce_global_vpn": True, "vpn_egress_ready": True,
+        "selective_degraded": False, "selective_degraded_missing": [],
+        "missing_by_mode": {"direct": [], "selective": [], "vpn": []},
+        "missing": [], "profile": "synthetic",
+    })
+    monkeypatch.setattr(dataplane_status, "build_global_preflight", lambda **_kwargs: {
+        "can_enforce_global_direct": True, "can_enforce_global_selective": True,
+        "can_enforce_global_vpn": True, "vpn_egress_ready": True,
+        "selective_degraded": False, "selective_degraded_missing": [],
+        "missing_by_mode": {"direct": [], "selective": [], "vpn": []},
+        "missing": [], "profile": "synthetic",
+    })
+    monkeypatch.setattr(live_probe_cache, "get_live_probe_cache", lambda _key, *, loader, **_kwargs: loader())
+
+    fixed_context = {"boot_id": "synthetic-fixed-boot", "network_namespace_inode": "17"}
+    monkeypatch.setattr(
+        "fwrouter_api.services.core_intent.read_core_runtime_context", lambda: dict(fixed_context),
+    )
+    runtime_state = {"vpn-global": "REJECT"}
+    groups_from_active = lambda: {
+        str(group.get("name")): list(group.get("proxies") or [])
+        for group in (yaml.safe_load(active_path.read_text()).get("proxy-groups") or [])
+        if isinstance(group, dict)
+    }
+
+    active_path = tmp_path / "mihomo.yaml"
+    candidate_path = tmp_path / "config.next.yaml"
+    base_config_path = tmp_path / "base.yaml"
+    base_config_path.write_text(yaml.safe_dump({"proxies": [], "proxy-groups": [], "rules": ["MATCH,DIRECT"]}))
+    active_path.write_text("initial: true\n", encoding="utf-8")
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: str(active_path))
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_candidate_config_path", lambda: str(candidate_path))
+    monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: str(active_path))
+    monkeypatch.setattr(mihomo_config, "_resolved_candidate_config_path", lambda: str(candidate_path))
+    monkeypatch.setattr(mihomo_config_status, "_resolved_base_config_path", lambda: str(active_path))
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_resolved_base_config_path", lambda: str(active_path))
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_resolved_candidate_config_path", lambda: str(candidate_path))
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_resolved_applied_manifest_path", lambda: paths.generated_dir / "dataplane" / "applied-manifest.json")
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "_resolved_contours_path", lambda: paths.generated_dir / "contours.json")
+
+    class NativeAdapter:
+        adapter_id = "mihomo"
+
+        def health(self):
+            groups = groups_from_active()
+            return SimpleNamespace(
+                runtime_state="running", active_server_id=runtime_state["vpn-global"],
+                details={"selectors": {
+                    "vpn_global_exists": True,
+                    "vpn_global_has_vpn_auto": "vpn-auto" in groups.get("vpn-global", []),
+                    "vpn_global_targets": groups.get("vpn-global", []),
+                    "vpn_auto_targets": groups.get("vpn-auto", []),
+                    "vpn_global_now": runtime_state["vpn-global"],
+                    "vpn_global_selected_target": runtime_state["vpn-global"],
+                }},
+            )
+
+        def apply_server_to_selector(self, selector_name: str, server_id: str):
+            runtime_state[selector_name] = server_id
+            return SimpleNamespace(ok=True, active_server_id=server_id,
+                                   to_dict=lambda: {"ok": True, "active_server_id": server_id})
+
+        def list_servers(self):
+            return [SimpleNamespace(server_id=server_id)]
+
+    native_adapter = NativeAdapter()
+    monkeypatch.setattr(runtime_adapters, "DEFAULT_MIHOMO_ADAPTER", native_adapter)
+    monkeypatch.setattr(mihomo_config_status, "DEFAULT_MIHOMO_ADAPTER", native_adapter)
+    # Load an isolated copy of the real wrapper because the autouse test guard
+    # replaces the shared module. Fake only its native transport boundaries.
+    import importlib.util
+    runtime_spec = importlib.util.spec_from_file_location(
+        "_fwrouter_test_mihomo_runtime", mihomo_runtime.__file__,
+    )
+    assert runtime_spec is not None and runtime_spec.loader is not None
+    actual_mihomo_runtime = importlib.util.module_from_spec(runtime_spec)
+    runtime_spec.loader.exec_module(actual_mihomo_runtime)
+    monkeypatch.setattr(mihomo_runtime, "restart_mihomo_container", actual_mihomo_runtime.restart_mihomo_container)
+    for runtime_module in (mihomo_runtime, actual_mihomo_runtime):
+        monkeypatch.setattr(runtime_module, "_run_compose_command", lambda *_a, **_k: {"ok": True, "returncode": 0})
+        monkeypatch.setattr(runtime_module, "get_mihomo_container_status", lambda: {"ok": True})
+        monkeypatch.setattr(runtime_module, "wait_for_mihomo_controller", lambda **_kwargs: {"ok": True})
+        monkeypatch.setattr(runtime_module, "get_mihomo_runtime_incarnation", lambda **_kwargs: "fixed-runtime-proof")
+
+    core_proof = xray_subscription_service._collect_legacy_admission_core_native_proof()
+    assert core_proof["ok"] is True, core_proof
+    workflow = _update_fixed_workflow(
+        fixed["pending_revision"], phase="core_verified",
+        mihomo_generation_mode="unchanged",
+        core_apply_id=core_proof["apply_id"], core_manifest_hash=core_proof["manifest_hash"],
+        core_enforcement_level=core_proof["enforcement_level"], core_live_mode=core_proof["live_global_mode"],
+    )
+    assert workflow is not None
+    route = get_routing_global_state(expire_ttl=False)
+    snapshot = _fixed_xray_routing_projection(route)
+    token = _capture_fixed_apply_context(route)
+    assert token is not None
+
+    def candidate_bytes(marker: str) -> bytes:
+        config = mihomo_config.build_mihomo_config(route, xray_handoff_assignments=[])
+        return (yaml.safe_dump(config, sort_keys=False) + f"\n# {marker}\n").encode()
+
+    with db_session() as connection:
+        _load_row(connection)
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    checkpoint.write_text(json.dumps({
+        "selection_revision": selection_revision,
+        "fixed_workflow_revision": fixed["pending_revision"],
+        "fixed_origin_selection_revision": selection_revision,
+        "fixed_routing_snapshot": snapshot,
+        "selection_operation_id": "fixed-xray-operation",
+    }), encoding="utf-8")
+    applied = []
+    for label in ("transition", "final"):
+        staged = tmp_path / f"{label}.yaml"
+        payload = candidate_bytes(label)
+        staged.write_bytes(payload)
+        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint(snapshot)
+        with xray_writer_guard(timeout_seconds=5.0):
+            result = xray_subscription_service._apply_staged_mihomo_candidate(
+                str(staged), hashlib.sha256(payload).hexdigest(),
+                candidate_input_fingerprint={"hash": fingerprint["hash"]},
+                fixed_routing_snapshot=snapshot,
+                fixed_workflow_revision=fixed["pending_revision"],
+                fixed_origin_selection_revision=selection_revision,
+                expected_selection_revision=(selection_revision if not applied else applied[-1]),
+            )
+        assert result["ok"] is True, result
+        assert type(result.get("selection_revision")) is int
+        _record_xray_generation_selection_revision(checkpoint, result["selection_revision"])
+        applied.append(result["selection_revision"])
+        with db_session() as connection:
+            assert read_selection_revision(connection) == result["selection_revision"]
+        assert runtime_state["vpn-global"] == runtime_name
+
+    callback = _fixed_xray_generation_callback(
+        server_id=server_id, mihomo_target=runtime_name,
+        fixed_until=str(route["fixed_server_until"]), token=token,
+    )
+    receipt = callback(operation_id="fixed-xray-operation", expected_selection_revision=applied[-1])
+    assert receipt["ok"] is True, receipt
+    assert receipt["selection_revision"] == applied[-1]
+    saved_checkpoint = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert saved_checkpoint["selection_revision"] == applied[-1]
+    with db_session() as connection:
+        pending = _load_row(connection)
+    assert pending["workflow"]["xray_generation_operation_id"] == "fixed-xray-operation"
+    assert pending["workflow"]["selection_revision"] == applied[-1]
+
+
+@pytest.mark.parametrize("stale_case", ["expired_ttl", "foreign_revision", "new_auto_selection"])
+def test_fixed_staged_effect_refuses_expiry_or_later_selection_without_writes(
+    monkeypatch, tmp_path: Path, stale_case: str,
+) -> None:
+    from fwrouter_api.services import xray_subscription_service
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+    from fwrouter_api.services.xray_subscription_service import _fixed_xray_routing_projection
+
+    server_id = f"fixed-stale-effect-{stale_case}"
+    _seed_server(server_id, vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server(server_id, requested_by="pytest")
+    assert fixed["ok"] is True
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET applied_fixed_server_id=?, apply_state='clean' WHERE id=1",
+            (server_id,),
+        )
+        initial_revision = read_selection_revision(connection)
+        if stale_case == "expired_ttl":
+            connection.execute(
+                "UPDATE routing_global_state SET fixed_server_until='2000-01-01 00:00:00' WHERE id=1",
+            )
+        elif stale_case == "new_auto_selection":
+            next_id = f"{server_id}-auto"
+            connection.execute(
+                "INSERT INTO servers(server_id, server_name, provider_name, inventory_state, raw_json) "
+                "VALUES (?, ?, 'fixed-mode-source-test', 'active', ?)",
+                (next_id, f"Runtime {next_id}", json.dumps({"name": f"Runtime {next_id}", "type": "socks5"})),
+            )
+            connection.execute(
+                "INSERT INTO server_preferences(server_id, vpn_auto, vpn_auto_priority, global_list) "
+                "VALUES (?, 1, 0, 1)", (next_id,),
+            )
+            connection.execute(
+                "UPDATE routing_global_state SET active_auto_server_id=? WHERE id=1", (next_id,),
+            )
+            assert advance_selection_revision(connection, expected_revision=initial_revision) == initial_revision + 1
+        elif stale_case == "foreign_revision":
+            assert advance_selection_revision(connection, expected_revision=initial_revision) == initial_revision + 1
+        route = dict(connection.execute("SELECT * FROM routing_global_state WHERE id=1").fetchone())
+        pending_revision = fixed["pending_revision"]
+
+    snapshot = _fixed_xray_routing_projection(route)
+    candidate = tmp_path / "must-not-be-copied.yaml"
+    result = xray_subscription_service._apply_staged_mihomo_candidate(
+        str(candidate), "a" * 64,
+        candidate_input_fingerprint={"hash": "b" * 64},
+        fixed_routing_snapshot=snapshot,
+        fixed_workflow_revision=pending_revision,
+        fixed_origin_selection_revision=initial_revision,
+        expected_selection_revision=initial_revision,
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"
+    assert candidate.exists() is False
+    with db_session() as connection:
+        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+        pending = _load_row(connection)
+        assert pending["pending"] is True
+        assert pending["revision"] == pending_revision
+        assert pending["workflow"]["phase"] == "intent"
+
+
+def test_fixed_checkpoint_restore_stays_pending_without_qualified_preimage(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.services.xray_subscription_service import _restore_xray_generation_checkpoint
+
+    checkpoint = tmp_path / "fixed-generation-checkpoint.json"
+    original = json.dumps({
+        "fixed_workflow_revision": 7,
+        "fixed_origin_selection_revision": 4,
+        "selection_revision": 5,
+        "phase": "transition_applied",
+    })
+    checkpoint.write_text(original, encoding="utf-8")
+    adapter = SimpleNamespace()
+
+    result = _restore_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result == {
+        "ok": False,
+        "status": "pending",
+        "runtime_verified": False,
+        "recovered": "fixed_generation_recovery_unproven",
+        "reason": "fixed_generation_preimage_not_authorized",
+    }
+    assert checkpoint.read_text(encoding="utf-8") == original
 
 
 @pytest.mark.parametrize(

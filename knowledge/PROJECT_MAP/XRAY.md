@@ -272,3 +272,22 @@ Xray, Mihomo and revision proofs before and after the selector effect. Earlier
 interrupted phases without sufficient receipt remain blocked without a native
 write. Final strict selected-target proof and completion CAS remain mandatory.
 Native qualification of this correction is pending.
+
+### Fixed routing in staged generation (qualification pending)
+
+The fixed workflow captures its routing projection explicitly for both transition
+and final Mihomo candidate renders. Candidate validation, input provenance and
+pre-effect checks use that same projection; a renderer default is not fixed
+intent. Promotion's exact selection revision is passed to the existing fenced
+restart and recorded in the generation checkpoint. The fixed origin revision
+remains distinct from stage revisions until the owned publication callback.
+
+The outer fixed callback runs before final Xray publication, after staged native
+effects. It may observe only proven REJECT or the captured fixed runtime target;
+it must report the actual selection. This supersedes the earlier assumption
+that this outer callback always runs inside the restart at REJECT. Final fixed
+completion still requires strict selected-target proof and all-owner CAS.
+
+Interrupted fixed checkpoints without qualified preimage recovery remain pending
+and block generic rollback. This preserves safety but is a recovery limitation,
+not completed native/restart acceptance. Full native qualification is pending.

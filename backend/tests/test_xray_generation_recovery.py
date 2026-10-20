@@ -605,6 +605,77 @@ def _direct_selection_snapshot(*, desired_mode: str = "direct", applied_mode: st
     }
 
 
+@pytest.mark.parametrize("origin_state", ["missing", "foreign", "owned"])
+def test_fixed_generation_recovery_rejects_missing_or_foreign_origin_without_mutation(
+    monkeypatch, tmp_path: Path, origin_state: str,
+) -> None:
+    from fwrouter_api.db.connection import db_session
+    from fwrouter_api.services.server_global_selection import set_global_fixed_server
+    from fwrouter_api.services.server_state import get_routing_global_state
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    adapter, _unused = _setup(monkeypatch, tmp_path)
+    server_id = f"fixed-recovery-origin-{origin_state}"
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state='enabled', lifecycle_mode='managed', apply_state='clean' "
+            "WHERE module_name='core'",
+        )
+        connection.execute(
+            "INSERT INTO servers(server_id, server_name, provider_name, inventory_state, raw_json) "
+            "VALUES (?, ?, 'recovery-test', 'active', ?)",
+            (server_id, server_id, json.dumps({"name": server_id, "type": "socks5"}),),
+        )
+        connection.execute(
+            "INSERT INTO server_preferences(server_id, vpn_auto, vpn_auto_priority, global_list) "
+            "VALUES (?, 0, 0, 0)", (server_id,),
+        )
+    fixed = set_global_fixed_server(server_id, requested_by="pytest")
+    assert fixed["ok"] is True
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET applied_fixed_server_id=?, apply_state='clean' WHERE id=1",
+            (server_id,),
+        )
+        selection_revision = read_selection_revision(connection)
+        pending = _load_row(connection)
+    route = get_routing_global_state(expire_ttl=False)
+    checkpoint = service._xray_generation_checkpoint_path(adapter)
+    checkpoint.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    checkpoint.write_text(json.dumps({
+        "version": 1,
+        "generation_id": "fixed-recovery-operation",
+        "selection_operation_id": "fixed-recovery-operation",
+        "phase": "transition_applied",
+        "fixed_workflow_revision": fixed["pending_revision"],
+        "fixed_origin_selection_revision": (
+            None if origin_state == "missing"
+            else selection_revision if origin_state == "owned"
+            else selection_revision - 1
+        ),
+        "selection_revision": selection_revision,
+        "fixed_routing_snapshot": service._fixed_xray_routing_projection(route),
+    }), encoding="utf-8")
+    checkpoint_before = checkpoint.read_bytes()
+    xray_before = adapter.config_path.read_bytes()
+
+    result = service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
+
+    assert result["ok"] is False
+    assert result["status"] == "pending"
+    assert result["error_code"] == "FIXED_XRAY_GENERATION_RECOVERY_UNPROVEN"
+    assert result["runtime_verified"] is False
+    assert "last_good_retained" not in result
+    assert checkpoint.read_bytes() == checkpoint_before
+    assert adapter.config_path.read_bytes() == xray_before
+    assert adapter.reload_count == 0
+    with db_session() as connection:
+        current = _load_row(connection)
+    assert current["pending"] is True
+    assert current["revision"] == pending["revision"]
+
+
 def _install_direct_readback_fakes(
     monkeypatch, *, native_ok: bool = True, current_routing_override: dict[str, Any] | None = None,
     decision_id: str | None = "current",

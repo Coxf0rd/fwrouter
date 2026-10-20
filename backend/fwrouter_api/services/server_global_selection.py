@@ -966,18 +966,24 @@ def _fixed_xray_generation_callback(
             routing = get_routing_global_state(expire_ttl=False)
             if not isinstance(routing, dict):
                 return {"ok": False, "error_code": "FIXED_XRAY_ROUTING_UNAVAILABLE"}
-            # Xray-owned Mihomo restart verification is a membership proof at
-            # the fail-closed REJECT selector state. The fixed job restores its
-            # captured target after this generation is durably published.
+            # This is the outer pre-publication receipt. The staged restart may
+            # leave REJECT or the exact persisted fixed target selected; the
+            # fixed owner performs strict selection restore and final proof
+            # after this receipt is durably published.
             native = mihomo_runtime_fixed_target_materialized(routing)
+            selection_state_ok = bool(
+                (native.get("vpn_global_now") == "REJECT"
+                 and native.get("selected_fixed_target") is False)
+                or (native.get("vpn_global_now") == mihomo_target
+                    and native.get("selected_fixed_target") is True)
+            )
             core_context = read_core_runtime_context()
             runtime_incarnation = get_mihomo_runtime_incarnation(timeout_seconds=5.0)
             config_hash = _file_hash(_resolved_base_config_path())
             input_fingerprint = current_mihomo_input_fingerprint(routing)
             if (
                 not native.get("ok") or native.get("fixed_runtime_target") != mihomo_target
-                or native.get("vpn_global_now") != "REJECT"
-                or native.get("selected_fixed_target") is not False
+                or not selection_state_ok
                 or routing.get("server_mode") != "fixed"
                 or routing.get("desired_fixed_server_id") != server_id
                 or routing.get("applied_fixed_server_id") != server_id
@@ -2252,11 +2258,18 @@ def apply_global_fixed_server(
     xray_proof = _fixed_xray_readback()
     xray_apply_result: dict[str, Any] | None = None
     if xray_proof.get("state") == "drift":
-        from fwrouter_api.services.xray_subscription_service import reconcile_xray_vpn_auto_subscription
+        from fwrouter_api.services.xray_subscription_service import (
+            _fixed_xray_routing_projection,
+            reconcile_xray_vpn_auto_subscription,
+        )
 
         xray_apply_result = reconcile_xray_vpn_auto_subscription(
             requested_by=f"global_fixed_server:{requested_by}",
             _fixed_workflow_revision=pending_revision,
+            _fixed_routing_snapshot=_fixed_xray_routing_projection(
+                get_routing_global_state(expire_ttl=False),
+            ),
+            _fixed_origin_selection_revision=int(token["selection_revision"]),
             verification_callback=_fixed_xray_generation_callback(
                 server_id=server_id,
                 mihomo_target=mihomo_target,
