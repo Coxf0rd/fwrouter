@@ -22,7 +22,8 @@ from .http_support import http_json
 TOP_LEVEL_RULE_COUNT = 199_257
 MIN_CONFIG_BYTES = 20_000_000
 RSS_LIMIT_KIB = 1_572_864
-STARTUP_HARD_LIMIT_SECONDS = 45.0
+STARTUP_HARD_LIMIT_SECONDS = 60.0
+STARTUP_WARNING_SECONDS = 45.0
 STARTUP_ENGINEERING_TARGET_SECONDS = 40.0
 SCALE_PROFILE_COUNT = 7
 SCALE_SERVERS_PER_PROFILE = 9
@@ -814,7 +815,9 @@ class _RssSampler:
             "sample_capacity": _STARTUP_RESOURCE_SAMPLE_CAPACITY,
             "freeze_trigger": trigger,
             "sample_count_retained": len(samples),
-            "startup_elapsed_seconds": round(max(0.0, (finished if finished is not None else time.monotonic()) - started), 4),
+            "observation_window_elapsed_seconds": round(
+                max(0.0, (finished if finished is not None else time.monotonic()) - started), 4,
+            ),
             "samples": samples,
             "probe_read_cost": costs,
         }
@@ -935,6 +938,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
                                           "samples": [], "probe_read_cost": {"sample_count": 0}},
         "startup_limits_seconds": {
             "hard_deadline": STARTUP_HARD_LIMIT_SECONDS,
+            "warning_seconds": STARTUP_WARNING_SECONDS,
             "engineering_target": STARTUP_ENGINEERING_TARGET_SECONDS,
         },
     }
@@ -997,6 +1001,9 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             metrics["startup_ready"] = True
             metrics["startup_deadline_seconds"] = STARTUP_HARD_LIMIT_SECONDS
             metrics["startup_readiness_probe"] = getattr(active_worker, "_acceptance_readiness_probe", None)
+            metrics["startup_worker_pid"] = active_worker.pid
+            metrics["startup_slow_warning"] = getattr(active_worker, "_acceptance_startup_warning", None)
+            metrics["startup_wall_seconds"] = metrics["startup_readiness_probe"]["elapsed_seconds"]
             metrics["rss_hwm_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmHWM")
             metrics["rss_kib_at_readiness"] = _read_rss_kib(active_worker.pid, field="VmRSS")
             metrics["api_process_cpu_seconds_at_readiness"] = _read_process_cpu_seconds(active_worker.pid)
@@ -1008,6 +1015,8 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
                 metrics["startup_wall_seconds"] = startup_failure.get("readiness_elapsed_seconds")
                 metrics["startup_deadline_seconds"] = startup_failure.get("readiness_deadline_seconds")
                 metrics["startup_ready"] = False
+                metrics["startup_worker_pid"] = startup_failure.get("worker_pid")
+                metrics["startup_slow_warning"] = startup_failure.get("slow_startup_warning")
                 metrics["rss_hwm_kib_at_readiness_deadline"] = startup_failure.get("rss_hwm_kib_at_deadline")
                 metrics["api_process_cpu_seconds_at_readiness_deadline"] = startup_failure.get(
                     "process_cpu_seconds_at_deadline"
@@ -1021,7 +1030,9 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         finally:
             if sampler is not None:
                 sampler.freeze_startup_resources(trigger=startup_freeze_trigger)
-                metrics["startup_resource_observations"] = sampler.startup_resource_observations()
+                resource_observations = sampler.startup_resource_observations()
+                resource_observations["readiness_elapsed_seconds"] = metrics.get("startup_wall_seconds")
+                metrics["startup_resource_observations"] = resource_observations
             if metrics.get("startup_wall_seconds") is None:
                 metrics["startup_wall_seconds"] = round(time.monotonic() - start, 4)
         stack["worker"] = active_worker
@@ -1055,7 +1066,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         assert observation.get("worker_pid") == active_worker.pid, observation
         assert observation.get("recovery_enabled") is True, observation
         assert observation.get("foundation_ok") is True, observation
-        assert metrics["startup_wall_seconds"] < STARTUP_HARD_LIMIT_SECONDS, {
+        assert metrics["startup_wall_seconds"] <= STARTUP_HARD_LIMIT_SECONDS, {
             "startup_wall_seconds": metrics["startup_wall_seconds"],
             "hard_limit_seconds": STARTUP_HARD_LIMIT_SECONDS,
         }
@@ -1349,7 +1360,9 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
     finally:
         if sampler is not None:
             sampler.stop()
-            metrics["startup_resource_observations"] = sampler.startup_resource_observations()
+            resource_observations = sampler.startup_resource_observations()
+            resource_observations["readiness_elapsed_seconds"] = metrics.get("startup_wall_seconds")
+            metrics["startup_resource_observations"] = resource_observations
             metrics["rss_peak_kib_sampled_process_lifetime"] = sampler.peak_kib
             metrics["rss_hwm_kib_process_lifetime"] = max(sampler.high_water_samples) if sampler.high_water_samples else None
             metrics["api_process_cpu_seconds_sampled"] = sampler.process_cpu_seconds

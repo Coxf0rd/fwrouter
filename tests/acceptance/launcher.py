@@ -290,6 +290,7 @@ def _docker_copy_capture(docker: str, container: str, source: str, destination: 
         "/tmp/fwrouter-receipts/application-acceptance.json",
         "/tmp/fwrouter-receipts/native-process-diagnostics.json",
         "/tmp/fwrouter-receipts/worker-service-logs.json",
+        "/tmp/fwrouter-receipts/startup-observations.json",
         "/tmp/fwrouter-receipts/state-snapshot.json",
         "/tmp/fwrouter-receipts/runtime-scale-metrics.json",
     }:
@@ -3458,6 +3459,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                       "native_cli_preflight": str(artifact_dir / "native-cli-preflight.json"),
                       "native_diagnostics": str(artifact_dir / "native-process-diagnostics.json"),
                       "worker_logs": str(artifact_dir / "worker-service-logs.json"),
+                      "startup_observations": str(artifact_dir / "startup-observations.json"),
                       "kernel_preflight": str(artifact_dir / "kernel-preflight.json"),
                       "state_summary": str(artifact_dir / "state-snapshot.json"),
                       "compose_logs": str(artifact_dir / "compose-logs.txt")},
@@ -3964,6 +3966,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
                                 "native_cli_preflight": str(artifact_dir / "native-cli-preflight.json"),
                                 "native_diagnostics": str(artifact_dir / "native-process-diagnostics.json"),
                                 "worker_logs": str(artifact_dir / "worker-service-logs.json"),
+                                "startup_observations": str(artifact_dir / "startup-observations.json"),
                                 "kernel_preflight": str(artifact_dir / "kernel-preflight.json"),
                                 "state_summary": str(artifact_dir / "state-snapshot.json"),
                                 "compose_logs": str(artifact_dir / "compose-logs.txt")}
@@ -4077,6 +4080,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             for source, filename in (
                 ("/tmp/fwrouter-receipts/native-process-diagnostics.json", "native-process-diagnostics.json"),
                 ("/tmp/fwrouter-receipts/worker-service-logs.json", "worker-service-logs.json"),
+                ("/tmp/fwrouter-receipts/startup-observations.json", "startup-observations.json"),
                 ("/tmp/fwrouter-receipts/state-snapshot.json", "state-snapshot.json"),
                 ("/tmp/fwrouter-receipts/runtime-scale-metrics.json", "runtime-scale-metrics.json"),
             ):

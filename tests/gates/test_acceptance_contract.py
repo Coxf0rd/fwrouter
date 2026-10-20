@@ -113,6 +113,37 @@ def _extract_health_readiness_predicate():
     return namespace["_health_response_is_ready"]
 
 
+def _extract_startup_readiness_policy():
+    tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
+    names = {
+        "MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS", "QUALIFIED_STARTUP_DEADLINE_SECONDS",
+        "SLOW_STARTUP_WARNING_SECONDS", "_bootstrap_observation_state",
+        "_startup_attempt_state", "_slow_startup_warning_due",
+    }
+    body = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in names:
+            body.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in names for target in node.targets
+        ):
+            body.append(node)
+    namespace: dict[str, Any] = {"math": math}
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(APPLICATION_ACCEPTANCE_CONFTEST), "exec"), namespace)
+    return namespace
+
+
+def _compile_acceptance_start_worker(namespace: dict[str, Any]):
+    tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
+    stack = next(node for node in tree.body
+                 if isinstance(node, ast.FunctionDef) and node.name == "acceptance_stack")
+    start_worker = next(node for node in ast.walk(stack)
+                        if isinstance(node, ast.FunctionDef) and node.name == "start_worker")
+    exec(compile(ast.Module(body=[start_worker], type_ignores=[]), str(APPLICATION_ACCEPTANCE_CONFTEST), "exec"),
+         namespace)
+    return namespace["start_worker"]
+
+
 def _extract_startup_phase_parser():
     """Load the small parser without importing pytest fixtures or FWRouter modules."""
     tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
@@ -1482,6 +1513,292 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('metrics["startup_readiness_probe"]', scale_case_source)
         self.assertIn('"native_loaded_client_count": len(loaded_after_readback)', scale_case_source)
         self.assertIn("len(loaded_after_readback) == SCALE_NATIVE_CLIENT_COUNT", scale_case_source)
+
+    def test_qualified_startup_deadline_is_inclusive_and_recovery_requires_actual_success(self):
+        policy = _extract_startup_readiness_policy()
+        self.assertEqual(15.0, policy["MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS"])
+        self.assertEqual(60.0, policy["QUALIFIED_STARTUP_DEADLINE_SECONDS"])
+        self.assertEqual(45.0, policy["SLOW_STARTUP_WARNING_SECONDS"])
+        attempt_state = policy["_startup_attempt_state"]
+        warning_due = policy["_slow_startup_warning_due"]
+        for elapsed in (30, 44, 45, 46, 59, 60):
+            with self.subTest(elapsed=elapsed):
+                self.assertEqual("ready", attempt_state(
+                    elapsed_seconds=elapsed, deadline_seconds=60, worker_alive=True,
+                    health_ready=True, bootstrap_state="ready",
+                ))
+                self.assertEqual(elapsed > 45, warning_due(elapsed))
+        self.assertEqual("deadline_exceeded", attempt_state(
+            elapsed_seconds=60.0001, deadline_seconds=60, worker_alive=True,
+            health_ready=True, bootstrap_state="ready",
+        ))
+        self.assertFalse(warning_due(float("nan")))
+        self.assertFalse(warning_due(True))
+        self.assertEqual("invalid_timing", attempt_state(
+            elapsed_seconds=float("nan"), deadline_seconds=60, worker_alive=True,
+            health_ready=True, bootstrap_state="ready",
+        ))
+        self.assertEqual("worker_exited", attempt_state(
+            elapsed_seconds=30, deadline_seconds=60, worker_alive=False,
+            health_ready=True, bootstrap_state="ready",
+        ))
+        self.assertEqual("health_unready", attempt_state(
+            elapsed_seconds=30, deadline_seconds=60, worker_alive=True,
+            health_ready=False, bootstrap_state="ready",
+        ))
+        self.assertEqual("bootstrap_pending", attempt_state(
+            elapsed_seconds=30, deadline_seconds=60, worker_alive=True,
+            health_ready=True, bootstrap_state="pending",
+        ))
+        self.assertEqual("bootstrap_failed", attempt_state(
+            elapsed_seconds=30, deadline_seconds=60, worker_alive=True,
+            health_ready=True, bootstrap_state="failed",
+        ))
+
+        inspect = policy["_bootstrap_observation_state"]
+        good = {
+            "schema": "fwrouter-runtime-bootstrap-observation/v1", "worker_pid": 123,
+            "completed": True, "foundation_ok": True, "recovery_enabled": True,
+            "live_recovery": {
+                "live_routing": {"status": "success", "ok": True},
+                "selector": {"skipped": True},
+            },
+            "apply_reconcile": {
+                "intended_routing": {"skipped": True},
+                "scoped_subject_routing": {"skipped": True},
+                "xray_subscription_profiles": {"skipped": True},
+                "dnsmasq_reconcile": {"status": "disabled"},
+            },
+        }
+        self.assertEqual("ready", inspect(200, good, worker_pid=123))
+        self.assertEqual("pending", inspect(503, good, worker_pid=123))
+        self.assertEqual("pending", inspect(200, {**good, "completed": False}, worker_pid=123))
+        for invalid in (
+            {**good, "worker_pid": 124},
+            {**good, "foundation_ok": False},
+            {**good, "recovery_enabled": False},
+            {**good, "live_recovery": {"selector": {"status": "failed"}}},
+            {**good, "apply_reconcile": {"dns": {"ok": False}}},
+            {**good, "apply_reconcile": {}},
+            {**good, "live_recovery": {**good["live_recovery"], "selector": {"status": "blocked"}}},
+            {**good, "apply_reconcile": {**good["apply_reconcile"],
+                                          "dnsmasq_reconcile": {"error_code": "RECONCILE_FAILED"}}},
+        ):
+            self.assertEqual("failed", inspect(200, invalid, worker_pid=123), invalid)
+
+        fixture_source = APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8")
+        start = fixture_source[fixture_source.index("        def start_worker("):]
+        start = start[:start.index("\n        worker, api = start_worker()")]
+        self.assertIn("QUALIFIED_STARTUP_DEADLINE_SECONDS", start)
+        self.assertIn("MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS", start)
+        self.assertIn('base + "/__acceptance/bootstrap/report"', start)
+        self.assertIn("_bootstrap_observation_state(", start)
+        self.assertIn("_slow_startup_warning_due(elapsed)", start)
+        self.assertIn("startup-observations.json", fixture_source)
+
+        scale_source = (Path(__file__).parents[1] / "application_acceptance" / "test_runtime_scale.py").read_text(
+            encoding="utf-8")
+        self.assertIn("STARTUP_HARD_LIMIT_SECONDS = 60.0", scale_source)
+        self.assertIn("STARTUP_WARNING_SECONDS = 45.0", scale_source)
+        self.assertIn('metrics["startup_slow_warning"]', scale_source)
+        launcher_source = LAUNCHER_PATH.read_text(encoding="utf-8")
+        self.assertIn('"/tmp/fwrouter-receipts/startup-observations.json"', launcher_source)
+        self.assertIn('"startup_observations": str(artifact_dir / "startup-observations.json")', launcher_source)
+        self.assertIn('("/tmp/fwrouter-receipts/startup-observations.json", "startup-observations.json")',
+                      launcher_source)
+        workflow = (Path(__file__).parents[2] / ".github" / "workflows" / "phase-d-validation.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("startup exceeded hard 60 second budget", workflow)
+        self.assertIn('"hard_budget_seconds": 60', workflow)
+        self.assertIn('"slow_startup_warning_seconds": 45', workflow)
+
+    def test_start_worker_path_uses_mocked_clock_for_deadline_warning_and_recovery_outcomes(self):
+        policy = _extract_startup_readiness_policy()
+
+        class Clock:
+            def __init__(self):
+                self.value = 0.0
+
+            def monotonic(self):
+                return self.value
+
+            def wait(self, seconds):
+                self.value += seconds
+                return False
+
+        class Worker:
+            def __init__(self, pid, *, exited=False):
+                self.pid = pid
+                self.returncode = -9 if exited else None
+                self.exited = exited
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        class PopenFactory:
+            current = None
+
+            @classmethod
+            def __class_getitem__(cls, _item):
+                return cls
+
+            def __new__(cls, *_args, **_kwargs):
+                return cls.current
+
+        good_observation = {
+            "schema": "fwrouter-runtime-bootstrap-observation/v1", "worker_pid": 4123,
+            "completed": True, "foundation_ok": True, "recovery_enabled": True,
+            "live_recovery": {"live_routing": {"ok": True}, "selector": {"skipped": True}},
+            "apply_reconcile": {
+                "intended_routing": {"skipped": True}, "scoped_subject_routing": {"skipped": True},
+                "xray_subscription_profiles": {"skipped": True}, "dnsmasq_reconcile": {"status": "disabled"},
+            },
+        }
+        case_errors = []
+
+        def run_case(*, target_elapsed, health_ready=True, observation=None, worker_exited=False,
+                     startup_tasks=True, startup_recovery=True):
+            clock = Clock()
+            proc = Worker(4123, exited=worker_exited)
+            PopenFactory.current = proc
+            failures = []
+            observations = []
+            warnings = []
+            with tempfile.TemporaryDirectory(prefix="fwrouter-startup-policy-contract-") as temp:
+                root = Path(temp)
+                (root / "state").mkdir()
+
+                def probe(url, *, timeout, **_kwargs):
+                    if url.endswith("/health"):
+                        if health_ready:
+                            clock.value = max(clock.value, target_elapsed - (0.1 if startup_recovery else 0.0))
+                            return 200, {
+                                "ok": True, "data": {"service": "fwrouter-api", "status": "healthy",
+                                "database": {"status": "healthy", "schema": {"ok": True}}},
+                            }
+                        return 503, {}
+                    clock.value = target_elapsed
+                    payload = good_observation if observation is None else observation
+                    return 200, {**payload, "worker_pid": proc.pid}
+
+                class FakeEvent:
+                    def wait(self, seconds):
+                        return clock.wait(seconds)
+
+                provider_bridge = SimpleNamespace(base_url="http://127.0.0.1:9000", mihomo_probe_url=None)
+                request = SimpleNamespace(config=SimpleNamespace(_fwrouter_startup_observations=observations))
+
+                def warn(fake_proc, elapsed, qualification):
+                    record = {"code": "SLOW_STARTUP", "elapsed_seconds": elapsed,
+                              "qualification": qualification, "worker_pid": fake_proc.pid,
+                              "resources": {"scope": "owned_api_worker", "process_cpu_seconds": 2.0,
+                                            "rss_kib": 100, "hwm_kib": 120, "threads": 3}}
+                    fake_proc._acceptance_startup_warning = record
+                    warnings.append(record)
+                    return record
+
+                def fail_startup(message):
+                    raise RuntimeError(message)
+
+                namespace = {
+                    "profile": {"profile": "hosted-kernel-packet", "xray": {"path": "/xray"},
+                                "mihomo": {"path": "/mihomo"}, "chromium": {"path": "/chromium"}},
+                    "suite_root": root, "state": root / "state", "rpc_socket": root / "state" / "rpc.sock",
+                    "parent_root": root, "provider_bridge": provider_bridge, "request": request,
+                    "worker_path": "/opt/fwrouter-test/bin:/usr/sbin:/sbin:/usr/bin:/bin",
+                    "owned_workers": [],
+                    "startup_failures": failures, "_free_loopback_port": lambda: 5000,
+                    "subprocess": SimpleNamespace(DEVNULL=subprocess.DEVNULL, Popen=PopenFactory,
+                                                   TimeoutExpired=subprocess.TimeoutExpired),
+                    "sys": SimpleNamespace(executable="/python"), "os": SimpleNamespace(
+                        kill=lambda *_a: (_ for _ in ()).throw(ProcessLookupError()),
+                    ), "signal": SimpleNamespace(SIGUSR1=10),
+                    "threading": SimpleNamespace(Event=FakeEvent), "time": SimpleNamespace(monotonic=clock.monotonic),
+                    "Path": Path, "pytest": SimpleNamespace(fail=fail_startup), "http_json": probe,
+                    "_health_response_is_ready": _extract_health_readiness_predicate(),
+                    "_startup_phase_diagnostics": lambda _path: {"status": "parsed", "events": []},
+                    "_process_cpu_seconds": lambda _pid: 2.0,
+                    "_owned_worker_resource_evidence": lambda _pid: {"scope": "owned_api_worker",
+                        "process_cpu_seconds": 2.0, "rss_kib": 100, "hwm_kib": 120, "threads": 3},
+                    "_slow_startup_warning": warn,
+                    "_slow_startup_warning_due": policy["_slow_startup_warning_due"],
+                    "_bootstrap_observation_state": policy["_bootstrap_observation_state"],
+                    "_startup_attempt_state": policy["_startup_attempt_state"],
+                    "MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS": policy["MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS"],
+                    "QUALIFIED_STARTUP_DEADLINE_SECONDS": policy["QUALIFIED_STARTUP_DEADLINE_SECONDS"],
+                    "SLOW_STARTUP_WARNING_SECONDS": policy["SLOW_STARTUP_WARNING_SECONDS"],
+                }
+                start_worker = _compile_acceptance_start_worker(namespace)
+                try:
+                    result = start_worker(startup_tasks=startup_tasks, startup_recovery=startup_recovery)
+                except BaseException as exc:
+                    case_errors.append(repr(exc))
+                    result = None
+                return result, failures, warnings, clock.value, observations
+
+        for elapsed in (30, 44, 45, 45 - 1e-6, 45 + 1e-6, 46, 59, 60):
+            with self.subTest(qualified_elapsed=elapsed):
+                result, _failures, warning_rows, _clock_value, observations = run_case(target_elapsed=elapsed)
+                self.assertIsNotNone(result, case_errors[-1] if case_errors else None)
+                worker = result[0]
+                readiness_elapsed = worker._acceptance_readiness_probe["elapsed_seconds"]
+                self.assertEqual(elapsed, readiness_elapsed)
+                self.assertEqual(elapsed > 45, bool(warning_rows))
+                self.assertEqual(elapsed > 45, getattr(worker, "_acceptance_startup_warning", None) is not None)
+                self.assertEqual(elapsed > 45, observations[0]["slow_startup_warning"] is not None)
+                if elapsed > 45:
+                    self.assertGreater(worker._acceptance_startup_warning["elapsed_seconds"], 45)
+                    self.assertEqual(readiness_elapsed, worker._acceptance_startup_warning["elapsed_seconds"])
+                serialized = json.loads(json.dumps({
+                    "readiness": worker._acceptance_readiness_probe,
+                    "observation": observations[0],
+                }))
+                self.assertEqual(elapsed, serialized["readiness"]["elapsed_seconds"])
+                self.assertEqual(elapsed, serialized["observation"]["elapsed_seconds"])
+
+        result, failures, _warnings, _clock_value, _observations = run_case(target_elapsed=60 + 1e-6)
+        self.assertIsNone(result)
+        self.assertEqual("readiness_deadline_exceeded", failures[-1]["failure"])
+        self.assertGreater(failures[-1]["readiness_elapsed_seconds"], 60)
+        self.assertIsNotNone(failures[-1]["slow_startup_warning"])
+
+        result, failures, _warnings, _clock_value, _observations = run_case(
+            target_elapsed=0, health_ready=False, startup_tasks=False, startup_recovery=False,
+        )
+        self.assertIsNone(result)
+        self.assertEqual(15.0, failures[-1]["readiness_deadline_seconds"])
+        self.assertEqual("minimal_worker", failures[-1]["startup_qualification"])
+
+        result, failures, _warnings, _clock_value, _observations = run_case(
+            target_elapsed=2, worker_exited=True,
+        )
+        self.assertIsNone(result)
+        self.assertEqual("worker_exited_before_readiness", failures[-1]["failure"])
+
+        failed_observation = {
+            **good_observation, "live_recovery": {
+                **good_observation["live_recovery"], "live_routing": {"status": "failed"},
+            },
+        }
+        result, failures, _warnings, _clock_value, _observations = run_case(
+            target_elapsed=2, observation=failed_observation,
+        )
+        self.assertIsNone(result)
+        self.assertEqual("startup_recovery_failed", failures[-1]["failure"])
+        self.assertEqual("failed", failures[-1]["bootstrap_observation"]["live_recovery"]["live_routing"]["status"])
+
+        result, _failures, _warnings, _clock_value, observations = run_case(
+            target_elapsed=15, startup_tasks=False, startup_recovery=False,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual("minimal_worker", result[0]._acceptance_readiness_probe["qualification"])
+        self.assertEqual([], observations)
 
     def test_worker_candidate_fingerprint_is_bounded_owned_and_path_redacted(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-candidate-fingerprint-") as temp:
@@ -5749,7 +6066,11 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn('run_launcher runtime-scale-diagnostic "$root/startup-attempt-2.log"', workflow)
         self.assertIn('output.mkdir(parents=True, exist_ok=False)', workflow)
         self.assertIn('"runtime-scale-metrics.json"', workflow)
-        self.assertIn('"hard_budget_seconds": 45', workflow)
+        self.assertIn('elif value > 60:', workflow)
+        self.assertIn('metrics.get("startup_ready") is not True', workflow)
+        self.assertIn('probe.get("healthy") is not True', workflow)
+        self.assertIn('"hard_budget_seconds": 60', workflow)
+        self.assertIn('"slow_startup_warning_seconds": 45', workflow)
         self.assertIn('"engineering_margin_goal_seconds": 40', workflow)
         self.assertIn('"engineering_margin_status": "demonstrated" if margin_demonstrated else "not_demonstrated"', workflow)
         self.assertIn('"startup_margin_claim": "at_least_5_seconds" if margin_demonstrated else "none"', workflow)
@@ -7935,12 +8256,12 @@ class StartupResourceObservationContract(unittest.TestCase):
         self.assertEqual(71, frozen["probe_read_cost"]["sample_count"])
         self.assertTrue(all(item["cgroup_scope"] == "owned_acceptance_container" for item in retained))
         self.assertFalse(sampler._startup_active)
-        frozen_elapsed = frozen["startup_elapsed_seconds"]
+        frozen_elapsed = frozen["observation_window_elapsed_seconds"]
         sample_count = frozen["probe_read_cost"]["sample_count"]
         time.sleep(0.02)
         sampler._sample_startup_resources_if_due(force=True)
         after_wait = sampler.startup_resource_observations()
-        self.assertEqual(frozen_elapsed, after_wait["startup_elapsed_seconds"])
+        self.assertEqual(frozen_elapsed, after_wait["observation_window_elapsed_seconds"])
         self.assertEqual(sample_count, after_wait["probe_read_cost"]["sample_count"])
         self.assertEqual(64, after_wait["sample_count_retained"])
         self.assertEqual(64, len(retained))
@@ -7960,7 +8281,9 @@ class StartupResourceObservationContract(unittest.TestCase):
     def test_startup_failure_path_freezes_before_outer_metrics_export(self):
         source = self.source.read_text(encoding="utf-8")
         self.assertIn("sampler.freeze_startup_resources(trigger=startup_freeze_trigger)", source)
-        self.assertIn('metrics["startup_resource_observations"] = sampler.startup_resource_observations()', source)
+        self.assertIn('resource_observations = sampler.startup_resource_observations()', source)
+        self.assertIn('metrics["startup_resource_observations"] = resource_observations', source)
+        self.assertIn('resource_observations["readiness_elapsed_seconds"] = metrics.get("startup_wall_seconds")', source)
         scale_test = next(item for item in self.tree.body
                           if isinstance(item, ast.FunctionDef)
                           and item.name == "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load")

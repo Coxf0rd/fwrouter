@@ -25,6 +25,8 @@ QUALIFIED_OLD_TREE_OID = "a3ff940aa985a6930dc7361848d845992034b399"
 MAIN_BASELINE_SHA = "47cfd63fc220f2890e140da27ff54c91a8a2c7a1"
 ATTEMPT_COUNT_PER_ARM = 3
 MAX_ATTEMPTS = 9
+# Frozen PR22 comparison policy: this immutable historical harness is not the
+# active qualified-startup deadline (60s) used by current acceptance gates.
 HARD_STARTUP_SECONDS = 45
 ENGINEERING_TARGET_SECONDS = 40
 CONTAINER_MEMORY_LIMIT_BYTES = 2560 * 1024 ** 2

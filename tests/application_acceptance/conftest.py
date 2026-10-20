@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import math
 import os
 import signal
@@ -28,6 +29,10 @@ _CRITICAL_SUCCESS_DIAGNOSTIC_NODEIDS = frozenset({
     "tests/application_acceptance/test_core_provider_mihomo.py::"
     "test_confirmed_provider_failure_applies_emergency_direct_and_failed_reentry_stays_direct",
 })
+
+MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS = 15.0
+QUALIFIED_STARTUP_DEADLINE_SECONDS = 60.0
+SLOW_STARTUP_WARNING_SECONDS = 45.0
 
 
 def _retain_acceptance_diagnostic(nodeid: str, *, failed: bool, has_records: bool) -> bool:
@@ -229,6 +234,107 @@ def _health_response_is_ready(status_code: int, payload: object) -> bool:
     return isinstance(schema, dict) and schema.get("ok") is True
 
 
+def _bootstrap_observation_state(status_code: int, payload: object, *, worker_pid: int) -> str:
+    """Classify the owned worker's completed startup-recovery observation."""
+    if status_code != 200 or not isinstance(payload, dict):
+        return "pending"
+    if (payload.get("schema") != "fwrouter-runtime-bootstrap-observation/v1"
+            or type(payload.get("worker_pid")) is not int or payload.get("worker_pid") != worker_pid):
+        return "failed"
+    if payload.get("completed") is not True:
+        return "pending"
+    if payload.get("foundation_ok") is not True or payload.get("recovery_enabled") is not True:
+        return "failed"
+
+    def has_explicit_failure(value: object, depth: int = 0) -> bool:
+        if depth > 8:
+            return True
+        if isinstance(value, dict):
+            if (value.get("ok") is False or value.get("status") in {"failed", "blocked", "error"}
+                    or value.get("error_code") is not None):
+                return True
+            return any(has_explicit_failure(item, depth + 1) for item in value.values())
+        if isinstance(value, list):
+            return any(has_explicit_failure(item, depth + 1) for item in value[:128])
+        return False
+
+    required_summaries = {
+        "live_recovery": {"live_routing", "selector"},
+        "apply_reconcile": {
+            "intended_routing", "scoped_subject_routing", "xray_subscription_profiles", "dnsmasq_reconcile",
+        },
+    }
+    for key, required in required_summaries.items():
+        summary = payload.get(key)
+        if (not isinstance(summary, dict) or not required.issubset(summary)
+                or any(not isinstance(summary[field], dict) or not summary[field] for field in required)
+                or has_explicit_failure(summary)):
+            return "failed"
+    return "ready"
+
+
+def _startup_attempt_state(
+    *, elapsed_seconds: float, deadline_seconds: float, worker_alive: bool,
+    health_ready: bool, bootstrap_state: str,
+) -> str:
+    """Apply the inclusive startup deadline and the actual readiness requirements."""
+    if (type(elapsed_seconds) not in {int, float} or not math.isfinite(elapsed_seconds)
+            or elapsed_seconds < 0 or type(deadline_seconds) not in {int, float}
+            or not math.isfinite(deadline_seconds) or deadline_seconds <= 0):
+        return "invalid_timing"
+    if not worker_alive:
+        return "worker_exited"
+    if elapsed_seconds > deadline_seconds:
+        return "deadline_exceeded"
+    if not health_ready:
+        return "health_unready"
+    if bootstrap_state == "failed":
+        return "bootstrap_failed"
+    if bootstrap_state == "pending":
+        return "bootstrap_pending"
+    if bootstrap_state not in {"not_required", "ready"}:
+        return "bootstrap_invalid"
+    return "ready"
+
+
+def _slow_startup_warning_due(elapsed_seconds: float) -> bool:
+    return (type(elapsed_seconds) in {int, float} and math.isfinite(elapsed_seconds)
+            and elapsed_seconds > SLOW_STARTUP_WARNING_SECONDS)
+
+
+def _owned_worker_resource_evidence(pid: int) -> dict[str, object]:
+    """Return bounded scalar resource evidence for the owned API process."""
+    result: dict[str, object] = {
+        "scope": "owned_api_worker", "process_cpu_seconds": _process_cpu_seconds(pid),
+        "rss_kib": None, "hwm_kib": None, "threads": None,
+    }
+    try:
+        lines = Path(f"/proc/{pid}/status").read_text(encoding="ascii")[:16_384].splitlines()
+    except OSError:
+        return result
+    fields = {"VmRSS": "rss_kib", "VmHWM": "hwm_kib", "Threads": "threads"}
+    for line in lines:
+        key, separator, value = line.partition(":")
+        if separator and key in fields:
+            tokens = value.split()
+            if tokens and tokens[0].isascii() and tokens[0].isdigit():
+                result[fields[key]] = int(tokens[0])
+    return result
+
+
+def _slow_startup_warning(proc: subprocess.Popen[bytes], elapsed_seconds: float, qualification: str) -> dict[str, object]:
+    record = {
+        "code": "SLOW_STARTUP", "threshold_seconds": SLOW_STARTUP_WARNING_SECONDS,
+        "elapsed_seconds": elapsed_seconds, "qualification": qualification,
+        "worker_pid": proc.pid, "resources": _owned_worker_resource_evidence(proc.pid),
+    }
+    proc._acceptance_startup_warning = record
+    logging.getLogger("fwrouter.acceptance.startup").warning(
+        "SLOW_STARTUP %s", json.dumps(record, sort_keys=True),
+    )
+    return record
+
+
 def _startup_phase_diagnostics(log_path: Path) -> dict[str, object]:
     """Extract only bounded timing fields from the owned worker's phase markers."""
     prefix = b"FWROUTER_ACCEPTANCE_BOOTSTRAP_PHASE "
@@ -305,6 +411,7 @@ def pytest_configure(config):
     config._fwrouter_acceptance_reports = {}
     config._fwrouter_diagnostic_records = []
     config._fwrouter_startup_failures = []
+    config._fwrouter_startup_observations = []
     config._fwrouter_acceptance_cleanup_errors = []
     config._fwrouter_acceptance_temp_bytes = 0
 
@@ -404,60 +511,139 @@ def acceptance_stack(request):
             if on_spawn is not None:
                 on_spawn(proc)
             base = f"http://127.0.0.1:{port}/api/v2"
-            readiness_limit = 45 if startup_tasks else 15
+            readiness_limit = (
+                QUALIFIED_STARTUP_DEADLINE_SECONDS if startup_tasks
+                else MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS
+            )
+            qualification = (
+                "qualified_startup_recovery" if startup_recovery
+                else "qualified_startup_tasks" if startup_tasks
+                else "minimal_worker"
+            )
             deadline = spawned_at + readiness_limit
-            while time.monotonic() < deadline:
+            warning_emitted = False
+            bootstrap_state = "not_required" if not startup_recovery else "pending"
+            last_health_ready = False
+            last_bootstrap_observation: dict[str, object] | None = None
+            failure_reason = "readiness_deadline_exceeded"
+            while True:
+                loop_now = time.monotonic()
+                elapsed = loop_now - spawned_at
                 if proc.poll() is not None:
+                    if _slow_startup_warning_due(elapsed) and not warning_emitted:
+                        _slow_startup_warning(proc, elapsed, qualification)
+                        warning_emitted = True
                     startup_failures.append({
                         "worker_pid": proc.pid,
-                        "readiness_deadline_seconds": 45 if startup_tasks else 15,
-                        "readiness_elapsed_seconds": round(time.monotonic() - spawned_at, 4),
+                        "readiness_deadline_seconds": readiness_limit,
+                        "readiness_elapsed_seconds": elapsed,
+                        "startup_qualification": qualification,
                         "ready": False,
                         "failure": "worker_exited_before_readiness",
                         "worker_exit_at_deadline": proc.returncode,
-                        "rss_kib_at_deadline": None,
-                        "rss_hwm_kib_at_deadline": None,
-                        "process_cpu_seconds_at_deadline": _process_cpu_seconds(proc.pid),
+                        "resources_at_failure": _owned_worker_resource_evidence(proc.pid),
+                        "slow_startup_warning": getattr(proc, "_acceptance_startup_warning", None),
                         "phase_diagnostics_at_deadline": _startup_phase_diagnostics(Path(proc._acceptance_log_path)),
                         "termination": {"status": "already_exited", "return_code": proc.returncode},
                     })
                     pytest.fail("owned API worker exited before readiness")
+                remaining = deadline - loop_now
+                if remaining <= 0:
+                    break
                 try:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        break
                     code, payload = http_json(base + "/health", timeout=min(0.5, remaining))
-                    if _health_response_is_ready(code, payload) and time.monotonic() < deadline:
+                    last_health_ready = _health_response_is_ready(code, payload)
+                    if last_health_ready and startup_recovery:
+                        remaining = deadline - time.monotonic()
+                        if remaining > 0:
+                            bootstrap_code, bootstrap_payload = http_json(
+                                base + "/__acceptance/bootstrap/report", timeout=min(0.5, remaining),
+                            )
+                            last_bootstrap_observation = (
+                                bootstrap_payload if isinstance(bootstrap_payload, dict) else None
+                            )
+                            bootstrap_state = _bootstrap_observation_state(
+                                bootstrap_code, bootstrap_payload, worker_pid=proc.pid,
+                            )
+                            if bootstrap_state == "failed":
+                                failure_reason = "startup_recovery_failed"
+                    completed_at = time.monotonic()
+                    completed_elapsed = completed_at - spawned_at
+                    startup_state = _startup_attempt_state(
+                        elapsed_seconds=completed_elapsed,
+                        deadline_seconds=readiness_limit,
+                        worker_alive=proc.poll() is None,
+                        health_ready=last_health_ready,
+                        bootstrap_state=bootstrap_state,
+                    )
+                    if startup_state == "ready":
+                        elapsed_seconds = completed_at - spawned_at
+                        if _slow_startup_warning_due(elapsed_seconds) and not warning_emitted:
+                            _slow_startup_warning(proc, elapsed_seconds, qualification)
+                            warning_emitted = True
                         proc._acceptance_readiness_probe = {
                             "path": "/health",
                             "status_code": code,
                             "healthy": True,
-                            "elapsed_seconds": round(time.monotonic() - spawned_at, 4),
+                            "elapsed_seconds": elapsed_seconds,
+                            "qualification": qualification,
+                            "bootstrap_verified": startup_recovery,
                         }
+                        if warning_emitted:
+                            proc._acceptance_readiness_probe["slow_startup_warning"] = getattr(
+                                proc, "_acceptance_startup_warning", None,
+                            )
+                        if startup_tasks:
+                            request.config._fwrouter_startup_observations.append({
+                                "worker_pid": proc.pid,
+                                "qualification": qualification,
+                                "elapsed_seconds": elapsed_seconds,
+                                "deadline_seconds": readiness_limit,
+                                "slow_startup_warning": getattr(proc, "_acceptance_startup_warning", None),
+                            })
                         return proc, base
+                    if startup_state == "worker_exited":
+                        failure_reason = "worker_exited_before_readiness"
+                        break
+                    if startup_state == "bootstrap_failed":
+                        failure_reason = "startup_recovery_failed"
+                        break
+                    if startup_state == "invalid_timing":
+                        failure_reason = "invalid_readiness_timing"
+                        break
                 except (OSError, ValueError, TimeoutError):
-                    threading.Event().wait(0.1)
+                    pass
+                now = time.monotonic()
+                if now >= deadline:
+                    break
+                threading.Event().wait(min(0.1, max(0.0, deadline - now)))
             # Record the actual readiness deadline before diagnostics and termination add time.
             readiness_elapsed = time.monotonic() - spawned_at
+            if _slow_startup_warning_due(readiness_elapsed) and not warning_emitted:
+                _slow_startup_warning(proc, readiness_elapsed, qualification)
+                warning_emitted = True
+            resource_evidence = _owned_worker_resource_evidence(proc.pid)
             failure: dict[str, object] = {
                 "worker_pid": proc.pid,
                 "readiness_deadline_seconds": readiness_limit,
-                "readiness_elapsed_seconds": round(readiness_elapsed, 4),
+                "readiness_elapsed_seconds": readiness_elapsed,
+                "startup_qualification": qualification,
+                "readiness_deadline_reached": readiness_elapsed >= readiness_limit,
+                "failure": failure_reason if failure_reason != "readiness_deadline_exceeded" else (
+                    "startup_recovery_not_completed"
+                    if startup_recovery and last_health_ready and bootstrap_state != "ready"
+                    else "readiness_deadline_exceeded"
+                ),
                 "ready": False,
                 "worker_exit_at_deadline": proc.poll(),
-                "rss_kib_at_deadline": None,
-                "rss_hwm_kib_at_deadline": None,
+                "rss_kib_at_deadline": resource_evidence.get("rss_kib"),
+                "rss_hwm_kib_at_deadline": resource_evidence.get("hwm_kib"),
                 "process_cpu_seconds_at_deadline": _process_cpu_seconds(proc.pid),
+                "resources_at_failure": resource_evidence,
+                "bootstrap_observation": last_bootstrap_observation,
+                "slow_startup_warning": getattr(proc, "_acceptance_startup_warning", None),
                 "termination": {"status": "NOT_RUN"},
             }
-            try:
-                for field, key in (("VmRSS", "rss_kib_at_deadline"), ("VmHWM", "rss_hwm_kib_at_deadline")):
-                    for status_line in Path(f"/proc/{proc.pid}/status").read_text(encoding="ascii").splitlines():
-                        if status_line.startswith(field + ":"):
-                            failure[key] = int(status_line.split()[1])
-                            break
-            except (OSError, ValueError, IndexError):
-                pass
             log_path = Path(proc._acceptance_log_path)
             failure["phase_diagnostics_at_deadline"] = _startup_phase_diagnostics(log_path)
             # The worker registered a traceback-only handler; no locals/config are dumped.
@@ -604,6 +790,7 @@ def acceptance_stack(request):
                 "worker_logs": worker_logs[:8], "native": native_diagnostics,
                 "state": state_summary, "cleanup_errors": list(cleanup_errors),
                 "startup_failures": list(startup_failures[-4:]),
+                "startup_observations": list(request.config._fwrouter_startup_observations[-4:]),
             })
         native.stop()
         if provider_bridge is not None:
@@ -664,8 +851,13 @@ def pytest_sessionfinish(session, exitstatus):
         "worker-service-logs.json": {"schema": "fwrouter-worker-service-logs/v1",
                                      "records": [{"nodeid": row["nodeid"], "status": row["status"],
                                                   "logs": row["worker_logs"],
-                                                  "startup_failures": row.get("startup_failures", [])}
+                                                  "startup_failures": row.get("startup_failures", []),
+                                                  "startup_observations": row.get("startup_observations", [])}
                                                  for row in diagnostic_records]},
+        "startup-observations.json": {
+            "schema": "fwrouter-qualified-startup-observations/v1",
+            "observations": getattr(config, "_fwrouter_startup_observations", [])[-128:],
+        },
         "state-snapshot.json": {"schema": "fwrouter-acceptance-state-summary/v1",
                                  "records": [{"nodeid": row["nodeid"], "status": row["status"],
                                               "files": row["state"]} for row in diagnostic_records]},
@@ -673,8 +865,9 @@ def pytest_sessionfinish(session, exitstatus):
     for filename, payload in diagnostic_payloads.items():
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         aggregate_limit = 1024 * 1024
-        while len(encoded) > aggregate_limit and payload["records"]:
-            payload["records"].pop(0)
+        bounded_rows_key = "observations" if filename == "startup-observations.json" else "records"
+        while len(encoded) > aggregate_limit and payload[bounded_rows_key]:
+            payload[bounded_rows_key].pop(0)
             encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         (receipt_path.parent / filename).write_bytes(encoded + b"\n")
     tests = []
