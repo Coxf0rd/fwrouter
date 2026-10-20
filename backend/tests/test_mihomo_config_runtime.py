@@ -499,8 +499,19 @@ def _seed_runtime_proxy_server(
         )
 
 
+@pytest.mark.parametrize(
+    ("selected_case", "expected_membership", "expected_selected"),
+    [
+        ("reject", True, False),
+        ("target", True, True),
+        ("direct", False, False),
+        ("foreign", False, False),
+        ("missing", False, False),
+    ],
+)
 def test_fixed_logical_profile_materialization_requires_owned_group_and_native_membership(
     monkeypatch, tmp_path: Path,
+    selected_case: str, expected_membership: bool, expected_selected: bool,
 ) -> None:
     from fwrouter_api.services import mihomo_config_paths
 
@@ -567,7 +578,13 @@ def test_fixed_logical_profile_materialization_requires_owned_group_and_native_m
                 # Real adapter hides non-server REJECT from active identity,
                 # while retaining the raw independently observed selection.
                 "vpn_global_now": None,
-                "vpn_global_selected_target": "REJECT",
+                "vpn_global_selected_target": {
+                    "reject": "REJECT",
+                    "target": group_name,
+                    "direct": "DIRECT",
+                    "foreign": "foreign-runtime-target",
+                    "missing": None,
+                }[selected_case],
             }},
         ),
     )
@@ -590,16 +607,30 @@ def test_fixed_logical_profile_materialization_requires_owned_group_and_native_m
 
     proof = mihomo_config_status_service.mihomo_runtime_fixed_target_materialized(routing)
 
-    assert proof["ok"] is True, proof
+    assert proof["native_membership_ok"] is expected_membership, proof
+    assert proof["ok"] is expected_membership and proof["selected_fixed_target"] is expected_selected, proof
     assert proof["fixed_runtime_target"] == group_name
     assert proof["logical_group_native_membership_ok"] is True
-    assert proof["selected_fixed_target"] is False
-    assert proof["vpn_global_now"] == "REJECT"
-    assert group_readbacks == [group_name]
+    assert proof["vpn_global_now"] == {
+        "reject": "REJECT",
+        "target": group_name,
+        "direct": "DIRECT",
+        "foreign": "foreign-runtime-target",
+        "missing": "",
+    }[selected_case]
+
+    strict_proof = mihomo_config_status_service.mihomo_runtime_fixed_target_materialized(
+        routing, require_selected=True,
+    )
+    assert strict_proof["native_membership_ok"] is expected_membership
+    assert strict_proof["selected_fixed_target"] is expected_selected
+    assert strict_proof["ok"] is expected_selected
+    assert group_readbacks == [group_name, group_name]
 
     native_members[:] = [{"runtime_identity": "unexpected-member"}]
     wrong_native_membership = mihomo_config_status_service.mihomo_runtime_fixed_target_materialized(routing)
     assert wrong_native_membership["ok"] is False
+    assert wrong_native_membership["native_membership_ok"] is expected_membership
     assert wrong_native_membership["logical_group_native_membership_ok"] is False
 
 

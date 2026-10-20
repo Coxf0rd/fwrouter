@@ -374,7 +374,13 @@ def test_fixed_pending_blocks_ordinary_xray_generation_until_core_phase() -> Non
     assert _assert_xray_generation_authorized(fixed["pending_revision"]) is True
 
 
-def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("native_runtime_target", "expected_ok"),
+    [("Runtime fixed-xray-receipt", True), ("foreign-runtime-target", False)],
+)
+def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(
+    monkeypatch, tmp_path: Path, native_runtime_target: str, expected_ok: bool,
+) -> None:
     from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_config_status, mihomo_reconcile, mihomo_runtime
     from fwrouter_api.services.server_global_selection import (
         _capture_fixed_apply_context,
@@ -387,6 +393,13 @@ def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(monkeypatc
     from fwrouter_api.services.mihomo_reconcile import _invoke_verification_callback
 
     _seed_server("fixed-xray-receipt", vpn_auto=False, global_list=False)
+    from fwrouter_api.services.mihomo_config_status import _resolve_active_fixed_runtime_target
+
+    mihomo_target = "Runtime fixed-xray-receipt"
+    assert _resolve_active_fixed_runtime_target(
+        "fixed-xray-receipt", expected_targets={mihomo_target},
+    ) == mihomo_target
+    assert mihomo_target != "fixed-xray-receipt"
     core_context = {"boot_id": "synthetic-boot", "network_namespace_inode": "42"}
     runtime_incarnation = {"value": "mihomo-before-xray-generation"}
     input_fingerprint = {"value": "1" * 64}
@@ -403,10 +416,13 @@ def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(monkeypatc
         mihomo_config_status, "mihomo_runtime_fixed_target_materialized",
         lambda _routing, require_selected=False: {
             "ok": True,
-            "fixed_runtime_target": "fixed-xray-receipt",
-            "vpn_global_now": "Runtime fixed-xray-receipt",
-            "vpn_global_selected_target": "Runtime fixed-xray-receipt",
-            "selected_fixed_target": require_selected,
+            "fixed_runtime_target": native_runtime_target,
+            "config_membership_ok": True,
+            "native_membership_ok": True,
+            "logical_group_native_membership_ok": True,
+            "vpn_global_now": "REJECT",
+            "vpn_global_selected_target": "REJECT",
+            "selected_fixed_target": False,
         },
     )
 
@@ -447,6 +463,7 @@ def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(monkeypatc
 
     callback = _fixed_xray_generation_callback(
         server_id="fixed-xray-receipt",
+        mihomo_target=mihomo_target,
         fixed_until=str(fixed["routing"]["fixed_server_until"]),
         token=token,
     )
@@ -455,7 +472,15 @@ def test_fixed_xray_generation_receipt_rebinds_changed_owner_snapshot(monkeypatc
         operation_id="owned-xray-generation-operation",
         expected_revision=generated_revision,
     )
-    assert receipt["ok"] is True, receipt
+    assert receipt["ok"] is expected_ok, receipt
+    if not expected_ok:
+        assert receipt["error_code"] == "FIXED_XRAY_MIHOMO_PROOF_FAILED"
+        assert "xray_generation_operation_id" not in token
+        with db_session() as connection:
+            pending = _load_row(connection)
+        assert pending["workflow"]["phase"] == "core_verified"
+        assert "xray_generation_operation_id" not in pending["workflow"]
+        return
     assert receipt["selection_revision"] == generated_revision
     assert receipt["fixed_pending_revision"] == fixed["pending_revision"]
     assert receipt["mihomo_input_sha256"] == input_fingerprint["value"]
@@ -1039,6 +1064,476 @@ def test_fixed_selection_stale_diagnostics_attribute_existing_fenced_paths(
         pending = _load_row(connection)
     assert pending is not None and pending["pending"] is True
     assert pending["workflow"]["phase"] in {"intent", "mihomo_reserved", "mihomo_generation_verified"}
+
+
+def test_fixed_apply_uses_real_membership_proof_to_select_from_reject(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The real verifier must admit a valid target when native selection is REJECT."""
+    import yaml
+
+    server_id = "fixed-real-membership-from-reject"
+    runtime_name = _seed_server(server_id, vpn_auto=False, global_list=False)
+    from fwrouter_api.services import (
+        core_intent, mihomo_config_paths, mihomo_config_status,
+        mihomo_reconcile, mihomo_runtime, server_global_selection,
+    )
+
+    active_config = tmp_path / "mihomo.yaml"
+    routing = {
+        "server_mode": "fixed",
+        "desired_fixed_server_id": server_id,
+        "applied_fixed_server_id": server_id,
+        "desired_mode": "selective",
+        "applied_mode": "selective",
+        "selective_default": "direct",
+    }
+    config = mihomo_config_service.build_mihomo_config(routing, xray_handoff_assignments=[])
+    active_config.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: active_config)
+    monkeypatch.setattr(mihomo_config_status, "_resolved_base_config_path", lambda: active_config)
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "real-proof-runtime")
+    monkeypatch.setattr(
+        mihomo_reconcile, "current_mihomo_input_fingerprint",
+        lambda _routing: {"hash": "a" * 64},
+    )
+
+    state = {"vpn-global": "REJECT"}
+
+    def health():
+        groups = {
+            str(group.get("name")): list(group.get("proxies") or [])
+            for group in config.get("proxy-groups", [])
+            if isinstance(group, dict)
+        }
+        return SimpleNamespace(
+            runtime_state="running",
+            active_server_id=state["vpn-global"],
+            details={"selectors": {
+                "vpn_global_exists": True,
+                "vpn_global_has_vpn_auto": "vpn-auto" in groups.get("vpn-global", []),
+                "vpn_global_targets": groups.get("vpn-global", []),
+                "vpn_auto_targets": groups.get("vpn-auto", []),
+                "vpn_global_now": state["vpn-global"],
+                "vpn_global_selected_target": state["vpn-global"],
+            }},
+        )
+
+    native_calls: list[tuple[str, str]] = []
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+
+    def apply_selector(selector: str, target: str) -> MihomoApplyResult:
+        native_calls.append((selector, target))
+        state[selector] = target
+        # Force the existing post-write owner fence to stop before intermediate
+        # publication; the assertion below is about reaching this native boundary.
+        with db_session() as connection:
+            revision = read_selection_revision(connection)
+            advance_selection_revision(connection, expected_revision=revision)
+        return MihomoApplyResult(ok=True, message="synthetic Mihomo transport", active_server_id=target)
+
+    monkeypatch.setattr(DEFAULT_MIHOMO_ADAPTER, "health", health)
+    monkeypatch.setattr(DEFAULT_MIHOMO_ADAPTER, "get_active_server_id", lambda: state["vpn-global"])
+    monkeypatch.setattr(DEFAULT_MIHOMO_ADAPTER, "apply_server_to_selector", apply_selector)
+
+    strict_proof = mihomo_config_status.mihomo_runtime_fixed_target_materialized(
+        routing, require_selected=True,
+    )
+    assert strict_proof["native_membership_ok"] is True, strict_proof
+    assert strict_proof["selected_fixed_target"] is False, strict_proof
+    assert strict_proof["ok"] is False, strict_proof
+
+    def generation_unchanged(routing, *, token, job_id):
+        del routing
+        revision = token["selection_revision"]
+        fence = {
+            "schema": "mihomo-reentry-generation-fence/v1",
+            "operation_id": "real-proof-no-change-operation",
+            "job_id": job_id,
+            "before_revision": revision,
+            "selection_revision": revision,
+            "runtime_incarnation": token["runtime_incarnation"],
+            "active_config_hash": token["active_config_hash"],
+            "native_proof_verified": True,
+            "publication_verified": True,
+            "unchanged_config": True,
+        }
+        return {
+            "ok": True,
+            "operation_id": fence["operation_id"],
+            "job_id": job_id,
+            "reentry_generation_fence": fence,
+        }
+
+    monkeypatch.setattr(server_global_selection, "_materialize_fixed_server_generation", generation_unchanged)
+    monkeypatch.setattr(
+        "fwrouter_api.services.server_ping.check_server_delay",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    result = apply_global_fixed_server(server_id, requested_by="pytest")
+
+    # The controlled revision race is after the fake native PUT. This keeps the
+    # test focused on admission while preserving the production owner fence.
+    assert native_calls == [("vpn-global", runtime_name)]
+    assert state["vpn-global"] == runtime_name
+    assert result["error_code"] == "GLOBAL_FIXED_SERVER_STALE"
+    assert result["fixed_selection_stage"] == "owner_fence_after_selection"
+    routing_after = get_routing_global_state(expire_ttl=False)
+    assert routing_after["desired_fixed_server_id"] == server_id
+    assert routing_after["applied_fixed_server_id"] is None
+    assert routing_after["apply_state"] == "pending"
+
+
+@pytest.mark.parametrize(
+    "race", [
+        None, "receipt_before", "receipt_after", "auto_before_put", "auto_after_put",
+        "core_before", "core_after", "core_unknown",
+        "core_receipt_before", "core_receipt_after",
+    ],
+)
+def test_xray_verified_resume_restores_only_exact_owned_reject_selection(
+    monkeypatch, race: str | None,
+) -> None:
+    """The fixed owner may reselect only after its Xray receipt is durable."""
+    from fwrouter_api.services import server_global_selection
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    server_id = f"fixed-xray-reentry-{race or 'clean'}"
+    runtime_name = _seed_server(server_id, vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server(server_id, requested_by="pytest")
+    assert fixed["ok"] is True
+    revision = fixed["pending_revision"]
+    selection_revision = fixed["selection_revision"]
+    xray_fields = {
+        "phase": "xray_verified",
+        "selection_revision": selection_revision,
+        "server_id": server_id,
+        "fixed_until": fixed["routing"]["fixed_server_until"],
+        "core_apply_id": "owned-core-apply",
+        "core_manifest_hash": "f" * 64,
+        "core_enforcement_level": "global_selective_enforced",
+        "core_live_mode": "selective",
+        "xray_generation_operation_id": "owned-xray-generation-op",
+        "xray_generation_mihomo_input_sha256": "a" * 64,
+        "xray_generation_mihomo_config_sha256": "b" * 64,
+        "xray_generation_mihomo_runtime_incarnation": "mihomo-after-xray",
+        "xray_state": "verified",
+        "xray_runtime_incarnation": "xray-incarnation",
+        "xray_config_sha256": "c" * 64,
+        "xray_artifact_sha256": "e" * 64,
+    }
+    assert server_global_selection._update_fixed_workflow(revision, **xray_fields) is not None
+    token = {
+        "selection_revision": selection_revision,
+        "pending_revision": revision,
+        "input_hash": xray_fields["xray_generation_mihomo_input_sha256"],
+        "active_config_hash": xray_fields["xray_generation_mihomo_config_sha256"],
+        "runtime_incarnation": xray_fields["xray_generation_mihomo_runtime_incarnation"],
+    }
+    workflow = server_global_selection._fixed_workflow_current(revision)
+    assert workflow is not None
+
+    effects: list[tuple[str, str]] = []
+    selector_state = {"current": "REJECT"}
+    proof_calls = 0
+    core_proof_calls = 0
+    real_workflow_current = server_global_selection._fixed_workflow_current
+
+    def owned_workflow_matches(expected_revision: int) -> dict[str, Any] | None:
+        current = real_workflow_current(expected_revision)
+        if race == "receipt_before" and current is not None and not effects:
+            server_global_selection._update_fixed_workflow(
+                expected_revision, xray_generation_operation_id="foreign-op",
+            )
+            return real_workflow_current(expected_revision)
+        if race == "core_receipt_before" and current is not None and not effects:
+            server_global_selection._update_fixed_workflow(
+                expected_revision, core_apply_id="foreign-core-apply",
+            )
+            return real_workflow_current(expected_revision)
+        if race == "receipt_after" and effects:
+            server_global_selection._update_fixed_workflow(
+                expected_revision, xray_generation_operation_id="foreign-op",
+            )
+            return real_workflow_current(expected_revision)
+        if race == "core_receipt_after" and effects:
+            server_global_selection._update_fixed_workflow(
+                expected_revision, core_apply_id="foreign-core-apply",
+            )
+            return real_workflow_current(expected_revision)
+        return current
+
+    monkeypatch.setattr(server_global_selection, "_fixed_workflow_current", owned_workflow_matches)
+    monkeypatch.setattr(server_global_selection, "_fixed_apply_token_matches", lambda **_kwargs: True)
+    monkeypatch.setattr(server_global_selection, "_fixed_xray_readback", lambda: {
+        "state": "verified",
+        "runtime_incarnation": xray_fields["xray_runtime_incarnation"],
+        "active_config_sha256": xray_fields["xray_config_sha256"],
+        "artifact_sha256": xray_fields["xray_artifact_sha256"],
+    })
+
+    def core_readback() -> dict[str, Any]:
+        nonlocal core_proof_calls
+        core_proof_calls += 1
+        valid = race not in {"core_before", "core_unknown"} or core_proof_calls > 1
+        if race == "core_after" and core_proof_calls >= 3:
+            valid = False
+        return {
+            "ok": False if race == "core_unknown" and core_proof_calls == 1 else valid,
+            "apply_id": xray_fields["core_apply_id"] if valid else "foreign-core-apply",
+            "manifest_hash": xray_fields["core_manifest_hash"] if valid else "0" * 64,
+            "enforcement_level": xray_fields["core_enforcement_level"],
+            "live_global_mode": xray_fields["core_live_mode"],
+        }
+
+    monkeypatch.setattr(server_global_selection, "_fixed_core_readback", core_readback)
+
+    def materialized(_routing, *, require_selected=False):
+        nonlocal proof_calls
+        proof_calls += 1
+        is_selected = selector_state["current"] == runtime_name
+        return {
+            "ok": is_selected if require_selected else selector_state["current"] in {"REJECT", runtime_name},
+            "fixed_runtime_target": runtime_name,
+            "config_membership_ok": True,
+            "native_membership_ok": True,
+            "logical_group_native_membership_ok": True,
+            "vpn_global_now": selector_state["current"],
+            "selected_fixed_target": is_selected,
+        }
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config_status.mihomo_runtime_fixed_target_materialized",
+        materialized,
+    )
+
+    def apply_selector(selector: str, target: str) -> MihomoApplyResult:
+        effects.append((selector, target))
+        selector_state["current"] = target
+        if race == "auto_after_put":
+            assert clear_global_fixed_server(requested_by="pytest-auto-race")["ok"] is True
+        return MihomoApplyResult(ok=True, message="synthetic Mihomo selector transport", active_server_id=target)
+
+    monkeypatch.setattr(DEFAULT_MIHOMO_ADAPTER, "apply_server_to_selector", apply_selector)
+    if race == "receipt_before":
+        # Corrupt the exact receipt before the helper performs its first owner read.
+        server_global_selection._update_fixed_workflow(
+            revision, xray_generation_operation_id="foreign-op",
+        )
+    elif race == "core_receipt_before":
+        server_global_selection._update_fixed_workflow(
+            revision, core_apply_id="foreign-core-apply",
+        )
+    elif race == "auto_before_put":
+        assert clear_global_fixed_server(requested_by="pytest-auto-race")["ok"] is True
+
+    result = server_global_selection._restore_fixed_selection_after_xray_generation(
+        server_id=server_id,
+        mihomo_target=runtime_name,
+        fixed_until=str(fixed["routing"]["fixed_server_until"]),
+        token=token,
+        workflow=workflow,
+    )
+    with db_session() as connection:
+        pending = _load_row(connection)
+
+    if race:
+        assert result["ok"] is False
+        assert effects == [] if race in {
+            "receipt_before", "core_receipt_before", "auto_before_put", "core_before", "core_unknown",
+        } else effects == [("vpn-global", runtime_name)]
+        assert pending["pending"] is True
+        if race.startswith("receipt_"):
+            assert pending["workflow"]["phase"] == "xray_verified"
+            assert pending["workflow"]["xray_generation_operation_id"] == "foreign-op"
+        elif race.startswith("core_receipt_"):
+            assert pending["workflow"]["phase"] == "xray_verified"
+            assert pending["workflow"]["core_apply_id"] == "foreign-core-apply"
+        elif race.startswith("core_"):
+            assert pending["workflow"]["phase"] == "xray_verified"
+            assert pending["workflow"]["core_apply_id"] == "owned-core-apply"
+        else:
+            assert pending.get("workflow") is None
+            assert get_routing_global_state(expire_ttl=False)["server_mode"] == "auto"
+    else:
+        assert result["ok"] is True, result
+        assert result["proof"]["selected_fixed_target"] is True
+        assert effects == [("vpn-global", runtime_name)]
+        assert pending["pending"] is True
+        assert pending["workflow"]["phase"] == "xray_verified"
+        assert pending["workflow"]["xray_generation_operation_id"] == "owned-xray-generation-op"
+    assert proof_calls == (
+        0 if race in {
+            "receipt_before", "core_receipt_before", "auto_before_put", "core_before", "core_unknown",
+        } else 2
+    )
+
+
+def test_core_verified_reentry_does_not_restore_unproven_xray_generation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A crash before the Xray receipt phase leaves REJECT pending and untouched."""
+    from fwrouter_api.services import (
+        core_intent, mihomo_config_paths, mihomo_reconcile, mihomo_runtime,
+        server_global_selection,
+    )
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    server_id = "fixed-core-verified-unproven-xray"
+    runtime_name = _seed_server(server_id, vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server(server_id, requested_by="pytest")
+    revision = fixed["pending_revision"]
+    active_config = tmp_path / "active-mihomo.yaml"
+    active_config.write_text("fixed: generated\n", encoding="utf-8")
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: active_config)
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "resume-runtime")
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(
+        mihomo_reconcile, "current_mihomo_input_fingerprint",
+        lambda _routing: {"hash": "a" * 64},
+    )
+    core_snapshot = ("enabled", "managed", "clean")
+    workflow = server_global_selection._update_fixed_workflow(
+        revision,
+        phase="core_verified",
+        selection_revision=fixed["selection_revision"],
+        server_id=server_id,
+        fixed_until=fixed["routing"]["fixed_server_until"],
+        core_snapshot=list(core_snapshot),
+        mihomo_generation_mode="unchanged",
+    )
+    assert workflow is not None
+    token = server_global_selection._capture_fixed_apply_context(fixed["routing"])
+    assert token is not None
+    assert token["fixed_workflow_phase"] == "core_verified"
+    status_calls: list[bool] = []
+    native_calls: list[tuple[str, str]] = []
+
+    def reject_status(_routing, *, require_selected=False):
+        status_calls.append(require_selected)
+        return {
+            "ok": not require_selected,
+            "fixed_runtime_target": runtime_name,
+            "config_membership_ok": True,
+            "native_membership_ok": True,
+            "logical_group_native_membership_ok": True,
+            "vpn_global_now": "REJECT",
+            "selected_fixed_target": False,
+        }
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config_status.mihomo_runtime_fixed_target_materialized",
+        reject_status,
+    )
+    monkeypatch.setattr(
+        DEFAULT_MIHOMO_ADAPTER,
+        "get_active_server_id",
+        lambda: "REJECT",
+    )
+
+    def unexpected_native_apply(selector: str, target: str) -> MihomoApplyResult:
+        native_calls.append((selector, target))
+        return MihomoApplyResult(ok=True, message="unexpected", active_server_id=target)
+
+    monkeypatch.setattr(DEFAULT_MIHOMO_ADAPTER, "apply_server_to_selector", unexpected_native_apply)
+    monkeypatch.setattr(
+        server_global_selection,
+        "_materialize_fixed_server_generation",
+        lambda _routing, *, token, job_id: {
+            "ok": True,
+            "operation_id": "unchanged-operation",
+            "job_id": job_id,
+            "reentry_generation_fence": {
+                "schema": "mihomo-reentry-generation-fence/v1",
+                "operation_id": "unchanged-operation",
+                "job_id": job_id,
+                "before_revision": token["selection_revision"],
+                "selection_revision": token["selection_revision"],
+                "runtime_incarnation": token["runtime_incarnation"],
+                "active_config_hash": token["active_config_hash"],
+                "native_proof_verified": True,
+                "publication_verified": True,
+                "unchanged_config": True,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.server_ping.check_server_delay",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        server_global_selection, "_restore_fixed_selection_after_xray_generation",
+        lambda **_kwargs: pytest.fail("core_verified without an Xray receipt cannot restore REJECT"),
+    )
+
+    result = apply_global_fixed_server(
+        server_id, requested_by="pytest", _resume_workflow=workflow,
+    )
+    with db_session() as connection:
+        pending = _load_row(connection)
+        routing = dict(connection.execute(
+            "SELECT applied_fixed_server_id, apply_state FROM routing_global_state WHERE id=1",
+        ).fetchone())
+    assert result["ok"] is False
+    assert result["error_code"] == "GLOBAL_FIXED_SERVER_STALE"
+    assert status_calls == [False, True]
+    assert native_calls == []
+    assert pending["pending"] is True
+    assert pending["workflow"]["phase"] == "core_verified"
+    assert "xray_generation_operation_id" not in pending["workflow"]
+    assert routing == {"applied_fixed_server_id": None, "apply_state": "pending"}
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_phase"),
+    [("core_verified", "core_verified"), ("xray_verified", "xray_verified"), ("unknown_phase", None)],
+)
+def test_fixed_context_preserves_only_known_unchanged_generation_phases(
+    monkeypatch, tmp_path: Path, phase: str, expected_phase: str | None,
+) -> None:
+    from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_reconcile, mihomo_runtime
+    from fwrouter_api.services.server_global_selection import (
+        _capture_fixed_apply_context, _update_fixed_workflow,
+    )
+
+    server_id = f"fixed-phase-context-{phase}"
+    _seed_server(server_id, vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server(server_id, requested_by="pytest")
+    active_config = tmp_path / "active-mihomo.yaml"
+    active_config.write_text("fixed: unchanged\n", encoding="utf-8")
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: active_config)
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "phase-runtime")
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(
+        mihomo_reconcile, "current_mihomo_input_fingerprint",
+        lambda _routing: {"hash": "a" * 64},
+    )
+    assert _update_fixed_workflow(
+        fixed["pending_revision"],
+        phase=phase,
+        selection_revision=fixed["selection_revision"],
+        server_id=server_id,
+        fixed_until=fixed["routing"]["fixed_server_until"],
+        mihomo_generation_mode="unchanged",
+    ) is not None
+
+    token = _capture_fixed_apply_context(fixed["routing"])
+    if expected_phase is None:
+        assert token is None
+    else:
+        assert token is not None
+        assert token["fixed_workflow_phase"] == expected_phase
 
 
 @pytest.mark.parametrize("receipt_case", ["missing", "wrong_operation"])

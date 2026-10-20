@@ -262,3 +262,13 @@ retains pending/failed intent and existing recovery/last-good protections.
 
 This section describes the approved implementation contract, not completed
 native qualification, merge or production acceptance.
+
+The fixed Xray generation callback proves exact fail-closed REJECT/unselected
+Mihomo membership after its owned restart; it does not claim final fixed
+selection. It binds the captured runtime target separately from logical server
+identity. Only the still-pending `xray_verified` workflow with an exact durable
+Xray receipt may restore selection through the fixed owner, with fresh Core,
+Xray, Mihomo and revision proofs before and after the selector effect. Earlier
+interrupted phases without sufficient receipt remain blocked without a native
+write. Final strict selected-target proof and completion CAS remain mandatory.
+Native qualification of this correction is pending.

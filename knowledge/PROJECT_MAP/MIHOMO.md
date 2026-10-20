@@ -260,3 +260,7 @@ Final workflow completion commits before cleanup of its exact own checkpoint.
 A retained protected orphan is not a new operation's proof. Raw checkpoint
 contents and private paths are not public pending-state data. This section is a
 source contract under qualification, not a deployment or native PASS claim.
+
+### Fixed selector membership versus selection proof
+
+Fixed native membership is independent of the requested selected target: a proven `{REJECT, fixed runtime target}` selector may legitimately remain on REJECT before the owned selector write. `require_selected=True` still requires the target to be selected for overall proof success; a valid membership result alone never completes the fixed job or legacy admission. Logical server identity and resolved native runtime name are separate domains and must remain bound by the captured generation/source fences. Native qualification of this correction is pending.

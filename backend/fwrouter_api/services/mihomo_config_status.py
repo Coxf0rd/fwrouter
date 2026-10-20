@@ -255,7 +255,7 @@ def mihomo_runtime_fixed_target_materialized(
         and current_global in native_global
         and (
             current_global == target
-            or (not require_selected and current_global == "REJECT")
+            or current_global == "REJECT"
         )
     )
     selected_ok = current_global == target

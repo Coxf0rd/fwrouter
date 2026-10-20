@@ -237,10 +237,11 @@ def _capture_fixed_apply_context(routing: dict[str, Any]) -> dict[str, Any] | No
         "input_hash": str(fingerprint["hash"]),
         "active_config_hash": _file_hash(_resolved_base_config_path()),
     }
+    if phase != "intent":
+        token["fixed_workflow_phase"] = phase
     if isinstance(generation_reservation, dict):
         token["mihomo_generation_reservation"] = dict(generation_reservation)
         token["source_selection_revision"] = int(generation_reservation["before_revision"])
-        token["fixed_workflow_phase"] = phase
     if isinstance(generation_receipt, dict):
         token["mihomo_generation_receipt"] = dict(generation_receipt)
     return token
@@ -620,7 +621,9 @@ def _materialize_fixed_server_generation(
             or token.get("selection_revision") != receipt.get("selection_revision")
         ):
             return {"ok": False, "stage": "generation_resume_receipt", "error_code": "MIHOMO_GENERATION_RECEIPT_INVALID"}
-        selected = phase in {"mihomo_verified", "core_verified", "xray_verified"}
+        # A recorded Xray generation may have recreated Mihomo at REJECT.
+        # Its fixed selection is restored by the still-pending fixed owner.
+        selected = phase in {"mihomo_verified", "core_verified"}
         proof = mihomo_runtime_fixed_target_materialized(routing, require_selected=selected)
         if (
             not proof.get("ok")
@@ -940,7 +943,7 @@ def _fixed_core_readback() -> dict[str, Any]:
 
 
 def _fixed_xray_generation_callback(
-    *, server_id: str, fixed_until: str, token: dict[str, Any],
+    *, server_id: str, mihomo_target: str, fixed_until: str, token: dict[str, Any],
 ):
     """Bind an Xray generation's Mihomo restart receipt to this fixed intent."""
     from fwrouter_api.adapters.xray_common import xray_writer_guard
@@ -953,19 +956,28 @@ def _fixed_xray_generation_callback(
     from fwrouter_api.services.xray_vpn_auto_pending import _load_row, _save_if_revision
 
     def verify(*, operation_id: str, expected_selection_revision: int) -> dict[str, Any]:
-        if not isinstance(operation_id, str) or not operation_id or type(expected_selection_revision) is not int:
+        if (
+            not isinstance(operation_id, str) or not operation_id
+            or type(expected_selection_revision) is not int
+            or not isinstance(mihomo_target, str) or not mihomo_target
+        ):
             return {"ok": False, "error_code": "FIXED_XRAY_GENERATION_RECEIPT_INVALID"}
         with xray_writer_guard(timeout_seconds=30.0):
             routing = get_routing_global_state(expire_ttl=False)
             if not isinstance(routing, dict):
                 return {"ok": False, "error_code": "FIXED_XRAY_ROUTING_UNAVAILABLE"}
-            native = mihomo_runtime_fixed_target_materialized(routing, require_selected=True)
+            # Xray-owned Mihomo restart verification is a membership proof at
+            # the fail-closed REJECT selector state. The fixed job restores its
+            # captured target after this generation is durably published.
+            native = mihomo_runtime_fixed_target_materialized(routing)
             core_context = read_core_runtime_context()
             runtime_incarnation = get_mihomo_runtime_incarnation(timeout_seconds=5.0)
             config_hash = _file_hash(_resolved_base_config_path())
             input_fingerprint = current_mihomo_input_fingerprint(routing)
             if (
-                not native.get("ok") or native.get("fixed_runtime_target") != server_id
+                not native.get("ok") or native.get("fixed_runtime_target") != mihomo_target
+                or native.get("vpn_global_now") != "REJECT"
+                or native.get("selected_fixed_target") is not False
                 or routing.get("server_mode") != "fixed"
                 or routing.get("desired_fixed_server_id") != server_id
                 or routing.get("applied_fixed_server_id") != server_id
@@ -1043,11 +1055,6 @@ def _fixed_xray_generation_callback(
                 "ok": True,
                 "operation_id": operation_id,
                 "selection_revision": expected_selection_revision,
-                "config_membership_ok": True,
-                "native_membership_ok": True,
-                "logical_group_native_membership_ok": True,
-                "vpn_global_now": native.get("vpn_global_now"),
-                "selected_fixed_target": True,
             }
 
     return verify
@@ -1082,6 +1089,133 @@ def _fixed_xray_generation_receipt_matches(
             if container.get("selection_revision") != token.get("selection_revision"):
                 return False
     return True
+
+
+def _restore_fixed_selection_after_xray_generation(
+    *, server_id: str, mihomo_target: str, fixed_until: str,
+    token: dict[str, Any], workflow: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-enter the fixed owner after its recorded Xray generation reset Mihomo."""
+    from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER, MihomoApplyResult
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.services.mihomo_config_status import mihomo_runtime_fixed_target_materialized
+
+    receipt_keys = (
+        "phase", "selection_revision", "server_id", "fixed_until",
+        "core_apply_id", "core_manifest_hash", "core_enforcement_level", "core_live_mode",
+        "xray_generation_operation_id", "xray_generation_mihomo_input_sha256",
+        "xray_generation_mihomo_config_sha256", "xray_generation_mihomo_runtime_incarnation",
+        "xray_state", "xray_runtime_incarnation", "xray_config_sha256", "xray_artifact_sha256",
+    )
+    expected_workflow = {key: workflow.get(key) for key in receipt_keys}
+    if (
+        workflow.get("phase") != "xray_verified"
+        or workflow.get("server_id") != server_id
+        or workflow.get("fixed_until") != fixed_until
+        or not isinstance(workflow.get("xray_generation_operation_id"), str)
+        or not workflow.get("xray_generation_operation_id")
+        or workflow.get("xray_state") != "verified"
+        or workflow.get("xray_generation_mihomo_input_sha256") != token.get("input_hash")
+        or workflow.get("xray_generation_mihomo_config_sha256") != token.get("active_config_hash")
+        or workflow.get("xray_generation_mihomo_runtime_incarnation") != token.get("runtime_incarnation")
+        or token.get("selection_revision") != workflow.get("selection_revision")
+    ):
+        return {"ok": False, "error_code": "GLOBAL_FIXED_SERVER_STALE"}
+
+    def xray_owner_proof_matches() -> bool:
+        proof = _fixed_xray_readback()
+        return bool(
+            proof.get("state") == workflow.get("xray_state")
+            and proof.get("runtime_incarnation") == workflow.get("xray_runtime_incarnation")
+            and proof.get("active_config_sha256") == workflow.get("xray_config_sha256")
+            and proof.get("artifact_sha256") == workflow.get("xray_artifact_sha256")
+        )
+
+    def core_owner_proof_matches(expected_workflow: dict[str, Any]) -> bool:
+        expected = {
+            "apply_id": expected_workflow.get("core_apply_id"),
+            "manifest_hash": expected_workflow.get("core_manifest_hash"),
+            "enforcement_level": expected_workflow.get("core_enforcement_level"),
+            "live_global_mode": expected_workflow.get("core_live_mode"),
+        }
+        if any(not isinstance(value, str) or not value for value in expected.values()):
+            return False
+        proof = _fixed_core_readback()
+        return bool(
+            proof.get("ok") is True
+            and all(proof.get(key) == value for key, value in expected.items())
+        )
+
+    with xray_writer_guard(timeout_seconds=30.0):
+        current_workflow = _fixed_workflow_current(int(token.get("pending_revision") or -1))
+        if (
+            current_workflow is None
+            or {key: current_workflow.get(key) for key in receipt_keys} != expected_workflow
+            or not _fixed_apply_token_matches(
+                server_id=server_id, fixed_until=fixed_until, token=token,
+            )
+            or not xray_owner_proof_matches()
+            or not core_owner_proof_matches(expected_workflow)
+        ):
+            return {"ok": False, "error_code": "GLOBAL_FIXED_SERVER_STALE"}
+
+        routing = get_routing_global_state(expire_ttl=False)
+        if not isinstance(routing, dict):
+            return {"ok": False, "error_code": "GLOBAL_FIXED_SERVER_STALE"}
+        membership = mihomo_runtime_fixed_target_materialized(routing)
+        if (
+            membership.get("ok") is not True
+            or membership.get("fixed_runtime_target") != mihomo_target
+            or membership.get("vpn_global_now") not in {"REJECT", mihomo_target}
+        ):
+            return {"ok": False, "error_code": "GLOBAL_FIXED_SERVER_NATIVE_PROOF_FAILED"}
+
+        # Recheck Core and the exact durable owner immediately before the
+        # selector effect. The first checks above can be separated from this
+        # point by native membership readback.
+        current_workflow = _fixed_workflow_current(int(token.get("pending_revision") or -1))
+        if (
+            current_workflow is None
+            or {key: current_workflow.get(key) for key in receipt_keys} != expected_workflow
+            or not _fixed_apply_token_matches(
+                server_id=server_id, fixed_until=fixed_until, token=token,
+            )
+            or not xray_owner_proof_matches()
+            or not core_owner_proof_matches(expected_workflow)
+        ):
+            return {"ok": False, "error_code": "GLOBAL_FIXED_SERVER_STALE"}
+
+        if membership.get("vpn_global_now") == "REJECT":
+            apply_result = DEFAULT_MIHOMO_ADAPTER.apply_server_to_selector("vpn-global", mihomo_target)
+            if not apply_result.ok:
+                return {
+                    "ok": False,
+                    "error_code": apply_result.error_code or "GLOBAL_FIXED_SERVER_NATIVE_PROOF_FAILED",
+                    "apply_result": apply_result.to_dict(),
+                }
+        else:
+            apply_result = MihomoApplyResult(
+                ok=True,
+                message="Recorded Xray generation already has the fixed target selected.",
+                active_server_id=mihomo_target,
+                details={"reentry_without_native_write": True},
+            )
+
+        selected = mihomo_runtime_fixed_target_materialized(routing, require_selected=True)
+        current_workflow = _fixed_workflow_current(int(token.get("pending_revision") or -1))
+        if (
+            selected.get("ok") is not True
+            or selected.get("fixed_runtime_target") != mihomo_target
+            or not _fixed_apply_token_matches(
+                server_id=server_id, fixed_until=fixed_until, token=token,
+            )
+            or current_workflow is None
+            or {key: current_workflow.get(key) for key in receipt_keys} != expected_workflow
+            or not xray_owner_proof_matches()
+            or not core_owner_proof_matches(expected_workflow)
+        ):
+            return {"ok": False, "error_code": "GLOBAL_FIXED_SERVER_STALE"}
+        return {"ok": True, "proof": selected, "apply_result": apply_result}
 
 
 def _commit_fixed_mihomo_stage(
@@ -1663,6 +1797,10 @@ def apply_global_fixed_server(
             "error_code": "GLOBAL_FIXED_SERVER_WORKFLOW_STALE",
             "error_message": "Durable fixed workflow marker is missing or superseded.",
         }
+    xray_selection_reentry = bool(
+        phase_at_entry == "xray_verified"
+        and workflow.get("xray_generation_operation_id")
+    )
 
     materialized = _materialize_fixed_server_generation(
         desired["routing"], token=token, job_id=job_id or "global-fixed-server",
@@ -1790,7 +1928,7 @@ def apply_global_fixed_server(
             apply_result = None
             stale_before_native = True
             selected_proof = None
-        elif fixed_stage_already_committed:
+        elif fixed_stage_already_committed and not xray_selection_reentry:
             selected_proof = mihomo_runtime_fixed_target_materialized(
                 get_routing_global_state(expire_ttl=False) or {}, require_selected=True,
             )
@@ -1810,6 +1948,18 @@ def apply_global_fixed_server(
                 )
                 if not stale_before_native else None
             )
+        elif xray_selection_reentry:
+            restored = _restore_fixed_selection_after_xray_generation(
+                server_id=server_id,
+                mihomo_target=mihomo_target,
+                fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+                token=token,
+                workflow=workflow,
+            )
+            stale_before_native = restored.get("ok") is not True
+            selected_proof = restored.get("proof") if isinstance(restored.get("proof"), dict) else None
+            fixed_selection_proof = selected_proof
+            apply_result = restored.get("apply_result")
         else:
             current_proof = mihomo_runtime_fixed_target_materialized(desired["routing"])
             if not current_proof.get("ok") or current_proof.get("fixed_runtime_target") != mihomo_target:
@@ -2109,6 +2259,7 @@ def apply_global_fixed_server(
             _fixed_workflow_revision=pending_revision,
             verification_callback=_fixed_xray_generation_callback(
                 server_id=server_id,
+                mihomo_target=mihomo_target,
                 fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
                 token=token,
             ),
@@ -2160,6 +2311,28 @@ def apply_global_fixed_server(
             "error_code": "GLOBAL_FIXED_SERVER_STALE",
             "error_message": "Durable fixed workflow changed before Xray proof publication.",
         }
+
+    if xray_apply_result is not None and workflow.get("xray_generation_operation_id"):
+        selection_restore = _restore_fixed_selection_after_xray_generation(
+            server_id=server_id,
+            mihomo_target=mihomo_target,
+            fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
+            token=token,
+            workflow=workflow,
+        )
+        if selection_restore.get("ok") is not True:
+            return {
+                "ok": False, "requested_by": requested_by, "server_id": server_id,
+                "routing_before": previous_state,
+                "routing_after": get_routing_global_state(expire_ttl=False),
+                "server": validation["server"], "pre_check": pre_check,
+                "apply_result": apply_result.to_dict(), "post_check": post_check_result,
+                "fixed_materialization_proof": selection_restore.get("proof"),
+                "rolled_back": False, "post_check_failed_no_rollback": False,
+                "error_code": str(selection_restore.get("error_code") or "GLOBAL_FIXED_SERVER_STALE"),
+                "error_message": "Fixed selection could not be rebound after the owned Xray generation.",
+                "xray_native_proof": xray_proof,
+            }
 
     generation_reservation = workflow.get("mihomo_generation_reservation")
 
