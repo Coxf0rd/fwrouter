@@ -1603,6 +1603,49 @@ def test_fixed_xray_stage_candidates_keep_fixed_selector_membership(monkeypatch,
     ordinary_checkpoint.unlink()
 
 
+def test_ordinary_fixed_public_reconcile_blocks_disabled_core_before_native_stage(monkeypatch) -> None:
+    """Public startup owner rejects fixed routing when Core has no valid owner proof."""
+    from fwrouter_api.services import xray_subscription_service
+    from fwrouter_api.services.xray_vpn_auto_pending import _complete_revision_in_connection
+
+    server_id = "ordinary-fixed-disabled-core"
+    _seed_server(server_id, vpn_auto=False, global_list=False)
+    fixed = set_global_fixed_server(server_id, requested_by="pytest")
+    assert fixed["ok"] is True
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE routing_global_state SET applied_fixed_server_id=?, apply_state='clean' WHERE id=1",
+            (server_id,),
+        )
+        connection.execute(
+            "UPDATE modules SET desired_state='disabled', lifecycle_mode='managed', apply_state='clean' "
+            "WHERE module_name='core'",
+        )
+        assert _complete_revision_in_connection(connection, fixed["pending_revision"])
+
+    class MustNotStage:
+        def stage_subscription_generation(self, **_kwargs):
+            pytest.fail("fixed generation must stop before native staging without Core proof")
+
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: MustNotStage())
+    result = xray_subscription_service.reconcile_xray_subscription_profile_nodes(requested_by="startup")
+
+    assert result["ok"] is False
+    assert result["status"] == "pending"
+    assert result["stage"] == "fixed_routing_snapshot"
+    assert result["runtime_verified"] is False
+    with db_session() as connection:
+        route = dict(connection.execute(
+            "SELECT desired_fixed_server_id, applied_fixed_server_id, apply_state "
+            "FROM routing_global_state WHERE id=1",
+        ).fetchone())
+    assert route == {
+        "desired_fixed_server_id": server_id,
+        "applied_fixed_server_id": server_id,
+        "apply_state": "clean",
+    }
+
+
 def test_fixed_xray_staged_apply_promotes_restarts_restores_and_publishes_outer_receipt(
     monkeypatch, tmp_path: Path,
 ) -> None:
@@ -1832,6 +1875,226 @@ def test_fixed_xray_staged_apply_promotes_restarts_restores_and_publishes_outer_
         pending = _load_row(connection)
     assert pending["workflow"]["xray_generation_operation_id"] == "fixed-xray-operation"
     assert pending["workflow"]["selection_revision"] == applied[-1]
+
+    # A subsequent normal fixed generation has no pending fixed workflow. It
+    # must reuse its captured route/Core proof and preserve the selector
+    # revision across both candidate effects.
+    from fwrouter_api.services.xray_vpn_auto_pending import _complete_revision_in_connection
+
+    with db_session() as connection:
+        assert _complete_revision_in_connection(connection, fixed["pending_revision"])
+    ordinary_context, ordinary_error = xray_subscription_service._capture_ordinary_fixed_xray_context()
+    assert ordinary_error is None
+    assert ordinary_context is not None
+    ordinary_context["source_fingerprint"] = xray_subscription_service._generation_source_fingerprint()
+    ordinary_revision = ordinary_context["selection_snapshot"]["selection_revision"]
+    assert ordinary_revision == applied[-1]
+
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+
+    stale_candidate = tmp_path / "ordinary-fixed-stale-candidate.yaml"
+    with db_session() as connection:
+        assert advance_selection_revision(connection, expected_revision=ordinary_revision) == ordinary_revision + 1
+    stale_result = xray_subscription_service._apply_staged_mihomo_candidate(
+        str(stale_candidate), "a" * 64,
+        candidate_input_fingerprint={"hash": "b" * 64},
+        fixed_routing_snapshot=snapshot,
+        expected_selection_revision=ordinary_revision,
+        ordinary_fixed_context=ordinary_context,
+    )
+    assert stale_result["ok"] is False
+    assert stale_result["error_code"] == "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"
+    assert stale_candidate.exists() is False
+
+    ordinary_context, ordinary_error = xray_subscription_service._capture_ordinary_fixed_xray_context()
+    assert ordinary_error is None and ordinary_context is not None
+    ordinary_context["source_fingerprint"] = xray_subscription_service._generation_source_fingerprint()
+    ordinary_revision = ordinary_context["selection_snapshot"]["selection_revision"]
+    with db_session() as connection:
+        connection.execute("UPDATE modules SET apply_state='failed' WHERE module_name='core'")
+    core_drift_result = xray_subscription_service._apply_staged_mihomo_candidate(
+        str(stale_candidate), "a" * 64,
+        candidate_input_fingerprint={"hash": "b" * 64},
+        fixed_routing_snapshot=snapshot,
+        expected_selection_revision=ordinary_revision,
+        ordinary_fixed_context=ordinary_context,
+    )
+    assert core_drift_result["ok"] is False
+    assert core_drift_result["error_code"] == "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"
+    assert stale_candidate.exists() is False
+    with db_session() as connection:
+        connection.execute("UPDATE modules SET apply_state='clean' WHERE module_name='core'")
+
+    ordinary_context, ordinary_error = xray_subscription_service._capture_ordinary_fixed_xray_context()
+    assert ordinary_error is None and ordinary_context is not None
+    ordinary_context["source_fingerprint"] = xray_subscription_service._generation_source_fingerprint()
+    ordinary_revision = ordinary_context["selection_snapshot"]["selection_revision"]
+
+    ordinary_applied = []
+    for label in ("ordinary-transition", "ordinary-final"):
+        staged = tmp_path / f"{label}.yaml"
+        payload = candidate_bytes(label)
+        staged.write_bytes(payload)
+        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint(snapshot)
+        with xray_writer_guard(timeout_seconds=5.0):
+            result = xray_subscription_service._apply_staged_mihomo_candidate(
+                str(staged), hashlib.sha256(payload).hexdigest(),
+                candidate_input_fingerprint={"hash": fingerprint["hash"]},
+                fixed_routing_snapshot=snapshot,
+                expected_selection_revision=ordinary_revision,
+                ordinary_fixed_context=ordinary_context,
+            )
+        assert result["ok"] is True, result
+        assert result["selection_revision"] == ordinary_revision
+        ordinary_applied.append(result["selection_revision"])
+        with db_session() as connection:
+            assert read_selection_revision(connection) == ordinary_revision
+        assert runtime_state["vpn-global"] == runtime_name
+    assert ordinary_applied == [ordinary_revision, ordinary_revision]
+
+    # The finalizer must re-prove the ordinary fixed Core owner after staged
+    # Mihomo effects and before its durable receipt/publication boundaries.
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+
+    xray_config_path = tmp_path / "ordinary-fixed-xray.json"
+    xray_config_path.write_text("ordinary-fixed-xray-candidate", encoding="utf-8")
+    xray_config_sha = hashlib.sha256(xray_config_path.read_bytes()).hexdigest()
+    active_mihomo_sha = hashlib.sha256(active_path.read_bytes()).hexdigest()
+    core_runtime_fingerprint = ordinary_context["core_runtime_fingerprint"]
+    core_proof_snapshot = ordinary_context["core_proof"]
+    source_snapshot = xray_subscription_service._generation_source_fingerprint()
+
+    class FinalizerAdapter:
+        config_path = xray_config_path
+
+        @staticmethod
+        def get_runtime_incarnation():
+            return "ordinary-fixed-xray-runtime"
+
+        @staticmethod
+        def get_runtime_config_sha256():
+            return xray_config_sha
+
+        @staticmethod
+        def list_loaded_client_identities():
+            return []
+
+    def set_core_drift() -> None:
+        with db_session() as connection:
+            connection.execute("UPDATE modules SET apply_state='failed' WHERE module_name='core'")
+
+    def restore_core_clean() -> None:
+        with db_session() as connection:
+            connection.execute("UPDATE modules SET apply_state='clean' WHERE module_name='core'")
+
+    for boundary in ("receipt", "checkpoint_cleanup"):
+        generation_id = f"ordinary-fixed-finalize-{boundary}"
+        finalize_checkpoint = tmp_path / f"{generation_id}.json"
+        finalize_checkpoint.write_text(json.dumps({
+            "generation_id": generation_id,
+            "phase": "selection_verified",
+            "selection_verification_required": True,
+            "selection_revision": ordinary_revision,
+            "mihomo_runtime_incarnation": "fixed-runtime-proof",
+            "xray_runtime_incarnation_after": "ordinary-fixed-xray-runtime",
+            "derived_source_fingerprint": source_snapshot,
+            "fixed_routing_snapshot": ordinary_context["routing_snapshot"],
+            "auto_selection_after": ordinary_context["selection_snapshot"],
+            "ordinary_fixed_core_proof": core_proof_snapshot,
+            "ordinary_fixed_core_runtime_fingerprint": core_runtime_fingerprint,
+            "subscription_snapshots": {},
+            "staged_generation": {
+                "mihomo_final_sha256": active_mihomo_sha,
+                "xray_candidate_sha256": xray_config_sha,
+                "native_validation": {"xray": {"expected_client_identities": []}},
+            },
+        }), encoding="utf-8")
+        pending_publication = {
+            "checkpoint_path": str(finalize_checkpoint),
+            "adapter": FinalizerAdapter(),
+            "subscription_nodes": [],
+            "affected_profile_tokens": [],
+            "materialize": True,
+            "promote_public_profile": True,
+            "inventory_admission": object() if boundary == "checkpoint_cleanup" else None,
+            "result_values": {
+                "applied_transition": {"ok": True},
+                "applied_xray": SimpleNamespace(details={"ok": True}),
+                "applied_final_mihomo": {"ok": True},
+                "desired_nodes": [], "created": [], "deleted": [], "recreated": [],
+                "reconcile_details": {}, "materialize_result": {"ok": True},
+                "staged_generation": {
+                    "xray_candidate_sha256": xray_config_sha,
+                    "native_validation": {"xray": {"expected_client_identities": []}},
+                },
+            },
+        }
+
+        profile_promotions = []
+        monkeypatch.setattr(
+            xray_subscription_service, "promote_runtime_verified_subscription_nodes",
+            lambda *_args, **_kwargs: profile_promotions.append(True) or {
+                "profiles_count": 1, "nodes_count": 0,
+            },
+        )
+        if boundary == "checkpoint_cleanup":
+            from fwrouter_api.services import subscription as subscription_service
+
+            def promote_inventory(_admission):
+                set_core_drift()
+                return {"ok": True}
+
+            monkeypatch.setattr(
+                subscription_service, "_promote_subscription_inventory_generation", promote_inventory,
+            )
+            monkeypatch.setattr(
+                xray_subscription_service, "_publish_xray_generation_mihomo_udp_receipt",
+                lambda **_kwargs: True,
+            )
+        else:
+            from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+
+            receipt_writes = []
+            monkeypatch.setattr(
+                mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+                lambda *_args, **_kwargs: {"hash": "ordinary-fixed-input"},
+            )
+
+            def native_proof_with_core_drift():
+                set_core_drift()
+                return {
+                    "ok": True,
+                    "native_top_level_rules_match": True,
+                    "selector_membership_matches": True,
+                    "guarded_rules_match": True,
+                }
+
+            monkeypatch.setattr(
+                mihomo_reconcile, "_native_udp_policy_proof", native_proof_with_core_drift,
+            )
+            monkeypatch.setattr(
+                mihomo_reconcile_fingerprint, "write_mihomo_reconcile_fingerprint_state",
+                lambda **kwargs: receipt_writes.append(kwargs) or True,
+            )
+        with xray_writer_guard(timeout_seconds=5.0):
+            result = xray_subscription_service._finalize_xray_profile_publication(
+                pending_publication,
+                {"ok": True, "operation_id": generation_id, "selection_revision": ordinary_revision},
+            )
+        assert result["ok"] is False, (boundary, result)
+        assert result["status"] == "pending", (boundary, result)
+        assert result["runtime_verified"] is False, (boundary, result)
+        assert "last_good_retained" not in result, (boundary, result)
+        assert "staged_publication_receipt" not in result
+        assert finalize_checkpoint.exists(), boundary
+        if boundary == "receipt":
+            assert receipt_writes == []
+            assert profile_promotions == []
+        else:
+            # The test promoter is a no-write boundary double; stale Core
+            # proof must retain the owner checkpoint before it is unlinked.
+            assert len(profile_promotions) == 1
+        restore_core_clean()
 
 
 @pytest.mark.parametrize("stale_case", ["expired_ttl", "foreign_revision", "new_auto_selection"])

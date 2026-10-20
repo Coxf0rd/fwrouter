@@ -41,6 +41,8 @@ class _SubscriptionInventoryAdmission:
     proof_only_core_runtime_fingerprint: str | None = None
     proof_only_selection_revision: int | None = None
     proof_only_selection_decision_id: str | None = None
+    proof_only_selection_snapshot: dict[str, Any] | None = None
+    proof_only_routing_snapshot: dict[str, Any] | None = None
     proof_only_xray_incarnation: str | None = None
     proof_only_mihomo_incarnation: str | None = None
     proof_only_xray_config_sha256: str | None = None
@@ -360,8 +362,14 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
         current_mihomo_input_fingerprint, mihomo_input_unchanged,
         mihomo_udp_policy_receipt_matches,
     )
+    proof_routing_snapshot = (
+        admission.proof_only_routing_snapshot
+        if admission.proof_only_source_fingerprint is not None
+        and isinstance(admission.proof_only_routing_snapshot, dict)
+        else None
+    )
     try:
-        fingerprint = current_mihomo_input_fingerprint()
+        fingerprint = current_mihomo_input_fingerprint(proof_routing_snapshot)
     except Exception:
         return {"ok": False, "reason": "native_input_fingerprint_unavailable"}
     if not mihomo_udp_policy_receipt_matches() or not mihomo_input_unchanged(fingerprint):
@@ -395,6 +403,11 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
                 (admission.proof_only_core_apply_id,),
             ).fetchone()
             durable_fence = read_selection_fence(connection)
+            durable_routing = connection.execute(
+                "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
+                "active_auto_server_id, desired_mode, applied_mode, selective_default, apply_state, updated_at "
+                "FROM routing_global_state WHERE id=1",
+            ).fetchone()
             core_unavailable = _legacy_admission_core_unavailable_reason(connection)
             if core_unavailable is not None:
                 return {"ok": False, "reason": core_unavailable}
@@ -402,6 +415,8 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
                 _legacy_admission_source_fingerprint(connection) != admission.proof_only_source_fingerprint
                 or durable_fence.get("revision") != admission.proof_only_selection_revision
                 or durable_fence.get("decision_id") != admission.proof_only_selection_decision_id
+                or durable_routing is None
+                or dict(durable_routing) != admission.proof_only_routing_snapshot
                 or _legacy_admission_core_runtime_fingerprint(connection)
                 != admission.proof_only_core_runtime_fingerprint
                 or latest_apply is None or latest_apply["status"] != "applied"

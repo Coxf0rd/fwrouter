@@ -376,6 +376,7 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
         "mihomo_incarnation_match": True,
         "mihomo_active_config_match": True,
         "mihomo_input_fingerprint_match": True,
+        "mihomo_routing_snapshot_match": True,
         "core_runtime_fingerprint_match": True,
         "core_state_available": True,
         "core_native_proof_ok": True,
@@ -438,7 +439,7 @@ def test_acceptance_worker_proof_only_routes_use_real_service_owned_xray_helper(
     monkeypatch.setattr(xray_subscription_service, "_publish_legacy_admission_mihomo_receipt",
                         synthetic_legacy_publish)
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
-                        lambda: {"hash": fingerprint_hash})
+                        lambda _routing=None: {"hash": fingerprint_hash})
     def synthetic_native_udp_proof():
         native_proof_calls.append(True)
         return {
@@ -693,9 +694,7 @@ def test_acceptance_worker_xray_candidate_diagnostic_is_bounded_and_redacted(mon
 
 
 def _positive_synthetic_proof() -> dict[str, object]:
-    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
-    with db_session() as connection:
-        selection = read_selection_fence(connection)
+    selection = xray_subscription_service._capture_generation_auto_selection()
     return {
         "ok": True,
         "xray_config_match": True,
@@ -717,14 +716,93 @@ def _positive_synthetic_proof() -> dict[str, object]:
             "active_mode_matches_intent": True,
             "live_global_mode": "direct",
         },
-        "selection_revision": selection.get("revision"),
-        "selection_decision_id": selection.get("decision_id"),
+        "selection_revision": selection.get("selection_revision"),
+        "selection_decision_id": selection.get("selection_decision_id"),
+        "selection_snapshot": selection,
+        "routing_snapshot": selection.get("routing"),
         "xray_runtime_incarnation": "synthetic-xray-incarnation",
         "mihomo_runtime_incarnation": "synthetic-mihomo-incarnation",
         "xray_config_sha256": "1" * 64,
         "mihomo_config_sha256": "2" * 64,
         "mihomo_fingerprint_hash": "3" * 64,
     }
+
+
+def test_proof_only_receipt_publishes_with_captured_routing_projection(monkeypatch):
+    from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
+
+    _seed_legacy_inventory()
+    proof = _positive_synthetic_proof()
+    route = proof["routing_snapshot"]
+    observed_routes = []
+    written = []
+    monkeypatch.setattr(xray_subscription_service, "xray_writer_guard_is_held", lambda: True)
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_source_fingerprint",
+                        lambda _connection=None: proof["source_fingerprint"])
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: True)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda routing=None: (
+        observed_routes.append(routing) or {"hash": proof["mihomo_fingerprint_hash"]}
+    ))
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", lambda: {
+        "ok": True, "native_top_level_rules_match": True,
+        "selector_membership_matches": True, "guarded_rules_match": True,
+    })
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "write_mihomo_reconcile_fingerprint_state",
+                        lambda **kwargs: written.append(kwargs) or True)
+
+    assert xray_subscription_service._publish_legacy_admission_mihomo_receipt(proof, "a" * 32) is True
+    assert observed_routes == [route]
+    assert written and written[0]["fingerprint"]["hash"] == proof["mihomo_fingerprint_hash"]
+
+
+def test_proof_only_routing_projection_drift_blocks_receipt(monkeypatch):
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+
+    _seed_legacy_inventory()
+    proof = _positive_synthetic_proof()
+    expected = dict(proof["routing_snapshot"])
+    changed_selection = dict(proof["selection_snapshot"])
+    changed_selection["routing"] = {**expected, "desired_fixed_server_id": "foreign-target"}
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: type("Adapter", (), {
+        "config_path": __file__,
+    })())
+    monkeypatch.setattr(xray_subscription_service, "_capture_generation_auto_selection", lambda: changed_selection)
+    monkeypatch.setattr(xray_subscription_service, "db_session", lambda: __import__("contextlib").nullcontext(object()))
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_core_runtime_fingerprint", lambda _connection=None: proof[
+        "core_runtime_fingerprint"
+    ])
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_core_unavailable_reason", lambda _connection=None: None)
+    monkeypatch.setattr(xray_subscription_service, "_collect_legacy_admission_core_native_proof", lambda: {
+        "ok": True, "manifest_hash": proof["core_dataplane_proof"]["manifest_hash"],
+        "apply_id": proof["core_dataplane_proof"]["apply_id"],
+        "enforcement_level": proof["core_dataplane_proof"]["enforcement_level"],
+        "live_global_mode": proof["core_dataplane_proof"]["live_global_mode"],
+    })
+    from fwrouter_api.services import mihomo_config, mihomo_runtime
+    monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: __file__)
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda: proof["mihomo_runtime_incarnation"])
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda routing=None: {
+        "hash": proof["mihomo_fingerprint_hash"],
+    })
+    admission = type("Admission", (), {
+        **{f"proof_only_{key}": value for key, value in {
+            "xray_incarnation": "synthetic-xray-incarnation",
+            "xray_config_sha256": __import__("hashlib").sha256(Path(__file__).read_bytes()).hexdigest(),
+            "mihomo_incarnation": proof["mihomo_runtime_incarnation"],
+            "mihomo_config_sha256": __import__("hashlib").sha256(Path(__file__).read_bytes()).hexdigest(),
+            "mihomo_fingerprint_hash": proof["mihomo_fingerprint_hash"],
+            "core_runtime_fingerprint": proof["core_runtime_fingerprint"],
+            "core_manifest_hash": proof["core_dataplane_proof"]["manifest_hash"],
+            "core_apply_id": proof["core_dataplane_proof"]["apply_id"],
+            "core_enforcement_level": proof["core_dataplane_proof"]["enforcement_level"],
+            "core_live_mode": proof["core_dataplane_proof"]["live_global_mode"],
+            "routing_snapshot": expected,
+            "selection_snapshot": proof["selection_snapshot"],
+        }.items()},
+    })()
+
+    facts = xray_subscription_service._legacy_admission_runtime_fence_facts(admission)
+    assert facts["mihomo_routing_snapshot_match"] is False
 
 
 def test_legacy_admission_requires_explicit_confirmation_and_exact_digest(monkeypatch, tmp_path):
@@ -799,7 +877,7 @@ def test_proof_only_admission_promotes_only_after_fresh_proof_and_is_idempotent(
     monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _admission: True)
     from fwrouter_api.services import mihomo_reconcile_fingerprint
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
-                        lambda: {"hash": "3" * 64})
+                        lambda _routing=None: {"hash": "3" * 64})
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
 
@@ -863,7 +941,8 @@ def test_legacy_admission_reproves_after_pending_marker_and_resumes_receipt_clos
     collected_fingerprints = []
 
     def native_boundary_proof(*_args, **_kwargs):
-        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+        route = xray_subscription_service._capture_generation_auto_selection().get("routing")
+        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint(route)
         collected_fingerprints.append(fingerprint["hash"])
         proof = _positive_synthetic_proof()
         proof["mihomo_fingerprint_hash"] = fingerprint["hash"]
@@ -901,7 +980,9 @@ def test_legacy_admission_reproves_after_pending_marker_and_resumes_receipt_clos
     assert len(collected_fingerprints) == 2
     assert collected_fingerprints[0] != collected_fingerprints[1]
     assert subscription.get_subscription_native_generation_state()["status"] == "verified"
-    final_fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+    final_fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint(
+        xray_subscription_service._capture_generation_auto_selection().get("routing")
+    )
     assert final_fingerprint["hash"] == collected_fingerprints[-1]
     assert mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches() is True
     assert mihomo_reconcile_fingerprint.mihomo_input_unchanged(final_fingerprint) is True
@@ -970,7 +1051,8 @@ def test_legacy_admission_post_marker_proof_failure_resumes_without_premature_re
         proof_calls += 1
         if proof_calls == 2:
             return {"ok": False, "reason": "synthetic_post_marker_native_proof_failure"}
-        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+        route = xray_subscription_service._capture_generation_auto_selection().get("routing")
+        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint(route)
         proof = _positive_synthetic_proof()
         proof["mihomo_fingerprint_hash"] = fingerprint["hash"]
         proof["mihomo_config_sha256"] = mihomo_reconcile_fingerprint.active_config_hash()
@@ -995,7 +1077,8 @@ def test_legacy_admission_post_marker_proof_failure_resumes_without_premature_re
     assert plan["action"] == "resume_proof_only"
 
     def resumed_native_boundary_proof(*_args, **_kwargs):
-        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+        route = xray_subscription_service._capture_generation_auto_selection().get("routing")
+        fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint(route)
         proof = _positive_synthetic_proof()
         proof["mihomo_fingerprint_hash"] = fingerprint["hash"]
         proof["mihomo_config_sha256"] = mihomo_reconcile_fingerprint.active_config_hash()
@@ -1011,7 +1094,9 @@ def test_legacy_admission_post_marker_proof_failure_resumes_without_premature_re
     assert resumed["status"] == "verified"
     assert resumed["proof_receipt_written"] is True
     assert subscription.get_subscription_native_generation_state()["candidate_revision"] == 1
-    final_fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint()
+    final_fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint(
+        xray_subscription_service._capture_generation_auto_selection().get("routing")
+    )
     assert mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches() is True
     assert mihomo_reconcile_fingerprint.mihomo_input_unchanged(final_fingerprint) is True
     assert not checkpoint.exists()
@@ -1035,7 +1120,7 @@ def test_proof_only_admission_never_publishes_when_fences_drift_after_readback(m
     monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _admission: True)
     from fwrouter_api.services import mihomo_reconcile_fingerprint
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
-                        lambda: {"hash": "3" * 64})
+                        lambda _routing=None: {"hash": "3" * 64})
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
 
@@ -1098,6 +1183,11 @@ def test_legacy_admission_runtime_fence_facts_are_closed_and_match_owner_predica
         proof_only_mihomo_incarnation="synthetic-mihomo-incarnation",
         proof_only_mihomo_config_sha256=mihomo_sha,
         proof_only_mihomo_fingerprint_hash=fingerprint_hash,
+        proof_only_routing_snapshot={"server_mode": "auto"},
+        proof_only_selection_snapshot={
+            "routing": {"server_mode": "auto"}, "selection_revision": 0,
+            "selection_decision_id": None,
+        },
         proof_only_core_runtime_fingerprint=core_fingerprint,
         proof_only_core_manifest_hash=core_proof["manifest_hash"],
         proof_only_core_apply_id=core_proof["apply_id"],
@@ -1115,8 +1205,10 @@ def test_legacy_admission_runtime_fence_facts_are_closed_and_match_owner_predica
     monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: mihomo_path)
     monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation",
                         lambda: "synthetic-mihomo-incarnation")
+    monkeypatch.setattr(xray_subscription_service, "_capture_generation_auto_selection",
+                        lambda: dict(admission.proof_only_selection_snapshot))
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
-                        lambda: {"hash": fingerprint_hash})
+                        lambda _routing=None: {"hash": fingerprint_hash})
 
     facts = xray_subscription_service._legacy_admission_runtime_fence_facts(admission)
     assert xray_subscription_service._legacy_admission_runtime_fences_match(admission) is True
@@ -1124,6 +1216,7 @@ def test_legacy_admission_runtime_fence_facts_are_closed_and_match_owner_predica
     assert set(facts) == {
         "xray_incarnation_match", "xray_runtime_config_match", "xray_active_config_match",
         "mihomo_incarnation_match", "mihomo_active_config_match", "mihomo_input_fingerprint_match",
+        "mihomo_routing_snapshot_match",
         "core_runtime_fingerprint_match", "core_state_available", "core_native_proof_ok",
         "core_manifest_match", "core_apply_id_match", "core_enforcement_match", "core_live_mode_match",
     }
@@ -1583,7 +1676,7 @@ def test_inventory_native_collector_completes_with_real_db_and_synthetic_native_
     from types import SimpleNamespace
     import yaml
 
-    digest = _seed_legacy_inventory()
+    _seed_legacy_inventory()
     real_temp_directory = xray_subscription_service.tempfile.TemporaryDirectory
     monkeypatch.setattr(
         xray_subscription_service.tempfile, "TemporaryDirectory",
@@ -1596,21 +1689,62 @@ def test_inventory_native_collector_completes_with_real_db_and_synthetic_native_
     binding_path = tmp_path / "bindings.json"
     binding_path.write_text("{}", encoding="utf-8")
     mihomo_path = tmp_path / "active-mihomo.yaml"
-    candidate_mihomo = {"proxies": [], "proxy-groups": []}
-    mihomo_path.write_text(yaml.safe_dump(candidate_mihomo, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    mihomo_path.write_text("{}\n", encoding="utf-8")
 
     from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
     from fwrouter_api.services import mihomo_config, mihomo_reconcile, mihomo_reconcile_fingerprint, mihomo_runtime
     from fwrouter_api.services import subscription_profiles, xray_materialize, xray_runtime_state
     _seed_proof_native_module_rows()
     with db_session() as connection:
+        fixed_runtime_name = "Legacy fixed target [proof]"
+        fixed_id = "legacy-admission-node"
+        connection.execute(
+            "UPDATE servers SET raw_json=? WHERE server_id=?",
+            (json.dumps({
+                "name": fixed_runtime_name, "_fwrouter_runtime_name": fixed_runtime_name,
+                "type": "socks5", "server": "203.0.113.19", "port": 1080,
+            }), fixed_id),
+        )
+        connection.execute(
+            "INSERT INTO server_preferences(server_id, vpn_auto, global_list) VALUES (?, 0, 0) "
+            "ON CONFLICT(server_id) DO UPDATE SET vpn_auto=0, global_list=0", (fixed_id,),
+        )
+        connection.execute(
+            "UPDATE routing_global_state SET desired_mode='direct', applied_mode='direct', "
+            "selective_default='direct', server_mode='fixed', desired_fixed_server_id=?, "
+            "applied_fixed_server_id=?, fixed_server_until=NULL, active_auto_server_id=NULL, apply_state='clean' "
+            "WHERE id=1", (fixed_id, fixed_id),
+        )
         routing = dict(connection.execute("SELECT * FROM routing_global_state WHERE id=1").fetchone())
         module_names = {row[0] for row in connection.execute("SELECT module_name FROM modules")}
         from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
         selection = read_selection_fence(connection)
+        digest = subscription._subscription_inventory_digest(connection)[0]
     assert "vpn" in module_names and "xray" in module_names and "mihomo" not in module_names
+    # Reproduce the former omission with the real renderer and comparator:
+    # the active fixed candidate differs from the old routing=None output.
+    monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: str(mihomo_path))
+    monkeypatch.setattr(mihomo_config, "_collect_xray_handoff_assignments", lambda: [])
+    from fwrouter_api.services import mihomo_config_rules
+    monkeypatch.setattr(mihomo_config_rules, "_build_effective_rules", lambda _routing: ([], {
+        "rendered_rules_count": 0, "path_kind": "synthetic",
+    }))
+    monkeypatch.setattr(mihomo_config, "_validate_candidate_with_binary", lambda *_args, **_kwargs: {
+        "ok": True, "returncode": 0, "stdout_tail": "", "stderr_tail": "",
+    })
+    fixed_candidate = mihomo_config.build_mihomo_config(routing=routing)
+    mihomo_path.write_text(yaml.safe_dump(fixed_candidate, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    local_validation = mihomo_config.validate_mihomo_candidate_config(
+        routing=routing, candidate_config=fixed_candidate,
+    )
+    assert local_validation.get("ok") is True, local_validation
+    omitted_routing_candidate = mihomo_config.build_mihomo_config()
+    baseline_path = tmp_path / "omitted-routing.yaml"
+    baseline_path.write_text(
+        yaml.safe_dump(omitted_routing_candidate, sort_keys=False, allow_unicode=True), encoding="utf-8",
+    )
+    assert not xray_subscription_service._legacy_mihomo_candidate_matches(mihomo_path, baseline_path)
     selection_revision = selection["revision"]
-    selection_decision_id = selection["decision_id"]
     manifest = {"plan_id": "synthetic-applied-generation", "routing_global_state": {
         key: routing.get(key) for key in (
             "desired_mode", "applied_mode", "selective_default", "server_mode",
@@ -1620,9 +1754,8 @@ def test_inventory_native_collector_completes_with_real_db_and_synthetic_native_
 
     # Native/service boundaries are bounded test doubles; SQLite ownership,
     # inventory reads, selection fencing and the proof collector stay real.
-    monkeypatch.setattr(xray_subscription_service, "_capture_generation_auto_selection", lambda: {
-        "selection_revision": selection_revision, "selection_decision_id": selection_decision_id,
-    })
+    selection_snapshot = xray_subscription_service._capture_generation_auto_selection()
+    monkeypatch.setattr(xray_subscription_service, "_capture_generation_auto_selection", lambda: selection_snapshot)
     monkeypatch.setattr(xray_subscription_service, "_verify_generation_recovery_selection_readback",
                         lambda _expected: {"ok": True})
     monkeypatch.setattr(xray_subscription_service, "_current_xray_projection_snapshot", lambda: {
@@ -1639,17 +1772,26 @@ def test_inventory_native_collector_completes_with_real_db_and_synthetic_native_
         "server_id": "synthetic-node", "client_uuid": "synthetic-client-id",
         "client_email": "synthetic-client@example.invalid", "xray_alias": "synthetic-node",
     }])
-    monkeypatch.setattr(mihomo_config, "_resolved_base_config_path", lambda: str(mihomo_path))
-    monkeypatch.setattr(mihomo_config, "build_mihomo_config", lambda **_kwargs: candidate_mihomo)
-    monkeypatch.setattr(mihomo_config, "validate_mihomo_candidate_config", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(mihomo_config, "_validate_candidate_with_binary", lambda *_args, **_kwargs: {
+        "ok": True, "returncode": 0, "stdout_tail": "", "stderr_tail": "",
+    })
     monkeypatch.setattr(xray_runtime_state, "_xray_bindings_path", lambda: binding_path)
     monkeypatch.setattr(xray_materialize, "_verify_active_config_bindings", lambda *_args, **_kwargs: {"ok": True})
     monkeypatch.setattr(xray_materialize, "_verify_active_config_client_modes", lambda *_args: {"ok": True})
-    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", lambda: {
-        "ok": True, "native_top_level_rules_match": True,
-        "selector_membership_matches": True, "guarded_rules_match": True,
-    })
-    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda: {"hash": "b" * 64})
+    native_proofs = []
+    def native_proof():
+        native_proofs.append(True)
+        return {
+            "ok": True, "native_top_level_rules_match": True,
+            "selector_membership_matches": True, "guarded_rules_match": True,
+        }
+    monkeypatch.setattr(mihomo_reconcile, "_native_udp_policy_proof", native_proof)
+    monkeypatch.setattr(mihomo_config, "promote_mihomo_candidate_config",
+                        lambda **_kwargs: pytest.fail("proof-only collector must never promote"))
+    monkeypatch.setattr(mihomo_runtime, "restart_mihomo_container",
+                        lambda **_kwargs: pytest.fail("proof-only collector must never restart"))
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+                        lambda _routing=None: {"hash": "b" * 64})
     monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda: "synthetic-mihomo-incarnation")
 
     monkeypatch.setattr(dataplane_status, "_read_live_dataplane_payload", lambda: {"table_exists": True})
@@ -1707,8 +1849,20 @@ def test_inventory_native_collector_completes_with_real_db_and_synthetic_native_
     assert proof["xray_loaded_users_match"] is True
     assert proof["mihomo_native_policy_match"] is True
     assert len(staged) == 1 and "fwrouter-legacy-admission-" in str(staged[0].parent)
+    assert native_proofs == [True]
     assert "dataplane_global.applied_manifest" in cache_refreshes
     assert cache_refreshes.count("dataplane_live.global_mode") >= 2
+
+    active = yaml.safe_load(mihomo_path.read_text(encoding="utf-8"))
+    next(group for group in active["proxy-groups"] if group.get("name") == "vpn-global")["proxies"] = ["DIRECT"]
+    mihomo_path.write_text(yaml.safe_dump(active, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    with xray_writer_guard():
+        mismatch = xray_subscription_service._collect_legacy_inventory_native_proof(
+            SyntheticAdapter(), expected_digest=digest, source_fingerprint=source,
+            checkpoint_path=tmp_path / "generation-checkpoint.json",
+        )
+    assert mismatch == {"ok": False, "reason": "mihomo_candidate_differs_from_active"}
+    assert native_proofs == [True]
 
 
 def test_fresh_admission_rejects_checkpoint_parent_symlink_without_touching_target(monkeypatch, tmp_path):
@@ -1861,7 +2015,7 @@ def test_final_promotion_rejects_core_apply_job_started_after_native_receipt(mon
         lambda *_args, **_kwargs: _positive_synthetic_proof(),
     )
     from fwrouter_api.services import mihomo_reconcile_fingerprint
-    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda: {"hash": "3" * 64})
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda _routing=None: {"hash": "3" * 64})
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
 
@@ -1952,7 +2106,7 @@ def test_failed_promotion_resume_requires_same_explicit_operation(monkeypatch, t
     monkeypatch.setattr(xray_subscription_service, "_publish_legacy_admission_mihomo_receipt", lambda *_args: True)
     monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _admission: True)
     from fwrouter_api.services import mihomo_reconcile_fingerprint
-    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda: {"hash": "3" * 64})
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda _routing=None: {"hash": "3" * 64})
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
     original_promote = subscription._promote_subscription_inventory_generation
@@ -2167,7 +2321,7 @@ def test_proof_only_checkpoint_closes_verified_commit_after_restart_window(monke
     monkeypatch.setattr(xray_subscription_service, "_publish_legacy_admission_mihomo_receipt", lambda *_args: True)
     monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _admission: True)
     from fwrouter_api.services import mihomo_reconcile_fingerprint
-    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda: {"hash": "3" * 64})
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda _routing=None: {"hash": "3" * 64})
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
     original_atomic_write = xray_subscription_service._atomic_write_private_checkpoint

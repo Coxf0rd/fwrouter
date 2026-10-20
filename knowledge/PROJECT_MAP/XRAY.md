@@ -291,3 +291,28 @@ completion still requires strict selected-target proof and all-owner CAS.
 Interrupted fixed checkpoints without qualified preimage recovery remain pending
 and block generic rollback. This preserves safety but is a recovery limitation,
 not completed native/restart acceptance. Full native qualification is pending.
+
+### Captured routing in admission and clean fixed startup (under qualification)
+
+Proof-only admission uses its captured selection/routing snapshot for private
+candidate rendering, validation, fingerprint revalidation and UDP policy receipt.
+The existing admission value object carries that context through initial marker
+publication and verified retry; final source/selection/Core CAS checks still
+reject drift. No candidate comparison or missing marker authorizes native apply.
+
+Ordinary Xray generation after fixed completion has no pending fixed workflow.
+It preserves the durable fixed projection using the existing generation owner
+and checkpoint, rather than falling back to an auto-shaped renderer. Fixed
+native effects require clean enabled/managed Core with fresh owned applied proof,
+exact selection revision, source and routing context. Disabled/pending/UNKNOWN
+Core blocks before native effects; it is never enabled implicitly. Auto/nonfixed
+behavior is unchanged. Unproven interrupted fixed checkpoints remain pending
+without generic rollback. These source contracts still require qualified native
+strict admission and two actual normal startups.
+
+Ordinary fixed context is revalidated at durable UDP receipt, public snapshot
+publication and checkpoint closure, not only around native effects. The original
+Core proof and unchanged generation/source receipt remain authoritative; marker
+promotion does not authorize adopting a newer source digest. A post-effect proof
+failure retains pending/checkpoint evidence and must report runtime unverified,
+rather than equating a saved artifact with current last-good runtime.

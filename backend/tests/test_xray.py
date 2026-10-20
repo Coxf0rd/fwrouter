@@ -975,6 +975,8 @@ def test_staged_generation_finalizer_requires_udp_receipt_before_publication(mon
 
     assert result["ok"] is False
     assert result["error_code"] == "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED"
+    assert result["last_good_retained"] is True
+    assert "runtime_verified" not in result
     assert "staged_publication_receipt" not in result
     assert checkpoint.exists()
     assert promoted == []
@@ -983,6 +985,33 @@ def test_staged_generation_finalizer_requires_udp_receipt_before_publication(mon
             "SELECT nodes_json FROM subscription_profile_snapshots WHERE token = ?", ("generation-test",),
         ).fetchone()
     assert snapshot is None
+
+
+def test_staged_generation_finalizer_keeps_pending_fixed_response_contract(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_subscription_identity(slug="generation-test", token="generation-test")
+    pending, checkpoint = _finalizer_pending(monkeypatch, tmp_path)
+    value = json.loads(checkpoint.read_text(encoding="utf-8"))
+    value["fixed_routing_snapshot"] = {"server_mode": "fixed"}
+    value["fixed_workflow_revision"] = 7
+    checkpoint.write_text(json.dumps(value), encoding="utf-8")
+    monkeypatch.setattr(
+        xray_subscription_service, "_publish_xray_generation_mihomo_udp_receipt",
+        lambda **_kwargs: False,
+    )
+
+    result = xray_subscription_service._finalize_xray_profile_publication(
+        pending,
+        {"ok": True, "operation_id": "generation-test",
+         "selection_revision": value["selection_revision"]},
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "pending"
+    assert result["last_good_retained"] is True
+    assert "runtime_verified" not in result
+    assert checkpoint.exists()
 
 
 def test_staged_generation_finalizer_emits_completion_only_after_durable_checkpoint_closure(

@@ -953,3 +953,41 @@ def test_current_projection_recovery_fails_closed_and_retains_checkpoint(monkeyp
     assert result == {"ok": False, "recovered": "current_projection_unproven", "reason": reason}
     assert checkpoint.exists()
     assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == old_digest
+
+
+def test_ordinary_fixed_checkpoint_recovery_stays_blocked_without_owned_preimage(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    adapter, checkpoint = _setup(monkeypatch, tmp_path)
+    checkpoint.write_text(json.dumps({
+        "version": 1,
+        "generation_id": "ordinary-fixed-recovery-operation",
+        "phase": "runtime_applied",
+        "selection_revision": 4,
+        "fixed_routing_snapshot": {
+            "server_mode": "fixed",
+            "desired_fixed_server_id": "fixed-target",
+            "applied_fixed_server_id": "fixed-target",
+            "fixed_server_until": "2099-12-31 23:59:59",
+            "desired_mode": "direct",
+            "applied_mode": "direct",
+            "selective_default": "direct",
+            "apply_state": "clean",
+        },
+    }, sort_keys=True), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    before = checkpoint.read_bytes()
+    xray_before = adapter.config_path.read_bytes()
+
+    result = service._resolve_existing_xray_generation_checkpoint(adapter, checkpoint)
+    restored = service._restore_xray_generation_checkpoint(adapter, checkpoint)
+
+    for blocked in (result, restored):
+        assert blocked["ok"] is False
+        assert blocked["runtime_verified"] is False
+        assert "last_good_retained" not in blocked
+    assert result["error_code"] == "FIXED_XRAY_GENERATION_RECOVERY_UNPROVEN"
+    assert restored["recovered"] == "fixed_generation_recovery_unproven"
+    assert checkpoint.read_bytes() == before
+    assert adapter.config_path.read_bytes() == xray_before
+    assert adapter.reload_count == 0
