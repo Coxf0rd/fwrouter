@@ -802,6 +802,7 @@ jobs:
           run_launcher runtime-scale-diagnostic "$root/startup-attempt-2.log" "$root/startup-attempt-2"
           python3 - "$root" <<'PY'
           import json, sys
+          import math
           from pathlib import Path
           import os
           root = Path(sys.argv[1])
@@ -832,14 +833,37 @@ jobs:
                   errors.append(f"startup metrics missing or invalid: {metrics_path.name}")
                   continue
               value = metrics.get("startup_wall_seconds")
-              if not isinstance(value, (int, float)) or isinstance(value, bool):
+              if type(value) not in {int, float} or not math.isfinite(value):
                   errors.append(f"startup wall time missing: {metrics_path.name}")
-              elif value >= 45:
-                  errors.append(f"startup exceeded hard 45 second budget: {metrics_path.name}")
+              elif value > 60:
+                  errors.append(f"startup exceeded hard 60 second budget: {metrics_path.name}")
+              probe = metrics.get("startup_readiness_probe")
+              if (metrics.get("startup_ready") is not True
+                      or not isinstance(probe, dict)
+                      or probe.get("path") != "/health"
+                      or probe.get("status_code") != 200
+                      or probe.get("healthy") is not True
+                      or type(probe.get("elapsed_seconds")) not in {int, float}
+                      or not math.isfinite(probe["elapsed_seconds"])
+                      or probe["elapsed_seconds"] != value):
+                  errors.append(f"healthy startup readiness evidence missing or invalid: {metrics_path.name}")
+              warning = metrics.get("startup_slow_warning")
+              if type(value) in {int, float} and math.isfinite(value) and value > 45:
+                  if (not isinstance(warning, dict) or warning.get("code") != "SLOW_STARTUP"
+                          or warning.get("threshold_seconds") != 45
+                          or type(warning.get("elapsed_seconds")) not in {int, float}
+                          or not math.isfinite(warning["elapsed_seconds"])
+                          or warning["elapsed_seconds"] <= 45
+                          or warning["elapsed_seconds"] != value
+                          or warning.get("worker_pid") != metrics.get("startup_worker_pid")
+                          or not isinstance(warning.get("resources"), dict)
+                          or warning["resources"].get("scope") != "owned_api_worker"):
+                      errors.append(f"SLOW_STARTUP warning evidence missing or invalid: {metrics_path.name}")
               scale.append({"attempt": len(scale) + 1, "suite_nonce": row.get("suite_nonce"),
                             "source_revision": row.get("source_revision"),
                             "plan_digest": row.get("plan_digest"),
                             "startup_wall_seconds": value,
+                            "startup_slow_warning": warning,
                             "engineering_margin_40s": value < 40 if isinstance(value, (int, float)) else False})
           if len(scale) != 2:
               errors.append(f"expected two independent cold startup receipts; found {len(scale)}")
@@ -850,7 +874,8 @@ jobs:
               and item["startup_wall_seconds"] < 40 for item in scale)
           result = {"schema": "fwrouter-startup-scale-repeat/v1",
                     "status": "failed" if errors else "passed",
-                    "hard_budget_seconds": 45,
+                    "hard_budget_seconds": 60,
+                    "slow_startup_warning_seconds": 45,
                     "engineering_margin_goal_seconds": 40,
                     "engineering_margin_status": "demonstrated" if margin_demonstrated else "not_demonstrated",
                     "startup_margin_claim": "at_least_5_seconds" if margin_demonstrated else "none",

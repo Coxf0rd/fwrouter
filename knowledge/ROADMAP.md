@@ -14,9 +14,9 @@ Assessment baseline: main `c85c0c8f83e7015226af5d39d6e291ae15c5df86`, PR22 singl
 
 Latest saved production baseline is69ec419, not current main; PR18 preflight stopped before deployment on legacy-generation admission. PR19 implements a proof-only source path, but its production execution/deployment remains separately authorized and NOT RUN. No fresh production state was inspected for this audit. Original78 identities/durable mapping and27 host files are supported by historical receipts only.
 
-D-12 remains open: PR22 startup43.8025s and main25.7397s are different hosted observations, not a measured speedup. Eight of nine matched diagnostic attempts hit45s and retain FAIL; causality UNKNOWN. Preserve40s advisory/45s hosted hard ceiling and120s/20s source systemd budgets. Long-term stability DEFERRED to an explicitly bounded natural-load plan; no leak, physical SSD wear reduction or whole-production CPU saving established.
+D-12 remains open: PR22 startup43.8025s and main25.7397s are different hosted observations, not a measured speedup. Eight of nine matched diagnostic attempts hit45s and retain FAIL; causality UNKNOWN. The2026-10-21 approved policy is60s qualified readiness with45s slow warning; retain40s as a separate advisory engineering target and120s/20s source systemd budgets. Historical45s timeouts remain FAIL under their original policy. Long-term stability DEFERRED to an explicitly bounded natural-load plan; no leak, physical SSD wear reduction or whole-production CPU saving established.
 
-Canonical publication is a proposal only: the canonical file was read and hashed, not overwritten. Older pending patches remain intact. The proposed canonical patch is retained locally with its exact base hash; this Git mirror records the reviewed proposal, not an assertion that the canonical file has already changed. Historical checkpoints below retain their original wording.
+At the historical closure-audit checkpoint, canonical publication was a proposal only: the file was read and hashed, not overwritten, and its proposed patch was retained with an exact base hash. On2026-10-21 only the approved D-12 startup-policy section was synchronized deliberately with the current canonical roadmap; newer architecture reconciliation and pending patches were preserved rather than copied over this mirror. This policy synchronization does not publish the separate PR28 architecture package. Historical checkpoints retain their original wording.
 
 
 ## Historical Operational Packages2/3 implementation checkpoint — 2026-10-16
@@ -112,18 +112,19 @@ Package2 and selected Package3 candidates are implemented, not planned work. The
 
 Closure requires: acceptedPackage1; Package2 decision and applicable acceptance; explicit Package3 IMPLEMENT/DEFER/NOT REQUIRED; disposition of performance-relevant legacy candidates in the single Stage6-owned register; residual CPU/RAM/SSD risks evaluated; actual comparable baseline/results; applicable staging/native/fullCI and recovery evidence; no functional/security regressions. Optional long-term work needs explicit execute/defer disposition. NOT RUN is never PASS. Only then Stage5 opens. No new stages or parallel cleanup backlog.
 
-### Timeouts & Thresholds Audit — PLANNED, before limit changes
+### Timeouts & Thresholds Audit — PARTIALLY EXPLAINED; startup policy revised 2026-10-21
 
-P1, owned by the same Operational re-audit, coordinated with Stage5 lifecycle and Stage9 host acceptance. No timeout changes are authorized here. Trace each value to introduction/history, intended failure outcome, event boundaries, environment/workload and test evidence. Separate safety/correctness gates, operational deadlines and advisory performance targets; a time budget does not replace CAS, fencing or native proof.
+P1, owned by the same Operational re-audit, coordinated with Stage5 lifecycle and Stage9 host acceptance. The user explicitly approved a60s qualified API-readiness deadline with45s warning threshold on2026-10-21; this is an operational policy revision, not measured acceleration or a waiver of startup/recovery failures. Earlier45s outcomes remain historical evidence. Other timeout changes are not authorized by this decision. Trace each value to introduction/history, intended failure outcome, event boundaries, environment/workload and test evidence. Separate safety/correctness gates, operational deadlines and advisory performance targets; a time budget does not replace CAS, fencing or native proof.
 
 | Historical value | Confirmed current meaning / remaining audit |
 |---|---|
 |40 seconds|Advisory hosted startup engineering target; not a hard PASS assertion. PR11 startup41.4643s did not meet this target |
-|45 seconds|Hard readiness ceiling in the synthetic hosted scale case, unchanged; not a universal Debian live-start SLA |
+|45 seconds|Historical hosted hard ceiling; now the slow-startup warning threshold. Healthy qualified readiness at or below45s passes normally; above45s and at or below60s passes with `SLOW_STARTUP` and measured elapsed/resource evidence |
+|60 seconds|User-approved qualified API startup/readiness hard deadline. Healthy readiness must actually complete within60s; unready after60s is TIMEOUT/FAIL with retained diagnostics. Safety/integrity/recovery failure remains FAIL regardless of elapsed time; this is not a universal Debian live-start SLA |
 |120 seconds|Source systemd `TimeoutStartSec` operational API start budget; distinguish unit/readiness scripts and historical installed versions |
 |20 seconds|Source systemd `TimeoutStopSec` operational stop budget; not a benchmark target or permission to cancel durable writers |
 
-Sources: `tests/application_acceptance/test_runtime_scale.py`, its conftest and `host/systemd/fwrouter-api.service`; these are source facts, not a new inspection of installed unit limits. Exit: reviewed threshold register with provenance, measured p50/p95/tail/headroom, environment sensitivity, timeout/error/cleanup behavior and change justification. Preserve truthful unready/failed state and bounded shutdown; never increase a timeout solely to hide a regression. Latest Package1 hosted startup40.1817s passes45s hard ceiling but misses40s advisory by0.1817s; live journal startup26.104s is a different workload/environment. Historical PR11 values remain in evidence. No new universal SLA is invented.
+Sources: `tests/application_acceptance/test_runtime_scale.py`, its conftest and `host/systemd/fwrouter-api.service`; these are source facts, not a new inspection of installed unit limits. Exit: reviewed threshold register with provenance, measured p50/p95/tail/headroom, environment sensitivity, timeout/error/cleanup behavior and change justification. Preserve truthful unready/failed state and bounded shutdown; never increase a timeout solely to hide a regression. Historically, Package1 hosted startup40.1817s passed the then45s hard ceiling but misses40s advisory by0.1817s; live journal startup26.104s is a different workload/environment. Historical PR11 values remain in evidence. No new universal SLA is invented.
 
 ## Stage 5 — Configuration and Persistence Contracts
 
