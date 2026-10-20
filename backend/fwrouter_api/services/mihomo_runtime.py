@@ -151,8 +151,23 @@ def _restart_mihomo_container(
     *,
     action: str = "restart",
     heartbeat: Callable[[], None] | None = None,
+    generation_verification_callback: Callable[..., dict[str, Any]] | None = None,
+    operation_id: str | None = None,
+    expected_selection_revision: int | None = None,
 ) -> dict[str, Any]:
     from fwrouter_api.services.selector import restore_mihomo_selector_state
+
+    if generation_verification_callback is not None:
+        from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+        from fwrouter_api.db.connection import db_session
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+        if (not xray_writer_guard_is_held() or type(expected_selection_revision) is not int
+                or not isinstance(operation_id, str) or not operation_id):
+            return {"ok": False, "error_code": "MIHOMO_GENERATION_VERIFICATION_FENCE_REQUIRED"}
+        with db_session() as connection:
+            if read_selection_revision(connection) != expected_selection_revision:
+                return {"ok": False, "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT"}
 
     if action == "force_recreate":
         restart_result = _run_compose_command(
@@ -175,7 +190,47 @@ def _restart_mihomo_container(
     controller_wait = wait_for_mihomo_controller(heartbeat=heartbeat)
     selector_restore = None
     if controller_wait["ok"]:
-        selector_restore = restore_mihomo_selector_state(requested_by=f"mihomo_restart:{action}")
+        if generation_verification_callback is None:
+            selector_restore = restore_mihomo_selector_state(requested_by=f"mihomo_restart:{action}")
+        else:
+            try:
+                proof = generation_verification_callback(
+                    operation_id=operation_id,
+                    expected_selection_revision=expected_selection_revision,
+                )
+            except Exception:
+                proof = None
+            proof_ok = bool(
+                isinstance(proof, dict)
+                and proof.get("ok") is True
+                and proof.get("operation_id") == operation_id
+                and proof.get("selection_revision") == expected_selection_revision
+                and type(expected_selection_revision) is int
+                and isinstance(operation_id, str)
+                and operation_id
+                and proof.get("config_membership_ok") is True
+                and proof.get("native_membership_ok") is True
+                and proof.get("logical_group_native_membership_ok") is True
+                and proof.get("vpn_global_now") == "REJECT"
+                and proof.get("selected_fixed_target") is False
+            )
+            with db_session() as connection:
+                proof_ok = bool(proof_ok and read_selection_revision(connection) == expected_selection_revision)
+            selector_restore = {
+                "ok": proof_ok,
+                "blocked": not proof_ok,
+                "generation_materialization": True,
+                "operation_id": operation_id,
+                "selection_revision": expected_selection_revision,
+                "config_membership_ok": bool(isinstance(proof, dict) and proof.get("config_membership_ok") is True),
+                "native_membership_ok": bool(isinstance(proof, dict) and proof.get("native_membership_ok") is True),
+                "logical_group_native_membership_ok": bool(
+                    isinstance(proof, dict) and proof.get("logical_group_native_membership_ok") is True
+                ),
+                "vpn_global_now": "REJECT" if isinstance(proof, dict) and proof.get("vpn_global_now") == "REJECT" else None,
+                "selected_fixed_target": False,
+                "error_code": None if proof_ok else "MIHOMO_GENERATION_SELECTOR_PROOF_FAILED",
+            }
 
     return {
         "compose_file": str(MIHOMO_COMPOSE_FILE),
@@ -200,6 +255,8 @@ def restart_mihomo_container(
     heartbeat: Callable[[], None] | None = None,
     selection_fenced: bool = False,
     expected_selection_revision: int | None = None,
+    generation_verification_callback: Callable[..., dict[str, Any]] | None = None,
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     """Restart Mihomo runtime with optional job heartbeat callback."""
 
@@ -216,6 +273,15 @@ def restart_mihomo_container(
             "action": action,
         }
 
+    if generation_verification_callback is not None and (
+        not selection_fenced or not isinstance(operation_id, str) or not operation_id
+    ):
+        return {
+            "ok": False,
+            "action": action,
+            "error_code": "MIHOMO_GENERATION_VERIFICATION_FENCE_REQUIRED",
+        }
+
     if selection_fenced:
         from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
         from fwrouter_api.db.connection import db_session
@@ -225,7 +291,13 @@ def restart_mihomo_container(
         with db_session() as connection:
             if read_selection_revision(connection) != expected_selection_revision:
                 return {"ok": False, "action": action, "error_code": "VPN_AUTO_SELECTION_REVISION_CONFLICT"}
-        return _restart_mihomo_container(action=action, heartbeat=heartbeat)
+        return _restart_mihomo_container(
+            action=action,
+            heartbeat=heartbeat,
+            generation_verification_callback=generation_verification_callback,
+            operation_id=operation_id,
+            expected_selection_revision=expected_selection_revision,
+        )
 
     from fwrouter_api.adapters.xray_common import xray_writer_guard
     from fwrouter_api.db.connection import db_session

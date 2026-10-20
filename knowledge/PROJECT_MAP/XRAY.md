@@ -236,3 +236,97 @@ verification; packet/Core re-entry acceptance remains incomplete.
 - Gateway depends on API readiness rather than direct Xray readiness.
 - `latest` images increase nondeterministic runtime behavior risk.
 - Non-idempotent config writes can restart clients during accounting/polling.
+
+## Unified fixed completion (source work in progress)
+
+A fixed selection changes the canonical Xray target/source and handoff projection.
+A successful Mihomo selector PUT alone cannot establish Xray/Core consistency.
+The unified fixed job coordinates the existing selection, Core apply and staged
+Xray generation owners; it is not a second generation manager or a physically
+atomic update of independent runtimes.
+
+The fixed intent transaction must retain an owned workflow in the existing Xray
+pending state before native effects. Intermediate routing-selection cleanliness
+does not mean unified completion. Generic startup/generation and legacy admission
+must not bypass an unfinished fixed workflow. Newer auto intent supersedes it
+through the same revisioned persistence mechanism.
+
+Fresh source/artifact/active/native proof may avoid an unnecessary Xray apply.
+Confirmed readable binding drift is reconciled by the existing staged generation
+owner; missing or UNKNOWN proof does not authorize a speculative reload. Original
+identities and durable credential mappings/history remain protected. Core is
+never implicitly enabled. Its threaded apply owner runs without an outer writer
+guard and must enforce expected intent/selection fences before native effects and
+completion. A final fresh proof and CAS govern unified SUCCESS; partial failure
+retains pending/failed intent and existing recovery/last-good protections.
+
+This section describes the approved implementation contract, not completed
+native qualification, merge or production acceptance.
+
+The fixed Xray generation callback proves exact fail-closed REJECT/unselected
+Mihomo membership after its owned restart; it does not claim final fixed
+selection. It binds the captured runtime target separately from logical server
+identity. Only the still-pending `xray_verified` workflow with an exact durable
+Xray receipt may restore selection through the fixed owner, with fresh Core,
+Xray, Mihomo and revision proofs before and after the selector effect. Earlier
+interrupted phases without sufficient receipt remain blocked without a native
+write. Final strict selected-target proof and completion CAS remain mandatory.
+Native qualification of this correction is pending.
+
+### Fixed routing in staged generation (qualification pending)
+
+The fixed workflow captures its routing projection explicitly for both transition
+and final Mihomo candidate renders. Candidate validation, input provenance and
+pre-effect checks use that same projection; a renderer default is not fixed
+intent. Promotion's exact selection revision is passed to the existing fenced
+restart and recorded in the generation checkpoint. The fixed origin revision
+remains distinct from stage revisions until the owned publication callback.
+
+The outer fixed callback runs before final Xray publication, after staged native
+effects. It may observe only proven REJECT or the captured fixed runtime target;
+it must report the actual selection. This supersedes the earlier assumption
+that this outer callback always runs inside the restart at REJECT. Final fixed
+completion still requires strict selected-target proof and all-owner CAS.
+
+Interrupted fixed checkpoints without qualified preimage recovery remain pending
+and block generic rollback. This preserves safety but is a recovery limitation,
+not completed native/restart acceptance. Full native qualification is pending.
+
+### Captured routing in admission and clean fixed startup (under qualification)
+
+Proof-only admission uses its captured selection/routing snapshot for private
+candidate rendering, validation, fingerprint revalidation and UDP policy receipt.
+The existing admission value object carries that context through initial marker
+publication and verified retry; final source/selection/Core CAS checks still
+reject drift. No candidate comparison or missing marker authorizes native apply.
+
+Ordinary Xray generation after fixed completion has no pending fixed workflow.
+It preserves the durable fixed projection using the existing generation owner
+and checkpoint, rather than falling back to an auto-shaped renderer. Fixed
+native effects require clean enabled/managed Core with fresh owned applied proof,
+exact selection revision, source and routing context. Disabled/pending/UNKNOWN
+Core blocks before native effects; it is never enabled implicitly. Auto/nonfixed
+behavior is unchanged. Unproven interrupted fixed checkpoints remain pending
+without generic rollback. These source contracts still require qualified native
+strict admission and two actual normal startups.
+
+Ordinary fixed context is revalidated at durable UDP receipt, public snapshot
+publication and checkpoint closure, not only around native effects. The original
+Core proof and unchanged generation/source receipt remain authoritative; marker
+promotion does not authorize adopting a newer source digest. A post-effect proof
+failure retains pending/checkpoint evidence and must report runtime unverified,
+rather than equating a saved artifact with current last-good runtime.
+
+### Bounded native qualification — 2026-10-20
+
+Exact source `68618d0907e27a47c671d27ee5c3b20d6b3b101a`, GitHub run
+[39433679641](https://github.com/Coxf0rd/fwrouter/actions/runs/39433679641):
+four isolated application/native cases passed with no failures/skips and clean
+owned-runtime cleanup. Fixed unified apply, strict legacy admission and two actual
+normal startups completed; the separate auto lifecycle also completed two
+startups. Native state and durable synthetic identity mappings remained unchanged
+across admission/startups; proof receipt publication was confirmed. This qualifies
+that bounded synthetic path, not production state or deployment. Interrupted fixed
+checkpoints without qualified preimage proof remain blocked/pending. Destructive
+fixed-specific interruption tests remain NOT RUN. Full final PR CI is a separate
+gate; production recovery/deployment and Stage 5 remain outside this task.

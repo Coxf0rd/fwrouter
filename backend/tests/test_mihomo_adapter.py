@@ -63,6 +63,29 @@ def test_vpn_udp_native_readback_requires_reject_groups_and_paired_guards() -> N
     assert MihomoHttpAdapter._vpn_udp_policy_readback(config, unsafe_selection)["selector_membership_matches"] is False
 
 
+def test_targetless_direct_legacy_global_group_remains_native_policy_compatible() -> None:
+    """This proves only installed fail-closed policy, never a fixed target."""
+    config = yaml.safe_dump({
+        "rules": ["MATCH,DIRECT"],
+        "proxy-groups": [
+            {"name": "vpn-auto", "proxies": ["Runtime Direct Legacy", "REJECT"]},
+            {"name": "vpn-global", "proxies": ["vpn-auto", "Runtime Direct Legacy", "REJECT"]},
+        ],
+        "sub-rules": {
+            "fwrouter-transparent": ["MATCH,DIRECT"],
+            "fwrouter-full-vpn": ["MATCH,vpn-global", "NETWORK,udp,REJECT"],
+        },
+    }, sort_keys=False)
+    proxies = {
+        "vpn-auto": {"all": ["Runtime Direct Legacy", "REJECT"], "now": "Runtime Direct Legacy"},
+        "vpn-global": {"all": ["vpn-auto", "Runtime Direct Legacy", "REJECT"], "now": "vpn-auto"},
+    }
+
+    proof = MihomoHttpAdapter._vpn_udp_policy_readback(config, proxies)
+    assert proof["policy_installed"] is True
+    assert proof["selector_membership_matches"] is True
+
+
 def test_vpn_udp_native_rule_readback_normalizes_pinned_mihomo_types() -> None:
     from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
     from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
@@ -1225,3 +1248,10 @@ def test_get_json_stream_parse_and_status_errors_close_stream_without_changing_e
     status_response = status_refs[0]()
     assert status_response is not None and getattr(status_response, "_content", None) is None
     assert status_streams[0].was_closed
+
+
+def test_raw_reject_selector_observation_is_distinct_from_active_server_identity(tmp_path: Path) -> None:
+    adapter = MihomoHttpAdapter(config_path=tmp_path / "config.yaml")
+    proxies = {"vpn-global": {"now": "REJECT", "all": ["REJECT", "fixed-target"]}}
+    assert adapter._selected_proxy_id("vpn-global", proxies=proxies) is None
+    assert adapter._selected_target("vpn-global", proxies=proxies) == "REJECT"

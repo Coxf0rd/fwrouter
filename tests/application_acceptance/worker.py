@@ -2881,12 +2881,15 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
         return result
 
     def observed_publish(*, expected_mihomo_runtime: str, expected_mihomo_sha: str,
-                         reconcile_reason: str, operation_id: str, owner_matches: Any) -> bool:
+                         reconcile_reason: str, operation_id: str, owner_matches: Any,
+                         routing_snapshot: dict[str, Any] | None = None) -> bool:
+        routing_arguments = {"routing_snapshot": routing_snapshot} if routing_snapshot is not None else {}
         if not getattr(local, "rollback", False) or reconcile_reason != "xray_generation_rollback":
             return original_publish(
                 expected_mihomo_runtime=expected_mihomo_runtime,
                 expected_mihomo_sha=expected_mihomo_sha,
                 reconcile_reason=reconcile_reason, operation_id=operation_id, owner_matches=owner_matches,
+                **routing_arguments,
             )
         # checkpoint_path and expected source/revision are only available to the
         # outer rollback owner; these owner callback observations remain booleans.
@@ -2902,6 +2905,7 @@ def _install_acceptance_xray_generation_rollback_observer() -> None:
             expected_mihomo_runtime=expected_mihomo_runtime,
             expected_mihomo_sha=expected_mihomo_sha,
             reconcile_reason=reconcile_reason, operation_id=operation_id, owner_matches=observed_owner,
+            **routing_arguments,
         )
         emit("receipt_publish_result", {
             "ok": bool(result), "owner_callback_count": owner_calls["count"],
@@ -4393,6 +4397,7 @@ def build_app(socket_path: Path):
         original_legacy_publish = xray_subscription_service._publish_legacy_admission_mihomo_receipt
         original_shared_publish = xray_subscription_service._publish_mihomo_udp_receipt_with_owner
         original_runtime_facts = xray_subscription_service._legacy_admission_runtime_fence_facts
+        original_bindings_parity = xray_subscription_service._current_bindings_artifact_parity
         original_source_fingerprint = xray_subscription_service._legacy_admission_source_fingerprint
         original_native_udp_proof = mihomo_reconcile._native_udp_policy_proof
         original_write_receipt = mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state
@@ -4638,6 +4643,35 @@ def build_app(socket_path: Path):
                 mihomo_reconcile_fingerprint._current_runtime_incarnation = original_current_runtime_incarnation
                 mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state = original_write_receipt
 
+        def observed_bindings_parity(bindings, modes):
+            result = original_bindings_parity(bindings, modes)
+            if not result[0]:
+                from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
+                from fwrouter_api.services.xray_bindings import _bindings_for_state, get_xray_handoff_listeners
+                try:
+                    artifact = json.loads(_xray_bindings_path().read_bytes())
+                    expected = _bindings_for_state(bindings)
+                    keys = ("subject_id", "client_id", "client_uuid", "client_email", "selected_server_id",
+                            "selected_server_source", "handoff_proxy_name", "server_name", "server_runtime_name",
+                            "match_key", "handoff")
+                    def columns(items, key):
+                        return sorted(json.dumps(row.get(key), sort_keys=True) for row in items if isinstance(row, dict))
+                    actual = artifact.get("bindings") or []
+                    diagnostic = {
+                        "schema": "fwrouter-bindings-parity-diagnostic/v1",
+                        "actual_bindings_count": len(actual), "expected_bindings_count": len(expected),
+                        "actual_modes_count": len(artifact.get("client_modes") or []), "expected_modes_count": len(modes),
+                        "bindings_different_fields": [key for key in keys if columns(actual,key) != columns(expected,key)],
+                        "modes_different_fields": [key for key in ("subject_id", "client_id", "client_uuid", "client_email", "desired_mode", "effective_mode", "mode_support_state")
+                                                  if columns(artifact.get("client_modes") or [],key) != columns(modes,key)],
+                        "handoff_count_matches": len(artifact.get("handoff_listeners") or []) == len(get_xray_handoff_listeners(bindings)),
+                        "all_binding_status_applied": all(row.get("status") == "applied" for row in actual),
+                    }
+                    print("FWROUTER_ACCEPTANCE_BINDINGS_PARITY " + json.dumps(diagnostic, sort_keys=True), flush=True)
+                except Exception:
+                    print('FWROUTER_ACCEPTANCE_BINDINGS_PARITY {"diagnostic_available":false}', flush=True)
+            return result
+
         def observed_writer_guard_held() -> bool:
             result = bool(original_writer_guard_held())
             if (receipt_observation is not None
@@ -4645,6 +4679,7 @@ def build_app(socket_path: Path):
                 receipt_observation["writer_guard_held"] = result
             return result
 
+        xray_subscription_service._current_bindings_artifact_parity = observed_bindings_parity
         adapter._runner = guarded_runner
         if callable(original_generation_stage):
             adapter.stage_subscription_generation = observed_generation_stage
@@ -4673,6 +4708,7 @@ def build_app(socket_path: Path):
         finally:
             if receipt_observation is not None:
                 receipt_context.admission_active = False
+            xray_subscription_service._current_bindings_artifact_parity = original_bindings_parity
             adapter._runner = original_runner
             if callable(original_generation_stage):
                 adapter.stage_subscription_generation = original_generation_stage

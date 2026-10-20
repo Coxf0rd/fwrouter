@@ -169,7 +169,7 @@ def test_mihomo_runtime_matching_scalar_metadata_keeps_policy_and_native_checks(
     monkeypatch.setattr(
         mihomo_config_status_service,
         "_ensure_selector_groups",
-        lambda active: active["proxy-groups"],
+        lambda active, **_kwargs: active["proxy-groups"],
     )
     monkeypatch.setattr(
         mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
@@ -298,7 +298,7 @@ def test_mihomo_runtime_resolves_auto_logical_target_to_unique_generated_name(
         },
         "proxy-groups": [],
     }
-    config["proxy-groups"] = mihomo_config_status_service._ensure_selector_groups(config)
+    config["proxy-groups"] = mihomo_config_status_service._ensure_selector_groups(config, routing=routing)
     groups_by_name = {group["name"]: group for group in config["proxy-groups"]}
     auto_targets = groups_by_name["vpn-auto"]["proxies"]
     global_targets = groups_by_name["vpn-global"]["proxies"]
@@ -497,6 +497,141 @@ def _seed_runtime_proxy_server(
             """,
             (server_id, 1 if vpn_auto else 0, vpn_auto_priority, 1 if global_list else 0),
         )
+
+
+@pytest.mark.parametrize(
+    ("selected_case", "expected_membership", "expected_selected"),
+    [
+        ("reject", True, False),
+        ("target", True, True),
+        ("direct", False, False),
+        ("foreign", False, False),
+        ("missing", False, False),
+    ],
+)
+def test_fixed_logical_profile_materialization_requires_owned_group_and_native_membership(
+    monkeypatch, tmp_path: Path,
+    selected_case: str, expected_membership: bool, expected_selected: bool,
+) -> None:
+    from fwrouter_api.services import mihomo_config_paths
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    fixed_id = "fixed-logical-proof"
+    group_name = "Fixed Logical Proof [a1b2c3d4e5f6]"
+    member_identity = "endpoint-proof-1"
+    member_name = f"{group_name} :: {member_identity[:12]}"
+    raw = {
+        "name": group_name,
+        "_fwrouter_runtime_name": group_name,
+        "_fwrouter_topology": {
+            "kind": "logical_profile",
+            "runtime_policy": "fallback",
+            "endpoints": [{
+                "identity": member_identity,
+                "runtime": {
+                    "type": "vless",
+                    "server": "198.18.0.44",
+                    "port": 443,
+                    "uuid": "00000000-0000-4000-8000-000000000002",
+                    "name": "Endpoint proof",
+                },
+            }],
+        },
+    }
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers(server_id, server_name, provider_name, inventory_state, raw_json) "
+            "VALUES (?, ?, 'pytest', 'active', ?)",
+            (fixed_id, group_name, json.dumps(raw, sort_keys=True)),
+        )
+        connection.execute(
+            "INSERT INTO server_preferences(server_id, vpn_auto, global_list) VALUES (?, 0, 0)",
+            (fixed_id,),
+        )
+
+    routing = {
+        "server_mode": "fixed",
+        "desired_fixed_server_id": fixed_id,
+        "applied_fixed_server_id": fixed_id,
+        "desired_mode": "selective",
+        "applied_mode": "selective",
+        "selective_default": "direct",
+        "apply_state": "pending",
+    }
+    config = mihomo_config_service.build_mihomo_config(routing, xray_handoff_assignments=[])
+    base_path = tmp_path / "managed-mihomo.yaml"
+    _write_yaml(base_path, config)
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: str(base_path))
+    monkeypatch.setattr(mihomo_config_status_service, "_resolved_base_config_path", lambda: str(base_path))
+    native_members = [{"runtime_identity": member_name}]
+    monkeypatch.setattr(
+        mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
+        "health",
+        lambda: SimpleNamespace(
+            runtime_state="running",
+            details={"selectors": {
+                "vpn_global_exists": True,
+                "vpn_global_has_vpn_auto": False,
+                "vpn_global_targets": ["REJECT", group_name],
+                "vpn_auto_targets": ["REJECT"],
+                # Real adapter hides non-server REJECT from active identity,
+                # while retaining the raw independently observed selection.
+                "vpn_global_now": None,
+                "vpn_global_selected_target": {
+                    "reject": "REJECT",
+                    "target": group_name,
+                    "direct": "DIRECT",
+                    "foreign": "foreign-runtime-target",
+                    "missing": None,
+                }[selected_case],
+            }},
+        ),
+    )
+    group_readbacks: list[str] = []
+
+    def read_groups(targets: list[str]) -> list[dict[str, object]]:
+        group_readbacks.extend(targets)
+        return [{
+            "ok": True,
+            "logical_runtime_target": group_name,
+            "members": native_members,
+            "effective_member_runtime_identity": member_name,
+        }]
+
+    monkeypatch.setattr(
+        mihomo_config_status_service.DEFAULT_MIHOMO_ADAPTER,
+        "get_logical_groups_state",
+        read_groups,
+    )
+
+    proof = mihomo_config_status_service.mihomo_runtime_fixed_target_materialized(routing)
+
+    assert proof["native_membership_ok"] is expected_membership, proof
+    assert proof["ok"] is expected_membership and proof["selected_fixed_target"] is expected_selected, proof
+    assert proof["fixed_runtime_target"] == group_name
+    assert proof["logical_group_native_membership_ok"] is True
+    assert proof["vpn_global_now"] == {
+        "reject": "REJECT",
+        "target": group_name,
+        "direct": "DIRECT",
+        "foreign": "foreign-runtime-target",
+        "missing": "",
+    }[selected_case]
+
+    strict_proof = mihomo_config_status_service.mihomo_runtime_fixed_target_materialized(
+        routing, require_selected=True,
+    )
+    assert strict_proof["native_membership_ok"] is expected_membership
+    assert strict_proof["selected_fixed_target"] is expected_selected
+    assert strict_proof["ok"] is expected_selected
+    assert group_readbacks == [group_name, group_name]
+
+    native_members[:] = [{"runtime_identity": "unexpected-member"}]
+    wrong_native_membership = mihomo_config_status_service.mihomo_runtime_fixed_target_materialized(routing)
+    assert wrong_native_membership["ok"] is False
+    assert wrong_native_membership["native_membership_ok"] is expected_membership
+    assert wrong_native_membership["logical_group_native_membership_ok"] is False
 
 
 def _base_candidate() -> dict:
@@ -1413,7 +1548,9 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
     *,
     format_only_candidate: bool,
     native_proof_ok: bool,
-) -> None:
+    verification_callback_ok: bool | None = None,
+    fixed_restart_wiring: bool = False,
+) -> dict:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._mihomo_incarnation", lambda: "pytest-runtime")
@@ -1428,10 +1565,20 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
     candidate_config = mihomo_config_service.build_mihomo_config({"selective_default": "direct"})
     base_path = Path(mihomo_config_service._resolved_base_config_path())
     candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
-    _write_yaml(base_path, candidate_config)
+    _write_yaml(base_path, {"rules": ["MATCH,REJECT"]} if fixed_restart_wiring else candidate_config)
     restart_calls: list[str] = []
+    materialization_callback = lambda **kwargs: {"ok": False}
 
-    def _fake_restart_mihomo_container(*, action: str = "restart", heartbeat=None):
+
+    def _fake_restart_mihomo_container(*, action: str = "restart", heartbeat=None, **kwargs):
+        if fixed_restart_wiring:
+            from fwrouter_api.adapters.xray_common import xray_writer_guard_is_held
+            assert xray_writer_guard_is_held()
+            assert kwargs["selection_fenced"] is True
+            assert type(kwargs["expected_selection_revision"]) is int
+            assert kwargs["generation_verification_callback"] is materialization_callback
+            assert kwargs["operation_id"]
+            raise RuntimeError("FIXED_RESTART_WIRING_REACHED")
         restart_calls.append(action)
         return {"ok": True, "action": action}
 
@@ -1482,9 +1629,36 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         "transparent_state_consistency_ok": True,
     })
 
-    result = mihomo_config_service.reconcile_mihomo_runtime({"selective_default": "direct"})
+    with db_session() as connection:
+        revision_before = read_selection_revision(connection)
+    verification_callback = None
+    if verification_callback_ok is not None:
+        def verification_callback(*, operation_id: str, expected_selection_revision: int) -> dict:
+            return {
+                "ok": verification_callback_ok,
+                "operation_id": operation_id,
+                "selection_revision": expected_selection_revision,
+            }
 
-    if native_proof_ok:
+    if fixed_restart_wiring:
+        monkeypatch.setattr(mihomo_reconcile_service, "promote_mihomo_candidate_config", lambda **kwargs: {"ok": True})
+        with pytest.raises(RuntimeError, match="FIXED_RESTART_WIRING_REACHED"):
+            mihomo_config_service.reconcile_mihomo_runtime(
+                {"selective_default": "direct", "server_mode": "fixed", "desired_fixed_server_id": "synthetic-fixed"},
+                verification_callback=verification_callback,
+                generation_materialization_callback=materialization_callback,
+            )
+        return {}
+    result = mihomo_config_service.reconcile_mihomo_runtime(
+        {"selective_default": "direct"},
+        verification_callback=verification_callback,
+    )
+
+    if verification_callback_ok is False:
+        assert result["ok"] is False
+        assert result["stage"] == "verification"
+        assert result.get("reentry_generation_fence") is None
+    elif native_proof_ok:
         assert result["ok"] is True
         assert result["reconcile_action"] == "none"
         assert result["reconcile_reason"] == "unchanged_config"
@@ -1492,12 +1666,22 @@ def _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         assert result["candidate"]["rules_count"] == len(candidate_config["rules"])
         assert "base_config" not in (result["config"] or {})
         assert "candidate_config" not in (result["config"] or {})
+        if verification_callback_ok is True:
+            fence = result.get("reentry_generation_fence")
+            assert isinstance(fence, dict)
+            assert fence["operation_id"] == result["operation_id"]
+            assert fence["before_revision"] == revision_before
+            assert fence["selection_revision"] == revision_before
+            assert fence["unchanged_config"] is True
+            assert fence["native_proof_verified"] is True
+            assert fence["publication_verified"] is True
     else:
         assert result["ok"] is False
         assert result["stage"] == "native_udp_policy_readback"
         assert result["reconcile_reason"] == "native_policy_or_fence_unconfirmed"
     assert restart_calls == []
-    assert native_proof_calls
+    assert bool(native_proof_calls) == (verification_callback_ok is not False)
+    return result
 
 
 def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
@@ -1511,6 +1695,28 @@ def test_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
         format_only_candidate=False,
         native_proof_ok=True,
     )
+
+
+def test_unchanged_reconcile_returns_only_same_revision_owner_receipt(monkeypatch, tmp_path: Path) -> None:
+    result = _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=False,
+        native_proof_ok=True,
+        verification_callback_ok=True,
+    )
+    assert result["reentry_generation_fence"]["selection_revision"] == result["reentry_generation_fence"]["before_revision"]
+
+
+def test_unchanged_reconcile_refuses_receipt_when_owner_readback_fails(monkeypatch, tmp_path: Path) -> None:
+    result = _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch,
+        tmp_path,
+        format_only_candidate=False,
+        native_proof_ok=True,
+        verification_callback_ok=False,
+    )
+    assert result.get("reentry_generation_fence") is None
 
 
 @pytest.mark.parametrize("format_only_candidate", [False, True])
@@ -2693,3 +2899,270 @@ def test_checkpoint_policy_safe_loaders_preserve_failclosed_decisions(monkeypatc
     assert decisions() == expected
     monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
     assert decisions() == expected
+
+
+def test_real_reconcile_forwards_separate_fenced_fixed_materialization_callback(monkeypatch, tmp_path: Path) -> None:
+    _assert_reconcile_mihomo_runtime_skips_restart_for_unchanged_config(
+        monkeypatch, tmp_path, format_only_candidate=False, native_proof_ok=True,
+        verification_callback_ok=True, fixed_restart_wiring=True,
+    )
+
+
+@pytest.mark.parametrize("core_apply_state", ["clean", "pending"])
+def test_fresh_fixed_structural_reconcile_reserves_promotes_and_publishes_receipt(
+    monkeypatch, tmp_path: Path, core_apply_state: str,
+) -> None:
+    """Connect fresh R→R+1 reservation, real promotion, restart seam and receipt in SQLite."""
+    import hashlib
+
+    from fwrouter_api.services import core_intent, mihomo_config_paths, mihomo_runtime
+    from fwrouter_api.services.mihomo_reconcile import _file_hash
+    from fwrouter_api.services.server_global_selection import (
+        _capture_fixed_apply_context,
+        _fixed_generation_callbacks,
+        _fixed_materialization_callback,
+        set_global_fixed_server,
+    )
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state='enabled', lifecycle_mode='managed', apply_state=? "
+            "WHERE module_name='core'",
+            (core_apply_state,),
+        )
+        connection.execute(
+            "INSERT INTO servers(server_id, server_name, provider_name, raw_json, inventory_state) "
+            "VALUES ('fresh-fixed-owner', 'Runtime fresh-fixed-owner', 'pytest', ?, 'active')",
+            (json.dumps({"name": "Runtime fresh-fixed-owner", "type": "socks5", "server": "198.18.0.11", "port": 12345}),),
+        )
+
+    base_path = tmp_path / "mihomo-base.yaml"
+    candidate_path = tmp_path / "mihomo-candidate.yaml"
+    last_good_path = tmp_path / "mihomo-last-good"
+    before_bytes = b"rules:\n  - MATCH,REJECT\n"
+    candidate_bytes = b"rules:\n  - MATCH,DIRECT\n"
+    base_path.write_bytes(before_bytes)
+    runtime_id = {"value": "fresh-fixed-before"}
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: runtime_id["value"])
+    monkeypatch.setattr(mihomo_reconcile_service, "_mihomo_incarnation", lambda: runtime_id["value"])
+    monkeypatch.setattr(mihomo_reconcile_fingerprint_service, "_current_runtime_incarnation", lambda: runtime_id["value"])
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: str(base_path))
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_candidate_config_path", lambda: str(candidate_path))
+    monkeypatch.setattr(mihomo_config_service, "_resolved_base_config_path", lambda: str(base_path))
+    monkeypatch.setattr(mihomo_config_service, "_resolved_candidate_config_path", lambda: str(candidate_path))
+    monkeypatch.setattr(mihomo_config_service, "_resolved_last_good_mihomo_dir", lambda: last_good_path)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint_service, "_resolved_base_config_path", lambda: str(base_path))
+    monkeypatch.setattr(mihomo_reconcile_fingerprint_service, "_resolved_candidate_config_path", lambda: str(candidate_path))
+    monkeypatch.setattr(mihomo_config_service, "managed_runtime_operation_blocked", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mihomo_reconcile_service, "current_mihomo_input_fingerprint", lambda _routing: {"hash": "a" * 64})
+    monkeypatch.setattr(mihomo_reconcile_service, "mihomo_input_unchanged", lambda _fingerprint: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription._subscription_inventory_generation_gate",
+        lambda _admission, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(mihomo_reconcile_service, "_inventory_candidate_promotion_blocked", lambda _admission: None)
+    def write_candidate(_routing=None):
+        candidate_path.write_bytes(candidate_bytes)
+        return {"candidate_path": str(candidate_path), "rules": ["MATCH,DIRECT"]}
+
+    monkeypatch.setattr(mihomo_config_service, "write_mihomo_candidate_config", write_candidate)
+    monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(mihomo_config_service, "_summarize_candidate", lambda _candidate: {"rules_count": 1})
+    monkeypatch.setattr(mihomo_reconcile_service, "_native_udp_policy_proof", lambda: {
+        "ok": True,
+        "native_top_level_rules_match": True,
+        "selector_membership_matches": True,
+        "guarded_rules_match": True,
+    })
+    monkeypatch.setattr(
+        mihomo_config_status_service, "mihomo_runtime_fixed_target_materialized",
+        lambda _routing, **_kwargs: {
+            "ok": True,
+            "fixed_runtime_target": "Runtime fresh-fixed-owner",
+            "config_membership_ok": True,
+            "native_membership_ok": True,
+            "logical_group_native_membership_ok": True,
+            "vpn_global_now": "REJECT",
+            "selected_fixed_target": False,
+        },
+    )
+
+    desired = set_global_fixed_server("fresh-fixed-owner", requested_by="pytest")
+    assert desired["ok"] is True
+    token = _capture_fixed_apply_context(desired["routing"])
+    assert token is not None
+    source_revision = token["selection_revision"]
+    reserve, publish = _fixed_generation_callbacks(desired["routing"], token)
+    phases: list[str] = []
+
+    def restart(**kwargs):
+        assert kwargs["selection_fenced"] is True
+        assert kwargs["expected_selection_revision"] == source_revision + 1
+        assert kwargs["operation_id"]
+        assert kwargs["generation_verification_callback"] is materialize
+        runtime_id["value"] = "fresh-fixed-after-restart"
+        proof = kwargs["generation_verification_callback"](
+            operation_id=kwargs["operation_id"],
+            expected_selection_revision=kwargs["expected_selection_revision"],
+        )
+        assert proof["ok"] is True, proof
+        phases.append("restart_readback")
+        return {"ok": True, "action": kwargs["action"]}
+
+    monkeypatch.setattr(mihomo_config_service, "restart_mihomo_container", restart)
+    materialize = _fixed_materialization_callback(desired["routing"], token)
+    result = mihomo_reconcile_service.reconcile_mihomo_runtime(
+        desired["routing"],
+        job_id="fresh-fixed-reconcile",
+        verification_callback=materialize,
+        generation_materialization_callback=materialize,
+        generation_reservation_callback=reserve,
+        generation_completion_callback=publish,
+        _inventory_admission=object(),
+    )
+
+    assert result["ok"] is True, result
+    assert result["promoted"]["promoted"] is True
+    assert result["container"]["action"] == "force_recreate"
+    assert result["reentry_generation_fence"]["before_revision"] == source_revision
+    assert result["reentry_generation_fence"]["selection_revision"] == source_revision + 1
+    assert phases == ["restart_readback"]
+    assert _file_hash(str(base_path)) == hashlib.sha256(candidate_bytes).hexdigest()
+    assert mihomo_reconcile_fingerprint_service._load_state()["active_config_hash"] == _file_hash(str(base_path))
+    with db_session() as connection:
+        assert read_selection_revision(connection) == source_revision + 1
+        marker = _load_row(connection)
+    assert marker["workflow"]["phase"] == "mihomo_generation_verified"
+    reservation = marker["workflow"]["mihomo_generation_reservation"]
+    receipt = marker["workflow"]["mihomo_generation_receipt"]
+    assert reservation["before_revision"] == source_revision
+    assert reservation["selection_revision"] == source_revision + 1
+    assert receipt["operation_id"] == reservation["operation_id"]
+    assert receipt["active_config_hash"] == _file_hash(str(base_path))
+
+
+@pytest.mark.parametrize("restart_already_happened", [False, True])
+def test_fixed_generation_resume_uses_active_effect_phase_without_unknown_reload(
+    monkeypatch, tmp_path: Path, restart_already_happened: bool,
+) -> None:
+    """The real reconcile path retries an unfinished restart, but never reloads UNKNOWN."""
+    import hashlib
+
+    from fwrouter_api.services.mihomo_reconcile import _write_fixed_generation_checkpoint
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _enable_vpn_module()
+    monkeypatch.setattr(mihomo_config_service, "_resolved_last_good_mihomo_dir", lambda: tmp_path / "last-good")
+    runtime_id = {"value": "mihomo-before-fixed-operation"}
+    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile._mihomo_incarnation", lambda: runtime_id["value"])
+    monkeypatch.setattr(mihomo_reconcile_fingerprint_service, "_current_runtime_incarnation", lambda: runtime_id["value"])
+    monkeypatch.setattr(mihomo_reconcile_service, "current_mihomo_input_fingerprint", lambda _routing: {"hash": "a" * 64})
+    monkeypatch.setattr(mihomo_reconcile_service, "mihomo_input_unchanged", lambda _fingerprint: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.subscription._subscription_inventory_generation_gate",
+        lambda _admission, **_kwargs: {"ok": True},
+    )
+
+    base_path = Path(mihomo_config_service._resolved_base_config_path())
+    candidate_path = Path(mihomo_config_service._resolved_candidate_config_path())
+    candidate_text = yaml.safe_dump({"rules": ["MATCH,DIRECT"]}, sort_keys=False)
+    candidate_bytes = candidate_text.encode("utf-8")
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    base_path.write_bytes(candidate_bytes)
+    def write_candidate(_routing=None):
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_bytes(candidate_bytes)
+        return {"candidate_path": str(candidate_path), "rules": ["MATCH,DIRECT"]}
+
+    monkeypatch.setattr(mihomo_config_service, "write_mihomo_candidate_config", write_candidate)
+    monkeypatch.setattr(mihomo_config_service, "validate_mihomo_candidate_config", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(mihomo_config_service, "_summarize_candidate", lambda _candidate: {"rules_count": 1})
+    monkeypatch.setattr(mihomo_reconcile_service, "_build_config_status_summary", lambda **_kwargs: {})
+    monkeypatch.setattr(mihomo_reconcile_service, "_native_udp_policy_proof", lambda: pytest.fail("UNKNOWN readback must not be replaced by a native proof/write"))
+    operation_id = "8ab7f539-32af-4cf9-acf3-b75d48b43b7d"
+    checkpoint = _write_fixed_generation_checkpoint(operation_id, b"before generation\n")
+    assert checkpoint is not None
+    with db_session() as connection:
+        selection_revision = advance_selection_revision(
+            connection, expected_revision=read_selection_revision(connection),
+        )
+    assert selection_revision is not None
+    before_hash = hashlib.sha256(b"before generation\n").hexdigest()
+    candidate_hash = hashlib.sha256(candidate_bytes).hexdigest()
+    reservation = {
+        "schema": "mihomo-fixed-generation-reservation/v1",
+        "operation_id": operation_id,
+        "job_id": "fixed-resume-test",
+        "before_revision": selection_revision - 1,
+        "selection_revision": selection_revision,
+        "input_fingerprint_hash": "a" * 64,
+        "candidate_config_hash": candidate_hash,
+        "before_active_config_hash": before_hash,
+        "before_runtime_incarnation": "mihomo-before-fixed-operation",
+        "checkpoint_ref": checkpoint,
+    }
+    if restart_already_happened:
+        runtime_id["value"] = "mihomo-after-fixed-operation"
+
+    phases: list[str] = []
+
+    def validate_reservation(*, mode: str, expected_selection_revision: int, reservation: dict, **_proof):
+        assert mode == "validate"
+        phases.append("reservation_validated")
+        with db_session() as connection:
+            assert read_selection_revision(connection) == expected_selection_revision == selection_revision
+        assert reservation == reservation_expected
+        return {"ok": True, "before_revision": reservation["before_revision"], "selection_revision": selection_revision}
+
+    reservation_expected = reservation
+
+    def verification(*, operation_id: str, expected_selection_revision: int):
+        phases.append("readback_attempted")
+        return {"ok": False, "operation_id": operation_id, "selection_revision": expected_selection_revision}
+
+    def restart(**_kwargs):
+        phases.append("restart_attempted")
+        return {"ok": True}
+
+    monkeypatch.setattr(mihomo_config_service, "restart_mihomo_container", restart)
+    monkeypatch.setattr(mihomo_reconcile_service, "promote_mihomo_candidate_config", lambda **_kwargs: {"ok": True, "promoted": True})
+
+    if restart_already_happened:
+        result = mihomo_reconcile_service.reconcile_mihomo_runtime(
+            {"server_mode": "fixed", "desired_fixed_server_id": "fixed-resume-target"},
+            job_id="fixed-resume-test",
+            verification_callback=verification,
+            generation_materialization_callback=verification,
+            generation_reservation_callback=validate_reservation,
+            generation_completion_callback=lambda **_kwargs: pytest.fail("unproven readback must not publish a receipt"),
+            fixed_generation_reservation=reservation,
+        )
+        assert result["ok"] is False
+        assert result["stage"] == "verification"
+        assert result["last_good_retained"] is False
+        assert result["checkpoint_retained"] is True
+        assert phases == ["reservation_validated", "readback_attempted"]
+    else:
+        monkeypatch.setattr(
+            mihomo_config_service, "restart_mihomo_container",
+            lambda **_kwargs: phases.append("restart_attempted") or (_ for _ in ()).throw(RuntimeError("RESUME_RESTART_REACHED")),
+        )
+        with pytest.raises(RuntimeError, match="RESUME_RESTART_REACHED"):
+            mihomo_reconcile_service.reconcile_mihomo_runtime(
+                {"server_mode": "fixed", "desired_fixed_server_id": "fixed-resume-target"},
+                job_id="fixed-resume-test",
+                verification_callback=verification,
+                generation_materialization_callback=verification,
+                generation_reservation_callback=validate_reservation,
+                generation_completion_callback=lambda **_kwargs: pytest.fail("restart seam must precede receipt"),
+                fixed_generation_reservation=reservation,
+            )
+        assert phases == ["reservation_validated", "reservation_validated", "restart_attempted"]

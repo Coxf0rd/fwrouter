@@ -164,6 +164,12 @@
       "contract": "Normal packet-profile startup preserves an explicitly admitted selective/VPN legacy inventory."
     },
     {
+      "nodeid": "tests/application_acceptance/test_packet_dataplane.py::test_fixed_legacy_admission_survives_two_normal_startups",
+      "suite": "packet",
+      "level": "L3",
+      "contract": "An off-list active fixed target survives owned apply, strict admission and two startups."
+    },
+    {
       "nodeid": "tests/application_acceptance/test_packet_dataplane.py::test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks",
       "suite": "packet",
       "level": "L3",

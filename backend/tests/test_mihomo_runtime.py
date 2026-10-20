@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from contextlib import nullcontext
+
 from fwrouter_api.services import mihomo_runtime
 from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+
+_REAL_RESTART = mihomo_runtime.restart_mihomo_container
 
 
 def test_mihomo_compose_probe_uses_fwrouter_docker_cli_state(monkeypatch, tmp_path: Path) -> None:
@@ -152,3 +157,88 @@ def test_mihomo_restart_still_fails_when_selector_restore_fails(monkeypatch) -> 
     assert result["controller_wait"]["policy_proven"] is False
     assert result["selector_restore"] == selector_restore
     assert result["ok"] is False
+
+
+@pytest.mark.parametrize("failure", [None, "unfenced", "missing_lock", "stale_revision", "selected", "exception", "cas_drift"])
+def test_fenced_fixed_generation_restart_uses_materialization_restore_callback(monkeypatch, tmp_path: Path, failure) -> None:
+    from types import SimpleNamespace
+
+    from _test_support import configure_test_state_dir
+    from fwrouter_api.adapters.xray_common import xray_writer_guard
+    from fwrouter_api.db.connection import db_session, initialize_database
+    from fwrouter_api.services import core_intent, mihomo_runtime, selector
+    from fwrouter_api.services.server_state import ensure_routing_global_state
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    configure_test_state_dir(monkeypatch, tmp_path)
+    initialize_database()
+    ensure_routing_global_state()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO servers(server_id, server_name, provider_name, inventory_state, raw_json) "
+            "VALUES ('fixed-pending-restart', 'Fixed Pending Restart', 'pytest', 'active', '{}')"
+        )
+        connection.execute(
+            """
+            UPDATE routing_global_state
+            SET server_mode='fixed', desired_fixed_server_id='fixed-pending-restart',
+                applied_fixed_server_id='fixed-pending-restart',
+                fixed_server_until=datetime('now', '+1 day'), apply_state='pending',
+                error_code=NULL, error_message=NULL
+            WHERE id=1
+            """
+        )
+        expected_revision = read_selection_revision(connection)
+
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "pending-fixed-runtime")
+    monkeypatch.setattr(mihomo_runtime, "_run_compose_command", lambda *_args, **_kwargs: {"ok": True})
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_container_status", lambda: {"ok": True})
+    monkeypatch.setattr(mihomo_runtime, "wait_for_mihomo_controller", lambda **_kwargs: {"ok": True})
+    monkeypatch.setattr(selector, "_active_selector_runtime", lambda: (
+        {"adapter_id": "mihomo", "capabilities": ["health", "list_servers", "apply_selector"]},
+        SimpleNamespace(
+            health=lambda: SimpleNamespace(runtime_state="running", details={"selectors": {}}),
+            list_servers=lambda: [],
+            apply_server_to_selector=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("generation restore must prove membership without a selector PUT")
+            ),
+        ),
+    ))
+    callback_receipts = []
+
+    def membership_proof(**kwargs):
+        callback_receipts.append((kwargs["operation_id"], kwargs["expected_selection_revision"]))
+        if failure == "exception":
+            raise OSError("synthetic readback failure")
+        if failure == "cas_drift":
+            from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+            with db_session() as connection:
+                assert advance_selection_revision(connection, expected_revision=expected_revision) is not None
+        return {**kwargs, "selection_revision": kwargs["expected_selection_revision"],
+                "ok": True, "config_membership_ok": True, "native_membership_ok": True,
+                "logical_group_native_membership_ok": True,
+                "vpn_global_now": "fixed-target" if failure == "selected" else "REJECT",
+                "selected_fixed_target": failure == "selected"}
+
+    monkeypatch.setattr(mihomo_runtime, "managed_runtime_operation_blocked", lambda *a, **kw: None)
+    with (nullcontext() if failure == "missing_lock" else xray_writer_guard(timeout_seconds=5.0)):
+        result = _REAL_RESTART(
+            action="restart", selection_fenced=failure != "unfenced",
+            expected_selection_revision=expected_revision + (1 if failure == "stale_revision" else 0),
+            generation_verification_callback=membership_proof,
+            operation_id="fixed-generation-operation",
+        )
+
+    if failure is not None:
+        assert result["ok"] is False, result
+        if failure in {"unfenced", "missing_lock", "stale_revision"}:
+            assert callback_receipts == []
+        return
+    assert result["ok"] is True, result
+    assert result["selector_restore"]["generation_materialization"] is True
+    assert result["selector_restore"]["selected_fixed_target"] is False
+    assert callback_receipts == [("fixed-generation-operation", expected_revision)]

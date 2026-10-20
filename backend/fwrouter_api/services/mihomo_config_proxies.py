@@ -11,6 +11,7 @@ from fwrouter_api.services.custom_servers import (
 from fwrouter_api.services.auto_eligibility import auto_eligible_sql
 from fwrouter_api.services.mihomo_config_inbounds import _normalize_proxy_list
 from fwrouter_api.services.mihomo_config_rules import _load_subject_server_override_routes
+from fwrouter_api.adapters.mihomo import NON_SERVER_PROXY_TARGETS
 
 
 LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS = 300
@@ -80,8 +81,12 @@ def _logical_profile_members(raw: dict[str, Any], *, logical_runtime_name: str) 
     return members
 
 
-def _logical_profile_groups() -> list[dict[str, Any]]:
-    rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
+def _logical_profile_groups(*, explicit_server_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    rows = resolve_mihomo_runtime_proxy_rows(
+        inventory_state="active",
+        limit=1000,
+        explicit_server_ids=explicit_server_ids,
+    )
     groups: list[dict[str, Any]] = []
     for row in rows:
         raw = row.get("raw") if isinstance(row, dict) else None
@@ -299,13 +304,20 @@ def _runtime_proxy_inventory_count() -> int:
 def _merge_runtime_proxies(
     base_config: dict[str, Any],
     *,
+    routing: dict[str, Any] | None = None,
     required_last_good_names: set[str] | None = None,
     required_last_good_server_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    runtime_proxy_rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
+    fixed_server_id = _fixed_routing_server_id(routing)
+    explicit_server_ids = {fixed_server_id} if fixed_server_id else set()
+    runtime_proxy_rows = resolve_mihomo_runtime_proxy_rows(
+        inventory_state="active",
+        limit=1000,
+        explicit_server_ids=explicit_server_ids,
+    )
     active_logical_group_names = {
         str(group["name"])
-        for group in _logical_profile_groups()
+        for group in _logical_profile_groups(explicit_server_ids=explicit_server_ids)
     }
     inactive_logical_groups = _known_inactive_logical_profile_groups(
         active_group_names=active_logical_group_names,
@@ -532,9 +544,69 @@ def _load_custom_proxy_names() -> set[str]:
     return {str(row["server_name"]) for row in rows if str(row["server_name"] or "").strip()}
 
 
-def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]:
+def _fixed_routing_server_id(routing: dict[str, Any] | None) -> str:
+    if not isinstance(routing, dict) or str(routing.get("server_mode") or "auto").strip().lower() != "fixed":
+        return ""
+    return str(routing.get("desired_fixed_server_id") or "").strip()
+
+
+def _fixed_targetless_direct_compat(routing: dict[str, Any] | None) -> bool:
+    """Retain the legacy direct-only startup shape without fixed proof."""
+    if not isinstance(routing, dict):
+        return False
+    return bool(
+        str(routing.get("server_mode") or "auto").strip().lower() == "fixed"
+        and not _fixed_routing_server_id(routing)
+        and str(routing.get("desired_mode") or "").strip().lower() == "direct"
+        and str(routing.get("applied_mode") or "").strip().lower() == "direct"
+    )
+
+
+def _fixed_runtime_target(routing: dict[str, Any] | None) -> str | None:
+    server_id = _fixed_routing_server_id(routing)
+    if not server_id:
+        return None
+    rows = resolve_mihomo_runtime_proxy_rows(
+        inventory_state="active",
+        limit=1000,
+        explicit_server_ids={server_id},
+    )
+    matches = [
+        row for row in rows
+        if isinstance(row, dict) and str(row.get("server_id") or "").strip() == server_id
+    ]
+    if len(matches) != 1:
+        raise ValueError("FIXED_GLOBAL_SERVER_TARGET_UNRESOLVED")
+    raw = matches[0].get("raw")
+    if not isinstance(raw, dict):
+        raise ValueError("FIXED_GLOBAL_SERVER_TARGET_UNRESOLVED")
+    target = str(raw.get("_fwrouter_runtime_name") or raw.get("name") or "").strip()
+    if not target or target in NON_SERVER_PROXY_TARGETS:
+        raise ValueError("FIXED_GLOBAL_SERVER_TARGET_UNRESOLVED")
+    aliases = 0
+    for row in rows:
+        candidate = row.get("raw") if isinstance(row, dict) else None
+        if isinstance(candidate, dict) and str(
+            candidate.get("_fwrouter_runtime_name") or candidate.get("name") or ""
+        ).strip() == target:
+            aliases += 1
+            if aliases > 1:
+                raise ValueError("FIXED_GLOBAL_SERVER_TARGET_AMBIGUOUS")
+    return target
+
+
+def _ensure_selector_groups(
+    base_config: dict[str, Any],
+    *,
+    routing: dict[str, Any] | None = None,
+    fixed_runtime_target: str | None = None,
+) -> list[dict[str, Any]]:
+    if fixed_runtime_target is None:
+        fixed_runtime_target = _fixed_runtime_target(routing)
+    fixed_server_id = _fixed_routing_server_id(routing)
+    explicit_server_ids = {fixed_server_id} if fixed_server_id else set()
     existing_groups = base_config.get("proxy-groups") if isinstance(base_config.get("proxy-groups"), list) else []
-    logical_profile_groups = _logical_profile_groups()
+    logical_profile_groups = _logical_profile_groups(explicit_server_ids=explicit_server_ids)
     stale_generated_groups = _stale_generated_logical_profile_group_names(
         base_config,
         logical_profile_groups=logical_profile_groups,
@@ -587,11 +659,28 @@ def _ensure_selector_groups(base_config: dict[str, Any]) -> list[dict[str, Any]]
         "proxies": [*vpn_auto_names, "REJECT"],
     }
 
-    vpn_global_proxies = ["vpn-auto"]
-    for name in global_list_proxy_names:
-        if name not in vpn_global_proxies:
-            vpn_global_proxies.append(name)
-    vpn_global_proxies.append("REJECT")
+    fixed_mode = str((routing or {}).get("server_mode") or "auto").strip().lower() == "fixed"
+    targetless_direct_compat = _fixed_targetless_direct_compat(routing)
+    if fixed_server_id:
+        # A pending fixed intent must not inherit a cached vpn-auto or global
+        # target while the explicit owner is materializing and proving it.
+        # REJECT is the safe startup/default member; only the canonical fixed
+        # target is available to the later fenced selection owner.
+        vpn_global_proxies = ["REJECT"]
+        if fixed_runtime_target:
+            if fixed_runtime_target not in proxy_name_set:
+                raise ValueError("FIXED_GLOBAL_SERVER_TARGET_NOT_GENERATED")
+            vpn_global_proxies.append(fixed_runtime_target)
+    elif fixed_mode and not targetless_direct_compat:
+        # Keep malformed fixed intent fail-closed while structural validation
+        # rejects it before any native promotion or restart.
+        vpn_global_proxies = ["REJECT"]
+    else:
+        vpn_global_proxies = ["vpn-auto"]
+        for name in global_list_proxy_names:
+            if name not in vpn_global_proxies:
+                vpn_global_proxies.append(name)
+        vpn_global_proxies.append("REJECT")
     groups_by_name["vpn-global"] = {
         "name": "vpn-global",
         "type": "select",

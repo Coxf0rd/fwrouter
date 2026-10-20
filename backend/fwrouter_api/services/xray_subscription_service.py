@@ -1234,6 +1234,237 @@ def _prospective_profile_bindings(
     return bindings, modes, assignments
 
 
+_FIXED_XRAY_ROUTING_FIELDS = (
+    "desired_mode", "applied_mode", "selective_default", "server_mode",
+    "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until", "apply_state",
+)
+
+
+def _fixed_xray_routing_projection(routing: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(routing, dict):
+        return None
+    return {key: routing.get(key) for key in _FIXED_XRAY_ROUTING_FIELDS}
+
+
+def _fixed_xray_routing_snapshot_matches(
+    snapshot: dict[str, Any] | None,
+    workflow_revision: int | None,
+    *, expected_selection_revision: int | None = None,
+    origin_selection_revision: int | None = None,
+) -> bool:
+    """Rebind fixed candidate projection to the live route and owned workflow."""
+    if not isinstance(snapshot, dict) or type(workflow_revision) is not int:
+        return False
+    try:
+        from fwrouter_api.services.server_state import get_routing_global_state
+        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+
+        routing = get_routing_global_state(expire_ttl=False)
+        if not isinstance(routing, dict):
+            return False
+        if any(routing.get(key) != snapshot.get(key) for key in _FIXED_XRAY_ROUTING_FIELDS):
+            return False
+        if (routing.get("server_mode") != "fixed"
+                or not routing.get("desired_fixed_server_id")
+                or routing.get("applied_fixed_server_id") != routing.get("desired_fixed_server_id")
+                or routing.get("apply_state") != "clean"):
+            return False
+        with db_session() as connection:
+            pending = _load_row(connection)
+            current_selection_revision = read_selection_revision(connection)
+            core_revision = read_core_intent_revision(connection)
+            core_row = connection.execute(
+                "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
+            ).fetchone()
+            fixed_ttl_valid = connection.execute(
+                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
+                "FROM routing_global_state WHERE id=1",
+            ).fetchone()
+        workflow = pending.get("workflow") if isinstance(pending, dict) else None
+        if (type(expected_selection_revision) is not int
+                or current_selection_revision != expected_selection_revision
+                or type(origin_selection_revision) is not int
+                or fixed_ttl_valid is None or not bool(fixed_ttl_valid[0])):
+            return False
+        if (not isinstance(workflow, dict)
+                or workflow.get("selection_revision") != origin_selection_revision):
+            return False
+        if (core_row is None
+                or tuple(str(core_row[key]) for key in ("desired_state", "lifecycle_mode", "apply_state"))
+                    != tuple(workflow.get("core_snapshot") or ())
+                or core_revision != workflow.get("core_revision")):
+            return False
+        core_proof = _collect_legacy_admission_core_native_proof()
+        return bool(
+            isinstance(pending, dict) and pending.get("pending") is True
+            and pending.get("revision") == workflow_revision
+            and isinstance(workflow, dict) and workflow.get("kind") == "global_fixed_server"
+            and workflow.get("phase") == "core_verified"
+            and workflow.get("server_id") == snapshot.get("desired_fixed_server_id")
+            and workflow.get("fixed_until") == snapshot.get("fixed_server_until")
+            and core_proof.get("ok") is True
+            and core_proof.get("apply_id") == workflow.get("core_apply_id")
+            and core_proof.get("manifest_hash") == workflow.get("core_manifest_hash")
+            and core_proof.get("enforcement_level") == workflow.get("core_enforcement_level")
+            and core_proof.get("live_global_mode") == workflow.get("core_live_mode")
+        )
+    except Exception:
+        return False
+
+
+def _capture_ordinary_fixed_xray_context() -> tuple[dict[str, Any] | None, str | None]:
+    """Capture fixed intent for an ordinary Xray generation without claiming a workflow."""
+    try:
+        selection = _capture_generation_auto_selection()
+        routing = selection.get("routing") if isinstance(selection, dict) else None
+        if not isinstance(routing, dict) or routing.get("server_mode") != "fixed":
+            return None, None
+        target = str(routing.get("desired_fixed_server_id") or "").strip()
+        if not target:
+            # Preserve the existing targetless direct compatibility behavior.
+            return None, None
+        if (
+            routing.get("applied_fixed_server_id") != target
+            or routing.get("apply_state") != "clean"
+            or routing.get("desired_mode") != routing.get("applied_mode")
+        ):
+            return None, "fixed_routing_state_unverified"
+        with db_session() as connection:
+            ttl_valid = connection.execute(
+                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
+                "FROM routing_global_state WHERE id=1",
+            ).fetchone()
+            core_unavailable = _legacy_admission_core_unavailable_reason(connection)
+        if ttl_valid is None or not bool(ttl_valid[0]):
+            return None, "fixed_server_ttl_unverified"
+        if core_unavailable is not None:
+            return None, core_unavailable
+        core_runtime_fingerprint = _legacy_admission_core_runtime_fingerprint()
+        core_proof = _collect_legacy_admission_core_native_proof()
+        if core_proof.get("ok") is not True:
+            return None, str(core_proof.get("reason") or "core_native_enforcement_unproven")
+        selection_after_proof = _capture_generation_auto_selection()
+        with db_session() as connection:
+            ttl_after_proof = connection.execute(
+                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
+                "FROM routing_global_state WHERE id=1",
+            ).fetchone()
+            core_after_proof = _legacy_admission_core_unavailable_reason(connection)
+            core_runtime_after_proof = _legacy_admission_core_runtime_fingerprint(connection)
+        if (
+            selection_after_proof != selection
+            or ttl_after_proof is None or not bool(ttl_after_proof[0])
+            or core_after_proof is not None
+            or core_runtime_after_proof != core_runtime_fingerprint
+        ):
+            return None, "fixed_generation_context_changed_during_proof"
+        return {
+            "routing_snapshot": _fixed_xray_routing_projection(routing),
+            "selection_snapshot": selection,
+            "core_runtime_fingerprint": core_runtime_fingerprint,
+            "core_proof": {
+                key: core_proof.get(key) for key in (
+                    "manifest_hash", "apply_id", "enforcement_level", "live_global_mode",
+                )
+            },
+        }, None
+    except Exception:
+        return None, "fixed_generation_context_unavailable"
+
+
+def _ordinary_fixed_xray_context_matches(
+    context: dict[str, Any] | None, *, expected_selection_revision: int | None = None,
+) -> bool:
+    """Reprove durable fixed routing and its existing Core owner before/after each effect."""
+    if not isinstance(context, dict):
+        return False
+    try:
+        snapshot = context.get("routing_snapshot")
+        selection_before = context.get("selection_snapshot")
+        core_expected = context.get("core_proof")
+        if not isinstance(snapshot, dict) or not isinstance(selection_before, dict) or not isinstance(core_expected, dict):
+            return False
+        current_selection = _capture_generation_auto_selection()
+        revision = expected_selection_revision
+        if revision is None:
+            revision = selection_before.get("selection_revision")
+        if (
+            type(revision) is not int
+            or current_selection.get("selection_revision") != revision
+            or current_selection.get("selection_decision_id") != selection_before.get("selection_decision_id")
+            or _fixed_xray_routing_projection(current_selection.get("routing")) != snapshot
+        ):
+            return False
+        source_fingerprint = context.get("source_fingerprint")
+        if (not isinstance(source_fingerprint, str) or len(source_fingerprint) != 64
+                or _generation_source_fingerprint() != source_fingerprint):
+            return False
+        with db_session() as connection:
+            if (
+                _legacy_admission_core_unavailable_reason(connection) is not None
+                or _legacy_admission_core_runtime_fingerprint(connection)
+                != context.get("core_runtime_fingerprint")
+            ):
+                return False
+            ttl_valid = connection.execute(
+                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
+                "FROM routing_global_state WHERE id=1",
+            ).fetchone()
+            if ttl_valid is None or not bool(ttl_valid[0]):
+                return False
+        proof = _collect_legacy_admission_core_native_proof()
+        if proof.get("ok") is not True or not all(
+            proof.get(key) == core_expected.get(key)
+            for key in ("manifest_hash", "apply_id", "enforcement_level", "live_global_mode")
+        ):
+            return False
+        selection_after_proof = _capture_generation_auto_selection()
+        with db_session() as connection:
+            ttl_after_proof = connection.execute(
+                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
+                "FROM routing_global_state WHERE id=1",
+            ).fetchone()
+            core_after_proof = _legacy_admission_core_unavailable_reason(connection)
+            core_runtime_after_proof = _legacy_admission_core_runtime_fingerprint(connection)
+        return bool(
+            selection_after_proof.get("selection_revision") == revision
+            and selection_after_proof.get("selection_decision_id") == selection_before.get("selection_decision_id")
+            and _fixed_xray_routing_projection(selection_after_proof.get("routing")) == snapshot
+            and ttl_after_proof is not None and bool(ttl_after_proof[0])
+            and core_after_proof is None
+            and core_runtime_after_proof == context.get("core_runtime_fingerprint")
+            and _generation_source_fingerprint() == source_fingerprint
+        )
+    except Exception:
+        return False
+
+
+def _fixed_xray_generation_context_matches(
+    routing_snapshot: dict[str, Any] | None,
+    fixed_workflow_revision: int | None,
+    *,
+    expected_selection_revision: int | None = None,
+    fixed_origin_selection_revision: int | None = None,
+    ordinary_fixed_context: dict[str, Any] | None = None,
+) -> bool:
+    if fixed_workflow_revision is not None:
+        return _fixed_xray_routing_snapshot_matches(
+            routing_snapshot, fixed_workflow_revision,
+            expected_selection_revision=expected_selection_revision,
+            origin_selection_revision=fixed_origin_selection_revision,
+        )
+    if ordinary_fixed_context is not None:
+        return (
+            routing_snapshot == ordinary_fixed_context.get("routing_snapshot")
+            and _ordinary_fixed_xray_context_matches(
+                ordinary_fixed_context, expected_selection_revision=expected_selection_revision,
+            )
+        )
+    return True
+
+
 def _stage_profile_native_candidates(
     *,
     adapter: Any,
@@ -1242,11 +1473,31 @@ def _stage_profile_native_candidates(
     bindings: list[dict[str, Any]],
     client_modes: list[dict[str, Any]],
     assignments: list[dict[str, Any]],
+    routing_snapshot: dict[str, Any] | None = None,
+    fixed_workflow_revision: int | None = None,
+    fixed_origin_selection_revision: int | None = None,
+    ordinary_fixed_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Native-validate prospective Xray plus transition/final Mihomo configs."""
     config_path = getattr(adapter, "config_path", None)
     if config_path is None or not callable(getattr(adapter, "stage_subscription_generation", None)):
         return {"ok": False, "stage": "stage_api", "error_code": "XRAY_GENERATION_STAGE_UNAVAILABLE"}
+    routing_snapshot = _fixed_xray_routing_projection(routing_snapshot)
+    if (fixed_workflow_revision is not None
+            and not _fixed_xray_routing_snapshot_matches(
+                routing_snapshot, fixed_workflow_revision,
+                expected_selection_revision=fixed_origin_selection_revision,
+                origin_selection_revision=fixed_origin_selection_revision,
+            )):
+        return {"ok": False, "stage": "fixed_routing_snapshot", "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"}
+    ordinary_origin_revision = (
+        ordinary_fixed_context.get("selection_snapshot", {}).get("selection_revision")
+        if isinstance(ordinary_fixed_context, dict) else None
+    )
+    if (ordinary_fixed_context is not None and not _fixed_xray_generation_context_matches(
+            routing_snapshot, None, expected_selection_revision=ordinary_origin_revision,
+            ordinary_fixed_context=ordinary_fixed_context)):
+        return {"ok": False, "stage": "fixed_routing_snapshot", "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"}
     stage_dir = Path(config_path).parent / ".generation"
     stage_dir.mkdir(parents=True, exist_ok=True)
     stage_dir.chmod(0o700)
@@ -1297,8 +1548,13 @@ def _stage_profile_native_candidates(
             paths = _candidate_base_config_paths()
             if len(paths) > 8:
                 return None  # Avoid hashing unbounded historical fallback files.
-            fingerprint = current_mihomo_input_fingerprint().get("hash")
-            if not isinstance(fingerprint, str) or len(fingerprint) != 64:
+            fingerprint = (
+                current_mihomo_input_fingerprint(routing_snapshot)
+                if routing_snapshot is not None else current_mihomo_input_fingerprint()
+            )
+            if (not isinstance(fingerprint, dict)
+                    or not isinstance(fingerprint.get("hash"), str)
+                    or len(fingerprint["hash"]) != 64):
                 return None
             return (fingerprint, tuple((str(path), _file_hash(path)) for path in paths), write_mihomo_candidate_config)
         except (OSError, ValueError, sqlite3.Error):
@@ -1322,6 +1578,7 @@ def _stage_profile_native_candidates(
             written = transition_written
         else:
             written = write_mihomo_candidate_config(
+                routing=routing_snapshot,
                 candidate_path=candidate_path,
                 xray_handoff_assignments=handoffs,
                 include_internal_config=True,
@@ -1334,7 +1591,16 @@ def _stage_profile_native_candidates(
         if write_reused and candidate_hash != expected_transition_hash:
             return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_COPY_MISMATCH"}
         candidate_config = written.get("_candidate_config") if isinstance(written.get("_candidate_config"), dict) else {}
-        local_validation = validate_local_mihomo(candidate_path=candidate_path, candidate_config=candidate_config)
+        if routing_snapshot is None:
+            local_validation = validate_local_mihomo(
+                candidate_path=candidate_path, candidate_config=candidate_config,
+            )
+        else:
+            local_validation = validate_local_mihomo(
+                routing=routing_snapshot,
+                candidate_path=candidate_path,
+                candidate_config=candidate_config,
+            )
         native_cache_key = (candidate_hash, native_validator_identity or "")
         cached_native_validation = (
             validated_native_candidates.get(native_cache_key)
@@ -1371,6 +1637,16 @@ def _stage_profile_native_candidates(
         ):
             return {"ok": False, "stage": f"mihomo_{name}_candidate",
                     "error_code": "MIHOMO_STAGE_INPUTS_CHANGED_AFTER_VALIDATION"}
+        if not _fixed_xray_generation_context_matches(
+                routing_snapshot, fixed_workflow_revision,
+                expected_selection_revision=(
+                    fixed_origin_selection_revision if fixed_workflow_revision is not None
+                    else ordinary_origin_revision
+                ),
+                fixed_origin_selection_revision=fixed_origin_selection_revision,
+                ordinary_fixed_context=ordinary_fixed_context):
+            return {"ok": False, "stage": f"mihomo_{name}_candidate",
+                    "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"}
         if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != candidate_hash:
             return {"ok": False, "stage": f"mihomo_{name}_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"}
         if cached_native_validation is None and native_validator_identity is not None:
@@ -1394,8 +1670,16 @@ def _stage_profile_native_candidates(
         # exact input revision through the existing stage validation and bind
         # it when the validated bytes are copied to the default candidate.
         "mihomo_input_fingerprint": (
-            {"hash": transition_context[0], "payload": {}}
+            {"hash": transition_context[0]["hash"]}
             if transition_context is not None else None
+        ),
+        # The raw fixed projection is private handoff state consumed only by
+        # the operation checkpoint writer. It is not included in public
+        # diagnostics or publication results.
+        "fixed_routing_snapshot": (
+            _fixed_xray_routing_projection(routing_snapshot)
+            if isinstance(routing_snapshot, dict) and routing_snapshot.get("server_mode") == "fixed"
+            else None
         ),
     }
 
@@ -1403,7 +1687,26 @@ def _stage_profile_native_candidates(
 def _apply_staged_mihomo_candidate(
     candidate_path: str, expected_sha256: str, *, inventory_admission: Any = None,
     candidate_input_fingerprint: dict[str, Any] | None = None,
+    fixed_routing_snapshot: dict[str, Any] | None = None,
+    fixed_workflow_revision: int | None = None,
+    fixed_origin_selection_revision: int | None = None,
+    expected_selection_revision: int | None = None,
+    ordinary_fixed_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if (fixed_workflow_revision is not None
+            and not _fixed_xray_routing_snapshot_matches(
+                fixed_routing_snapshot, fixed_workflow_revision,
+                expected_selection_revision=expected_selection_revision,
+                origin_selection_revision=fixed_origin_selection_revision,
+            )):
+        return {"ok": False, "stage": "fixed_routing_snapshot",
+                "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE", "last_good_retained": True}
+    if ordinary_fixed_context is not None and not _fixed_xray_generation_context_matches(
+            fixed_routing_snapshot, None,
+            expected_selection_revision=expected_selection_revision,
+            ordinary_fixed_context=ordinary_fixed_context):
+        return {"ok": False, "stage": "fixed_routing_snapshot",
+                "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE", "last_good_retained": True}
     source = Path(candidate_path)
     if not source.exists() or hashlib.sha256(source.read_bytes()).hexdigest() != expected_sha256:
         return {"ok": False, "stage": "candidate_integrity", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_AFTER_VALIDATION"}
@@ -1415,9 +1718,15 @@ def _apply_staged_mihomo_candidate(
         candidate_input_fingerprint.get("hash")
         if isinstance(candidate_input_fingerprint, dict) else None
     )
+    input_routing = fixed_routing_snapshot if isinstance(fixed_routing_snapshot, dict) else None
     try:
-        current_input_hash = current_mihomo_input_fingerprint().get("hash")
+        promotion_fingerprint = (
+            current_mihomo_input_fingerprint(input_routing)
+            if isinstance(input_routing, dict) else current_mihomo_input_fingerprint()
+        )
+        current_input_hash = promotion_fingerprint.get("hash")
     except Exception:
+        promotion_fingerprint = None
         current_input_hash = None
     if (
         not isinstance(expected_input_hash, str)
@@ -1430,7 +1739,39 @@ def _apply_staged_mihomo_candidate(
 
     active_path = Path(mihomo_config._resolved_base_config_path())
     if active_path.exists() and hashlib.sha256(active_path.read_bytes()).hexdigest() == expected_sha256:
-        return {"ok": True, "stage": "unchanged", "container": {"ok": True, "action": "none", "reason": "config_unchanged"}}
+        unchanged_revision_ok = (
+            fixed_workflow_revision is None and ordinary_fixed_context is None
+            or (type(expected_selection_revision) is int
+                and _fixed_xray_routing_snapshot_matches(
+                    fixed_routing_snapshot, fixed_workflow_revision,
+                    expected_selection_revision=expected_selection_revision,
+                    origin_selection_revision=fixed_origin_selection_revision,
+                ))
+        )
+        if ordinary_fixed_context is not None:
+            unchanged_revision_ok = _fixed_xray_generation_context_matches(
+                fixed_routing_snapshot, None,
+                expected_selection_revision=expected_selection_revision,
+                ordinary_fixed_context=ordinary_fixed_context)
+        return {
+            "ok": unchanged_revision_ok,
+            "stage": "unchanged" if unchanged_revision_ok else "fixed_routing_snapshot",
+            "error_code": None if unchanged_revision_ok else "FIXED_XRAY_SELECTION_REVISION_UNVERIFIED",
+            "selection_revision": expected_selection_revision,
+            "container": {"ok": unchanged_revision_ok, "action": "none", "reason": "config_unchanged"},
+        }
+    if not _fixed_xray_generation_context_matches(
+            fixed_routing_snapshot, fixed_workflow_revision,
+            expected_selection_revision=(
+                expected_selection_revision
+                if fixed_workflow_revision is not None or ordinary_fixed_context is not None
+                else None
+            ),
+            fixed_origin_selection_revision=fixed_origin_selection_revision,
+            ordinary_fixed_context=ordinary_fixed_context):
+        return {"ok": False, "stage": "fixed_routing_snapshot",
+                "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE",
+                "runtime_verified": False, "last_good_retained": True}
     active_candidate = Path(mihomo_config._resolved_candidate_config_path())
     atomic_copy_file(source, active_candidate)
     if hashlib.sha256(active_candidate.read_bytes()).hexdigest() != expected_sha256:
@@ -1439,23 +1780,92 @@ def _apply_staged_mihomo_candidate(
         from fwrouter_api.services.mihomo_reconcile_fingerprint import record_candidate_provenance
         if not record_candidate_provenance(
             candidate_path=active_candidate,
-            fingerprint=candidate_input_fingerprint or {},
+            fingerprint=promotion_fingerprint or {},
         ):
             return {"ok": False, "stage": "candidate_provenance",
                     "error_code": "MIHOMO_CANDIDATE_PROVENANCE_UNVERIFIED",
                     "last_good_retained": True}
-    promoted = mihomo_config.promote_mihomo_candidate_config(
-        _inventory_admission=inventory_admission,
-        _candidate_input_fingerprint=candidate_input_fingerprint,
-    )
+    if not _fixed_xray_generation_context_matches(
+            fixed_routing_snapshot, fixed_workflow_revision,
+            expected_selection_revision=(
+                expected_selection_revision
+                if fixed_workflow_revision is not None or ordinary_fixed_context is not None
+                else None
+            ),
+            fixed_origin_selection_revision=fixed_origin_selection_revision,
+            ordinary_fixed_context=ordinary_fixed_context):
+        return {"ok": False, "stage": "fixed_routing_snapshot",
+                "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE",
+                "runtime_verified": False, "last_good_retained": True}
+    promotion_kwargs = {
+        "_inventory_admission": inventory_admission,
+        "_candidate_input_fingerprint": promotion_fingerprint,
+    }
+    if ordinary_fixed_context is not None:
+        promotion_kwargs.update({
+            "selection_fenced": True,
+            "expected_selection_revision": expected_selection_revision,
+        })
+    promoted = mihomo_config.promote_mihomo_candidate_config(**promotion_kwargs)
     if not promoted.get("ok"):
         return {"ok": False, "stage": "promote", "promoted": _strip_raw_payload(promoted)}
-    restarted = restart_mihomo_container(action="force_recreate")
+    promoted_revision = (
+        expected_selection_revision if ordinary_fixed_context is not None
+        else promoted.get("selection_revision")
+    )
+    if ordinary_fixed_context is not None and (
+            type(promoted_revision) is not int
+            or promoted_revision != expected_selection_revision
+            or not _fixed_xray_generation_context_matches(
+                fixed_routing_snapshot, None,
+                expected_selection_revision=expected_selection_revision,
+                ordinary_fixed_context=ordinary_fixed_context)):
+        return {"ok": False, "stage": "selection_revision_receipt",
+                "error_code": "FIXED_XRAY_SELECTION_REVISION_UNVERIFIED",
+                "selection_revision": promoted_revision, "runtime_verified": False}
+    if (fixed_workflow_revision is not None
+            and (type(promoted_revision) is not int or not _fixed_xray_routing_snapshot_matches(
+                fixed_routing_snapshot, fixed_workflow_revision,
+                expected_selection_revision=promoted_revision,
+                origin_selection_revision=fixed_origin_selection_revision,
+            ))):
+        return {"ok": False, "stage": "selection_revision_receipt",
+                "error_code": "FIXED_XRAY_SELECTION_REVISION_UNVERIFIED",
+                "selection_revision": promoted_revision, "runtime_verified": False}
+    if fixed_workflow_revision is not None or ordinary_fixed_context is not None:
+        restarted = restart_mihomo_container(
+            action="force_recreate", selection_fenced=True,
+            expected_selection_revision=(
+                promoted_revision if fixed_workflow_revision is not None else expected_selection_revision
+            ),
+        )
+    else:
+        restarted = restart_mihomo_container(action="force_recreate")
+    fixed_context_ok = fixed_workflow_revision is None and ordinary_fixed_context is None
+    if fixed_workflow_revision is not None:
+        fixed_context_ok = _fixed_xray_routing_snapshot_matches(
+            fixed_routing_snapshot, fixed_workflow_revision,
+            expected_selection_revision=promoted_revision,
+            origin_selection_revision=fixed_origin_selection_revision,
+        )
+    if ordinary_fixed_context is not None:
+        fixed_context_ok = _fixed_xray_generation_context_matches(
+            fixed_routing_snapshot, None,
+            expected_selection_revision=expected_selection_revision,
+            ordinary_fixed_context=ordinary_fixed_context)
     return {
-        "ok": bool(restarted.get("ok")),
-        "stage": "applied" if restarted.get("ok") else "restart",
+        "ok": bool(restarted.get("ok")) and fixed_context_ok,
+        "stage": "applied" if restarted.get("ok") and fixed_context_ok else "restart",
+        "error_code": None if fixed_context_ok else "FIXED_XRAY_ROUTING_SNAPSHOT_STALE",
+        "selection_revision": (
+            (promoted_revision if fixed_workflow_revision is not None else expected_selection_revision)
+            if (fixed_workflow_revision is not None or ordinary_fixed_context is not None)
+            else restarted.get("selection_revision")
+        ),
         "promoted": _strip_raw_payload(promoted),
         "container": _strip_raw_payload(restarted),
+        **({"runtime_verified": False} if (fixed_workflow_revision is not None or ordinary_fixed_context is not None)
+           and (not restarted.get("ok") or not fixed_context_ok) else {}),
     }
 
 
@@ -2205,6 +2615,7 @@ def _legacy_admission_runtime_fence_facts(admission: Any) -> dict[str, bool]:
         "mihomo_incarnation_match": False,
         "mihomo_active_config_match": False,
         "mihomo_input_fingerprint_match": False,
+        "mihomo_routing_snapshot_match": False,
         "core_runtime_fingerprint_match": False,
         "core_state_available": False,
         "core_native_proof_ok": False,
@@ -2224,7 +2635,12 @@ def _legacy_admission_runtime_fence_facts(admission: Any) -> dict[str, bool]:
         xray_sha = hashlib.sha256(Path(adapter.config_path).read_bytes()).hexdigest()
         mihomo_path = Path(mihomo_config._resolved_base_config_path())
         mihomo_sha = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
-        fingerprint = current_mihomo_input_fingerprint()
+        selection = _capture_generation_auto_selection()
+        expected_selection = getattr(admission, "proof_only_selection_snapshot", None)
+        routing_snapshot = getattr(admission, "proof_only_routing_snapshot", None)
+        # Keep the historical no-argument path for ordinary callers/adapters;
+        # only an explicitly captured fixed projection is passed positionally.
+        fingerprint = current_mihomo_input_fingerprint(routing_snapshot) if isinstance(routing_snapshot, dict) else current_mihomo_input_fingerprint()
         core_native = _collect_legacy_admission_core_native_proof()
         xray_incarnation_reader = getattr(adapter, "get_runtime_incarnation", None)
         xray_config_reader = getattr(adapter, "get_runtime_config_sha256", None)
@@ -2248,6 +2664,12 @@ def _legacy_admission_runtime_fence_facts(admission: Any) -> dict[str, bool]:
             ),
             "mihomo_input_fingerprint_match": (
                 fingerprint.get("hash") == admission.proof_only_mihomo_fingerprint_hash
+            ),
+            "mihomo_routing_snapshot_match": (
+                isinstance(expected_selection, dict)
+                and selection == expected_selection
+                and isinstance(routing_snapshot, dict)
+                and selection.get("routing") == routing_snapshot
             ),
             "core_runtime_fingerprint_match": (
                 core_fingerprint == admission.proof_only_core_runtime_fingerprint
@@ -2277,6 +2699,7 @@ def _legacy_admission_runtime_fences_match(admission: Any) -> bool:
     required = {
         "xray_incarnation_match", "xray_runtime_config_match", "xray_active_config_match",
         "mihomo_incarnation_match", "mihomo_active_config_match", "mihomo_input_fingerprint_match",
+        "mihomo_routing_snapshot_match",
         "core_runtime_fingerprint_match", "core_state_available", "core_native_proof_ok",
         "core_manifest_match", "core_apply_id_match", "core_enforcement_match", "core_live_mode_match",
     }
@@ -2380,7 +2803,16 @@ def _collect_legacy_inventory_native_proof(
         mihomo_incarnation = get_mihomo_runtime_incarnation()
         if not mihomo_incarnation:
             return {"ok": False, "reason": "mihomo_runtime_incarnation_unavailable"}
-        input_fingerprint = current_mihomo_input_fingerprint()
+        expected_selection = _capture_generation_auto_selection()
+        routing_snapshot = expected_selection.get("routing")
+        if not isinstance(routing_snapshot, dict):
+            return {"ok": False, "reason": "selection_fence_unavailable"}
+        if (
+            expected_selection.get("selection_revision") != selection.get("revision")
+            or expected_selection.get("selection_decision_id") != selection.get("decision_id")
+        ):
+            return {"ok": False, "reason": "selection_fence_changed"}
+        input_fingerprint = current_mihomo_input_fingerprint(routing_snapshot)
         fingerprint_hash = str(input_fingerprint.get("hash") or "")
         if len(fingerprint_hash) != 64:
             return {"ok": False, "reason": "mihomo_input_fingerprint_unavailable"}
@@ -2434,7 +2866,6 @@ def _collect_legacy_inventory_native_proof(
             desired_nodes, token_prefix="sub-", managed_email_prefixes=managed_prefixes,
             preserve_existing_overrides=True,
         )
-        expected_selection = _capture_generation_auto_selection()
         selection_proof = _verify_generation_recovery_selection_readback(expected_selection)
         if not selection_proof.get("ok"):
             return {"ok": False, "reason": "core_selection_readback_unproven"}
@@ -2469,6 +2900,7 @@ def _collect_legacy_inventory_native_proof(
                 return {"ok": False, "reason": "xray_native_binding_or_mode_mismatch"}
 
             candidate_mihomo = mihomo_config.build_mihomo_config(
+                routing=routing_snapshot,
                 xray_handoff_assignments=assignments,
             )
             import yaml
@@ -2478,6 +2910,7 @@ def _collect_legacy_inventory_native_proof(
             )
             mihomo_candidate.chmod(0o600)
             local_validation = mihomo_config.validate_mihomo_candidate_config(
+                routing=routing_snapshot,
                 candidate_config=candidate_mihomo, candidate_path=mihomo_candidate,
             )
             if not local_validation.get("ok"):
@@ -2504,6 +2937,8 @@ def _collect_legacy_inventory_native_proof(
             or adapter.get_runtime_config_sha256() != active_xray_sha
             or get_mihomo_runtime_incarnation() != mihomo_incarnation
             or hashlib.sha256(mihomo_path.read_bytes()).hexdigest() != active_mihomo_sha
+            or _capture_generation_auto_selection() != expected_selection
+            or current_mihomo_input_fingerprint(routing_snapshot).get("hash") != fingerprint_hash
             or hashlib.sha256(Path(_xray_bindings_path()).read_bytes()).hexdigest() != bindings_artifact_sha
             or _current_projection_fingerprint(_current_xray_projection_snapshot())
             != _current_projection_fingerprint(current_projection)
@@ -2521,6 +2956,8 @@ def _collect_legacy_inventory_native_proof(
             "mihomo_native_policy_match": True, "source_fingerprint": source_fingerprint,
             "selection_revision": selection.get("revision"),
             "selection_decision_id": selection.get("decision_id"),
+            "selection_snapshot": expected_selection,
+            "routing_snapshot": routing_snapshot,
             "xray_runtime_incarnation": xray_incarnation,
             "mihomo_runtime_incarnation": mihomo_incarnation,
             "xray_config_sha256": active_xray_sha,
@@ -2550,6 +2987,8 @@ def _publish_legacy_admission_mihomo_receipt(proof: dict[str, Any], operation_id
             proof_only_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
             proof_only_selection_revision=int(proof["selection_revision"]),
             proof_only_selection_decision_id=proof.get("selection_decision_id"),
+            proof_only_selection_snapshot=proof["selection_snapshot"],
+            proof_only_routing_snapshot=proof["routing_snapshot"],
             proof_only_xray_incarnation=str(proof["xray_runtime_incarnation"]),
             proof_only_mihomo_incarnation=str(proof["mihomo_runtime_incarnation"]),
             proof_only_xray_config_sha256=str(proof["xray_config_sha256"]),
@@ -2567,6 +3006,7 @@ def _publish_legacy_admission_mihomo_receipt(proof: dict[str, Any], operation_id
         expected_mihomo_sha=str(proof.get("mihomo_config_sha256") or ""),
         reconcile_reason="proof_only_legacy_admission",
         operation_id=operation_id,
+        routing_snapshot=proof.get("routing_snapshot"),
         owner_matches=lambda fingerprint_hash: (
             fingerprint_hash == proof.get("mihomo_fingerprint_hash")
             and _legacy_admission_source_fingerprint() == proof.get("source_fingerprint")
@@ -2582,6 +3022,8 @@ class _AdmissionFenceView:
     proof_only_core_runtime_fingerprint: str
     proof_only_selection_revision: int
     proof_only_selection_decision_id: str | None
+    proof_only_selection_snapshot: dict[str, Any]
+    proof_only_routing_snapshot: dict[str, Any]
     proof_only_xray_incarnation: str
     proof_only_mihomo_incarnation: str
     proof_only_xray_config_sha256: str
@@ -2619,6 +3061,9 @@ def admit_legacy_subscription_inventory(
             )
             from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
             with db_session() as connection:
+                from fwrouter_api.services.xray_vpn_auto_pending import _admission_fixed_workflow_pending
+                if _admission_fixed_workflow_pending(connection):
+                    return {"ok": False, "status": "blocked", "reason": "fixed_server_workflow_pending"}
                 digest, count = _subscription_inventory_digest(connection)
                 state = _read_subscription_native_generation(connection)
                 marker_row = connection.execute(
@@ -2779,6 +3224,8 @@ def admit_legacy_subscription_inventory(
                     proof_only_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
                     proof_only_selection_revision=int(proof["selection_revision"]),
                     proof_only_selection_decision_id=proof.get("selection_decision_id"),
+                    proof_only_selection_snapshot=proof["selection_snapshot"],
+                    proof_only_routing_snapshot=proof["routing_snapshot"],
                     proof_only_xray_incarnation=str(proof["xray_runtime_incarnation"]),
                     proof_only_mihomo_incarnation=str(proof["mihomo_runtime_incarnation"]),
                     proof_only_xray_config_sha256=str(proof["xray_config_sha256"]),
@@ -2858,6 +3305,8 @@ def admit_legacy_subscription_inventory(
                 proof_only_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
                 proof_only_selection_revision=int(proof["selection_revision"]),
                 proof_only_selection_decision_id=proof.get("selection_decision_id"),
+                proof_only_selection_snapshot=proof["selection_snapshot"],
+                proof_only_routing_snapshot=proof["routing_snapshot"],
                 proof_only_xray_incarnation=str(proof["xray_runtime_incarnation"]),
                 proof_only_mihomo_incarnation=str(proof["mihomo_runtime_incarnation"]),
                 proof_only_xray_config_sha256=str(proof["xray_config_sha256"]),
@@ -3001,7 +3450,8 @@ def _current_inventory_generation_binding() -> dict[str, Any]:
 def _checkpoint_inventory_generation_matches(checkpoint_path: Path) -> bool:
     """A current-projection recovery must be bound to this exact inventory."""
     try:
-        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        loaded_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        checkpoint = loaded_checkpoint if isinstance(loaded_checkpoint, dict) else {}
         binding = checkpoint.get("subscription_inventory_generation")
         from fwrouter_api.services.subscription import get_subscription_native_generation_state
         state = get_subscription_native_generation_state()
@@ -3041,6 +3491,8 @@ def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: 
     if not checkpoint_path.exists():
         return {"ok": True, "status": "skipped", "reason": "no_checkpoint"}
     try:
+        from fwrouter_api.services.server_state import get_routing_global_state
+
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
         mode = _checkpoint_operation_mode(checkpoint)
         if mode == "proof_only_legacy_admission":
@@ -3048,6 +3500,55 @@ def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: 
                     "reason": "proof_only_operation_requires_explicit_resume",
                     "error_code": "XRAY_PROOF_ONLY_ADMISSION_REQUIRES_OPERATOR"}
         checkpoint_phase = str(checkpoint.get("phase") or "") if isinstance(checkpoint, dict) else "invalid"
+        with db_session() as connection:
+            from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+            pending_fixed = _load_row(connection)
+            pending_workflow = pending_fixed.get("workflow") if isinstance(pending_fixed, dict) else None
+            current_selection_revision = read_selection_revision(connection)
+        fixed_operation = checkpoint.get("fixed_workflow_revision")
+        if isinstance(pending_workflow, dict) and pending_workflow.get("kind") == "global_fixed_server":
+            fixed_snapshot = checkpoint.get("fixed_routing_snapshot")
+            fixed_origin_revision = checkpoint.get("fixed_origin_selection_revision")
+            checkpoint_selection_revision = checkpoint.get("selection_revision")
+            receipt_owned = bool(
+                isinstance(pending_workflow, dict)
+                and type(checkpoint_selection_revision) is int
+                and pending_workflow.get("selection_revision") == checkpoint_selection_revision
+                and pending_workflow.get("xray_generation_operation_id")
+                    == checkpoint.get("selection_operation_id")
+            )
+            origin_owned = bool(
+                type(fixed_origin_revision) is int
+                and pending_workflow.get("selection_revision") == fixed_origin_revision
+            )
+            if (
+                type(fixed_operation) is not int
+                or type(fixed_origin_revision) is not int
+                or type(checkpoint_selection_revision) is not int
+                or checkpoint_selection_revision < fixed_origin_revision
+                or not (origin_owned or receipt_owned)
+                or pending_fixed.get("revision") != fixed_operation
+                or current_selection_revision != checkpoint_selection_revision
+                or not isinstance(fixed_snapshot, dict)
+                or not _fixed_xray_routing_projection(get_routing_global_state(expire_ttl=False)) == fixed_snapshot
+            ):
+                return {"ok": False, "status": "pending", "stage": "fixed_generation_recovery_fence",
+                        "error_code": "FIXED_XRAY_GENERATION_RECOVERY_UNPROVEN",
+                        "runtime_verified": False}
+            # Fixed generation rollback has no qualified preimage/native proof
+            # contract yet. Keep its immutable checkpoint and pending intent.
+            return {"ok": False, "status": "pending", "stage": "fixed_generation_recovery_fence",
+                    "error_code": "FIXED_XRAY_GENERATION_RECOVERY_UNPROVEN",
+                    "runtime_verified": False}
+        elif fixed_operation is not None:
+            return {"ok": False, "status": "pending", "stage": "fixed_generation_recovery_fence",
+                    "error_code": "FIXED_XRAY_GENERATION_RECOVERY_UNPROVEN",
+                    "runtime_verified": False}
+        elif isinstance(checkpoint.get("fixed_routing_snapshot"), dict):
+            return {"ok": False, "status": "pending", "stage": "fixed_generation_recovery_fence",
+                    "error_code": "FIXED_XRAY_GENERATION_RECOVERY_UNPROVEN",
+                    "runtime_verified": False}
         checkpoint_inventory_bound = _checkpoint_inventory_generation_matches(checkpoint_path)
         from fwrouter_api.services.subscription import get_subscription_native_generation_state
         inventory_state = get_subscription_native_generation_state()
@@ -3271,11 +3772,22 @@ def _write_xray_generation_checkpoint(
     managed_email_prefixes: list[str],
     supersession: dict[str, Any] | None = None,
     inventory_generation: dict[str, Any] | None = None,
+    fixed_workflow_revision: int | None = None,
+    fixed_origin_selection_revision: int | None = None,
+    ordinary_fixed_context: dict[str, Any] | None = None,
 ) -> Path:
     from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
     from fwrouter_api.services import mihomo_config
     from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
     from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    fixed_routing_snapshot = _fixed_xray_routing_projection(
+        (ordinary_fixed_context or {}).get("routing_snapshot")
+        if ordinary_fixed_context is not None
+        else staged_generation.get("fixed_routing_snapshot")
+    )
+    if fixed_workflow_revision is not None and fixed_routing_snapshot is None:
+        raise RuntimeError("XRAY_FIXED_ROUTING_SNAPSHOT_UNAVAILABLE")
 
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3320,6 +3832,20 @@ def _write_xray_generation_checkpoint(
     binding_path = _xray_bindings_path()
     with db_session() as connection:
         selection_fence = read_selection_fence(connection)
+        ordinary_selection = (ordinary_fixed_context or {}).get("selection_snapshot")
+        if isinstance(ordinary_fixed_context, dict):
+            routing_row = connection.execute(
+                "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
+                "active_auto_server_id, desired_mode, applied_mode, selective_default, apply_state, updated_at "
+                "FROM routing_global_state WHERE id=1",
+            ).fetchone()
+            if (not isinstance(ordinary_selection, dict)
+                    or selection_fence.get("revision") != ordinary_selection.get("selection_revision")
+                    or selection_fence.get("decision_id") != ordinary_selection.get("selection_decision_id")
+                    or _fixed_xray_routing_projection(dict(routing_row) if routing_row else None)
+                        != fixed_routing_snapshot
+                    or _legacy_admission_core_unavailable_reason(connection) is not None):
+                raise RuntimeError("FIXED_XRAY_ROUTING_SNAPSHOT_STALE")
         snapshots: dict[str, dict[str, Any] | None] = {}
         for token in tokens:
             row = connection.execute(
@@ -3339,6 +3865,8 @@ def _write_xray_generation_checkpoint(
         "generation_id": generation_id,
         "phase": phase,
         "source_fingerprint": source_fingerprint,
+        "fixed_workflow_revision": fixed_workflow_revision,
+        "fixed_origin_selection_revision": fixed_origin_selection_revision,
         "subscription_inventory_generation": dict(
             inventory_generation if inventory_generation is not None else _current_inventory_generation_binding()
         ),
@@ -3363,9 +3891,23 @@ def _write_xray_generation_checkpoint(
         "subscription_snapshots": snapshots,
         "derived_rows_before": derived_rows,
         "derived_rows_after": None,
-        "auto_selection_before": _capture_generation_auto_selection(),
+        "auto_selection_before": (
+            ordinary_selection if isinstance(ordinary_selection, dict)
+            else _capture_generation_auto_selection()
+        ),
         "auto_selection_after": None,
         "managed_email_prefixes": managed_email_prefixes,
+        "fixed_routing_snapshot": (
+            fixed_routing_snapshot if fixed_routing_snapshot is not None else None
+        ),
+        "ordinary_fixed_core_proof": (
+            dict(ordinary_fixed_context.get("core_proof") or {})
+            if isinstance(ordinary_fixed_context, dict) else None
+        ),
+        "ordinary_fixed_core_runtime_fingerprint": (
+            ordinary_fixed_context.get("core_runtime_fingerprint")
+            if isinstance(ordinary_fixed_context, dict) else None
+        ),
         "expected_client_identities": expected_client_identities,
         "staged_generation": {
             "xray_candidate_path": staged_generation.get("xray_candidate_path"),
@@ -3442,12 +3984,27 @@ def _update_xray_generation_checkpoint(
     _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
 
+def _record_xray_generation_selection_revision(
+    checkpoint_path: Path, selection_revision: int | None,
+) -> None:
+    """Persist only the exact revision returned by this staged promotion."""
+    if type(selection_revision) is not int:
+        raise ValueError("Staged Mihomo promotion did not return its selection revision.")
+    data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    current = data.get("selection_revision")
+    if type(current) is not int or selection_revision < current:
+        raise ValueError("Staged Mihomo promotion returned an older selection revision.")
+    data["selection_revision"] = selection_revision
+    _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
+
+
 def _capture_generation_auto_selection() -> dict[str, Any]:
     from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
     with db_session() as connection:
         routing = connection.execute(
-            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, active_auto_server_id, "
-            "desired_mode, applied_mode, apply_state, updated_at FROM routing_global_state WHERE id = 1"
+            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
+            "active_auto_server_id, desired_mode, applied_mode, selective_default, apply_state, updated_at "
+            "FROM routing_global_state WHERE id = 1"
         ).fetchone()
         provenance = connection.execute(
             "SELECT value_json, updated_at FROM settings WHERE key = 'routing.auto_selection_provenance'"
@@ -4474,14 +5031,41 @@ def _mark_generation_selection_verification_required(checkpoint_path: Path) -> N
     _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
 
-def _record_xray_generation_derived_rows(checkpoint_path: Path, *, phase: str) -> None:
+def _record_xray_generation_derived_rows(
+    checkpoint_path: Path, *, phase: str,
+    expected_generation_id: str | None = None,
+    expected_source_fingerprint: str | None = None,
+) -> None:
     data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    data["auto_selection_after"] = _capture_generation_auto_selection()
-    data["derived_rows_after"] = _capture_generation_derived_rows(
+    if expected_generation_id is not None or expected_source_fingerprint is not None:
+        if (
+            not expected_generation_id
+            or not expected_source_fingerprint
+            or data.get("generation_id") != expected_generation_id
+            or data.get("derived_source_fingerprint") != expected_source_fingerprint
+            or _generation_source_fingerprint() != expected_source_fingerprint
+        ):
+            raise ValueError("XRAY_GENERATION_DERIVED_ROW_OWNER_CHANGED")
+    auto_selection_after = _capture_generation_auto_selection()
+    derived_rows_after = _capture_generation_derived_rows(
         managed_email_prefixes=list(data.get("managed_email_prefixes") or []),
         expected_client_identities=list(data.get("expected_client_identities") or []),
     )
-    data["derived_source_fingerprint"] = _generation_source_fingerprint()
+    if expected_source_fingerprint is not None and (
+        data.get("generation_id") != expected_generation_id
+        or data.get("derived_source_fingerprint") != expected_source_fingerprint
+        or _generation_source_fingerprint() != expected_source_fingerprint
+    ):
+        raise ValueError("XRAY_GENERATION_DERIVED_ROW_OWNER_CHANGED")
+    data["auto_selection_after"] = auto_selection_after
+    data["derived_rows_after"] = derived_rows_after
+    # The owner CAS above proves this is still the same source snapshot. Do
+    # not replace it with a fresh fingerprint that could adopt foreign writes.
+    data["derived_source_fingerprint"] = (
+        expected_source_fingerprint
+        if expected_source_fingerprint is not None
+        else _generation_source_fingerprint()
+    )
     data["phase"] = phase
     _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
@@ -4519,9 +5103,55 @@ def _record_xray_generation_snapshot_postimage(checkpoint_path: Path) -> None:
     _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
 
+def _ordinary_fixed_checkpoint_context_matches(
+    checkpoint: dict[str, Any], *, expected_source: str, expected_revision: int,
+) -> bool:
+    """Revalidate the checkpoint's original ordinary-fixed Core/routing owner."""
+    route_snapshot = checkpoint.get("fixed_routing_snapshot")
+    if route_snapshot is None:
+        return True
+    if not isinstance(route_snapshot, dict):
+        return False
+    fixed_workflow_revision = checkpoint.get("fixed_workflow_revision")
+    if type(fixed_workflow_revision) is int:
+        # Fixed-workflow publication is fenced by its existing callback and
+        # workflow receipt; this helper adds proof only for ordinary fixed
+        # startup checkpoints.
+        return True
+    selection_snapshot = checkpoint.get("auto_selection_after")
+    if not isinstance(selection_snapshot, dict):
+        selection_snapshot = checkpoint.get("auto_selection_before")
+    core_proof = checkpoint.get("ordinary_fixed_core_proof")
+    core_runtime_fingerprint = checkpoint.get("ordinary_fixed_core_runtime_fingerprint")
+    if (
+        not isinstance(selection_snapshot, dict)
+        or selection_snapshot.get("selection_revision") != expected_revision
+        or checkpoint.get("selection_revision") != expected_revision
+        or not isinstance(core_proof, dict)
+        or not isinstance(core_runtime_fingerprint, str)
+        or len(core_runtime_fingerprint) != 64
+        or not isinstance(expected_source, str)
+        or len(expected_source) != 64
+    ):
+        return False
+    context = {
+        "routing_snapshot": route_snapshot,
+        "selection_snapshot": selection_snapshot,
+        "core_proof": core_proof,
+        "core_runtime_fingerprint": core_runtime_fingerprint,
+        "source_fingerprint": expected_source,
+    }
+    return _fixed_xray_generation_context_matches(
+        route_snapshot, None,
+        expected_selection_revision=expected_revision,
+        ordinary_fixed_context=context,
+    )
+
+
 def _publish_mihomo_udp_receipt_with_owner(
     *, expected_mihomo_runtime: str, expected_mihomo_sha: str,
     reconcile_reason: str, operation_id: str, owner_matches: Any,
+    routing_snapshot: dict[str, Any] | None = None,
 ) -> bool:
     """Share native proof and durable receipt persistence across fenced owners."""
     from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
@@ -4533,7 +5163,11 @@ def _publish_mihomo_udp_receipt_with_owner(
     try:
         if not xray_writer_guard_is_held() or not callable(owner_matches):
             return False
-        fingerprint = current_mihomo_input_fingerprint()
+        fingerprint = (
+            current_mihomo_input_fingerprint(routing_snapshot)
+            if isinstance(routing_snapshot, dict)
+            else current_mihomo_input_fingerprint()
+        )
         fingerprint_hash = str(fingerprint.get("hash") or "")
         if not fingerprint_hash or not owner_matches(fingerprint_hash):
             return False
@@ -4577,6 +5211,9 @@ def _publish_xray_generation_mihomo_udp_receipt(
         if not verification_required and "ok" in verification and verification.get("ok") is not True:
             return False
         generation_id = str(checkpoint.get("generation_id") or "")
+        routing_snapshot = checkpoint.get("fixed_routing_snapshot")
+        if not isinstance(routing_snapshot, dict):
+            routing_snapshot = None
         if (
             not generation_id
             or not expected_source
@@ -4587,6 +5224,10 @@ def _publish_xray_generation_mihomo_udp_receipt(
             or checkpoint.get("derived_source_fingerprint") != expected_source
             or (checkpoint.get("staged_generation") or {}).get("mihomo_final_sha256") != expected_mihomo_sha
         ):
+            return False
+        if not _ordinary_fixed_checkpoint_context_matches(
+                checkpoint, expected_source=expected_source,
+                expected_revision=expected_revision):
             return False
         verification_operation_id = verification.get("operation_id")
         if checkpoint.get("selection_verification_required") is True:
@@ -4605,7 +5246,11 @@ def _publish_xray_generation_mihomo_udp_receipt(
                 active_hash = hashlib.sha256(
                     Path(mihomo_config._resolved_base_config_path()).read_bytes()
                 ).hexdigest()
-                current_fingerprint = current_mihomo_input_fingerprint()
+                current_fingerprint = (
+                    current_mihomo_input_fingerprint(routing_snapshot)
+                    if isinstance(routing_snapshot, dict)
+                    else current_mihomo_input_fingerprint()
+                )
                 return bool(
                     current_checkpoint.get("generation_id") == generation_id
                     and current_checkpoint.get("selection_revision") == expected_revision
@@ -4617,6 +5262,10 @@ def _publish_xray_generation_mihomo_udp_receipt(
                     and get_mihomo_runtime_incarnation() == expected_mihomo_runtime
                     and active_hash == expected_mihomo_sha
                     and current_fingerprint.get("hash") == fingerprint_hash
+                    and _ordinary_fixed_checkpoint_context_matches(
+                        current_checkpoint, expected_source=expected_source,
+                        expected_revision=expected_revision,
+                    )
                 )
             except (OSError, ValueError, TypeError):
                 return False
@@ -4627,6 +5276,7 @@ def _publish_xray_generation_mihomo_udp_receipt(
             reconcile_reason="xray_staged_generation",
             operation_id=generation_id,
             owner_matches=owned,
+            routing_snapshot=routing_snapshot,
         )
     except Exception:
         return False
@@ -4647,6 +5297,9 @@ def _publish_xray_generation_rollback_mihomo_udp_receipt(
             return False
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
         generation_id = str(checkpoint.get("generation_id") or "")
+        routing_snapshot = checkpoint.get("fixed_routing_snapshot")
+        if not isinstance(routing_snapshot, dict):
+            routing_snapshot = None
         def checkpoint_preimage_matches(value: dict[str, Any]) -> bool:
             try:
                 artifacts = value.get("artifacts") if isinstance(value.get("artifacts"), dict) else {}
@@ -4676,7 +5329,11 @@ def _publish_xray_generation_rollback_mihomo_udp_receipt(
                 active_hash = hashlib.sha256(
                     Path(mihomo_config._resolved_base_config_path()).read_bytes()
                 ).hexdigest()
-                current_fingerprint = current_mihomo_input_fingerprint()
+                current_fingerprint = (
+                    current_mihomo_input_fingerprint(routing_snapshot)
+                    if isinstance(routing_snapshot, dict)
+                    else current_mihomo_input_fingerprint()
+                )
                 return bool(
                     current_checkpoint.get("generation_id") == generation_id
                     and current_checkpoint.get("phase") == "restore_started"
@@ -4697,6 +5354,7 @@ def _publish_xray_generation_rollback_mihomo_udp_receipt(
             reconcile_reason="xray_generation_rollback",
             operation_id=f"{generation_id}:rollback",
             owner_matches=owned,
+            routing_snapshot=routing_snapshot,
         )
     except Exception:
         return False
@@ -4724,6 +5382,27 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
         (str(pair[0]), str(pair[1])) for pair in native_xray.get("expected_client_identities", [])
     )
     adapter = pending.get("adapter")
+    checkpoint: dict[str, Any] = {}
+
+    def pending_failure(stage: str, error_code: str, **details: Any) -> dict[str, Any]:
+        response = {
+            "ok": False, "status": "pending", "stage": stage,
+            "error_code": error_code, **details,
+        }
+        ordinary_fixed_checkpoint = bool(
+            isinstance(checkpoint.get("fixed_routing_snapshot"), dict)
+            and type(checkpoint.get("fixed_workflow_revision")) is not int
+        )
+        if ordinary_fixed_checkpoint:
+            # The checkpoint is still the operation owner, but it does not
+            # prove that the runtime was restored to its last-good state.
+            response["runtime_verified"] = False
+        else:
+            # Preserve the established auto/legacy and pending-fixed
+            # response contract; this correction is ordinary-fixed only.
+            response["last_good_retained"] = True
+        return response
+
     try:
         checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
         expected_runtime = str(checkpoint.get("xray_runtime_incarnation_after") or "")
@@ -4734,25 +5413,51 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
         )
         expected_source = str(checkpoint.get("derived_source_fingerprint") or "")
         expected_revision = checkpoint.get("selection_revision")
+        expected_xray_runtime = str(checkpoint.get("xray_runtime_incarnation_after") or "")
+        expected_xray_sha = str(staged.get("xray_candidate_sha256") or "")
+        fixed_routing_snapshot = checkpoint.get("fixed_routing_snapshot")
+        if not isinstance(fixed_routing_snapshot, dict):
+            fixed_routing_snapshot = None
         from fwrouter_api.services import mihomo_config
         from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
         from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
 
         def publication_context_matches() -> bool:
             try:
+                current_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+                xray_path = Path(adapter.config_path)
+                xray_file_hash = hashlib.sha256(xray_path.read_bytes()).hexdigest()
                 with db_session() as connection:
                     fence = read_selection_fence(connection)
                 return bool(
-                    expected_source
+                    current_checkpoint.get("generation_id") == checkpoint.get("generation_id")
+                    and current_checkpoint.get("selection_revision") == expected_revision
+                    and current_checkpoint.get("mihomo_runtime_incarnation") == expected_mihomo_runtime
+                    and current_checkpoint.get("derived_source_fingerprint") == expected_source
+                    and (current_checkpoint.get("staged_generation") or {}).get("mihomo_final_sha256") == expected_mihomo_sha
+                    and current_checkpoint.get("fixed_routing_snapshot") == checkpoint.get("fixed_routing_snapshot")
+                    and current_checkpoint.get("ordinary_fixed_core_proof") == checkpoint.get("ordinary_fixed_core_proof")
+                    and current_checkpoint.get("ordinary_fixed_core_runtime_fingerprint")
+                        == checkpoint.get("ordinary_fixed_core_runtime_fingerprint")
+                    and expected_source
                     and _generation_source_fingerprint() == expected_source
                     and type(expected_revision) is int
                     and fence.get("revision") == expected_revision
                     and (verification.get("selection_revision") in (None, expected_revision))
+                    and expected_xray_runtime
+                    and adapter.get_runtime_incarnation() == expected_xray_runtime
+                    and xray_file_hash == expected_xray_sha
+                    and adapter.get_runtime_config_sha256() == expected_xray_sha
+                    and sorted(adapter.list_loaded_client_identities()) == expected_identities
                     and expected_mihomo_runtime
                     and get_mihomo_runtime_incarnation() == expected_mihomo_runtime
                     and expected_mihomo_sha
                     and hashlib.sha256(Path(mihomo_config._resolved_base_config_path()).read_bytes()).hexdigest()
                     == expected_mihomo_sha
+                    and _ordinary_fixed_checkpoint_context_matches(
+                        current_checkpoint, expected_source=expected_source,
+                        expected_revision=expected_revision,
+                    )
                 )
             except Exception:
                 return False
@@ -4776,8 +5481,7 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
     except Exception:
         exact_readback = False
     if not exact_readback:
-        return {"ok": False, "status": "pending", "stage": "xray_runtime_readback",
-                "error_code": "XRAY_GENERATION_RUNTIME_READBACK_FAILED", "last_good_retained": True}
+        return pending_failure("xray_runtime_readback", "XRAY_GENERATION_RUNTIME_READBACK_FAILED")
     if type(expected_revision) is not int or not _publish_xray_generation_mihomo_udp_receipt(
         checkpoint_path=checkpoint_path,
         verification=verification,
@@ -4786,8 +5490,9 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
         expected_mihomo_runtime=expected_mihomo_runtime,
         expected_mihomo_sha=expected_mihomo_sha,
     ):
-        return {"ok": False, "status": "pending", "stage": "mihomo_udp_policy_receipt",
-                "error_code": "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED", "last_good_retained": True}
+        return pending_failure("mihomo_udp_policy_receipt", "MIHOMO_UDP_POLICY_RECEIPT_UNCONFIRMED")
+    if not publication_context_matches():
+        return pending_failure("generation_publication_revalidation", "XRAY_GENERATION_STALE_BEFORE_PUBLICATION")
     promoted_profile = (
         promote_runtime_verified_subscription_nodes(
             pending["subscription_nodes"],
@@ -4796,8 +5501,12 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
         if pending["materialize"] and pending["promote_public_profile"]
         else {"profiles_count": 0, "nodes_count": 0}
     )
+    if not publication_context_matches():
+        return pending_failure("generation_publication_revalidation", "XRAY_GENERATION_STALE_BEFORE_PUBLICATION")
     if checkpoint_path.exists():
         _record_xray_generation_snapshot_postimage(checkpoint_path)
+    if not publication_context_matches():
+        return pending_failure("generation_publication_revalidation", "XRAY_GENERATION_STALE_BEFORE_PUBLICATION")
     generation_apply = {
         "transition_mihomo": _strip_raw_payload(values["applied_transition"]),
         "xray": _strip_raw_payload(values["applied_xray"].details),
@@ -4819,19 +5528,27 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
         "pre_publication_verification": verification,
     }
     inventory_admission = pending.get("inventory_admission")
+    if not publication_context_matches():
+        return pending_failure("generation_publication_revalidation", "XRAY_GENERATION_STALE_BEFORE_PUBLICATION")
     if inventory_admission is not None:
         from fwrouter_api.services.subscription import _promote_subscription_inventory_generation
         generation_promotion = _promote_subscription_inventory_generation(inventory_admission)
         if not generation_promotion.get("ok"):
-            return {
-                "ok": False,
-                "status": "pending",
-                "stage": "inventory_generation_promotion",
-                "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_PROMOTION_UNVERIFIED",
-                "inventory_generation_promotion": generation_promotion,
-                "last_good_retained": True,
-            }
+            return pending_failure(
+                "inventory_generation_promotion",
+                "SUBSCRIPTION_INVENTORY_GENERATION_PROMOTION_UNVERIFIED",
+                inventory_generation_promotion=generation_promotion,
+            )
         result["inventory_generation_promotion"] = generation_promotion
+        if checkpoint_path.exists():
+            _record_xray_generation_derived_rows(
+                checkpoint_path,
+                phase="inventory_generation_promoted",
+                expected_generation_id=str(checkpoint.get("generation_id") or ""),
+                expected_source_fingerprint=expected_source,
+            )
+    if not publication_context_matches():
+        return pending_failure("generation_publication_revalidation", "XRAY_GENERATION_STALE_BEFORE_PUBLICATION")
     if checkpoint_path.exists():
         checkpoint_path.unlink(missing_ok=True)
         _fsync_directory(checkpoint_path.parent)
@@ -4880,6 +5597,18 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
     if mode == "proof_only_legacy_admission":
         return {"ok": False, "recovered": "proof_only_admission_pending",
                 "reason": "proof_only_operation_requires_explicit_resume"}
+    if type(data.get("fixed_workflow_revision")) is int:
+        # Fixed generation checkpoints have no qualified generic rollback
+        # proof. Preserve the checkpoint and leave recovery to the fixed owner.
+        return {"ok": False, "status": "pending", "runtime_verified": False,
+                "recovered": "fixed_generation_recovery_unproven",
+                "reason": "fixed_generation_preimage_not_authorized"}
+    if isinstance(data.get("fixed_routing_snapshot"), dict):
+        # Ordinary fixed startup has no workflow-owned preimage receipt. Do not
+        # let generic recovery roll back or adopt current native state.
+        return {"ok": False, "status": "pending", "runtime_verified": False,
+                "recovered": "fixed_generation_recovery_unproven",
+                "reason": "fixed_generation_preimage_not_authorized"}
     supersession = data.get("supersession") if isinstance(data.get("supersession"), dict) else None
     if supersession is not None and not supersession.get("rollback_preimage_projection_matches"):
         # The old native set was not proven equal to the newly committed DB
@@ -5370,17 +6099,71 @@ def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> 
             "selection_restore_revision": owned_selection_revision}
 
 
+def _fixed_workflow_identity_snapshot() -> str | None:
+    """Hash durable Xray identity state only when generation needs no provisioning."""
+    try:
+        from fwrouter_api.services.subscription_node_identity import credentials_for_scope
+        from fwrouter_api.services.subscription_profiles import _subscription_servers
+
+        servers = _subscription_servers()
+        auto_servers = _vpn_auto_servers_for_xray_subscription()
+        with db_session() as connection:
+            identity_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_identities ORDER BY identity_id",
+            )]
+            alias_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_aliases ORDER BY server_id",
+            )]
+            credential_rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM subscription_node_credentials ORDER BY scope, identity_id",
+            )]
+            token_rows = connection.execute(
+                "SELECT c.token FROM subscription_clients c JOIN subscription_accounts a "
+                "ON a.account_id=c.account_id WHERE c.enabled=1 AND a.enabled=1 ORDER BY c.token",
+            ).fetchall()
+            aliases = {str(row["server_id"]): str(row["identity_id"]) for row in alias_rows}
+            identities = {str(row["identity_id"]) for row in identity_rows}
+            for server in servers:
+                server_id = str(server.get("server_id") or "")
+                identity_id = aliases.get(server_id)
+                if not server_id or not identity_id or identity_id not in identities:
+                    return None
+                for token in token_rows:
+                    credential = credentials_for_scope(
+                        connection, "subscription:" + str(token["token"]),
+                    ).get(server_id)
+                    if credential is None:
+                        return None
+            auto_credentials = credentials_for_scope(connection, "vpn-auto")
+            for server in auto_servers:
+                credential = auto_credentials.get(str(server.get("server_id") or ""))
+                if credential is None:
+                    return None
+        return hashlib.sha256(json.dumps(
+            {"identities": identity_rows, "aliases": alias_rows, "credentials": credential_rows},
+            sort_keys=True, separators=(",", ":"), default=str,
+        ).encode("utf-8")).hexdigest()
+    except Exception:
+        return None
+
+
 def reconcile_xray_vpn_auto_subscription(
     *,
     requested_by: str = "api",
     verification_callback: Any = None,
     _inventory_admission: Any = None,
+    _fixed_workflow_revision: int | None = None,
+    _fixed_routing_snapshot: dict[str, Any] | None = None,
+    _fixed_origin_selection_revision: int | None = None,
 ) -> dict[str, Any]:
     result = reconcile_xray_subscription_profile_nodes(
         requested_by=requested_by,
         include_vpn_auto=True,
         verification_callback=verification_callback,
         _inventory_admission=_inventory_admission,
+        _fixed_workflow_revision=_fixed_workflow_revision,
+        _fixed_routing_snapshot=_fixed_routing_snapshot,
+        _fixed_origin_selection_revision=_fixed_origin_selection_revision,
     )
     return {**result, "profile_reconcile": result}
 
@@ -5391,11 +6174,55 @@ def reconcile_xray_subscription_profile_nodes(
     cleanup_deleted_projections: bool = True, preserve_existing_overrides: bool = False,
     include_vpn_auto: bool = False, verification_callback: Any = None,
     _inventory_admission: Any = None,
+    _fixed_workflow_revision: int | None = None,
+    _fixed_routing_snapshot: dict[str, Any] | None = None,
+    _fixed_origin_selection_revision: int | None = None,
     _supersede_checkpoint_sha256: str | None = None,
     _migration_plan_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Run staged generation as guarded apply, unguarded verification, guarded publish."""
     with xray_writer_guard(timeout_seconds=30.0):
+        from fwrouter_api.services.xray_vpn_auto_pending import _assert_xray_generation_authorized
+        if not _assert_xray_generation_authorized(_fixed_workflow_revision):
+            return {
+                "ok": False,
+                "status": "blocked",
+                "stage": "fixed_server_workflow_gate",
+                "error_code": "XRAY_GENERATION_BLOCKED_BY_FIXED_WORKFLOW",
+                "last_good_retained": True,
+            }
+        if (_fixed_workflow_revision is not None
+                and not _fixed_xray_routing_snapshot_matches(
+                _fixed_routing_snapshot, _fixed_workflow_revision,
+                expected_selection_revision=_fixed_origin_selection_revision,
+                origin_selection_revision=_fixed_origin_selection_revision,
+                )):
+            return {
+                "ok": False, "status": "blocked", "stage": "fixed_routing_snapshot",
+                "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE",
+                "last_good_retained": True,
+            }
+        ordinary_fixed_context = None
+        if _fixed_workflow_revision is None:
+            ordinary_fixed_context, ordinary_fixed_error = _capture_ordinary_fixed_xray_context()
+            if ordinary_fixed_error is not None:
+                return {
+                    "ok": False, "status": "pending", "stage": "fixed_routing_snapshot",
+                    "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE",
+                    "reason": ordinary_fixed_error, "runtime_verified": False,
+                }
+            if ordinary_fixed_context is not None:
+                _fixed_routing_snapshot = ordinary_fixed_context["routing_snapshot"]
+        identity_preimage = None
+        if _fixed_workflow_revision is not None:
+            identity_preimage = _fixed_workflow_identity_snapshot()
+            if identity_preimage is None:
+                return {
+                    "ok": False, "status": "blocked",
+                    "stage": "fixed_workflow_identity_preflight",
+                    "error_code": "FIXED_WORKFLOW_IDENTITY_UNAVAILABLE",
+                    "last_good_retained": True,
+                }
         from fwrouter_api.services import mihomo_config
         result = _reconcile_xray_subscription_profile_nodes_guarded(
             requested_by=requested_by, materialize=materialize,
@@ -5407,8 +6234,21 @@ def reconcile_xray_subscription_profile_nodes(
             _inventory_admission=_inventory_admission,
             _supersede_checkpoint_sha256=_supersede_checkpoint_sha256,
             _migration_plan_sha256=_migration_plan_sha256,
+            _fixed_workflow_revision=_fixed_workflow_revision,
+            _fixed_routing_snapshot=_fixed_routing_snapshot,
+            _fixed_origin_selection_revision=_fixed_origin_selection_revision,
+            _ordinary_fixed_context=ordinary_fixed_context,
             _defer_selection_verification=callable(verification_callback),
         )
+        if identity_preimage is not None:
+            identity_postimage = _fixed_workflow_identity_snapshot()
+            if identity_postimage != identity_preimage:
+                return {
+                    "ok": False, "status": "partial",
+                    "stage": "fixed_workflow_identity_readback",
+                    "error_code": "FIXED_WORKFLOW_IDENTITY_CHANGED",
+                    "last_good_retained": True,
+                }
     pending = result.get("_pending_generation") if isinstance(result, dict) else None
     if not isinstance(pending, dict):
         return result
@@ -5545,6 +6385,10 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
     _defer_selection_verification: bool = False,
     _supersede_checkpoint_sha256: str | None = None,
     _migration_plan_sha256: str | None = None,
+    _fixed_workflow_revision: int | None = None,
+    _fixed_routing_snapshot: dict[str, Any] | None = None,
+    _fixed_origin_selection_revision: int | None = None,
+    _ordinary_fixed_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     adapter = _xray_adapter()
     checkpoint_path = _xray_generation_checkpoint_path(adapter)
@@ -5695,6 +6539,16 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
             "ok": False, "status": "failed", "stage": "generation_source_fingerprint",
             "error_code": "XRAY_GENERATION_SOURCE_FINGERPRINT_UNAVAILABLE",
         })
+    if _ordinary_fixed_context is not None:
+        _ordinary_fixed_context["source_fingerprint"] = source_fingerprint
+        if not _fixed_xray_generation_context_matches(
+                _fixed_routing_snapshot, None,
+                expected_selection_revision=_ordinary_fixed_context.get("selection_snapshot", {}).get("selection_revision"),
+                ordinary_fixed_context=_ordinary_fixed_context):
+            return fail_before_checkpoint({
+                "ok": False, "status": "pending", "stage": "fixed_routing_snapshot",
+                "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE", "runtime_verified": False,
+            })
     if supersession is not None:
         try:
             supersession["baseline"] = _checkpoint_supersession_state(
@@ -5796,6 +6650,10 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                 bindings=prospective_bindings,
                 client_modes=prospective_modes,
                 assignments=handoff_assignments,
+                routing_snapshot=_fixed_routing_snapshot,
+                fixed_workflow_revision=_fixed_workflow_revision,
+                fixed_origin_selection_revision=_fixed_origin_selection_revision,
+                ordinary_fixed_context=_ordinary_fixed_context,
             )
             if not isinstance(staged_generation, dict):
                 raise TypeError("XRAY_GENERATION_CANDIDATE_RESULT_INVALID")
@@ -5810,6 +6668,18 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                 "stage": staged_generation.get("stage") or "native_candidate_validation",
                 "error_code": staged_generation.get("error_code") or "XRAY_GENERATION_CANDIDATE_INVALID",
                 "details": _strip_raw_payload(staged_generation),
+            })
+        if not _fixed_xray_generation_context_matches(
+                _fixed_routing_snapshot, _fixed_workflow_revision,
+                expected_selection_revision=(
+                    _fixed_origin_selection_revision if _fixed_workflow_revision is not None
+                    else (_ordinary_fixed_context or {}).get("selection_snapshot", {}).get("selection_revision")
+                ),
+                fixed_origin_selection_revision=_fixed_origin_selection_revision,
+                ordinary_fixed_context=_ordinary_fixed_context):
+            return fail_before_checkpoint({
+                "ok": False, "status": "pending", "stage": "fixed_routing_snapshot",
+                "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE", "last_good_retained": True,
             })
         try:
             staged_source_fingerprint = _generation_source_fingerprint()
@@ -5852,6 +6722,9 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                      "revision": _inventory_admission.revision}
                     if _inventory_admission is not None else _current_inventory_generation_binding()
                 ),
+                fixed_workflow_revision=_fixed_workflow_revision,
+                fixed_origin_selection_revision=_fixed_origin_selection_revision,
+                ordinary_fixed_context=_ordinary_fixed_context,
             )
         except Exception as exc:
             return fail_before_checkpoint({
@@ -5861,45 +6734,112 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                 "error_code": "XRAY_GENERATION_CHECKPOINT_FAILED",
                 "error_message": str(exc),
             })
+        # Keep the captured routing projection in the private checkpoint and
+        # owner context only. Staged metadata can flow into public result
+        # projections after verification.
+        staged_generation.pop("fixed_routing_snapshot", None)
         transition = staged_generation["mihomo_candidates"]["transition"]
+        fixed_stage_selection_revision = (
+            _fixed_origin_selection_revision if _fixed_workflow_revision is not None
+            else (_ordinary_fixed_context or {}).get("selection_snapshot", {}).get("selection_revision")
+        )
+        if not _fixed_xray_generation_context_matches(
+                _fixed_routing_snapshot, _fixed_workflow_revision,
+                expected_selection_revision=(fixed_stage_selection_revision if _fixed_workflow_revision is not None
+                                             else (_ordinary_fixed_context or {}).get("selection_snapshot", {}).get("selection_revision")),
+                fixed_origin_selection_revision=_fixed_origin_selection_revision,
+                ordinary_fixed_context=_ordinary_fixed_context):
+            return {"ok": False, "status": "pending", "stage": "fixed_routing_snapshot",
+                    "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE", "runtime_verified": False}
         applied_transition = _apply_staged_mihomo_candidate(
             transition,
             staged_generation["native_validation"]["transition"]["candidate_sha256"],
             inventory_admission=_inventory_admission,
             candidate_input_fingerprint=staged_generation.get("mihomo_input_fingerprint"),
+            fixed_routing_snapshot=_fixed_routing_snapshot,
+            fixed_workflow_revision=_fixed_workflow_revision,
+            fixed_origin_selection_revision=_fixed_origin_selection_revision,
+            expected_selection_revision=fixed_stage_selection_revision,
+            ordinary_fixed_context=_ordinary_fixed_context,
         )
+        transition_selection_revision = applied_transition.get("selection_revision")
+        if type(transition_selection_revision) is int:
+            _record_xray_generation_selection_revision(checkpoint_path, transition_selection_revision)
+        elif _fixed_workflow_revision is not None or _ordinary_fixed_context is not None:
+            return {"ok": False, "status": "pending", "stage": "selection_revision_receipt",
+                    "error_code": "XRAY_GENERATION_SELECTION_REVISION_UNVERIFIED", "runtime_verified": False}
         if not applied_transition.get("ok"):
             restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
-            return {"ok": False, "status": "failed", "stage": "mihomo_transition_apply", "error_code": "XRAY_GENERATION_TRANSITION_APPLY_FAILED", "details": _strip_raw_payload(applied_transition)}
+            return {"ok": False, "status": "pending" if (_fixed_workflow_revision is not None or _ordinary_fixed_context is not None) else "failed",
+                    "stage": "mihomo_transition_apply", "error_code": "XRAY_GENERATION_TRANSITION_APPLY_FAILED",
+                    "details": _strip_raw_payload(applied_transition),
+                    **({"runtime_verified": False, "generation_recovery": restored}
+                       if (_fixed_workflow_revision is not None or _ordinary_fixed_context is not None) else {})}
         _update_xray_generation_checkpoint(
             checkpoint_path, phase="transition_applied",
-            selection_revision=((applied_transition.get("container") or {}).get("selection_revision")),
+            selection_revision=transition_selection_revision,
         )
+        if _fixed_workflow_revision is not None:
+            fixed_stage_selection_revision = transition_selection_revision
+        if not _fixed_xray_generation_context_matches(
+                _fixed_routing_snapshot, _fixed_workflow_revision,
+                expected_selection_revision=(fixed_stage_selection_revision if _fixed_workflow_revision is not None
+                                             else (_ordinary_fixed_context or {}).get("selection_snapshot", {}).get("selection_revision")),
+                fixed_origin_selection_revision=_fixed_origin_selection_revision,
+                ordinary_fixed_context=_ordinary_fixed_context):
+            return {"ok": False, "status": "pending", "stage": "fixed_routing_snapshot",
+                    "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE", "runtime_verified": False}
         applied_xray = adapter.apply_staged_subscription_generation(
             staged_generation["xray_candidate_path"],
             expected_sha256=staged_generation["xray_candidate_sha256"],
         )
         if not applied_xray.ok:
             restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
-            return {"ok": False, "status": "failed", "stage": "xray_generation_apply", "error_code": applied_xray.error_code or "XRAY_GENERATION_APPLY_FAILED", "details": _strip_raw_payload(applied_xray.details)}
+            return {"ok": False, "status": "pending" if (_fixed_workflow_revision is not None or _ordinary_fixed_context is not None) else "failed",
+                    "stage": "xray_generation_apply", "error_code": applied_xray.error_code or "XRAY_GENERATION_APPLY_FAILED",
+                    "details": _strip_raw_payload(applied_xray.details),
+                    **({"runtime_verified": False, "generation_recovery": restored}
+                       if (_fixed_workflow_revision is not None or _ordinary_fixed_context is not None) else {})}
         _update_xray_generation_checkpoint(
             checkpoint_path, phase="xray_applied",
             xray_runtime_incarnation=adapter.get_runtime_incarnation(),
             xray_mounted_config_sha256=adapter.get_runtime_config_sha256(),
         )
         final_path = staged_generation["mihomo_candidates"]["final"]
+        if not _fixed_xray_generation_context_matches(
+                _fixed_routing_snapshot, _fixed_workflow_revision,
+                expected_selection_revision=(fixed_stage_selection_revision if _fixed_workflow_revision is not None
+                                             else (_ordinary_fixed_context or {}).get("selection_snapshot", {}).get("selection_revision")),
+                fixed_origin_selection_revision=_fixed_origin_selection_revision,
+                ordinary_fixed_context=_ordinary_fixed_context):
+            return {"ok": False, "status": "pending", "stage": "fixed_routing_snapshot",
+                    "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE", "runtime_verified": False}
         applied_final_mihomo = _apply_staged_mihomo_candidate(
             final_path,
             staged_generation["native_validation"]["final"]["candidate_sha256"],
             inventory_admission=_inventory_admission,
             candidate_input_fingerprint=staged_generation.get("mihomo_input_fingerprint"),
+            fixed_routing_snapshot=_fixed_routing_snapshot,
+            fixed_workflow_revision=_fixed_workflow_revision,
+            fixed_origin_selection_revision=_fixed_origin_selection_revision,
+            expected_selection_revision=fixed_stage_selection_revision,
+            ordinary_fixed_context=_ordinary_fixed_context,
         )
+        final_selection_revision = applied_final_mihomo.get("selection_revision")
+        if type(final_selection_revision) is int:
+            _record_xray_generation_selection_revision(checkpoint_path, final_selection_revision)
+        elif _fixed_workflow_revision is not None or _ordinary_fixed_context is not None:
+            return {"ok": False, "status": "pending", "stage": "selection_revision_receipt",
+                    "error_code": "XRAY_GENERATION_SELECTION_REVISION_UNVERIFIED", "runtime_verified": False}
         if not applied_final_mihomo.get("ok"):
             restored = _restore_xray_generation_checkpoint(adapter, checkpoint_path)
-            return {"ok": False, "status": "failed", "stage": "mihomo_final_apply", "error_code": "XRAY_GENERATION_FINAL_APPLY_FAILED", "details": _strip_raw_payload(applied_final_mihomo), "generation_recovery": restored}
+            return {"ok": False, "status": "pending" if (_fixed_workflow_revision is not None or _ordinary_fixed_context is not None) else "failed",
+                    "stage": "mihomo_final_apply", "error_code": "XRAY_GENERATION_FINAL_APPLY_FAILED",
+                    "details": _strip_raw_payload(applied_final_mihomo), "generation_recovery": restored,
+                    **({"runtime_verified": False} if (_fixed_workflow_revision is not None or _ordinary_fixed_context is not None) else {})}
         _update_xray_generation_checkpoint(
             checkpoint_path, phase="runtime_applied",
-            selection_revision=((applied_final_mihomo.get("container") or {}).get("selection_revision")),
+            selection_revision=final_selection_revision,
         )
         reconcile_details = {"stage": "staged_generation_applied", "created": [], "deleted": [], "recreated": []}
         existing_by_email = {str(client.email or "").lower(): client for client in existing_clients if str(client.email or "")}

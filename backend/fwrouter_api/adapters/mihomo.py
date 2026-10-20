@@ -962,10 +962,20 @@ class MihomoHttpAdapter(MihomoAdapter):
             actual = proxies.get(name) if isinstance(proxies.get(name), dict) else {}
             native = actual.get("all") if isinstance(actual.get("all"), list) else []
             selected = str(actual.get("now") or "").strip()
-            group_ok = bool(configured and configured[-1] == "REJECT" and "DIRECT" not in configured
+            fixed_global_default = bool(
+                name == "vpn-global"
+                and len(configured) == 2
+                and configured[0] == "REJECT"
+                and configured[1] not in NON_SERVER_PROXY_TARGETS
+            )
+            group_ok = bool(
+                            configured
+                            and (configured[-1] == "REJECT" or fixed_global_default)
+                            and "DIRECT" not in configured
                             and set(configured) == {str(value) for value in native}
                             and selected in configured
-                            and selected not in {"DIRECT", "PASS", "PASS-RULE", "COMPATIBLE"})
+                            and selected not in {"DIRECT", "PASS", "PASS-RULE", "COMPATIBLE"}
+                        )
             group_names_match[name] = group_ok
             group_readback_ok = group_readback_ok and group_ok
 

@@ -90,6 +90,17 @@ def _preference_server_summaries(servers: list[dict[str, Any]]) -> list[dict[str
     ]
 
 
+def _fixed_workflow_pending(connection: Any) -> bool:
+    from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+    pending = _load_row(connection)
+    workflow = pending.get("workflow") if isinstance(pending, dict) else None
+    return bool(
+        isinstance(pending, dict) and pending.get("pending") is True
+        and isinstance(workflow, dict) and workflow.get("kind") == "global_fixed_server"
+    )
+
+
 def _normalize_vpn_auto_priority(value: Any) -> tuple[bool, int | None, str | None]:
     if isinstance(value, bool) or not isinstance(value, int):
         return False, None, "vpn_auto_priority must be an integer between -1 and 5."
@@ -286,6 +297,18 @@ def update_server_preferences(
         from fwrouter_api.services.vpn_auto_selection_state import (
             advance_selection_revision, selection_pool_signature,
         )
+        if _fixed_workflow_pending(connection):
+            return {
+                "ok": False,
+                "changed": False,
+                "changed_fields": [],
+                "requested_by": requested_by,
+                "server_id": normalized_server_id,
+                "server": _preference_server_summary(current_server),
+                "mihomo_reconcile": None,
+                "error_code": "FIXED_WORKFLOW_PENDING",
+                "error_message": "Server preferences are locked by the active fixed-server workflow.",
+            }
         current_target_error = _preference_target_error(connection, normalized_server_id)
         if current_target_error is not None:
             return {
@@ -576,6 +599,21 @@ def replace_vpn_auto_servers(
         from fwrouter_api.services.vpn_auto_selection_state import (
             advance_selection_revision, selection_pool_signature,
         )
+        if _fixed_workflow_pending(connection):
+            return {
+                "ok": False,
+                "changed": False,
+                "requested_by": requested_by,
+                "server_ids": normalized_server_ids,
+                "current_server_ids": current_server_ids,
+                "vpn_auto_count": len(current_server_ids),
+                "vpn_auto_servers": _preference_server_summaries(
+                    list_servers(inventory_state="active", vpn_auto=True, limit=1000),
+                ),
+                "mihomo_reconcile": None,
+                "error_code": "FIXED_WORKFLOW_PENDING",
+                "error_message": "VPN-auto membership is locked by the active fixed-server workflow.",
+            }
         current_invalid = [
             {"server_id": server_id, **error}
             for server_id in normalized_server_ids

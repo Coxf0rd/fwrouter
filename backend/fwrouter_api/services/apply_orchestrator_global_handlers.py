@@ -26,10 +26,65 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             message="Global mode must be one of: direct, selective, vpn.",
         )
 
+    # A persisted fixed workflow owns the selection/Core sequence until its
+    # final proof CAS. Only its exact internal same-mode Core apply may cross
+    # this boundary; generic API/startup applies must leave it untouched.
+    with db_session() as connection:
+        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+        pending = _load_row(connection)
+        workflow = pending.get("workflow") if isinstance(pending, dict) else None
+        if (
+            isinstance(pending, dict) and pending.get("pending") is True
+            and isinstance(workflow, dict) and workflow.get("kind") == "global_fixed_server"
+        ):
+            expected_snapshot = payload.get("expected_core_snapshot")
+            desired = connection.execute(
+                "SELECT desired_mode FROM routing_global_state WHERE id=1",
+            ).fetchone()
+            owns_fixed_core_stage = bool(desired is not None) and bool(
+                workflow.get("phase") == "mihomo_verified"
+                and mode == str(desired["desired_mode"] or "")
+                and type(payload.get("expected_selection_revision")) is int
+                and payload.get("expected_selection_revision") == workflow.get("selection_revision")
+                and type(payload.get("expected_core_revision")) is int
+                and payload.get("expected_core_revision") == workflow.get("core_revision")
+                and isinstance(expected_snapshot, list)
+                and expected_snapshot == workflow.get("core_snapshot")
+            )
+            if not owns_fixed_core_stage:
+                return orchestrator._build_failure_result(
+                    intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+                    job_id=str(job["job_id"]),
+                    requested_by=requested_by,
+                    stage="fixed_workflow_fence",
+                    code="FIXED_WORKFLOW_PENDING",
+                    message="The fixed-server workflow owns routing until its verified completion.",
+                )
+
     core_revision: int | None = None
     core_enable_pending = False
     core_module_snapshot: tuple[str, str, str] | None = None
     core_runtime_context: dict[str, str] | None = None
+    expected_selection_revision = payload.get("expected_selection_revision")
+    expected_core_revision = payload.get("expected_core_revision")
+    expected_core_snapshot = payload.get("expected_core_snapshot")
+    if expected_selection_revision is not None and type(expected_selection_revision) is not int:
+        return orchestrator._build_failure_result(
+            intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+            requested_by=requested_by, stage="fence", code="SELECTION_REVISION_INVALID",
+            message="Expected selection revision is invalid; Core apply was not started.",
+        )
+    if expected_core_snapshot is not None and (
+        not isinstance(expected_core_snapshot, list)
+        or len(expected_core_snapshot) != 3
+        or not all(isinstance(value, str) for value in expected_core_snapshot)
+    ):
+        return orchestrator._build_failure_result(
+            intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+            requested_by=requested_by, stage="fence", code="CORE_SNAPSHOT_INVALID",
+            message="Expected Core snapshot is invalid; Core apply was not started.",
+        )
     with db_session() as connection:
         core = connection.execute(
             "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
@@ -46,6 +101,20 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                     intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                     requested_by=requested_by, stage="fence", code="CORE_INTENT_REVISION_INVALID",
                     message="Core intent revision is unavailable; apply was not started.",
+                )
+            if expected_core_revision is not None and (
+                type(expected_core_revision) is not int or core_revision != expected_core_revision
+            ):
+                return orchestrator._build_failure_result(
+                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                    requested_by=requested_by, stage="fence", code="CORE_INTENT_STALE",
+                    message="Core intent changed before the fixed workflow apply began.",
+                )
+            if expected_core_snapshot is not None and list(core_module_snapshot) != expected_core_snapshot:
+                return orchestrator._build_failure_result(
+                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                    requested_by=requested_by, stage="fence", code="CORE_INTENT_STALE",
+                    message="Core state changed before the fixed workflow apply began.",
                 )
             bypass = connection.execute(
                 "SELECT value_json FROM settings WHERE key='core.bypass'",
@@ -73,6 +142,14 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                     intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                     requested_by=requested_by, stage="fence", code="CORE_BYPASS_ACTIVE",
                     message="Core bypass is active; Core enable apply was not started.",
+                )
+        if expected_selection_revision is not None:
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+            if read_selection_revision(connection) != expected_selection_revision:
+                return orchestrator._build_failure_result(
+                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                    requested_by=requested_by, stage="fence", code="SELECTION_INTENT_STALE",
+                    message="Selection intent changed before the fixed workflow Core apply began.",
                 )
 
     if core_enable_pending:
@@ -145,7 +222,18 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             "reason": "global_direct_does_not_change_mihomo_config",
         }
     else:
-        mihomo_reconcile = orchestrator.mihomo_runtime_satisfies_routing(future_routing)
+        # A same-mode Core enable applies authority, not a new fixed selection.
+        # Its native proof must retain the settled persisted selection snapshot;
+        # the future apply-state is only a planning projection. Real changes
+        # still use future routing and the normal generation owner.
+        readiness_routing = (
+            routing
+            if str(routing.get("server_mode") or "auto") == "fixed"
+            and routing.get("desired_mode") == routing.get("applied_mode") == mode
+            and routing.get("apply_state") == "clean"
+            else future_routing
+        )
+        mihomo_reconcile = orchestrator.mihomo_runtime_satisfies_routing(readiness_routing)
         if mihomo_reconcile.get("ok"):
             mihomo_reconcile = {
                 **mihomo_reconcile,
@@ -241,7 +329,14 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
     if core_revision is not None:
         from fwrouter_api.services.core_intent import assert_core_intent_snapshot_current
         with db_session() as connection:
-            if not assert_core_intent_snapshot_current(connection, core_revision, core_module_snapshot):
+            from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+            if (
+                not assert_core_intent_snapshot_current(connection, core_revision, core_module_snapshot)
+                or (
+                    expected_selection_revision is not None
+                    and read_selection_revision(connection) != expected_selection_revision
+                )
+            ):
                 return orchestrator._build_failure_result(
                     intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                     requested_by=requested_by, stage="fence", code="CORE_INTENT_STALE",
@@ -291,6 +386,7 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
     )
 
 
+@xray_writer_guarded
 def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     requested_by = str(job.get("requested_by") or "api")
     server_mode = str(payload.get("server_mode") or "").strip().lower()

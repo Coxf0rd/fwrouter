@@ -35,3 +35,20 @@ A promoted generation keeps a guarded last-good artifact checkpoint; failed
 apply/readback restores only the generation-owned active artifact and reports
 whether recovery was confirmed. Existing staged Xray generation recovery remains
 the managed path; this does not introduce a second reconciliation engine.
+
+### Unified fixed-operation handoff (under qualification)
+
+The existing reconcile owner can bind its structural selection-revision
+reservation to the existing fixed pending workflow in the same SQLite
+transaction before native effects. Source revision and reserved revision have
+different roles; callbacks, durable verified receipt and intermediate commit
+must agree on one exact operation rather than accept an arbitrary newer value.
+
+An immutable operation-keyed checkpoint in the protected last-good directory
+preserves the preimage independently of shared previous-config files. Raw copy
+and hash validation cover supported generated configurations without conflating
+base-input or semantic-parsing limits. Resume either proves the same operation
+and current native state or remains blocked. Publication must hold the existing
+writer guard; confirmed completion precedes exact own-checkpoint cleanup.
+These additions retain the ordinary non-fixed generation owner and strict
+inventory/native proof contracts. Native qualification is still pending.

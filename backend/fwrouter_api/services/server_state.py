@@ -71,7 +71,7 @@ def get_routing_global_state(*, expire_ttl: bool = True) -> dict[str, Any] | Non
     }
 
 
-def _clear_expired_global_fixed_server_state(row: Any) -> None:
+def _clear_expired_global_fixed_server_state(row: Any) -> bool:
     write_details = {
         "desired_fixed_server_id": row["desired_fixed_server_id"],
         "applied_fixed_server_id": row["applied_fixed_server_id"],
@@ -101,6 +101,18 @@ def _clear_expired_global_fixed_server_state(row: Any) -> None:
         if changed.rowcount == 1:
             if advance_selection_revision(connection, expected_revision=revision) is None:
                 raise RuntimeError("VPN-auto selection revision changed during fixed-mode TTL expiry.")
+            from fwrouter_api.services.xray_vpn_auto_pending import mark_xray_vpn_auto_pending
+
+            mark_xray_vpn_auto_pending(
+                connection,
+                trigger="global_fixed_server_ttl_expired",
+                immediate=True,
+                supersede_fixed_workflow=True,
+            )
+        cleared = changed.rowcount == 1
+
+    if not cleared:
+        return False
 
     from fwrouter_api.services.logs import write_operational_log
 
@@ -109,6 +121,7 @@ def _clear_expired_global_fixed_server_state(row: Any) -> None:
         message="Global fixed server TTL expired and desired state was returned to auto.",
         details=write_details,
     )
+    return True
 
 
 def expire_global_fixed_server(
@@ -134,13 +147,30 @@ def expire_global_fixed_server(
         expired = dict(row) if row is not None else None
 
     if expired is not None and not dry_run:
-        _clear_expired_global_fixed_server_state(expired)
-        if apply_runtime:
-            from fwrouter_api.services.server_global_selection import apply_global_auto_server
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
 
-            runtime_apply = apply_global_auto_server(requested_by="global_fixed_server_ttl")
-        else:
-            runtime_apply = {"skipped": True}
+        with xray_writer_guard(timeout_seconds=30.0):
+            # Re-read under the same writer fence; a renewal may have replaced
+            # the row after the initial scheduler scan.
+            with db_session() as connection:
+                current = connection.execute(
+                    """SELECT desired_fixed_server_id, applied_fixed_server_id, fixed_server_until
+                       FROM routing_global_state WHERE id=1 AND server_mode='fixed'
+                         AND fixed_server_until IS NOT NULL
+                         AND fixed_server_until <= CURRENT_TIMESTAMP"""
+                ).fetchone()
+            if current is None:
+                expired = None
+                runtime_apply = {"skipped": True, "reason": "fixed_intent_renewed"}
+            else:
+                expired = dict(current)
+                cleared = _clear_expired_global_fixed_server_state(expired)
+                if cleared and apply_runtime:
+                    from fwrouter_api.services.server_global_selection import apply_global_auto_server
+
+                    runtime_apply = apply_global_auto_server(requested_by="global_fixed_server_ttl")
+                else:
+                    runtime_apply = {"skipped": True} if cleared else {"skipped": True, "reason": "fixed_intent_changed"}
     else:
         runtime_apply = {"skipped": True}
 

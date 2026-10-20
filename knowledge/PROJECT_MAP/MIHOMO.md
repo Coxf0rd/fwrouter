@@ -63,7 +63,7 @@ is not qualified by the auto-mode check.
 
 ## Server Selection
 
-- Runtime `proxies` include active servers with `global_list=1` or `vpn_auto=1`.
+- Runtime `proxies` include active servers with `global_list=1` or `vpn_auto=1`, plus the explicitly approved active fixed target independently of those flags.
 - `vpn-auto` contains auto candidates plus `DIRECT`.
 - `vpn-global` contains `vpn-auto`, manual global-list targets, and `DIRECT`.
 - A JSON `logical_profile` remains one user-visible server. Its persisted
@@ -198,3 +198,83 @@ the current input fingerprint and candidate file hash still match; structural
 candidate validation remains mandatory before promotion or restart. The
 pipeline exposes compact `timings_ms` stage data for operational diagnostics;
 preparation and apply totals use distinct keys.
+
+
+## Fixed generation and publication contract (source branch, 2026-10-19)
+
+The admin fixed API retains the full active independent inventory as its target
+domain; auto/global-list preference flags are not admission criteria for that
+API. The existing generation owner materializes the explicitly selected target
+without adding it to the independent auto pool. With a concrete fixed intent,
+`vpn-global` has only the canonical fixed target and `REJECT`, with `REJECT` as
+the safe default. Auto/global-list alternatives cannot be retained from a native
+selector cache during a pending fixed generation. The independent `vpn-auto`
+group and scoped consumers remain available. Returning to auto materializes its
+normal membership through the same generation owner before selection.
+
+Fixed apply reserves the shared selection revision, binds Core intent/runtime
+context and the owned generation receipt, and revalidates around native effect,
+unlocked probes and durable completion. Startup must refuse unsettled,
+mismatched, expired or malformed fixed state rather than replay an older applied
+target. A failed operation may restore a preimage only while still owning the
+fence and with sufficient native proof; uncertain effects remain explicitly
+unverified. Enabled, pending and materialized membership are distinct from a
+confirmed applied fixed selection.
+
+Owned materialization and ordinary restoration have separate obligations. An
+exact-revision generation restart may use its existing owner's verification
+callback to prove fresh config/membership while the fixed selector remains
+`REJECT`; this does not select a server or complete pending intent. Ordinary
+startup/restart still refuses unsettled fixed state. The targetless compatibility
+shape is limited to persisted desired/applied Direct and never establishes fixed
+VPN proof. Active logical-profile fixed targets need their owned group and
+members generated and independently read back, including when explicitly
+selected outside the normal inventory window.
+
+Inventory verification and explicit proof-only legacy admission remain owned by
+the existing subscription generation mechanism. Missing markers do not permit
+native generation preparation. Older loaded fixed layouts with auto/global
+alternatives are not automatically accepted by this contract: exact current
+candidate/native proof may remain blocked and requires separate disposition.
+Source/native qualification and production acceptance are separate gates; this
+section does not authorize or claim production deployment.
+
+### Fixed-operation revision handoff (under qualification)
+
+A structural generation can reserve the next selection revision before native
+restart. For a unified fixed operation, that reservation and the existing pending
+workflow must advance together in the existing owner's SQLite transaction. The
+workflow retains both the source revision and the exact reserved operation; a
+plain latest-revision match is not ownership evidence.
+
+The existing protected last-good directory holds an immutable operation-keyed
+preimage checkpoint. Its identity/hash belongs to that pending workflow, not to
+generic runtime discovery. Native/publication/fingerprint verification must
+produce a durable exact-operation receipt before the fixed owner commits its
+intermediate selection phase. Resume uses the same operation and fresh proof;
+UNKNOWN, foreign checkpoint or conflicting intent blocks without forced reload
+or stale snapshot compensation. Membership preparation remains distinct from
+selected-target proof and final Core/Mihomo/Xray job completion.
+
+Final workflow completion commits before cleanup of its exact own checkpoint.
+A retained protected orphan is not a new operation's proof. Raw checkpoint
+contents and private paths are not public pending-state data. This section is a
+source contract under qualification, not a deployment or native PASS claim.
+
+### Fixed selector membership versus selection proof
+
+Fixed native membership is independent of the requested selected target: a proven `{REJECT, fixed runtime target}` selector may legitimately remain on REJECT before the owned selector write. `require_selected=True` still requires the target to be selected for overall proof success; a valid membership result alone never completes the fixed job or legacy admission. Logical server identity and resolved native runtime name are separate domains and must remain bound by the captured generation/source fences. Native qualification of this correction is pending.
+
+### Bounded native qualification — 2026-10-20
+
+Exact source `68618d0907e27a47c671d27ee5c3b20d6b3b101a`, GitHub run
+[39433679641](https://github.com/Coxf0rd/fwrouter/actions/runs/39433679641):
+four isolated application/native cases passed with no failures/skips and clean
+owned-runtime cleanup. Fixed unified apply, strict legacy admission and two actual
+normal startups completed; the separate auto lifecycle also completed two
+startups. Native state and durable synthetic identity mappings remained unchanged
+across admission/startups; proof receipt publication was confirmed. This qualifies
+that bounded synthetic path, not production state or deployment. Interrupted fixed
+checkpoints without qualified preimage proof remain blocked/pending. Destructive
+fixed-specific interruption tests remain NOT RUN. Full final PR CI is a separate
+gate; production recovery/deployment and Stage 5 remain outside this task.
