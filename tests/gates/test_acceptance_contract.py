@@ -7768,6 +7768,228 @@ class RuntimeScaleFailureDiagnosticsContract(unittest.TestCase):
         self.assertEqual({"worker_returncode": -9}, observation["after"])
 
 
+class StartupResourceObservationContract(unittest.TestCase):
+    def setUp(self):
+        self.source = Path(__file__).parents[1] / "application_acceptance" / "test_runtime_scale.py"
+        self.tree = ast.parse(self.source.read_text(encoding="utf-8"))
+
+    def _helpers(self):
+        names = {
+            "_STARTUP_CGROUP_MEMORY_EVENTS", "_STARTUP_CGROUP_CPU_FIELDS", "_STARTUP_CGROUP_IO_FIELDS",
+            "_STARTUP_CGROUP_PRESSURE_FILES", "_STARTUP_PROC_STATUS_FIELDS", "_STARTUP_PROC_IO_FIELDS",
+            "_STARTUP_RESOURCE_SAMPLE_INTERVAL_SECONDS", "_STARTUP_RESOURCE_SAMPLE_CAPACITY",
+            "_read_bounded_ascii", "_parse_startup_keyed_counters", "_read_startup_worker_resource_snapshot",
+        }
+        body = []
+        for item in self.tree.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name in names:
+                body.append(item)
+            elif isinstance(item, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id in names for target in item.targets
+            ):
+                body.append(item)
+        namespace: dict[str, Any] = {"Path": Path, "os": os, "re": re, "Any": Any}
+        exec(compile(ast.Module(body=body, type_ignores=[]), str(self.source), "exec"), namespace)
+        return namespace
+
+    def test_owned_process_cgroup_snapshot_aggregates_allowlisted_scalars_only(self):
+        helpers = self._helpers()
+        with tempfile.TemporaryDirectory(prefix="fwrouter-startup-resource-synthetic-") as temp:
+            root = Path(temp)
+            pid = 123
+            proc = root / "proc" / str(pid)
+            cgroot = root / "cgroup"
+            cg = cgroot / "owned-container"
+            proc.mkdir(parents=True)
+            cg.mkdir(parents=True)
+            stat_fields = ["S"] + ["0"] * 21
+            stat_fields[7], stat_fields[9], stat_fields[11], stat_fields[12] = "12", "3", "70", "30"
+            (proc / "stat").write_text("123 (synthetic api worker) " + " ".join(stat_fields), encoding="ascii")
+            (proc / "status").write_text(
+                "Name:\tsynthetic\nVmRSS:\t2048 kB\nVmHWM:\t4096 kB\nThreads:\t7\n", encoding="ascii",
+            )
+            (proc / "io").write_text("read_bytes: 1000\nwrite_bytes: 2000\nrchar: 9\n", encoding="ascii")
+            (proc / "schedstat").write_text("101 202 3\n", encoding="ascii")
+            (proc / "cgroup").write_text("0::/owned-container\n", encoding="ascii")
+            (cg / "cpu.stat").write_text(
+                "usage_usec 5000\nuser_usec 3000\nsystem_usec 2000\nnr_periods 10\n"
+                "nr_throttled 2\nthrottled_usec 1500000\nignored_secret 999\n", encoding="ascii",
+            )
+            (cg / "cpu.max").write_text("150000 100000\n", encoding="ascii")
+            (cg / "memory.current").write_text("123456\n", encoding="ascii")
+            (cg / "memory.peak").write_text("234567\n", encoding="ascii")
+            (cg / "memory.max").write_text("max\n", encoding="ascii")
+            (cg / "memory.events").write_text("low 0\nmax 4\noom 1\noom_kill 1\nsecret 99\n", encoding="ascii")
+            (cg / "cpu.pressure").write_text("some avg10=0.10 avg60=0.20 total=1234\nfull avg10=0.01 total=34\n", encoding="ascii")
+            (cg / "memory.pressure").write_text("some avg10=0.00 total=456\n", encoding="ascii")
+            (cg / "io.pressure").write_text("some avg10=0.00 total=789\n", encoding="ascii")
+            (cg / "io.stat").write_text(
+                "8:0 rbytes=10 wbytes=20 rios=1 wios=2 dbytes=3 dios=4\n"
+                "8:16 rbytes=5 wbytes=7 rios=3 wios=4\n", encoding="ascii",
+            )
+
+            result = helpers["_read_startup_worker_resource_snapshot"](
+                pid, proc_root=root / "proc", cgroup_root=cgroot,
+            )
+
+        self.assertEqual("owned_acceptance_container", result["cgroup_scope"])
+        self.assertEqual(2048, result["process_rss_kib"])
+        self.assertEqual(4096, result["process_hwm_kib"])
+        self.assertEqual(7, result["process_threads"])
+        self.assertEqual(12, result["minor_faults"])
+        self.assertEqual(3, result["major_faults"])
+        self.assertEqual(1000, result["process_io_bytes_read"])
+        self.assertEqual(2000, result["process_io_bytes_written"])
+        self.assertEqual("pid_leader_thread_only", result["main_thread_sched_scope"])
+        self.assertEqual(3, result["main_thread_sched_runqueue_count"])
+        self.assertEqual(1.5, result["cgroup"]["cpu"]["throttled_seconds"])
+        self.assertEqual({"quota_us": 150000, "period_us": 100000}, result["cgroup"]["cpu_max"])
+        self.assertEqual({"current_bytes": 123456, "peak_bytes": 234567, "max_bytes": "max"},
+                         result["cgroup"]["memory"])
+        self.assertEqual(1, result["cgroup"]["memory_events"]["oom_kill"])
+        self.assertEqual({"cpu_some_total_us": 1234, "cpu_full_total_us": 34,
+                          "memory_some_total_us": 456, "io_some_total_us": 789},
+                         result["cgroup"]["psi_total_us"])
+        self.assertEqual(15, result["cgroup"]["io_bytes_read"])
+        self.assertEqual(27, result["cgroup"]["io_bytes_written"])
+        self.assertEqual(4, result["cgroup"]["io_read_ops"])
+        self.assertEqual(6, result["cgroup"]["io_write_ops"])
+        self.assertNotIn("8:0", json.dumps(result))
+        self.assertNotIn("owned-container", json.dumps(result))
+        self.assertNotIn("avg10", json.dumps(result))
+        self.assertNotIn("ignored_secret", json.dumps(result))
+
+    def test_missing_or_malformed_owned_files_remain_unknown_without_host_fallback(self):
+        helpers = self._helpers()
+        with tempfile.TemporaryDirectory(prefix="fwrouter-startup-resource-missing-") as temp:
+            root = Path(temp)
+            proc = root / "proc" / "124"
+            cgroot = root / "cgroup"
+            (cgroot / "container").mkdir(parents=True)
+            proc.mkdir(parents=True)
+            (proc / "cgroup").write_text("0::/container\n", encoding="ascii")
+            (proc / "stat").write_text("broken (record) not-numeric\n", encoding="ascii")
+            (proc / "status").write_text("VmRSS: invalid kB\nVmHWM: 99 bytes\nThreads: nope\n", encoding="ascii")
+            (proc / "io").write_text("read_bytes: NaN\nwrite_bytes: -1\nsecret_path: /never/emit\n", encoding="ascii")
+            missing_files = helpers["_read_startup_worker_resource_snapshot"](
+                124, proc_root=root / "proc", cgroup_root=cgroot,
+            )
+            (proc / "cgroup").write_text("0::/../../credential-shaped-path\n", encoding="ascii")
+            result = helpers["_read_startup_worker_resource_snapshot"](
+                124, proc_root=root / "proc", cgroup_root=cgroot,
+            )
+            partial = cgroot / "partial"
+            partial.mkdir()
+            (partial / "io.stat").write_text("8:0 wbytes=12 dbytes=4\n", encoding="ascii")
+            (proc / "cgroup").write_text("0::/partial\n", encoding="ascii")
+            partial_io = helpers["_read_startup_worker_resource_snapshot"](
+                124, proc_root=root / "proc", cgroup_root=cgroot,
+            )
+        self.assertIsNone(result["process_cpu_seconds"])
+        self.assertIsNone(result["process_rss_kib"])
+        self.assertIsNone(result["process_hwm_kib"])
+        self.assertIsNone(result["process_io_bytes_read"])
+        self.assertIsNone(result["cgroup"])
+        self.assertIsNone(missing_files["cgroup"]["cpu"])
+        self.assertIsNone(missing_files["cgroup"]["cpu_max"])
+        self.assertEqual({"current_bytes": None, "peak_bytes": None, "max_bytes": None},
+                         missing_files["cgroup"]["memory"])
+        self.assertIsNone(missing_files["cgroup"]["psi_total_us"])
+        self.assertIsNone(missing_files["cgroup"]["io_bytes_read"])
+        self.assertIsNone(partial_io["cgroup"]["io_bytes_read"])
+        self.assertEqual(12, partial_io["cgroup"]["io_bytes_written"])
+        self.assertIsNone(partial_io["cgroup"]["io_read_ops"])
+        self.assertIsNone(partial_io["cgroup"]["io_write_ops"])
+        self.assertEqual("owned_acceptance_container", result["cgroup_scope"])
+        self.assertNotIn("credential-shaped-path", json.dumps(result))
+        self.assertNotIn("/never/emit", json.dumps(result))
+        with self.assertRaises(ValueError):
+            helpers["_read_startup_worker_resource_snapshot"](1, proc_root=root / "proc", cgroup_root=cgroot)
+
+    def test_startup_sampler_freezes_retains_only_last_bounded_ring_and_exports_probe_cost(self):
+        helpers = self._helpers()
+        sampler_node = next(item for item in self.tree.body
+                            if isinstance(item, ast.ClassDef) and item.name == "_RssSampler")
+        namespace = {
+            **helpers, "Any": Any, "Path": Path, "time": time, "threading": threading,
+            "deque": __import__("collections").deque,
+            "_read_rss_kib": lambda *_args, **_kwargs: None,
+            "_read_process_cpu_seconds": lambda _pid: None,
+            "_read_startup_worker_resource_snapshot": lambda pid: {
+                "process_cpu_seconds": 1.0, "cgroup_scope": "owned_acceptance_container", "cgroup": None,
+            },
+        }
+        exec(compile(ast.Module(body=[sampler_node], type_ignores=[]), str(self.source), "exec"), namespace)
+        sampler = namespace["_RssSampler"](125)
+        sampler._startup_started = time.monotonic()
+        sampler._startup_next_sample = sampler._startup_started
+        for _ in range(70):
+            sampler._sample_startup_resources_if_due(force=True)
+        sampler.freeze_startup_resources(trigger="start_worker_raised")
+        frozen = sampler.startup_resource_observations()
+        retained = frozen["samples"]
+        self.assertEqual("frozen", frozen["status"])
+        self.assertEqual("start_worker_raised", frozen["freeze_trigger"])
+        self.assertEqual(64, frozen["sample_capacity"])
+        self.assertEqual(64, frozen["sample_count_retained"])
+        self.assertEqual(71, frozen["probe_read_cost"]["sample_count"])
+        self.assertTrue(all(item["cgroup_scope"] == "owned_acceptance_container" for item in retained))
+        self.assertFalse(sampler._startup_active)
+        frozen_elapsed = frozen["startup_elapsed_seconds"]
+        sample_count = frozen["probe_read_cost"]["sample_count"]
+        time.sleep(0.02)
+        sampler._sample_startup_resources_if_due(force=True)
+        after_wait = sampler.startup_resource_observations()
+        self.assertEqual(frozen_elapsed, after_wait["startup_elapsed_seconds"])
+        self.assertEqual(sample_count, after_wait["probe_read_cost"]["sample_count"])
+        self.assertEqual(64, after_wait["sample_count_retained"])
+        self.assertEqual(64, len(retained))
+
+        def probe_failure(_pid):
+            raise OSError("/synthetic/secret/path")
+
+        namespace["_read_startup_worker_resource_snapshot"] = probe_failure
+        failed_probe_sampler = namespace["_RssSampler"](126)
+        failed_probe_sampler._startup_started = time.monotonic()
+        failed_probe_sampler._startup_next_sample = failed_probe_sampler._startup_started
+        failed_probe_sampler.freeze_startup_resources(trigger="start_worker_raised")
+        failed_probe = failed_probe_sampler.startup_resource_observations()
+        self.assertEqual("OSError", failed_probe["samples"][-1]["snapshot_error_type"])
+        self.assertNotIn("/synthetic/secret/path", json.dumps(failed_probe))
+
+    def test_startup_failure_path_freezes_before_outer_metrics_export(self):
+        source = self.source.read_text(encoding="utf-8")
+        self.assertIn("sampler.freeze_startup_resources(trigger=startup_freeze_trigger)", source)
+        self.assertIn('metrics["startup_resource_observations"] = sampler.startup_resource_observations()', source)
+        scale_test = next(item for item in self.tree.body
+                          if isinstance(item, ast.FunctionDef)
+                          and item.name == "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load")
+        start_worker_call = next(node for node in ast.walk(scale_test)
+                                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Subscript)
+                                 and isinstance(node.func.value, ast.Name) and node.func.value.id == "stack"
+                                 and isinstance(node.func.slice, ast.Constant)
+                                 and node.func.slice.value == "start_worker")
+        startup_try = min((node for node in ast.walk(scale_test)
+                           if isinstance(node, ast.Try) and start_worker_call in ast.walk(node)),
+                          key=lambda node: node.end_lineno - node.lineno)
+        self.assertTrue(any(isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                            and child.func.attr == "freeze_startup_resources"
+                            for final_statement in startup_try.finalbody
+                            for child in ast.walk(final_statement)))
+        outer_finally = next(node for node in ast.walk(scale_test) if isinstance(node, ast.Try)
+                             and any(isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                                     and child.func.attr == "stop"
+                                     for final_statement in node.finalbody
+                                     for child in ast.walk(final_statement)))
+        self.assertTrue(any(isinstance(child, ast.Assign)
+                            and any(isinstance(target, ast.Subscript)
+                                    and isinstance(target.slice, ast.Constant)
+                                    and target.slice.value == "startup_resource_observations"
+                                    for target in child.targets)
+                            for final_statement in outer_finally.finalbody
+                            for child in ast.walk(final_statement)))
+
+
 class SharedReceiptObserverContractTests(unittest.TestCase):
     def test_actual_observer_forwards_routing_context_and_owner_proof(self):
         source = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
