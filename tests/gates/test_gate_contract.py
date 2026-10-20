@@ -1739,5 +1739,136 @@ class GateContractTests(unittest.TestCase):
         self.assertIn('${{ runner.temp }}/phase-d-unit-fixtures/**', job)
 
 
+
+class StartupPairDiagnosticTests(unittest.TestCase):
+    @staticmethod
+    def load(relative):
+        spec = importlib.util.spec_from_file_location("d12_" + Path(relative).stem, gate.ROOT / relative)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_calibration_has_fixed_work_and_cooperative_budget(self):
+        calibration = self.load("tests/application_acceptance/startup_calibration.py")
+        result = calibration.cpu_calibration()
+        self.assertEqual("complete", result["status"])
+        self.assertEqual([8, 8, 8], [sample["iterations_completed"] for sample in result["samples"]])
+        self.assertEqual(8192, result["objects_per_decode"])
+        with mock.patch.object(calibration.time, "monotonic", side_effect=[0, 3, 3, 3, 3]):
+            incomplete = calibration.cpu_calibration()
+        self.assertEqual("incomplete", incomplete["status"])
+        self.assertEqual(0, incomplete["samples"][0]["iterations_completed"])
+
+    def test_worker_snapshot_rejects_stale_pid_and_symlink(self):
+        calibration = self.load("tests/application_acceptance/startup_calibration.py")
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "snapshot.json"
+            path.write_text(json.dumps({"schema": "fwrouter-startup-causality/v1", "worker_pid": 123}))
+            with mock.patch.object(calibration, "Path", return_value=path):
+                self.assertEqual("available", calibration.read_startup_counters(123)["status"])
+                self.assertEqual("unavailable", calibration.read_startup_counters(124)["status"])
+            link = Path(temp) / "link"
+            link.symlink_to(path)
+            with mock.patch.object(calibration, "Path", return_value=link):
+                self.assertEqual("unavailable", calibration.read_startup_counters(123)["status"])
+
+    def test_pair_rejects_changed_work_inputs_and_reused_suite(self):
+        pair = self.load("tests/acceptance/startup_pair.py")
+        first = {"suite_nonce": "first", "inputs": {"count": 5}, "runtime": {"xray": "v1"},
+                 "dependency_image": "sha256:one", "calibration": {"workload_sha256": "fixed"}}
+        second = copy.deepcopy(first)
+        second["suite_nonce"] = "second"
+        self.assertEqual([], pair.compare_attempts(first, second))
+        for key in ("inputs", "runtime", "dependency_image", "suite_nonce"):
+            changed = copy.deepcopy(second)
+            changed[key] = first[key] if key == "suite_nonce" else "changed"
+            self.assertTrue(pair.compare_attempts(first, changed), key)
+
+    def test_pair_validates_bound_receipts_and_cleanup(self):
+        pair = self.load("tests/acceptance/startup_pair.py")
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            profile = {"source_revision": "sha", "plan_digest": "plan", "suite_nonce": "a" * 32,
+                       "xray": {"version": "1", "sha256": "a" * 64},
+                       "mihomo": {"version": "1", "sha256": "b" * 64},
+                       "dns_runtime": {key: "1" for key in ("dnsmasq_base_package_version",
+                           "bind9_dnsutils_package_version", "iptables_package_version")},
+                       "playwright_python": "1"}
+            (directory / "profile.json").write_text(json.dumps(profile))
+            digest = pair.hashlib.sha256((directory / "profile.json").read_bytes()).hexdigest()
+            report = dict(profile, profile_sha256=digest, cleanup="owned_resources_removed", suite_nonce="a" * 32,
+                          dependency_base_image={"digest": "sha256:" + "c" * 64})
+            receipt = dict(profile, profile_sha256=digest, cleanup_errors=[])
+            path = directory / "hosted-acceptance-report.json"
+            path.write_text(json.dumps(report))
+            (directory / "application-acceptance-receipt.json").write_text(json.dumps(receipt))
+            metrics = {"cpu_calibration_before_startup": {"status": "complete"},
+                       "startup_causality": {"status": "available"},
+                       "startup_input_manifest": {"schema": "fwrouter-startup-inputs/v1"}}
+            (directory / "runtime-scale-metrics.json").write_text(json.dumps(metrics))
+            self.assertEqual("a" * 32, pair.validate_attempt(path, "sha", "plan")["suite_nonce"])
+            (directory / "application-acceptance-receipt.json").write_text(json.dumps(dict(receipt, suite_nonce="b" * 32)))
+            with self.assertRaisesRegex(ValueError, "nonce"):
+                pair.validate_attempt(path, "sha", "plan")
+            (directory / "application-acceptance-receipt.json").write_text(json.dumps(receipt))
+            for field in ("xray", "mihomo", "dns_runtime", "playwright_python"):
+                broken = dict(profile)
+                broken.pop(field)
+                (directory / "profile.json").write_text(json.dumps(broken))
+                bad_digest = pair.hashlib.sha256((directory / "profile.json").read_bytes()).hexdigest()
+                (directory / "application-acceptance-receipt.json").write_text(json.dumps(dict(receipt, profile_sha256=bad_digest)))
+                path.write_text(json.dumps(dict(report, profile_sha256=bad_digest)))
+                with self.assertRaises(ValueError):
+                    pair.validate_attempt(path, "sha", "plan")
+            (directory / "profile.json").write_text(json.dumps(profile))
+            (directory / "application-acceptance-receipt.json").write_text(json.dumps(receipt))
+            path.write_text(json.dumps(dict(report, dependency_base_image={})))
+            with self.assertRaisesRegex(ValueError, "digest missing"):
+                pair.validate_attempt(path, "sha", "plan")
+            path.write_text(json.dumps(report))
+            receipt["cleanup_errors"] = ["owned resource remains"]
+            (directory / "application-acceptance-receipt.json").write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, "cleanup"):
+                pair.validate_attempt(path, "sha", "plan")
+            with self.assertRaisesRegex(ValueError, "source or plan"):
+                pair.validate_attempt(path, "other", "plan")
+
+    def test_pair_runs_only_once_and_preserves_primary_failure(self):
+        pair = self.load("tests/acceptance/startup_pair.py")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            primary = root / "fwrouter-acceptance-first-artifacts" / "hosted-acceptance-report.json"
+            primary.parent.mkdir()
+            for name in pair.RETAIN:
+                (primary.parent / name).write_text("{}")
+            first = {"suite_nonce": "first", "status": "failed", "startup_ready": False,
+                     "inputs": {}, "runtime": {}, "dependency_image": "digest", "calibration": {}}
+            second = dict(first, suite_nonce="second", status="passed", startup_ready=True)
+            def launch(*args, **kwargs):
+                directory = root / "fwrouter-acceptance-second-artifacts"
+                directory.mkdir()
+                (directory / "hosted-acceptance-report.json").write_text("{}")
+                return subprocess.CompletedProcess(args[0], 0)
+            with mock.patch.dict(os.environ, {"RUNNER_TEMP": temp, "FWROUTER_ACCEPTANCE_PLAN_DIGEST": "plan"}), \
+                 mock.patch.object(pair.subprocess, "check_output", return_value="sha"), \
+                 mock.patch.object(pair, "packet_reports", return_value=[primary]), \
+                 mock.patch.object(pair, "validate_attempt", side_effect=[first, second]), \
+                 mock.patch.object(pair.subprocess, "run", side_effect=launch) as run:
+                self.assertEqual(1, pair.run_pair())
+                run.assert_called_once()
+            summary = json.loads((root / "fwrouter-d12-pair/pair-summary.json").read_text())
+            self.assertTrue(summary["comparison_valid"])
+            self.assertEqual("failed", summary["attempts"][0]["status"])
+            self.assertTrue((root / "fwrouter-d12-pair/supplementary/hosted-acceptance-report.json").exists())
+
+    def test_pair_workflow_is_additive_after_aggregation(self):
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text()
+        self.assertLess(workflow.index("Aggregate immutable source"), workflow.index("D-12 paired startup diagnosis"))
+        step = workflow.split("- name: D-12 paired startup diagnosis", 1)[1].split("- name:", 1)[0]
+        self.assertIn("github.event.pull_request.number == 29", step)
+        self.assertEqual(1, step.count("python tests/acceptance/startup_pair.py"))
+        self.assertNotIn("continue-on-error", step)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

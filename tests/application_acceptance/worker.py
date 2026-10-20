@@ -3824,6 +3824,19 @@ def build_app(socket_path: Path):
     bootstrap_diagnostic_active = False
     bootstrap_diagnostic_counts: dict[str, int] = {}
     bootstrap_diagnostic_limit = 8
+    startup_causality = None
+    if (os.environ.get("FWROUTER_STARTUP_TASKS_ENABLED") == "1"
+            and os.environ.get("FWROUTER_STARTUP_RECOVERY_ENABLED") == "1"
+            and acceptance_profile.get("profile") == "hosted-kernel-packet"):
+        from .startup_causality import StartupCausality
+        from fwrouter_api.services import live_probe_cache
+        startup_causality = StartupCausality()
+        import httpx
+        startup_causality.install(
+            sqlite_module=__import__("sqlite3"), json_module=json, cache_module=live_probe_cache,
+            boundary_targets=((sys.modules[__name__], "_rpc_call", "native.acceptance_rpc"),
+                              (httpx.Client, "request", "httpx.client.request")),
+        )
 
     def candidate_fingerprint(candidate_value: Any) -> dict[str, Any] | None:
         if not isinstance(candidate_value, (str, Path)):
@@ -3859,6 +3872,9 @@ def build_app(socket_path: Path):
             nonlocal bootstrap_diagnostic_active
             if not bootstrap_diagnostic_active:
                 return original(*args, **kwargs)
+            previous_phase = startup_causality.phase if startup_causality is not None else "foundation"
+            if startup_causality is not None:
+                startup_causality.set_phase("xray")
             with bootstrap_diagnostic_lock:
                 count = min(bootstrap_diagnostic_counts.get(name, 0) + 1, 10_000)
                 bootstrap_diagnostic_counts[name] = count
@@ -3979,6 +3995,8 @@ def build_app(socket_path: Path):
                     "phase": name, "event": "exit", "call": count,
                     "seconds": elapsed, "cpu_seconds": cpu_elapsed,
                 }), flush=True)
+                if startup_causality is not None:
+                    startup_causality.set_phase(previous_phase)
         return observed
 
     for phase in (
@@ -4008,6 +4026,22 @@ def build_app(socket_path: Path):
         def observed(*args, **kwargs):
             if not bootstrap_diagnostic_active:
                 return original(*args, **kwargs)
+            previous_phase = startup_causality.phase if startup_causality is not None else "foundation"
+            if startup_causality is not None:
+                phase_name = name.rsplit(".", 1)[-1]
+                if "dnsmasq" in name or "dns" in name:
+                    phase_name = "dns"
+                elif "selector" in name:
+                    phase_name = "selector"
+                elif "scoped" in name:
+                    phase_name = "scoped"
+                elif "intended" in name:
+                    phase_name = "intended"
+                elif "xray" in name or "profile" in name:
+                    phase_name = "xray"
+                elif "routing" in name or "apply_global" in name:
+                    phase_name = "routing"
+                startup_causality.set_phase(phase_name)
             with bootstrap_diagnostic_lock:
                 count = min(bootstrap_diagnostic_counts.get(name, 0) + 1, 10_000)
                 bootstrap_diagnostic_counts[name] = count
@@ -4032,6 +4066,8 @@ def build_app(socket_path: Path):
                     "phase": name, "event": "exit", "call": count, "seconds": elapsed,
                     "cpu_seconds": cpu_elapsed,
                 }), flush=True)
+                if startup_causality is not None:
+                    startup_causality.set_phase(previous_phase)
         return observed
 
     for phase in ("recover_startup_live_routing_from_persisted_mode", "recover_startup_mihomo_selector",
@@ -4115,10 +4151,19 @@ def build_app(socket_path: Path):
     def observed_bootstrap() -> dict[str, Any]:
         nonlocal bootstrap_diagnostic_active
         bootstrap_diagnostic_active = True
+        if startup_causality is not None:
+            startup_causality.recording = True
+            startup_causality.set_phase("foundation")
         try:
             result = original_bootstrap()
+            if startup_causality is not None:
+                startup_causality.completed = True
         finally:
             bootstrap_diagnostic_active = False
+            if startup_causality is not None:
+                startup_causality.recording = False
+                startup_causality.snapshot()
+                startup_causality.restore()
         bootstrap_observation.update({
             "completed": True,
             "recovery_enabled": result.get("startup_recovery_enabled") is True,
@@ -4149,6 +4194,9 @@ def build_app(socket_path: Path):
         ("_config_text", "startup.mihomo.config_text"),
     ):
         setattr(mihomo_adapter, attribute, observe_phase(phase, getattr(mihomo_adapter, attribute)))
+        if startup_causality is not None:
+            startup_causality.observe_boundary(mihomo_adapter, attribute,
+                                               "static.mihomo." + attribute.lstrip("_"))
     _install_acceptance_mihomo_fence_observer()
     _install_acceptance_provider_verification_observer()
     _install_acceptance_generation_callback_observer()

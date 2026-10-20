@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from .http_support import http_json
+from .startup_calibration import cpu_calibration, read_startup_counters
 
 
 TOP_LEVEL_RULE_COUNT = 199_257
@@ -186,6 +187,7 @@ def _seed_scale_rules_source(state: Path) -> dict[str, Any]:
     )
 
     return {
+        "rules_content_sha256": hashlib.sha256(json.dumps(effective_artifact["rules"], sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         "effective_rules_count": len(effective_artifact["rules"]),
         "vpn_domain_suffix_count": sum(
             1 for item in effective_artifact["rules"]
@@ -979,6 +981,21 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
         metrics["fixed_external_clients"] = SCALE_FIXED_EXTERNAL_CLIENTS
         native.restart_mihomo_child()
 
+        # Source-defined synthetic inputs only; all digest/calibration work is
+        # outside the unchanged spawn-to-readiness deadline.
+        metrics["startup_input_manifest"] = {
+            "schema": "fwrouter-startup-inputs/v1",
+            "config_sha256": metrics["config"]["config_sha256"],
+            "config_bytes": metrics["config"]["config_bytes"],
+            "rules_sha256": metrics["rules_source"]["rules_content_sha256"],
+            "rules_count": metrics["rules_source"]["effective_rules_count"],
+            "xray_sha256": hashlib.sha256(json.dumps(xray_config, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "profile_counts": dict(profile_state["expected_counts"]),
+            "cache_state": "fresh_worker_python_cache; fresh_test_sqlite; OS_page_cache_uncontrolled",
+            "prior_packet_cases": 3,
+        }
+        metrics["cpu_calibration_before_startup"] = cpu_calibration()
+
         def observe_spawn(worker) -> None:
             nonlocal active_worker, sampler
             active_worker = worker
@@ -1022,6 +1039,7 @@ def test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load(ac
             if sampler is not None:
                 sampler.freeze_startup_resources(trigger=startup_freeze_trigger)
                 metrics["startup_resource_observations"] = sampler.startup_resource_observations()
+            metrics["startup_causality"] = read_startup_counters(active_worker.pid)
             if metrics.get("startup_wall_seconds") is None:
                 metrics["startup_wall_seconds"] = round(time.monotonic() - start, 4)
         stack["worker"] = active_worker

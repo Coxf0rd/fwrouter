@@ -286,6 +286,20 @@ jobs:
         run: |
           python installer/qualify_recovery.py --aggregate "$RUNNER_TEMP/fwrouter-aggregate.json" \
             --output "$RUNNER_TEMP/fwrouter-safe-recovery"
+      # PR29-only bounded diagnostic: one supplementary fresh packet suite.
+      # This runs after mandatory aggregation, so a FAIL cannot be replaced.
+      - name: D-12 paired startup diagnosis (one supplementary suite)
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.number == 29 && steps.plan.outputs.needs_packet == 'true'
+        run: python tests/acceptance/startup_pair.py
+      - name: Retain separate D-12 paired evidence
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.number == 29
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fwrouter-d12-pair-${{ github.sha }}
+          path: ${{ runner.temp }}/fwrouter-d12-pair/**
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 3
       - name: Record runner use and Docker cleanup state
         if: always()
         run: |
