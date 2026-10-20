@@ -2,7 +2,7 @@ name: Phase D branch validation (temporary)
 
 on:
   push:
-    branches: [fix/fixed-mode-native-proof, stage/test-architecture-ci-stabilization, fix/api-runtime-health-scale-stability, fix/startup-scale-concurrent-disconnect, fix/proof-only-legacy-admission, cleanup/ruff-completion-startup-audit]
+    branches: [stage/test-architecture-ci-stabilization, fix/api-runtime-health-scale-stability, fix/startup-scale-concurrent-disconnect, fix/proof-only-legacy-admission, cleanup/ruff-completion-startup-audit]
 
 permissions:
   contents: read
@@ -160,7 +160,7 @@ jobs:
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
       - name: Check full Phase D delta syntax and whitespace from fixed checkpoint
         env:
-          PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/fixed-mode-native-proof' && '4d36a5443f52d019366de012e3bd7798c8a286a6' || github.ref == 'refs/heads/fix/proof-only-legacy-admission' && '9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || (needs.select-stage.outputs.stage == 'startup-comparison' && '47cfd63fc220f2890e140da27ff54c91a8a2c7a1') || ((needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345') }}
+          PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/proof-only-legacy-admission' && '9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || (needs.select-stage.outputs.stage == 'startup-comparison' && '47cfd63fc220f2890e140da27ff54c91a8a2c7a1') || ((needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345') }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"
@@ -687,7 +687,7 @@ jobs:
         run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
       - name: Bind diagnostic to fixed source and complete Phase D plan
         env:
-          PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/fixed-mode-native-proof' && '4d36a5443f52d019366de012e3bd7798c8a286a6' || github.ref == 'refs/heads/fix/proof-only-legacy-admission' && '9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || (needs.select-stage.outputs.stage == 'startup-comparison' && '47cfd63fc220f2890e140da27ff54c91a8a2c7a1') || ((needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345') }}
+          PHASE_D_BASE_SHA: ${{ github.ref == 'refs/heads/fix/proof-only-legacy-admission' && '9a48562ab347f6e5324f24504cec1ecbc9f48f7c' || (needs.select-stage.outputs.stage == 'startup-comparison' && '47cfd63fc220f2890e140da27ff54c91a8a2c7a1') || ((needs.select-stage.outputs.stage == 'identity-diagnostic' || needs.select-stage.outputs.stage == 'final-regressions-diagnostic' || needs.select-stage.outputs.stage == 'packet-diagnostic') && '1b302e91b3cd652cd4aab4f45bbdd88c088e5786' || '6bdf37e9c73b5728b8d50e971f34d848610eb345') }}
         run: |
           set -euo pipefail
           git cat-file -e "$PHASE_D_BASE_SHA^{commit}"

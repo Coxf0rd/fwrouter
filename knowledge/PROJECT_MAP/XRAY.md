@@ -316,3 +316,17 @@ Core proof and unchanged generation/source receipt remain authoritative; marker
 promotion does not authorize adopting a newer source digest. A post-effect proof
 failure retains pending/checkpoint evidence and must report runtime unverified,
 rather than equating a saved artifact with current last-good runtime.
+
+### Bounded native qualification — 2026-10-20
+
+Exact source `68618d0907e27a47c671d27ee5c3b20d6b3b101a`, GitHub run
+[39433679641](https://github.com/Coxf0rd/fwrouter/actions/runs/39433679641):
+four isolated application/native cases passed with no failures/skips and clean
+owned-runtime cleanup. Fixed unified apply, strict legacy admission and two actual
+normal startups completed; the separate auto lifecycle also completed two
+startups. Native state and durable synthetic identity mappings remained unchanged
+across admission/startups; proof receipt publication was confirmed. This qualifies
+that bounded synthetic path, not production state or deployment. Interrupted fixed
+checkpoints without qualified preimage proof remain blocked/pending. Destructive
+fixed-specific interruption tests remain NOT RUN. Full final PR CI is a separate
+gate; production recovery/deployment and Stage 5 remain outside this task.

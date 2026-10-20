@@ -264,3 +264,17 @@ source contract under qualification, not a deployment or native PASS claim.
 ### Fixed selector membership versus selection proof
 
 Fixed native membership is independent of the requested selected target: a proven `{REJECT, fixed runtime target}` selector may legitimately remain on REJECT before the owned selector write. `require_selected=True` still requires the target to be selected for overall proof success; a valid membership result alone never completes the fixed job or legacy admission. Logical server identity and resolved native runtime name are separate domains and must remain bound by the captured generation/source fences. Native qualification of this correction is pending.
+
+### Bounded native qualification — 2026-10-20
+
+Exact source `68618d0907e27a47c671d27ee5c3b20d6b3b101a`, GitHub run
+[39433679641](https://github.com/Coxf0rd/fwrouter/actions/runs/39433679641):
+four isolated application/native cases passed with no failures/skips and clean
+owned-runtime cleanup. Fixed unified apply, strict legacy admission and two actual
+normal startups completed; the separate auto lifecycle also completed two
+startups. Native state and durable synthetic identity mappings remained unchanged
+across admission/startups; proof receipt publication was confirmed. This qualifies
+that bounded synthetic path, not production state or deployment. Interrupted fixed
+checkpoints without qualified preimage proof remain blocked/pending. Destructive
+fixed-specific interruption tests remain NOT RUN. Full final PR CI is a separate
+gate; production recovery/deployment and Stage 5 remain outside this task.
