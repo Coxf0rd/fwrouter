@@ -1031,12 +1031,18 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                 # Keep the complete failure phase chain, never configs, IDs or
                 # credentials. This is emitted only for this synthetic job.
                 observations = []
-                allowed = {"ok", "stage", "status", "error_code", "reason",
+                allowed = {"ok", "stage", "fixed_selection_stage", "status", "error_code", "reason",
                            "reconcile_reason", "reconcile_action", "last_good_retained", "checkpoint_retained",
                            "config_membership_ok", "native_membership_ok",
-                           "logical_group_native_membership_ok", "selected_fixed_target"}
+                           "logical_group_native_membership_ok", "selected_fixed_target",
+                           "vpn_global_matches_target"}
 
                 safe_values = {
+                    'owner_fence_before_selection',
+                    'membership_before_selection',
+                    'selected_proof_before_selection',
+                    'selected_proof_after_selection',
+                    'owner_fence_after_selection',
                     'CORE_INTENT_STALE',
                     'CORE_NATIVE_PROOF_UNVERIFIED',
                     'CORE_NOT_ENABLED_MANAGED',
@@ -1068,6 +1074,7 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                     'MIHOMO_GENERATION_SELECTOR_PROOF_FAILED',
                     'fixed_target_native_membership_unverified',
                     'fixed_intent_superseded',
+                    'fixed_target_native_membership_unverified',
                     'fixed_target_config_membership_mismatch',
                     'fixed_target_mapping_unresolved',
                     'fixed_target_missing',

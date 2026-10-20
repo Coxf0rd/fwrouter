@@ -1461,6 +1461,38 @@ def _restore_global_routing_state(
     return {"ok": True, "routing": restored}
 
 
+def _fixed_selection_proof_diagnostic(proof: Any) -> dict[str, Any] | None:
+    """Return only bounded, non-identifying proof facts for stale diagnostics."""
+
+    if not isinstance(proof, dict):
+        return None
+    diagnostic: dict[str, Any] = {}
+    for key in (
+        "ok",
+        "config_membership_ok",
+        "native_membership_ok",
+        "logical_group_native_membership_ok",
+        "selected_fixed_target",
+    ):
+        value = proof.get(key)
+        diagnostic[key] = value if type(value) is bool else None
+    reason = proof.get("reason")
+    diagnostic["reason"] = reason if isinstance(reason, str) and reason in {
+        "fixed_target_native_membership_unverified",
+        "fixed_target_config_membership_mismatch",
+        "fixed_target_mapping_unresolved",
+        "fixed_target_missing",
+        "active_config_unavailable",
+        "mihomo_health_unavailable",
+    } else None
+    current = proof.get("vpn_global_now")
+    target = proof.get("fixed_runtime_target")
+    diagnostic["vpn_global_matches_target"] = (
+        current == target if isinstance(current, str) and isinstance(target, str) else None
+    )
+    return diagnostic
+
+
 def apply_global_fixed_server(
     server_id: str,
     *,
@@ -1750,8 +1782,11 @@ def apply_global_fixed_server(
             "error_message": pre_check.get("error_message") or "Global fixed server pre-check failed.",
         }
 
+    fixed_selection_stage: str | None = None
+    fixed_selection_proof: dict[str, Any] | None = materialized_proof
     with xray_writer_guard(timeout_seconds=30.0):
         if not _fixed_apply_token_matches(server_id=server_id, fixed_until=str(desired["routing"].get("fixed_server_until") or ""), token=token):
+            fixed_selection_stage = "owner_fence_before_selection"
             apply_result = None
             stale_before_native = True
             selected_proof = None
@@ -1759,10 +1794,13 @@ def apply_global_fixed_server(
             selected_proof = mihomo_runtime_fixed_target_materialized(
                 get_routing_global_state(expire_ttl=False) or {}, require_selected=True,
             )
+            fixed_selection_proof = selected_proof
             stale_before_native = not bool(
                 selected_proof.get("ok")
                 and selected_proof.get("fixed_runtime_target") == mihomo_target
             )
+            if stale_before_native:
+                fixed_selection_stage = "selected_proof_before_selection"
             apply_result = (
                 MihomoApplyResult(
                     ok=True,
@@ -1775,6 +1813,8 @@ def apply_global_fixed_server(
         else:
             current_proof = mihomo_runtime_fixed_target_materialized(desired["routing"])
             if not current_proof.get("ok") or current_proof.get("fixed_runtime_target") != mihomo_target:
+                fixed_selection_stage = "membership_before_selection"
+                fixed_selection_proof = current_proof
                 apply_result = None
                 stale_before_native = True
                 selected_proof = None
@@ -1782,6 +1822,7 @@ def apply_global_fixed_server(
                 selected_proof = mihomo_runtime_fixed_target_materialized(
                     desired["routing"], require_selected=True,
                 )
+                fixed_selection_proof = selected_proof
                 if selected_proof.get("ok") and selected_proof.get("fixed_runtime_target") == mihomo_target:
                     stale_before_native = False
                     apply_result = MihomoApplyResult(
@@ -1803,11 +1844,17 @@ def apply_global_fixed_server(
                         selected_proof = mihomo_runtime_fixed_target_materialized(
                             desired["routing"], require_selected=True,
                         )
-                        if not selected_proof.get("ok") or not _fixed_apply_token_matches(
+                        fixed_selection_proof = selected_proof
+                        if not selected_proof.get("ok"):
+                            fixed_selection_stage = "selected_proof_after_selection"
+                            apply_result = None
+                            stale_before_native = True
+                        elif not _fixed_apply_token_matches(
                             server_id=server_id,
                             fixed_until=str(desired["routing"].get("fixed_server_until") or ""),
                             token=token,
                         ):
+                            fixed_selection_stage = "owner_fence_after_selection"
                             apply_result = None
                             stale_before_native = True
                     else:
@@ -1815,6 +1862,7 @@ def apply_global_fixed_server(
                 else:
                     apply_result = None
                     stale_before_native = True
+                    fixed_selection_stage = "selected_proof_before_selection"
 
     if stale_before_native or apply_result is None:
         return {
@@ -1826,6 +1874,8 @@ def apply_global_fixed_server(
             "routing_after": get_routing_global_state(expire_ttl=False),
             "server": validation["server"], "pre_check": pre_check,
             "apply_result": apply_result.to_dict() if apply_result else None,
+            "fixed_selection_stage": fixed_selection_stage,
+            "fixed_selection_proof": _fixed_selection_proof_diagnostic(fixed_selection_proof),
             "post_check": None, "rolled_back": False,
             "post_check_failed_no_rollback": False,
             "error_code": "GLOBAL_FIXED_SERVER_STALE",

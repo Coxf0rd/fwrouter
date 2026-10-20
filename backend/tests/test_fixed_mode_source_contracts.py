@@ -902,6 +902,145 @@ def test_fixed_apply_token_rejects_core_source_and_runtime_drift(monkeypatch, dr
     ) is False
 
 
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_apply_calls"),
+    [
+        ("owner_fence_before_selection", 0),
+        ("membership_before_selection", 0),
+        ("selected_proof_before_selection", 0),
+        ("selected_proof_after_selection", 1),
+        ("owner_fence_after_selection", 1),
+    ],
+)
+def test_fixed_selection_stale_diagnostics_attribute_existing_fenced_paths(
+    monkeypatch, tmp_path: Path, failure_stage: str, expected_apply_calls: int,
+) -> None:
+    """Exercise stale attribution through fixed apply with isolated SQLite intent."""
+    server_id = f"fixed-stage-{failure_stage}"
+    runtime_name = _seed_server(server_id, vpn_auto=False, global_list=False)
+    from fwrouter_api.adapters import mihomo as mihomo_adapter_module
+    from fwrouter_api.services import (
+        core_intent, mihomo_config_paths, mihomo_reconcile, mihomo_runtime,
+        server_global_selection,
+    )
+    from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision
+    from fwrouter_api.db.connection import db_session
+
+    monkeypatch.setattr(core_intent, "read_core_runtime_context", lambda: {
+        "boot_id": "00000000-0000-0000-0000-000000000001",
+        "network_namespace_inode": "1",
+    })
+    monkeypatch.setattr(mihomo_runtime, "get_mihomo_runtime_incarnation", lambda **_kwargs: "stage-test-runtime")
+    active_config = tmp_path / "active.yaml"
+    active_config.write_text("fixed: true\n", encoding="utf-8")
+    monkeypatch.setattr(mihomo_config_paths, "_resolved_base_config_path", lambda: active_config)
+    monkeypatch.setattr(
+        mihomo_reconcile, "current_mihomo_input_fingerprint",
+        lambda _routing: {"hash": "a" * 64},
+    )
+    native_calls: list[tuple[str, str]] = []
+    selected = {"value": "vpn-auto"}
+
+    def bump_selection_revision() -> None:
+        with db_session() as connection:
+            revision = read_selection_revision(connection)
+            advance_selection_revision(connection, expected_revision=revision)
+
+    def apply_selector(selector: str, target: str):
+        native_calls.append((selector, target))
+        selected["value"] = target
+        if failure_stage == "owner_fence_after_selection":
+            bump_selection_revision()
+        return MihomoApplyResult(ok=True, message="synthetic native boundary", active_server_id=target)
+
+    monkeypatch.setattr(
+        mihomo_adapter_module, "DEFAULT_MIHOMO_ADAPTER",
+        SimpleNamespace(get_active_server_id=lambda: selected["value"], apply_server_to_selector=apply_selector),
+    )
+
+    def valid_generation(routing, *, token, job_id):
+        del routing
+        if failure_stage == "owner_fence_before_selection":
+            bump_selection_revision()
+        fence = {
+            "schema": "mihomo-reentry-generation-fence/v1",
+            "operation_id": "stage-diagnostic-operation",
+            "job_id": job_id,
+            "before_revision": token.get("source_selection_revision", token["selection_revision"]),
+            "selection_revision": token.get("source_selection_revision", token["selection_revision"]),
+            "runtime_incarnation": token["runtime_incarnation"],
+            "active_config_hash": token["active_config_hash"],
+            "native_proof_verified": True,
+            "publication_verified": True,
+            "unchanged_config": True,
+        }
+        return {
+            "ok": True,
+            "operation_id": fence["operation_id"],
+            "job_id": job_id,
+            "reentry_generation_fence": fence,
+        }
+
+    monkeypatch.setattr(server_global_selection, "_materialize_fixed_server_generation", valid_generation)
+
+    calls = 0
+
+    def materialized_proof(_routing, *, require_selected=False):
+        nonlocal calls
+        calls += 1
+        proof = {
+            "ok": True,
+            "fixed_runtime_target": runtime_name,
+            "config_membership_ok": True,
+            "native_membership_ok": True,
+            "logical_group_native_membership_ok": True,
+            "vpn_global_now": selected["value"],
+            "selected_fixed_target": selected["value"] == runtime_name,
+            "reason": "fixed_target_native_membership_unverified",
+            "private_token": "must-not-escape",
+            "config_path": "/private/config.yaml",
+        }
+        if failure_stage == "membership_before_selection" and calls == 2:
+            proof.update(ok=False, config_membership_ok=False)
+        elif failure_stage == "selected_proof_before_selection" and calls == 3:
+            proof.update(ok=False, native_membership_ok=False)
+        elif failure_stage == "selected_proof_after_selection" and calls == 4:
+            proof.update(ok=False, selected_fixed_target=False)
+        if require_selected:
+            proof["ok"] = proof["ok"] and selected["value"] == runtime_name
+        return proof
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.mihomo_config_status.mihomo_runtime_fixed_target_materialized",
+        materialized_proof,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.server_ping.check_server_delay",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    result = apply_global_fixed_server(server_id, requested_by="pytest")
+    assert result["ok"] is False
+    assert result["error_code"] == "GLOBAL_FIXED_SERVER_STALE", result
+    assert result["fixed_selection_stage"] == failure_stage
+    assert len(native_calls) == expected_apply_calls
+    assert result["fixed_selection_proof"] is not None
+    assert "private_token" not in result["fixed_selection_proof"]
+    assert "config_path" not in result["fixed_selection_proof"]
+    assert result["fixed_selection_proof"]["ok"] in {True, False, None}
+    routing_after = get_routing_global_state(expire_ttl=False)
+    assert routing_after["server_mode"] == "fixed"
+    assert routing_after["desired_fixed_server_id"] == server_id
+    assert routing_after["applied_fixed_server_id"] is None
+    assert routing_after["apply_state"] == "pending"
+    with db_session() as connection:
+        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
+
+        pending = _load_row(connection)
+    assert pending is not None and pending["pending"] is True
+    assert pending["workflow"]["phase"] in {"intent", "mihomo_reserved", "mihomo_generation_verified"}
+
+
 @pytest.mark.parametrize("receipt_case", ["missing", "wrong_operation"])
 def test_fixed_apply_rejects_missing_or_mismatched_generation_receipt(
     monkeypatch, receipt_case: str,
