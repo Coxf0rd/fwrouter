@@ -74,3 +74,25 @@ The fixed parent-process CPU calibration completed three local attempts (24 work
 Initial independent source QA required two corrections: reject missing native/dependency fingerprints instead of accepting matching nulls; isolate actual SQLite callable time from SQL-template fingerprint and recorder overhead. Both are corrected with negative regressions. JSON observation also now has a strict inactive fast path before/after bootstrap. No runtime defect or optimization follows from these harness corrections. Raw calibration, exact helper hashes and local JUnit remain in the private server-only evidence directory. Final independent recheck and one hosted paired iteration remain pending.
 
 Final local qualification:333PASS/0FAIL/0SKIP (four existing browser-mark warnings); the final suite-nonce binding follow-up separately passed all six pair/calibration contract cases. Ruff on all seven affected Python files, YAML parse, whitespace and monorepo surface checks PASS. Independent frozen source recheck found the prior findings resolved and no remaining material code findings; exactly one paired CI is justified as diagnostics, with overhead and OS-cache/host comparability caveats. Source review does not qualify startup or establish root cause. The required hosted result remains pending.
+
+## Completed paired experiment and retention disposition — 2026-10-21
+
+The bounded experiment completed on historical diagnostic HEAD `e4dfa2a8dff06438a36fa0b33718cf3e45f28610`: [required CI39475580279](https://github.com/Coxf0rd/fwrouter/actions/runs/39475580279) SUCCESS,2047PASS/0FAIL/0SKIP; separate supplementary packet suite4PASS/0FAIL/0SKIP. Source/plan/profile/native bindings and owned cleanup passed independent review. The two distinct suites had identical synthetic input fingerprints, pinned dependency/native versions and fresh worker/SQLite state; OS cache and physical CPU conditions were uncontrolled.
+
+| Measurement | Mandatory | Supplementary |
+|---|---:|---:|
+| Ready wall seconds |44.9682|44.6470|
+| API CPU seconds at readiness |35.34|34.98|
+| Routing recovery wall seconds |13.2630|13.1382|
+| Xray recovery wall seconds |24.8726|24.8328|
+| JSON decode calls / wall seconds |1773 /8.9172|1774 /8.7156|
+| SQLite connections |2048|2048|
+| SQLite statement/fetch/transaction operations |18186|18186|
+| Cache actual loader calls / wall seconds |57 /15.4636|57 /15.3937|
+| Parent fixed CPU-sample median seconds |0.027772|0.027874|
+
+Nested operation families cannot be summed. JSON sizes use mixed character/byte units, not unique bytes or disk traffic. Sampling retained19large inputs/113,103,587bytes and11sampled repeats; truncation prevents exhaustive repeated-large-payload claims. SQL-template counters saturate and are not exact distinct counts; the shared truncation flag can reflect SQL or JSON bounds. The measured wrapper/snapshot/hash overhead components overlap, and no full-startup observer-off/on control exists. They can matter against the historical31.8/353ms margins and must not be subtracted to fabricate corrected readiness. Resource-probe totals were36.1/35.4ms; no memory pressure/OOM was observed, while cgroup I/O counters were unavailable. These are isolated hosted observations, not production acceptance or optimization savings.
+
+**D-12: PARTIALLY EXPLAINED; historical30-to45s variability root cause UNKNOWN.** The pair measured almost identical expensive current work without a matched fast contrast. Historical FAILs above remain valid under their original policy. No runtime fix or measured acceleration was established.
+
+The approved retention decision keeps only bounded resource snapshots in the existing scale sampler and their four focused regressions. The one-shot paired driver, CPU calibration, global JSON/SQLite/cache/native recorder, acceptance-worker hooks and PR29-number workflow steps are removed from active code. Exact historical source remains available at the commit above; methodology, CI receipts and private raw/calibration evidence are retained. General profiling, a permanent CPU benchmark and startup optimization are deferred to the owning later performance scope. This cleanup preserves existing native/packet/fencing/recovery assertions and adds no production authority.
