@@ -1,0 +1,59 @@
+# Roadmap reconciliation — 2026-10-20
+
+## Scope and source acceptance
+
+Documentation/planning only. Baseline main94724aaa221aac90af08c3affef7a59acae76de1, PR27 user-merged as single-parent squash over4d36a544. Squash tree equals qualified PR17b1ecfd1cedd31047406f9b866e04e5ad5270ae. Required PR CI39435413296 and separate mainCI39438911410 SUCCESS; each2047PASS/0FAIL/0SKIP. Main artifact mandatory plan, exactsource/plan/profile bindings, aggregate eligibility, threehostedreceipts and cleanup independently checked by Orchestrator. Fixed+auto actual two-startup lifecycle and strict admission already qualified in synthetic native scope; source independentQA PASSED. Interrupted fixed checkpoint without sufficient preimage/native proof staysBLOCKED; destructivefixedinterruptionNOTRUN. Neither CI nor these tests establish production78/76identitypreservation or current live parity.
+
+No production reading/writing, deployment, Core enable/apply/admission, stage implementation, service changes or new benchmarks. GitHub openPR list empty at preflight. Workingbranch docs/roadmap-native-core-reconciliation created fromactualmain; unrelated untracked audits and pending patches preserved.
+
+## Proposed changes presented before editing
+
+| Area | Previous active plan | Approved current disposition |
+|---|---|---|
+| Operational/R1 | Mixed October16–18 checkpoints and stale closure blocker | Bounded OperationalClosure ACCEPTABLE; R1resolved byPR24; PR25–27 source/native followups accepted; live/deployment separate |
+| Core | Native/optionalruntime direction present but not complete target boundary | NativeDebian/systemd authority, independentstartup/headless, noCoreDocker migration |
+| Stage5 | Configuration/persistence foundations | Addserverparameters, optionalmoduleDockerconfig, API/CLI, headless and intent/generated/applied/lastgood separation |
+| Stage6 | Mostly obsoletecodecleanup | Internal structure/responsibility/import/largefile audit with behavior-preserving smallPRs, notmoduleextraction |
+| Stage6A | Measuredperformance/serverorchestration | FunctionalComposegroups; planning now, massmigrationafterstable8/7+hostproof; unrelatedservicesnotStage7blocker |
+| Stage8A | SDKlateafterpostextraction | Mandatoryregistry/SDK/security/validationexamples BEFOREStage7; no universalinternalmodels |
+| UI/CLI | ExistingUI/API andmaintenanceCLI | IndependentDockerUIcontrolclient; API-firstnormalCLI separateofflineprivilegedmaintenance |
+| LateTelemetry | Metricsoptimization/generalexternaltelemetry | DedicatedGoDockermodule, boundedcollectors/delivery, noSQLite/routingauthority; CorestaysnativePythoncurrentimplementation |
+
+The explicit user decisions supersede lateSDK ordering and previously undecided monolithic-compose placement. Remaining API transport/auth details, directory names, resource budgets and supported platform matrix remain design questions for their owning stages, not invented implementation choices.
+
+## Structure evidence and ownership
+
+Current backend has core/,db/,services/,routes/,jobs/,adapters/protocols/,subscription/,watchdog/,selector/ packages. Existing real selector implementation is services/selector.py (~2415lines), not the near-empty top-level selector package. xray_subscription_service.py (~7647lines) and ui/static/js/settings.js (~4400lines) are review candidates, not automatic split targets. Existing CLI backend/fwrouter_api/cli.py contains local maintenance commands; API-first status/modules/routing/clients/jobs examples are planned, not claims of existing commands. Installer,host/,runtimes/{xray,mihomo},ui/ and integrations/homeassistant/ remain current physical layout. Suggested adapters/sdk directory layout is illustrative; Stage6/8A audit selects final placement with imports/installer/exports evidence.
+
+## History and canonical publication
+
+Prechange canonical/mirror archived byte-for-byte in knowledge/history/roadmap_reconciliation_2026-10-20 with BASE_HASHES.json. Prior operationalclosure/R1 canonical proposal patches preserved and hashed separately; not blindly applied. New activehead/decisions explicitly supersede old checkpoints; historical security/acceptance/residual owners remain linked. Canonical publication uses unchanged-beforeimage hash guard after QA; resulting canonical/mirror equality must be verified. Publication here is local filesystem synchronization, not GitHub publication.
+
+## Remaining gates
+
+Deployment remains separate and blocked pending fresh authorized read-only live preflight, target-specific runbook/backup/recovery/nativeproof/identityreview and explicit mutation approval. Stage5 source readiness is not execution authorization: user plans controlleddeployment and applicableLiveAcceptance first. FullDebianHost, externalpositiveE2E and longsoak remain separate gaps; D12startupcausalityUNKNOWN, thresholdsunchanged. No release/security waiver or blind oldcode/schema rollback. See active roadmap and existing decision/residual register for owners and entry/exit criteria.
+
+## Explicit deferred and blocked work
+
+- Stage5 implementation: NOT STARTED; separate user decision after planned controlled production review/deployment and applicable acceptance.
+- Production execution: NOT AUTHORIZED in this task; fresh live evidence/runbook and individual mutation approvals still required. The old roadmap STOP receipt is historical after reconciliation, not a continuing assertion that publication never happened.
+- Interrupted fixed recovery: BLOCKED without exact preimage/native proof; destructive qualification NOT RUN. Preserve pending ownership, no generic rollback.
+- Stage8/8A/7: PLANNED, not implemented. Directory names, IPC/auth mechanism, SDK version policy, managed/external capability matrix and support floor are future stage-owned decisions.
+- Go telemetry and physical server-wide Compose migration: DEFERRED to named late dependencies; neither starts here or blocks unrelated FWRouter extraction by blanket server scope.
+- D12 causality, full Debian host/boot/recovery, positive external E2E, long-soak and security residuals remain under existing owners. No threshold, secret, networking or release waiver.
+
+## Dated rebase addendum — 2026-10-21, after PR29 merge
+
+The findings and attempt-specific status above are a historical record of the PR28 rebase/qualification point. They are not the current branch or merge status. PR29 subsequently carried bounded D-12 startup diagnostics and the approved 60-second qualified-readiness policy. Exact source `7c181cc3c9e35747c32f8fd41d8d86c832166fd3` passed required workflow [39487766109](https://github.com/Coxf0rd/fwrouter/actions/runs/39487766109), including hosted startup42.7113s. PR29 was merged to main as `0bf8a031940c32615883a1b29a322477ac76b353`; main workflow [39491652809](https://github.com/Coxf0rd/fwrouter/actions/runs/39491652809) completed SUCCESS with 2047 PASS, no failures or uncollected nodes, and all three hosted partitions cleaned up. These source/CI results do not establish deployment or live acceptance.
+
+The active readiness policy is now: healthy qualified readiness at or below45s passes normally; strictly above45s and at or below60s passes with `SLOW_STARTUP` and measured elapsed/resource evidence; unready beyond60s is TIMEOUT/FAIL. Any safety, integrity or recovery failure remains FAIL regardless of elapsed time. Forty seconds remains an advisory engineering target. This policy does not explain the underlying 30–45s startup variability, which remains UNKNOWN; D-12 is PARTIALLY EXPLAINED only as to bounded observations of work at earlier deadline snapshots. Bounded resource-only sampling is retained and temporary paired diagnostics are removed. No acceleration or root-cause resolution is claimed.
+
+Resume causal D-12 investigation only on a >60s startup timeout, a failure trend, new matched evidence, or an approved performance budget. Optional optimization belongs to existing Stage6A measured-performance scope and requires its entry evidence/approval; none is implemented here. PR24–PR27 outcomes, native reconciliation architecture, Stage5 READY/NOT STARTED, Stage8A-before-Stage7 ordering, and production/full-host/external-E2E/long-soak/security/release gates remain unchanged. After confirming the authorized canonical preimage hash remained unchanged, the current canonical roadmap was synchronized byte-for-byte with the Git mirror; both now have SHA-256 `9fd7ea0129b9a50d9e5248eaf5d98b7bdbb3c2b27e372e798401f6d16f017878`. Earlier publication/hash claims above describe their historical state.
+
+## Qualification checkpoint — 2026-10-21
+
+Full mandatory PR CI [39497222309](https://github.com/Coxf0rd/fwrouter/actions/runs/39497222309) passed on source `9ac064f065b2707207ed79023315285349d24b68`: aggregation eligible, 2047 executed nodes, no novel failures or missing levels; required hosted/native receipts and owned-resource cleanup passed. Scale readiness was 47.52718375199993 seconds with the required `SLOW_STARTUP` warning under the 60-second policy. This does not establish acceleration or resolve historical D-12 causality.
+
+The separate push fast lane [39497208861](https://github.com/Coxf0rd/fwrouter/actions/runs/39497208861) failed before lint/planning/tests: its pre-rebase `EVENT_BEFORE=67af62af5ed91dc37371e9b1e6b34c7fbcec83eb` was unavailable in the runner checkout, producing `Push has no resolvable immutable before SHA`. That failed attempt remains evidence, not a test PASS. A normal follow-up documentation push uses the reachable current source as its push baseline; workflow behavior and all qualification gates remain unchanged. General force-push baseline handling is not repaired by this documentation checkpoint.
+
+This report update requires fresh qualification of its own final HEAD; the preceding SUCCESS only qualifies the source named above. Until that qualification and all current checks succeed, PR28 remains Draft. Production, deployment runbook and Stage5 are unchanged.
