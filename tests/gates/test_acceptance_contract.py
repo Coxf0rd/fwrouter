@@ -11,6 +11,7 @@ import math
 import os
 import re
 import sqlite3
+import shutil
 import tarfile
 import tempfile
 import threading
@@ -37,6 +38,8 @@ from application_acceptance.diagnostics import encode_safe_reentry_native_record
 sys.path.insert(0, str(Path(__file__).parents[1] / "acceptance"))
 import qualified_child
 import qualified_xray_docker
+sys.path.insert(0, str(Path(__file__).parent))
+import ci_inputs
 
 
 LAUNCHER_PATH = Path(__file__).parents[1] / "acceptance" / "launcher.py"
@@ -8490,6 +8493,141 @@ class SharedReceiptObserverContractTests(unittest.TestCase):
                     if rollback:
                         self.assertEqual(1, events[0][1]["owner_callback_count"])
                     self.assertNotIn("desired_fixed_server_id", json.dumps(events))
+
+
+class ParallelCiBuildInputContractTests(unittest.TestCase):
+    @staticmethod
+    def _fixture(root: Path) -> tuple[Path, Path, Path]:
+        (root / "backend/fwrouter_api").mkdir(parents=True)
+        (root / "backend/fwrouter_api/__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (root / "backend/pyproject.toml").write_text(
+            '[project]\nname = "fwrouter-api"\nversion = "0.1.0"\n'
+            '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n',
+            encoding="utf-8")
+        (root / "tests/gates").mkdir(parents=True)
+        shutil.copyfile(Path(__file__).with_name("verify_backend_wheel.py"),
+                        root / "tests/gates/verify_backend_wheel.py")
+        manifest = {"version": "test-v1", "test_files": [{"path": "backend/tests/test_one.py"}]}
+        (root / "tests/gates/manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        lock = root / "tests/gates/requirements-build.txt"
+        lock.write_text("hatchling==1.27.0 --hash=sha256:" + "a" * 64 + "\n", encoding="utf-8")
+        commit = "a" * 40
+        plan = {"source_commit": commit, "selected_files": ["backend/tests/test_one.py"],
+                "manifest_version": manifest["version"],
+                "manifest_digest": ci_inputs.canonical_digest(manifest)}
+        plan["plan_digest"] = ci_inputs.canonical_digest(plan)
+        plan_path = root / "plan.json"
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        (root / "ui/static/js").mkdir(parents=True)
+        (root / "ui/static/js/app.js").write_text("const ready = true;\n", encoding="utf-8")
+        return plan_path, lock, root / "backend/fwrouter_api/__init__.py"
+
+    def _mock_build_command(self, argv: list[str], *, root: Path, timeout: int, label: str) -> float:
+        if label == "backend wheel build":
+            target_dir = Path(argv[argv.index("--wheel-dir") + 1])
+            wheel = target_dir / "fwrouter_api-0.1.0-py3-none-any.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("fwrouter_api/__init__.py", "VALUE = 1\n")
+                archive.writestr("fwrouter_api-0.1.0.dist-info/METADATA",
+                                 "Metadata-Version: 2.1\nName: fwrouter-api\nVersion: 0.1.0\n")
+            return 0.01
+        if label in {"backend wheel source-content verification",
+                      "downloaded wheel source-content verification"}:
+            result = subprocess.run(argv, cwd=root, check=False, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=timeout)
+            if result.returncode:
+                raise AssertionError("test wheel fixture failed the real source verifier")
+            return 0.01
+        self.assertTrue(argv)
+        return 0.01
+
+    def test_prepare_and_restore_verify_exact_wheel_plan_and_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            plan, lock, _ = self._fixture(source)
+            artifact = Path(directory) / "artifact"
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="a" * 40), \
+                    mock.patch.object(ci_inputs, "_run", side_effect=self._mock_build_command):
+                summary = ci_inputs.prepare(artifact, plan, source_root=source)
+                self.assertEqual("fwrouter-ci-build-inputs/v1", summary["schema"])
+                self.assertEqual(ci_inputs.file_digest(lock), summary["build_requirements_sha256"])
+                self.assertEqual("a" * 40, ci_inputs.verify(artifact, plan, source_root=source)["source_commit"])
+                producer = artifact / "producer.json"
+                producer.write_text('{"schema":"fwrouter-ci-producer/v1"}\n', encoding="utf-8")
+                self.assertEqual("a" * 40, ci_inputs.verify(artifact, plan, source_root=source)["source_commit"])
+
+            wheel = artifact / summary["wheel"]["path"]
+            with wheel.open("ab") as stream:
+                stream.write(b"tampered")
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="a" * 40):
+                with self.assertRaisesRegex(ci_inputs.BuildInputError, "wheel digest"):
+                    ci_inputs.verify(artifact, plan, source_root=source)
+
+    def test_prepare_rejects_changed_source_or_invalid_plan_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            plan, _, _ = self._fixture(source)
+            artifact = Path(directory) / "artifact"
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="b" * 40):
+                with self.assertRaisesRegex(ci_inputs.BuildInputError, "source commit"):
+                    ci_inputs.prepare(artifact, plan, source_root=source)
+            self.assertFalse(artifact.exists())
+
+            value = json.loads(plan.read_text(encoding="utf-8"))
+            value["selected_files"].append("backend/tests/test_other.py")
+            plan.write_text(json.dumps(value), encoding="utf-8")
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="a" * 40):
+                with self.assertRaisesRegex(ci_inputs.BuildInputError, "plan digest"):
+                    ci_inputs.prepare(artifact, plan, source_root=source)
+            self.assertFalse(artifact.exists())
+
+    def test_build_accepts_immutable_l0_only_documentation_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            plan, _, _ = self._fixture(source)
+            value = json.loads(plan.read_text(encoding="utf-8"))
+            value["selected_files"] = []
+            value.pop("plan_digest")
+            value["plan_digest"] = ci_inputs.canonical_digest(value)
+            plan.write_text(json.dumps(value), encoding="utf-8")
+            artifact = Path(directory) / "artifact"
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="a" * 40), \
+                    mock.patch.object(ci_inputs, "_run", side_effect=self._mock_build_command):
+                summary = ci_inputs.prepare(artifact, plan, source_root=source)
+                verified = ci_inputs.verify(artifact, plan, source_root=source)
+            self.assertEqual(value["plan_digest"], summary["plan_digest"])
+            self.assertEqual(summary, verified)
+
+    def test_verify_rejects_extra_artifact_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            plan, _, _ = self._fixture(source)
+            artifact = Path(directory) / "artifact"
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="a" * 40), \
+                    mock.patch.object(ci_inputs, "_run", side_effect=self._mock_build_command):
+                ci_inputs.prepare(artifact, plan, source_root=source)
+            (artifact / "build/untrusted.bin").write_bytes(b"extra")
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="a" * 40):
+                with self.assertRaisesRegex(ci_inputs.BuildInputError, "unexpected files"):
+                    ci_inputs.verify(artifact, plan, source_root=source)
+
+    def test_verify_rejects_oversized_producer_envelope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            plan, _, _ = self._fixture(source)
+            artifact = Path(directory) / "artifact"
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="a" * 40), \
+                    mock.patch.object(ci_inputs, "_run", side_effect=self._mock_build_command):
+                ci_inputs.prepare(artifact, plan, source_root=source)
+            (artifact / "producer.json").write_bytes(b"x" * (ci_inputs.MAX_PRODUCER_BYTES + 1))
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="a" * 40):
+                with self.assertRaisesRegex(ci_inputs.BuildInputError, "producer artifact metadata"):
+                    ci_inputs.verify(artifact, plan, source_root=source)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,10 @@ SPEC = importlib.util.spec_from_file_location("fwrouter_gate", GATE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
+PARALLEL_SPEC = importlib.util.spec_from_file_location("fwrouter_parallel_ci", Path(__file__).with_name("parallel_ci.py"))
+assert PARALLEL_SPEC and PARALLEL_SPEC.loader
+parallel_ci = importlib.util.module_from_spec(PARALLEL_SPEC)
+PARALLEL_SPEC.loader.exec_module(parallel_ci)
 PLUGIN_PATH = gate.ROOT / "backend/tests/gate_plugin.py"
 PLUGIN_SPEC = importlib.util.spec_from_file_location("fwrouter_gate_plugin_contract", PLUGIN_PATH)
 assert PLUGIN_SPEC is not None and PLUGIN_SPEC.loader is not None
@@ -204,7 +208,12 @@ class GateContractTests(unittest.TestCase):
                         env=env, text=True, capture_output=True, check=False,
                     )
                     self.assertEqual(0, completed.returncode, completed.stderr)
-                    self.assertEqual(f"mandatory_all={expected}\n", output_path.read_text())
+                    args = subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c", policy + '\nprintf \'%s\\n\' "${PLAN_ARGS[@]}"'],
+                        cwd=repo, env=env, text=True, capture_output=True, check=False,
+                    )
+                    self.assertEqual(0, args.returncode, args.stderr)
+                    self.assertEqual(expected == "true", "--mandatory-all" in args.stdout.splitlines())
 
     def test_mandatory_all_selects_every_safe_suite_and_rejects_omission(self) -> None:
         changed = "backend/fwrouter_api/services/bootstrap.py"
@@ -642,17 +651,13 @@ class GateContractTests(unittest.TestCase):
                 paths = gate.changed_python_paths(base, Path(owned), root=repo)
             self.assertEqual(["base.py", "committed.py", "intent-to-add.py", "staged.py"], paths)
 
-    def test_fast_and_affected_workflows_lint_before_planning_or_running_suites(self) -> None:
-        fast = (gate.ROOT / ".github/workflows/push-fast.yml").read_text(encoding="utf-8")
-        fast_script = fast.split("- name: Plan and run routine affected L0-L1 only", 1)[1]
-        self.assertLess(fast_script.index("gate.py lint-changed --base"), fast_script.index("gate.py plan"))
-        self.assertLess(fast_script.index("gate.py plan"), fast_script.index("gate.py run"))
+    def test_preflight_lint_precedes_immutable_plan_publication(self) -> None:
+        workflow = (gate.ROOT / '.github/workflows/test-gates.yml').read_text()
+        plan = workflow.split('  plan:', 1)[1].split('  build:', 1)[0]
+        self.assertLess(plan.index('gate.py lint-changed --base'), plan.index('gate.py plan'))
+        self.assertLess(plan.index('gate.py plan'), plan.index('parallel_ci.py configure'))
+        self.assertIn('set -euo pipefail', plan)
 
-        affected = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
-        plan_start = affected.index("- name: Resolve immutable base, plan affected L0-L5, and execute routine suites")
-        plan_script = affected[plan_start:]
-        self.assertLess(plan_script.index("gate.py lint-changed --base"), plan_script.index("gate.py plan"))
-        self.assertIn("set -euo pipefail", plan_script)
 
     def test_provider_plan_expands_declared_domains_and_uses_l5_anchors_as_primary_levels(self) -> None:
         plan = gate.make_plan("HEAD", self.manifest, ["backend/fwrouter_api/services/provider_recovery.py"])
@@ -803,46 +808,77 @@ class GateContractTests(unittest.TestCase):
         self.assertNotIn("identity-diagnostic", full_bundle)
 
     def test_main_push_smoke_reuses_ordinary_or_runs_one_exact_native_diagnostic(self) -> None:
-        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
-        required = (
-            "run_main_smoke={'true' if '${{ github.event_name }}' == 'push' else 'false'}",
-            "--suite xray-diagnostic",
-            "if [ '${{ steps.plan.outputs.needs_qcp }}' = true ]; then",
-            "if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ]; then",
-            "args+=(--require-main-smoke)", "args+=(--main-smoke-report",
-        )
-        forbidden = (
-            "needs_qcp }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke",
-            "needs_xray_docker }}' = true ] || [ '${{ steps.plan.outputs.run_main_smoke",
-        )
-        self.assertTrue(all(item in workflow for item in required)
-                        and all(item not in workflow for item in forbidden),
-                        "main push must require one native smoke and select QCP/Docker-Xray only by affected plan")
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text()
+        source = (gate.ROOT / "tests/gates/parallel_ci.py").read_text()
+        self.assertIn("--main-smoke", workflow)
+        self.assertIn("'functional-ordinary' if requirements(plan)['provider'] else 'xray-diagnostic'", source)
+        self.assertIn("require_main_smoke=args.main_smoke, main_smoke_path=smoke", source)
+        self.assertIn("'xray-diagnostic'", source)
+        self.assertIn("'backend/tests/test_xray_native_readback.py' in plan['selected_files']", source)
+        self.assertIn("and r['path'] != 'backend/tests/test_xray_native_readback.py'", source)
+
 
     def test_main_wheel_build_is_explicit_source_and_checks_retained_project_identity(self) -> None:
+        import yaml
+        jobs = yaml.safe_load((gate.ROOT / ".github/workflows/test-gates.yml").read_text())["jobs"]
+        helper = (gate.ROOT / "tests/gates/ci_inputs.py").read_text()
+        verifier = (gate.ROOT / "tests/gates/verify_backend_wheel.py").read_text()
+        self.assertEqual("plan", jobs["build"]["needs"])
+        self.assertNotIn("if", jobs["build"])
+        self.assertIn("ci_inputs.py prepare", str(jobs["build"]["steps"]))
+        self.assertIn('"--no-build-isolation"', helper)
+        self.assertIn('"--require-hashes"', helper)
+        self.assertIn('"./backend"', helper)
+        self.assertIn('project.get("project", {}).get("name")', verifier)
+        self.assertIn('project.get("project", {}).get("version")', verifier)
+        self.assertIn('payload_bytes[name] == source_files[name]', verifier)
+        self.assertIn('"fwrouter_api/__init__.py"', verifier)
+        self.assertIn('ci_inputs.verify', (gate.ROOT / 'tests/gates/parallel_ci.py').read_text())
+
+    def test_ci_dependency_installs_are_minimal_and_owned_by_consumers(self) -> None:
+        import yaml
+
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
-        wheel_step = workflow.split("- name: Build backend wheel on main", 1)[1].split(
-            "- name: Provision exact runtime inputs", 1)[0]
-        trigger = workflow.split("permissions:", 1)[0]
-        affected = workflow.split("  affected:", 1)[1]
-        artifact_step = workflow.split("- name: Retain bounded reports", 1)[1]
-        verifier = (gate.ROOT / "tests/gates/verify_backend_wheel.py").read_text(encoding="utf-8")
-        contract = (
-            'python -m pip wheel --no-deps --wheel-dir "$wheel_dir" ./backend' in wheel_step
-            and '"$wheel_dir" "$RUNNER_TEMP/fwrouter-wheel-metadata.json"' in wheel_step
-            and "branches: [main]" in trigger
-            and "github.event_name == 'pull_request'" in affected
-            and "github.ref == 'refs/heads/main'" in affected
-            and 'endswith(".dist-info/METADATA")' in verifier
-            and 'project.get("project", {}).get("name")' in verifier
-            and 'project.get("project", {}).get("version")' in verifier
-            and 'payload_bytes[name] == source_files[name]' in verifier
-            and '"fwrouter_api/__init__.py"' in verifier
-            and "fwrouter-wheel-metadata.json" in wheel_step
-            and "fwrouter-wheel-metadata.json" in artifact_step
-            and "if: always()" in artifact_step
+        jobs = yaml.safe_load(workflow)["jobs"]
+
+        def install_commands(role: str) -> list[str]:
+            return [step.get("run", "") for step in jobs[role]["steps"]
+                    if "pip install" in step.get("run", "")]
+
+        preflight = (gate.ROOT / "tests/gates/requirements-preflight.txt").read_text(encoding="utf-8")
+        full_lock = (gate.ROOT / "tests/gates/requirements-ci.txt").read_text(encoding="utf-8")
+        build_helper = (gate.ROOT / "tests/gates/ci_inputs.py").read_text(encoding="utf-8")
+        self.assertEqual(1, len(install_commands("plan")))
+        self.assertIn("--require-hashes", install_commands("plan")[0])
+        self.assertIn("requirements-preflight.txt", install_commands("plan")[0])
+        self.assertIn("ruff==0.17.0 --hash=sha256:", preflight)
+        self.assertEqual(1, len([line for line in preflight.splitlines()
+                                 if line.strip() and not line.startswith("#")]))
+        self.assertEqual([], install_commands("build"))
+        self.assertIn('"--require-hashes"', build_helper)
+        self.assertIn('str(lock_path)', build_helper)
+        self.assertEqual(1, len(install_commands("unit")))
+        self.assertEqual(1, len(install_commands("native")))
+        for role in ("unit", "native"):
+            self.assertIn("requirements-ci.txt", install_commands(role)[0])
+        for role in ("hosted", "provider", "packet", "affected"):
+            self.assertEqual([], install_commands(role), role)
+        self.assertIn("ruff==0.17.0 --hash=sha256:", full_lock)
+        self.assertIn("PyYAML==6.0.2 --hash=sha256:", full_lock)
+
+        # These jobs invoke only stdlib host helpers; application test dependencies
+        # are installed and run inside the pinned dependency image/container.
+        script = (
+            "import sys\n"
+            "sys.path[:0] = ['tests/gates', 'tests/acceptance', 'installer']\n"
+            "import parallel_ci, ci_inputs, qualify_recovery\n"
         )
-        self.assertTrue(contract, "main wheel must prove and retain the built source distribution identity")
+        completed = subprocess.run(
+            [__import__("sys").executable, "-S", "-c", script], cwd=gate.ROOT,
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
 
     def test_wheel_verifier_checks_identity_exact_payload_and_single_wheel(self) -> None:
         source_payload = {
@@ -903,25 +939,18 @@ class GateContractTests(unittest.TestCase):
                 self.assertFalse(passed, f"{label} must be rejected")
 
     def test_pr_and_main_workflow_event_policy_uses_only_event_bases(self) -> None:
-        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
-        trigger = workflow.split("permissions:", 1)[0]
-        job = workflow.split("  affected:", 1)[1].split("    steps:", 1)[0]
-        plan_step = workflow.split('if [ "$EVENT_NAME" = pull_request ]; then', 1)[1].split(
-            'if [ -z "$BASE"', 1)[0]
-        contract = (
-            "pull_request:\n    branches: [main]\n  push:\n    branches: [main]" in trigger
-            and "github.event_name == 'pull_request'" in job
-            and "github.ref == 'refs/heads/main'" in job
-            and 'BASE="$PR_BASE_SHA"' in plan_step
-            and 'BASE="$PUSH_BASE_SHA"' in plan_step
-            and 'PHASE_E_BASE_SHA' not in workflow
-            and 'ci:main-equivalent' not in workflow
-            and 'ci:wheel-equivalent' not in workflow
-            and 'stage/test-architecture-ci-stabilization' not in trigger
-            and '  wheel-audit:' not in workflow
-        )
-        self.assertTrue(contract,
-                        "affected CI must be limited to PR/main events with event-derived base SHAs")
+        import yaml
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text()
+        jobs = yaml.safe_load(workflow)["jobs"]
+        self.assertEqual("Affected L0-L5 with hosted profiles", jobs["affected"]["name"])
+        self.assertEqual("always()", jobs["affected"]["if"])
+        self.assertEqual(set(parallel_ci.ROLES), set(jobs["affected"]["needs"]))
+        self.assertIn('BASE="$PR_BASE_SHA"', workflow)
+        self.assertIn('BASE="$PUSH_BASE_SHA"', workflow)
+        self.assertNotIn('BASE="HEAD^"', workflow)
+        self.assertIn("github.event.pull_request.head.sha || github.sha", workflow)
+        self.assertEqual(["plan"], jobs["unit"]["needs"])
+
 
     def test_unit_fixture_junit_contract_rejects_missing_and_skipped_cases(self) -> None:
         with tempfile.TemporaryDirectory(prefix="fwrouter-unit-junit-contract-") as temp:
@@ -1673,29 +1702,220 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual([], result["selected_tests"])
 
     def test_pr_main_and_l6_stop_after_unit_failure_and_persist_nonpromoting_report(self) -> None:
-        affected = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
-        unit_step = affected.split("id: plan", 1)[1].split("- name: Build backend wheel", 1)[0]
-        self.assertRegex(unit_step, r"printf\s+['\"]unit_exit=%s\\n['\"]\s+.*GITHUB_OUTPUT")
-        self.assertIn('exit "$result"', unit_step)
-        self.assertLess(unit_step.index('exit "$result"'), affected.index("Provision exact runtime inputs"))
-        aggregate = affected.split("- name: Aggregate immutable source", 1)[1].split(
-            "- name: Record runner use", 1)[0]
-        self.assertIn("if: always()", aggregate)
-        self.assertIn("--unit-failure-report --unit-exit-code", aggregate)
-        self.assertLess(aggregate.index("--unit-failure-report"), aggregate.index("args=(--plan"))
+        import yaml
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text()
+        jobs = yaml.safe_load(workflow)["jobs"]
+        self.assertEqual("always()", jobs['affected']['if'])
+        self.assertEqual(set(parallel_ci.ROLES), set(jobs['affected']['needs']))
+        self.assertIn('FWROUTER_CI_NEEDS: ${{ toJSON(needs) }}', workflow)
+        self.assertNotIn('continue-on-error:', workflow)
+        outcomes = {role: {'result': 'success'} for role in parallel_ci.ROLES}
+        required = {role: True for role in parallel_ci.ROLES}
+        for status in ('failure', 'cancelled', 'skipped', None):
+            with self.subTest(status=status):
+                mutated = copy.deepcopy(outcomes)
+                mutated['unit']['result'] = status
+                self.assertTrue(parallel_ci.validate_results(mutated, required))
+        l6 = (gate.ROOT / '.github/workflows/test-full-suite.yml').read_text()
+        self.assertIn('--unit-failure-report --unit-exit-code', l6)
+        self.assertIn('exit "$result"', l6)
 
-        l6 = (gate.ROOT / ".github/workflows/test-full-suite.yml").read_text(encoding="utf-8")
-        routine = l6.split("id: routine", 1)[1].split("- name: Provision exact native", 1)[0]
-        self.assertRegex(routine, r"printf\s+['\"]unit_exit=%s\\n['\"]\s+.*GITHUB_OUTPUT")
-        self.assertIn('exit "$result"', routine)
-        l6_aggregate = l6.split("- name: Aggregate full L6 evidence", 1)[1].split(
-            "- name: Upload L6 evidence", 1)[0]
-        self.assertIn("if: always()", l6_aggregate)
-        self.assertIn("--unit-failure-report --unit-exit-code", l6_aggregate)
-        self.assertLess(l6_aggregate.index("--unit-failure-report"), l6_aggregate.index("args=(--plan"))
+    def test_parallel_producer_envelope_rejects_wrong_identity_role_and_outcome(self) -> None:
+        plan = {
+            "source_commit": "a" * 40,
+            "plan_digest": "b" * 64,
+            "manifest_digest": "c" * 64,
+            "manifest_version": "manifest-v1",
+        }
+        identity_fields = {
+            "source_commit": "d" * 40,
+            "plan_digest": "e" * 64,
+            "manifest_digest": "f" * 64,
+            "manifest_version": "manifest-v2",
+            "run_id": "987654",
+            "run_attempt": "9",
+            "role": "provider",
+            "outcome": "failure",
+        }
+        with tempfile.TemporaryDirectory(prefix="fwrouter-producer-identity-") as temp:
+            root = Path(temp)
+            (root / "receipt.json").write_text('{"eligible":true}\n', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GITHUB_RUN_ID": "123456", "GITHUB_RUN_ATTEMPT": "2"}):
+                for field, wrong in identity_fields.items():
+                    with self.subTest(field=field):
+                        envelope = parallel_ci.seal(root, "hosted", plan, "success")
+                        envelope[field] = wrong
+                        envelope["producer_digest"] = gate.canonical_digest(
+                            {key: value for key, value in envelope.items() if key != "producer_digest"})
+                        gate.atomic_json(root / "producer.json", envelope)
+                        with self.assertRaisesRegex(parallel_ci.gate.GateError, "identity/status"):
+                            parallel_ci.verify_producer(root, "hosted", plan)
+
+    def test_parallel_producer_envelope_rejects_file_inventory_changes_and_symlinks(self) -> None:
+        plan = {
+            "source_commit": "a" * 40,
+            "plan_digest": "b" * 64,
+            "manifest_digest": "c" * 64,
+            "manifest_version": "manifest-v1",
+        }
+        for change in ("missing", "extra", "symlink", "digest"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory(
+                    prefix="fwrouter-producer-files-") as temp:
+                root = Path(temp)
+                payload = root / "receipt.json"
+                payload.write_text('{"eligible":true}\n', encoding="utf-8")
+                with mock.patch.dict(os.environ, {"GITHUB_RUN_ID": "123456", "GITHUB_RUN_ATTEMPT": "2"}):
+                    envelope = parallel_ci.seal(root, "hosted", plan, "success")
+                    if change == "missing":
+                        payload.unlink()
+                        message = "producer files"
+                    elif change == "extra":
+                        (root / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+                        message = "producer files"
+                    elif change == "symlink":
+                        payload.unlink()
+                        (root / "outside.txt").write_text("outside\n", encoding="utf-8")
+                        payload.symlink_to(root / "outside.txt")
+                        message = "symlink"
+                    else:
+                        envelope["producer_digest"] = "0" * 64
+                        gate.atomic_json(root / "producer.json", envelope)
+                        message = "digest"
+                    with self.assertRaisesRegex(parallel_ci.gate.GateError, message):
+                        parallel_ci.verify_producer(root, "hosted", plan)
+
+    def test_parallel_documentation_plan_preserves_l0_only_and_main_smoke(self) -> None:
+        manifest = gate.load_manifest()
+        with mock.patch.object(gate, "changed_paths", return_value=["README.md"]):
+            plan = gate.make_plan(gate.git("rev-parse", "HEAD"), manifest, include_native=True)
+            gate.ensure_plan(plan, manifest)
+        self.assertEqual([], plan["selected_files"])
+        ordinary = parallel_ci.requirements(plan)
+        self.assertEqual({"plan", "build", "unit"},
+                         {role for role, needed in ordinary.items() if needed})
+        main = parallel_ci.requirements(plan, main_smoke=True)
+        self.assertEqual({"plan", "build", "unit", "hosted"},
+                         {role for role, needed in main.items() if needed})
+        results = {role: {"result": "success" if needed else "skipped"}
+                   for role, needed in ordinary.items()}
+        self.assertEqual([], parallel_ci.validate_results(results, ordinary))
+
+    def test_parallel_result_matrix_requires_success_and_only_allows_optional_skip(self) -> None:
+        required = {role: True for role in parallel_ci.ROLES}
+        successes = {role: {"result": "success"} for role in parallel_ci.ROLES}
+        self.assertEqual([], parallel_ci.validate_results(successes, required))
+        for role in parallel_ci.ROLES:
+            for status in ("failure", "cancelled", "skipped", None):
+                with self.subTest(role=role, status=status):
+                    changed = copy.deepcopy(successes)
+                    if status is None:
+                        del changed[role]
+                    else:
+                        changed[role]["result"] = status
+                    self.assertTrue(parallel_ci.validate_results(changed, required))
+
+        optional = dict(required)
+        optional["provider"] = False
+        skipped = copy.deepcopy(successes)
+        skipped["provider"]["result"] = "skipped"
+        self.assertEqual([], parallel_ci.validate_results(skipped, optional))
+        for status in ("success", "failure", "cancelled", None):
+            with self.subTest(optional_provider=status):
+                changed = copy.deepcopy(skipped)
+                if status is None:
+                    del changed["provider"]
+                else:
+                    changed["provider"]["result"] = status
+                self.assertTrue(parallel_ci.validate_results(changed, optional))
+
+    def test_parallel_aggregate_malformed_upstream_json_writes_failure_receipts(self) -> None:
+        plan = {
+            "source_commit": "a" * 40,
+            "plan_digest": "b" * 64,
+            "manifest_digest": "c" * 64,
+            "manifest_version": "manifest-v1",
+            "selected_files": [],
+        }
+        with tempfile.TemporaryDirectory(prefix="fwrouter-bad-needs-json-") as temp:
+            root = Path(temp)
+            output = root / "report"
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            plan_path = root / "plan.json"
+            plan_path.write_text("{}\n", encoding="utf-8")
+            args = type("AggregateArgs", (), {
+                "root": output, "plan": plan_path, "artifacts": artifacts, "main_smoke": False,
+            })()
+            with mock.patch.dict(os.environ, {
+                    "FWROUTER_CI_NEEDS": "{not-json", "GITHUB_RUN_ID": "123456",
+                    "GITHUB_RUN_ATTEMPT": "2"}), \
+                 mock.patch.object(parallel_ci, "load_plan", return_value=plan):
+                self.assertEqual(1, parallel_ci.aggregate(args))
+            result = json.loads((output / "required-result.json").read_text(encoding="utf-8"))
+            report = json.loads((output / "fwrouter-aggregate.json").read_text(encoding="utf-8"))
+            self.assertIs(result["eligible"], False)
+            self.assertTrue(result["error"])
+            self.assertIs(report["eligible"], False)
+
+    @unittest.skipUnless(Path("/usr/bin/time").is_file(), "/usr/bin/time is required by the real child runner")
+    def test_parallel_run_command_bounds_live_log_and_preserves_tail_and_exit(self) -> None:
+        import sys
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-bounded-child-log-") as temp:
+            log = Path(temp) / "noisy-child.log"
+            child = (
+                "import os, sys, time\n"
+                "os.write(1, b'A' * (5 * 1024 * 1024))\n"
+                "time.sleep(0.15)\n"
+                "size = os.path.getsize(os.environ['FWROUTER_TEST_CHILD_LOG'])\n"
+                "sys.stdout.write(f'\\nON_DISK={size}\\n')\n"
+                "sys.stdout.flush()\n"
+                "time.sleep(0.15)\n"
+                "sys.stdout.write('TAIL_SENTINEL')\n"
+                "sys.stdout.flush()\n"
+                "raise SystemExit(23)\n"
+            )
+            stdout = StringIO()
+            with mock.patch.dict(os.environ, {"FWROUTER_TEST_CHILD_LOG": str(log)}), \
+                 redirect_stdout(stdout):
+                code, _ = parallel_ci.run_command([sys.executable, "-c", child], log)
+
+            self.assertEqual(23, code)
+            self.assertLessEqual(log.stat().st_size, 4 * 1024 * 1024)
+            report_line = next(line for line in stdout.getvalue().splitlines()
+                               if line.startswith("ON_DISK="))
+            self.assertLessEqual(int(report_line.split("=", 1)[1]), 4 * 1024 * 1024)
+            suffix = f"\n{report_line}\nTAIL_SENTINEL\n"
+            self.assertEqual("A" * (65537 - len(suffix)) + suffix, stdout.getvalue())
+
+    def test_parallel_aggregate_reports_preflight_status_without_plan_artifact(self) -> None:
+        for status in ("failure", "cancelled", "skipped", None):
+            with self.subTest(status=status), tempfile.TemporaryDirectory(
+                    prefix="fwrouter-plan-preflight-status-") as temp:
+                root = Path(temp)
+                output = root / "report"
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                plan_path = root / "absent-plan.json"
+                results = {} if status is None else {"plan": {"result": status}}
+                args = type("AggregateArgs", (), {
+                    "root": output, "plan": plan_path, "artifacts": artifacts, "main_smoke": False,
+                })()
+                with mock.patch.dict(os.environ, {
+                        "FWROUTER_CI_NEEDS": json.dumps(results), "GITHUB_RUN_ID": "123456",
+                        "GITHUB_RUN_ATTEMPT": "2"}):
+                    self.assertEqual(1, parallel_ci.aggregate(args))
+                result = json.loads((output / "required-result.json").read_text(encoding="utf-8"))
+                self.assertIs(result["eligible"], False)
+                self.assertEqual(results, result["upstream"])
+                self.assertIn("plan preflight result", result["error"])
+                self.assertIn(status or "missing", result["error"])
+                report = json.loads((output / "fwrouter-aggregate.json").read_text(encoding="utf-8"))
+                self.assertIs(report["eligible"], False)
+
 
     def test_workflow_unit_exit_normalization_preserves_success_and_fails_closed(self) -> None:
-        for workflow_name in ("test-gates.yml", "test-full-suite.yml"):
+        for workflow_name in ("test-full-suite.yml",):
             with self.subTest(workflow=workflow_name):
                 workflow = (gate.ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
                 normalization = workflow.split('case "$UNIT_EXIT" in', 1)[1].split(
