@@ -262,6 +262,111 @@ def _extract_xray_bindings_startup_comparison():
 
 
 class AcceptanceContractTests(unittest.TestCase):
+    def test_packet_parent_selector_uses_owned_mihomo_config_and_fresh_health(self):
+        packet_tree = ast.parse(PACKET_ACCEPTANCE_SOURCE.read_text(encoding="utf-8"))
+        binder = next(node for node in packet_tree.body
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "_bind_packet_parent_selector_runtime")
+        target = next(node for node in packet_tree.body
+                      if isinstance(node, ast.FunctionDef)
+                      and node.name == "test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks")
+        assertion = next(node for node in packet_tree.body
+                         if isinstance(node, ast.FunctionDef) and node.name == "_assert_native_empty_vpn_pool")
+
+        class Adapter:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class ScopedPatch:
+            def __init__(self):
+                self.original = None
+                self.target = None
+
+            def setattr(self, target, name, value):
+                self.target = target
+                self.original = getattr(target, name)
+                setattr(target, name, value)
+
+            def undo(self):
+                self.target.DEFAULT_MIHOMO_ADAPTER = self.original
+
+        original_adapter = object()
+        defaults = SimpleNamespace(DEFAULT_MIHOMO_ADAPTER=original_adapter)
+        namespace = {
+            "Path": Path, "stat": stat, "MihomoHttpAdapter": Adapter,
+            "runtime_adapters": defaults,
+        }
+        executable_binder = copy.deepcopy(binder)
+        executable_binder.body = [statement for statement in executable_binder.body
+                                  if not (isinstance(statement, ast.ImportFrom)
+                                          and statement.module in {"fwrouter_api.adapters.mihomo",
+                                                                   "fwrouter_api.services"})]
+        exec(compile(ast.Module(body=[executable_binder], type_ignores=[]),
+                     str(PACKET_ACCEPTANCE_SOURCE), "exec"), namespace)
+        patcher = ScopedPatch()
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            config = state / "generated/mihomo/config.yaml"
+            config.parent.mkdir(parents=True)
+            config.write_text("proxies: []\n", encoding="utf-8")
+            contours = config.with_name("contours.json")
+            try:
+                adapter = namespace[binder.name]({"state": state}, patcher)
+                self.assertIsInstance(adapter, Adapter)
+                self.assertIs(defaults.DEFAULT_MIHOMO_ADAPTER, adapter)
+                self.assertEqual("http://127.0.0.1:5200", adapter.kwargs["base_url"])
+                self.assertEqual(config, adapter.kwargs["config_path"])
+                self.assertEqual(contours, adapter.kwargs["contours_path"])
+                self.assertEqual(3.0, adapter.kwargs["timeout_seconds"])
+            finally:
+                patcher.undo()
+            self.assertIs(defaults.DEFAULT_MIHOMO_ADAPTER, original_adapter)
+
+            outside = state.parent / f"{state.name}-outside-contours.json"
+            outside.write_text("{}", encoding="utf-8")
+            contours.symlink_to(outside)
+            with self.assertRaises(AssertionError):
+                namespace[binder.name]({"state": state}, patcher)
+            outside.unlink()
+
+        binder_calls = [node for node in ast.walk(target)
+                        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == "_bind_packet_parent_selector_runtime"]
+        self.assertEqual(1, len(binder_calls))
+        parent_observation_calls = [node for node in ast.walk(target)
+                                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                                    and node.func.id in {"_refresh_packet_provider", "_refresh_packet_capability",
+                                                         "_assert_native_empty_vpn_pool"}]
+        self.assertTrue(parent_observation_calls)
+        self.assertLess(binder_calls[0].lineno, min(node.lineno for node in parent_observation_calls),
+                        "bind the isolated runtime before every parent-process selector observation")
+        self.assertIn("monkeypatch", {arg.arg for arg in target.args.args})
+
+        state_reads = [node for node in ast.walk(packet_tree)
+                       if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                       and node.func.id == "get_vpn_auto_state"]
+        self.assertTrue(state_reads)
+        for call in state_reads:
+            self.assertTrue(any(keyword.arg == "read_only"
+                                and isinstance(keyword.value, ast.Constant)
+                                and keyword.value.value is True for keyword in call.keywords))
+            self.assertFalse(any(keyword.arg == "cache_runtime"
+                                 and isinstance(keyword.value, ast.Constant)
+                                 and keyword.value.value is True for keyword in call.keywords),
+                             "packet selection checks must retain fresh, uncached native health")
+        runtime_running = any(
+            isinstance(node, ast.Compare)
+            and isinstance(node.left, ast.Call)
+            and isinstance(node.left.func, ast.Attribute)
+            and node.left.func.attr == "get"
+            and node.left.args and isinstance(node.left.args[0], ast.Constant)
+            and node.left.args[0].value == "mihomo_runtime_state"
+            and any(isinstance(comparator, ast.Constant) and comparator.value == "running"
+                    for comparator in node.comparators)
+            for node in ast.walk(assertion)
+        )
+        self.assertTrue(runtime_running, "empty-pool success requires fresh Mihomo RUNNING evidence")
+
     def test_startup_subject_inventory_allows_only_monotonic_xray_observation_timestamps(self):
         compare = _extract_xray_bindings_startup_comparison()[
             "_assert_subject_inventory_startup_equivalent"
