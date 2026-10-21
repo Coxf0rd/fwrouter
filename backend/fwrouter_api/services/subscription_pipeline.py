@@ -285,6 +285,30 @@ def _subscription_transition_preflight() -> dict[str, Any]:
         if str(value) and str(value) != active_auto
     ]
     if not alternatives:
+        # A manual provider switch may repair the currently selected logical
+        # root when policy still owns that target but its native health has
+        # failed.  The provider service marks only a PATCH+GET-confirmed,
+        # revision-fenced handoff; every candidate/native proof below remains
+        # mandatory.  Ordinary refreshes and automatic switches still fail
+        # closed here.
+        if (
+            active_auto in active_ids
+            and state.get("active_auto_target_valid") is True
+            and state.get("active_auto_server_valid") is False
+        ):
+            from fwrouter_api.db.connection import db_session
+            from fwrouter_api.services.provider_managed import (
+                allows_explicit_unhealthy_selected_root_recovery,
+            )
+
+            with db_session() as connection:
+                if allows_explicit_unhealthy_selected_root_recovery(connection, active_auto):
+                    return {
+                        "ok": True,
+                        "mode": "auto",
+                        "selected_server_id": active_auto,
+                        "provider_selected_root_recovery": True,
+                    }
         return {"ok": False, "stage": "preflight", "error": {"code": "VPN_AUTO_NO_ELIGIBLE_ALTERNATIVE", "message": "The selected VPN-auto server is unavailable and no eligible alternative can be applied. The last verified runtime remains active."}}
     return {"ok": True, "mode": "auto", "selected_server_id": active_auto, "alternative_count": len(alternatives)}
 
