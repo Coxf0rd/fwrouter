@@ -14,13 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  affected:
-    name: Affected L0-L5 with hosted profiles
-    if: >-
-      github.event_name == 'pull_request' ||
-      github.ref == 'refs/heads/main'
+  plan:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    name: Immutable plan and preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 10
+    outputs:
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      plan_digest: ${{ steps.plan.outputs.plan_digest }}
+      needs_hosted: ${{ steps.plan.outputs.needs_hosted }}
+      needs_packet: ${{ steps.plan.outputs.needs_packet }}
+      needs_provider: ${{ steps.plan.outputs.needs_provider }}
+      needs_native: ${{ steps.plan.outputs.needs_native }}
+      needs_runtime: ${{ steps.plan.outputs.needs_runtime }}
+      main_smoke: ${{ steps.plan.outputs.main_smoke }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -39,32 +46,13 @@ jobs:
             exit 1
           fi
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           python-version: 3.11.2
-          cache: pip
-          cache-dependency-path: tests/gates/requirements-ci.txt
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        with:
-          python-version: 3.11.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.22.2
-      - name: Record runner limits before tests
-        run: |
-          mkdir -p "$RUNNER_TEMP/fwrouter-resources"
-          {
-            date -u +%FT%TZ
-            uname -a
-            nproc
-            free -h
-            df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
-            docker version
-            docker compose version
-          } > "$RUNNER_TEMP/fwrouter-resources/before.txt" 2>&1
-      - name: Install hashed test dependencies
-        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
       - name: Lint workflow syntax with pinned actionlint binary
         run: |
           set -euo pipefail
@@ -75,12 +63,12 @@ jobs:
           echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  '"$archive" | sha256sum --check
           tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
-      - name: Validate test catalog, gates, and isolation bootstrap
+      - name: Validate catalog and isolation bootstrap
         run: |
           python tests/gates/gate.py validate
           python tests/gates/gate.py dry-run --level L7
           python tests/gates/isolation_smoke.py
-      - name: Resolve immutable base, plan affected L0-L5, and execute routine suites
+      - name: Resolve immutable base and plan affected L0-L5
         id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -95,12 +83,12 @@ jobs:
             BASE="$PUSH_BASE_SHA"
           fi
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
-            echo "Cannot resolve immutable event base SHA" >&2
+            echo 'Cannot resolve immutable event base SHA' >&2
             exit 2
           fi
           python tests/gates/gate.py lint-changed --base "$BASE"
-          PLAN="$RUNNER_TEMP/fwrouter-affected-plan.json"
-          REPORT="$RUNNER_TEMP/fwrouter-affected-unit.json"
+          mkdir -p "$RUNNER_TEMP/plan"
+          PLAN="$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
           PLAN_ARGS=(--base "$BASE" --include-native --output "$PLAN")
           mandatory_all=false
           if [ "$EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
@@ -113,209 +101,346 @@ jobs:
           if [ "$mandatory_all" = true ]; then
             PLAN_ARGS+=(--mandatory-all)
           fi
-          printf 'mandatory_all=%s\n' "$mandatory_all" >> "$GITHUB_OUTPUT"
           python tests/gates/gate.py plan "${PLAN_ARGS[@]}"
-          python - "$PLAN" "$GITHUB_OUTPUT" <<'PY'
-          import json, sys
-          plan = json.load(open(sys.argv[1], encoding="utf-8"))
-          profiles = set(plan["required_execution_profiles"])
-          selected = set(plan["selected_files"])
-          manifest = json.load(open("tests/gates/manifest.json", encoding="utf-8"))
-          needs_qcp = any(row.get("execution_profile") == "qualified-child-process"
-                          and row["path"] in selected
-                          and row["path"] != "backend/tests/test_xray_native_readback.py"
-                          for row in manifest["test_files"])
-          selected_rows = [row for row in manifest["test_files"] if row["path"] in selected]
-          needs_functional = any(row.get("execution_profile") == "hosted-isolated-compose"
-                                 for row in selected_rows)
-          needs_packet = any(row.get("execution_profile") == "hosted-kernel-packet"
-                             for row in selected_rows)
-          needs_recovery = {"installer/tests/test_safe_recovery.py",
-                            "backend/tests/test_network_contract.py", "backend/tests/test_dnsmasq.py",
-                            "tests/application_acceptance/test_packet_dataplane.py"} <= selected
-          with open(sys.argv[2], "a", encoding="utf-8") as output:
-              output.write(f"needs_recovery={'true' if needs_recovery else 'false'}\n")
-              output.write(f"plan_digest={plan['plan_digest']}\n")
-              output.write(f"needs_hosted={'true' if needs_functional else 'false'}\n")
-              output.write(f"needs_packet={'true' if needs_packet else 'false'}\n")
-              output.write(f"needs_qcp={'true' if needs_qcp else 'false'}\n")
-              output.write(f"needs_xray_docker={'true' if 'backend/tests/test_xray_native_readback.py' in selected else 'false'}\n")
-              output.write(f"run_main_smoke={'true' if '${{ github.event_name }}' == 'push' else 'false'}\n")
-              output.write(f"needs_runtime={'true' if profiles or '${{ github.event_name }}' == 'push' else 'false'}\n")
-          PY
-          set +e
-          python tests/gates/gate.py run --plan "$PLAN" --include-native --defer-hosted \
-            --output "$REPORT" > "$RUNNER_TEMP/fwrouter-affected-unit.log" 2>&1
-          result=$?
-          set -e
-          printf 'unit_exit=%s\n' "$result" >> "$GITHUB_OUTPUT"
-          tail -c 65536 "$RUNNER_TEMP/fwrouter-affected-unit.log" || true
-          exit "$result"
-      - name: Build backend wheel on main
-        if: github.event_name == 'push'
-        run: |
-          set -euo pipefail
-          wheel_dir="$RUNNER_TEMP/fwrouter-wheel"
-          mkdir -p "$wheel_dir"
-          python -m compileall -q backend/fwrouter_api
-          python -m pip wheel --no-deps --wheel-dir "$wheel_dir" ./backend
-          python tests/gates/verify_backend_wheel.py "$wheel_dir" "$RUNNER_TEMP/fwrouter-wheel-metadata.json"
-          for source in ui/static/js/*.js; do node --check "$source"; done
-      - name: Provision exact runtime inputs when selected
-        if: steps.plan.outputs.needs_runtime == 'true'
-        run: |
-          set -euo pipefail
-          printf 'FWROUTER_ACCEPTANCE_PLAN_DIGEST=%s\n' '${{ steps.plan.outputs.plan_digest }}' >> "$GITHUB_ENV"
-          python tests/acceptance/provision.py --runner-temp "$RUNNER_TEMP" --github-env "$GITHUB_ENV"
-          cp "$RUNNER_TEMP/fwrouter-acceptance-inputs/inputs.json" "$RUNNER_TEMP/fwrouter-runtime-inputs.json"
-      - name: Run affected native, application, and browser profiles
-        if: steps.plan.outputs.needs_runtime == 'true'
-        run: |
-          set -euo pipefail
-          failures=0
-          if [ '${{ steps.plan.outputs.needs_hosted }}' = true ]; then
-            for suite in functional-ordinary provider-cohort; do
-              set +e
-              /usr/bin/time -v python tests/acceptance/launcher.py --run --suite "$suite" \
-                > "$RUNNER_TEMP/fwrouter-$suite-main.log" 2>&1
-              result=$?
-              set -e
-              cat "$RUNNER_TEMP/fwrouter-$suite-main.log"
-              if [ "$result" -ne 0 ]; then failures=1; fi
-            done
-          elif [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
-            set +e
-            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite xray-diagnostic \
-              > "$RUNNER_TEMP/fwrouter-xray-diagnostic-main.log" 2>&1
-            result=$?
-            set -e
-            cat "$RUNNER_TEMP/fwrouter-xray-diagnostic-main.log"
-            if [ "$result" -ne 0 ]; then failures=1; fi
-          fi
-          if [ '${{ steps.plan.outputs.needs_packet }}' = true ]; then
-            set +e
-            /usr/bin/time -v python tests/acceptance/launcher.py --run --suite packet-diagnostic \
-              > "$RUNNER_TEMP/fwrouter-packet-main.log" 2>&1
-            result=$?
-            set -e
-            cat "$RUNNER_TEMP/fwrouter-packet-main.log"
-            if [ "$result" -ne 0 ]; then failures=1; fi
-          fi
-          if [ '${{ steps.plan.outputs.needs_qcp }}' = true ]; then
-            set +e
-            /usr/bin/time -v python tests/acceptance/qualified_child.py --run \
-              > "$RUNNER_TEMP/fwrouter-qcp.log" 2>&1
-            result=$?
-            set -e
-            cat "$RUNNER_TEMP/fwrouter-qcp.log"
-            if [ "$result" -ne 0 ]; then failures=1; fi
-          fi
-          if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ]; then
-            set +e
-            /usr/bin/time -v python tests/acceptance/qualified_xray_docker.py --run \
-              > "$RUNNER_TEMP/fwrouter-xray-docker.log" 2>&1
-            result=$?
-            set -e
-            cat "$RUNNER_TEMP/fwrouter-xray-docker.log"
-            if [ "$result" -ne 0 ]; then failures=1; fi
-          fi
-          printf 'hosted_profile_exit=%s\n' "$failures" > "$RUNNER_TEMP/fwrouter-hosted-exit.txt"
-          test "$failures" -eq 0
-      - name: Aggregate immutable source, unit, QCP, browser, and native evidence
-        if: always() && steps.plan.outputs.plan_digest != ''
-        env:
-          UNIT_EXIT: ${{ steps.plan.outputs.unit_exit }}
-        run: |
-          set -euo pipefail
-          plan="$RUNNER_TEMP/fwrouter-affected-plan.json"
-          unit="$RUNNER_TEMP/fwrouter-affected-unit.json"
-          case "$UNIT_EXIT" in
-            ''|*[!0-9]*) unit_exit=1 ;;
-            *) unit_exit="$UNIT_EXIT" ;;
-          esac
-          if [ "$unit_exit" -gt 255 ]; then unit_exit=1; fi
-          if [ "$unit_exit" -ne 0 ]; then
-            python tests/gates/aggregate_hosted.py --plan "$plan" --unit-report "$unit" \
-              --unit-failure-report --unit-exit-code "$unit_exit" \
-              --output "$RUNNER_TEMP/fwrouter-aggregate.json"
-            exit $?
-          fi
-          args=(--plan "$plan" --unit-report "$unit" --output "$RUNNER_TEMP/fwrouter-aggregate.json")
-          if [ -f "$RUNNER_TEMP/fwrouter-runtime-inputs.json" ]; then
-            args+=(--runtime-inputs "$RUNNER_TEMP/fwrouter-runtime-inputs.json")
-          fi
-          if [ '${{ steps.plan.outputs.needs_hosted }}' = true ] || [ '${{ steps.plan.outputs.needs_packet }}' = true ]; then
-            while IFS= read -r receipt; do args+=(--hosted-report "$receipt"); done \
-              < <(find "$RUNNER_TEMP" -type f -name hosted-acceptance-report.json -print | sort)
-          fi
-          if [ '${{ steps.plan.outputs.needs_qcp }}' = true ]; then
-            while IFS= read -r receipt; do args+=(--qcp-report "$receipt"); done \
-              < <(find "$RUNNER_TEMP" -type f -name qualified-child-receipt.json -print | sort)
-          fi
-          if [ '${{ steps.plan.outputs.needs_xray_docker }}' = true ]; then
-            while IFS= read -r receipt; do args+=(--xray-docker-report "$receipt"); done \
-              < <(find "$RUNNER_TEMP" -type f -name qualified-xray-docker-receipt.json -print | sort)
-          fi
-          if [ '${{ steps.plan.outputs.run_main_smoke }}' = true ]; then
-            args+=(--require-main-smoke)
-            if [ '${{ steps.plan.outputs.needs_hosted }}' = true ]; then
-              expected_suite=functional-ordinary
-            else
-              expected_suite=xray-diagnostic
-            fi
-            smoke_candidates=()
-            while IFS= read -r receipt; do
-              suite=$(python - "$receipt" <<'PY'
-          import json, sys
-          try:
-              with open(sys.argv[1], encoding="utf-8") as stream:
-                  print(json.load(stream).get("suite", ""))
-          except (OSError, ValueError):
-              print("")
-          PY
-              )
-              if [ "$suite" = "$expected_suite" ]; then smoke_candidates+=("$receipt"); fi
-            done < <(find "$RUNNER_TEMP" -type f -name hosted-acceptance-report.json -print | sort)
-            if [ "${#smoke_candidates[@]}" -eq 1 ]; then
-              args+=(--main-smoke-report "${smoke_candidates[0]}")
-            fi
-          fi
-          python tests/gates/aggregate_hosted.py "${args[@]}"
-      - name: Qualify selected safe backend recovery artifact
-        if: success() && steps.plan.outputs.needs_recovery == 'true' && steps.plan.outputs.needs_packet == 'true'
-        run: |
-          python installer/qualify_recovery.py --aggregate "$RUNNER_TEMP/fwrouter-aggregate.json" \
-            --output "$RUNNER_TEMP/fwrouter-safe-recovery"
-      - name: Record runner use and Docker cleanup state
+          smoke=()
+          if [ "$EVENT_NAME" = push ]; then smoke+=(--main-smoke); fi
+          python tests/gates/parallel_ci.py configure --plan "$PLAN" --github-output "$GITHUB_OUTPUT" "${smoke[@]}"
+      - name: Upload immutable plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fwrouter-v2-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan/
+          if-no-files-found: error
+          retention-days: 30
+
+  build:
+    name: Build and verify source once
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      FWROUTER_CI_PLAN_DIGEST: ${{ needs.plan.outputs.plan_digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan
+      - name: Verify immutable preflight artifact
+        run: python tests/gates/parallel_ci.py verify-plan --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+      - name: Build backend and verify static UI
+        id: execution
+        run: python tests/gates/ci_inputs.py prepare --root "$RUNNER_TEMP/build" --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+      - name: Seal bounded build evidence
         if: always()
-        run: |
-          mkdir -p "$RUNNER_TEMP/fwrouter-resources"
-          {
-            date -u +%FT%TZ
-            free -h
-            df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE"
-            docker ps --all --size
-            docker network ls
-            docker system df
-          } > "$RUNNER_TEMP/fwrouter-resources/after.txt" 2>&1
-      - name: Retain bounded reports, receipts, and failure logs
+        run: >-
+          python tests/gates/parallel_ci.py seal --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/build" --role build --outcome '${{ steps.execution.outcome }}'
+      - name: Upload build evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: fwrouter-affected-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/fwrouter-affected-plan.json
-            ${{ runner.temp }}/fwrouter-affected-unit.json
-            ${{ runner.temp }}/fwrouter-affected-unit.log
-            ${{ runner.temp }}/fwrouter-aggregate.json
-            ${{ runner.temp }}/fwrouter-runtime-inputs.json
-            ${{ runner.temp }}/fwrouter-wheel-metadata.json
-            ${{ runner.temp }}/fwrouter-*-*.log
-            ${{ runner.temp }}/fwrouter-acceptance-*-artifacts/**
-            ${{ runner.temp }}/fwrouter-qcp-*-artifacts/**
-            ${{ runner.temp }}/fwrouter-xray-native-*-artifacts/**
-            ${{ runner.temp }}/fwrouter-resources/**
-            ${{ runner.temp }}/fwrouter-safe-recovery/**
-          if-no-files-found: warn
+          name: fwrouter-v2-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/build/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 3
+
+  unit:
+    name: Backend installer and frontend tests
+    needs: [plan]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      FWROUTER_CI_PLAN_DIGEST: ${{ needs.plan.outputs.plan_digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.22.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan
+      - name: Verify immutable preflight artifact
+        run: python tests/gates/parallel_ci.py verify-plan --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+      - name: Run isolated unit profile
+        id: execution
+        run: >-
+          python tests/gates/parallel_ci.py worker --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/unit" --role unit
+      - name: Seal bounded unit evidence
+        if: always()
+        run: >-
+          python tests/gates/parallel_ci.py seal --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/unit" --role unit --outcome '${{ steps.execution.outcome }}'
+      - name: Upload unit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fwrouter-v2-unit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/unit/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 3
+
+  hosted:
+    name: Ordinary functional and browser
+    needs: [plan, build]
+    if: needs.plan.outputs.needs_hosted == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      FWROUTER_CI_PLAN_DIGEST: ${{ needs.plan.outputs.plan_digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan
+      - name: Verify immutable preflight artifact
+        run: python tests/gates/parallel_ci.py verify-plan --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/build
+      - name: Run isolated hosted profile
+        id: execution
+        run: >-
+          python tests/gates/parallel_ci.py worker --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/hosted" --role hosted
+      - name: Seal bounded hosted evidence
+        if: always()
+        run: >-
+          python tests/gates/parallel_ci.py seal --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/hosted" --role hosted --outcome '${{ steps.execution.outcome }}'
+      - name: Upload hosted evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fwrouter-v2-hosted-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hosted/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 3
+
+  provider:
+    name: Provider and browser cohort
+    needs: [plan, build]
+    if: needs.plan.outputs.needs_provider == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      FWROUTER_CI_PLAN_DIGEST: ${{ needs.plan.outputs.plan_digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan
+      - name: Verify immutable preflight artifact
+        run: python tests/gates/parallel_ci.py verify-plan --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/build
+      - name: Run isolated provider profile
+        id: execution
+        run: >-
+          python tests/gates/parallel_ci.py worker --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/provider" --role provider
+      - name: Seal bounded provider evidence
+        if: always()
+        run: >-
+          python tests/gates/parallel_ci.py seal --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/provider" --role provider --outcome '${{ steps.execution.outcome }}'
+      - name: Upload provider evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fwrouter-v2-provider-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/provider/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 3
+
+  packet:
+    name: Kernel packet and fail-closed
+    needs: [plan, build]
+    if: needs.plan.outputs.needs_packet == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      FWROUTER_CI_PLAN_DIGEST: ${{ needs.plan.outputs.plan_digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan
+      - name: Verify immutable preflight artifact
+        run: python tests/gates/parallel_ci.py verify-plan --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/build
+      - name: Run isolated packet profile
+        id: execution
+        run: >-
+          python tests/gates/parallel_ci.py worker --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/packet" --role packet
+      - name: Seal bounded packet evidence
+        if: always()
+        run: >-
+          python tests/gates/parallel_ci.py seal --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/packet" --role packet --outcome '${{ steps.execution.outcome }}'
+      - name: Upload packet evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fwrouter-v2-packet-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/packet/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 3
+
+  native:
+    name: Qualified native Mihomo and Xray
+    needs: [plan, build]
+    if: needs.plan.outputs.needs_native == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      FWROUTER_CI_PLAN_DIGEST: ${{ needs.plan.outputs.plan_digest }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan
+      - name: Verify immutable preflight artifact
+        run: python tests/gates/parallel_ci.py verify-plan --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fwrouter-v2-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/build
+      - name: Run isolated native profile
+        id: execution
+        run: >-
+          python tests/gates/parallel_ci.py worker --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/native" --role native
+      - name: Seal bounded native evidence
+        if: always()
+        run: >-
+          python tests/gates/parallel_ci.py seal --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/native" --role native --outcome '${{ steps.execution.outcome }}'
+      - name: Upload native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fwrouter-v2-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 3
+
+  affected:
+    name: Affected L0-L5 with hosted profiles
+    if: always()
+    needs: [plan, build, unit, hosted, provider, packet, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      FWROUTER_CI_PLAN_DIGEST: ${{ needs.plan.outputs.plan_digest }}
+      FWROUTER_CI_NEEDS: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: 3.11.2
+      - name: Install hashed CI dependencies
+        run: python -m pip install --require-hashes -r tests/gates/requirements-ci.txt
+      - name: Download current attempt producer artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: fwrouter-v2-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence
+      - name: Aggregate immutable evidence and qualify safe recovery
+        if: always()
+        run: |
+          set -euo pipefail
+          smoke=()
+          if [ '${{ github.event_name }}' = push ]; then smoke+=(--main-smoke); fi
+          python tests/gates/parallel_ci.py aggregate \
+            --plan "$RUNNER_TEMP/evidence/fwrouter-v2-plan-${{ github.run_id }}-${{ github.run_attempt }}/fwrouter-affected-plan.json" \
+            --artifacts "$RUNNER_TEMP/evidence" --root "$RUNNER_TEMP/required" "${smoke[@]}"
+      - name: Retain bounded required reports and recovery qualification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fwrouter-required-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/required/
+          if-no-files-found: error
           retention-days: 30
           compression-level: 3

@@ -1,5 +1,9 @@
 # Test Architecture & CI Stabilization
 
+## CI Pipeline V2 — implementation in progress (2026-10-22)
+
+The separately authorized CI infrastructure milestone starts from main `059f49bfe130529607a5f49153d592cf487754dc` on `feat/ci-pipeline-v2`. It does not deploy or change product/runtime code. The existing closed CI milestone remains historical. See [V2 architecture and measurements](../audits/ci_pipeline_v2_2026-10-22/REPORT.md). Source implementation and local contracts are under qualification; hosted V2 success, failure evidence and measured performance are not yet claimed.
+
 ## Current checkpoint — 2026-10-15
 
 The CI milestone is CLOSED following actual squash/main validation (PR5, main run38363962787). PR8 merged as dabf9f4; PR10 merged/deployed as ffe506e. Production remains ffe506e with the original78 identities restored and API/Gateway recovered. PR11 isolation/redaction fixes are source-only, not deployed: Synthetic Functional Acceptance PASS, Production State Acceptance PARTIAL, controlled external E2E NOT RUN, overall Production Acceptance BLOCKED. These are recorded receipts, not new live probes. Earlier dated checkpoints below are historical where superseded; they do not reopen CI or describe the current held/recovery state.

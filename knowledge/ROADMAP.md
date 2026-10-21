@@ -1,5 +1,9 @@
 # FWRouter — active roadmap
 
+## CI Pipeline V2 — 2026-10-22 (IN PROGRESS)
+
+Separate infrastructure task on `feat/ci-pipeline-v2` from actual main `059f49bfe130529607a5f49153d592cf487754dc` (PR31 merged). Implement eight isolated jobs with immutable plan/build inputs, parallel unit/ordinary/provider/packet/native qualification and the unchanged required check name. Preserve exact coverage, native proof, cleanup, safe-recovery qualification, mandatory main smoke and fail-closed aggregation. No product changes, deployment, branch-protection change, CD or agent merge. Source/local regression/review and real hosted positive/negative evidence, V1/V2 measurements and one ready unmerged PR are separate remaining gates. See [CI V2 report](audits/ci_pipeline_v2_2026-10-22/REPORT.md). Earlier refresh checkpoints retain their historical status; this task does not reopen that work.
+
 ## Scheduled refresh correction — deployed acceptance 2026-10-22
 
 This checkpoint supersedes the IN PROGRESS gates below without removing historical results. PR31 remains OPEN; no merge/CD was performed. Qualified runtime source `e0069978357c9c3bf10c628c12871c6315b2c009` passed full mandatory CI39653755064: aggregate eligible, no blocked/missing/not-run qualification levels, native/hosted/packet receipts and safety gates passed,42 qualified-child cases with no skips. The ordinary local subprocess-lock omission was exercised in the qualified cohort. The cancelled742eda2 run is not qualification.
