@@ -1127,6 +1127,26 @@ def _source_id(url: str) -> str:
     return "src:" + hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 
+def _active_xray_server_override_count(connection: Any, server_ids: set[str]) -> int:
+    """Count live Xray client assignments that would lose their server target."""
+    normalized = sorted({str(server_id).strip() for server_id in server_ids if str(server_id).strip()})
+    if not normalized:
+        return 0
+    placeholders = ", ".join("?" for _ in normalized)
+    row = connection.execute(
+        f"""SELECT COUNT(*) AS count
+            FROM subject_server_overrides o
+            JOIN subjects s ON s.subject_id = o.subject_id
+            WHERE o.selected_server_id IN ({placeholders})
+              AND o.selected_until > CURRENT_TIMESTAMP
+              AND s.implementation_kind = 'xray'
+              AND s.is_active = 1
+              AND s.is_deleted = 0""",
+        tuple(normalized),
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
 def delete_subscription_source_intent(
     source_ref: str,
     *,
@@ -1198,6 +1218,16 @@ def delete_subscription_source_intent(
         if not alternatives:
             return {"ok": False, "error_code": "SUBSCRIPTION_DELETE_NO_AUTO_ALTERNATIVE", "message": "The current server belongs only to this source and no eligible alternative is available. Add or enable another VPN-auto server before deleting this source.", "current_server_id": current_auto}
 
+    with db_session() as connection:
+        active_xray_overrides = _active_xray_server_override_count(connection, orphaned)
+    if active_xray_overrides:
+        return {
+            "ok": False,
+            "error_code": "SUBSCRIPTION_DELETE_ACTIVE_XRAY_OVERRIDES",
+            "message": "Clear or reassign active Xray client server overrides that point to servers owned only by this source before deleting it.",
+            "active_override_count": active_xray_overrides,
+        }
+
     remaining = [item for item in sources if _source_id(str(item.get("url") or "")) != source_ref]
     if not sources and legacy_primary_url:
         remaining = []
@@ -1216,6 +1246,10 @@ def delete_subscription_source_intent(
                     "error_code": str(checkpoint_gate.get("error_code") or "XRAY_GENERATION_CHECKPOINT_RECOVERY_REQUIRED"),
                     "message": "A verified Xray generation recovery is required before subscription changes."}
         with db_session() as connection:
+            # Reserve the SQLite writer before the final dependency check so a
+            # concurrent override write cannot land between the check and the
+            # source intent mutation.
+            connection.execute("BEGIN IMMEDIATE")
             current_fence = read_selection_fence(connection)
             if (current_fence["revision"] != expected_fence["revision"]
                     or current_fence["active_server_id"] != expected_fence["active_server_id"]
@@ -1230,6 +1264,14 @@ def delete_subscription_source_intent(
             if not any(_source_id(str(item.get("url") or "")) == normalized_ref for item in _subscription_sources(current_metadata)):
                 if _source_id(str(current_state.get("url") or "")) != normalized_ref:
                     return {"ok": False, "error_code": "VPN_AUTO_SELECTION_SNAPSHOT_STALE", "message": "Subscription sources changed during deletion preflight."}
+            active_xray_overrides = _active_xray_server_override_count(connection, orphaned)
+            if active_xray_overrides:
+                return {
+                    "ok": False,
+                    "error_code": "SUBSCRIPTION_DELETE_ACTIVE_XRAY_OVERRIDES",
+                    "message": "Clear or reassign active Xray client server overrides that point to servers owned only by this source before deleting it.",
+                    "active_override_count": active_xray_overrides,
+                }
             connection.execute(
                 """INSERT INTO subscription_state (id, url, status, error_code, error_message, metadata_json, server_inventory_updated_at)
                    VALUES (1, ?, 'success', NULL, NULL, ?, CURRENT_TIMESTAMP)

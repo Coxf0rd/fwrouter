@@ -114,6 +114,22 @@ def set_subject_server_override(
         }
 
     with db_session() as connection:
+        # Validation above is intentionally kept as a fast preflight, but the
+        # selected target must still be available at commit time. Reserve the
+        # writer first so source deletion cannot retire it between recheck and
+        # override persistence.
+        connection.execute("BEGIN IMMEDIATE")
+        if str(server_id or "").strip() != VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
+            validation = _validate_user_selectable_server(server_id)
+            if not validation["ok"]:
+                return {
+                    "ok": False,
+                    "subject_id": subject_id,
+                    "subject": dict(subject),
+                    "server": validation["server"],
+                    "error_code": validation["error_code"],
+                    "error_message": validation["error_message"],
+                }
         previous = connection.execute(
             """
             SELECT selected_server_id
