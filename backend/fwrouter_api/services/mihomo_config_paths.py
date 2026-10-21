@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import json
-import yaml  # noqa: F401 - retained as a compatibility patch point for existing tests
+import yaml as yaml
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.services.mihomo_config_yaml import (
     MAX_MIHOMO_CONFIG_BYTES,
