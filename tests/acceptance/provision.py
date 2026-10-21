@@ -17,6 +17,7 @@ import shutil
 import stat
 import tarfile
 import time
+from urllib.parse import urlsplit
 import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -52,7 +53,7 @@ INPUTS = {
     "chromium": {
         "version": CHROMIUM_VERSION,
         "revision": CHROMIUM_REVISION,
-        "url": "https://playwright.download.prss.microsoft.com/dbazure/download/playwright/builds/chromium/1187/chromium-linux.zip",
+        "url": "https://cdn.playwright.dev/builds/chromium/1187/chromium-linux.zip",
         "sha256": "395e829e88f9ff3fc108cc9a3db49907afd9f5860066e9678694b01a406ee979",
         "archive": "zip",
     },
@@ -73,9 +74,12 @@ def digest(path: Path) -> str:
 
 def download(name: str, destination: Path) -> None:
     spec = INPUTS[name]
+    configured_host = urlsplit(spec["url"]).hostname or "invalid"
     request = urllib.request.Request(spec["url"], headers={"User-Agent": "fwrouter-hosted-acceptance/1"})
     temporary = destination.with_suffix(destination.suffix + ".partial")
     for attempt in range(2):
+        print(f"provisioning asset={name} configured_host={configured_host} attempt={attempt + 1}/2",
+              flush=True)
         total = 0
         hasher = hashlib.sha256()
         try:

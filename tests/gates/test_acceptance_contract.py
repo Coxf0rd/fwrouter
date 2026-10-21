@@ -4,6 +4,7 @@ import importlib.util
 import ast
 import builtins
 import copy
+import contextlib
 import hashlib
 import json
 import math
@@ -5465,6 +5466,10 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertRegex(provision.BASE_IMAGE, r"^python:3\.11-bookworm@sha256:[0-9a-f]{64}$")
         self.assertEqual("1.55.0", provision.PLAYWRIGHT_VERSION)
         self.assertEqual("1187", provision.CHROMIUM_REVISION)
+        self.assertEqual(
+            "https://cdn.playwright.dev/builds/chromium/1187/chromium-linux.zip",
+            provision.INPUTS["chromium"]["url"],
+        )
         for name, item in provision.INPUTS.items():
             with self.subTest(asset=name):
                 self.assertRegex(item["url"], r"^https://")
@@ -5504,6 +5509,37 @@ class AcceptanceContractTests(unittest.TestCase):
         finally:
             provision.INPUTS["xray"] = original
             provision.MAX_DOWNLOAD["xray"] = old_limit
+
+    def test_provision_download_reports_asset_and_host_without_url_query(self):
+        original = provision.INPUTS["xray"]
+        provision.INPUTS["xray"] = {
+            "url": "https://fixture.invalid/pinned-asset?signature=private-value",
+            "sha256": "0" * 64,
+        }
+        try:
+            with tempfile.TemporaryDirectory(prefix="fwrouter-provision-dns-") as temp:
+                destination = Path(temp) / "asset"
+                output = io.StringIO()
+                with mock.patch.object(
+                    provision.urllib.request, "urlopen",
+                    side_effect=OSError("Name or service not known"),
+                ) as urlopen:
+                    with contextlib.redirect_stdout(output):
+                        with self.assertRaisesRegex(OSError, "Name or service not known"):
+                            provision.download("xray", destination)
+                self.assertEqual(2, urlopen.call_count)
+                self.assertEqual(
+                    [
+                        "provisioning asset=xray configured_host=fixture.invalid attempt=1/2",
+                        "provisioning asset=xray configured_host=fixture.invalid attempt=2/2",
+                    ],
+                    output.getvalue().splitlines(),
+                )
+                self.assertNotIn("private-value", output.getvalue())
+                self.assertNotIn("pinned-asset", output.getvalue())
+                self.assertFalse(destination.with_suffix(".partial").exists())
+        finally:
+            provision.INPUTS["xray"] = original
 
     def test_provision_chromium_bundle_normalizes_and_hashes_complete_archive(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-provision-chromium-") as temp:
