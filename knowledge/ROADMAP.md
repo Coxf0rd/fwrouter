@@ -1,10 +1,10 @@
 # FWRouter — active roadmap
 
-## Virtual Xray VPN-auto override POST — 2026-10-22 (IN PROGRESS)
+## Virtual Xray VPN-auto override POST — source correction (2026-10-22)
 
-Bounded defect correction from actual main `e1c4aa9` after merged PR31/32. PR32 squash is single-parent with exact qualified feature-tree inclusion; main CI39670417991 passed including mandatory main smoke. This supersedes the pending-integration gate below without changing its historical receipts. One new feature branch/PR will fix virtual target persistence without starting Stage5 or changing production.
+Bounded defect correction from actual main `e1c4aa9` after merged PR31/32. PR32 squash is single-parent with exact qualified feature-tree inclusion; main CI39670417991 passed including mandatory main smoke. This supersedes the pending-integration gate below without changing its historical receipts. [PR33](https://github.com/Coxf0rd/fwrouter/pull/33), `fix/virtual-xray-vpn-auto-override`, fixes virtual target persistence without starting Stage5 or changing production.
 
-Explicit virtual target and DELETE differ in durable intent/TTL/audit and Xray binding projection; preserve Core-owned `vpn-global`, including global fixed enforcement. Plan a minimal discriminator on the existing override row with atomic schema26→27 compatibility migration and API projection of the virtual ID. Keep the real-server FK and historical NULL semantics. Source implementation, real SQLite/API negative/regression tests, native qualification, independent review and CI V2 remain separate open gates. No deployment or merge. See [bounded correction report](audits/virtual_xray_vpn_auto_override_2026-10-22/REPORT.md).
+Explicit virtual target and DELETE differ in durable intent/TTL/audit and Xray binding projection; preserve Core-owned `vpn-global`, including global fixed enforcement. The existing override row now has a minimal discriminator, atomic schema26→27 migration and API projection of the virtual ID; real-server FK and historical NULL semantics are preserved. Baseline API negative control reproduced the FK defect; final targeted tests52 passed, independent QA passed with7 synthetic checks. Source/local review is complete; exact-HEAD hosted/native/packet qualification is the required PR33 CI V2 gate and is reported there. Serial POST/DELETE leaves global selection revision unchanged; no endpoint expected-revision parameter is invented. Deployment/live acceptance require separate GO; no deployment or merge. See [bounded correction report](audits/virtual_xray_vpn_auto_override_2026-10-22/REPORT.md).
 
 ## CI Pipeline V2 — source and reference qualification complete (2026-10-22)
 
