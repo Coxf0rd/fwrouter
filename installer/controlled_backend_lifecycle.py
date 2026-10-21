@@ -20,7 +20,9 @@ from typing import Any
 import uuid
 
 
-SCHEMA = 1
+SCHEMA = 2
+LEGACY_SCHEMA = 1
+MAX_SOURCE_TRANSITIONS = 16
 DEFAULT_STATE_DIR = Path("/var/lib/fwrouter-v2/state/controlled-rollout")
 SOURCE_BACKEND = Path(__file__).resolve().parents[1] / "backend"
 TARGET_BACKEND = Path("/opt/fwrouter-api")
@@ -57,6 +59,10 @@ STOP_ORDER = (*reversed(PERSISTENT_TIMERS), *reversed(LONG_RUNNING_DEPENDENTS))
 CHECKPOINT_KEYS = {
     "schema", "operation_id", "status", "created_at", "backend_manifest",
     "backend_manifest_sha256", "active_units", "pending_units",
+    "initial_backend_manifest_sha256", "source_transitions",
+}
+LEGACY_CHECKPOINT_KEYS = CHECKPOINT_KEYS - {
+    "initial_backend_manifest_sha256", "source_transitions",
 }
 
 
@@ -305,7 +311,13 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise LifecycleError("cannot read rollout checkpoint") from exc
-    if not isinstance(value, dict) or set(value) != CHECKPOINT_KEYS or value.get("schema") != SCHEMA:
+    if not isinstance(value, dict):
+        raise LifecycleError("rollout checkpoint schema or keys are invalid")
+    schema = value.get("schema")
+    if (type(schema) is not int
+            or (schema == LEGACY_SCHEMA and set(value) != LEGACY_CHECKPOINT_KEYS)
+            or (schema == SCHEMA and set(value) != CHECKPOINT_KEYS)
+            or schema not in {LEGACY_SCHEMA, SCHEMA}):
         raise LifecycleError("rollout checkpoint schema or keys are invalid")
     if value.get("status") not in {"pending", "complete"}:
         raise LifecycleError("rollout checkpoint status is invalid")
@@ -316,6 +328,36 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
     manifest = _validate_manifest(value["backend_manifest"])
     if value["backend_manifest_sha256"] != _manifest_digest(manifest):
         raise LifecycleError("checkpoint source identity does not match its backend manifest")
+    if schema == SCHEMA:
+        initial = value["initial_backend_manifest_sha256"]
+        transitions = value["source_transitions"]
+        if (not isinstance(initial, str) or len(initial) != 64
+                or any(ch not in "0123456789abcdef" for ch in initial)
+                or not isinstance(transitions, list)
+                or len(transitions) > MAX_SOURCE_TRANSITIONS):
+            raise LifecycleError("rollout source transition history is invalid")
+        previous = initial
+        for item in transitions:
+            if not isinstance(item, dict) or set(item) != {
+                    "operation_id", "from_manifest_sha256", "to_manifest_sha256", "created_at"}:
+                raise LifecycleError("rollout source transition entry is invalid")
+            try:
+                transition_operation = str(uuid.UUID(item["operation_id"]))
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise LifecycleError("rollout source transition operation id is invalid") from exc
+            from_digest = item["from_manifest_sha256"]
+            to_digest = item["to_manifest_sha256"]
+            timestamp = item["created_at"]
+            if (transition_operation != value["operation_id"]
+                    or from_digest != previous
+                    or not isinstance(to_digest, str) or len(to_digest) != 64
+                    or any(ch not in "0123456789abcdef" for ch in to_digest)
+                    or to_digest == from_digest
+                    or not isinstance(timestamp, str) or not timestamp):
+                raise LifecycleError("rollout source transition history is inconsistent")
+            previous = to_digest
+        if previous != value["backend_manifest_sha256"]:
+            raise LifecycleError("rollout source transition history does not bind current source")
     units = value["active_units"]
     pending = value["pending_units"]
     expected_units = {*RESTORE_ORDER, *TRANSIENT_JOBS, API_UNIT}
@@ -326,6 +368,98 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
             or len(pending) != len(set(pending))):
         raise LifecycleError("rollout checkpoint unit state is invalid")
     return value
+
+
+def _checkpoint_as_current_schema(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade an in-memory legacy checkpoint without changing its ownership."""
+    if checkpoint["schema"] == SCHEMA:
+        return checkpoint
+    digest = checkpoint["backend_manifest_sha256"]
+    return {
+        **checkpoint,
+        "schema": SCHEMA,
+        "initial_backend_manifest_sha256": digest,
+        "source_transitions": [],
+    }
+
+
+def _require_units_stopped() -> None:
+    units = (*RESTORE_ORDER, *TRANSIENT_JOBS, API_UNIT)
+    active = [unit for unit in units if _is_active(unit)]
+    if active:
+        raise LifecycleError("all rollout-owned API, dependent, timer, and one-shot units must be stopped")
+
+
+def _transfer(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
+    checkpoint_path = state_dir / "pending.json"
+    checkpoint = _read_checkpoint(checkpoint_path)
+    if checkpoint["status"] != "pending":
+        raise LifecycleError("only a pending rollout checkpoint can transfer source ownership")
+    try:
+        expected_operation_id = str(uuid.UUID(args.expected_operation_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise LifecycleError("expected rollout operation id is invalid") from exc
+    expected_old_digest = args.expected_current_manifest_sha256
+    expected_new_digest = args.expected_new_manifest_sha256
+    for value in (expected_old_digest, expected_new_digest):
+        if (not isinstance(value, str) or len(value) != 64
+                or any(ch not in "0123456789abcdef" for ch in value)):
+            raise LifecycleError("expected source manifest digest is invalid")
+    if checkpoint["operation_id"] != expected_operation_id:
+        raise LifecycleError("rollout operation id changed")
+
+    current_source = _backend_manifest(SOURCE_BACKEND)
+    current_source_digest = _manifest_digest(current_source)
+    if current_source_digest != expected_new_digest:
+        raise LifecycleError("trusted source export does not match expected new manifest")
+
+    checkpoint = _checkpoint_as_current_schema(checkpoint)
+    current_checkpoint_digest = checkpoint["backend_manifest_sha256"]
+    transitions = checkpoint["source_transitions"]
+
+    # Atomic publication can complete immediately before an interruption. Permit
+    # only an exact replay of the final CAS, with the installed tree still at
+    # either side of that transition and all rollout-owned units stopped.
+    if current_checkpoint_digest == expected_new_digest:
+        if (not transitions
+                or transitions[-1]["from_manifest_sha256"] != expected_old_digest
+                or transitions[-1]["to_manifest_sha256"] != expected_new_digest
+                or transitions[-1]["operation_id"] != expected_operation_id):
+            raise LifecycleError("checkpoint is already bound to a different source transition")
+        _require_units_stopped()
+        installed = _backend_manifest(TARGET_BACKEND)
+        installed_digest = _manifest_digest(installed)
+        if installed_digest not in {expected_old_digest, expected_new_digest}:
+            raise LifecycleError("installed backend does not match either side of the recorded source transition")
+        return {"status": "already_transferred", "operation_id": expected_operation_id,
+                "backend_manifest_sha256": expected_new_digest}
+
+    if current_checkpoint_digest != expected_old_digest:
+        raise LifecycleError("checkpoint source identity changed")
+    if len(transitions) >= MAX_SOURCE_TRANSITIONS:
+        raise LifecycleError("rollout source transition history reached its bound")
+
+    _require_units_stopped()
+    # The old installed tree is the only admissible pre-install state. In
+    # particular, a hand-edited/stale/partially overlaid backend cannot transfer.
+    _verify_export(checkpoint["backend_manifest"])
+    # Recheck after the bounded tree hash: the lifecycle flock serializes this
+    # helper, while this second observation catches a unit started by an
+    # unrelated systemd/operator action during hashing.
+    _require_units_stopped()
+
+    checkpoint["backend_manifest"] = current_source
+    checkpoint["backend_manifest_sha256"] = current_source_digest
+    checkpoint["source_transitions"].append({
+        "operation_id": expected_operation_id,
+        "from_manifest_sha256": expected_old_digest,
+        "to_manifest_sha256": current_source_digest,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    })
+    _atomic_write(checkpoint_path, checkpoint)
+    return {"status": "transferred", "operation_id": expected_operation_id,
+            "backend_manifest_sha256": current_source_digest,
+            "source_transition_count": len(checkpoint["source_transitions"])}
 
 
 def _systemctl(action: str, unit: str) -> None:
@@ -425,6 +559,8 @@ def _stop(state_dir: Path) -> dict[str, Any]:
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "backend_manifest": backend_manifest,
             "backend_manifest_sha256": _manifest_digest(backend_manifest),
+            "initial_backend_manifest_sha256": _manifest_digest(backend_manifest),
+            "source_transitions": [],
             "active_units": active,
             "pending_units": [],
         }
@@ -482,8 +618,11 @@ def _resume(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
 
 def run_command(argv: list[str] | None = None) -> dict[str, Any]:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("stop", "resume"))
+    parser.add_argument("command", choices=("stop", "resume", "transfer"))
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    parser.add_argument("--expected-operation-id")
+    parser.add_argument("--expected-current-manifest-sha256")
+    parser.add_argument("--expected-new-manifest-sha256")
     parser.add_argument("--allow-timer-catchup", action="store_true",
                         help="explicitly allow reactivation of previously active Persistent=true timers")
     args = parser.parse_args(argv)
@@ -491,11 +630,21 @@ def run_command(argv: list[str] | None = None) -> dict[str, Any]:
         raise LifecycleError("controlled backend lifecycle must run as root")
     if args.allow_timer_catchup and args.command != "resume":
         raise LifecycleError("--allow-timer-catchup applies only to resume")
+    if args.command == "transfer" and not all((args.expected_operation_id,
+                                                args.expected_current_manifest_sha256,
+                                                args.expected_new_manifest_sha256)):
+        raise LifecycleError("transfer requires expected operation id and old/new manifest digests")
+    if args.command != "transfer" and any((args.expected_operation_id,
+                                             args.expected_current_manifest_sha256,
+                                             args.expected_new_manifest_sha256)):
+        raise LifecycleError("expected source transition arguments apply only to transfer")
     state_dir = _validate_state_dir(args.state_dir)
     lock_fd = _locked(state_dir)
     try:
         if args.command == "stop":
             return _stop(state_dir)
+        if args.command == "transfer":
+            return _transfer(args, state_dir)
         return _resume(args, state_dir)
     finally:
         os.close(lock_fd)

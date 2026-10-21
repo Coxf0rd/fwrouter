@@ -6,8 +6,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from fwrouter_api.adapters import mihomo as mihomo_module
 from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+from fwrouter_api.services import mihomo_config_yaml
 
 
 def test_lazy_line_iterator_matches_str_splitlines_boundaries() -> None:
@@ -182,6 +185,125 @@ def test_config_text_reads_changes_deletion_recreation_and_atomic_replace(tmp_pa
     replacement.write_text("mixed-port: 4004\n", encoding="utf-8")
     os.replace(replacement, path)
     assert adapter._config_top_level_scalar("mixed-port") == "4004"
+
+
+def test_configured_metadata_snapshot_reads_complete_new_file_after_preopen_replace(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    replacement = tmp_path / "config.next.yaml"
+    path.write_text("mixed-port: 5101\n", encoding="utf-8")
+    replacement.write_text("mixed-port: 6202\n", encoding="utf-8")
+    adapter = MihomoHttpAdapter(config_path=path, contours_path=tmp_path / "missing.yaml")
+    original_open = mihomo_config_yaml.os.open
+    replaced = False
+
+    def replace_before_open(target: str | bytes | os.PathLike[str], flags: int, *args: object) -> int:
+        nonlocal replaced
+        if os.fspath(target) == os.fspath(path) and not replaced:
+            replaced = True
+            os.replace(replacement, path)
+        return original_open(target, flags, *args)
+
+    monkeypatch.setattr(mihomo_config_yaml.os, "open", replace_before_open)
+    assert adapter._config_top_level_scalar("mixed-port") == "6202"
+
+
+def test_configured_metadata_snapshot_keeps_open_inode_across_atomic_replace(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    replacement = tmp_path / "config.next.yaml"
+    path.write_text("mixed-port: 5101\n", encoding="utf-8")
+    replacement.write_text("mixed-port: 6202\n", encoding="utf-8")
+    adapter = MihomoHttpAdapter(config_path=path, contours_path=tmp_path / "missing.yaml")
+    original_read = mihomo_config_yaml.os.read
+    replaced = False
+
+    def replace_after_first_read(descriptor: int, count: int) -> bytes:
+        nonlocal replaced
+        chunk = original_read(descriptor, count)
+        if chunk and not replaced:
+            replaced = True
+            os.replace(replacement, path)
+        return chunk
+
+    monkeypatch.setattr(mihomo_config_yaml.os, "read", replace_after_first_read)
+    # The descriptor is a complete old-config snapshot even though the path
+    # has already moved to its new complete config.
+    assert adapter._config_top_level_scalar("mixed-port") == "5101"
+    assert adapter._config_top_level_scalar("mixed-port") == "6202"
+
+
+def test_metadata_snapshot_rejects_inplace_mutation_during_read(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("mixed-port: 5101\n", encoding="utf-8")
+    original_read = mihomo_config_yaml.os.read
+    mutated = False
+
+    def mutate_after_read(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        chunk = original_read(descriptor, count)
+        if chunk and not mutated:
+            mutated = True
+            before = path.stat()
+            with path.open("r+b") as stream:
+                stream.write(b"mixed-port: 6202\n")
+                stream.flush()
+            # Make the modification-time delta deterministic even on filesystems
+            # whose timestamp clock can report consecutive writes identically.
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+        return chunk
+
+    monkeypatch.setattr(mihomo_config_yaml.os, "read", mutate_after_read)
+    with pytest.raises(mihomo_config_yaml.MihomoYamlInvalidError, match="file_changed_during_read"):
+        mihomo_config_yaml.read_mihomo_yaml_snapshot_bytes(path)
+
+
+def test_metadata_snapshot_rejects_symlink_and_oversize(tmp_path: Path) -> None:
+    target = tmp_path / "target.yaml"
+    target.write_text("mode: rule\n", encoding="utf-8")
+    symlink = tmp_path / "linked.yaml"
+    symlink.symlink_to(target)
+    with pytest.raises(mihomo_config_yaml.MihomoYamlInvalidError):
+        mihomo_config_yaml.read_mihomo_yaml_snapshot_bytes(symlink)
+    with pytest.raises(mihomo_config_yaml.MihomoYamlLimitError, match="byte_limit"):
+        mihomo_config_yaml.read_mihomo_yaml_snapshot_bytes(target, max_bytes=4)
+
+
+def test_adapter_config_text_keeps_strict_path_fence_during_atomic_replace(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    replacement = tmp_path / "config.next.yaml"
+    path.write_text("mixed-port: 5101\n", encoding="utf-8")
+    replacement.write_text("mixed-port: 6202\n", encoding="utf-8")
+    adapter = MihomoHttpAdapter(config_path=path, contours_path=tmp_path / "missing.yaml")
+    original_open = mihomo_config_yaml.os.open
+    replaced = False
+
+    def replace_before_strict_open(target: str | bytes | os.PathLike[str], flags: int, *args: object) -> int:
+        nonlocal replaced
+        if os.fspath(target) == os.fspath(path) and not replaced:
+            replaced = True
+            os.replace(replacement, path)
+        return original_open(target, flags, *args)
+
+    monkeypatch.setattr(mihomo_config_yaml.os, "open", replace_before_strict_open)
+    with pytest.raises(mihomo_config_yaml.MihomoYamlInvalidError, match="file_changed_before_read"):
+        adapter._config_text()
+
+
+def test_mihomo_health_uses_strict_config_reader_not_metadata_snapshot(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("mode: rule\n", encoding="utf-8")
+    adapter = MihomoHttpAdapter(config_path=path, contours_path=tmp_path / "missing.yaml")
+
+    def strict_reader_rejects(_path: Path) -> str:
+        raise mihomo_config_yaml.MihomoYamlInvalidError("strict_config_read_failed")
+
+    def metadata_reader_must_not_run(_path: Path) -> str:
+        raise AssertionError("health must not use the observational metadata snapshot")
+
+    monkeypatch.setattr(mihomo_module, "read_mihomo_yaml_text", strict_reader_rejects)
+    monkeypatch.setattr(mihomo_module, "read_mihomo_yaml_snapshot_text", metadata_reader_must_not_run)
+    health = adapter.health()
+    assert health.runtime_state is mihomo_module.MihomoRuntimeState.DEGRADED
+    assert health.details["error"] == "strict_config_read_failed"
 
 
 def test_concurrent_atomic_replacements_return_complete_per_read_configs(tmp_path: Path) -> None:

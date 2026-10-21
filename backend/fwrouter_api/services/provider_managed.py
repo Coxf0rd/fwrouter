@@ -116,9 +116,11 @@ def _mark_members_unadvertised(connection: Any, source_ref: str) -> int | None:
 def material_handoff(binding: dict[str, Any], config: dict[str, Any], *, select_logical: bool = False,
                      selection_revision: int | None = None, operation_id: str | None = None,
                      source_snapshot_selection_revision: int | None = None,
-                     runtime_incarnation: str | None = None) -> Iterator[None]:
+                     runtime_incarnation: str | None = None,
+                     allow_unhealthy_selected_root_recovery: bool = False) -> Iterator[None]:
     token = _MATERIAL.set({"source_ref": binding["source_ref"], "revision": binding["binding_revision"],
                            "config": config, "select_logical": select_logical,
+                           "allow_unhealthy_selected_root_recovery": allow_unhealthy_selected_root_recovery,
                            "selection_revision": selection_revision,
                            "source_snapshot_selection_revision": source_snapshot_selection_revision,
                            "runtime_incarnation": runtime_incarnation,
@@ -333,11 +335,13 @@ def automatic_member_switch_allowed(source_ref: str) -> bool:
 
 def _refresh_with_material(binding: dict[str, Any], config: dict[str, Any], *, select_logical: bool = False,
                            selection_revision: int | None = None, operation_id: str | None = None,
-                           runtime_incarnation: str | None = None) -> dict[str, Any]:
+                           runtime_incarnation: str | None = None,
+                           allow_unhealthy_selected_root_recovery: bool = False) -> dict[str, Any]:
     from fwrouter_api.services.subscription_pipeline import refresh_subscription
     with material_handoff(binding, config, select_logical=select_logical,
                           selection_revision=selection_revision, operation_id=operation_id,
-                          runtime_incarnation=runtime_incarnation):
+                          runtime_incarnation=runtime_incarnation,
+                          allow_unhealthy_selected_root_recovery=allow_unhealthy_selected_root_recovery):
         result = refresh_subscription(binding["source_ref"])
         handoff = _MATERIAL.get() or {}
         receipt = handoff.get("owned_inventory_receipt")
@@ -440,6 +444,44 @@ def validate_provider_material_handoff(connection: Any) -> dict[str, Any] | None
     ):
         raise ProviderError("PROVIDER_MATERIAL_HANDOFF_STALE")
     return handoff
+
+
+def allows_explicit_unhealthy_selected_root_recovery(
+    connection: Any, selected_logical_server_id: str,
+) -> bool:
+    """Allow only a fenced manual provider switch to refresh its selected root."""
+    handoff = _MATERIAL.get()
+    if (
+        not handoff
+        or handoff.get("allow_unhealthy_selected_root_recovery") is not True
+        or type(handoff.get("selection_revision")) is not int
+    ):
+        return False
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+    routing = connection.execute(
+        "SELECT server_mode, active_auto_server_id FROM routing_global_state WHERE id=1"
+    ).fetchone()
+    selected_id = str(selected_logical_server_id or "").strip()
+    if (
+        not selected_id
+        or routing is None
+        or str(routing["server_mode"] or "").lower() != "auto"
+        or str(routing["active_auto_server_id"] or "").strip() != selected_id
+        or read_selection_revision(connection) != handoff["selection_revision"]
+    ):
+        return False
+    try:
+        if validate_provider_material_handoff(connection) is None:
+            return False
+    except ProviderError:
+        return False
+    binding = store.get_binding(connection, str(handoff.get("source_ref") or ""))
+    return bool(
+        binding
+        and binding.get("enabled")
+        and str(binding.get("logical_server_id") or "").strip() == selected_id
+    )
 
 
 def validate_provider_inventory_handoffs(
@@ -648,7 +690,8 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                 _select_logical = True
             result = _refresh_with_material(binding, config, select_logical=_select_logical,
                                             selection_revision=selection_revision, operation_id=handoff_operation_id,
-                                            runtime_incarnation=expected_runtime_incarnation)
+                                            runtime_incarnation=expected_runtime_incarnation,
+                                            allow_unhealthy_selected_root_recovery=(action == "refresh"))
         elif action in {"switch", "protocol"}:
             if action == "protocol":
                 if protocol not in adapter.supported_protocols:
@@ -729,7 +772,10 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                     binding = binding_for(source_ref)
                 result = _refresh_with_material(binding, config, select_logical=_select_logical,
                                                 selection_revision=selection_revision, operation_id=handoff_operation_id,
-                                                runtime_incarnation=expected_runtime_incarnation)
+                                                runtime_incarnation=expected_runtime_incarnation,
+                                                allow_unhealthy_selected_root_recovery=(
+                                                    action == "protocol" and not automatic_switch
+                                                ))
 
             else:
                 if not binding["current_location_id"]:
@@ -793,7 +839,10 @@ def execute_provider_operation(source_ref: str, action: str, *, member_id: str |
                     binding = binding_for(source_ref)
                 result = _refresh_with_material(binding, config, select_logical=_select_logical,
                                                 selection_revision=selection_revision, operation_id=handoff_operation_id,
-                                                runtime_incarnation=expected_runtime_incarnation)
+                                                runtime_incarnation=expected_runtime_incarnation,
+                                                allow_unhealthy_selected_root_recovery=(
+                                                    action == "switch" and not automatic_switch
+                                                ))
         else:
             raise ProviderError("PROVIDER_ACTION_INVALID")
         verified = bool(result.get("ok") and result.get("runtime_verified"))

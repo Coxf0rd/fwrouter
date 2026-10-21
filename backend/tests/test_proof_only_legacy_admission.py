@@ -1227,6 +1227,20 @@ def test_legacy_admission_runtime_fence_facts_are_closed_and_match_owner_predica
     assert sum(value is False for value in stale.values()) == 1
     assert xray_subscription_service._legacy_admission_runtime_fences_match(admission) is False
 
+    mihomo_path.unlink()
+    mihomo_path.touch()
+    with mihomo_path.open("r+b") as handle:
+        handle.truncate(32 * 1024 * 1024 + 1)
+    oversized = xray_subscription_service._legacy_admission_runtime_fence_facts(admission)
+    assert not any(oversized.values())
+
+    mihomo_path.unlink()
+    target = tmp_path / "mihomo-target.yaml"
+    target.write_bytes(b"synthetic mihomo active")
+    mihomo_path.symlink_to(target)
+    symlink = xray_subscription_service._legacy_admission_runtime_fence_facts(admission)
+    assert not any(symlink.values())
+
 
 def test_proof_only_checkpoint_direct_recovery_helpers_are_non_mutating(tmp_path, monkeypatch):
     checkpoint = tmp_path / "generation-checkpoint.json"
@@ -2206,17 +2220,34 @@ def test_admission_cli_reports_receipt_only_for_successful_verified_result(monke
     assert output.get("proof_receipt_written") is not True
 
 
-def test_exact_large_mihomo_candidate_match_skips_semantic_yaml_parse(tmp_path, monkeypatch):
+def test_exact_large_mihomo_candidate_match_validates_yaml_once(tmp_path, monkeypatch):
     from fwrouter_api.services import mihomo_reconcile
 
-    content = b"x" * (1024 * 1024 + 7)
+    content = b"rules:\n- MATCH,DIRECT\n#" + (b"x" * (1024 * 1024 + 7)) + b"\n"
     active = tmp_path / "active.yaml"
     candidate = tmp_path / "candidate.yaml"
     active.write_bytes(content)
     candidate.write_bytes(content)
     monkeypatch.setattr(mihomo_reconcile, "_semantic_config_files_equal",
-                        lambda *_args: pytest.fail("identical large candidates need no YAML parse"))
+                        lambda *_args: pytest.fail("byte-identical candidates must not enter semantic comparison"))
     assert xray_subscription_service._legacy_mihomo_candidate_matches(active, candidate) is True
+
+
+@pytest.mark.parametrize(
+    "invalid_yaml",
+    [
+        b"mode: rule\nmode: global\n",
+        b"shared: &value repeated\nfirst: *value\n",
+    ],
+    ids=["duplicate-key", "alias"],
+)
+def test_identical_ambiguous_mihomo_candidate_is_not_admitted(tmp_path, invalid_yaml):
+    active = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    active.write_bytes(invalid_yaml)
+    candidate.write_bytes(invalid_yaml)
+
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(active, candidate) is False
 
 
 @pytest.mark.parametrize("marker", [

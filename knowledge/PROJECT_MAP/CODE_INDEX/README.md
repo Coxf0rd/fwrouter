@@ -46,6 +46,7 @@
 30. `opt_fwrouter_api_fwrouter_api_services_global_mode_profiles_py.md`
 31. `opt_fwrouter_api_fwrouter_api_services_mihomo_config_py.md`
 31a. `backend_fwrouter_api_services_mihomo_serialization_py.md`
+31a.1. `backend_fwrouter_api_services_mihomo_config_yaml_py.md`
 31b. `backend_fwrouter_api_adapters_protocol_integration_py.md`
 32. `opt_fwrouter_api_fwrouter_api_services_mihomo_config_rules_py.md`
 33. `opt_fwrouter_api_fwrouter_api_services_mihomo_config_proxies_py.md`

@@ -68,7 +68,7 @@ def _db(monkeypatch):
     conn.execute("CREATE TABLE subscription_server_memberships (source_id TEXT, server_id TEXT, is_active INTEGER)")
     conn.execute("CREATE TABLE logical_server_members (logical_server_id TEXT, member_id TEXT, member_runtime_name TEXT, is_active INTEGER DEFAULT 1)")
     conn.execute("CREATE TABLE server_custom_https_proxy (server_id TEXT PRIMARY KEY)")
-    conn.execute("CREATE TABLE routing_global_state (id INTEGER PRIMARY KEY, server_mode TEXT, active_auto_server_id TEXT)")
+    conn.execute("CREATE TABLE routing_global_state (id INTEGER PRIMARY KEY, server_mode TEXT, active_auto_server_id TEXT, desired_fixed_server_id TEXT, applied_fixed_server_id TEXT)")
     conn.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT)")
 
     @contextmanager
@@ -122,9 +122,66 @@ def test_switch_verified_reports_actual_member_when_provider_falls_back(monkeypa
     assert result["actual_member_id"] == "901"
     assert [call[0] for call in fake.calls] == ["switch"]
     assert callback["select_logical"] is True
+    assert callback["allow_unhealthy_selected_root_recovery"] is True
     assert type(callback["selection_revision"]) is int
     assert callback["operation_id"]
     assert store.get_binding(conn, "source-a")["current_member_id"] == "901"
+
+
+def test_explicit_provider_refresh_marks_exact_material_for_selected_root_recovery(monkeypatch) -> None:
+    _conn, binding, _fake = _operation_setup(monkeypatch)
+    callback = {}
+    monkeypatch.setattr(provider_managed, "_refresh_with_material", lambda *_args, **kwargs: callback.update(kwargs) or {
+        "ok": True, "runtime_verified": True,
+    })
+
+    result = provider_managed.execute_provider_operation(
+        "source-a", "refresh", expected_revision=binding["binding_revision"],
+    )
+
+    assert result["outcome"] == "verified", (result, callback)
+    assert callback["allow_unhealthy_selected_root_recovery"] is True
+
+
+def test_automatic_provider_switch_does_not_mark_selected_root_recovery(monkeypatch) -> None:
+    _conn, binding, _fake = _operation_setup(monkeypatch)
+    callback = {}
+    monkeypatch.setattr(provider_managed, "_refresh_with_material", lambda *_args, **kwargs: callback.update(kwargs) or {
+        "ok": True, "runtime_verified": True,
+    })
+
+    result = provider_managed.execute_provider_operation(
+        "source-a", "switch", member_id="902", expected_revision=binding["binding_revision"],
+        automatic_switch=True,
+    )
+
+    assert result["outcome"] == "verified"
+    assert callback["allow_unhealthy_selected_root_recovery"] is False
+
+
+def test_explicit_provider_protocol_change_marks_selected_root_recovery(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    _conn, binding, fake = _operation_setup(monkeypatch)
+    fake.supported_protocols = ("hysteria2", "vless")
+    fake.change_protocol = lambda _config_id, _location_id, protocol, *, budget=None: {
+        "id": 1234, "server_id": 901, "location_id": 6,
+        "protocol": protocol, "connection_url": CONNECTION_URL,
+    }
+    monkeypatch.setattr("fwrouter_api.services.provider_adapters.validate_provider_protocol_change", lambda *_args: None)
+    monkeypatch.setattr("fwrouter_api.services.events.write_audit_event", lambda **_kwargs: None)
+    monkeypatch.setattr(provider_managed, "_normalized_refresh", lambda *_args: SimpleNamespace(ok=True))
+    callback = {}
+    monkeypatch.setattr(provider_managed, "_refresh_with_material", lambda *_args, **kwargs: callback.update(kwargs) or {
+        "ok": True, "runtime_verified": True,
+    })
+
+    result = provider_managed.execute_provider_operation(
+        "source-a", "protocol", protocol="vless", expected_revision=binding["binding_revision"],
+    )
+
+    assert result["outcome"] == "verified", (result, callback)
+    assert callback["allow_unhealthy_selected_root_recovery"] is True
 
 
 def test_incomplete_mutation_material_uses_one_targeted_get(monkeypatch) -> None:
@@ -622,6 +679,100 @@ def test_provider_handoff_rejects_newer_same_identity_observation(monkeypatch) -
                             observed_at=101.0)
         with pytest.raises(ProviderError, match="PROVIDER_MATERIAL_HANDOFF_STALE"):
             provider_managed.validate_provider_material_handoff(conn)
+
+
+def _selected_unhealthy_handoff(monkeypatch, *, enabled=True, selected_id="logical-provider-vpn"):
+    from contextlib import contextmanager
+    from fwrouter_api.db import connection as db_connection
+    from fwrouter_api.services import subscription_pipeline
+
+    conn = _db(monkeypatch)
+    binding = _binding(conn, enabled=enabled)
+    conn.execute(
+        "UPDATE provider_bindings SET current_member_id='902', current_location_id='6', observed_protocol='hysteria2' WHERE source_ref='source-a'"
+    )
+    conn.execute(
+        "INSERT INTO routing_global_state (id, server_mode, active_auto_server_id) VALUES (1, 'auto', ?)",
+        (selected_id,),
+    )
+    conn.execute("INSERT INTO servers VALUES (?, 'selected', '{}', 'active', 'stealthsurf')", (selected_id,))
+    material = {"server_id": 902, "location_id": 6, "protocol": "hysteria2"}
+    store.record_config(conn, "source-a", binding["binding_revision"], material, observed_at=100.0)
+    captured = store.get_binding(conn, "source-a")
+
+    @contextmanager
+    def session():
+        yield conn
+
+    monkeypatch.setattr(db_connection, "db_session", session)
+    monkeypatch.setattr(
+        subscription_pipeline, "get_vpn_auto_state",
+        lambda **_kwargs: {
+            "active_auto_target_valid": True,
+            "active_auto_server_valid": False,
+            "auto_selectable_candidate_ids": [],
+        },
+    )
+    return conn, binding, captured, material, subscription_pipeline
+
+
+def test_manual_provider_handoff_can_recover_same_selected_unhealthy_root(monkeypatch) -> None:
+    conn, binding, _captured, material, pipeline = _selected_unhealthy_handoff(monkeypatch)
+    with provider_managed.material_handoff(
+        binding, material, selection_revision=0,
+        allow_unhealthy_selected_root_recovery=True,
+    ):
+        result = pipeline._subscription_transition_preflight()
+        validated = provider_managed.validate_provider_material_handoff(conn)
+
+    assert result == {
+        "ok": True,
+        "mode": "auto",
+        "selected_server_id": "logical-provider-vpn",
+        "provider_selected_root_recovery": True,
+    }
+    # This is preflight permission only; the generation remains subject to the
+    # normal native candidate and runtime proof path.
+    assert validated["config"] == material
+
+
+@pytest.mark.parametrize("case", ["unmarked", "stale_selection", "disabled_binding", "wrong_root"])
+def test_unhealthy_selected_root_recovery_rejects_unowned_or_stale_handoff(monkeypatch, case) -> None:
+    conn, binding, _captured, material, pipeline = _selected_unhealthy_handoff(
+        monkeypatch,
+        enabled=case != "disabled_binding",
+        selected_id="different-root" if case == "wrong_root" else "logical-provider-vpn",
+    )
+    marked = case != "unmarked"
+    selection_revision = 1 if case == "stale_selection" else 0
+    with provider_managed.material_handoff(
+        binding, material, selection_revision=selection_revision,
+        allow_unhealthy_selected_root_recovery=marked,
+    ):
+        result = pipeline._subscription_transition_preflight()
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "VPN_AUTO_NO_ELIGIBLE_ALTERNATIVE"
+
+
+def test_unhealthy_selected_root_recovery_requires_target_policy_still_valid(monkeypatch) -> None:
+    _conn, binding, _captured, material, pipeline = _selected_unhealthy_handoff(monkeypatch)
+    monkeypatch.setattr(
+        pipeline, "get_vpn_auto_state",
+        lambda **_kwargs: {
+            "active_auto_target_valid": False,
+            "active_auto_server_valid": False,
+            "auto_selectable_candidate_ids": [],
+        },
+    )
+    with provider_managed.material_handoff(
+        binding, material, selection_revision=0,
+        allow_unhealthy_selected_root_recovery=True,
+    ):
+        result = pipeline._subscription_transition_preflight()
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "VPN_AUTO_NO_ELIGIBLE_ALTERNATIVE"
 
 
 def test_prepared_subscription_handoff_includes_current_location(monkeypatch) -> None:

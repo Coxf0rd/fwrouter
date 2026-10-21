@@ -39,6 +39,19 @@ Before writing a checkpoint or stopping any unit, `stop` compares the installed 
 
 After preflight, `stop` writes a root-owned, mode-`0700` durable checkpoint under `/var/lib/fwrouter-v2/state/controlled-rollout` before it stops only previously active allowlisted API dependents and the API. It refuses to interrupt active one-shot jobs. The checkpoint binds resume to the backend source export captured before stop; `resume` checks the same trusted export and requires the filtered `/opt/fwrouter-api` file manifest to match exactly, then requires the API health response to report both the API and database healthy. It restores only units recorded active in that checkpoint. Gateway restoration also waits for its configured listener at `172.18.0.1:5055`.
 
+If a controlled rollout is already pending and the reviewed branch source changes, do not edit or remove `pending.json`. The same lifecycle owner provides an explicit, root-only `transfer` command. It requires the exact saved operation ID, current checkpoint manifest digest, and new trusted-export manifest digest; it verifies the installed backend still exactly matches the old checkpoint and that every rollout-owned API, dependent, timer, and one-shot unit is inactive. It then atomically binds the existing operation to the new manifest, preserving the original active-unit set and timer gate while recording the old/new digest transition. The command never starts or stops services. It rechecks unit inactivity after hashing the installed tree. Run it within a single-operator maintenance window: the helper lock serializes lifecycle commands, but it does not lock out an unrelated installer or systemd operator. An exact replay after checkpoint publication is idempotent while the installed backend matches either side of that last recorded transition; a later source revision requires another explicit CAS transfer after the prior revision is installed. At most 16 transitions are retained. A missing external-writer check is not implied by unit quiescence: the operator must separately establish that no out-of-band database writers remain before transfer or deployment.
+
+Example (fill every value from the protected checkpoint and the reviewed clean export manifest; do not copy placeholder hashes):
+
+```bash
+python3 "$FWROUTER_TRUSTED_SOURCE/installer/controlled_backend_lifecycle.py" transfer \
+  --expected-operation-id '<pending operation UUID>' \
+  --expected-current-manifest-sha256 '<checkpoint backend_manifest_sha256>' \
+  --expected-new-manifest-sha256 '<reviewed trusted export digest>'
+```
+
+The new source digest must match the helper's trusted source export. After transfer, install that same export, then use the normal health-gated `resume` path only when the separately authorized rollout phase permits it. Legacy schema-1 checkpoints remain readable; transfer upgrades their checkpoint format atomically while preserving their operation ownership.
+
 The helper does not install files, start the API, restore a database, or change networking. If `stop` exits partway through, keep the checkpoint and rerun `stop` before installing; it continues the same saved operation. If `resume` exits partway through, keep the checkpoint and rerun `resume` after API readiness; completed unit starts are safe to repeat. Do not delete a pending checkpoint to bypass a failed health or source-export check.
 
 Persistent timers are stopped when they were active before rollout. By default `resume` restores long-running dependents and leaves those timers listed as pending. To allow systemd's `Persistent=true` catch-up behavior, review the timer consequences and explicitly run:

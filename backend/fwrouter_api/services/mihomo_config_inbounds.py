@@ -29,7 +29,11 @@ from fwrouter_api.services.mihomo_config_paths import (
     _resolved_debug_dir,
     _resolved_last_good_mihomo_dir,
     _resolve_proxy_bypass_mark_value,
-    _safe_load_yaml,
+)
+from fwrouter_api.services.mihomo_config_yaml import (
+    MihomoYamlError,
+    MihomoYamlLimitError,
+    load_mihomo_yaml_mapping,
 )
 
 
@@ -92,13 +96,30 @@ def _candidate_base_config_paths() -> list[Path]:
 
 def _load_base_config() -> dict[str, Any]:
     config: dict[str, Any] = {}
-    for candidate in _candidate_base_config_paths():
+    candidates = _candidate_base_config_paths()
+    primary = Path(_resolved_base_config_path())
+    for candidate in candidates:
         try:
-            if candidate.exists() and candidate.stat().st_size > MAX_BASE_CONFIG_BYTES:
-                continue
-        except OSError:
+            candidate.lstat()
+        except FileNotFoundError:
             continue
-        loaded = _safe_load_yaml(str(candidate))
+        except OSError:
+            if candidate == primary:
+                raise
+            continue
+        try:
+            loaded = load_mihomo_yaml_mapping(candidate, max_bytes=MAX_BASE_CONFIG_BYTES)
+        except MihomoYamlLimitError:
+            # An existing current base is authoritative. Falling through to a
+            # stale last-good because it crossed an obsolete safety threshold
+            # could silently change the generated runtime projection.
+            if candidate == primary:
+                raise
+            continue
+        except MihomoYamlError:
+            if candidate == primary:
+                raise
+            continue
         if not isinstance(loaded, dict):
             continue
         normalized = _normalize_proxy_list(dict(loaded))

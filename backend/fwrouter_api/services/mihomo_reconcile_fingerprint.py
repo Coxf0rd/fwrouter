@@ -10,6 +10,7 @@ from typing import Any
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.artifacts import atomic_write_json
+from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file
 from fwrouter_api.services.mihomo_config_paths import (
     _resolved_applied_manifest_path,
     _resolved_base_config_path,
@@ -238,6 +239,7 @@ def _source_fingerprint() -> dict[str, Any]:
     service_dir = Path(__file__).resolve().parent
     files = [
         "mihomo_config.py",
+        "mihomo_config_yaml.py",
         "mihomo_config_inbounds.py",
         "mihomo_config_paths.py",
         "mihomo_config_validation.py",
@@ -247,7 +249,10 @@ def _source_fingerprint() -> dict[str, Any]:
         "xray_handoff.py",
         "xray_subscription_service.py",
     ]
-    return {name: _file_hash(service_dir / name) for name in files}
+    fingerprints = {name: _file_hash(service_dir / name) for name in files}
+    adapter_path = service_dir.parent / "adapters" / "mihomo.py"
+    fingerprints["adapters/mihomo.py"] = _file_hash(adapter_path)
+    return fingerprints
 
 
 def current_mihomo_input_fingerprint(routing: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -272,7 +277,10 @@ def current_mihomo_input_fingerprint(routing: dict[str, Any] | None = None) -> d
 
 
 def active_config_hash() -> str | None:
-    return _file_hash(_resolved_base_config_path())
+    try:
+        return hash_mihomo_yaml_file(_resolved_base_config_path())
+    except (OSError, ValueError):
+        return None
 
 
 def mihomo_input_unchanged(fingerprint: dict[str, Any]) -> bool:

@@ -15,6 +15,14 @@ import socket
 import threading
 import httpx
 import yaml
+from fwrouter_api.services.mihomo_config_yaml import (
+    MAX_MIHOMO_CONFIG_BYTES,
+    MihomoYamlError,
+    MihomoYamlInvalidError,
+    parse_mihomo_yaml_mapping,
+    read_mihomo_yaml_snapshot_text,
+    read_mihomo_yaml_text,
+)
 
 DEFAULT_BASE_URL = "http://127.0.0.1:5200"
 DEFAULT_CONFIG_PATH = Path("/var/lib/fwrouter-v2/generated/mihomo/config.yaml")
@@ -24,7 +32,7 @@ TRANSPARENT_TPROXY_LISTENER_NAME = "fwrouter-tproxy"
 TRANSPARENT_TPROXY_LISTENER_BIND = "0.0.0.0"
 TRANSPARENT_TPROXY_PROXY_NAME = "vpn-global"
 TRANSPARENT_TPROXY_RULE_NAME = "fwrouter-transparent"
-MAX_CACHED_POLICY_CONFIG_BYTES = 32 * 1024 * 1024
+MAX_CACHED_POLICY_CONFIG_BYTES = MAX_MIHOMO_CONFIG_BYTES
 MAX_CACHED_POLICY_RULE_COUNT = 250_000
 _SIMPLE_DOMAIN_UDP_GUARD = re.compile(
     r"\(\((?:Network|NETWORK),udp\)(?:,| && )\((Domain|DOMAIN|DomainSuffix|DOMAIN-SUFFIX|DomainKeyword|DOMAIN-KEYWORD),([^,()]+)\)\)"
@@ -457,12 +465,31 @@ class MihomoHttpAdapter(MihomoAdapter):
         self._policy_config_cache: tuple[str, type[Any], dict[str, Any], dict[str, Any]] | None = None
 
     def _config_text(self) -> str:
-        if not self.config_path.exists():
+        """Read config under the strict path-stability contract used by health proof."""
+        try:
+            self.config_path.lstat()
+        except FileNotFoundError:
             return ""
-        return self.config_path.read_text(encoding="utf-8")
+        except OSError:
+            raise MihomoYamlInvalidError("file_unavailable") from None
+        return read_mihomo_yaml_text(self.config_path)
+
+    def _configured_metadata_text(self) -> str:
+        """Read one bounded complete file snapshot for configured metadata scans.
+
+        This observation may describe the old inode during an atomic publish;
+        callers must not treat it as current native or admission proof.
+        """
+        try:
+            self.config_path.lstat()
+        except FileNotFoundError:
+            return ""
+        except OSError:
+            raise MihomoYamlInvalidError("file_unavailable") from None
+        return read_mihomo_yaml_snapshot_text(self.config_path)
 
     def _config_top_level_scalar(self, key: str, *, text: str | None = None) -> str | None:
-        source = text if text is not None else self._config_text()
+        source = text if text is not None else self._configured_metadata_text()
         prefix = f"{key}:"
         lines = _configured_scan_lines(source, prefix)
         for line in lines:
@@ -473,7 +500,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         return None
 
     def _scan_listener_ports(self, *, text: str | None = None) -> dict[str, int | None]:
-        source = text if text is not None else self._config_text()
+        source = text if text is not None else self._configured_metadata_text()
         lines = _configured_scan_lines(source, "listeners:")
         mixed_port: int | None = None
         tproxy_port: int | None = None
@@ -540,7 +567,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         }
 
     def _scan_transparent_listeners(self, *, text: str | None = None) -> dict[str, dict[str, Any]]:
-        source = text if text is not None else self._config_text()
+        source = text if text is not None else self._configured_metadata_text()
         lines = _configured_scan_lines(source, "listeners:")
         in_listeners = False
         current: dict[str, Any] | None = None
@@ -595,7 +622,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         return result
 
     def _scan_tun_enabled(self, *, text: str | None = None) -> bool:
-        source = text if text is not None else self._config_text()
+        source = text if text is not None else self._configured_metadata_text()
         lines = _configured_scan_lines(source, "tun:")
         in_tun = False
         for raw_line in lines:
@@ -723,7 +750,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 "fwrouter_contours": contours,
             }
 
-        config_text = self._config_text() if config_text is None else config_text
+        config_text = self._configured_metadata_text() if config_text is None else config_text
         listener_ports = self._scan_listener_ports(text=config_text)
         mixed_port = listener_ports["mixed_port"]
         tproxy_port = listener_ports["tproxy_port"]
@@ -859,11 +886,9 @@ class MihomoHttpAdapter(MihomoAdapter):
     def _parse_vpn_udp_policy_config(config_text: str) -> dict[str, Any]:
         """Parse policy config with the same safe loader and fail-closed behavior."""
         try:
-            loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-            config = yaml.load(config_text, Loader=loader) or {}
-        except yaml.YAMLError:
-            config = {}
-        return config if isinstance(config, dict) else {}
+            return parse_mihomo_yaml_mapping(config_text.encode("utf-8"))
+        except UnicodeError:
+            raise MihomoYamlInvalidError("invalid_utf8") from None
 
     def _parsed_vpn_udp_policy_config(self, config_text: str) -> dict[str, Any]:
         loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
@@ -934,7 +959,13 @@ class MihomoHttpAdapter(MihomoAdapter):
         """Prove the active config and controller selectors are fail-closed for VPN UDP."""
         # `health()` passes only an internal parse of the exact bytes it just
         # read. Direct callers retain the original parse-on-every-call behavior.
-        config = _parsed_config if _parsed_config is not None else MihomoHttpAdapter._parse_vpn_udp_policy_config(config_text)
+        if _parsed_config is not None:
+            config = _parsed_config
+        else:
+            try:
+                config = MihomoHttpAdapter._parse_vpn_udp_policy_config(config_text)
+            except MihomoYamlError:
+                config = {}
         configured_groups = [
             item for item in (config.get("proxy-groups") or [])
             if isinstance(item, dict) and str(item.get("name") or "").strip()
@@ -1224,8 +1255,23 @@ class MihomoHttpAdapter(MihomoAdapter):
             return False
 
     def health(self) -> MihomoHealth:
-        config_text = self._config_text()
-        config_details = self._config_runtime_details(config_text=config_text)
+        try:
+            config_text = self._config_text()
+            parsed_policy_config = self._parsed_vpn_udp_policy_config(config_text)
+            config_details = self._config_runtime_details(config_text=config_text)
+        except MihomoYamlError as exc:
+            return MihomoHealth(
+                runtime_state=MihomoRuntimeState.DEGRADED,
+                active_server_id=None,
+                message="Mihomo configuration is unavailable or cannot be safely verified.",
+                details={
+                    "adapter": "http",
+                    "base_url": self.base_url,
+                    "error": str(exc),
+                    "config": {"readable": False},
+                    "selectors": {},
+                },
+            )
         try:
             version = self._get_json("/version")
             proxies = self._proxies()
@@ -1235,7 +1281,6 @@ class MihomoHttpAdapter(MihomoAdapter):
                 native_rules = native_rules_value if isinstance(native_rules_value, list) else None
             except (httpx.HTTPError, OSError, ValueError):
                 native_rules = None
-            parsed_policy_config = self._parsed_vpn_udp_policy_config(config_text)
             udp_policy = self._readback_with_config_analysis(
                 config_text, proxies, native_rules, parsed_policy_config,
             )
@@ -1256,7 +1301,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 connection_details = self._transparent_session_observation(self._get_json("/connections"))
             except (httpx.HTTPError, OSError, yaml.YAMLError):
                 connection_details = self._transparent_session_observation(None)
-        except (httpx.HTTPError, OSError, yaml.YAMLError) as exc:
+        except (httpx.HTTPError, OSError, yaml.YAMLError, MihomoYamlError) as exc:
             return MihomoHealth(
                 runtime_state=MihomoRuntimeState.DEGRADED,
                 active_server_id=None,

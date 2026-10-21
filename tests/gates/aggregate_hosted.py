@@ -18,9 +18,9 @@ import provision  # noqa: E402
 import launcher as acceptance_launcher  # noqa: E402
 
 
-QCP_EXPECTED_PROTOCOL_CASES = 20
+QCP_EXPECTED_PROTOCOL_CASES = 21
 QCP_EXPECTED_FILE_COUNTS = {
-    "backend/tests/test_protocol_native_validation.py": 20,
+    "backend/tests/test_protocol_native_validation.py": 21,
     "backend/tests/test_traffic_accounting.py": 1,
     "backend/tests/test_vpn_auto_writer_guard.py": 1,
     "backend/tests/test_xray.py": 16,
@@ -383,7 +383,7 @@ def validate_qcp_receipt(path: Path, plan: dict[str, Any], runtime_inputs: dict[
                 "backend/tests/test_protocol_native_validation.py::") for nodeid in expected_qcp)
             != QCP_EXPECTED_PROTOCOL_CASES):
         problems.append(
-            "qualified-child exact IDs differ from the checked-in 20 protocol plus 21 supporting scenario contract"
+            "qualified-child exact IDs differ from the checked-in 21 protocol plus 21 supporting scenario contract"
         )
 
     expected_set = set(expected_qcp) if scenario_ids_valid else set()

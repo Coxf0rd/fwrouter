@@ -137,6 +137,19 @@ def _parse_uri(uri: str) -> ProtocolHookResult:
     network = str(query.get("type") or query.get("network") or "tcp").strip() or "tcp"
     if network not in {"tcp", "ws", "http", "h2", "grpc", "xhttp"}:
         return ProtocolHookResult(True, issues=(ProtocolValidationIssue("unsupported_transport", "network"),))
+    # Mihomo v1.19.31 has no spiderX option. Its REALITY invalid-auth
+    # crawler requests https://<serverName>/, so only provider spx="/" has
+    # an equivalent representation. The authenticated path is unaffected.
+    if "spx" in query and query["spx"] != "/":
+        return ProtocolHookResult(True, issues=(ProtocolValidationIssue("unsupported_security_value", "reality-opts.spider-x"),))
+    if "spx" in query and security != "reality":
+        return ProtocolHookResult(True, issues=(ProtocolValidationIssue("unsupported_security_value", "reality-opts.spider-x"),))
+    seed = query.get("seed")
+    if seed is not None and (
+        security != "reality" or network != "grpc" or query.get("flow") or query.get("encryption")
+        or re.fullmatch(r"[0-9a-fA-F]{16}", seed) is None
+    ):
+        return ProtocolHookResult(True, issues=(ProtocolValidationIssue("unsupported_security_value", "reality-opts.seed"),))
     proxy: dict[str, Any] = {
         "name": unquote(parsed.fragment or "").strip() or parsed.hostname,
         "type": "vless", "server": parsed.hostname, "port": port,
@@ -182,6 +195,13 @@ def _parse_uri(uri: str) -> ProtocolHookResult:
             "path": query.get("path"), "host": [query["host"]] if query.get("host") else None,
         }.items() if value}
     proxy["_fwrouter_uri_query"] = query
+    if seed is not None:
+        # Xray's URI seed is not a Mihomo outbound option (and stock Xray
+        # 26.9.9 does not apply its outbound Seed field). Keep the exact
+        # source value in private raw provenance; native projection strips
+        # all _fwrouter_* keys. Acceptance is restricted to this proven
+        # gRPC + REALITY, no-flow/no-encryption profile.
+        proxy["_fwrouter_provider_metadata"] = {"vless_seed": seed, "seed_semantics": "opaque_compatibility_metadata"}
     return ProtocolHookResult(True, proxy=proxy)
 
 

@@ -40,6 +40,8 @@ assert.match(css, /#vpnSubscriptionDelete[\s\S]*rgba\(154, 52, 52/);
 assert.match(css, /settings-client-row__buttons \.btn--danger[\s\S]*rgba\(154, 52, 52/);
 assert.match(i18n, /"html\.settings\.delete_saved_subscription": "Удалить"/);
 assert.match(i18n, /"html\.settings\.delete_saved_subscription": "Delete"/);
+assert.match(i18n, /"api_error\.SUBSCRIPTION_DELETE_ACTIVE_XRAY_OVERRIDES": "Перед удалением очистите или переназначьте активные назначения Xray-клиентов/);
+assert.match(i18n, /"api_error\.SUBSCRIPTION_DELETE_ACTIVE_XRAY_OVERRIDES": "Clear or reassign active Xray client server overrides/);
 assert.match(i18n, /"settings\.subscription\.delete\.confirm"/);
 assert.match(i18n, /"events\.code\.subscription\.source_delete_requested": "Удаление источника подписки запрошено"/);
 assert.match(i18n, /"events\.type\.subscription_source_delete_apply_failed": "Не удалось завершить удаление источника подписки"/);

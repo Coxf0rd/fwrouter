@@ -27,12 +27,12 @@ COORDINATOR_ROOT = "/tmp/fwrouter-qcp-test-root"
 COORDINATOR_MARKER = ".fwrouter-gate-test-root-owned"
 COORDINATOR_MARKER_CONTENT = "FWROUTER_GATE_TEST_ROOT_V1\n"
 PYTEST_WORKDIR = "/workspace/backend"
-EXPECTED_TOTAL = 41
+EXPECTED_TOTAL = 42
 SMALL_OUTPUT_LIMIT = 64 * 1024
 DIAGNOSTIC_LIMIT = 4096
 MAX_JUNIT_BYTES = launcher.MAX_RECEIPT_BYTES
 QUALIFIED_CHILD_NODE_FILES = {
-    "backend/tests/test_protocol_native_validation.py": 20,
+    "backend/tests/test_protocol_native_validation.py": 21,
     "backend/tests/test_traffic_accounting.py": 1,
     "backend/tests/test_vpn_auto_writer_guard.py": 1,
     "backend/tests/test_xray.py": 16,
@@ -390,7 +390,7 @@ def _qualified_child_nodeids() -> list[str]:
         raise launcher.NotRun("qualified-child exact scenario registry is unavailable") from exc
     if (not isinstance(expected_ids, list) or any(not isinstance(item, str) for item in expected_ids)
             or scenarios.get("schema") != "fwrouter-qualified-child-scenarios/v1"
-            or scenarios.get("protocol_case_count") != 20 or len(expected_ids) != EXPECTED_TOTAL
+            or scenarios.get("protocol_case_count") != 21 or len(expected_ids) != EXPECTED_TOTAL
             or len(expected_ids) != len(set(expected_ids))):
         raise launcher.NotRun("qualified-child exact scenario registry has an invalid identity/count contract")
     counts = {path: 0 for path in QUALIFIED_CHILD_NODE_FILES}
@@ -440,9 +440,9 @@ def _read_junit(path: Path) -> dict[str, Any]:
         statuses[nodeid] = status
     errors = []
     protocol_ids = [node for node in expected if node.startswith("backend/tests/test_protocol_native_validation.py::")]
-    if (len(expected) != EXPECTED_TOTAL or len(protocol_ids) != 20
+    if (len(expected) != EXPECTED_TOTAL or len(protocol_ids) != 21
             or len(statuses) != EXPECTED_TOTAL or set(statuses) != expected):
-        errors.append("observed node IDs differ from the checked-in exact 20 protocol plus 21 supporting cohort contract")
+        errors.append("observed node IDs differ from the checked-in exact 21 protocol plus 21 supporting cohort contract")
     counts = {name: sum(status == name for status in statuses.values())
               for name in ("passed", "failed", "skipped")}
     if counts["failed"] or counts["skipped"]:

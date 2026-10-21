@@ -53,6 +53,139 @@ def _import(monkeypatch, sources: dict[str, tuple[str, ...]]) -> None:
     refresh_subscription_inventory_batch(list(sources))
 
 
+def _add_xray_server_override(server_id: str, *, subject_id: str = "xray:test", active: bool = True, deleted: bool = False, expires: str = "+1 day") -> None:
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """INSERT INTO subjects (
+                   subject_id, subject_type, subject_role, implementation_kind,
+                   stable_key, display_name, desired_mode, is_active, is_deleted
+               ) VALUES (?, 'explicit_external_client', 'vless_client', 'xray', ?, 'Test Xray client', 'vpn', ?, ?)""",
+            (subject_id, subject_id, int(active), int(deleted)),
+        )
+        connection.execute(
+            """INSERT INTO subject_server_overrides (subject_id, selected_server_id, selected_until)
+               VALUES (?, ?, datetime('now', ?))""",
+            (subject_id, server_id, expires),
+        )
+
+
+def test_source_delete_preserves_source_when_active_xray_override_targets_orphan(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    url = "https://one.example/sub"
+    _import(monkeypatch, {url: ("only",)})
+    _add_xray_server_override("only")
+    before = get_subscription_state()
+
+    result = delete_subscription_source_intent(_source_id(url))
+
+    assert result["ok"] is False
+    assert result["error_code"] == "SUBSCRIPTION_DELETE_ACTIVE_XRAY_OVERRIDES"
+    assert result["active_override_count"] == 1
+    assert get_subscription_state() == before
+    with subscription_service.db_session() as connection:
+        membership = connection.execute(
+            "SELECT is_active FROM subscription_server_memberships WHERE source_id=? AND server_id='only'",
+            (_source_id(url),),
+        ).fetchone()
+    assert membership["is_active"] == 1
+
+
+def test_source_delete_rechecks_xray_overrides_after_guarded_checkpoint(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    url = "https://one.example/sub"
+    _import(monkeypatch, {url: ("only",)})
+    before = get_subscription_state()
+
+    def add_override_during_guarded_preflight():
+        _add_xray_server_override("only")
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service.subscription_inventory_checkpoint_write_gate",
+        add_override_during_guarded_preflight,
+    )
+
+    result = delete_subscription_source_intent(_source_id(url))
+
+    assert result["ok"] is False
+    assert result["error_code"] == "SUBSCRIPTION_DELETE_ACTIVE_XRAY_OVERRIDES"
+    assert get_subscription_state() == before
+
+
+@pytest.mark.parametrize(
+    ("active", "deleted", "expires"),
+    [(True, False, "-1 day"), (False, False, "+1 day"), (True, True, "+1 day")],
+)
+def test_source_delete_ignores_expired_or_inactive_xray_override(
+    monkeypatch, tmp_path: Path, active: bool, deleted: bool, expires: str,
+) -> None:
+    _setup(monkeypatch, tmp_path)
+    url = "https://one.example/sub"
+    _import(monkeypatch, {url: ("only",)})
+    _add_xray_server_override("only", active=active, deleted=deleted, expires=expires)
+
+    result = delete_subscription_source_intent(_source_id(url))
+
+    assert result["ok"] is True
+
+
+def test_source_delete_allows_active_xray_override_when_server_is_shared(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    first, second = "https://one.example/sub", "https://two.example/sub"
+    _import(monkeypatch, {first: ("shared",), second: ("shared",)})
+    _add_xray_server_override("shared")
+
+    result = delete_subscription_source_intent(_source_id(first))
+
+    assert result["ok"] is True
+    assert result["orphaned_server_ids"] == []
+
+
+def test_server_override_revalidates_target_after_source_deletion_race(monkeypatch, tmp_path: Path) -> None:
+    _setup(monkeypatch, tmp_path)
+    url = "https://one.example/sub"
+    _import(monkeypatch, {url: ("only",)})
+    with subscription_service.db_session() as connection:
+        connection.execute(
+            """INSERT INTO subjects (
+                   subject_id, subject_type, subject_role, implementation_kind,
+                   stable_key, display_name, desired_mode, is_active
+               ) VALUES ('xray:race', 'explicit_external_client', 'vless_client', 'xray',
+                         'xray:race', 'Race client', 'vpn', 1)"""
+        )
+
+    from fwrouter_api.services import server_subject_overrides
+    from fwrouter_api.services.server_subject_overrides import set_subject_server_override
+
+    original_validate = server_subject_overrides._validate_user_selectable_server
+    validations = 0
+    deletion_results: list[dict[str, object]] = []
+
+    def validate_then_delete(server_id: str) -> dict[str, object]:
+        nonlocal validations
+        validations += 1
+        result = original_validate(server_id)
+        if validations == 1:
+            deletion_results.append(delete_subscription_source_intent(_source_id(url)))
+        return result
+
+    monkeypatch.setattr(server_subject_overrides, "_validate_user_selectable_server", validate_then_delete)
+
+    result = set_subject_server_override("xray:race", "only")
+
+    assert len(deletion_results) == 1
+    assert deletion_results[0]["ok"] is True
+    assert deletion_results[0]["orphaned_server_ids"] == ["only"]
+    assert validations == 2
+    assert result["ok"] is False
+    assert result["error_code"] == "SERVER_NOT_FOUND_OR_INACTIVE"
+    with subscription_service.db_session() as connection:
+        override = connection.execute(
+            "SELECT 1 FROM subject_server_overrides WHERE subject_id='xray:race'"
+        ).fetchone()
+    assert override is None
+
+
 def test_source_delete_deactivates_only_exact_source_and_preserves_shared_server(monkeypatch, tmp_path: Path) -> None:
     _setup(monkeypatch, tmp_path)
     first, second = "https://one.example/sub?token=secret", "https://two.example/sub"

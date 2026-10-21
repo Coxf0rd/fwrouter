@@ -2273,6 +2273,38 @@ def _read_packet_selector_state() -> dict[str, Any]:
     return get_vpn_auto_state(read_only=True)
 
 
+def _bind_packet_parent_selector_runtime(stack: dict[str, Any], monkeypatch: Any) -> Any:
+    """Bind parent-process selector reads to this packet fixture's owned runtime."""
+    from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+    from fwrouter_api.services import runtime_adapters
+
+    state_root = Path(stack["state"]).resolve(strict=True)
+    config_path = state_root / "generated" / "mihomo" / "config.yaml"
+    contours_path = state_root / "generated" / "mihomo" / "contours.json"
+    expected_config_path = state_root / "generated" / "mihomo" / "config.yaml"
+    expected_contours_path = state_root / "generated" / "mihomo" / "contours.json"
+    try:
+        config_stat = config_path.lstat()
+        config_resolved = config_path.resolve(strict=True)
+        contours_resolved = contours_path.resolve(strict=False)
+    except OSError:
+        raise AssertionError("packet selector runtime paths are unavailable") from None
+    assert (stat.S_ISREG(config_stat.st_mode) and not stat.S_ISLNK(config_stat.st_mode)
+            and config_resolved == expected_config_path
+            and contours_resolved == expected_contours_path), {
+        "packet_selector_runtime_paths_owned": False,
+    }
+
+    adapter = MihomoHttpAdapter(
+        base_url="http://127.0.0.1:5200",
+        config_path=config_path,
+        contours_path=contours_path,
+        timeout_seconds=3.0,
+    )
+    monkeypatch.setattr(runtime_adapters, "DEFAULT_MIHOMO_ADAPTER", adapter)
+    return adapter
+
+
 def _refresh_packet_capability(stack: dict[str, Any], api: str, bridge: Any, source_ref: str, capability: str | None,
                                expected_capability: str, logical_id: str, expected_member: str,
                                record_property: Any) -> dict[str, Any]:
@@ -4494,12 +4526,14 @@ def _assert_native_empty_vpn_pool(stack: dict[str, Any], *, expected_fence: dict
             and selector_state.get("auto_selectable_candidates_count") == 0
             and selector_state.get("active_auto_target_valid") is False
             and selector_state.get("active_auto_server_valid") is False
+            and selector_state.get("mihomo_runtime_state") == "running"
             and selector_state.get("problem_code") == "vpn_auto_no_candidates"), {
         "empty_pool_selector_state": {
             "enabled_candidates_count": selector_state.get("enabled_candidates_count"),
             "auto_selectable_candidates_count": selector_state.get("auto_selectable_candidates_count"),
             "active_auto_target_valid": selector_state.get("active_auto_target_valid") is True,
             "active_auto_server_valid": selector_state.get("active_auto_server_valid") is True,
+            "mihomo_runtime_running": selector_state.get("mihomo_runtime_state") == "running",
             "problem_code_matches_no_candidates": selector_state.get("problem_code") == "vpn_auto_no_candidates",
         }
     }
@@ -4933,8 +4967,9 @@ def _qualify_stale_rescue_lan_cleanup(api: str, stack: dict[str, Any], record_pr
 
 @pytest.mark.packet
 def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_leaks(
-        acceptance_stack, record_property):
+        acceptance_stack, record_property, monkeypatch):
     stack = acceptance_stack
+    _bind_packet_parent_selector_runtime(stack, monkeypatch)
     profile = stack["profile"]
     bridge, native, api = stack["provider_bridge"], stack["native"], stack["api"]
     assert profile.get("profile") == "hosted-kernel-packet"

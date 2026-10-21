@@ -28,6 +28,28 @@ PROFILES = (
     ProviderProtocolProfile("amneziawg2", "amnezia-wg-2", "wireguard"),
 )
 
+_STEALTHSURF_SERVER_ENVELOPE_KEYS = frozenset({
+    "custom_dns_url", "dns_preset", "is_block_bittorrent", "is_family_filter_enabled",
+    "is_fingerprint_randomized", "is_grpc_enabled", "is_grpc_multi_enabled",
+    "is_loopbacks_enabled", "is_pass_all_traffic_through_vpn", "is_reality_disabled",
+    "is_sni_changed", "is_sni_disabled", "is_warp_enabled", "is_xhttp_enabled",
+    "port", "public_key", "random_id", "xray_config",
+})
+_STEALTHSURF_VLESS_FEATURE_FLAGS = {
+    "is_block_bittorrent": False,
+    "is_family_filter_enabled": False,
+    "is_fingerprint_randomized": False,
+    "is_grpc_enabled": True,
+    "is_grpc_multi_enabled": False,
+    "is_loopbacks_enabled": False,
+    "is_pass_all_traffic_through_vpn": False,
+    "is_reality_disabled": False,
+    "is_sni_changed": False,
+    "is_sni_disabled": True,
+    "is_warp_enabled": False,
+    "is_xhttp_enabled": False,
+}
+
 
 def profile_for(key: str) -> ProviderProtocolProfile:
     for profile in PROFILES:
@@ -66,19 +88,37 @@ def parse_material(key: str, config: dict[str, Any]) -> Any:
     profile = profile_for(key)
     if config.get("protocol", key) != key:
         raise ProviderError("PROVIDER_PROTOCOL_MISMATCH")
+    # This provider envelope is a server-side profile, not a client outbound.
+    # Accept its separately returned URI only after proving the URI's endpoint,
+    # VLESS identity, Reality key/short-id, and gRPC service match the server
+    # configuration. All other extended material stays authoritative and
+    # fail-closed; there is no generic URI fallback.
+    if profile.family == "vless" and config.get("xray_config"):
+        envelope = _stealthsurf_vless_server_envelope(config["xray_config"])
+        if envelope is not None:
+            if not isinstance(config.get("connection_url"), str):
+                raise ProviderError("PROVIDER_PROTOCOL_VALIDATION_FAILED")
+            _validate_stealthsurf_vless_uri(config["connection_url"], envelope)
+            material = config["connection_url"]
+        else:
+            material = None
+    else:
+        material = None
     # Extended material is authoritative. Never fall back to a URI after an
     # invalid/unrepresentable extended profile (that would change semantics).
     field = next((f for f in ("xray_config", "awg_config", "connection_url")
                   if config.get(f) is not None and config.get(f) != ""), None)
-    if field is None or not isinstance(config[field], str):
+    if material is None and (field is None or not isinstance(config[field], str)):
         raise ProviderError("PROVIDER_CONFIG_INCOMPLETE")
-    if profile.family == "vless" and config[field].lstrip().startswith("vless://"):
+    if material is None:
+        material = config[field]
+    if profile.family == "vless" and material.lstrip().startswith("vless://"):
         from urllib.parse import parse_qsl, urlparse
         allowed_query = {"security", "type", "network", "flow", "encryption", "sni", "fp", "pbk", "sid", "udp",
-                         "serviceName", "grpc-service-name", "path", "host", "mode", "extra"}
-        if any(k not in allowed_query for k, _ in parse_qsl(urlparse(config[field]).query, keep_blank_values=True)):
+                         "serviceName", "grpc-service-name", "path", "host", "mode", "extra", "spx", "seed"}
+        if any(k not in allowed_query for k, _ in parse_qsl(urlparse(material).query, keep_blank_values=True)):
             raise ProviderError("PROVIDER_PROTOCOL_VALIDATION_FAILED")
-    parsed = parse_subscription_payload(config[field])
+    parsed = parse_subscription_payload(material)
     if not parsed.ok or len(parsed.servers) != 1:
         raise ProviderError("PROVIDER_PROTOCOL_VALIDATION_FAILED")
     server = parsed.servers[0]
@@ -99,6 +139,108 @@ def parse_material(key: str, config: dict[str, Any]) -> Any:
         if profile.family == "ss" and not str(proxy.get("cipher", "")).startswith("2022-"):
             raise ProviderError("PROVIDER_PROTOCOL_MISMATCH")
     return parsed
+
+
+def _stealthsurf_vless_server_envelope(raw: str) -> dict[str, Any] | None:
+    """Recognize the observed provider server-only Xray envelope shape."""
+    import json
+
+    try:
+        outer = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(outer, dict) or not {"public_key", "port", "xray_config"}.issubset(outer):
+        return None
+    def invalid() -> None:
+        raise ProviderError("PROVIDER_PROTOCOL_VALIDATION_FAILED")
+
+    # The wrapper flags describe provider-side configuration, not Core intent.
+    # Only the exact observed gRPC + REALITY/no-SNI feature combination is
+    # qualified here; a changed feature would need an explicit client mapping.
+    if (set(outer) - _STEALTHSURF_SERVER_ENVELOPE_KEYS
+        or any(outer.get(key) is not expected for key, expected in _STEALTHSURF_VLESS_FEATURE_FLAGS.items())
+        or outer.get("custom_dns_url") not in (None, "") or outer.get("dns_preset") not in (None, "")):
+        invalid()
+
+    core = outer.get("xray_config")
+    if not isinstance(core, dict) or set(core) - {"dns", "inbounds", "log", "outbounds", "policy", "routing"}:
+        invalid()
+    inbounds = core.get("inbounds")
+    outbounds = core.get("outbounds")
+    if not isinstance(inbounds, list) or len(inbounds) != 1 or not isinstance(inbounds[0], dict):
+        invalid()
+    if not isinstance(outbounds, list) or not outbounds or any(
+        not isinstance(item, dict) or str(item.get("protocol") or "").lower() not in {"freedom", "blackhole"}
+        for item in outbounds
+    ):
+        invalid()
+    inbound = inbounds[0]
+    settings = inbound.get("settings") if isinstance(inbound.get("settings"), dict) else {}
+    clients = settings.get("clients")
+    stream = inbound.get("streamSettings") if isinstance(inbound.get("streamSettings"), dict) else {}
+    reality = stream.get("realitySettings") if isinstance(stream.get("realitySettings"), dict) else {}
+    grpc = stream.get("grpcSettings") if isinstance(stream.get("grpcSettings"), dict) else {}
+    if (set(inbound) - {"listen", "port", "protocol", "settings", "sniffing", "streamSettings", "tag"}
+        or set(settings) - {"clients", "decryption"} or set(stream) - {"network", "security", "grpcSettings", "realitySettings"}
+        or set(grpc) - {"authority", "multiMode", "serviceName"}
+        or set(reality) - {"dest", "maxTimeDiff", "privateKey", "serverNames", "shortIds", "show"}):
+        invalid()
+    server_names = reality.get("serverNames")
+    short_ids = reality.get("shortIds")
+    if (str(inbound.get("protocol") or "").lower() != "vless" or not isinstance(clients, list) or len(clients) != 1
+        or str(stream.get("network") or "").lower() != "grpc" or str(stream.get("security") or "").lower() != "reality"
+        or not isinstance(short_ids, list) or not short_ids or any(
+            not isinstance(value, str) or not value or len(value) > 16 or len(value) % 2
+            or any(ch not in "0123456789abcdefABCDEF" for ch in value) for value in short_ids
+        )
+        # An empty sole serverName is the provider's explicit disabled-SNI
+        # representation (`is_sni_disabled=true`); do not synthesize SNI.
+        or not isinstance(server_names, list) or not server_names
+        or any(not isinstance(value, str) for value in server_names)
+        or any(not value.strip() for value in server_names) and server_names != [""]
+        or (server_names == [""]) is not (outer.get("is_sni_disabled") is True)
+        or not grpc.get("serviceName") or grpc.get("authority", "") != ""
+        or not isinstance(grpc.get("multiMode", False), bool) or grpc.get("multiMode", False) is not outer.get("is_grpc_multi_enabled")
+        or isinstance(outer.get("port"), bool) or not isinstance(outer.get("port"), int)
+        or inbound.get("port") != outer.get("port") or settings.get("decryption") != "none"):
+        invalid()
+    client = clients[0]
+    if (not isinstance(client, dict) or set(client) - {"id", "email", "seed"} or not client.get("id")
+        or not isinstance(client.get("seed"), str) or len(client["seed"]) != 16
+        or any(ch not in "0123456789abcdefABCDEF" for ch in client["seed"])):
+        invalid()
+    return {"outer": outer, "client": client, "reality": reality, "grpc": grpc}
+
+
+def _validate_stealthsurf_vless_uri(uri: str, envelope: dict[str, Any]) -> None:
+    from urllib.parse import parse_qsl, urlparse
+
+    parsed = urlparse(uri)
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    query = dict(query_items)
+    client = envelope["client"]
+    outer = envelope["outer"]
+    reality = envelope["reality"]
+    grpc = envelope["grpc"]
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    allowed_query = {"security", "type", "pbk", "sid", "serviceName", "grpc-service-name", "spx", "seed", "fp"}
+    service_names_match = ("serviceName" not in query or "grpc-service-name" not in query
+                           or query["serviceName"] == query["grpc-service-name"])
+    valid = (
+        len(query_items) == len(query) and not (set(query) - allowed_query) and service_names_match
+        and parsed.scheme.lower() == "vless" and parsed.hostname and parsed.username == str(client.get("id"))
+        and port == outer.get("port") and query.get("security") == "reality"
+        and query.get("type") == "grpc" and query.get("pbk") == outer.get("public_key")
+        and query.get("sid") in reality.get("shortIds", [])
+        and query.get("seed") == client.get("seed") and query.get("spx") == "/"
+        and (query.get("serviceName") or query.get("grpc-service-name")) == grpc.get("serviceName")
+        and not query.get("flow") and not query.get("encryption")
+    )
+    if not valid:
+        raise ProviderError("PROVIDER_PROTOCOL_VALIDATION_FAILED")
 
 
 def validate_change_preflight(key: str, current: dict[str, Any]) -> None:

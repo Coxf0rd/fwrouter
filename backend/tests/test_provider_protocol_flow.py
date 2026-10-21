@@ -201,3 +201,108 @@ def test_provider_json_cannot_publish_a_subset_with_unsupported_outbounds():
                                     {'protocol':'unsupported-tunnel','settings':{'secret':'private'}}]})
     with pytest.raises(ProviderError):
         profiles.parse_material('trojan',{'xray_config':material})
+
+
+def _stealthsurf_vless_server_config(*, service_name='grpc', client_seed='0123456789abcdef'):
+    identity='11111111-2222-4333-8444-555555555555'
+    public_key='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    short_id='a1b2c3d4'
+    uri=(f'vless://{identity}@edge.example:443?security=reality&type=grpc&pbk={public_key}'
+         f'&sid={short_id}&serviceName={service_name}&spx=%2F&seed={client_seed}&fp=chrome')
+    core={'dns':{'queryStrategy':'UseIP','servers':[]},'inbounds':[{'port':443,'protocol':'vless','settings':{'decryption':'none','clients':[{'id':identity,'email':'fixture','seed':client_seed}]},
+                       'streamSettings':{'network':'grpc','security':'reality','grpcSettings':{'serviceName':service_name},
+                                         'realitySettings':{'privateKey':'server-private-key','serverNames':['unpublished.example'],
+                                                            'shortIds':[short_id]}}}],
+          'log':{'loglevel':'warning'},'outbounds':[{'protocol':'freedom','tag':'direct'},{'protocol':'blackhole','tag':'block'}],
+          'policy':{'levels':{},'system':{}},'routing':{'domainStrategy':'AsIs','rules':[
+              {'type':'field','protocol':['bittorrent'],'outboundTag':'block'},
+              {'type':'field','domain':['domain:gemini.example'],'outboundTag':'direct'}]}}
+    envelope={'public_key':public_key,'port':443,'random_id':'fixture-random-id','xray_config':core,
+              'custom_dns_url':None,'dns_preset':None,'is_warp_enabled':False,'is_reality_disabled':False,
+              'is_sni_changed':False,'is_sni_disabled':True,'is_family_filter_enabled':False,
+              'is_block_bittorrent':False,'is_pass_all_traffic_through_vpn':False,'is_xhttp_enabled':False,
+              'is_grpc_enabled':True,'is_grpc_multi_enabled':False,'is_fingerprint_randomized':False,
+              'is_loopbacks_enabled':False}
+    # The observed profile intentionally disables SNI at the provider.
+    core['inbounds'][0]['streamSettings']['realitySettings']['serverNames']=['']
+    return {'protocol':'vless','is_extended_settings_enabled':True,'xray_config':json.dumps(envelope),
+            'connection_url':uri}, identity
+
+
+def test_stealthsurf_vless_server_envelope_uses_only_matching_client_uri():
+    config, _identity=_stealthsurf_vless_server_config()
+    parsed=profiles.parse_material('vless',config)
+    assert parsed.ok and len(parsed.servers)==1
+    raw=parsed.servers[0].raw
+    assert raw['_fwrouter_uri_query']['seed']=='0123456789abcdef'
+    assert raw['_fwrouter_provider_metadata']=={
+        'vless_seed':'0123456789abcdef','seed_semantics':'opaque_compatibility_metadata'}
+    assert raw['network']=='grpc' and raw['security']=='reality'
+    assert 'routing' not in raw and 'dns' not in raw and 'policy' not in raw
+    from fwrouter_api.services.mihomo_config_proxies import _project_native_proxy
+    native=_project_native_proxy(raw)
+    assert not any(key.startswith('_fwrouter') for key in native)
+    assert native['network']=='grpc' and native['reality-opts']['public-key']=='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+
+
+@pytest.mark.parametrize('mutation', ['identity','port','public_key','short_id','service_name','seed','transport',
+                                     'extra_outbound','server_testseed','client_testseed','client_flow','server_security_option',
+                                     'outer_flow','unknown_root','empty_server_names','unexpected_server_name',
+                                     'changed_outer_flag','grpc_authority','grpc_multi_mode','duplicate_query',
+                                     'service_alias_mismatch'])
+def test_stealthsurf_vless_server_envelope_rejects_uri_or_schema_mismatch(mutation):
+    config, _identity=_stealthsurf_vless_server_config()
+    if mutation in {'identity','port','public_key','short_id','service_name','seed','transport',
+                    'duplicate_query','service_alias_mismatch'}:
+        uri=config['connection_url']
+        replacements={'identity':('11111111-2222-4333-8444-555555555555','99999999-2222-4333-8444-555555555555'),
+                      'port':(':443?',':444?'),'public_key':('pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','pbk=other-key'),
+                      'short_id':('sid=a1b2c3d4','sid=deadbeef'),'service_name':('serviceName=grpc','serviceName=other'),
+                      'seed':('seed=0123456789abcdef','seed=fedcba9876543210'),
+                      'transport':('type=grpc','type=ws')}
+        if mutation == 'duplicate_query':
+            config['connection_url']=uri+'&type=grpc'
+        elif mutation == 'service_alias_mismatch':
+            config['connection_url']=uri+'&grpc-service-name=other'
+        else:
+            old,new=replacements[mutation]
+            config['connection_url']=uri.replace(old,new,1)
+    else:
+        envelope=json.loads(config['xray_config'])
+        core=envelope['xray_config']
+        if mutation=='extra_outbound':
+            core['outbounds'].append({'protocol':'vless','tag':'client'})
+        elif mutation=='server_testseed':
+            core['inbounds'][0]['settings']['testseed']=[1]
+        elif mutation=='client_testseed':
+            core['inbounds'][0]['settings']['clients'][0]['testseed']=[1]
+        elif mutation=='client_flow':
+            core['inbounds'][0]['settings']['clients'][0]['flow']='xtls-rprx-vision'
+        elif mutation=='server_security_option':
+            core['inbounds'][0]['streamSettings']['realitySettings']['mldsaSeed']='hidden'
+        elif mutation=='outer_flow':
+            envelope['flow']='xtls-rprx-vision'
+        elif mutation=='unknown_root':
+            core['clientTransportHint']='vision'
+        elif mutation=='empty_server_names':
+            core['inbounds'][0]['streamSettings']['realitySettings']['serverNames']=[]
+        elif mutation=='unexpected_server_name':
+            core['inbounds'][0]['streamSettings']['realitySettings']['serverNames']=['different.example']
+        elif mutation=='changed_outer_flag':
+            envelope['is_xhttp_enabled']=True
+        elif mutation=='grpc_authority':
+            core['inbounds'][0]['streamSettings']['grpcSettings']['authority']='authority.example'
+        elif mutation=='grpc_multi_mode':
+            core['inbounds'][0]['streamSettings']['grpcSettings']['multiMode']=True
+        config['xray_config']=json.dumps(envelope)
+    with pytest.raises(ProviderError,match='PROVIDER_PROTOCOL_VALIDATION_FAILED'):
+        profiles.parse_material('vless',config)
+
+
+@pytest.mark.parametrize('query', ['spx=%2Ffoo','spx=%2F&security=tls','seed=0123456789abcdef&security=reality&type=tcp',
+                                   'seed=not-a-seed&security=reality&type=grpc',
+                                   'seed=0123456789abcdef&security=reality&type=grpc&flow=xtls-rprx-vision'])
+def test_vless_seed_and_spx_are_only_accepted_for_observed_runtime_semantics(query):
+    from fwrouter_api.adapters.subscription import parse_subscription_payload
+    result=parse_subscription_payload(f'vless://11111111-2222-4333-8444-555555555555@edge.example:443?{query}')
+    assert not result.ok

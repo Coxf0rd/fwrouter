@@ -11,6 +11,7 @@ import yaml
 from fwrouter_api.adapters.protocol_integration import normalize_protocol_proxy
 from fwrouter_api.adapters.subscription import parse_subscription_payload
 from fwrouter_api.adapters.stealthsurf_protocols import profile_for
+from fwrouter_api.adapters import stealthsurf_protocols
 from fwrouter_api.services import mihomo_config as mihomo_config_service
 from fwrouter_api.services.subscription import _upsert_subscription_servers
 from fwrouter_api.services.provider_managed import _normalized_refresh
@@ -176,6 +177,67 @@ def test_parsed_protocol_generates_config_accepted_by_pinned_mihomo(
     completed = _run_native_config(Path(result["candidate_path"]))
     assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
     assert "configuration file" in completed.stdout.lower() or "configuration file" in completed.stderr.lower()
+
+
+def test_stealthsurf_vless_server_envelope_generates_native_grpc_reality_without_sni_or_seed(tmp_path, monkeypatch):
+    _assert_pinned_binary()
+    identity = "11111111-2222-4333-8444-555555555555"
+    public_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    short_id = "a1b2c3d4"
+    seed = "0123456789abcdef"
+    core = {
+        "dns": {"queryStrategy": "UseIP", "servers": []},
+        "inbounds": [{
+            "port": 443, "protocol": "vless",
+            "settings": {"decryption": "none", "clients": [{"id": identity, "email": "fixture", "seed": seed}]},
+            "streamSettings": {
+                "network": "grpc", "security": "reality",
+                "grpcSettings": {"authority": "", "multiMode": False, "serviceName": "grpc"},
+                "realitySettings": {"privateKey": "fixture-server-private-key", "serverNames": [""],
+                                    "shortIds": [short_id], "show": False},
+            },
+        }],
+        "log": {"loglevel": "warning"},
+        "outbounds": [{"protocol": "freedom", "tag": "direct"}, {"protocol": "blackhole", "tag": "block"}],
+        "policy": {"levels": {}, "system": {}},
+        "routing": {"domainStrategy": "AsIs", "rules": [
+            {"type": "field", "protocol": ["bittorrent"], "outboundTag": "block"},
+            {"type": "field", "domain": ["domain:gemini.example"], "outboundTag": "direct"},
+        ]},
+    }
+    wrapper = {
+        "custom_dns_url": None, "dns_preset": None, "is_block_bittorrent": False,
+        "is_family_filter_enabled": False, "is_fingerprint_randomized": False,
+        "is_grpc_enabled": True, "is_grpc_multi_enabled": False, "is_loopbacks_enabled": False,
+        "is_pass_all_traffic_through_vpn": False, "is_reality_disabled": False,
+        "is_sni_changed": False, "is_sni_disabled": True, "is_warp_enabled": False,
+        "is_xhttp_enabled": False, "port": 443, "public_key": public_key,
+        "random_id": "fixture-random-id", "xray_config": core,
+    }
+    uri = (f"vless://{identity}@127.0.0.1:443?security=reality&type=grpc&pbk={public_key}"
+           f"&sid={short_id}&serviceName=grpc&spx=%2F&seed={seed}&fp=chrome#fixture")
+    material = {"protocol": "vless", "server_id": 1456, "is_extended_settings_enabled": True,
+                "xray_config": json.dumps(wrapper), "connection_url": uri}
+    binding = {"provider_id": "stealthsurf", "protocol": "vless",
+               "logical_server_id": "provider:stealthsurf-fixture", "source_ref": "stealthsurf-fixture"}
+    parsed = stealthsurf_protocols.parse_material("vless", material)
+    assert parsed.ok and len(parsed.servers) == 1
+    server = _normalized_refresh(binding, material).servers[0]
+    _upsert_subscription_servers([server])
+    monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
+    monkeypatch.setattr(mihomo_config_service, "_resolve_transparent_bind_address",
+                        lambda: mihomo_config_service.TRANSPARENT_BIND_ADDRESS)
+    result = mihomo_config_service.write_mihomo_candidate_config(
+        include_internal_config=True, candidate_path=tmp_path / "stealthsurf.yaml", xray_handoff_assignments=[])
+    generated = result["_candidate_config"]
+    selected = next(proxy for proxy in generated["proxies"] if proxy.get("server") == "127.0.0.1")
+    assert selected["type"] == "vless" and selected["network"] == "grpc"
+    assert selected["security"] == "reality" and selected["reality-opts"]["public-key"] == public_key
+    assert selected["reality-opts"]["short-id"] == short_id
+    assert "servername" not in selected and "flow" not in selected and "seed" not in selected
+    assert "grpc-opts" in selected and selected["grpc-opts"]["grpc-service-name"] == "grpc"
+    completed = _run_native_config(Path(result["candidate_path"]))
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
 
 
 @pytest.mark.parametrize(
