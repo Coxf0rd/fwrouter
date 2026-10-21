@@ -28,6 +28,6 @@ Mihomo config hash and relevant service source hashes. Writes
 
 ## Scheduled refresh / transient inventory boundary
 
-Fingerprint version3 limits `subject_routes` to subjects with a server or user-mode override. An unowned Docker validator subject has no route in the renderer and its appearance/retirement must not invalidate native staging. Active/deleted/address/override changes for owned routes, explicit Xray clients, servers/preferences, generation digest, routing/modules and file/source inputs remain fenced. Provider IP metadata is an address dependency alongside LAN/external/Docker addresses.
+Fingerprint version3 limits `subject_routes` to subjects with a server or user-mode override, plus all explicit Xray/vless subjects even without an override. An unowned Docker validator subject has no route in the renderer and its appearance/retirement must not invalidate native staging. Active/deleted/address/override changes for owned routes, explicit Xray clients, servers/preferences, generation digest, routing/modules and file/source inputs remain fenced. Provider IP metadata is an address dependency alongside LAN/external/Docker addresses.
 
 `fingerprint_category_hashes()` supports safe fence diagnostics: categories and SHA256 values only. Never persist or log the raw payload, which contains credential-bearing server/custom-proxy data. Native validation and candidate-byte/source/selection checks remain mandatory; this change does not admit stale candidates or add an unvalidated retry.

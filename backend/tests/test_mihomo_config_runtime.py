@@ -3031,6 +3031,32 @@ def test_mihomo_fingerprint_ignores_unrouted_inventory_but_tracks_override_route
     _seed_fingerprint_servers()
     baseline = current_mihomo_input_fingerprint()["hash"]
 
+    # Explicit Xray identities are also runtime inputs without overrides;
+    # their active/deleted state controls Xray binding materialization.
+    with db_session() as connection:
+        connection.execute(
+            """INSERT INTO subjects (
+                   subject_id, subject_type, subject_role, implementation_kind,
+                   stable_key, display_name, desired_mode, runtime_state,
+                   is_active, is_deleted, metadata_json
+               ) VALUES (
+                   'xray:explicit-identity', 'explicit_external_client', 'vless_client', 'xray',
+                   'xray:explicit-identity', 'identity', 'enabled', 'active',
+                   1, 0, ?
+               )""",
+            (json.dumps({"detail": {"client_id": "client-a", "client_uuid": "uuid-a", "enabled": True}}),),
+        )
+    with_explicit_xray = current_mihomo_input_fingerprint()["hash"]
+    assert with_explicit_xray != baseline
+    with db_session() as connection:
+        connection.execute("UPDATE subjects SET is_active=0 WHERE subject_id='xray:explicit-identity'")
+    with_xray_inactive = current_mihomo_input_fingerprint()["hash"]
+    assert with_xray_inactive != with_explicit_xray
+    with db_session() as connection:
+        connection.execute("UPDATE subjects SET is_deleted=1 WHERE subject_id='xray:explicit-identity'")
+    with_xray_deleted = current_mihomo_input_fingerprint()["hash"]
+    assert with_xray_deleted != with_xray_inactive
+
     # A short-lived native validator is visible to Docker inventory for a
     # moment, but without an override it cannot add any Mihomo source route.
     with db_session() as connection:
@@ -3046,7 +3072,7 @@ def test_mihomo_fingerprint_ignores_unrouted_inventory_but_tracks_override_route
                )""",
             (json.dumps({"detail": {"ip_address": None}}),),
         )
-    assert current_mihomo_input_fingerprint()["hash"] == baseline
+    assert current_mihomo_input_fingerprint()["hash"] == with_xray_deleted
 
     # User mode overrides remain fenced, including the subject address that
     # Core may need when it materializes the override route.

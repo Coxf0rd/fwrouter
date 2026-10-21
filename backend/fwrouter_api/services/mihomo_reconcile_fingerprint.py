@@ -181,6 +181,8 @@ def _table_fingerprint() -> dict[str, Any]:
                       FROM subject_user_overrides AS user_override
                       WHERE user_override.subject_id = s.subject_id
                   )
+               OR s.implementation_kind = 'xray'
+               OR s.subject_role = 'vless_client'
             ORDER BY s.subject_id
             """
         ),

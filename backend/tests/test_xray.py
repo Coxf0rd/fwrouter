@@ -1556,6 +1556,47 @@ def test_profile_generation_ignores_unrouted_native_validator_inventory_row(
         ).fetchone() is not None
 
 
+def test_explicit_xray_binding_projection_tracks_active_and_deleted_state(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    from fwrouter_api.services import xray_bindings
+
+    with db_session() as connection:
+        for subject_id, is_active, is_deleted in (
+            ("xray:active", 1, 0),
+            ("xray:inactive", 0, 0),
+            ("xray:deleted", 1, 1),
+        ):
+            connection.execute(
+                """INSERT INTO subjects (
+                       subject_id, subject_type, subject_role, implementation_kind,
+                       stable_key, display_name, desired_mode, runtime_state,
+                       is_active, is_deleted, metadata_json
+                   ) VALUES (?, 'explicit_external_client', 'vless_client', 'xray',
+                             ?, ?, 'enabled', 'active', ?, ?, ?)""",
+                (subject_id, subject_id, subject_id, is_active, is_deleted,
+                 json.dumps({"detail": {"enabled": True}})),
+            )
+
+    monkeypatch.setattr(subject_policy_service, "get_routing_snapshot", lambda: {})
+    monkeypatch.setattr(subject_policy_service, "build_runtime_enforcement_state", lambda: {})
+    monkeypatch.setattr(subject_policy_service, "get_core_bypass_state", lambda: {})
+    monkeypatch.setattr(
+        xray_bindings,
+        "_load_xray_subject_projections",
+        lambda rows: ({str(row["subject_id"]): {"subject_id": str(row["subject_id"])} for row in rows}, {}, {}),
+    )
+    monkeypatch.setattr(subject_policy_service, "enrich_subject_with_effective_state", lambda subject, **_kwargs: subject)
+    monkeypatch.setattr(
+        xray_bindings,
+        "_build_binding_for_subject",
+        lambda subject: {"subject_id": subject["subject_id"]},
+    )
+    monkeypatch.setattr(xray_bindings, "_annotate_bindings_with_handoff", lambda bindings: bindings)
+
+    assert [item["subject_id"] for item in xray_bindings.collect_xray_runtime_bindings()] == ["xray:active"]
+
+
 def test_mihomo_input_context_diagnostic_exposes_only_category_hashes(monkeypatch) -> None:
     from fwrouter_api.services.mihomo_reconcile_fingerprint import fingerprint_category_hashes
 
