@@ -182,7 +182,7 @@ def test_parsed_protocol_generates_config_accepted_by_pinned_mihomo(
 def test_stealthsurf_vless_server_envelope_generates_native_grpc_reality_without_sni_or_seed(tmp_path, monkeypatch):
     _assert_pinned_binary()
     identity = "11111111-2222-4333-8444-555555555555"
-    public_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    public_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     short_id = "a1b2c3d4"
     seed = "0123456789abcdef"
     core = {

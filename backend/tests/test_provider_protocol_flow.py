@@ -205,7 +205,7 @@ def test_provider_json_cannot_publish_a_subset_with_unsupported_outbounds():
 
 def _stealthsurf_vless_server_config(*, service_name='grpc', client_seed='0123456789abcdef'):
     identity='11111111-2222-4333-8444-555555555555'
-    public_key='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+    public_key='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
     short_id='a1b2c3d4'
     uri=(f'vless://{identity}@edge.example:443?security=reality&type=grpc&pbk={public_key}'
          f'&sid={short_id}&serviceName={service_name}&spx=%2F&seed={client_seed}&fp=chrome')
@@ -242,7 +242,7 @@ def test_stealthsurf_vless_server_envelope_uses_only_matching_client_uri():
     from fwrouter_api.services.mihomo_config_proxies import _project_native_proxy
     native=_project_native_proxy(raw)
     assert not any(key.startswith('_fwrouter') for key in native)
-    assert native['network']=='grpc' and native['reality-opts']['public-key']=='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+    assert native['network']=='grpc' and native['reality-opts']['public-key']=='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 
 
 @pytest.mark.parametrize('mutation', ['identity','port','public_key','short_id','service_name','seed','transport',
@@ -256,7 +256,7 @@ def test_stealthsurf_vless_server_envelope_rejects_uri_or_schema_mismatch(mutati
                     'duplicate_query','service_alias_mismatch'}:
         uri=config['connection_url']
         replacements={'identity':('11111111-2222-4333-8444-555555555555','99999999-2222-4333-8444-555555555555'),
-                      'port':(':443?',':444?'),'public_key':('pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=','pbk=other-key'),
+                      'port':(':443?',':444?'),'public_key':('pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','pbk=other-key'),
                       'short_id':('sid=a1b2c3d4','sid=deadbeef'),'service_name':('serviceName=grpc','serviceName=other'),
                       'seed':('seed=0123456789abcdef','seed=fedcba9876543210'),
                       'transport':('type=grpc','type=ws')}
