@@ -20,6 +20,7 @@ from fwrouter_api.services.mihomo_config_yaml import (
     MihomoYamlError,
     MihomoYamlInvalidError,
     parse_mihomo_yaml_mapping,
+    read_mihomo_yaml_snapshot_text,
     read_mihomo_yaml_text,
 )
 
@@ -464,6 +465,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         self._policy_config_cache: tuple[str, type[Any], dict[str, Any], dict[str, Any]] | None = None
 
     def _config_text(self) -> str:
+        """Read config under the strict path-stability contract used by health proof."""
         try:
             self.config_path.lstat()
         except FileNotFoundError:
@@ -472,8 +474,22 @@ class MihomoHttpAdapter(MihomoAdapter):
             raise MihomoYamlInvalidError("file_unavailable") from None
         return read_mihomo_yaml_text(self.config_path)
 
+    def _configured_metadata_text(self) -> str:
+        """Read one bounded complete file snapshot for configured metadata scans.
+
+        This observation may describe the old inode during an atomic publish;
+        callers must not treat it as current native or admission proof.
+        """
+        try:
+            self.config_path.lstat()
+        except FileNotFoundError:
+            return ""
+        except OSError:
+            raise MihomoYamlInvalidError("file_unavailable") from None
+        return read_mihomo_yaml_snapshot_text(self.config_path)
+
     def _config_top_level_scalar(self, key: str, *, text: str | None = None) -> str | None:
-        source = text if text is not None else self._config_text()
+        source = text if text is not None else self._configured_metadata_text()
         prefix = f"{key}:"
         lines = _configured_scan_lines(source, prefix)
         for line in lines:
@@ -484,7 +500,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         return None
 
     def _scan_listener_ports(self, *, text: str | None = None) -> dict[str, int | None]:
-        source = text if text is not None else self._config_text()
+        source = text if text is not None else self._configured_metadata_text()
         lines = _configured_scan_lines(source, "listeners:")
         mixed_port: int | None = None
         tproxy_port: int | None = None
@@ -551,7 +567,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         }
 
     def _scan_transparent_listeners(self, *, text: str | None = None) -> dict[str, dict[str, Any]]:
-        source = text if text is not None else self._config_text()
+        source = text if text is not None else self._configured_metadata_text()
         lines = _configured_scan_lines(source, "listeners:")
         in_listeners = False
         current: dict[str, Any] | None = None
@@ -606,7 +622,7 @@ class MihomoHttpAdapter(MihomoAdapter):
         return result
 
     def _scan_tun_enabled(self, *, text: str | None = None) -> bool:
-        source = text if text is not None else self._config_text()
+        source = text if text is not None else self._configured_metadata_text()
         lines = _configured_scan_lines(source, "tun:")
         in_tun = False
         for raw_line in lines:
@@ -734,7 +750,7 @@ class MihomoHttpAdapter(MihomoAdapter):
                 "fwrouter_contours": contours,
             }
 
-        config_text = self._config_text() if config_text is None else config_text
+        config_text = self._configured_metadata_text() if config_text is None else config_text
         listener_ports = self._scan_listener_ports(text=config_text)
         mixed_port = listener_ports["mixed_port"]
         tproxy_port = listener_ports["tproxy_port"]

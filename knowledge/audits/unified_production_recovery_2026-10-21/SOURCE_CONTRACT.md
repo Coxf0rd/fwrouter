@@ -21,3 +21,9 @@ No schema migration is planned (schema26). No identity/credential regeneration, 
 ## Readback boundary correction
 
 The same stable32MiB reader/hash also covers admission's active-config snapshots/rechecks/fences and the existing native-health/receipt input paths. Node/alias/depth checks run before native controller proof consumes parsed policy. Unsafe config reports configuration unavailable/DEGRADED, not runtime DOWN or verified policy; no controller request establishes false health on that path. Existing missing/ambiguous native evidence stays blocking. The native input source fingerprint includes the shared parser and adapter so a code revision cannot silently reuse its input-fingerprint cache as unchanged. Fresh receipt publication remains with the existing owner, never a new bypass writer.
+
+## Observational metadata versus proof
+
+PR #30's first mandatory CI exposed an existing configured-metadata concurrency contract: complete old/new inode snapshots across atomic configuration replacement. Applying strict pathname-current proof checks to these observations caused a reproducible exception. Metadata-only scalar/listener/tun/configured-detail scans therefore use a separately named bounded descriptor-snapshot reader. Health explicitly retains strict config input and passes that already-read text into detail scanners. Admission/comparison/hash/fingerprint readers remain strict and unchanged.
+
+A descriptor snapshot is never fresh native proof. It can outlive pathname replacement. It rejects ordinary in-place changes; unchanged size/mtime/mode with an observed link-count drop permits the inode-unlink ctime change. It cannot establish integrity against an adversarial compound edit plus unlink and is excluded from proof consumers. No retry/cache, new owner, direct routing change, assertion relaxation or limit extension is introduced.

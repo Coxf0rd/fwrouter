@@ -168,6 +168,83 @@ def read_mihomo_yaml_bytes(path: str | os.PathLike[str], *, max_bytes: int = MAX
         raise MihomoYamlInvalidError("file_unavailable") from None
 
 
+def read_mihomo_yaml_snapshot_bytes(
+    path: str | os.PathLike[str], *, max_bytes: int = MAX_MIHOMO_CONFIG_BYTES,
+) -> bytes:
+    """Read one bounded descriptor snapshot for observational metadata only.
+
+    Unlike ``read_mihomo_yaml_bytes``, this intentionally does not prove that
+    the descriptor still names the current pathname after the read. An atomic
+    publisher may replace the pathname while a reader holds the old inode; the
+    descriptor still yields one complete old-or-new file image. This API must
+    never be used for admission, hashing, reconciliation, or native proof.
+
+    An unlink of the opened inode can update ctime while leaving the bytes
+    untouched. Permit only the corresponding single link-count decrement
+    when all content-relevant metadata is otherwise unchanged. In-place
+    changes, type changes, and size changes remain errors.
+    """
+    target = os.fspath(path)
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(target, flags)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+                if before.st_size > max_bytes:
+                    raise MihomoYamlLimitError("byte_limit")
+                raise MihomoYamlInvalidError("not_regular_file")
+
+            chunks: list[bytes] = []
+            total = 0
+            while total <= max_bytes:
+                chunk = os.read(descriptor, min(1024 * 1024, max_bytes + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            if total > max_bytes:
+                raise MihomoYamlLimitError("byte_limit")
+            raw = b"".join(chunks)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+
+        stable_content = lambda value: (
+            value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
+            value.st_size, value.st_mtime_ns,
+        )
+        same_content_metadata = stable_content(before) == stable_content(after)
+        unchanged_file = (
+            before.st_ctime_ns == after.st_ctime_ns
+            and before.st_nlink == after.st_nlink
+        )
+        single_unlink = before.st_nlink > 0 and after.st_nlink == before.st_nlink - 1
+        if (
+            len(raw) != before.st_size
+            or not same_content_metadata
+            or not (unchanged_file or single_unlink)
+        ):
+            raise MihomoYamlInvalidError("file_changed_during_read")
+        return raw
+    except MihomoYamlError:
+        raise
+    except OSError:
+        raise MihomoYamlInvalidError("file_unavailable") from None
+
+
+def read_mihomo_yaml_snapshot_text(
+    path: str | os.PathLike[str], *, max_bytes: int = MAX_MIHOMO_CONFIG_BYTES,
+) -> str:
+    """Decode one bounded observational snapshot as UTF-8 text."""
+    raw = read_mihomo_yaml_snapshot_bytes(path, max_bytes=max_bytes)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeError:
+        raise MihomoYamlInvalidError("invalid_utf8") from None
+
+
 def _json_safe(value: Any) -> bool:
     pending = [value]
     while pending:

@@ -43,3 +43,7 @@ Ruff changed backend/installer files, whitespace checks, test catalog validation
 ## Final lint compatibility correction
 
 The mandatory pinned Ruff gate uses `--ignore-noqa` and rejected the compatibility-only `yaml` import despite the earlier ordinary Ruff check. It is now an explicit `import yaml as yaml` re-export, preserving existing loader patch points without a suppression. The pinned changed-source gate passed. Both C-loader and SafeLoader fallback compatibility tests passed (2PASS,0.70s). This does not change parser behavior, limits or proof predicates. Full hosted qualification remains pending on the final commit.
+
+## PR #30 first CI refusal and bounded correction
+
+Run39520719706 onb740beda failed a configured-metadata atomic-replacement test:9PASS/1FAIL, exception `file_changed_before_read`, not timeout/OOM. Hosted native profiles were consequently NOT RUN. See [the retained failure analysis](PR30_CI_FAILURE.md). The observation/proof reader boundary was corrected without changing strict proof consumers or the existing concurrency assertion. Exact gate-environment metadata suite16PASS; expanded affected backend268PASS/0FAIL/0SKIP,48.76s,631840KiBpeakRSS under the same local process envelope. Full CI must run again on the new committed correction; the earlier failed run remains historical FAIL.
