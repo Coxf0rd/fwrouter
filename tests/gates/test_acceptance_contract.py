@@ -4300,8 +4300,12 @@ class AcceptanceContractTests(unittest.TestCase):
             encoding="utf-8"))
         expected = [nodeid.removeprefix("backend/") for nodeid in scenarios["nodeids"]]
         self.assertEqual(expected, qualified_child._qualified_child_pytest_selectors())
-        self.assertEqual(41, len(expected))
+        self.assertEqual(42, len(expected))
         self.assertTrue(all("::" in selector for selector in expected))
+        self.assertIn(
+            "tests/test_protocol_native_validation.py::test_stealthsurf_vless_server_envelope_generates_native_grpc_reality_without_sni_or_seed",
+            expected,
+        )
         required_xray_nodes = {
             "tests/test_xray.py::test_profile_generation_preserves_specific_nested_native_validation_failure",
             "tests/test_xray.py::test_generation_failure_operation_rejects_untrusted_nested_codes[lowercase]",

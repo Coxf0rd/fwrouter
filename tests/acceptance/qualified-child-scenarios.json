@@ -1,10 +1,11 @@
 {
   "schema": "fwrouter-qualified-child-scenarios/v1",
-  "protocol_case_count": 20,
+  "protocol_case_count": 21,
   "nodeids": [
     "backend/tests/test_protocol_native_validation.py::test_documented_provider_aliases_map_to_family_without_implied_transport_or_security[vless_variant_2410-vless-2410-vless]",
     "backend/tests/test_protocol_native_validation.py::test_documented_provider_aliases_map_to_family_without_implied_transport_or_security[trojan_variant_2901-trojan-2901-trojan]",
     "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-vless-reality-vless-vless-yaml]",
+    "backend/tests/test_protocol_native_validation.py::test_stealthsurf_vless_server_envelope_generates_native_grpc_reality_without_sni_or_seed",
     "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-vless-reality-vless-vless_variant_2410-yaml]",
     "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-trojan-tls-trojan-trojan-yaml]",
     "backend/tests/test_protocol_native_validation.py::test_parsed_protocol_generates_config_accepted_by_pinned_mihomo[fixture-trojan-tls-trojan-trojan_variant_2901-yaml]",
