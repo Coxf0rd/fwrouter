@@ -7,6 +7,8 @@ import errno
 import hashlib
 import json
 import re
+import socket
+import ssl
 from typing import Any
 from urllib.parse import urlparse
 
@@ -222,6 +224,8 @@ def _safe_http_error_details(exc: httpx.HTTPError) -> tuple[str, dict[str, int]]
         errno.ETIMEDOUT: "timeout",
         errno.ENETUNREACH: "network_unreachable",
         errno.EHOSTUNREACH: "network_unreachable",
+        socket.EAI_NONAME: "dns_resolution_failed",
+        socket.EAI_AGAIN: "dns_resolution_temporary",
     }
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -229,6 +233,10 @@ def _safe_http_error_details(exc: httpx.HTTPError) -> tuple[str, dict[str, int]]
         if current is None or id(current) in seen:
             break
         seen.add(id(current))
+        if isinstance(current, httpx.ProxyError):
+            return "proxy_error", {}
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return "tls_certificate_verification_failed", {}
         if isinstance(current, OSError) and type(current.errno) is int:
             kind = errno_kind.get(current.errno)
             if kind:

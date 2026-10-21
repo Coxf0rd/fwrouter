@@ -97,3 +97,8 @@ The [Full Protocol Adapter layer](FULL_PROTOCOL_ADAPTER_LAYER.md) supersedes the
 The source-only status above is historical. The eight-profile Protocol Adapter has since been deployed, with controlled current-account verification of the Hy2 path; seven other provider handshakes remain open. This does not close provider mutation/recovery acceptance or the Emergency Direct correction. See the [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md) and [provider specification](/решения/roadmap/fwrouter/PROVIDER_MANAGED_SUBSCRIPTIONS_AND_ADAPTERS.md).
 
 This dated status also supersedes the earlier statement that migration and pinned-runtime validation remain planned before Performance: the mandatory Emergency Direct/provider correction and Test Architecture & CI/CD Foundation now precede Performance in the canonical 19-step order.
+
+
+## Narrow REALITY/gRPC provider compatibility — PR30, 2026-10-21
+
+The observed StealthSurf client profile uses standard VLESS/REALITY/gRPC with no Vision flow. Its `spx=/` is equivalent to pinned Mihomo v1.19.31's unauthenticated REALITY fallback root request; other spider paths remain unsupported. Its16-hex-character provider string `seed` is not Xray's numeric Vision `testseed`; the tested stock client field is unused, and the exact no-flow/no-encryption gRPC profile completed authenticated HTTPS and UDP STUN with the pinned Mihomo binary. Source-only query metadata is retained explicitly. This narrow evidence does not authorize accepting arbitrary seed/flow/encryption combinations, inventing SNI or dropping security fields. See [investigation and exact gate status](../audits/protocol_compatibility_stabilization_2026-10-21/REPORT.md). Native generated validation and actual connectivity are separate evidence gates.

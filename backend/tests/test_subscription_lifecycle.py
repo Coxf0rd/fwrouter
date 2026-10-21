@@ -7,6 +7,8 @@ from fwrouter_api.db.connection import get_db_path, initialize_database
 import json
 import hashlib
 import sqlite3
+import socket
+import ssl
 import uuid
 from pathlib import Path
 
@@ -448,6 +450,75 @@ def test_subscription_timeout_tls_and_http_status_failures_are_redacted_without_
         assert "private-token" not in diagnostics
         assert "password" not in diagnostics
         assert "user:" not in diagnostics
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_kind", "expected_details"),
+    [
+        (
+            httpx.ConnectError("private host and token", request=httpx.Request("GET", "https://user:pass@example.test/?token=x")),
+            "dns_resolution_failed",
+            {"transport_errno": socket.EAI_NONAME},
+        ),
+        (
+            httpx.ConnectError("private host and token", request=httpx.Request("GET", "https://user:pass@example.test/?token=x")),
+            "dns_resolution_temporary",
+            {"transport_errno": socket.EAI_AGAIN},
+        ),
+        (
+            httpx.ConnectError("private host and token", request=httpx.Request("GET", "https://user:pass@example.test/?token=x")),
+            "tls_certificate_verification_failed",
+            {},
+        ),
+        (
+            httpx.ProxyError("proxy user:secret@proxy.example token=private", request=httpx.Request("GET", "https://example.test/")),
+            "proxy_error",
+            {},
+        ),
+    ],
+)
+def test_subscription_transport_failures_have_safe_specific_classification(
+    monkeypatch, error, expected_kind: str, expected_details: dict[str, int]
+) -> None:
+    if expected_kind.startswith("dns_resolution"):
+        cause: BaseException = socket.gaierror(expected_details["transport_errno"], "private-dns-response")
+    elif expected_kind == "tls_certificate_verification_failed":
+        cause = ssl.SSLCertVerificationError(1, "private certificate detail")
+    else:
+        cause = error
+    if cause is not error:
+        error.__cause__ = OSError("private wrapper detail")
+        error.__cause__.__cause__ = cause
+
+    class _ClassifiedFailureClient(_FakeHttpClient):
+        def get(self, url: str) -> httpx.Response:
+            raise error
+
+    monkeypatch.setattr(subscription_adapter_module.httpx, "Client", _ClassifiedFailureClient)
+    result = HttpMihomoSubscriptionAdapter().fetch_with_profile(
+        "https://user:pass@example.test/sub?token=private"
+    )
+    diagnostics = json.dumps({"message": result.error_message, "metadata": result.metadata})
+
+    assert result.ok is False
+    assert result.error_code == "SUBSCRIPTION_DOWNLOAD_FAILED"
+    assert result.metadata["transport_kind"] == expected_kind
+    assert result.error_message == f"Subscription download failed ({expected_kind})."
+    for key, value in expected_details.items():
+        assert result.metadata[key] == value
+    for secret in ("private", "pass", "user:", "proxy.example", "private-dns-response"):
+        assert secret not in diagnostics
+
+
+def test_subscription_transport_error_cause_cycle_is_bounded_and_generic() -> None:
+    error = httpx.ConnectError("private token", request=httpx.Request("GET", "https://example.test/"))
+    wrapper = OSError("private wrapper")
+    error.__cause__ = wrapper
+    wrapper.__cause__ = wrapper
+
+    kind, details = subscription_adapter_module._safe_http_error_details(error)
+
+    assert (kind, details) == ("transport_error", {})
 
 
 def test_subscription_parse_base64_uri_subscription() -> None:
