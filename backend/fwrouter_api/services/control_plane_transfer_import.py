@@ -800,18 +800,20 @@ def import_control_plane_snapshot(
             INSERT INTO subject_server_overrides (
                 subject_id,
                 selected_server_id,
+                selected_target_kind,
                 selected_until,
                 apply_state,
                 error_code,
                 error_message,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
             """,
             [
                 (
                     row["subject_id"],
                     row.get("selected_server_id"),
+                    row.get("selected_target_kind") or "server",
                     row.get("selected_until"),
                     row.get("apply_state", "clean"),
                     row.get("error_code"),

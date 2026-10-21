@@ -19,6 +19,7 @@ from fwrouter_api.services.subject_taxonomy import (
     is_explicit_external_client_subject_type,
     subject_follows_global_mode,
 )
+from fwrouter_api.services.subject_server_override_codec import project_row
 from fwrouter_api.services.subjects import get_subject, list_subjects
 
 
@@ -149,6 +150,7 @@ def _load_active_server_override(subject_id: str) -> dict[str, Any] | None:
             SELECT
                 subject_id,
                 selected_server_id,
+                selected_target_kind,
                 selected_until,
                 apply_state,
                 error_code,
@@ -156,13 +158,13 @@ def _load_active_server_override(subject_id: str) -> dict[str, Any] | None:
                 updated_at
             FROM subject_server_overrides
             WHERE subject_id = ?
-              AND selected_server_id IS NOT NULL
+              AND (selected_target_kind = 'vpn_auto' OR selected_server_id IS NOT NULL)
               AND selected_until > CURRENT_TIMESTAMP
             """,
             (subject_id,),
         ).fetchone()
 
-    return dict(row) if row else None
+    return project_row(row)
 
 
 def _load_active_server_overrides(subject_ids: list[str]) -> dict[str, dict[str, Any]]:
@@ -176,6 +178,7 @@ def _load_active_server_overrides(subject_ids: list[str]) -> dict[str, dict[str,
             SELECT
                 subject_id,
                 selected_server_id,
+                selected_target_kind,
                 selected_until,
                 apply_state,
                 error_code,
@@ -183,12 +186,16 @@ def _load_active_server_overrides(subject_ids: list[str]) -> dict[str, dict[str,
                 updated_at
             FROM subject_server_overrides
             WHERE subject_id IN ({placeholders})
-              AND selected_server_id IS NOT NULL
+              AND (selected_target_kind = 'vpn_auto' OR selected_server_id IS NOT NULL)
               AND selected_until > CURRENT_TIMESTAMP
             """,
             tuple(normalized),
         ).fetchall()
-    return {str(row["subject_id"]): dict(row) for row in rows}
+    return {
+        str(row["subject_id"]): project_row(row)
+        for row in rows
+        if project_row(row) is not None
+    }
 
 
 def _xray_effective_mode(
@@ -807,7 +814,7 @@ def expire_subject_overrides(*, dry_run: bool = True) -> dict[str, Any]:
         ).fetchall()
         expired_server_rows = connection.execute(
             """
-            SELECT subject_id, selected_server_id, selected_until
+            SELECT subject_id, selected_server_id, selected_target_kind, selected_until
             FROM subject_server_overrides
             WHERE selected_until IS NOT NULL
               AND selected_until <= CURRENT_TIMESTAMP
@@ -816,7 +823,9 @@ def expire_subject_overrides(*, dry_run: bool = True) -> dict[str, Any]:
         ).fetchall()
 
         expired_user_overrides = [dict(row) for row in expired_user_rows]
-        expired_server_overrides = [dict(row) for row in expired_server_rows]
+        expired_server_overrides = [
+            project_row(row) for row in expired_server_rows
+        ]
 
         if not dry_run:
             if expired_user_overrides:

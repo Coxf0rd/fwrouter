@@ -10,6 +10,7 @@ from fwrouter_api.services.control_plane_transfer_common import (
     _parse_datetime,
     _state_from_snapshot,
 )
+from fwrouter_api.services.subject_server_override_codec import project_row
 from fwrouter_api.services.control_plane_transfer_validation import validate_control_plane_snapshot
 from fwrouter_api.services.dataplane_status import build_runtime_enforcement_state
 from fwrouter_api.services.rules import get_manual_rules_texts
@@ -85,7 +86,7 @@ def _enriched_subjects_from_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         if isinstance(row, dict)
         if (
             active := _snapshot_active_override(
-                row,
+                project_row(row) or row,
                 until_field="selected_until",
                 value_field="selected_server_id",
             )
@@ -209,4 +210,3 @@ def plan_control_plane_import(
             ),
         },
     }
-

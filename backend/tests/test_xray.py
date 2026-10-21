@@ -6037,6 +6037,271 @@ def test_xray_server_override_endpoint_persists_pending_runtime_gap(monkeypatch,
         assert scoped_runtime["materialized_by"] == "xray_runtime_bindings"
 
 
+def test_xray_virtual_vpn_auto_override_post_is_persisted_and_materialized(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    register_extended_handlers(get_default_job_manager())
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        subject_policy_service,
+        "build_runtime_enforcement_state",
+        lambda: {
+            "supported_modes": {"direct": True, "selective": False, "vpn": True},
+            "enforcement_level": "global_vpn_enforced",
+            "traffic_enforcement_guaranteed": True,
+        },
+    )
+    config_path, _ = _xray_paths()
+    _write_xray_config(config_path, [{"id": "uuid-vpn-auto", "email": "vpn-auto@example.test"}])
+    adapter = _build_adapter(tmp_path, runner=_FakeRunner())
+    _patch_xray_adapters(monkeypatch, adapter)
+    inventory_service.sync_subject_inventory(
+        requested_by="pytest",
+        discover_docker=False,
+        discover_tailscale=False,
+        discover_xray=True,
+    )
+    _seed_routing_state(desired_mode="vpn", active_auto_server_id=None)
+
+    # The target kind is persisted intent even when both targets have a NULL
+    # server FK and an identical TTL. Generation fences must observe that switch.
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subject_server_overrides "
+            "(subject_id, selected_server_id, selected_target_kind, selected_until) "
+            "VALUES (?, NULL, 'server', datetime('now', '+24 hours'))",
+            ("xray:uuid-vpn-auto",),
+        )
+        legacy_kind_fingerprint = xray_subscription_service._generation_source_fingerprint(connection)
+        connection.execute(
+            "UPDATE subject_server_overrides SET selected_target_kind='vpn_auto' WHERE subject_id=?",
+            ("xray:uuid-vpn-auto",),
+        )
+        virtual_kind_fingerprint = xray_subscription_service._generation_source_fingerprint(connection)
+        assert legacy_kind_fingerprint != virtual_kind_fingerprint
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        connection.execute(
+            "DELETE FROM subject_server_overrides WHERE subject_id=?",
+            ("xray:uuid-vpn-auto",),
+        )
+
+
+    app = create_app(enable_startup_tasks=False)
+    with TestClient(app) as client:
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
+
+        # User overrides remain locked when admin mode selects direct/disabled.
+        for admin_mode in ("direct", "disabled"):
+            with db_session() as connection:
+                connection.execute(
+                    "UPDATE subjects SET desired_mode=? WHERE subject_id=?",
+                    (admin_mode, "xray:uuid-vpn-auto"),
+                )
+            locked = client.post(
+                "/api/v2/subjects/xray:uuid-vpn-auto/server-override",
+                json={"server_id": "virtual:xray:vpn-auto", "requested_by": "pytest"},
+            ).json()
+            assert locked["ok"] is False
+            assert locked["error"]["code"] == "SUBJECT_SERVER_OVERRIDE_ADMIN_LOCKED"
+            with db_session() as connection:
+                assert connection.execute(
+                    "SELECT 1 FROM subject_server_overrides WHERE subject_id=?",
+                    ("xray:uuid-vpn-auto",),
+                ).fetchone() is None
+
+        # Admission rejects every incompatible transport implementation before
+        # an override row can be created.
+        for subject_type, implementation in (
+            ("lan", "xray"),
+            ("docker", "xray"),
+            ("host", "xray"),
+            ("explicit_external_client", "future-xray-engine"),
+        ):
+            with db_session() as connection:
+                connection.execute(
+                    "UPDATE subjects SET subject_type=?, implementation_kind=?, desired_mode='vpn' "
+                    "WHERE subject_id=?",
+                    (subject_type, implementation, "xray:uuid-vpn-auto"),
+                )
+            denied = client.post(
+                "/api/v2/subjects/xray:uuid-vpn-auto/server-override",
+                json={"server_id": "virtual:xray:vpn-auto", "requested_by": "pytest"},
+            ).json()
+            assert denied["ok"] is False
+            assert denied["error"]["code"] in {
+                "SUBJECT_TYPE_NOT_SUPPORTED", "SERVER_OVERRIDE_VPN_AUTO_XRAY_ONLY",
+            }
+            with db_session() as connection:
+                assert connection.execute(
+                    "SELECT 1 FROM subject_server_overrides WHERE subject_id=?",
+                    ("xray:uuid-vpn-auto",),
+                ).fetchone() is None
+        with db_session() as connection:
+            connection.execute(
+                "UPDATE subjects SET subject_type='explicit_external_client', "
+                "implementation_kind='xray', desired_mode='direct' WHERE subject_id=?",
+                ("xray:uuid-vpn-auto",),
+            )
+
+        # Admin scope may assign despite direct mode, but it does not change the
+        # subject's effective mode or global VPN-auto selection.
+        admin_result = client.post(
+            "/api/v2/subjects/xray:uuid-vpn-auto/server-override",
+            json={
+                "server_id": "virtual:xray:vpn-auto", "requested_by": "pytest",
+                "actor_scope": "admin",
+            },
+        ).json()
+        assert admin_result["ok"] is True, admin_result
+        admin_subject = client.get("/api/v2/subjects/xray:uuid-vpn-auto").json()["data"]["subject"]
+        assert admin_subject["effective_state"]["effective_mode"] == "direct"
+        assert client.delete("/api/v2/subjects/xray:uuid-vpn-auto/server-override").json()["ok"] is True
+        with db_session() as connection:
+            connection.execute(
+                "UPDATE subjects SET desired_mode='vpn' WHERE subject_id=?",
+                ("xray:uuid-vpn-auto",),
+            )
+            selection_revision_before = read_selection_revision(connection)
+
+        # A failed native materialization must remain an API failure and retain
+        # pending/failed persistence instead of reporting a false success.
+        from fwrouter_api.services import apply_orchestrator as apply_orchestrator_service
+        with monkeypatch.context() as patcher:
+            patcher.setattr(
+                apply_orchestrator_service,
+                "materialize_explicit_external_client_runtime_bindings",
+                lambda *_args, **_kwargs: {
+                    "ok": False,
+                    "error": {"code": "NATIVE_BINDING_MISSING", "message": "Native binding is absent."},
+                },
+            )
+            failed_apply = client.post(
+                "/api/v2/subjects/xray:uuid-vpn-auto/server-override",
+                json={"server_id": "virtual:xray:vpn-auto", "requested_by": "pytest"},
+            ).json()
+        assert failed_apply["ok"] is False
+        assert failed_apply["error"]["code"] == "NATIVE_BINDING_MISSING"
+        with db_session() as connection:
+            failed_row = connection.execute(
+                "SELECT selected_server_id, selected_target_kind, apply_state, error_code "
+                "FROM subject_server_overrides WHERE subject_id=?",
+                ("xray:uuid-vpn-auto",),
+            ).fetchone()
+            assert failed_row["selected_server_id"] is None
+            assert failed_row["selected_target_kind"] == "vpn_auto"
+            assert failed_row["apply_state"] == "failed"
+            assert failed_row["error_code"] == "NATIVE_BINDING_MISSING"
+
+        response = client.post(
+            "/api/v2/subjects/xray:uuid-vpn-auto/server-override",
+            json={"server_id": "virtual:xray:vpn-auto", "requested_by": "pytest"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is True
+        override = payload["data"]["server_override"]
+        assert override["selected_server_id"] == "virtual:xray:vpn-auto"
+        assert override["selected_target_kind"] == "vpn_auto"
+        assert override["apply_state"] == "clean", payload
+
+        subject = client.get("/api/v2/subjects/xray:uuid-vpn-auto").json()["data"]["subject"]
+        binding = xray_service.collect_xray_runtime_bindings()[0]
+        assert subject["effective_state"]["selected_server_id"] == "virtual:xray:vpn-auto"
+        assert subject["effective_state"]["selected_server_source"] == "subject_override"
+        assert binding["selected_server_id"] == "vpn-global"
+        assert binding["selected_server_source"] == "subject_override"
+        assert binding["handoff_proxy_name"] == "vpn-global"
+
+        with db_session() as connection:
+            audit_count = connection.execute(
+                "SELECT COUNT(*) FROM operational_logs WHERE json_extract(details_json, '$.event_code') = 'server.assignment_changed' AND subject_id = ?",
+                ("xray:uuid-vpn-auto",),
+            ).fetchone()[0]
+        repeated = client.post(
+            "/api/v2/subjects/xray:uuid-vpn-auto/server-override",
+            json={"server_id": "virtual:xray:vpn-auto", "requested_by": "pytest"},
+        ).json()
+        assert repeated["ok"] is True, repeated
+        assert repeated["data"]["server_override"]["selected_server_id"] == "virtual:xray:vpn-auto"
+        with db_session() as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM operational_logs WHERE json_extract(details_json, '$.event_code') = 'server.assignment_changed' AND subject_id = ?",
+                ("xray:uuid-vpn-auto",),
+            ).fetchone()[0] == audit_count
+
+        deleted = client.delete("/api/v2/subjects/xray:uuid-vpn-auto/server-override")
+        assert deleted.status_code == 200
+        assert deleted.json()["ok"] is True
+        assert client.get("/api/v2/subjects/xray:uuid-vpn-auto/server-override").json()["data"]["server_override"] is None
+        after_delete = xray_service.collect_xray_runtime_bindings()[0]
+        assert after_delete["selected_server_id"] == "vpn-global"
+        assert after_delete["selected_server_source"] == "vpn_auto"
+
+    with db_session() as connection:
+        assert read_selection_revision(connection) == selection_revision_before
+        stored = connection.execute(
+            "SELECT selected_server_id, selected_target_kind FROM subject_server_overrides WHERE subject_id = ?",
+            ("xray:uuid-vpn-auto",),
+        ).fetchone()
+        assert stored is None
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_xray_refresh_materialization_preserves_active_virtual_override(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    subject_id = "xray:refresh-virtual"
+    server_id = "refresh-materialized-server"
+    _seed_server(server_id)
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subjects "
+            "(subject_id, subject_type, subject_role, implementation_kind, stable_key, "
+            "display_name, desired_mode, is_active, metadata_json) "
+            "VALUES (?, 'xray', 'vless_client', 'xray', ?, ?, 'vpn', 1, ?)",
+            (subject_id, subject_id, subject_id, json.dumps({"detail": {"client_uuid": "refresh-uuid"}})),
+        )
+        connection.execute(
+            "INSERT INTO subject_server_overrides "
+            "(subject_id, selected_server_id, selected_target_kind, selected_until, apply_state) "
+            "VALUES (?, NULL, 'vpn_auto', datetime('now', '+24 hours'), 'clean')",
+            (subject_id,),
+        )
+
+    node = {
+        "client_uuid": "refresh-uuid",
+        "server_id": server_id,
+        "xray_alias": "refresh-alias",
+    }
+    result = xray_subscription_service._batch_materialize_xray_subject_bindings(
+        [node], requested_by="pytest", preserve_existing_overrides=False,
+    )
+    assert result["ok"] is True
+    with db_session() as connection:
+        preserved = connection.execute(
+            "SELECT selected_server_id, selected_target_kind, selected_until "
+            "FROM subject_server_overrides WHERE subject_id=?", (subject_id,),
+        ).fetchone()
+        assert preserved["selected_server_id"] is None
+        assert preserved["selected_target_kind"] == "vpn_auto"
+        connection.execute(
+            "UPDATE subject_server_overrides SET selected_until='2000-01-01 00:00:00' WHERE subject_id=?",
+            (subject_id,),
+        )
+
+    result = xray_subscription_service._batch_materialize_xray_subject_bindings(
+        [node], requested_by="pytest", preserve_existing_overrides=False,
+    )
+    assert result["ok"] is True
+    with db_session() as connection:
+        replaced = connection.execute(
+            "SELECT selected_server_id, selected_target_kind FROM subject_server_overrides WHERE subject_id=?",
+            (subject_id,),
+        ).fetchone()
+        assert replaced["selected_server_id"] == server_id
+        assert replaced["selected_target_kind"] == "server"
+
+
 def test_xray_binding_materialization_writes_runtime_metadata(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()

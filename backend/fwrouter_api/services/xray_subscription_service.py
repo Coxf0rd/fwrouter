@@ -996,9 +996,17 @@ def _upsert_xray_subject_server_override(
             return
 
         existing = connection.execute(
-            "SELECT 1 FROM subject_server_overrides WHERE subject_id = ? LIMIT 1",
+            "SELECT selected_target_kind, selected_until FROM subject_server_overrides WHERE subject_id = ? LIMIT 1",
             (subject_id,),
         ).fetchone()
+        if (
+            existing is not None
+            and str(existing["selected_target_kind"] or "server") == "vpn_auto"
+            and connection.execute(
+                "SELECT ? > CURRENT_TIMESTAMP AS active", (existing["selected_until"],)
+            ).fetchone()["active"]
+        ):
+            return
 
         if existing is None:
             insert_values: dict[str, Any] = {}
@@ -1006,6 +1014,8 @@ def _upsert_xray_subject_server_override(
                 insert_values["subject_id"] = subject_id
             if "selected_server_id" in columns:
                 insert_values["selected_server_id"] = selected_server_id
+            if "selected_target_kind" in columns:
+                insert_values["selected_target_kind"] = "server"
             if "selected_until" in columns:
                 insert_values["selected_until"] = selected_until
             if "requested_by" in columns:
@@ -1041,6 +1051,8 @@ def _upsert_xray_subject_server_override(
             if "selected_server_id" in columns:
                 assignments.append("selected_server_id = ?")
                 params.append(selected_server_id)
+            if "selected_target_kind" in columns:
+                assignments.append("selected_target_kind = 'server'")
             if "selected_until" in columns:
                 assignments.append("selected_until = ?")
                 params.append(selected_until)
@@ -1142,6 +1154,7 @@ def _batch_materialize_xray_subject_bindings(
                 insert_values = {name: value for name, value in {
                     "subject_id": subject_id,
                     "selected_server_id": server_id,
+                    "selected_target_kind": "server",
                     "selected_until": selected_until,
                     "requested_by": requested_by,
                     "created_by": requested_by,
@@ -1157,10 +1170,16 @@ def _batch_materialize_xray_subject_bindings(
                 )
                 inserted_overrides += 1
                 continue
-            if preserve_existing_overrides:
+            if preserve_existing_overrides or (
+                str(existing["selected_target_kind"] or "server") == "vpn_auto"
+                and connection.execute(
+                    "SELECT ? > CURRENT_TIMESTAMP AS active", (existing["selected_until"],)
+                ).fetchone()["active"]
+            ):
                 continue
             semantic_values = (
                 ("selected_server_id", server_id),
+                ("selected_target_kind", "server"),
                 ("selected_until", selected_until),
                 ("requested_by", requested_by),
                 ("updated_by", requested_by),
@@ -1175,8 +1194,11 @@ def _batch_materialize_xray_subject_bindings(
             params = []
             for name, value in semantic_values:
                 if name in columns:
-                    assignments.append(f"{name} = ?")
-                    params.append(value)
+                    if name == "selected_target_kind":
+                        assignments.append("selected_target_kind = 'server'")
+                    else:
+                        assignments.append(f"{name} = ?")
+                        params.append(value)
             if "updated_at" in columns:
                 assignments.append("updated_at = CURRENT_TIMESTAMP")
             params.append(subject_id)
@@ -2144,7 +2166,7 @@ def _generation_source_fingerprint(connection: sqlite3.Connection | None = None)
                 json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid,
                 json_extract(metadata_json, '$.detail.email') AS email
                 FROM subjects WHERE implementation_kind = 'xray' ORDER BY subject_id""").fetchall()],
-            [dict(row) for row in active.execute("SELECT subject_id, selected_server_id, selected_until FROM subject_server_overrides ORDER BY subject_id").fetchall()],
+            [dict(row) for row in active.execute("SELECT subject_id, selected_server_id, selected_target_kind, selected_until FROM subject_server_overrides ORDER BY subject_id").fetchall()],
             [dict(row) for row in active.execute("SELECT subject_id, override_mode, override_until FROM subject_user_overrides ORDER BY subject_id").fetchall()],
             [dict(row) for row in active.execute("SELECT desired_mode, selective_default, server_mode FROM routing_global_state ORDER BY id").fetchall()],
             [dict(row) for row in active.execute("SELECT key, value_json FROM settings WHERE key='vpn_auto_exclusive_source_ref'").fetchall()],

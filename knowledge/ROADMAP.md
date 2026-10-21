@@ -1,5 +1,11 @@
 # FWRouter — active roadmap
 
+## Virtual Xray VPN-auto override POST — 2026-10-22 (IN PROGRESS)
+
+Bounded defect correction from actual main `e1c4aa9` after merged PR31/32. PR32 squash is single-parent with exact qualified feature-tree inclusion; main CI39670417991 passed including mandatory main smoke. This supersedes the pending-integration gate below without changing its historical receipts. One new feature branch/PR will fix virtual target persistence without starting Stage5 or changing production.
+
+Explicit virtual target and DELETE differ in durable intent/TTL/audit and Xray binding projection; preserve Core-owned `vpn-global`, including global fixed enforcement. Plan a minimal discriminator on the existing override row with atomic schema26→27 compatibility migration and API projection of the virtual ID. Keep the real-server FK and historical NULL semantics. Source implementation, real SQLite/API negative/regression tests, native qualification, independent review and CI V2 remain separate open gates. No deployment or merge. See [bounded correction report](audits/virtual_xray_vpn_auto_override_2026-10-22/REPORT.md).
+
 ## CI Pipeline V2 — source and reference qualification complete (2026-10-22)
 
 Separate infrastructure task in [PR32](https://github.com/Coxf0rd/fwrouter/pull/32), `feat/ci-pipeline-v2`, from main `059f49bfe130529607a5f49153d592cf487754dc` (PR31 merged). Eight isolated jobs implement immutable plan/build inputs, parallel unit/ordinary/provider/packet/native execution and the unchanged required check. Full reference `5a44a59`/run39665954573 attempt1 passed2121 registered nodes, exact178-file selection, native proof, three hosted partitions, cleanup and safe-recovery qualification. Required check rejected both a real unit failure and the attempt2 partial rerun with missing current-attempt artifacts despite retained upstream SUCCESS. No protection/fencing/coverage weakening.

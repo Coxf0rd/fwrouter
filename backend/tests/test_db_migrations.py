@@ -74,7 +74,7 @@ def test_v20_to21_scrubs_operational_credentials_idempotently(monkeypatch, tmp_p
     technical_records = [json.loads(line) for line in technical_path.read_text(encoding="utf-8").splitlines()]
 
     assert [(item.from_version, item.to_version) for item in applied] == [
-        (20, 21), (21, 22), (22, 23), (23, 24), (24, 25), (25, 26),
+        (20, 21), (21, 22), (22, 23), (23, 24), (24, 25), (25, 26), (26, 27),
     ]
     assert applied_again == []
     assert "user:pass" not in first["message"]
@@ -519,6 +519,7 @@ def _install_genuine_schema_24(connection: sqlite3.Connection) -> None:
     ):
         connection.execute(f"DROP TABLE {table}")
     connection.execute("ALTER TABLE apply_versions DROP COLUMN core_intent_revision")
+    connection.execute("ALTER TABLE subject_server_overrides DROP COLUMN selected_target_kind")
     connection.execute("DELETE FROM settings WHERE key='core.intent_revision'")
     connection.execute(
         "UPDATE schema_meta SET value = '24' WHERE key = 'schema_version'"
@@ -556,7 +557,7 @@ def _install_genuine_schema_24(connection: sqlite3.Connection) -> None:
     assert all(
         info["ok"]
         for name, info in state["tables"].items()
-        if name not in identity_tables and name != "apply_versions"
+        if name not in identity_tables and name not in {"apply_versions", "subject_server_overrides"}
     )
     assert connection.execute("SELECT COUNT(*) FROM subjects").fetchone()[0] == 78
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
@@ -585,6 +586,7 @@ def test_v25_to26_failure_rolls_back_and_can_reenter(
     with _connect_raw() as connection:
         connection.execute("UPDATE schema_meta SET value='25' WHERE key='schema_version'")
         connection.execute("ALTER TABLE apply_versions DROP COLUMN core_intent_revision")
+        connection.execute("ALTER TABLE subject_server_overrides DROP COLUMN selected_target_kind")
         connection.execute("DELETE FROM settings WHERE key='core.intent_revision'")
         connection.execute(
             "INSERT INTO settings (key, value_json) VALUES "
@@ -644,6 +646,7 @@ def test_v25_to26_failure_rolls_back_and_can_reenter(
         migrations.SchemaMigration(item.from_version, item.to_version, original)
         if item.from_version == 25 else item for item in migrations.MIGRATIONS
     ))
+    monkeypatch.setattr(migrations, "CURRENT_SCHEMA_VERSION", 26)
     with _connect_raw() as connection:
         assert [(item.from_version, item.to_version) for item in migrations.run_missing_migrations(connection)] == [(25, 26)]
     with _connect_raw() as connection:
@@ -655,6 +658,35 @@ def test_v25_to26_failure_rolls_back_and_can_reenter(
         assert connection.execute("SELECT value_json FROM settings WHERE key='subscriptions.native_generation.v1'").fetchone()[0] == '{"digest":"synthetic-marker"}'
         assert connection.execute("SELECT client_email FROM subscription_node_credentials WHERE identity_id='migration-fixture-id'").fetchone()[0] == "migration@fixture.invalid"
     assert checkpoint.read_text(encoding="utf-8") == '{"fixture":"preserve"}\n'
+
+
+@pytest.mark.no_database_autoinit
+def test_v26_to27_failure_rolls_back_discriminator_ddl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with _connect_raw() as connection:
+        connection.execute("ALTER TABLE subject_server_overrides DROP COLUMN selected_target_kind")
+        connection.execute("UPDATE schema_meta SET value='26' WHERE key='schema_version'")
+
+    original = migrations._migrate_26_to_27
+
+    def fail_after_migration_ddl(connection: sqlite3.Connection) -> None:
+        original(connection)
+        raise RuntimeError("synthetic failure after 26-to-27 DDL")
+
+    monkeypatch.setattr(migrations, "MIGRATIONS", tuple(
+        migrations.SchemaMigration(item.from_version, item.to_version, fail_after_migration_ddl)
+        if item.from_version == 26 else item for item in migrations.MIGRATIONS
+    ))
+    with pytest.raises(RuntimeError, match="after 26-to-27 DDL"):
+        with db_session() as connection:
+            migrations.run_missing_migrations(connection)
+
+    with _connect_raw() as connection:
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "26"
+        assert "selected_target_kind" not in migrations._columns(connection, "subject_server_overrides")
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
 def _table_rows(connection: sqlite3.Connection, table_name: str) -> list[dict[str, object]]:
@@ -792,6 +824,7 @@ def test_upgrade_runs_sequential_migrations(monkeypatch, tmp_path: Path) -> None
         (23, 24),
         (24, 25),
         (25, 26),
+        (26, 27),
     ]
     assert schema_state["ok"] is True
     assert _schema_version() == str(migrations.CURRENT_SCHEMA_VERSION)
@@ -815,7 +848,7 @@ def test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting
         ]
         before = _table_snapshot(connection, legacy_tables)
         applied = migrations.run_missing_migrations(connection)
-        assert [(item.from_version, item.to_version) for item in applied] == [(24, 25), (25, 26)]
+        assert [(item.from_version, item.to_version) for item in applied] == [(24, 25), (25, 26), (26, 27)]
         after = _table_snapshot(connection, legacy_tables)
         identity_tables = {
             str(row["name"])
@@ -915,7 +948,7 @@ def test_database_upgrade_cli_is_explicit_backed_up_and_idempotent(
     with sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True) as backup:
         assert backup.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "24"
     with _connect_raw() as connection:
-        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "26"
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "27"
         after_rows = _table_snapshot(connection, legacy_tables)
         assert {name: rows for name, rows in after_rows.items() if name not in {"settings", "modules"}} == {
             name: rows for name, rows in before_rows.items() if name not in {"settings", "modules"}
@@ -926,7 +959,7 @@ def test_database_upgrade_cli_is_explicit_backed_up_and_idempotent(
 
     with _connect_raw() as connection:
         rows_after_upgrade = _table_snapshot(connection, legacy_tables)
-    assert main(["database", "upgrade", "--expected-schema", "26"]) == 0
+    assert main(["database", "upgrade", "--expected-schema", "27"]) == 0
     current = json.loads(capsys.readouterr().out)
     assert current["status"] == "already_current" and current["database_changed"] is False
     assert len(list(backups.glob("*.bak"))) == 1
@@ -945,6 +978,7 @@ def test_database_upgrade_cli_accepts_structural_schema25_and_preserves_identity
     with _connect_raw() as connection:
         connection.execute("UPDATE schema_meta SET value='25' WHERE key='schema_version'")
         connection.execute("ALTER TABLE apply_versions DROP COLUMN core_intent_revision")
+        connection.execute("ALTER TABLE subject_server_overrides DROP COLUMN selected_target_kind")
         connection.execute("DELETE FROM settings WHERE key='core.intent_revision'")
         connection.execute(
             "INSERT INTO subscription_node_identities "
@@ -1001,7 +1035,7 @@ def test_database_upgrade_cli_accepts_structural_schema25_and_preserves_identity
     with sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True) as backup:
         assert backup.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "25"
     with _connect_raw() as connection:
-        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "26"
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "27"
         after_rows = _table_snapshot(connection, legacy_tables)
         assert {name: rows for name, rows in after_rows.items() if name not in {"settings", "modules"}} == {
             name: rows for name, rows in before_rows.items() if name not in {"settings", "modules"}
@@ -1012,12 +1046,67 @@ def test_database_upgrade_cli_accepts_structural_schema25_and_preserves_identity
         assert next(row for row in after_rows["modules"] if row["module_name"] == "core")["apply_state"] == "pending"
 
     rows_after_upgrade = after_rows
-    assert main(["database", "upgrade", "--expected-schema", "26"]) == 0
+    assert main(["database", "upgrade", "--expected-schema", "27"]) == 0
     current = json.loads(capsys.readouterr().out)
     assert current["status"] == "already_current" and current["database_changed"] is False
     assert len(list(backups.glob("*.bak"))) == 1
     with _connect_raw() as connection:
         assert _table_snapshot(connection, legacy_tables) == rows_after_upgrade
+
+
+@pytest.mark.no_database_autoinit
+def test_database_upgrade_cli_migrates_schema26_to27_without_identity_or_credential_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with _connect_raw() as connection:
+        connection.execute(
+            "INSERT INTO subscription_node_identities "
+            "(identity_id, origin_server_id, current_server_id, revision, provenance_sha256) "
+            "VALUES ('cli26-fixture-id', 'origin26', 'current26', 1, ?)",
+            ("c" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_credentials "
+            "(scope, identity_id, client_uuid, client_email) "
+            "VALUES ('synthetic', 'cli26-fixture-id', "
+            "'00000000-0000-4000-8000-000000000026', 'cli26@fixture.invalid')"
+        )
+        before_identity = _table_snapshot(connection, ["subscription_node_identities"])
+        before_credentials = _table_snapshot(connection, ["subscription_node_credentials"])
+        connection.execute("ALTER TABLE subject_server_overrides DROP COLUMN selected_target_kind")
+        connection.execute("UPDATE schema_meta SET value='26' WHERE key='schema_version'")
+
+    from fwrouter_api.cli import main
+    from fwrouter_api.db.connection import get_db_path
+    db_path = get_db_path()
+    backups = db_path.parent / "backups"
+    assert main(["database", "upgrade", "--expected-schema", "26"]) == 0
+    dry_run = json.loads(capsys.readouterr().out)
+    assert dry_run["status"] == "dry_run" and not backups.exists()
+    assert main([
+        "database", "upgrade", "--expected-schema", "26", "--apply", "--confirm-offline",
+    ]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["status"] == "applied" and applied["target_schema"] == 27
+    with _connect_raw() as connection:
+        assert connection.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'"
+        ).fetchone()[0] == "27"
+        assert _table_snapshot(connection, ["subscription_node_identities"]) == before_identity
+        assert _table_snapshot(connection, ["subscription_node_credentials"]) == before_credentials
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        override_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(subject_server_overrides)")
+        }
+        assert "selected_target_kind" in override_columns
+        assert connection.execute(
+            "SELECT selected_target_kind FROM subject_server_overrides LIMIT 1"
+        ).fetchone() is None
 
 
 @pytest.mark.no_database_autoinit
@@ -1376,7 +1465,7 @@ def test_subscription_identity_migration_preserves_references_and_membership(
 
     assert [(item.from_version, item.to_version) for item in applied] == [
         (12, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 18),
-        (18, 19), (19, 20), (20, 21), (21, 22), (22, 23), (23, 24), (24, 25), (25, 26),
+        (18, 19), (19, 20), (20, 21), (21, 22), (22, 23), (23, 24), (24, 25), (25, 26), (26, 27),
     ]
     assert old_server is None
     assert server["server_name"] == old_id
@@ -1467,10 +1556,63 @@ def test_schema_inspection_detects_missing_core_apply_revision_column(
     with connect() as connection:
         state = inspect_database_schema(connection)
 
-    assert state["actual_schema_version"] == "26"
+    assert state["actual_schema_version"] == "27"
     assert state["ok"] is False
     assert state["tables"]["apply_versions"]["ok"] is False
     assert "core_intent_revision" in state["tables"]["apply_versions"]["missing_columns"]
+
+
+def test_v26_to_v27_preserves_override_rows_and_foreign_keys() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.executescript(
+        """
+        CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT);
+        INSERT INTO schema_meta(key, value) VALUES ('schema_version', '26');
+        CREATE TABLE subjects(subject_id TEXT PRIMARY KEY);
+        CREATE TABLE servers(server_id TEXT PRIMARY KEY);
+        CREATE TABLE subject_server_overrides (
+            subject_id TEXT PRIMARY KEY,
+            selected_server_id TEXT,
+            selected_until TEXT,
+            apply_state TEXT NOT NULL DEFAULT 'clean',
+            error_code TEXT,
+            error_message TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (apply_state IN ('clean', 'pending', 'applying', 'failed')),
+            FOREIGN KEY (subject_id) REFERENCES subjects(subject_id) ON DELETE CASCADE,
+            FOREIGN KEY (selected_server_id) REFERENCES servers(server_id) ON DELETE SET NULL
+        );
+        INSERT INTO subjects VALUES ('xray:real'), ('xray:legacy-null'), ('xray:virtual');
+        INSERT INTO servers VALUES ('server-real');
+        INSERT INTO subject_server_overrides(subject_id, selected_server_id, selected_until, apply_state)
+            VALUES ('xray:real', 'server-real', '2099-01-01', 'clean');
+        INSERT INTO subject_server_overrides(subject_id, selected_server_id, selected_until, apply_state)
+            VALUES ('xray:legacy-null', NULL, '2099-01-01', 'pending');
+        """
+    )
+    try:
+        before = [dict(row) for row in connection.execute(
+            "SELECT subject_id, selected_server_id, selected_until, apply_state FROM subject_server_overrides ORDER BY subject_id"
+        )]
+        assert [(m.from_version, m.to_version) for m in migrations.run_missing_migrations(connection)] == [(26, 27)]
+        after = [dict(row) for row in connection.execute(
+            "SELECT subject_id, selected_server_id, selected_until, apply_state FROM subject_server_overrides ORDER BY subject_id"
+        )]
+        assert after == before
+        assert connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0] == "27"
+        assert [row["selected_target_kind"] for row in connection.execute(
+            "SELECT selected_target_kind FROM subject_server_overrides ORDER BY subject_id"
+        )] == ["server", "server"]
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO subject_server_overrides(subject_id, selected_server_id, selected_target_kind) VALUES ('xray:virtual', 'server-real', 'vpn_auto')"
+            )
+    finally:
+        connection.close()
 
 
 def test_health_reports_unavailable_for_missing_database_without_creating_it(

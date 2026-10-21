@@ -166,6 +166,7 @@ def _table_fingerprint() -> dict[str, Any]:
                    json_extract(s.metadata_json, '$.detail.tailscale_ip') AS legacy_external_ip,
                    d.ip_address AS docker_ip,
                    o.selected_server_id,
+                   o.selected_target_kind,
                    o.selected_until
             FROM subjects AS s
             LEFT JOIN subject_lan AS l ON l.subject_id = s.subject_id

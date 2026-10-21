@@ -2,9 +2,14 @@ from __future__ import annotations
 from _test_support import configure_test_state_dir as _configure_env
 
 from pathlib import Path
+import pytest
 
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.services.subject_policy import get_subject_with_effective_state
+from fwrouter_api.services.subject_policy import resolve_effective_vpn_target
+from fwrouter_api.services.custom_servers import VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
+from fwrouter_api.services.subject_server_override_codec import decode_target, encode_target
+from fwrouter_api.services.subject_taxonomy import explicit_external_client_subject_allows_virtual_vpn_auto
 
 
 
@@ -190,6 +195,115 @@ def test_selective_default_is_capture_fallback_only(monkeypatch, tmp_path: Path)
     assert state["vpn_target_id"] is None
     assert state["vpn_target_source"] is None
     assert state["selected_server_source"] == "direct"
+
+
+def test_explicit_virtual_vpn_auto_is_distinct_from_inherited_global_fixed() -> None:
+    routing = {
+        "server_mode": "fixed",
+        "desired_fixed_server_id": "server-fixed",
+        "applied_fixed_server_id": "server-fixed",
+        "active_auto_server_id": "server-auto",
+    }
+    explicit = resolve_effective_vpn_target(
+        "vpn",
+        subject_type="explicit_external_client",
+        subject_server_override={"selected_server_id": VIRTUAL_XRAY_VPN_AUTO_SERVER_ID},
+        routing=routing,
+        runtime_enforcement={"supported_modes": {"vpn": True}},
+    )
+    inherited = resolve_effective_vpn_target(
+        "vpn",
+        subject_type="explicit_external_client",
+        subject_server_override=None,
+        routing=routing,
+        runtime_enforcement={"supported_modes": {"vpn": True}},
+    )
+    assert explicit["selected_server_id"] == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
+    assert explicit["selected_server_source"] == "subject_override"
+    assert inherited["selected_server_id"] == "server-fixed"
+    assert inherited["selected_server_source"] == "global_fixed"
+
+
+def test_virtual_override_codec_never_infers_from_legacy_null_and_requires_xray_contract() -> None:
+    assert encode_target(VIRTUAL_XRAY_VPN_AUTO_SERVER_ID) == ("vpn_auto", None)
+    assert decode_target({"selected_server_id": None, "selected_target_kind": "server"}) is None
+    assert decode_target({"selected_server_id": None, "selected_target_kind": "vpn_auto"}) == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
+    assert explicit_external_client_subject_allows_virtual_vpn_auto("explicit_external_client", "xray") is True
+    assert explicit_external_client_subject_allows_virtual_vpn_auto("xray", "xray") is True
+    assert explicit_external_client_subject_allows_virtual_vpn_auto("explicit_external_client", "unknown") is False
+    assert explicit_external_client_subject_allows_virtual_vpn_auto("lan", "xray") is False
+
+
+@pytest.mark.parametrize("subject_type", ["lan", "docker", "host"])
+def test_virtual_vpn_auto_request_rejects_non_xray_subject_types(subject_type: str) -> None:
+    from fwrouter_api.services.apply_orchestrator_commits import _validate_subject_server_override_request
+
+    result = _validate_subject_server_override_request(
+        {"subject_type": subject_type, "implementation_kind": "xray"},
+        VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+    )
+    assert result is not None
+    assert result["code"] in {"SUBJECT_TYPE_NOT_SUPPORTED", "SERVER_OVERRIDE_VPN_AUTO_XRAY_ONLY"}
+
+
+def test_virtual_vpn_auto_request_rejects_unknown_explicit_xray_implementation() -> None:
+    from fwrouter_api.services.apply_orchestrator_commits import _validate_subject_server_override_request
+
+    result = _validate_subject_server_override_request(
+        {"subject_type": "explicit_external_client", "implementation_kind": "future-xray-engine"},
+        VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+    )
+    assert result is not None
+    assert result["code"] == "SERVER_OVERRIDE_VPN_AUTO_XRAY_ONLY"
+
+
+def test_virtual_vpn_auto_request_retains_registered_legacy_xray_alias() -> None:
+    from fwrouter_api.services.apply_orchestrator_commits import _validate_subject_server_override_request
+
+    assert _validate_subject_server_override_request(
+        {"subject_type": "xray", "implementation_kind": "xray"},
+        VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "binding,expected_status",
+    [
+        (None, "pending_unresolved_subject_match"),
+        ({"status": "applied", "selected_server_id": "wrong-server"}, "pending_unresolved_subject_match"),
+        ({"status": "applied", "selected_server_id": "vpn-global"}, "applied"),
+    ],
+)
+def test_virtual_handoff_readback_requires_matching_applied_native_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    binding: dict[str, str] | None,
+    expected_status: str,
+) -> None:
+    from fwrouter_api.services import scoped_egress
+
+    monkeypatch.setattr(
+        scoped_egress,
+        "_load_explicit_client_runtime_bindings",
+        lambda *_args: {"xray:scoped": binding} if binding else {},
+    )
+    result = scoped_egress.build_scoped_subject_runtime(
+        {
+            "subject_id": "xray:scoped",
+            "subject_type": "explicit_external_client",
+            "implementation_kind": "xray",
+            "is_active": True,
+        },
+        dataplane_path="vpn",
+        selected_server_id=VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+        selected_server_source="subject_override",
+        vpn_target_id=VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+        vpn_target_source="subject_override",
+        server_override={"selected_server_id": VIRTUAL_XRAY_VPN_AUTO_SERVER_ID},
+        vpn_supported=True,
+        bypass_enabled=False,
+    )
+    assert result["status"] == expected_status
+    assert result["applied"] is (expected_status == "applied")
 
 
 def test_selective_default_vpn_keeps_vpn_bound_and_no_server_target(monkeypatch, tmp_path: Path) -> None:

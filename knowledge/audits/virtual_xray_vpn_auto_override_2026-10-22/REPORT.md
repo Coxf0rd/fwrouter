@@ -1,0 +1,33 @@
+# Virtual Xray VPN-auto override POST
+
+## Scope and source boundary
+
+Bounded correction on `fix/virtual-xray-vpn-auto-override` from main `e1c4aa9db7aa176a95988260dcfe7e1ec33cae1a`. PR31 and PR32 are merged. PR32 is a single-parent squash whose tree exactly equals qualified feature HEAD `a0dbc82`; actual main CI `39670417991` passed mandatory qualification including main smoke. No production read/write, deployment, migration or runtime restart is part of this correction. Stage5 remains a separate milestone.
+
+## Proven contract
+
+The virtual target is a transient API/server-list item, never a canonical `servers` row. Existing admission accepts it for compatible explicit Xray clients, but the manual override writer attempts to store its virtual ID in `subject_server_overrides.selected_server_id`, violating the real-server foreign key. SQLite must continue rejecting such a physical ID.
+
+An explicit virtual target is not equivalent to deleting the override. Subject policy resolves explicit subject intent before global fixed selection. An explicit virtual binding targets `vpn-global`; a cleared override inherits the global fixed server or current automatic selection. `vpn-global` remains owned by Core: in fixed mode its native group contains only REJECT and the canonical fixed target. This fix must not reinterpret virtual selection as bypassing global fixed routing into the raw `vpn-auto` pool. Even where current external egress coincides, explicit provenance,24-hour TTL, audit, DTO and future binding reconciliation differ.
+
+## Persistence and ownership decision
+
+Extend the existing override row with an explicit target-kind discriminator. Physical `selected_server_id` stays NULL for virtual VPN-auto; default/legacy kind remains real-server, so historical NULL rows are never reinterpreted as new virtual intent. API/effective projections expose the established virtual ID, while real-server FK behavior and ON DELETE SET NULL remain intact. One additive transactional26→27 schema migration belongs to this existing owner; no fake server, foreign-key disabling, secondary store or alternate writer is introduced. Schema26 inputs/history must be preserved and validated during upgrade.
+
+The row retains the existing subject PK, expiry, apply status and audit transaction. POST repeat follows the existing TTL-renewal contract without duplicate assignment-change audit when the semantic target is unchanged. DELETE removes explicit intent and restores inheritance. Desired intent survives runtime failure with truthful failed/pending status; success requires the existing materialization/native-proof path. Registry admission, admin/user mode policy, writer guard, selection revision and generation fences must remain authoritative. Target-kind changes must participate in source fingerprints and scoped compensation/recovery snapshots.
+
+Refresh/reconcile must preserve active explicit virtual intent and its expiry; expired intent may return to the existing derived profile behavior. Real-server overrides retain their existing source ownership and semantics. UI/DTO projection must agree with desired versus applied state without showing an invented real server.
+
+## Qualification gates
+
+The baseline negative control on exact main `e1c4aa9` reproduced the real isolated HTTP POST failure: `JOB_HANDLER_FAILED`, caused by SQLite `FOREIGN KEY constraint failed`. The baseline test intentionally asserts that failure; it is not a successful virtual assignment.
+
+Initial local grouped regression: 221 passed; one qualified subprocess writer-lock test was rejected by ordinary pytest isolation and remains for its required child-process execution profile. Gate/acceptance contracts: 265 passed, one local skip because `/usr/bin/time` is absent; that skip is not qualification. Manifest coverage (179 files), changed-source Ruff 0.17.0 and installer source-surface checks passed. Further explicit API failure/concurrency cases, native/hosted qualification, independent QA and exact-HEAD CI V2 remain in progress. No production acceptance is claimed.
+
+## Separate production acceptance scenario
+
+After an explicit deployment GO: capture consistent SQLite backup plus protected source/runtime manifests, independent admin access and the normal full installer preflight. Qualify the exact source before the standard full `--deploy --all` procedure, controlled lifecycle and source transfer. Keep normal API/workers/timers stopped during the offline migration. With the newly installed qualified CLI, first run `fwrouter database upgrade --expected-schema 26` (dry run), then `fwrouter database upgrade --expected-schema 26 --apply --confirm-offline`; require verified backup/hash, exact legacy-structure preflight and target27 success before activation. Repeating with `--expected-schema 27` must report already-current without mutation. Confirm atomic26→27 upgrade, integrity/FKs and preservation of identities/credentials/account/client/source records. Do not restore the old backend over a newer schema or perform an unreviewed DB restore; hold the compatible source and fail closed if recovery is uncertain.
+
+Use one specifically authorized Xray test subject, never an arbitrary customer identity. Record its original modes/override/TTL and Core selection revision; through the supported API POST the virtual target, inspect job and desired/applied readback, and prove the exact Xray→Mihomo `vpn-global` handoff with native readback plus isolated client traffic. Repeat POST, run normal refresh/reconcile and verify stable intent. Restore the prior assignment through the API and verify native convergence. Exercise DELETE only on that test subject with its original state safely recorded. Verify unrelated subjects/credentials/source rows, Core selection and administrative access remain unchanged. A real external-device E2E remains separate until exercised from that device. Do not switch global routing or providers to test this defect on production.
+
+The authorized test API operations are `POST /api/v2/subjects/{test_subject_id}/server-override` with `{"server_id":"virtual:xray:vpn-auto","actor_scope":"user","requested_by":"operator-acceptance","run_now":true}`, followed by job/result inspection, GET of that override and GET of the subject. Desired DTO must expose virtual ID/kind; persisted FK must be NULL/kind vpn_auto; applied status must follow actual native matching. Repeat the same POST; after recorded-state restoration preparation use DELETE on the same URL and require inherited readback. Persisted original real-server assignment can be restored with POST of that exact recorded real ID; an original absence is restored with DELETE. Do not write SQLite directly.

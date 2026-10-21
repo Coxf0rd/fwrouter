@@ -32,6 +32,63 @@ def validate_control_plane_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         )
         subjects = []
 
+    subjects_by_id = {
+        str(subject.get("subject_id") or ""): subject
+        for subject in subjects
+        if isinstance(subject, dict) and str(subject.get("subject_id") or "").strip()
+    }
+
+    subject_server_overrides = state.get("subject_server_overrides")
+    if subject_server_overrides is not None and not isinstance(subject_server_overrides, list):
+        errors.append(
+            {
+                "code": "SNAPSHOT_SUBJECT_SERVER_OVERRIDES_INVALID",
+                "message": "Snapshot subject server overrides section must be a list.",
+            }
+        )
+        subject_server_overrides = []
+    elif not isinstance(subject_server_overrides, list):
+        subject_server_overrides = []
+    for override in subject_server_overrides:
+        if not isinstance(override, dict):
+            errors.append(
+                {
+                    "code": "SNAPSHOT_SUBJECT_SERVER_OVERRIDE_INVALID",
+                    "message": "Snapshot subject server override entries must be objects.",
+                }
+            )
+            continue
+        kind = str(override.get("selected_target_kind") or "server")
+        if kind not in {"server", "vpn_auto"}:
+            errors.append(
+                {
+                    "code": "SNAPSHOT_SUBJECT_SERVER_OVERRIDE_KIND_INVALID",
+                    "message": "Snapshot subject server override target kind is unsupported.",
+                }
+            )
+            continue
+        if kind != "vpn_auto":
+            continue
+        subject = subjects_by_id.get(str(override.get("subject_id") or ""))
+        from fwrouter_api.services.subject_taxonomy import (
+            explicit_external_client_subject_allows_virtual_vpn_auto,
+        )
+
+        if (
+            override.get("selected_server_id") is not None
+            or subject is None
+            or not explicit_external_client_subject_allows_virtual_vpn_auto(
+                str(subject.get("subject_type") or ""),
+                str(subject.get("implementation_kind") or ""),
+            )
+        ):
+            errors.append(
+                {
+                    "code": "SNAPSHOT_SUBJECT_SERVER_OVERRIDE_VPN_AUTO_INVALID",
+                    "message": "Virtual VPN-auto overrides require a compatible Xray subject and no server foreign key.",
+                }
+            )
+
     servers = state.get("servers")
     if not isinstance(servers, list):
         errors.append(
@@ -135,4 +192,3 @@ def validate_control_plane_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             "normalize_runtime_state": True,
         },
     }
-

@@ -195,6 +195,7 @@ def export_control_plane_snapshot(*, include_secrets: bool = False, write_file: 
                 SELECT
                     subject_id,
                     selected_server_id,
+                    selected_target_kind,
                     selected_until,
                     apply_state,
                     error_code,

@@ -28,6 +28,7 @@ from fwrouter_api.services.state_projection import (
 )
 from fwrouter_api.services.state_snapshot import StateSnapshot
 from fwrouter_api.services.xray_runtime_state import _load_xray_bindings_state
+from fwrouter_api.services.subject_server_override_codec import project_row
 
 
 ReconcileState = Literal["in_sync", "drift", "stale", "failed", "unknown"]
@@ -188,14 +189,18 @@ def _read_subject_server_overrides(subject_ids: list[str]) -> dict[str, dict[str
     with db_session() as connection:
         rows = connection.execute(
             f"""
-            SELECT subject_id, selected_server_id, selected_until, apply_state,
+            SELECT subject_id, selected_server_id, selected_target_kind, selected_until, apply_state,
                    error_code, error_message, updated_at
             FROM subject_server_overrides
             WHERE subject_id IN ({placeholders})
             """,
             tuple(subject_ids),
         ).fetchall()
-    return {str(row["subject_id"]): dict(row) for row in rows}
+    return {
+        str(row["subject_id"]): project_row(row)
+        for row in rows
+        if project_row(row) is not None
+    }
 
 
 def _read_watchdog_state() -> dict[str, Any] | None:
