@@ -1,5 +1,27 @@
 # FWRouter — active roadmap
 
+## Manual verified local deployment — owner decision (2026-10-22)
+
+This checkpoint supersedes the proposed Secure Gated CD implementation direction without rewriting earlier decisions. CI V2 is implemented; automatic production CD is not. The owner selected a manually invoked, root-controlled local deployment verifier. GitHub provides read-only remote-main and exact-main CI evidence only: no GitHub-to-production administrative access, pull agent, root broker, scheduled deployment or merge-triggered deployment.
+
+The privileged wrapper and configuration must live outside the public repository and must never update through PR/merge/pull. Preparation and qualification occur in private isolated staging; installation into its final root-owned location and first production execution require separate owner GO. Deployment code must come exclusively from verified already-local Git objects/checkout; remote mismatch means STOP, never fetch/pull/checkout. Unsupported schema/backend/network/native/recovery scope must defer to the existing controlled manual procedure. Implementation, negative security tests, independent QA and exact-source qualification remain open; a Draft PR is not activation permission. The implementation/public-contract PR will be separate from this documentation reconciliation PR, with no competing edits to this roadmap before the documentation PR is merged by the user.
+
+GitHub security debt remains: the inspected active ruleset requires PR/squash and strict required CI with no bypass actors, but approving-review count is zero, Code Owner review is disabled, Actions permits arbitrary actions and administrative SHA-pinning enforcement is off. No settings were changed. CI PASS proves the declared tests, not the safety of arbitrary code. See [manual deployment architecture decision](audits/manual_verified_deployment_2026-10-22/DECISION.md).
+
+## Final post-rollout audit — 2026-10-22 (PARTIALLY VERIFIED; external gates open)
+
+Read-only initial/final checks confirmed installed main `d313dcf`, schema27 integrity/FK, the original65 native identities, preserved93 node credentials,7 accounts,7 clients,12 node identities and83 override targets/TTLs, generation18 verified and routing in_sync. Public subscriptions returnedHTTPS200 with verified TLS; protected host configuration and normal services/timers remained stable. No new rollout, restart, migration, CRUD, reconcile or checkpoint mutation was performed in that audit.
+
+The owner subsequently reported successful client connectivity from an external device. This is recorded as owner-reported external connectivity, not as instrumented comprehensive acceptance. Complete DNS-leak and fresh authenticated external SSH/Rescue/SFTP evidence remain unavailable. Formal acceptance stays PARTIALLY VERIFIED and recovery external-evidence closure remains open. Historical server-originated public VLESS HTTPS/UDP DNS PASS is retained with its original scope. Private raw evidence remains with the operator and is not published. No new functional milestone is activated by these reports.
+
+## PR33 manual production rollout — completed (2026-10-22)
+
+PR33 was user-merged into `d313dcf4f4dc997527c505aa8fbb746c29870c63`; [main CI39680667412](https://github.com/Coxf0rd/fwrouter/actions/runs/39680667412) passed full qualification including main smoke. The controlled full installer `--deploy --all` exited0. Guarded source transfer, offline SQLite26→27 dry-run/apply, integrity/FK, historical-row preservation and already-current no-mutation verification passed. Consistent backup and restore-copy checks were verified before mutation. No old-backend/schema rollback was attempted.
+
+Normal startup, Gateway, subject worker and four timers resumed. Protected host files and backend configuration were preserved, including the reviewed local traffic-collector readiness guard. StealthSurf VLESS, Core routing intent and existing native identities were retained without forced selection or provider-side changes. The initial controlled-stop systemd observation declined safely; its bounded retry completed.
+
+An isolated temporary alias-only Xray client passed virtual POST, repeat, desired/applied readback, physical NULL FK/kind vpn_auto and native vpn-global checks. An actual systemd subscription refresh preserved explicit intent. DELETE restored inheritance; API deletion removed the temporary client and restored exactly the original65 native identities. Generation18 is verified with candidate/verified digest parity and no active recovery checkpoint. Credentials/accounts/clients, original override targets/TTLs and Core routing were preserved; refresh observation/apply timestamps legitimately changed. These historical acceptance results do not authorize another deployment.
+
 ## Virtual Xray VPN-auto override POST — source correction (2026-10-22)
 
 Bounded defect correction from actual main `e1c4aa9` after merged PR31/32. PR32 squash is single-parent with exact qualified feature-tree inclusion; main CI39670417991 passed including mandatory main smoke. This supersedes the pending-integration gate below without changing its historical receipts. [PR33](https://github.com/Coxf0rd/fwrouter/pull/33), `fix/virtual-xray-vpn-auto-override`, fixes virtual target persistence without starting Stage5 or changing production.
