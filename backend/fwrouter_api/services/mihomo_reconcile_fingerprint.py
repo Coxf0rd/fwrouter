@@ -18,7 +18,7 @@ from fwrouter_api.services.mihomo_config_paths import (
     _resolved_contours_path,
 )
 
-FINGERPRINT_VERSION = 2
+FINGERPRINT_VERSION = 3
 UDP_POLICY_RECEIPT_VERSION = 1
 STATE_FILE_NAME = "reconcile-state.json"
 CANDIDATE_PROVENANCE_FILE_NAME = "config.next.provenance.json"
@@ -161,6 +161,7 @@ def _table_fingerprint() -> dict[str, Any]:
             """
             SELECT s.subject_id, s.subject_type, s.is_active, s.is_deleted,
                    l.ip_address AS lan_ip,
+                   json_extract(s.metadata_json, '$.detail.provider_ip') AS external_provider_ip,
                    json_extract(s.metadata_json, '$.detail.ip_address') AS external_ip,
                    json_extract(s.metadata_json, '$.detail.tailscale_ip') AS legacy_external_ip,
                    d.ip_address AS docker_ip,
@@ -170,6 +171,18 @@ def _table_fingerprint() -> dict[str, Any]:
             LEFT JOIN subject_lan AS l ON l.subject_id = s.subject_id
             LEFT JOIN subject_docker AS d ON d.subject_id = s.subject_id
             LEFT JOIN subject_server_overrides AS o ON o.subject_id = s.subject_id
+            WHERE EXISTS (
+                      SELECT 1
+                      FROM subject_server_overrides AS server_override
+                      WHERE server_override.subject_id = s.subject_id
+                  )
+               OR EXISTS (
+                      SELECT 1
+                      FROM subject_user_overrides AS user_override
+                      WHERE user_override.subject_id = s.subject_id
+                  )
+               OR s.implementation_kind = 'xray'
+               OR s.subject_role = 'vless_client'
             ORDER BY s.subject_id
             """
         ),
@@ -274,6 +287,22 @@ def current_mihomo_input_fingerprint(routing: dict[str, Any] | None = None) -> d
         "hash": _json_hash(payload),
         "payload": payload,
     }
+
+
+def fingerprint_category_hashes(fingerprint: dict[str, Any] | None) -> dict[str, str]:
+    """Return safe hashes for fingerprint subcategories, never their raw values."""
+    payload = fingerprint.get("payload") if isinstance(fingerprint, dict) else None
+    if not isinstance(payload, dict):
+        return {}
+    hashes: dict[str, str] = {}
+    for category, value in sorted(payload.items(), key=lambda item: str(item[0])):
+        category_name = str(category)
+        if isinstance(value, dict):
+            for subcategory, subvalue in sorted(value.items(), key=lambda item: str(item[0])):
+                hashes[f"{category_name}.{subcategory}"] = _json_hash(subvalue)
+        else:
+            hashes[category_name] = _json_hash(value)
+    return hashes
 
 
 def active_config_hash() -> str | None:

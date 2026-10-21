@@ -35,7 +35,7 @@ from fwrouter_api.services.subscription_profiles import (
     render_subscription_profile,
     _stable_digest,
 )
-from fwrouter_api.services.logs import write_operational_log
+from fwrouter_api.services.logs import write_operational_log, write_technical_log
 from fwrouter_api.services.xray_client_state import (
     _client_alias_map,
     _sync_xray_inventory,
@@ -77,6 +77,69 @@ def _generation_failure_operation(result: dict[str, Any]) -> str:
                     and code.isascii() and all(char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for char in code)):
                 return code
     return str(result.get("error_code") or result.get("stage") or "generation_failed")
+
+
+def _safe_mihomo_input_context_summary(context: Any) -> dict[str, Any]:
+    """Summarize staged inputs using hashes only; fingerprint payloads may contain secrets."""
+    if not isinstance(context, tuple) or len(context) < 2:
+        return {"available": False}
+    fingerprint, base_inputs = context[0], context[1]
+    if not isinstance(fingerprint, dict) or not isinstance(base_inputs, (list, tuple)):
+        return {"available": False}
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import fingerprint_category_hashes
+
+    try:
+        category_hashes = fingerprint_category_hashes(fingerprint)
+        fingerprint_hash = fingerprint.get("hash")
+        fingerprint_version = fingerprint.get("version")
+        normalized_base_inputs = sorted(
+            (str(path), str(digest) if digest is not None else None)
+            for path, digest in base_inputs
+        )
+    except (TypeError, ValueError):
+        return {"available": False}
+    base_digest = hashlib.sha256(
+        json.dumps(normalized_base_inputs, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "available": bool(isinstance(fingerprint_hash, str) and len(fingerprint_hash) == 64),
+        "fingerprint_version": fingerprint_version,
+        "fingerprint_sha256": fingerprint_hash,
+        "category_sha256": category_hashes,
+        "base_config_input_count": len(normalized_base_inputs),
+        "base_config_inputs_sha256": base_digest,
+    }
+
+
+def _log_mihomo_input_context_change(*, stage: str, before: Any, after: Any) -> None:
+    """Persist only category names, versions, and opaque hashes for fence diagnosis."""
+    try:
+        before_summary = _safe_mihomo_input_context_summary(before)
+        after_summary = _safe_mihomo_input_context_summary(after)
+        before_categories = before_summary.get("category_sha256", {})
+        after_categories = after_summary.get("category_sha256", {})
+        changed_categories = sorted(
+            category for category in set(before_categories) | set(after_categories)
+            if before_categories.get(category) != after_categories.get(category)
+        )
+        if before_summary.get("base_config_inputs_sha256") != after_summary.get("base_config_inputs_sha256"):
+            changed_categories.append("base_config_inputs")
+        write_technical_log(
+            component="xray-subscription",
+            event_type="mihomo_stage_input_context_changed",
+            level="warning",
+            message="Mihomo staged inputs changed during native validation.",
+            details={
+                "stage": stage,
+                "changed_categories": changed_categories,
+                "before": before_summary,
+                "after": after_summary,
+            },
+            event_code="mihomo.stage_input_context_changed",
+        )
+    except Exception:
+        # Diagnostics must not mask the original fail-closed generation result.
+        pass
 
 
 def _legacy_xray_candidate_matches_active(active_path: Path, candidate_path: Path) -> bool:
@@ -1586,6 +1649,12 @@ def _stage_profile_native_candidates(
         if name == "transition":
             context_after = candidate_input_context()
             transition_context = context_before if context_before is not None and context_before == context_after else None
+            if context_before is not None and context_after != context_before:
+                _log_mihomo_input_context_change(
+                    stage="transition_render",
+                    before=context_before,
+                    after=context_after,
+                )
             transition_written = written
         candidate_hash = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
         if write_reused and candidate_hash != expected_transition_hash:
@@ -1630,11 +1699,14 @@ def _stage_profile_native_candidates(
                 "error_code": "MIHOMO_CANDIDATE_INVALID",
                 "validation": _strip_raw_payload(validation),
             }
-        if (
-            context_before is None
-            or candidate_input_context() != context_before
-            or (name == "final" and transition_context != context_before)
-        ):
+        context_after_validation = candidate_input_context()
+        transition_context_changed = name == "final" and transition_context != context_before
+        if context_before is None or context_after_validation != context_before or transition_context_changed:
+            _log_mihomo_input_context_change(
+                stage=f"{name}_native_validation",
+                before=context_before,
+                after=(transition_context if transition_context_changed else context_after_validation),
+            )
             return {"ok": False, "stage": f"mihomo_{name}_candidate",
                     "error_code": "MIHOMO_STAGE_INPUTS_CHANGED_AFTER_VALIDATION"}
         if not _fixed_xray_generation_context_matches(
