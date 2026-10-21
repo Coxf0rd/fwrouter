@@ -102,8 +102,8 @@ def _validate_plan(root: Path, plan_path: Path) -> tuple[dict[str, Any], dict[st
     if (plan.get("manifest_digest") != manifest_digest
             or plan.get("manifest_version") != manifest.get("version")):
         raise BuildInputError("plan manifest identity differs from current source")
-    if not isinstance(plan.get("selected_files"), list) or not plan["selected_files"]:
-        raise BuildInputError("plan has no selected test files")
+    if not isinstance(plan.get("selected_files"), list):
+        raise BuildInputError("plan selected test files must be a list")
     return plan, manifest, commit, plan_digest
 
 

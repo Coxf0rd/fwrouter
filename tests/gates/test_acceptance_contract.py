@@ -8583,6 +8583,24 @@ class ParallelCiBuildInputContractTests(unittest.TestCase):
                     ci_inputs.prepare(artifact, plan, source_root=source)
             self.assertFalse(artifact.exists())
 
+    def test_build_accepts_immutable_l0_only_documentation_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            source.mkdir()
+            plan, _, _ = self._fixture(source)
+            value = json.loads(plan.read_text(encoding="utf-8"))
+            value["selected_files"] = []
+            value.pop("plan_digest")
+            value["plan_digest"] = ci_inputs.canonical_digest(value)
+            plan.write_text(json.dumps(value), encoding="utf-8")
+            artifact = Path(directory) / "artifact"
+            with mock.patch.object(ci_inputs, "_current_commit", return_value="a" * 40), \
+                    mock.patch.object(ci_inputs, "_run", side_effect=self._mock_build_command):
+                summary = ci_inputs.prepare(artifact, plan, source_root=source)
+                verified = ci_inputs.verify(artifact, plan, source_root=source)
+            self.assertEqual(value["plan_digest"], summary["plan_digest"])
+            self.assertEqual(summary, verified)
+
     def test_verify_rejects_extra_artifact_files(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source"

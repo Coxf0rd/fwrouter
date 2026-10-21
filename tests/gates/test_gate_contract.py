@@ -835,6 +835,50 @@ class GateContractTests(unittest.TestCase):
         self.assertIn('"fwrouter_api/__init__.py"', verifier)
         self.assertIn('ci_inputs.verify', (gate.ROOT / 'tests/gates/parallel_ci.py').read_text())
 
+    def test_ci_dependency_installs_are_minimal_and_owned_by_consumers(self) -> None:
+        import yaml
+
+        workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
+        jobs = yaml.safe_load(workflow)["jobs"]
+
+        def install_commands(role: str) -> list[str]:
+            return [step.get("run", "") for step in jobs[role]["steps"]
+                    if "pip install" in step.get("run", "")]
+
+        preflight = (gate.ROOT / "tests/gates/requirements-preflight.txt").read_text(encoding="utf-8")
+        full_lock = (gate.ROOT / "tests/gates/requirements-ci.txt").read_text(encoding="utf-8")
+        build_helper = (gate.ROOT / "tests/gates/ci_inputs.py").read_text(encoding="utf-8")
+        self.assertEqual(1, len(install_commands("plan")))
+        self.assertIn("--require-hashes", install_commands("plan")[0])
+        self.assertIn("requirements-preflight.txt", install_commands("plan")[0])
+        self.assertIn("ruff==0.17.0 --hash=sha256:", preflight)
+        self.assertEqual(1, len([line for line in preflight.splitlines()
+                                 if line.strip() and not line.startswith("#")]))
+        self.assertEqual([], install_commands("build"))
+        self.assertIn('"--require-hashes"', build_helper)
+        self.assertIn('str(lock_path)', build_helper)
+        self.assertEqual(1, len(install_commands("unit")))
+        self.assertEqual(1, len(install_commands("native")))
+        for role in ("unit", "native"):
+            self.assertIn("requirements-ci.txt", install_commands(role)[0])
+        for role in ("hosted", "provider", "packet", "affected"):
+            self.assertEqual([], install_commands(role), role)
+        self.assertIn("ruff==0.17.0 --hash=sha256:", full_lock)
+        self.assertIn("PyYAML==6.0.2 --hash=sha256:", full_lock)
+
+        # These jobs invoke only stdlib host helpers; application test dependencies
+        # are installed and run inside the pinned dependency image/container.
+        script = (
+            "import sys\n"
+            "sys.path[:0] = ['tests/gates', 'tests/acceptance', 'installer']\n"
+            "import parallel_ci, ci_inputs, qualify_recovery\n"
+        )
+        completed = subprocess.run(
+            [__import__("sys").executable, "-S", "-c", script], cwd=gate.ROOT,
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+
 
     def test_wheel_verifier_checks_identity_exact_payload_and_single_wheel(self) -> None:
         source_payload = {
@@ -1739,6 +1783,22 @@ class GateContractTests(unittest.TestCase):
                         message = "digest"
                     with self.assertRaisesRegex(parallel_ci.gate.GateError, message):
                         parallel_ci.verify_producer(root, "hosted", plan)
+
+    def test_parallel_documentation_plan_preserves_l0_only_and_main_smoke(self) -> None:
+        manifest = gate.load_manifest()
+        with mock.patch.object(gate, "changed_paths", return_value=["README.md"]):
+            plan = gate.make_plan(gate.git("rev-parse", "HEAD"), manifest, include_native=True)
+            gate.ensure_plan(plan, manifest)
+        self.assertEqual([], plan["selected_files"])
+        ordinary = parallel_ci.requirements(plan)
+        self.assertEqual({"plan", "build", "unit"},
+                         {role for role, needed in ordinary.items() if needed})
+        main = parallel_ci.requirements(plan, main_smoke=True)
+        self.assertEqual({"plan", "build", "unit", "hosted"},
+                         {role for role, needed in main.items() if needed})
+        results = {role: {"result": "success" if needed else "skipped"}
+                   for role, needed in ordinary.items()}
+        self.assertEqual([], parallel_ci.validate_results(results, ordinary))
 
     def test_parallel_result_matrix_requires_success_and_only_allows_optional_skip(self) -> None:
         required = {role: True for role in parallel_ci.ROLES}

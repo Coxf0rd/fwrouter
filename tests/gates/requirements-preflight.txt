@@ -1,0 +1,3 @@
+# Minimal host tools for immutable plan validation and changed-source linting.
+# Exact Linux wheel hashes are shared with the full CI lock.
+ruff==0.17.0 --hash=sha256:bc73e7c133e82d55b5f15897b2a442d72c0cb4a0c886c46801ce3c247150b60c

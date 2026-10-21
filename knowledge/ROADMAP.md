@@ -1,8 +1,10 @@
 # FWRouter — active roadmap
 
-## CI Pipeline V2 — 2026-10-22 (IN PROGRESS)
+## CI Pipeline V2 — source and reference qualification complete (2026-10-22)
 
-Separate infrastructure task on `feat/ci-pipeline-v2` from actual main `059f49bfe130529607a5f49153d592cf487754dc` (PR31 merged). Implement eight isolated jobs with immutable plan/build inputs, parallel unit/ordinary/provider/packet/native qualification and the unchanged required check name. Preserve exact coverage, native proof, cleanup, safe-recovery qualification, mandatory main smoke and fail-closed aggregation. No product changes, deployment, branch-protection change, CD or agent merge. Source/local regression/review and real hosted positive/negative evidence, V1/V2 measurements and one ready unmerged PR are separate remaining gates. See [CI V2 report](audits/ci_pipeline_v2_2026-10-22/REPORT.md). Earlier refresh checkpoints retain their historical status; this task does not reopen that work.
+Separate infrastructure task in [PR32](https://github.com/Coxf0rd/fwrouter/pull/32), `feat/ci-pipeline-v2`, from main `059f49bfe130529607a5f49153d592cf487754dc` (PR31 merged). Eight isolated jobs implement immutable plan/build inputs, parallel unit/ordinary/provider/packet/native execution and the unchanged required check. Full reference `5a44a59`/run39665954573 attempt1 passed2121 registered nodes, exact178-file selection, native proof, three hosted partitions, cleanup and safe-recovery qualification. Required check rejected both a real unit failure and the attempt2 partial rerun with missing current-attempt artifacts despite retained upstream SUCCESS. No protection/fencing/coverage weakening.
+
+Measured reference workflow wall7m57s versus V1 21m23s; total runner-minutes23.93 versus21.32 (12.3% higher summed runner time for62.8% lower observed wall). Single qualified observations, not a repeated CPU-matched benchmark. Final optimization removes redundant host dependencies while retaining full unit/native locks and pinned Ruff/build inputs; independent review passed. Latest PR32 required SUCCESS remains the final optimized-HEAD/review-readiness gate, with final run measurements retained in its artifacts and PR report. Only the user may Squash and Merge; actual main-event qualification follows that event. No product/runtime change, production operation, CD, deployment or agent merge. See [CI V2 report and results](audits/ci_pipeline_v2_2026-10-22/REPORT.md). Earlier refresh checkpoints retain their historical status.
 
 ## Scheduled refresh correction — deployed acceptance 2026-10-22
 

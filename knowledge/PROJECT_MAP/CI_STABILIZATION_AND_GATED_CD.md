@@ -1,8 +1,8 @@
 # Test Architecture & CI Stabilization
 
-## CI Pipeline V2 — implementation in progress (2026-10-22)
+## CI Pipeline V2 — qualified architecture (2026-10-22)
 
-The separately authorized CI infrastructure milestone starts from main `059f49bfe130529607a5f49153d592cf487754dc` on `feat/ci-pipeline-v2`. It does not deploy or change product/runtime code. The existing closed CI milestone remains historical. See [V2 architecture and measurements](../audits/ci_pipeline_v2_2026-10-22/REPORT.md). Source implementation and local contracts are under qualification; hosted V2 success, failure evidence and measured performance are not yet claimed.
+The separately authorized CI infrastructure milestone starts from main `059f49bfe130529607a5f49153d592cf487754dc` on `feat/ci-pipeline-v2`. It does not deploy or change product/runtime code. The existing closed CI milestone remains historical. See [V2 architecture and measurements](../audits/ci_pipeline_v2_2026-10-22/REPORT.md). Full reference qualification passed at5a44a59/run39665954573 attempt1:2121 nodes, native/hosted/packet/cleanup and safe-recovery evidence complete. Attempt2 deliberately proved missing same-attempt artifacts fail the required check despite successful upstream statuses. Measured workflow wall7m57s versus V1 21m23s; runner-minutes23.93 versus21.32. Final dependency optimization and the current PR32 HEAD require the unchanged final check before review readiness. Real main-event CI follows user Squash and Merge; no agent merge or deployment.
 
 ## Current checkpoint — 2026-10-15
 

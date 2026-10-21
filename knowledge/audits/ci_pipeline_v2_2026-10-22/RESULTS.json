@@ -1,0 +1,611 @@
+{
+  "schema": "fwrouter-ci-v2-comparison/v1",
+  "baseline": {
+    "source_commit": "be4ec2aed9d66fabcd80029da9ddfde70116c37e",
+    "run_id": 39658023287,
+    "workflow_wall_seconds": 1283,
+    "job_seconds": 1279,
+    "selected_files": 178,
+    "executed_node_count": 2121
+  },
+  "v2_reference": {
+    "source_commit": "5a44a5923bc5c0c577c086cebcaf101c771eff31",
+    "run_id": 39665954573,
+    "attempt": 1,
+    "workflow_wall_seconds": 477,
+    "selected_files": 178,
+    "executed_node_count": 2121,
+    "aggregate_eligible": true,
+    "job_sum_minutes": 23.933,
+    "jobs": [
+      {
+        "name": "Immutable plan and preflight",
+        "result": "success",
+        "seconds": 40.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 3.0,
+            "result": "success"
+          },
+          {
+            "name": "Stop targeted qualification before full required CI",
+            "seconds": 0.0,
+            "result": "skipped"
+          },
+          {
+            "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 10.0,
+            "result": "success"
+          },
+          {
+            "name": "Install hashed CI dependencies",
+            "seconds": 8.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "seconds": 9.0,
+            "result": "success"
+          },
+          {
+            "name": "Lint workflow syntax with pinned actionlint binary",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Validate catalog and isolation bootstrap",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Resolve immutable base and plan affected L0-L5",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Upload immutable plan",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Complete job",
+            "seconds": 0.0,
+            "result": "success"
+          }
+        ]
+      },
+      {
+        "name": "Backend installer and frontend tests",
+        "result": "success",
+        "seconds": 292.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "seconds": 3.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 3.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 7.0,
+            "result": "success"
+          },
+          {
+            "name": "Install hashed CI dependencies",
+            "seconds": 5.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "seconds": 7.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Verify immutable preflight artifact",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Run isolated unit profile",
+            "seconds": 260.0,
+            "result": "success"
+          },
+          {
+            "name": "Seal bounded unit evidence",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Upload unit evidence",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Complete job",
+            "seconds": 0.0,
+            "result": "success"
+          }
+        ]
+      },
+      {
+        "name": "Build and verify source once",
+        "result": "success",
+        "seconds": 32.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 3.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 9.0,
+            "result": "success"
+          },
+          {
+            "name": "Install hashed CI dependencies",
+            "seconds": 4.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "seconds": 5.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Verify immutable preflight artifact",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Build backend and verify static UI",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Seal bounded build evidence",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Upload build evidence",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Complete job",
+            "seconds": 0.0,
+            "result": "success"
+          }
+        ]
+      },
+      {
+        "name": "Ordinary functional and browser",
+        "result": "success",
+        "seconds": 366.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 4.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 14.0,
+            "result": "success"
+          },
+          {
+            "name": "Install hashed CI dependencies",
+            "seconds": 7.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Verify immutable preflight artifact",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Run isolated hosted profile",
+            "seconds": 330.0,
+            "result": "success"
+          },
+          {
+            "name": "Seal bounded hosted evidence",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Upload hosted evidence",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Complete job",
+            "seconds": 1.0,
+            "result": "success"
+          }
+        ]
+      },
+      {
+        "name": "Kernel packet and fail-closed",
+        "result": "success",
+        "seconds": 260.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "seconds": 3.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 3.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 9.0,
+            "result": "success"
+          },
+          {
+            "name": "Install hashed CI dependencies",
+            "seconds": 6.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Verify immutable preflight artifact",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Run isolated packet profile",
+            "seconds": 233.0,
+            "result": "success"
+          },
+          {
+            "name": "Seal bounded packet evidence",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Upload packet evidence",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Complete job",
+            "seconds": 0.0,
+            "result": "success"
+          }
+        ]
+      },
+      {
+        "name": "Provider and browser cohort",
+        "result": "success",
+        "seconds": 316.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 10.0,
+            "result": "success"
+          },
+          {
+            "name": "Install hashed CI dependencies",
+            "seconds": 5.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Verify immutable preflight artifact",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Run isolated provider profile",
+            "seconds": 293.0,
+            "result": "success"
+          },
+          {
+            "name": "Seal bounded provider evidence",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Upload provider evidence",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Complete job",
+            "seconds": 0.0,
+            "result": "success"
+          }
+        ]
+      },
+      {
+        "name": "Qualified native Mihomo and Xray",
+        "result": "success",
+        "seconds": 102.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 3.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 9.0,
+            "result": "success"
+          },
+          {
+            "name": "Install hashed CI dependencies",
+            "seconds": 9.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Verify immutable preflight artifact",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Run isolated native profile",
+            "seconds": 74.0,
+            "result": "success"
+          },
+          {
+            "name": "Seal bounded native evidence",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Upload native evidence",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Complete job",
+            "seconds": 1.0,
+            "result": "success"
+          }
+        ]
+      },
+      {
+        "name": "Affected L0-L5 with hosted profiles",
+        "result": "success",
+        "seconds": 28.0,
+        "steps": [
+          {
+            "name": "Set up job",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 3.0,
+            "result": "success"
+          },
+          {
+            "name": "Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 9.0,
+            "result": "success"
+          },
+          {
+            "name": "Install hashed CI dependencies",
+            "seconds": 5.0,
+            "result": "success"
+          },
+          {
+            "name": "Download current attempt producer artifacts",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Aggregate immutable evidence and qualify safe recovery",
+            "seconds": 1.0,
+            "result": "success"
+          },
+          {
+            "name": "Retain bounded required reports and recovery qualification",
+            "seconds": 2.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "seconds": 0.0,
+            "result": "success"
+          },
+          {
+            "name": "Complete job",
+            "seconds": 0.0,
+            "result": "success"
+          }
+        ]
+      }
+    ],
+    "compressed_artifact_bytes": 2822718
+  },
+  "negative_cases": {
+    "failed_unit_run": 39664620080,
+    "missing_current_attempt_evidence_run": 39665954573,
+    "missing_current_attempt_evidence_attempt": 2
+  },
+  "limitations": [
+    "single qualified reference per architecture",
+    "CPU model not recorded",
+    "time RSS excludes Docker container peaks",
+    "final dependency optimization measured separately in latest PR run"
+  ]
+}
