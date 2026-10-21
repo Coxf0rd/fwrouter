@@ -306,7 +306,8 @@ def _schema_version_matches_canonical_structure(
     upgrade admission check has a stricter job: it must reject missing or
     altered baseline tables before creating a backup or applying migration.
     Build the reference from the repository's canonical schema.sql. For v24,
-    remove only the five additive v25 identity tables. Compare SQLite metadata
+    remove only the five additive v25 identity tables. For pre-v27 schemas,
+    remove the additive override discriminator. Compare SQLite metadata
     so equivalent DDL formatting and harmless custom non-unique indexes remain
     compatible.
     """
@@ -315,6 +316,10 @@ def _schema_version_matches_canonical_structure(
     try:
         schema_path = Path(__file__).parent / "db" / "schema.sql"
         expected.executescript(schema_path.read_text(encoding="utf-8"))
+        if schema_version < 27:
+            expected.execute(
+                "ALTER TABLE subject_server_overrides DROP COLUMN selected_target_kind"
+            )
         if schema_version == 24:
             for table_name in (
                 "subscription_node_credential_history",
@@ -335,7 +340,7 @@ def _schema_version_matches_canonical_structure(
             expected.execute(
                 "UPDATE schema_meta SET value = '25' WHERE key = 'schema_version'"
             )
-        elif schema_version != 26:
+        elif schema_version not in {26, 27}:
             return False
 
         expected_tables = {
@@ -391,7 +396,7 @@ def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_sche
         except (TypeError, ValueError):
             actual_schema = None
         if (
-            (expected_schema, target_schema) in {(24, 26), (25, 26), (26, 26)}
+            (expected_schema, target_schema) in {(24, 27), (25, 27), (26, 27), (27, 27)}
             and actual_schema == expected_schema
             and integrity == ["ok"]
             and not foreign_key_violations
@@ -418,12 +423,26 @@ def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_sche
             raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
         return actual_schema
 
-    if (expected_schema, target_schema) == (25, 26):
+    if (expected_schema, target_schema) == (26, 27):
+        if not canonical_structure_matches:
+            raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+        problems = state.get("problems") if isinstance(state.get("problems"), list) else []
+        allowed_problem_keys = {
+            ("SCHEMA_VERSION_MISMATCH", None),
+            ("TABLE_SCHEMA_MISMATCH", "subject_server_overrides"),
+        }
+        if any((problem.get("code"), problem.get("table")) not in allowed_problem_keys for problem in problems):
+            raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+        if len(problems) != 2:
+            raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
+        return actual_schema
+
+    if (expected_schema, target_schema) == (25, 27):
         if not canonical_structure_matches:
             raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
         return actual_schema
 
-    if (expected_schema, target_schema) != (24, 26):
+    if (expected_schema, target_schema) != (24, 27):
         raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
     if not canonical_structure_matches:
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
@@ -435,18 +454,20 @@ def _database_upgrade_preflight(path: Path, *, expected_schema: int, target_sche
     if any(bool(tables[name].get("exists")) for name in _SCHEMA_25_IDENTITY_TABLES):
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
     if any(not table.get("ok") for name, table in tables.items()
-           if name not in _SCHEMA_25_IDENTITY_TABLES and name != "apply_versions"):
+           if name not in _SCHEMA_25_IDENTITY_TABLES
+           and name not in {"apply_versions", "subject_server_overrides"}):
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
     problems = state.get("problems") if isinstance(state.get("problems"), list) else []
     allowed_problem_keys = {
         ("SCHEMA_VERSION_MISMATCH", None),
         *(("TABLE_SCHEMA_MISMATCH", name) for name in _SCHEMA_25_IDENTITY_TABLES),
         ("TABLE_SCHEMA_MISMATCH", "apply_versions"),
+        ("TABLE_SCHEMA_MISMATCH", "subject_server_overrides"),
     }
     if any((problem.get("code"), problem.get("table")) not in allowed_problem_keys
            for problem in problems):
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
-    if len(problems) != len(_SCHEMA_25_IDENTITY_TABLES) + 2:
+    if len(problems) != len(_SCHEMA_25_IDENTITY_TABLES) + 3:
         raise ValueError("DATABASE_SCHEMA_PREFLIGHT_FAILED")
     return actual_schema
 
@@ -524,9 +545,8 @@ def _run_database_upgrade(args: argparse.Namespace) -> int:
             raise ValueError("DATABASE_SCHEMA_FILE_UNAVAILABLE")
         target_version = int(EXPECTED_SCHEMA_VERSION)
         if not (
-            (args.expected_schema == target_version and target_version == 26)
-            or (args.expected_schema == 25 and target_version == 26)
-            or (args.expected_schema == 24 and target_version == 26)
+            args.expected_schema == target_version
+            or (args.expected_schema in {24, 25, 26} and target_version == 27)
         ):
             raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
         current = _database_upgrade_preflight(
@@ -536,7 +556,7 @@ def _run_database_upgrade(args: argparse.Namespace) -> int:
             print(json.dumps({"ok": True, "status": "already_current", "current_schema": current,
                               "target_schema": target_version, "database_changed": False}, sort_keys=True))
             return 0
-        if args.expected_schema not in {24, 25} or target_version != 26:
+        if args.expected_schema not in {24, 25, 26} or target_version != 27:
             raise ValueError("DATABASE_SCHEMA_UPGRADE_TARGET_UNSUPPORTED")
         if not args.apply:
             print(json.dumps({"ok": True, "status": "dry_run", "current_schema": current,

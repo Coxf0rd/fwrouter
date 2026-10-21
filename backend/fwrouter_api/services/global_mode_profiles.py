@@ -121,7 +121,7 @@ def _subject_server_overrides_stamp() -> dict[str, Any]:
     # Only selected target content changes the manifest.
     return _query_digest(
         """
-        SELECT subject_id, selected_server_id, selected_until
+        SELECT subject_id, selected_server_id, selected_target_kind, selected_until
         FROM subject_server_overrides
         ORDER BY subject_id
         """

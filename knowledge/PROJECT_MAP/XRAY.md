@@ -330,3 +330,9 @@ that bounded synthetic path, not production state or deployment. Interrupted fix
 checkpoints without qualified preimage proof remain blocked/pending. Destructive
 fixed-specific interruption tests remain NOT RUN. Full final PR CI is a separate
 gate; production recovery/deployment and Stage 5 remain outside this task.
+
+## Explicit virtual subject target — source correction, 2026-10-22
+
+`POST /api/v2/subjects/{id}/server-override` with `virtual:xray:vpn-auto` retains explicit subject intent and24-hour expiry. It differs from DELETE, which clears the row and restores global inheritance. Schema27 represents this in the existing override owner using target kind plus a NULL real-server FK; DTOs project the established virtual ID. Compatible registered Xray explicit clients alone may select this target; user requests remain locked under admin direct/disabled modes.
+
+The native target is the existing `vpn-global` handoff. Core still controls that selector, including fixed-mode enforcement; virtual selection never authorizes bypassing Core into a raw automatic pool. Scoped readback compares against the same native target mapping as Xray binding generation and requires an actually applied matching binding. Failed materialization keeps desired intent with truthful failure/pending status. Refresh, restart and reconcile preserve active intent rather than replacing it with a derived server assignment. Source snapshots/fingerprints include the discriminator. See the [bounded correction and separate deployment scenario](../audits/virtual_xray_vpn_auto_override_2026-10-22/REPORT.md); no live acceptance is implied.

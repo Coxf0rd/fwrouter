@@ -5,7 +5,12 @@ from typing import Any
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.events import create_event_context, safe_human_label, write_audit_event
-from fwrouter_api.services.subject_taxonomy import explicit_external_client_allows_virtual_vpn_auto
+from fwrouter_api.services.subject_taxonomy import explicit_external_client_subject_allows_virtual_vpn_auto
+from fwrouter_api.services.subject_server_override_codec import (
+    decode_target,
+    encode_target,
+    project_row,
+)
 
 
 VIRTUAL_XRAY_VPN_AUTO_SERVER_ID = "virtual:xray:vpn-auto"
@@ -30,6 +35,7 @@ def _get_subject_row(subject_id: str) -> Any | None:
             SELECT
                 subject_id,
                 subject_type,
+                implementation_kind,
                 stable_key,
                 display_name,
                 alias,
@@ -62,8 +68,8 @@ def set_subject_server_override(
     This function only stores desired override state. Runtime materialization
     depends on subject-specific scoped egress support:
     - LAN and Tailscale-node subjects can materialize inside the owned nft contour.
-    - Xray subjects keep the override in control-plane/runtime state, but still
-      require a future Xray-specific runtime matcher before they can be applied.
+    - Xray virtual vpn-auto intent is represented by a typed target with no
+      servers FK; Xray binding materialization maps it to the vpn-global group.
     """
 
     subject = _get_subject_row(subject_id)
@@ -78,7 +84,9 @@ def set_subject_server_override(
 
     subject_type = str(subject["subject_type"] or "")
     if str(server_id or "").strip() == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
-        if not explicit_external_client_allows_virtual_vpn_auto(subject_type):
+        if not explicit_external_client_subject_allows_virtual_vpn_auto(
+            subject_type, str(subject["implementation_kind"] or "")
+        ):
             return {
                 "ok": False,
                 "subject_id": subject_id,
@@ -132,19 +140,21 @@ def set_subject_server_override(
                 }
         previous = connection.execute(
             """
-            SELECT selected_server_id
+            SELECT selected_server_id, selected_target_kind
             FROM subject_server_overrides
             WHERE subject_id = ? AND selected_until > CURRENT_TIMESTAMP
             """,
             (subject_id,),
         ).fetchone()
-        previous_server_id = str(previous["selected_server_id"] or "") or None if previous else None
+        previous_server_id = decode_target(previous)
+        selected_target_kind, persisted_server_id = encode_target(server_id)
         previous_server_label = _safe_server_label(connection, previous_server_id)
         connection.execute(
             """
             INSERT INTO subject_server_overrides (
                 subject_id,
                 selected_server_id,
+                selected_target_kind,
                 selected_until,
                 apply_state,
                 error_code,
@@ -152,6 +162,7 @@ def set_subject_server_override(
                 updated_at
             )
             VALUES (
+                ?,
                 ?,
                 ?,
                 datetime('now', '+' || ? || ' hours'),
@@ -162,13 +173,14 @@ def set_subject_server_override(
             )
             ON CONFLICT(subject_id) DO UPDATE SET
                 selected_server_id = excluded.selected_server_id,
+                selected_target_kind = excluded.selected_target_kind,
                 selected_until = excluded.selected_until,
                 apply_state = 'pending',
                 error_code = NULL,
                 error_message = NULL,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (subject_id, server_id, MANUAL_SERVER_TTL_HOURS),
+            (subject_id, persisted_server_id, selected_target_kind, MANUAL_SERVER_TTL_HOURS),
         )
         if previous_server_id != server_id:
             write_audit_event(
@@ -200,6 +212,7 @@ def set_subject_server_override(
             SELECT
                 subject_id,
                 selected_server_id,
+                selected_target_kind,
                 selected_until,
                 apply_state,
                 error_code,
@@ -211,10 +224,11 @@ def set_subject_server_override(
             (subject_id,),
         ).fetchone()
 
+    projected = project_row(row)
     return {
         "ok": True,
         "requested_by": requested_by,
-        "override": dict(row),
+        "override": projected,
         "server": validation["server"],
     }
 
@@ -233,6 +247,7 @@ def clear_subject_server_override(
             SELECT
                 subject_id,
                 selected_server_id,
+                selected_target_kind,
                 selected_until,
                 selected_until > CURRENT_TIMESTAMP AS is_active,
                 apply_state,
@@ -253,7 +268,7 @@ def clear_subject_server_override(
             (subject_id,),
         )
         previous_server_id = (
-            str(row_before["selected_server_id"] or "") or None
+            decode_target(row_before)
             if row_before and bool(row_before["is_active"])
             else None
         )
@@ -281,6 +296,7 @@ def clear_subject_server_override(
     cleared_override = dict(row_before) if row_before else None
     if cleared_override is not None:
         cleared_override.pop("is_active", None)
+        cleared_override = project_row(cleared_override)
     return {
         "ok": True,
         "requested_by": requested_by,
@@ -298,6 +314,7 @@ def get_subject_server_override(subject_id: str) -> dict[str, Any] | None:
             SELECT
                 subject_id,
                 selected_server_id,
+                selected_target_kind,
                 selected_until,
                 apply_state,
                 error_code,
@@ -305,12 +322,13 @@ def get_subject_server_override(subject_id: str) -> dict[str, Any] | None:
                 updated_at
             FROM subject_server_overrides
             WHERE subject_id = ?
+              AND (selected_target_kind = 'vpn_auto' OR selected_server_id IS NOT NULL)
               AND selected_until > CURRENT_TIMESTAMP
             """,
             (subject_id,),
         ).fetchone()
 
-    return dict(row) if row else None
+    return project_row(row)
 
 
 def update_subject_server_override_apply_status(

@@ -28,3 +28,7 @@ runtime binding has been applied.
 - Keep manual override TTL semantics intact.
 - Do not allow inactive or non-global-list servers as user-selectable overrides.
 - Preserve subject taxonomy behavior for virtual VPN-auto selection.
+
+## Typed target persistence (schema27 source)
+
+The existing row owns explicit virtual Xray VPN-auto intent as well as real-server assignments. A discriminator plus NULL physical server FK encodes virtual intent; `subject_server_override_codec.py` projects the stable virtual ID for API/policy consumers. Historical NULL real-server rows remain distinct. Set/clear/audit compare semantic targets, retaining TTL renewal and apply-error reporting. Virtual POST is not a canonical clear operation. Admission checks the registered implementation as well as subject taxonomy. Migration and native qualification are separate from production deployment.

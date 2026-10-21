@@ -17,7 +17,7 @@ from fwrouter_api.services.subject_policy import (
 )
 from fwrouter_api.services.subject_taxonomy import (
     SERVER_OVERRIDE_SUBJECT_TYPES,
-    explicit_external_client_allows_virtual_vpn_auto,
+    explicit_external_client_subject_allows_virtual_vpn_auto,
     is_explicit_external_client_subject_type,
     subject_follows_global_mode,
 )
@@ -94,19 +94,21 @@ def _validate_subject_server_override_request(
     server_id: str,
 ) -> dict[str, Any] | None:
     subject_type = str(subject["subject_type"])
-    if subject_type not in SERVER_OVERRIDE_SUBJECT_TYPES:
-        return {
-            "code": "SUBJECT_TYPE_NOT_SUPPORTED",
-            "message": f"Server override is not supported for subject type: {subject_type}.",
-        }
-
     if server_id == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
-        if not explicit_external_client_allows_virtual_vpn_auto(subject_type):
+        if not explicit_external_client_subject_allows_virtual_vpn_auto(
+            subject_type, str(subject.get("implementation_kind") or "")
+        ):
             return {
                 "code": "SERVER_OVERRIDE_VPN_AUTO_XRAY_ONLY",
                 "message": "Virtual vpn-auto override is supported only for compatible explicit external clients.",
             }
         return None
+
+    if subject_type not in SERVER_OVERRIDE_SUBJECT_TYPES:
+        return {
+            "code": "SUBJECT_TYPE_NOT_SUPPORTED",
+            "message": f"Server override is not supported for subject type: {subject_type}.",
+        }
 
     server = get_server(server_id)
     if server is None:

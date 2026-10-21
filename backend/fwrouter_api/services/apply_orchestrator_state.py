@@ -15,6 +15,7 @@ from fwrouter_api.services.servers import (
 from fwrouter_api.services.subject_policy import (
     enrich_subject_with_effective_state,
 )
+from fwrouter_api.services.subject_server_override_codec import project_row
 from fwrouter_api.services.subject_taxonomy import (
     subject_follows_global_mode,
 )
@@ -42,17 +43,22 @@ def _load_server_override_map() -> dict[str, dict[str, Any]]:
             SELECT
                 subject_id,
                 selected_server_id,
+                selected_target_kind,
                 selected_until,
                 apply_state,
                 error_code,
                 error_message,
                 updated_at
             FROM subject_server_overrides
-            WHERE selected_server_id IS NOT NULL
+            WHERE (selected_target_kind = 'vpn_auto' OR selected_server_id IS NOT NULL)
               AND selected_until > CURRENT_TIMESTAMP
             """
         ).fetchall()
-    return {str(row["subject_id"]): dict(row) for row in rows}
+    return {
+        str(row["subject_id"]): project_row(row)
+        for row in rows
+        if project_row(row) is not None
+    }
 
 
 def _load_subjects_with_overrides(

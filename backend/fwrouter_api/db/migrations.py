@@ -1432,6 +1432,25 @@ def _migrate_25_to_26(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_26_to_27(connection: sqlite3.Connection) -> None:
+    """Add a typed target discriminator without changing historical overrides.
+
+    Existing rows retain the default ``server`` kind. In particular, a legacy
+    NULL server id remains an absent/invalid override and is never interpreted
+    as vpn-auto. The virtual kind is valid only with a NULL FK target.
+    """
+    if not _table_exists(connection, "subject_server_overrides"):
+        return
+    columns = _columns(connection, "subject_server_overrides")
+    if "selected_target_kind" not in columns:
+        connection.execute(
+            """ALTER TABLE subject_server_overrides
+               ADD COLUMN selected_target_kind TEXT NOT NULL DEFAULT 'server'
+               CHECK (selected_target_kind IN ('server', 'vpn_auto')
+                      AND (selected_target_kind = 'server' OR selected_server_id IS NULL))"""
+        )
+
+
 MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(7, 8, _migrate_7_to_8),
     SchemaMigration(8, 9, _migrate_8_to_9),
@@ -1452,6 +1471,7 @@ MIGRATIONS: tuple[SchemaMigration, ...] = (
     SchemaMigration(23, 24, _migrate_23_to_24),
     SchemaMigration(24, 25, _migrate_24_to_25),
     SchemaMigration(25, 26, _migrate_25_to_26),
+    SchemaMigration(26, 27, _migrate_26_to_27),
 )
 
 
@@ -1489,11 +1509,11 @@ def run_missing_migrations(connection: sqlite3.Connection) -> list[SchemaMigrati
         migration = by_from_version.get(version)
         if migration is None:
             raise RuntimeError(f"No FWRouter schema migration from version {version}")
-        if migration.from_version == 25 and migration.to_version == 26:
+        if migration.from_version in {25, 26}:
             # SQLite's legacy transaction mode does not begin a transaction
             # for ALTER TABLE. Keep this migration's DDL, durable intent
             # initialization, and schema marker in one rollback boundary.
-            savepoint = "fwrouter_schema_25_to_26"
+            savepoint = f"fwrouter_schema_{migration.from_version}_to_{migration.to_version}"
             connection.execute(f"SAVEPOINT {savepoint}")
             try:
                 migration.apply(connection)

@@ -12,7 +12,7 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
 - migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- current expected schema version: `26`
+- source expected schema version: `27` (typed subject override targets; deployment is separate)
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -45,6 +45,10 @@ All subjects remain in the shared inventory, but generic behavior must use `subj
 - Xray clients are forced into VPN egress through their explicit Xray handoff/binding path.
 - Host and Docker default to direct-safe behavior and require stable attribution before scoped VPN can be considered fully applied.
 - `fwrouter:global` is not a user-facing implicit VPN subject. FWRouter own traffic stays direct-safe unless a future separate technical contour is introduced.
+
+`subject_server_overrides` remains the owner of manual per-subject target intent,24-hour expiry and apply status. In schema27, `selected_target_kind` distinguishes a real `server` target from explicit `vpn_auto`. The latter stores SQL NULL in the physical `selected_server_id` foreign key and projects `virtual:xray:vpn-auto` in API/effective DTOs. A legacy NULL with kind `server` is not virtual intent. The foreign key stays enabled and no synthetic server row is created.
+
+The additive26→27 migration changes only this representation/schema marker, preserving historical overrides and credentials/identities. Its DDL and marker must share an atomic savepoint. Both fresh schema and migration enforce the allowed target kinds and virtual/NULL pairing. Native generation source fingerprints and scoped snapshots include target kind. Source verification/CI does not authorize upgrading a live database or rolling an older backend over schema27.
 
 ### Routing And Runtime
 

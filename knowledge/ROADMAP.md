@@ -1,5 +1,11 @@
 # FWRouter — active roadmap
 
+## Virtual Xray VPN-auto override POST — source correction (2026-10-22)
+
+Bounded defect correction from actual main `e1c4aa9` after merged PR31/32. PR32 squash is single-parent with exact qualified feature-tree inclusion; main CI39670417991 passed including mandatory main smoke. This supersedes the pending-integration gate below without changing its historical receipts. [PR33](https://github.com/Coxf0rd/fwrouter/pull/33), `fix/virtual-xray-vpn-auto-override`, fixes virtual target persistence without starting Stage5 or changing production.
+
+Explicit virtual target and DELETE differ in durable intent/TTL/audit and Xray binding projection; preserve Core-owned `vpn-global`, including global fixed enforcement. The existing override row now has a minimal discriminator, atomic schema26→27 migration and API projection of the virtual ID; real-server FK and historical NULL semantics are preserved. Baseline API negative control reproduced the FK defect; final targeted tests52 passed, independent QA passed with7 synthetic checks. Source/local review is complete; exact-HEAD hosted/native/packet qualification is the required PR33 CI V2 gate and is reported there. Serial POST/DELETE leaves global selection revision unchanged; no endpoint expected-revision parameter is invented. Deployment/live acceptance require separate GO; no deployment or merge. See [bounded correction report](audits/virtual_xray_vpn_auto_override_2026-10-22/REPORT.md).
+
 ## CI Pipeline V2 — source and reference qualification complete (2026-10-22)
 
 Separate infrastructure task in [PR32](https://github.com/Coxf0rd/fwrouter/pull/32), `feat/ci-pipeline-v2`, from main `059f49bfe130529607a5f49153d592cf487754dc` (PR31 merged). Eight isolated jobs implement immutable plan/build inputs, parallel unit/ordinary/provider/packet/native execution and the unchanged required check. Full reference `5a44a59`/run39665954573 attempt1 passed2121 registered nodes, exact178-file selection, native proof, three hosted partitions, cleanup and safe-recovery qualification. Required check rejected both a real unit failure and the attempt2 partial rerun with missing current-attempt artifacts despite retained upstream SUCCESS. No protection/fencing/coverage weakening.

@@ -179,6 +179,49 @@ def test_control_plane_export_redacts_subscription_url_by_default(
     assert files_payload["snapshots"][0]["file_path"] == payload["file_path"]
 
 
+def test_control_plane_snapshot_validates_virtual_override_contract() -> None:
+    from fwrouter_api.services.control_plane_transfer_common import CONTROL_PLANE_SNAPSHOT_VERSION
+    from fwrouter_api.services.control_plane_transfer_validation import validate_control_plane_snapshot
+
+    snapshot = {
+        "snapshot_version": CONTROL_PLANE_SNAPSHOT_VERSION,
+        "state": {
+            "subjects": [{
+                "subject_id": "xray:test-client",
+                "subject_type": "xray",
+                "implementation_kind": "xray",
+            }],
+            "servers": [],
+            "subject_server_overrides": [{
+                "subject_id": "xray:test-client",
+                "selected_server_id": None,
+                "selected_target_kind": "vpn_auto",
+            }],
+            "rules": {"content": {}},
+        },
+    }
+    assert validate_control_plane_snapshot(snapshot)["ok"] is True
+
+    snapshot["state"]["subjects"][0]["subject_type"] = "lan"
+    assert any(
+        error["code"] == "SNAPSHOT_SUBJECT_SERVER_OVERRIDE_VPN_AUTO_INVALID"
+        for error in validate_control_plane_snapshot(snapshot)["errors"]
+    )
+    snapshot["state"]["subjects"][0].update(subject_type="xray", implementation_kind="xray")
+    snapshot["state"]["subject_server_overrides"][0]["selected_server_id"] = "server-1"
+    assert any(
+        error["code"] == "SNAPSHOT_SUBJECT_SERVER_OVERRIDE_VPN_AUTO_INVALID"
+        for error in validate_control_plane_snapshot(snapshot)["errors"]
+    )
+    snapshot["state"]["subject_server_overrides"][0].update(
+        selected_server_id=None, selected_target_kind="unknown"
+    )
+    assert any(
+        error["code"] == "SNAPSHOT_SUBJECT_SERVER_OVERRIDE_KIND_INVALID"
+        for error in validate_control_plane_snapshot(snapshot)["errors"]
+    )
+
+
 def test_control_plane_plan_and_import_from_file(
     monkeypatch,
     tmp_path: Path,

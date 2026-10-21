@@ -202,6 +202,21 @@ def explicit_external_client_allows_virtual_vpn_auto(subject_type: str | None) -
     return bool(contract and contract.get("virtual_vpn_auto_override"))
 
 
+def explicit_external_client_subject_allows_virtual_vpn_auto(
+    subject_type: str | None,
+    implementation_kind: str | None,
+) -> bool:
+    """Require the registered implementation contract for virtual Xray targets."""
+    normalized = normalize_subject_type(subject_type)
+    provider = str(implementation_kind or "").strip().lower()
+    return any(
+        str(contract.get("subject_type") or "") == normalized
+        and str(contract.get("implementation_kind") or contract.get("provider") or "").strip().lower() == provider
+        and bool(contract.get("virtual_vpn_auto_override"))
+        for contract in explicit_external_client_provider_contracts()
+    )
+
+
 def explicit_external_client_uses_transparent_policy(subject_type: str | None) -> bool:
     contract = explicit_external_client_contract(subject_type)
     return bool(contract and contract.get("transparent_dataplane_policy"))

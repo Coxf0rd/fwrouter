@@ -24,3 +24,5 @@ missing VPN binding.
 - Do not persist raw server configs in the safe bindings state payload.
 - Do not infer an applied mode from stored intent alone; the materializer must
   verify the effective mode rule before writing it as applied.
+
+Explicit virtual override DTOs and inherited automatic routing both map to the established `vpn-global` native handoff. Their persisted provenance/expiry remain distinct. Scoped applied readback must use that same mapping and require matching applied native evidence; a virtual ID is never looked up as a physical server row. Core's fixed-mode selection remains authoritative.

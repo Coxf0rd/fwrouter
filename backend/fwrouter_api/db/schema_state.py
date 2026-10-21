@@ -5,7 +5,7 @@ from collections.abc import Iterable as Iterable
 from typing import Any
 
 
-EXPECTED_SCHEMA_VERSION = "26"
+EXPECTED_SCHEMA_VERSION = "27"
 
 _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "subscription_node_identities": {
@@ -192,6 +192,7 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "columns": {
             "subject_id",
             "selected_server_id",
+            "selected_target_kind",
             "selected_until",
             "apply_state",
             "error_code",
@@ -202,6 +203,7 @@ _TABLE_EXPECTATIONS: dict[str, dict[str, Any]] = {
             "create table subject_server_overrides",
             "apply_state text not null default 'clean'",
             "selected_server_id text",
+            "selected_target_kind text not null default 'server'",
         ),
     },
     "subscription_server_memberships": {

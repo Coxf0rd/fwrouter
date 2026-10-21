@@ -235,6 +235,79 @@ def test_email_client_generation_persists_and_matches_native_after_worker_restar
     assert active_path.read_bytes() == before
     assert stack["native"].reload_calls == reload_count_before_repeat
 
+    # The generated automatic profile already has a native vpn-global handoff.
+    # Persisting explicit virtual intent must retain that same owned handoff,
+    # rather than insert a virtual ID into the physical servers foreign key.
+    virtual_id = "virtual:xray:vpn-auto"
+    virtual_nodes = [node for node in persisted_nodes if node.get("server_id") == virtual_id]
+    assert len(virtual_nodes) == 1, {"virtual_profile_count": len(virtual_nodes)}
+    virtual_uuid = str(virtual_nodes[0]["client_uuid"])
+    connection = sqlite3.connect(f"file:{stack['state'] / 'fwrouter.db'}?mode=ro", uri=True, timeout=2)
+    try:
+        subjects = connection.execute(
+            "SELECT subject_id FROM subjects WHERE implementation_kind='xray' "
+            "AND json_extract(metadata_json, '$.detail.client_uuid')=? AND is_deleted=0",
+            (virtual_uuid,),
+        ).fetchall()
+    finally:
+        connection.close()
+    assert len(subjects) == 1, {"virtual_subject_count": len(subjects)}
+    subject_id = str(subjects[0][0])
+    before_override_identities = set(loaded_identities(stack["native"]))
+
+    def virtual_readback(api):
+        status, reply = http_json(f"{api}/subjects/{subject_id}/server-override")
+        assert status == 200 and reply.get("ok") is True, reply
+        override = reply.get("data", {}).get("server_override")
+        assert isinstance(override, dict), reply
+        assert override.get("selected_server_id") == virtual_id, override
+        assert override.get("selected_target_kind") == "vpn_auto", override
+        assert override.get("apply_state") == "clean", override
+        status, projected = http_json(f"{api}/subjects/{subject_id}")
+        assert status == 200 and projected.get("ok") is True, projected
+        effective = projected.get("data", {}).get("subject", {}).get("effective_state", {})
+        assert effective.get("selected_server_id") == virtual_id, effective
+        assert effective.get("selected_server_source") == "subject_override", effective
+        assert effective.get("scoped_runtime", {}).get("status") == "applied", effective
+        connection = sqlite3.connect(f"file:{stack['state'] / 'fwrouter.db'}?mode=ro", uri=True, timeout=2)
+        try:
+            stored = connection.execute(
+                "SELECT selected_server_id, selected_target_kind, "
+                "(julianday(selected_until)-julianday('now'))*24 FROM subject_server_overrides WHERE subject_id=?",
+                (subject_id,),
+            ).fetchone()
+            assert stored is not None and stored[0] is None and stored[1] == "vpn_auto", stored
+            assert 23 < stored[2] <= 24.1, {"remaining_ttl_hours": stored[2]}
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        finally:
+            connection.close()
+        bindings = assert_applied_bindings(stack["state"], generated_pairs)["bindings"]
+        selected = [binding for binding in bindings if binding.get("subject_id") == subject_id]
+        assert len(selected) == 1, {"virtual_binding_count": len(selected)}
+        binding = selected[0]
+        assert binding.get("selected_server_id") == "vpn-global", binding
+        assert binding.get("handoff_proxy_name") == "vpn-global", binding
+        handoff = binding.get("handoff") or {}
+        config = yaml.safe_load((stack["state"] / "generated/mihomo/config.yaml").read_text())
+        listeners = [listener for listener in config.get("listeners", [])
+                     if listener.get("name") == handoff.get("listener_name")]
+        assert len(listeners) == 1 and listeners[0].get("proxy") == "vpn-global", listeners
+        assert int(listeners[0]["port"]) == int(handoff["port"])
+        assert_native_matches_active(stack["native"], active_path)
+        assert_mihomo_launch_matches_active(stack["native"], stack["state"] / "generated/mihomo/config.yaml")
+        assert set(loaded_identities(stack["native"])) == before_override_identities
+        return override
+
+    for _ in range(2):
+        status, assigned = http_json(
+            f"{stack['api']}/subjects/{subject_id}/server-override", method="POST",
+            payload={"server_id": virtual_id, "actor_scope": "user", "requested_by": "hosted-acceptance"},
+        )
+        assert status == 200 and assigned.get("ok") is True, assigned
+        assert await_job(stack["api"], assigned).get("status") == "success", assigned
+        last_override = virtual_readback(stack["api"])
+
     stack["worker"].terminate()
     stack["worker"].wait(timeout=5)
     restarted_worker, restarted_api = stack["start_worker"]()
@@ -244,6 +317,16 @@ def test_email_client_generation_persists_and_matches_native_after_worker_restar
     )
     assert reload_code == 200 and reload_response.get("ok") is True, reload_response
     assert_native_matches_active(stack["native"], active_path)
+    restarted_override = virtual_readback(restarted_api)
+    assert restarted_override["selected_until"] == last_override["selected_until"]
+    status, cleared = http_json(f"{restarted_api}/subjects/{subject_id}/server-override", method="DELETE")
+    assert status == 200 and cleared.get("ok") is True, cleared
+    assert await_job(restarted_api, cleared).get("status") == "success", cleared
+    status, cleared_readback = http_json(f"{restarted_api}/subjects/{subject_id}/server-override")
+    assert status == 200 and cleared_readback.get("data", {}).get("server_override") is None, cleared_readback
+    assert_applied_bindings(stack["state"], generated_pairs)
+    assert_native_matches_active(stack["native"], active_path)
+    assert set(loaded_identities(stack["native"])) == before_override_identities
 
 
 def test_email_generation_reload_failure_keeps_desired_candidate_and_last_good_loaded_identity(acceptance_stack):

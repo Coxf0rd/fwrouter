@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fwrouter_api.core.config import get_settings
+from fwrouter_api.services.custom_servers import VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
 from fwrouter_api.services.subject_taxonomy import (
     CLIENT_PLANE_SUBJECT_TYPES,
     CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES,
@@ -416,7 +417,14 @@ def build_scoped_subject_runtime(
         )
         # Explicit runtime clients may bind to a stable vpn-auto handoff instead
         # of the current concrete active_auto_server_id.
-        if resolved_vpn_target_source == "vpn_auto":
+        explicit_contract = explicit_external_client_contract_for_subject(
+            subject_type,
+            implementation_kind,
+        )
+        if resolved_vpn_target_source == "vpn_auto" or (
+            str(resolved_vpn_target_id) == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
+            and bool(explicit_contract and explicit_contract.get("virtual_vpn_auto_override"))
+        ):
             expected_server_id = "vpn-global"
         materialized_server_id = (
             str(explicit_client_binding.get("selected_server_id"))

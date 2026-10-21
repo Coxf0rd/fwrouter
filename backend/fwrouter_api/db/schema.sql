@@ -435,6 +435,9 @@ CREATE TABLE IF NOT EXISTS routing_global_state (
 CREATE TABLE IF NOT EXISTS subject_server_overrides (
     subject_id TEXT PRIMARY KEY,
     selected_server_id TEXT,
+    selected_target_kind TEXT NOT NULL DEFAULT 'server'
+        CHECK (selected_target_kind IN ('server', 'vpn_auto')
+               AND (selected_target_kind = 'server' OR selected_server_id IS NULL)),
     selected_until TEXT,
     apply_state TEXT NOT NULL DEFAULT 'clean',
     error_code TEXT,
@@ -740,7 +743,7 @@ CREATE INDEX IF NOT EXISTS idx_provider_evidence_latest
     ON provider_evidence(source_ref, evidence_kind, scope_key, observed_at DESC);
 
 INSERT INTO schema_meta (key, value, updated_at)
-VALUES ('schema_version', '26', CURRENT_TIMESTAMP)
+VALUES ('schema_version', '27', CURRENT_TIMESTAMP)
 ON CONFLICT(key) DO UPDATE SET
     value = excluded.value,
     updated_at = excluded.updated_at
