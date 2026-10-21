@@ -3022,6 +3022,98 @@ def test_mihomo_fingerprint_ignores_derived_auto_selection_but_tracks_generation
     assert current_mihomo_input_fingerprint(selection_only_routing)["hash"] != before_source_change
 
 
+def test_mihomo_fingerprint_ignores_unrouted_inventory_but_tracks_override_routes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    _seed_fingerprint_servers()
+    baseline = current_mihomo_input_fingerprint()["hash"]
+
+    # A short-lived native validator is visible to Docker inventory for a
+    # moment, but without an override it cannot add any Mihomo source route.
+    with db_session() as connection:
+        connection.execute(
+            """INSERT INTO subjects (
+                   subject_id, subject_type, subject_role, implementation_kind,
+                   stable_key, display_name, desired_mode, runtime_state,
+                   is_active, is_deleted, metadata_json
+               ) VALUES (
+                   'docker:temporary-native-validator', 'docker', 'docker_runtime', 'docker',
+                   'docker:temporary-native-validator', 'validator', 'vpn', 'running',
+                   1, 0, ?
+               )""",
+            (json.dumps({"detail": {"ip_address": None}}),),
+        )
+    assert current_mihomo_input_fingerprint()["hash"] == baseline
+
+    # User mode overrides remain fenced, including the subject address that
+    # Core may need when it materializes the override route.
+    with db_session() as connection:
+        connection.execute(
+            """INSERT INTO subjects (
+                   subject_id, subject_type, subject_role, implementation_kind,
+                   stable_key, display_name, desired_mode, runtime_state,
+                   is_active, is_deleted, metadata_json
+               ) VALUES (
+                   'docker:owned-mode-route', 'docker', 'docker_runtime', 'docker',
+                   'docker:owned-mode-route', 'owned', 'vpn', 'running',
+                   1, 0, ?
+               )""",
+            (json.dumps({"detail": {"provider_ip": "192.0.2.10"}}),),
+        )
+        connection.execute(
+            """INSERT INTO subject_user_overrides (subject_id, override_mode)
+               VALUES ('docker:owned-mode-route', 'vpn')"""
+        )
+    with_user_override = current_mihomo_input_fingerprint()["hash"]
+    assert with_user_override != baseline
+    with db_session() as connection:
+        connection.execute(
+            """UPDATE subjects SET metadata_json=? WHERE subject_id='docker:owned-mode-route'""",
+            (json.dumps({"detail": {"provider_ip": "192.0.2.11"}}),),
+        )
+    with_mode_address_updated = current_mihomo_input_fingerprint()["hash"]
+    assert with_mode_address_updated != with_user_override
+
+    # Server-specific source routes also retain active-state and IP changes.
+    with db_session() as connection:
+        connection.execute(
+            """UPDATE subjects SET metadata_json=?
+               WHERE subject_id='docker:temporary-native-validator'""",
+            (json.dumps({"detail": {"provider_ip": "192.0.2.20"}}),),
+        )
+    assert current_mihomo_input_fingerprint()["hash"] == with_mode_address_updated
+    with db_session() as connection:
+        connection.execute(
+            """INSERT INTO subject_server_overrides (subject_id, selected_server_id)
+               VALUES ('docker:temporary-native-validator', 'fixed-a')"""
+        )
+    with_server_override = current_mihomo_input_fingerprint()["hash"]
+    assert with_server_override != with_mode_address_updated
+    from fwrouter_api.services import mihomo_config_rules
+    assert any(
+        route["subject_id"] == "docker:temporary-native-validator"
+        and route["source_cidr"] == "192.0.2.20/32"
+        for route in mihomo_config_rules._load_subject_server_override_routes()
+    )
+    with db_session() as connection:
+        connection.execute(
+            """UPDATE subjects SET metadata_json=?
+               WHERE subject_id='docker:temporary-native-validator'""",
+            (json.dumps({"detail": {"provider_ip": "192.0.2.21"}}),),
+        )
+    assert current_mihomo_input_fingerprint()["hash"] != with_server_override
+    with_server_override = current_mihomo_input_fingerprint()["hash"]
+    with db_session() as connection:
+        connection.execute(
+            """UPDATE subjects SET is_active=0
+               WHERE subject_id='docker:temporary-native-validator'"""
+        )
+    assert current_mihomo_input_fingerprint()["hash"] != with_server_override
+
+
 def test_mihomo_publication_fence_rejects_newer_selection_with_stable_derived_input_hash(
     monkeypatch,
     tmp_path: Path,

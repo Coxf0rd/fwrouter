@@ -1421,6 +1421,7 @@ def _run_profile_candidate_validation_case(
     mutate_candidate: bool = False,
     image_id: str | None = "sha256:" + "a" * 64,
     input_context_changes: bool = False,
+    create_transient_inventory_subject: bool = False,
 ):
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -1433,8 +1434,9 @@ def _run_profile_candidate_validation_case(
     native_calls: list[str] = []
     local_calls: list[str] = []
     input_context = {"hash": "a" * 64}
-    monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint",
-                        lambda: dict(input_context))
+    if not create_transient_inventory_subject:
+        monkeypatch.setattr("fwrouter_api.services.mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint",
+                            lambda: dict(input_context))
 
     class Adapter:
         def __init__(self):
@@ -1459,6 +1461,21 @@ def _run_profile_candidate_validation_case(
         native_calls.append(str(candidate_path))
         if input_context_changes and Path(candidate_path).name == "mihomo-transition.candidate.yaml":
             input_context["hash"] = "b" * 64
+        if (create_transient_inventory_subject
+                and Path(candidate_path).name == "mihomo-transition.candidate.yaml"):
+            with db_session() as connection:
+                connection.execute(
+                    """INSERT INTO subjects (
+                           subject_id, subject_type, subject_role, implementation_kind,
+                           stable_key, display_name, desired_mode, runtime_state,
+                           is_active, is_deleted, metadata_json
+                       ) VALUES (
+                           'docker:temporary-native-validator', 'docker', 'docker_runtime', 'docker',
+                           'docker:temporary-native-validator', 'validator', 'vpn', 'running',
+                           1, 0, ?
+                       )""",
+                    (json.dumps({"detail": {"ip_address": None}}),),
+                )
         assert image_reference == image_id
         if mutate_candidate:
             Path(candidate_path).write_text("changed\n", encoding="utf-8")
@@ -1515,6 +1532,74 @@ def test_profile_generation_validates_distinct_transition_and_final_candidates_i
     assert len(native_calls) == 2
     assert result["native_validation"]["transition"]["validation"]["native_validation_reused"] is False
     assert result["native_validation"]["final"]["validation"]["native_validation_reused"] is False
+
+
+def test_profile_generation_ignores_unrouted_native_validator_inventory_row(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    result, local_calls, native_calls = _run_profile_candidate_validation_case(
+        monkeypatch,
+        tmp_path,
+        old_assignments=[],
+        assignments=[{"selected_server_id": "server-a", "port": 53123}],
+        create_transient_inventory_subject=True,
+    )
+
+    assert result["ok"] is True
+    assert len(local_calls) == 2
+    assert len(native_calls) == 1
+    assert result["native_validation"]["final"]["validation"]["candidate_write_reused"] is True
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT 1 FROM subjects WHERE subject_id='docker:temporary-native-validator'"
+        ).fetchone() is not None
+
+
+def test_mihomo_input_context_diagnostic_exposes_only_category_hashes(monkeypatch) -> None:
+    from fwrouter_api.services.mihomo_reconcile_fingerprint import fingerprint_category_hashes
+
+    fingerprint = {
+        "version": 3,
+        "hash": "a" * 64,
+        "payload": {
+            "tables": {"subject_routes": [{"credential": "do-not-log-this"}]},
+            "files": {"applied_manifest": "sensitive-manifest-content"},
+            "source": {"mihomo_config.py": "b" * 64},
+        },
+    }
+    summary = xray_subscription_service._safe_mihomo_input_context_summary(
+        (fingerprint, (("/private/config.yaml", "c" * 64),), object())
+    )
+    assert summary["fingerprint_version"] == 3
+    assert set(summary["category_sha256"]) == {
+        "tables.subject_routes", "files.applied_manifest", "source.mihomo_config.py",
+    }
+    assert summary["base_config_input_count"] == 1
+    assert "/private/config.yaml" not in json.dumps(summary)
+    assert "do-not-log-this" not in json.dumps(summary)
+    assert "sensitive-manifest-content" not in json.dumps(summary)
+    assert xray_subscription_service._safe_mihomo_input_context_summary(None) == {"available": False}
+    assert xray_subscription_service._safe_mihomo_input_context_summary((fingerprint, (("bad",),))) == {
+        "available": False,
+    }
+    assert fingerprint_category_hashes({"payload": "malformed"}) == {}
+
+    after = json.loads(json.dumps(fingerprint))
+    after["payload"]["tables"]["subject_routes"] = [{"credential": "another-private-value"}]
+    logged = []
+    monkeypatch.setattr(xray_subscription_service, "write_technical_log", lambda **kwargs: logged.append(kwargs))
+    xray_subscription_service._log_mihomo_input_context_change(
+        stage="transition_native_validation",
+        before=(fingerprint, (("/private/config.yaml", "c" * 64),), object()),
+        after=(after, (("/private/config.yaml", "c" * 64),), object()),
+    )
+    logged_text = json.dumps(logged)
+    assert len(logged) == 1
+    assert logged[0]["details"]["changed_categories"] == ["tables.subject_routes"]
+    assert "do-not-log-this" not in logged_text
+    assert "another-private-value" not in logged_text
+    assert "/private/config.yaml" not in logged_text
 
 
 def test_profile_generation_does_not_reuse_failed_or_mutated_native_validation(

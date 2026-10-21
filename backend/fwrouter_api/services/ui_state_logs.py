@@ -208,6 +208,10 @@ UI_TECHNICAL_EVENT_MESSAGES = {
         "ru": "Candidate-конфигурация Mihomo проверена",
         "en": "Mihomo candidate config validated",
     },
+    "mihomo_stage_input_context_changed": {
+        "ru": "Входные данные candidate Mihomo изменились при проверке",
+        "en": "Mihomo candidate inputs changed during validation",
+    },
     "xray_service_error": {"ru": "Ошибка Xray-сервиса", "en": "Xray service error"},
     "xray_binding_materialization_failed": {
         "ru": "Не удалось подготовить Xray runtime bindings",

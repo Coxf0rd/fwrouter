@@ -378,6 +378,28 @@ def test_successful_internal_mihomo_candidate_steps_are_visible_in_ui_journal() 
     assert validated["ui_visible"] is True
 
 
+def test_mihomo_staged_input_fence_diagnostic_is_localized() -> None:
+    event = {
+        "timestamp": "2026-07-01T00:00:02+00:00",
+        "level": "warning",
+        "component": "xray-subscription",
+        "event_type": "mihomo_stage_input_context_changed",
+        "message": "Mihomo staged inputs changed during native validation.",
+        "details": {
+            "stage": "transition_native_validation",
+            "changed_categories": ["tables.subject_routes"],
+            "before": {"fingerprint_version": 3, "fingerprint_sha256": "a" * 64},
+            "after": {"fingerprint_version": 3, "fingerprint_sha256": "b" * 64},
+        },
+    }
+
+    ru_summary = _summarize_log_event(event, technical=True, locale="ru")
+    en_summary = _summarize_log_event(event, technical=True, locale="en")
+
+    assert ru_summary["message"] == "Входные данные candidate Mihomo изменились при проверке"
+    assert en_summary["message"] == "Mihomo candidate inputs changed during validation"
+
+
 def test_mihomo_candidate_validation_errors_remain_visible() -> None:
     summary = _summarize_log_event(
         {

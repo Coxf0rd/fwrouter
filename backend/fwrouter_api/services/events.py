@@ -97,6 +97,7 @@ DIAGNOSTIC_EVENT_TYPES = {
     "probe_result",
     "debug_dump",
     "materialization_details",
+    "mihomo.stage_input_context_changed",
 }
 DIAGNOSTIC_LEGACY_EVENT_TYPES = {
     "vpn_watchdog_healthy",
