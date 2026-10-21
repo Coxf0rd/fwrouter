@@ -1826,7 +1826,7 @@ class GateContractTests(unittest.TestCase):
                                if line.startswith("ON_DISK="))
             self.assertLessEqual(int(report_line.split("=", 1)[1]), 4 * 1024 * 1024)
             suffix = f"\n{report_line}\nTAIL_SENTINEL\n"
-            self.assertEqual("A" * (65536 - len(suffix)) + suffix, stdout.getvalue())
+            self.assertEqual("A" * (65537 - len(suffix)) + suffix, stdout.getvalue())
 
     def test_parallel_aggregate_reports_preflight_status_without_plan_artifact(self) -> None:
         for status in ("failure", "cancelled", "skipped", None):
