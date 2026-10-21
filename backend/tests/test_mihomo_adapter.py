@@ -308,6 +308,38 @@ def test_vpn_udp_yaml_parse_errors_and_unsafe_constructors_fail_closed(monkeypat
     assert not sentinel.exists()
 
 
+def test_mihomo_health_refuses_unsafe_or_oversized_config_before_controller_read(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    adapter = MihomoHttpAdapter(config_path=config_path)
+    controller_calls: list[str] = []
+    adapter._get_json = lambda path: controller_calls.append(path) or {}  # type: ignore[method-assign]
+
+    config_path.write_text("secret: hidden\nsecret: duplicate\n", encoding="utf-8")
+    duplicate = adapter.health()
+    assert duplicate.runtime_state is MihomoRuntimeState.DEGRADED
+    assert duplicate.details["error"] == "duplicate_mapping_key"
+    assert "hidden" not in str(duplicate.details)
+    assert controller_calls == []
+
+    config_path.unlink()
+    config_path.touch()
+    with config_path.open("r+b") as handle:
+        handle.truncate(32 * 1024 * 1024 + 1)
+    oversized = adapter.health()
+    assert oversized.runtime_state is MihomoRuntimeState.DEGRADED
+    assert oversized.details["error"] == "byte_limit"
+    assert controller_calls == []
+
+    config_path.unlink()
+    target = tmp_path / "target.yaml"
+    target.write_text("secret: hidden\n", encoding="utf-8")
+    config_path.symlink_to(target)
+    symlink = adapter.health()
+    assert symlink.runtime_state is MihomoRuntimeState.DEGRADED
+    assert symlink.details["error"] == "not_regular_file"
+    assert controller_calls == []
+
+
 def test_policy_parse_cache_reuses_exact_content_and_invalidates_same_size_rewrite(
     monkeypatch, tmp_path: Path,
 ) -> None:
@@ -490,14 +522,12 @@ def test_config_analysis_cache_bounds_expanded_yaml_scalar_aliases(monkeypatch, 
     text = "rules:\n  - &owned " + rule + "\n  - *owned\n  - *owned\n"
     monkeypatch.setattr(adapter_module, "MAX_CACHED_POLICY_CONFIG_BYTES", len(text.encode("utf-8")))
     adapter = MihomoHttpAdapter(config_path=tmp_path / "config.yaml")
-    parsed = adapter._parsed_vpn_udp_policy_config(text)
-    assert adapter._policy_config_cache is not None
-    assert len(parsed["rules"]) == 3
-    assert sum(len(rule.encode("utf-8")) for rule in parsed["rules"]) > len(text.encode("utf-8"))
-    result = adapter._readback_with_config_analysis(text, {}, [], parsed)
-    assert result["native_top_level_rules_match"] is False
-    assert result["policy_installed"] is False
-    assert adapter._policy_config_cache[3] == {}
+    with pytest.raises(ValueError, match="aliases_unsupported"):
+        adapter._parsed_vpn_udp_policy_config(text)
+    assert adapter._policy_config_cache is None
+    proof = MihomoHttpAdapter._vpn_udp_policy_readback(text, {})
+    assert proof["policy_installed"] is False
+    assert proof["selector_membership_matches"] is False
 
 
 def test_policy_parse_cache_rejects_changed_unsafe_content_and_loader_changes(monkeypatch, tmp_path: Path) -> None:
@@ -507,9 +537,12 @@ def test_policy_parse_cache_rejects_changed_unsafe_content_and_loader_changes(mo
     unsafe_text = f"!!python/object/apply:os.system ['touch {sentinel}']"
 
     safe = adapter._parsed_vpn_udp_policy_config(safe_text)
-    unsafe = adapter._parsed_vpn_udp_policy_config(unsafe_text)
+    with pytest.raises(ValueError) as error:
+        adapter._parsed_vpn_udp_policy_config(unsafe_text)
     assert safe["rules"] == ["MATCH,DIRECT"]
-    assert unsafe == {}
+    assert str(error.value) == "root_mapping_required"
+    assert error.value.__cause__ is None
+    assert str(sentinel) not in str(error.value)
     assert not sentinel.exists()
 
     cached_loader = adapter._policy_config_cache[1]

@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import json
-import yaml
-
+import yaml  # noqa: F401 - retained as a compatibility patch point for existing tests
 from fwrouter_api.core.config import get_settings
+from fwrouter_api.services.mihomo_config_yaml import (
+    MAX_MIHOMO_CONFIG_BYTES,
+    MihomoYamlError,
+    load_mihomo_yaml_mapping,
+)
 
 MIHOMO_CANDIDATE_CONFIG_PATH = "/var/lib/fwrouter-v2/generated/mihomo/config.next.yaml"
 BASE_CONFIG_PATH = "/var/lib/fwrouter-v2/generated/mihomo/config.yaml"
@@ -20,7 +24,7 @@ EXPLICIT_MIXED_LISTENER_BIND = "127.0.0.1"
 EXPLICIT_MIXED_LISTENER_PORT = 5201
 TRANSPARENT_BIND_ADDRESS = "0.0.0.0"
 MIHOMO_CONTROLLER_ADDRESS = "127.0.0.1:5200"
-MAX_BASE_CONFIG_BYTES = 4 * 1024 * 1024
+MAX_BASE_CONFIG_BYTES = MAX_MIHOMO_CONFIG_BYTES
 TRANSPARENT_TPROXY_RULE_NAME = "fwrouter-transparent"
 FULL_VPN_RULE_NAME = "fwrouter-full-vpn"
 TRANSPARENT_TPROXY_PROXY_NAME = "vpn-global"
@@ -82,14 +86,10 @@ def _resolved_debug_dir() -> Path:
 
 
 def _safe_load_yaml(path: str) -> dict[str, Any] | None:
-    if not os.path.exists(path):
-        return None
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = yaml.load(handle, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
-    except (OSError, yaml.YAMLError):
+        return load_mihomo_yaml_mapping(path)
+    except MihomoYamlError:
         return None
-    return data if isinstance(data, dict) else {}
 
 
 def _safe_load_applied_manifest(path: str) -> dict[str, Any] | None:

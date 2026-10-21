@@ -1002,6 +1002,15 @@ def test_rebuilding_from_active_mihomo_config_changes_only_sanitization_provenan
         "resolved_selective_default": "vpn",
     })) is False
     assert candidate_matches(lambda value: value["rules"].append("MATCH,DIRECT")) is False
+    assert candidate_matches(lambda value: value["sub-rules"]["fwrouter-transparent"].append(
+        "DOMAIN-SUFFIX,unexpected.example,DIRECT",
+    )) is False
+    assert candidate_matches(lambda value: value["proxy-groups"][0]["proxies"].append(
+        "unexpected-selector-member",
+    )) is False
+    assert candidate_matches(lambda value: value["proxies"].append({
+        "name": "unexpected-proxy", "type": "socks5", "server": "192.0.2.2", "port": 1080,
+    })) is False
     assert candidate_matches(lambda value: value.update({"unknown-runtime-setting": True})) is False
     bad_provenance_matches = candidate_matches(lambda value: value["fwrouter"].update({
         "sanitized_managed_listeners": ["not-present-in-active-config"],
@@ -1491,39 +1500,123 @@ def test_build_mihomo_config_rebuilds_rules_without_represerving_old_effective_e
     ]
 
 
-def test_build_mihomo_config_skips_oversized_base_config(monkeypatch, tmp_path: Path) -> None:
+def test_build_mihomo_config_does_not_fallback_from_oversized_current_base(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     monkeypatch.setattr(mihomo_config_service, "_collect_xray_handoff_assignments", lambda: [])
-
     settings = get_settings()
-    _write_effective_rules(
-        settings.paths.generated_dir / "rules" / "effective-rules.json",
-        {
-            "selective_default": "direct",
-            "rules": [
-                {"action": "VPN", "kind": "domain_suffix", "value": ".instagram.com"},
-            ],
-        },
+    stale = settings.paths.state_dir / "last-good" / "mihomo" / "config.0001.yaml"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(
+        "proxies:\n- name: stale\n  type: socks5\n  server: 192.0.2.1\n  port: 1080\n"
+        "proxy-groups:\n- name: vpn-global\n  type: select\n  proxies: [stale, DIRECT]\n",
+        encoding="utf-8",
     )
+    monkeypatch.setattr(mihomo_inbounds_service, "MAX_BASE_CONFIG_BYTES", 64)
     oversized = settings.paths.generated_dir / "mihomo" / "config.yaml"
     oversized.parent.mkdir(parents=True, exist_ok=True)
-    oversized.write_text("rules:\n" + ("- DOMAIN-SUFFIX,legacy.example,vpn-global\n" * 300000), encoding="utf-8")
+    oversized.write_text("rules:\n" + ("- xxxxxxxxxxxxxxxxxxxx\n" * 10), encoding="utf-8")
 
-    config = mihomo_config_service.build_mihomo_config()
+    with pytest.raises(mihomo_inbounds_service.MihomoYamlLimitError):
+        mihomo_config_service.build_mihomo_config()
 
-    assert config["rules"] == [
-        "DOMAIN-SUFFIX,instagram.com,vpn-global",
-        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
-        "MATCH,DIRECT",
-    ]
-    assert config["sub-rules"]["fwrouter-transparent"] == [
-        "DOMAIN-SUFFIX,instagram.com,vpn-global",
-        "AND,((NETWORK,udp),(DOMAIN-SUFFIX,instagram.com)),REJECT",
-        "MATCH,DIRECT",
-    ]
-    assert "DOMAIN-SUFFIX,legacy.example,vpn-global" not in config["rules"]
-    assert config["external-controller"] == mihomo_config_service.MIHOMO_CONTROLLER_ADDRESS
+    oversized.write_text("mode: rule\nmode: global\n", encoding="utf-8")
+    with pytest.raises(mihomo_inbounds_service.MihomoYamlError):
+        mihomo_config_service.build_mihomo_config()
+
+
+def test_large_mihomo_builder_output_matches_strict_proof_comparator(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Exercise the actual builder and admission comparator above the old 1 MiB cap."""
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    settings = get_settings()
+    base_path = settings.paths.generated_dir / "mihomo" / "config.yaml"
+    candidate_path = tmp_path / "candidate.yaml"
+    _write_yaml(base_path, {
+        "proxies": [{"name": "synthetic-upstream", "type": "socks5", "server": "192.0.2.1", "port": 1080}],
+        "proxy-groups": [{"name": "vpn-global", "type": "select", "proxies": ["synthetic-upstream", "DIRECT"]}],
+    })
+
+    # Three large policy projections mimic the top-level, transparent, and
+    # full-VPN rule collections (~570k scalar nodes) with deterministic data.
+    rule_count = 95_000
+    protected_rules = []
+    protected_full_vpn_rules = []
+    for index in range(rule_count):
+        domain = f"s{index:08d}.example"
+        protected_rules.extend((
+            f"DOMAIN-SUFFIX,{domain},vpn-global",
+            f"AND,((NETWORK,udp),(DOMAIN-SUFFIX,{domain})),REJECT",
+        ))
+        address = f"10.{index % 250}.{(index // 250) % 250}.{index % 250}"
+        source_rule = f"SRC-IP-CIDR,{address}/32,vpn-global"
+        protected_full_vpn_rules.extend((
+            source_rule,
+            f"AND,((NETWORK,udp),({source_rule.split(',', 1)[0]},{address}/32)),REJECT",
+        ))
+    generated_rules = [*protected_rules, "MATCH,DIRECT"]
+    metadata = {
+        "rules": generated_rules,
+        "transparent_rules": [*protected_rules, "MATCH,vpn-global"],
+        "full_vpn_rules": protected_full_vpn_rules,
+        "scoped_vpn_source_rules_count": 0,
+        "resolved_selective_default": "direct",
+        "final_match_rule": "MATCH,DIRECT",
+        "transparent_final_match_rule": "MATCH,vpn-global",
+        "transparent_required_udp_guard": None,
+        "full_vpn_final_match_rule": "MATCH,vpn-global",
+        "full_vpn_required_udp_guard": None,
+        "rendered_rules_count": rule_count,
+        "path_kind": "core_routed",
+        "transparent_rule_name": "fwrouter-transparent",
+        "full_vpn_rule_name": "fwrouter-full-vpn",
+    }
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "_build_mihomo_config_with_source",
+        lambda _routing=None: (generated_rules, metadata),
+    )
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "_collect_xray_handoff_assignments",
+        lambda: [],
+    )
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "_merge_runtime_proxies",
+        lambda base, **_kwargs: list(base.get("proxies") or []),
+    )
+    monkeypatch.setattr(
+        mihomo_config_service,
+        "_ensure_selector_groups",
+        lambda base, **_kwargs: list(base.get("proxy-groups") or []),
+    )
+
+    active = mihomo_config_service.build_mihomo_config(xray_handoff_assignments=[])
+    base_path.write_text(mihomo_config_service.dump_mihomo_config(active), encoding="utf-8")
+    candidate = mihomo_config_service.build_mihomo_config(xray_handoff_assignments=[])
+    candidate_path.write_text(mihomo_config_service.dump_mihomo_config(candidate), encoding="utf-8")
+
+    active_size = base_path.stat().st_size
+    candidate_size = candidate_path.stat().st_size
+    assert active_size > 20_834_224, active_size
+    assert candidate_size > 20_834_224, candidate_size
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(
+        base_path, candidate_path,
+    ) is True
+
+    changed = json.loads(json.dumps(candidate))
+    changed["rules"][0] = "DOMAIN-SUFFIX,changed.example,DIRECT"
+    candidate_path.write_text(mihomo_config_service.dump_mihomo_config(changed), encoding="utf-8")
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(
+        base_path, candidate_path,
+    ) is False
 
 
 def test_build_mihomo_config_uses_direct_transparent_subrule_fallback_when_selective_default_is_direct(
@@ -1736,8 +1829,11 @@ def test_reconcile_mihomo_runtime_skips_restart_for_semantically_unchanged_confi
 
 
 def test_semantic_config_comparison_rejects_ambiguous_missing_and_oversized_yaml(
+    monkeypatch,
     tmp_path: Path,
 ) -> None:
+    from fwrouter_api.services import mihomo_config_yaml
+
     active = tmp_path / "active.yaml"
     candidate = tmp_path / "candidate.yaml"
     active.write_text("mode: rule\nmode: global\n", encoding="utf-8")
@@ -1751,15 +1847,128 @@ def test_semantic_config_comparison_rejects_ambiguous_missing_and_oversized_yaml
     missing = tmp_path / "missing.yaml"
     assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(missing)) is False
 
-    active.write_text(
-        "".join(f"key-{index}: value\n" for index in range(50_050)),
-        encoding="utf-8",
-    )
+    monkeypatch.setattr(mihomo_config_yaml, "MAX_MIHOMO_YAML_NODES", 10)
+    active.write_text("".join(f"key-{index}: value\n" for index in range(6)), encoding="utf-8")
     assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is False
 
-    with active.open("wb") as stream:
-        stream.truncate(20 * 1024 * 1024)
+    monkeypatch.setattr(mihomo_config_yaml, "MAX_MIHOMO_YAML_NODES", 1_000_000)
+    monkeypatch.setattr(mihomo_reconcile_service, "MAX_SEMANTIC_CONFIG_BYTES", 8)
+    active.write_text("mode: global\n", encoding="utf-8")
     assert mihomo_reconcile_service._semantic_config_files_equal(str(active), str(candidate)) is False
+
+
+def test_mihomo_stable_hash_is_bounded_and_rejects_symlinks_or_path_replacement(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services import mihomo_config_yaml
+
+    config = tmp_path / "config.yaml"
+    config.write_text("mode: rule\n", encoding="utf-8")
+    expected = mihomo_config_yaml.hash_mihomo_yaml_file(config)
+    assert len(expected) == 64
+    with pytest.raises(mihomo_config_yaml.MihomoYamlLimitError, match="byte_limit"):
+        mihomo_config_yaml.hash_mihomo_yaml_file(config, max_bytes=4)
+
+    symlink = tmp_path / "linked.yaml"
+    symlink.symlink_to(config)
+    with pytest.raises(mihomo_config_yaml.MihomoYamlInvalidError, match="not_regular_file"):
+        mihomo_config_yaml.hash_mihomo_yaml_file(symlink)
+
+    replacement = tmp_path / "replacement.yaml"
+    replacement.write_text("mode: next\n", encoding="utf-8")
+    original_read = mihomo_config_yaml.os.read
+    replaced = False
+
+    def replace_after_first_read(fd: int, count: int) -> bytes:
+        nonlocal replaced
+        chunk = original_read(fd, count)
+        if chunk and not replaced:
+            replaced = True
+            config.unlink()
+            replacement.rename(config)
+        return chunk
+
+    monkeypatch.setattr(mihomo_config_yaml.os, "read", replace_after_first_read)
+    with pytest.raises(mihomo_config_yaml.MihomoYamlInvalidError, match="file_changed_during_read"):
+        mihomo_config_yaml.hash_mihomo_yaml_file(config)
+
+
+def test_active_mihomo_fingerprint_hash_fails_closed_for_unreadable_path(monkeypatch, tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    target = tmp_path / "target.yaml"
+    target.write_text("mode: rule\n", encoding="utf-8")
+    config.symlink_to(target)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint_service, "_resolved_base_config_path", lambda: config)
+    assert mihomo_reconcile_fingerprint_service.active_config_hash() is None
+
+
+
+@pytest.mark.parametrize(
+    "invalid_yaml",
+    [
+        "mode: rule\nmode: global\n",
+        "shared: &value repeated\nfirst: *value\n",
+    ],
+    ids=["duplicate-key", "alias"],
+)
+def test_legacy_candidate_comparator_rejects_identical_ambiguous_yaml(
+    monkeypatch,
+    tmp_path: Path,
+    invalid_yaml: str,
+) -> None:
+    from fwrouter_api.services import mihomo_config_yaml
+
+    active = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    active.write_text(invalid_yaml, encoding="utf-8")
+    candidate.write_text(invalid_yaml, encoding="utf-8")
+
+    def construction_must_not_run(*_args, **_kwargs):
+        pytest.fail("ambiguous identical YAML must be rejected during event preflight")
+
+    monkeypatch.setattr(mihomo_config_yaml.yaml, "load", construction_must_not_run)
+
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(active, candidate) is False
+
+
+def test_legacy_candidate_comparator_rejects_identical_yaml_over_node_limit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import mihomo_config_yaml
+
+    content = "root:\n" + "".join(f"  key-{index}: value\n" for index in range(8))
+    active = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    active.write_text(content, encoding="utf-8")
+    candidate.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(mihomo_config_yaml, "MAX_MIHOMO_YAML_NODES", 5)
+
+    def construction_must_not_run(*_args, **_kwargs):
+        pytest.fail("over-limit identical YAML must be rejected before construction")
+
+    monkeypatch.setattr(mihomo_config_yaml.yaml, "load", construction_must_not_run)
+
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(active, candidate) is False
+
+
+def test_legacy_candidate_comparator_rejects_identical_yaml_over_depth_limit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import mihomo_config_yaml
+
+    content = "value: " + "[" * 8 + "leaf" + "]" * 8 + "\n"
+    active = tmp_path / "active.yaml"
+    candidate = tmp_path / "candidate.yaml"
+    active.write_text(content, encoding="utf-8")
+    candidate.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(mihomo_config_yaml, "MAX_MIHOMO_YAML_DEPTH", 4)
+
+    def construction_must_not_run(*_args, **_kwargs):
+        pytest.fail("over-depth identical YAML must be rejected before construction")
+
+    monkeypatch.setattr(mihomo_config_yaml.yaml, "load", construction_must_not_run)
+
+    assert xray_subscription_service._legacy_mihomo_candidate_matches(active, candidate) is False
 
 
 @pytest.mark.parametrize(

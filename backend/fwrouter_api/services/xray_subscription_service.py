@@ -2387,121 +2387,36 @@ def _legacy_mihomo_candidate_matches(active_path: Path, candidate_path: Path) ->
     records a fresh sanitization of the active config; compare every other
     field strictly.
     """
-    def digest(path: Path) -> bytes | None:
-        hasher = hashlib.sha256()
-        try:
-            before_path = path.lstat()
-            if not stat.S_ISREG(before_path.st_mode) or stat.S_ISLNK(before_path.st_mode):
-                return None
-            descriptor = os.open(
-                path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0),
-            )
-            try:
-                before = os.fstat(descriptor)
-                if (
-                    not stat.S_ISREG(before.st_mode)
-                    or (before.st_dev, before.st_ino) != (before_path.st_dev, before_path.st_ino)
-                ):
-                    return None
-                while True:
-                    chunk = os.read(descriptor, 1024 * 1024)
-                    if not chunk:
-                        break
-                    hasher.update(chunk)
-                after = os.fstat(descriptor)
-            finally:
-                os.close(descriptor)
-            after_path = path.lstat()
-            def stable_fields(value: os.stat_result) -> tuple[int, int, int, int, int]:
-                return (
-                    value.st_dev, value.st_ino, value.st_size,
-                    value.st_mtime_ns, value.st_ctime_ns,
-                )
-            if (
-                not stat.S_ISREG(after_path.st_mode) or stat.S_ISLNK(after_path.st_mode)
-                or stable_fields(before) != stable_fields(after)
-                or (after.st_dev, after.st_ino) != (after_path.st_dev, after_path.st_ino)
-            ):
-                return None
-            return hasher.digest()
-        except OSError:
-            return None
     try:
-        active_digest = digest(active_path)
-        candidate_digest = digest(candidate_path)
-        if active_digest is None or candidate_digest is None:
-            return False
-        if active_digest == candidate_digest:
+        from fwrouter_api.services.mihomo_config_yaml import (
+            MihomoYamlError,
+            parse_mihomo_yaml_mapping,
+            read_mihomo_yaml_bytes,
+        )
+
+        active_raw = read_mihomo_yaml_bytes(active_path)
+        candidate_raw = read_mihomo_yaml_bytes(candidate_path)
+        if active_raw == candidate_raw:
+            # Byte identity still has to satisfy the shared parser contract:
+            # reject aliases, duplicate keys, excessive depth/nodes and
+            # non-JSON YAML before claiming proof equivalence.
+            parse_mihomo_yaml_mapping(active_raw)
             return True
-    except (OSError, ValueError):
+        active = parse_mihomo_yaml_mapping(active_raw)
+        del active_raw
+        candidate = parse_mihomo_yaml_mapping(candidate_raw)
+        del candidate_raw
+    except (MihomoYamlError, OSError, ValueError, TypeError, RecursionError):
+        return False
+
+    if not isinstance(active, dict) or not isinstance(candidate, dict):
         return False
 
     import copy
-    import yaml
 
     from fwrouter_api.services.mihomo_config_inbounds import _sanitize_fwrouter_managed_inbounds
-    from fwrouter_api.services.mihomo_config_paths import MAX_BASE_CONFIG_BYTES
     from fwrouter_api.services.mihomo_config_status import _configs_equal
-    from fwrouter_api.services.mihomo_reconcile import (
-        MAX_SEMANTIC_CONFIG_BYTES, _yaml_tree_is_unambiguous, _yaml_value_is_json_safe,
-    )
 
-    max_bytes = min(MAX_BASE_CONFIG_BYTES, MAX_SEMANTIC_CONFIG_BYTES)
-
-    def load_bounded(path: Path) -> dict[str, Any] | None:
-        try:
-            before_path = path.lstat()
-            if not stat.S_ISREG(before_path.st_mode) or stat.S_ISLNK(before_path.st_mode):
-                return None
-            descriptor = os.open(
-                path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0),
-            )
-            try:
-                before = os.fstat(descriptor)
-                if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
-                    return None
-                chunks: list[bytes] = []
-                total = 0
-                while total <= max_bytes:
-                    chunk = os.read(descriptor, min(65536, max_bytes + 1 - total))
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    total += len(chunk)
-                raw = b"".join(chunks)
-                after = os.fstat(descriptor)
-            finally:
-                os.close(descriptor)
-            after_path = path.lstat()
-            if (
-                len(raw) > max_bytes or len(raw) != before.st_size
-                or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
-                or (before.st_dev, before.st_ino)
-                != (before_path.st_dev, before_path.st_ino)
-                or (after.st_dev, after.st_ino)
-                != (after_path.st_dev, after_path.st_ino)
-                or stat.S_ISLNK(after_path.st_mode)
-            ):
-                return None
-            text = raw.decode("utf-8")
-            loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-            tree = yaml.compose(text, Loader=loader)
-            if not _yaml_tree_is_unambiguous(tree):
-                return None
-            value = yaml.load(text, Loader=loader)
-            if not isinstance(value, dict) or not _yaml_value_is_json_safe(value):
-                return None
-            return value
-        except (OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError, RecursionError):
-            return None
-
-    active = load_bounded(active_path)
-    candidate = load_bounded(candidate_path)
-    if active is None or candidate is None:
-        return False
     active_meta = active.get("fwrouter")
     candidate_meta = candidate.get("fwrouter")
     if not isinstance(active_meta, dict) or not isinstance(candidate_meta, dict):
@@ -2627,6 +2542,7 @@ def _legacy_admission_runtime_fence_facts(admission: Any) -> dict[str, bool]:
     try:
         adapter = _xray_adapter()
         from fwrouter_api.services import mihomo_config
+        from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file
         from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
         from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
         with db_session() as connection:
@@ -2634,7 +2550,7 @@ def _legacy_admission_runtime_fence_facts(admission: Any) -> dict[str, bool]:
             core_unavailable = _legacy_admission_core_unavailable_reason(connection)
         xray_sha = hashlib.sha256(Path(adapter.config_path).read_bytes()).hexdigest()
         mihomo_path = Path(mihomo_config._resolved_base_config_path())
-        mihomo_sha = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+        mihomo_sha = hash_mihomo_yaml_file(mihomo_path)
         selection = _capture_generation_auto_selection()
         expected_selection = getattr(admission, "proof_only_selection_snapshot", None)
         routing_snapshot = getattr(admission, "proof_only_routing_snapshot", None)
@@ -2799,7 +2715,11 @@ def _collect_legacy_inventory_native_proof(
         if not xray_incarnation or active_xray_sha != mounted_xray_sha:
             return {"ok": False, "reason": "xray_active_runtime_mismatch"}
         mihomo_path = Path(mihomo_config._resolved_base_config_path())
-        active_mihomo_sha = hashlib.sha256(mihomo_path.read_bytes()).hexdigest()
+        from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file
+        try:
+            active_mihomo_sha = hash_mihomo_yaml_file(mihomo_path)
+        except ValueError:
+            return {"ok": False, "reason": "mihomo_active_config_unavailable"}
         mihomo_incarnation = get_mihomo_runtime_incarnation()
         if not mihomo_incarnation:
             return {"ok": False, "reason": "mihomo_runtime_incarnation_unavailable"}
@@ -2936,7 +2856,7 @@ def _collect_legacy_inventory_native_proof(
             or adapter.get_runtime_incarnation() != xray_incarnation
             or adapter.get_runtime_config_sha256() != active_xray_sha
             or get_mihomo_runtime_incarnation() != mihomo_incarnation
-            or hashlib.sha256(mihomo_path.read_bytes()).hexdigest() != active_mihomo_sha
+            or hash_mihomo_yaml_file(mihomo_path) != active_mihomo_sha
             or _capture_generation_auto_selection() != expected_selection
             or current_mihomo_input_fingerprint(routing_snapshot).get("hash") != fingerprint_hash
             or hashlib.sha256(Path(_xray_bindings_path()).read_bytes()).hexdigest() != bindings_artifact_sha

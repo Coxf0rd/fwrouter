@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
+import uuid
 
 import pytest
 
@@ -46,11 +47,11 @@ class FakeSystemd:
         raise AssertionError(f"unexpected systemctl action: {action}")
 
 
-def _paths(tmp_path: Path) -> tuple[Path, Path]:
+def _paths(tmp_path: Path, source_content: str = "SOURCE_SENTINEL = 'expected'\n") -> tuple[Path, Path]:
     source = tmp_path / "source-backend"
     target = tmp_path / "target-backend"
     source.mkdir(exist_ok=True)
-    (source / "module.py").write_text("SOURCE_SENTINEL = 'expected'\n", encoding="utf-8")
+    (source / "module.py").write_text(source_content, encoding="utf-8")
     return source, target
 
 
@@ -61,11 +62,12 @@ def _install_fixture(source: Path, target: Path) -> None:
 
 
 def _run(tmp_path: Path, command: str, systemd: FakeSystemd, *, api_healthy: bool = True,
-         allow_timer_catchup: bool = False, install_target: bool = True) -> dict[str, object]:
+         allow_timer_catchup: bool = False, install_target: bool = True,
+         source_content: str = "SOURCE_SENTINEL = 'expected'\n") -> dict[str, object]:
     args = [command, "--state-dir", str(tmp_path / "rollout-state")]
     if allow_timer_catchup:
         args.append("--allow-timer-catchup")
-    source, target = _paths(tmp_path)
+    source, target = _paths(tmp_path, source_content)
     if install_target and not target.exists():
         _install_fixture(source, target)
     def private_test_state(path: Path) -> Path:
@@ -85,6 +87,37 @@ def _run(tmp_path: Path, command: str, systemd: FakeSystemd, *, api_healthy: boo
         return lifecycle.run_command(args)
 
 
+def _run_transfer(tmp_path: Path, systemd: FakeSystemd, operation_id: str,
+                  old_digest: str, new_digest: str, *, source_content: str) -> dict[str, object]:
+    source, target = _paths(tmp_path, source_content)
+    args = ["transfer", "--state-dir", str(tmp_path / "rollout-state"),
+            "--expected-operation-id", operation_id,
+            "--expected-current-manifest-sha256", old_digest,
+            "--expected-new-manifest-sha256", new_digest]
+
+    def private_test_state(path: Path) -> Path:
+        if path.is_symlink():
+            raise lifecycle.LifecycleError("state directory path contains a symlink")
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.chmod(0o700)
+        return path
+
+    with patch.object(lifecycle.subprocess, "run", side_effect=systemd.run), \
+            patch.object(lifecycle, "SOURCE_BACKEND", source), \
+            patch.object(lifecycle, "TARGET_BACKEND", target), \
+            patch.object(lifecycle, "_validate_state_dir", side_effect=private_test_state), \
+            patch.object(lifecycle.os, "geteuid", return_value=0):
+        return lifecycle.run_command(args)
+
+
+def _digest_for_source_content(content: str) -> str:
+    import hashlib
+
+    manifest = [{"path": "module.py", "size": len(content.encode()),
+                 "sha256": hashlib.sha256(content.encode()).hexdigest()}]
+    return lifecycle._manifest_digest(manifest)
+
+
 def test_stop_then_api_ready_resume_restores_only_previously_active_gateway(tmp_path: Path) -> None:
     gateway = "fwrouter-xray-sub-gateway.service"
     systemd = FakeSystemd({"fwrouter-api.service", gateway})
@@ -101,6 +134,195 @@ def test_stop_then_api_ready_resume_restores_only_previously_active_gateway(tmp_
     assert resumed["status"] == "complete"
     assert gateway in systemd.active
     assert [call[2] for call in systemd.calls if call[1] == "start"] == [gateway]
+
+
+def test_transfer_preserves_rollout_ownership_and_timer_gate(tmp_path: Path) -> None:
+    gateway = "fwrouter-xray-sub-gateway.service"
+    timer = "fwrouter-subscription-refresh.timer"
+    worker = "fwrouter-docker-subject-events.service"
+    systemd = FakeSystemd({"fwrouter-api.service", gateway, worker, timer})
+    old_content = "SOURCE_SENTINEL = 'old'\n"
+    new_content = "SOURCE_SENTINEL = 'new'\n"
+    _paths(tmp_path, old_content)
+    _install_fixture(*_paths(tmp_path, old_content))
+
+    stopped = _run(tmp_path, "stop", systemd, source_content=old_content)
+    old_digest = _digest_for_source_content(old_content)
+    new_digest = _digest_for_source_content(new_content)
+    checkpoint_path = tmp_path / "rollout-state" / "pending.json"
+    before = json.loads(checkpoint_path.read_text())
+    assert before["schema"] == lifecycle.SCHEMA
+
+    transferred = _run_transfer(tmp_path, systemd, str(stopped["operation_id"]),
+                                old_digest, new_digest, source_content=new_content)
+    after = json.loads(checkpoint_path.read_text())
+    assert transferred["status"] == "transferred"
+    assert after["operation_id"] == before["operation_id"]
+    assert after["active_units"] == before["active_units"]
+    assert after["pending_units"] == before["pending_units"]
+    assert after["created_at"] == before["created_at"]
+    assert after["backend_manifest_sha256"] == new_digest
+    assert after["initial_backend_manifest_sha256"] == old_digest
+    assert after["source_transitions"] == [{
+        "operation_id": before["operation_id"],
+        "from_manifest_sha256": old_digest,
+        "to_manifest_sha256": new_digest,
+        "created_at": after["source_transitions"][0]["created_at"],
+    }]
+    assert timer not in after["pending_units"]
+    assert not systemd.active.intersection(lifecycle.ALLOWED_UNITS)
+
+    source, target = _paths(tmp_path, new_content)
+    _install_fixture(source, target)
+    systemd.active.add("fwrouter-api.service")
+    resumed = _run(tmp_path, "resume", systemd, source_content=new_content)
+    assert resumed["status"] == "pending"
+    assert timer in resumed["pending_units"]
+    assert timer not in systemd.active
+    assert gateway in systemd.active and worker in systemd.active
+
+
+def test_transfer_is_idempotent_after_checkpoint_publish_before_install(tmp_path: Path) -> None:
+    systemd = FakeSystemd({"fwrouter-api.service", "fwrouter-xray-sub-gateway.service"})
+    old_content = "SOURCE_SENTINEL = 'old'\n"
+    new_content = "SOURCE_SENTINEL = 'new'\n"
+    _paths(tmp_path, old_content)
+    _install_fixture(*_paths(tmp_path, old_content))
+    stopped = _run(tmp_path, "stop", systemd, source_content=old_content)
+    old_digest = _digest_for_source_content(old_content)
+    new_digest = _digest_for_source_content(new_content)
+
+    first = _run_transfer(tmp_path, systemd, str(stopped["operation_id"]),
+                          old_digest, new_digest, source_content=new_content)
+    checkpoint_path = tmp_path / "rollout-state" / "pending.json"
+    checkpoint_bytes = checkpoint_path.read_bytes()
+    replay = _run_transfer(tmp_path, systemd, str(stopped["operation_id"]),
+                           old_digest, new_digest, source_content=new_content)
+
+    assert first["status"] == "transferred"
+    assert replay["status"] == "already_transferred"
+    assert checkpoint_path.read_bytes() == checkpoint_bytes
+    assert lifecycle._manifest_digest(lifecycle._backend_manifest(_paths(tmp_path, old_content)[1])) == old_digest
+
+
+def test_transfer_rejects_stale_cas_active_units_and_installed_drift(tmp_path: Path) -> None:
+    systemd = FakeSystemd({"fwrouter-api.service", "fwrouter-xray-sub-gateway.service"})
+    old_content = "SOURCE_SENTINEL = 'old'\n"
+    new_content = "SOURCE_SENTINEL = 'new'\n"
+    _paths(tmp_path, old_content)
+    _install_fixture(*_paths(tmp_path, old_content))
+    stopped = _run(tmp_path, "stop", systemd, source_content=old_content)
+    old_digest = _digest_for_source_content(old_content)
+    new_digest = _digest_for_source_content(new_content)
+    checkpoint_path = tmp_path / "rollout-state" / "pending.json"
+    before = checkpoint_path.read_bytes()
+
+    with pytest.raises(lifecycle.LifecycleError, match="operation id"):
+        _run_transfer(tmp_path, systemd, str(uuid.uuid4()), old_digest, new_digest,
+                      source_content=new_content)
+    assert checkpoint_path.read_bytes() == before
+
+    systemd.active.add("fwrouter-docker-subject-events.service")
+    with pytest.raises(lifecycle.LifecycleError, match="must be stopped"):
+        _run_transfer(tmp_path, systemd, str(stopped["operation_id"]), old_digest,
+                      new_digest, source_content=new_content)
+    systemd.active.clear()
+    assert checkpoint_path.read_bytes() == before
+
+    target = tmp_path / "target-backend"
+    (target / "module.py").write_text("unapproved installed drift\n", encoding="utf-8")
+    with pytest.raises(lifecycle.LifecycleError, match="missing, changed, or stale"):
+        _run_transfer(tmp_path, systemd, str(stopped["operation_id"]), old_digest,
+                      new_digest, source_content=new_content)
+    assert checkpoint_path.read_bytes() == before
+
+
+def test_transfer_supports_explicit_chained_source_revisions(tmp_path: Path) -> None:
+    systemd = FakeSystemd({"fwrouter-api.service"})
+    versions = ["SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'next'\n",
+                "SOURCE_SENTINEL = 'final'\n"]
+    _paths(tmp_path, versions[0])
+    _install_fixture(*_paths(tmp_path, versions[0]))
+    stopped = _run(tmp_path, "stop", systemd, source_content=versions[0])
+    operation_id = str(stopped["operation_id"])
+    digests = [_digest_for_source_content(value) for value in versions]
+
+    _run_transfer(tmp_path, systemd, operation_id, digests[0], digests[1],
+                  source_content=versions[1])
+    source, target = _paths(tmp_path, versions[1])
+    _install_fixture(source, target)
+    _run_transfer(tmp_path, systemd, operation_id, digests[1], digests[2],
+                  source_content=versions[2])
+
+    checkpoint = json.loads((tmp_path / "rollout-state" / "pending.json").read_text())
+    assert checkpoint["operation_id"] == operation_id
+    assert checkpoint["initial_backend_manifest_sha256"] == digests[0]
+    assert checkpoint["backend_manifest_sha256"] == digests[2]
+    assert [(item["from_manifest_sha256"], item["to_manifest_sha256"])
+            for item in checkpoint["source_transitions"]] == [
+                (digests[0], digests[1]), (digests[1], digests[2])]
+
+
+def test_transfer_upgrades_schema_one_checkpoint_and_preserves_operation(tmp_path: Path) -> None:
+    systemd = FakeSystemd({"fwrouter-api.service", "fwrouter-xray-sub-gateway.service",
+                          "fwrouter-maintenance.timer"})
+    old_content = "SOURCE_SENTINEL = 'old'\n"
+    new_content = "SOURCE_SENTINEL = 'new'\n"
+    _paths(tmp_path, old_content)
+    _install_fixture(*_paths(tmp_path, old_content))
+    stopped = _run(tmp_path, "stop", systemd, source_content=old_content)
+    checkpoint_path = tmp_path / "rollout-state" / "pending.json"
+    legacy = json.loads(checkpoint_path.read_text())
+    legacy["schema"] = lifecycle.LEGACY_SCHEMA
+    legacy.pop("initial_backend_manifest_sha256")
+    legacy.pop("source_transitions")
+    checkpoint_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    assert lifecycle._read_checkpoint(checkpoint_path)["schema"] == lifecycle.LEGACY_SCHEMA
+    old_digest = _digest_for_source_content(old_content)
+    new_digest = _digest_for_source_content(new_content)
+    result = _run_transfer(tmp_path, systemd, str(stopped["operation_id"]),
+                           old_digest, new_digest, source_content=new_content)
+    upgraded = json.loads(checkpoint_path.read_text())
+
+    assert result["status"] == "transferred"
+    assert upgraded["schema"] == lifecycle.SCHEMA
+    assert upgraded["operation_id"] == legacy["operation_id"]
+    assert upgraded["active_units"] == legacy["active_units"]
+    assert upgraded["source_transitions"][0]["from_manifest_sha256"] == old_digest
+    assert "fwrouter-maintenance.timer" not in systemd.active
+
+
+def test_transfer_atomic_write_failure_keeps_original_checkpoint(tmp_path: Path) -> None:
+    systemd = FakeSystemd({"fwrouter-api.service"})
+    old_content = "SOURCE_SENTINEL = 'old'\n"
+    new_content = "SOURCE_SENTINEL = 'new'\n"
+    _paths(tmp_path, old_content)
+    _install_fixture(*_paths(tmp_path, old_content))
+    stopped = _run(tmp_path, "stop", systemd, source_content=old_content)
+    checkpoint_path = tmp_path / "rollout-state" / "pending.json"
+    before = checkpoint_path.read_bytes()
+
+    with patch.object(lifecycle.os, "replace", side_effect=OSError("injected publication interruption")):
+        with pytest.raises(lifecycle.LifecycleError, match="durably write"):
+            _run_transfer(tmp_path, systemd, str(stopped["operation_id"]),
+                          _digest_for_source_content(old_content),
+                          _digest_for_source_content(new_content), source_content=new_content)
+
+    assert checkpoint_path.read_bytes() == before
+    assert lifecycle._read_checkpoint(checkpoint_path)["backend_manifest_sha256"] == (
+        _digest_for_source_content(old_content))
+
+
+def test_transfer_rejects_malformed_or_overlong_source_history(tmp_path: Path) -> None:
+    systemd = FakeSystemd({"fwrouter-api.service"})
+    _run(tmp_path, "stop", systemd)
+    checkpoint_path = tmp_path / "rollout-state" / "pending.json"
+    checkpoint = json.loads(checkpoint_path.read_text())
+    checkpoint["source_transitions"] = [{"unexpected": "field"}]
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    with pytest.raises(lifecycle.LifecycleError, match="transition entry"):
+        lifecycle._read_checkpoint(checkpoint_path)
 
 
 def test_resume_fails_closed_when_api_is_not_healthy(tmp_path: Path) -> None:

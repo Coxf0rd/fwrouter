@@ -178,10 +178,12 @@ def test_live_probe_cache_coalesces_concurrent_loaders(monkeypatch) -> None:
     assert values == [{"value": 1}, {"value": 1}]
 
 
-def test_mihomo_health_uses_one_proxies_request(monkeypatch) -> None:
+def test_mihomo_health_uses_one_proxies_request(monkeypatch, tmp_path: Path) -> None:
     from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
 
-    adapter = MihomoHttpAdapter(base_url="http://mihomo.test")
+    config_path = tmp_path / "mihomo-config.yaml"
+    config_path.write_text("secret: synthetic-test-secret\nmode: rule\n", encoding="utf-8")
+    adapter = MihomoHttpAdapter(base_url="http://mihomo.test", config_path=config_path)
     calls = []
     proxies = {
         "vpn-auto": {"all": ["node-a"], "now": "node-a"},
@@ -270,11 +272,13 @@ def test_provider_batch_is_bounded_ordered_and_propagates_unexpected_errors(monk
         raise AssertionError("unexpected provider exception was swallowed")
 
 
-def test_mihomo_probe_many_is_bounded_and_ordered(monkeypatch) -> None:
+def test_mihomo_probe_many_is_bounded_and_ordered(monkeypatch, tmp_path: Path) -> None:
     import httpx
     from fwrouter_api.adapters import mihomo as adapter_module
 
-    adapter = adapter_module.MihomoHttpAdapter(base_url="http://mihomo.test")
+    config_path = tmp_path / "mihomo-config.yaml"
+    config_path.write_text("secret: synthetic-test-secret\nmode: rule\n", encoding="utf-8")
+    adapter = adapter_module.MihomoHttpAdapter(base_url="http://mihomo.test", config_path=config_path)
     active = 0
     peak = 0
     lock = threading.Lock()
