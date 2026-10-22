@@ -613,6 +613,13 @@
     },
     {
       "domains": [
+        "documentation",
+        "installer"
+      ],
+      "glob": "docs/MANUAL_VERIFIED_DEPLOYMENT.md"
+    },
+    {
+      "domains": [
         "documentation"
       ],
       "glob": "knowledge/**"
