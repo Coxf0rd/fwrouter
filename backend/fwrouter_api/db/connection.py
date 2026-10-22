@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 import sqlite3
 import time
 import os
@@ -14,6 +15,9 @@ from fwrouter_api.db.schema_state import inspect_database_schema
 from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 
 
+_READ_ONLY_DB_SESSIONS: ContextVar[bool] = ContextVar("fwrouter_read_only_db_sessions", default=False)
+
+
 def get_db_path() -> Path:
     settings = get_settings()
     return settings.paths.db_path
@@ -23,8 +27,29 @@ def get_schema_path() -> Path:
     return Path(__file__).with_name("schema.sql")
 
 
+@contextmanager
+def readonly_db_session_scope() -> Iterator[None]:
+    """Make nested `connect()`/`db_session()` calls read-only in this context."""
+    token = _READ_ONLY_DB_SESSIONS.set(True)
+    try:
+        yield
+    finally:
+        _READ_ONLY_DB_SESSIONS.reset(token)
+
+
 def connect() -> sqlite3.Connection:
     db_path = get_db_path()
+    if _READ_ONLY_DB_SESSIONS.get():
+        connection = sqlite3.connect(
+            f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON;")
+        connection.execute("PRAGMA foreign_keys = ON;")
+        connection.execute("PRAGMA busy_timeout = 30000;")
+        connection.execute("PRAGMA temp_store = MEMORY;")
+        return connection
+
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.parent.chmod(0o700)
     if db_path.exists():

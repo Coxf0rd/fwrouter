@@ -59,11 +59,13 @@ QUALIFIED_CHILD_TEST_FILES = {
     "/workspace/backend/tests/test_vpn_auto_writer_guard.py",
     "/workspace/backend/tests/test_xray.py",
     "/workspace/backend/tests/test_xray_default_runner_archive.py",
+    "/workspace/backend/tests/test_native_proof_native.py",
 }
 QUALIFIED_CHILD_XRAY_FILES = {
     "/workspace/backend/tests/test_vpn_auto_writer_guard.py",
     "/workspace/backend/tests/test_xray.py",
     "/workspace/backend/tests/test_xray_default_runner_archive.py",
+    "/workspace/backend/tests/test_native_proof_native.py",
 }
 QUALIFIED_DOCKER_XRAY_FILE: str | None = None
 QUALIFIED_SOURCE_ROOTS = (

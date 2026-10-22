@@ -111,6 +111,7 @@
 75. `opt_fwrouter_api_fwrouter_api_services_xray_clients_py.md`
 76. `opt_fwrouter_api_fwrouter_api_services_xray_materialize_py.md`
 77. `opt_fwrouter_api_fwrouter_api_services_xray_subscription_service_py.md`
+77a. `backend_fwrouter_api_services_native_proof_py.md` — [operator contract](../../NATIVE_PROOF.md)
 78. `opt_fwrouter_api_fwrouter_api_services_live_probe_cache_py.md`
 78a. `opt_fwrouter_api_fwrouter_api_services_external_ingress_py.md`
 78b. `opt_fwrouter_api_fwrouter_api_services_external_provider_registry_py.md`
@@ -198,3 +199,7 @@ PY
 ```
 
 Manual diagnostics are documented by `opt_fwrouter_api_fwrouter_api_services_manual_check_py.md`; the same index also covers external observations, health contracts, state snapshots, and subject proxy diagnostics.
+
+- [Atomic installer UI publication](installer_ui_publication_py.md): prepared immutable UI trees, atomic active pointer and retained previous release.
+- [Installer component lock](installer_component_install_lock_py.md): shared serialization for backend/UI installer operations and direct UI publication.
+- [Safe backend recovery artifact](installer_safe_recovery_py.md): tracked backend artifact verification and isolated staging through the exact installer dependency closure.

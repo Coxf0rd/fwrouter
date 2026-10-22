@@ -2299,6 +2299,15 @@ def test_default_runner_uses_fwrouter_docker_cli_state(monkeypatch, tmp_path: Pa
     result = adapter._default_runner("compose_ps", {})
 
     assert result.ok is True
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert not docker_cli_state.exists()
+    assert "DOCKER_CONFIG" not in env
+    assert env["HOME"] == "/proc"
+
+    result = adapter._default_runner("reload", {})
+
+    assert result.ok is True
     assert docker_cli_state.exists()
     env = captured["env"]
     assert isinstance(env, dict)

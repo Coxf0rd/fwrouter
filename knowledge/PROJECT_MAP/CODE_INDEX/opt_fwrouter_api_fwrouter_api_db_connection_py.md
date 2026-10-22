@@ -30,6 +30,14 @@ invoke writable connection permission/WAL setup. Inspection drift stays drift;
 SQLite errors propagate for the API's existing unavailable-database response.
 Startup/installer remain the explicit writable initialization owners.
 
+`readonly_db_session_scope()` is a context-local override for nested projection
+reads during native proof capture. It opens existing databases with
+`mode=ro`/`query_only`, never creates or chmods the database path, and never
+changes journal mode. It resets on normal return or exception and does not
+affect other threads/tasks. SQLite WAL readers may update shared-memory reader
+bookkeeping; the guarantee is no durable database/config mutation, not a
+bit-for-bit unchanged WAL/SHM snapshot.
+
 ## Guardrails
 
 - Keep FWRouter core as the authority for classification and policy routing.

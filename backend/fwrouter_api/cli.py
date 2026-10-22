@@ -204,6 +204,19 @@ def _run_checkpoint_supersession(args: argparse.Namespace) -> int:
         return 1
 
 
+def _run_native_proof(args: argparse.Namespace) -> int:
+    from fwrouter_api.services.native_proof import collect_native_proof
+
+    proof = collect_native_proof(
+        scope=str(args.scope),
+        expected_backend_manifest_sha256=str(args.expected_backend_manifest_sha256),
+        expected_xray_image_digest=args.expected_xray_image_digest,
+        expected_mihomo_image_digest=args.expected_mihomo_image_digest,
+    )
+    print(json.dumps(proof, ensure_ascii=False, sort_keys=True))
+    return 0 if proof.get("status") == "PASS" else 1
+
+
 def _run_legacy_inventory_admission(args: argparse.Namespace) -> int:
     try:
         from fwrouter_api.services.xray_subscription_service import (
@@ -601,6 +614,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     reconcile_subparsers.add_parser("check")
     diagnose_parser = subparsers.add_parser("diagnose")
     diagnose_parser.add_argument("--json", action="store_true", dest="json_output")
+    native_proof_parser = subparsers.add_parser("native-proof")
+    native_proof_parser.add_argument("--scope", choices=("ui",), required=True)
+    native_proof_parser.add_argument("--expected-backend-manifest-sha256", required=True)
+    native_proof_parser.add_argument("--expected-xray-image-digest", required=True)
+    native_proof_parser.add_argument("--expected-mihomo-image-digest", required=True)
     xray_parser = subparsers.add_parser("xray")
     xray_subparsers = xray_parser.add_subparsers(dest="xray_command")
     identity_parser = xray_subparsers.add_parser("identity-migration")
@@ -632,6 +650,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _print_reconcile_check()
     if args.command == "diagnose":
         return _print_diagnose(json_output=bool(args.json_output))
+    if args.command == "native-proof":
+        return _run_native_proof(args)
     if args.command == "xray" and args.xray_command == "identity-migration":
         return _run_identity_migration(args)
     if args.command == "xray" and args.xray_command == "generation" and args.generation_command == "supersede":

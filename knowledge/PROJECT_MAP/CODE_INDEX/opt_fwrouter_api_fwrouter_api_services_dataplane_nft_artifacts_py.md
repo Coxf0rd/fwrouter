@@ -11,3 +11,7 @@ candidate, current, applied and last-good nft/manifest files.
 - Do not render nft policy here except through the injected/default renderer.
 - Persistent business intent remains SQLite plus generated artifacts; this
   module does not own routing decisions.
+- After the existing apply owner promotes a verified manifest, it may write an
+  optional read-only native proof receipt bound to the apply ID and Core
+  revision. Failed/incomplete capture does not block normal promotion; strict
+  native proof remains `INCOMPLETE` until a later successful owner capture.

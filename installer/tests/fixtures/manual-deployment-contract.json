@@ -1,5 +1,5 @@
 {
-  "schema": "fwrouter-manual-deployment-contract/v1",
+  "schema": "fwrouter-manual-deployment-contract/v2",
   "execution": "owner-invoked-local-only",
   "wrapper_distribution": "outside-repository-owner-controlled",
   "source": "verified-existing-local-git-objects",
@@ -199,7 +199,92 @@
       "id": 34,
       "name": "permanent_receipts_preserved",
       "production_allowed": false
+    },
+    {
+      "id": 35,
+      "name": "native_proof_missing_generation_receipt",
+      "production_allowed": false
+    },
+    {
+      "id": 36,
+      "name": "native_proof_stale_owner_fence",
+      "production_allowed": false
+    },
+    {
+      "id": 37,
+      "name": "native_proof_runtime_image_mismatch",
+      "production_allowed": false
+    },
+    {
+      "id": 38,
+      "name": "ui_pointer_tampering",
+      "production_allowed": false
+    },
+    {
+      "id": 39,
+      "name": "ui_pointer_integrity_not_attested_by_native_proof",
+      "production_allowed": false
+    },
+    {
+      "id": 40,
+      "name": "post_publication_proof_incomplete_unknown",
+      "production_allowed": false
     }
   ],
-  "qualification_boundary": "Public CI verifies this contract and synthetic data only; private wrapper qualification must bind separately reviewed private implementation hashes."
+  "qualification_boundary": "Public CI verifies this contract and synthetic data only; private wrapper qualification must bind separately reviewed private implementation hashes.",
+  "ui_publication": {
+    "installer_operation": "installer/install.sh --deploy --component ui",
+    "target": "/opt/fwrouter-ui",
+    "managed_release_root": "/opt/.fwrouter-ui-releases",
+    "publisher": "installer/ui_publication.py",
+    "atomic_switch": "renameat2(RENAME_EXCHANGE)",
+    "shared_lock": "/opt/.fwrouter-component-install.lock",
+    "restore": "explicit-only-through-the-same-publisher",
+    "wrapper_may_mutate_pointer": false,
+    "native_proof_attests_ui_pointer": false,
+    "guarantees": [
+      "server-side-path-resolution"
+    ],
+    "not_guaranteed": [
+      "browser-session-across-requests",
+      "browser-cache-coherence"
+    ],
+    "deploy_side_effects": [
+      "bootstrap-state-directories-and-markers",
+      "state-database-and-backup-permissions",
+      "api-env-mode-0600"
+    ],
+    "automatic_rollback": false
+  },
+  "native_proof": {
+    "command": "fwrouter native-proof --scope ui",
+    "proof_schema_version": 1,
+    "accepted_status": "PASS",
+    "rejected_statuses": [
+      "FAIL",
+      "STALE",
+      "INCOMPLETE"
+    ],
+    "identity_fields": [
+      "source_identity.kind",
+      "source_identity.sha256",
+      "source_identity.commit_sha"
+    ],
+    "backend_identity": "installer-canonical-filtered-content-manifest-rooted-at-executing-module",
+    "runtime_identity": "pinned-local-docker-image-configuration-id",
+    "required_checks": [
+      "backend_manifest_sha256",
+      "sqlite_schema_integrity_foreign_keys",
+      "generation_owner_state",
+      "checkpoint_state",
+      "xray_identity_bindings_config_runtime",
+      "mihomo_config_rules_selectors_runtime",
+      "core_manifest_nft_ip_routing_runtime",
+      "final_native_runtime_fence_recheck",
+      "generation_native_receipt_exact_match"
+    ],
+    "side_effects": [],
+    "missing_owner_receipt": "STOP; no synthetic receipt, legacy admission, staging, refresh, reconcile, apply, or recovery"
+  },
+  "legacy_backend_prerequisite": "The installed backend must expose native-proof and have current valid Core and generation owner receipts; otherwise STOP pending a separately authorized normal owner operation. UI-only deployment cannot install this prerequisite."
 }
