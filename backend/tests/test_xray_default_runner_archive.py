@@ -28,6 +28,10 @@ def _install_real_child_popen(monkeypatch, process_holder: list[subprocess.Popen
 
     def run_child(command, **kwargs):
         assert command == ["docker", "cp", f"{'a' * 64}:/etc/xray/config.json", "-"]
+        child_env = kwargs.get("env")
+        assert isinstance(child_env, dict)
+        assert child_env.get("HOME") == "/proc"
+        assert "DOCKER_CONFIG" not in child_env
         process = real_popen([sys.executable, "-c", script_factory()], **kwargs)
         process_holder.append(process)
         return process
@@ -59,7 +63,7 @@ def test_default_runner_reads_archive_with_real_popen_and_selector(monkeypatch, 
     assert result.ok is True
     assert result.details["archive_bytes"] == expected
     assert process_holder and process_holder[0].poll() is not None
-    assert (tmp_path / "docker-cli").is_dir()
+    assert not (tmp_path / "docker-cli").exists()
 
 
 def test_default_runner_archive_timeout_kills_child(monkeypatch, tmp_path: Path) -> None:
@@ -79,6 +83,7 @@ def test_default_runner_archive_timeout_kills_child(monkeypatch, tmp_path: Path)
     assert result.ok is False
     assert result.error_code == "XRAY_RUNTIME_READBACK_TIMEOUT"
     assert process_holder and process_holder[0].poll() is not None
+    assert not (tmp_path / "docker-cli").exists()
 
 
 def test_default_runner_archive_size_limit_kills_child(monkeypatch, tmp_path: Path) -> None:
@@ -96,3 +101,4 @@ def test_default_runner_archive_size_limit_kills_child(monkeypatch, tmp_path: Pa
     assert result.ok is False
     assert result.error_code == "XRAY_RUNTIME_CONFIG_TOO_LARGE"
     assert process_holder and process_holder[0].poll() is not None
+    assert not (tmp_path / "docker-cli").exists()
