@@ -49,3 +49,11 @@ Public CI must retain its existing required check, native/hosted/packet profile 
 5. Obtain separate first-use deployment GO; invoke only the documented explicit UI operation at the exact expected SHA. For any unsupported scope use the existing controlled manual full-release procedure and its separate authorization.
 
 The precise private installation commands, hashes and CLI are delivered in the private staging package and final operator handoff. Public paths are conventional installation locations, not a self-install mechanism. Nothing in this document authorizes a current deployment.
+
+## Additional isolated qualification — 2026-10-22
+
+The exact existing installer/bootstrap has been executed on disposable targets, including UI-only with a preinstalled backend. A separate execution uses target `/` inside a disposable chroot and isolated network namespace; this is not a production-root or real-systemd deployment. Tests retain synthetic database/credentials/native files and check bootstrap side effects, repeated execution and failures. Real interruption of the tar UI overlay demonstrates partial publication. Therefore changed-UI publication through the wrapper must be refused; no atomic UI publication guarantee is claimed and no alternative privileged copying path is introduced. Use the existing controlled manual procedure with separate authorization for that scope.
+
+Additional private checks exercise SQLite backup creation using the existing CLI helper, restore only into a new disposable target, consistency/FK/schema and synthetic protected data; real isolated Nginx/Gateway paths with a synthetic upstream; and CI-pinned Mihomo/Xray child-process API readbacks in a separate network namespace. Native process/API readback is distinct from production routing/generation parity or user traffic acceptance. All executable tests and private implementation remain outside this repository.
+
+The ordinary production invocation block remains mandatory. Private staging evidence does not authorize installation, remove that block, qualify production host facilities or change the formal post-rollout acceptance. The exact private qualification result and remaining blockers belong to the private handoff. PR34 is unchanged and remains the first documentation integration step.
