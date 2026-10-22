@@ -5,6 +5,8 @@ Source-tree installer and validation tools.
 ## Files
 
 - `install.sh` - installs selected components from this monorepo into live system paths. Use `--deploy` on an already prepared host when only copying selected local source components to live targets; it skips apt dependencies, backend venv setup, unit enable/daemon-reload, Docker network creation, and sysctl reload.
+- `component_install_lock.py` - serializes cooperating backend/UI installer operations and direct UI publication for one target.
+- `safe_recovery.py` - prepares, verifies, and isolated-stages hosted-qualified backend recovery artifacts; it is not a live restore or rollback tool.
 - `install-host-dependencies.sh` - installs component-scoped apt packages required by FWRouter on apt-based systems; `--dry-run` prints the selected package set without mutating apt state.
 - `test-install.sh` - static installer tests for component copy boundaries and dependency dry-runs.
 - `check-clean-tree-surface.sh` - validates that the source tree has the expected deployable files and excludes runtime/secrets.
@@ -61,3 +63,29 @@ python3 "$FWROUTER_TRUSTED_SOURCE/installer/controlled_backend_lifecycle.py" res
 ```
 
 That option applies only to timers that were active in the saved checkpoint. It does not directly invoke their one-shot services.
+
+## Atomic UI publication
+
+`--component backend`, `--component ui`, and `--all` use a shared `/opt/.fwrouter-component-install.lock` (under the selected `--target` root when disposable). It is held from before backend/UI writes through installer bootstrap and, when selected, the final UI compatibility check and pointer switch. This prevents cooperating FWRouter installer invocations from changing the backend in the check-to-switch interval. The lock runner validates the target path and lock file, passes its open descriptor through exec, and the installer checks that the inherited descriptor identifies the exact target lock and still owns it. Other component-only installs do not take this lock. A privileged process that edits backend files outside the installer contract is outside this serialization guarantee.
+
+`--component ui` publishes `/opt/fwrouter-ui` from a prepared immutable release below `/opt/.fwrouter-ui-releases`. It takes the common component lock before the UI publisher's own lock. A direct invocation of `ui_publication.py`, including explicit retained-release restoration, acquires the same common lock itself before checking backend compatibility; installer calls reuse the already-held validated descriptor. The source and installed backend must have identical canonical filtered manifests from `controlled_backend_lifecycle.py`; `--all` installs backend first and then applies this compatibility check. For live deployment the checkout and installed tree must be root-owned; disposable targets must be owned by the invoking identity. UI files and directories must be regular, non-symlink entries with safe ownership and modes that let the static-file server read files and traverse directories. Entry count and total/per-file byte limits are enforced. Their bytes, file modes, and directory modes are hashed and verified before and after publication. The installer fsyncs prepared files/directories and the containing directories, then uses Linux `renameat2(RENAME_EXCHANGE)` to replace an initial real UI directory without an absent-path interval. Unsupported syscall/filesystem behavior fails closed; there is no non-atomic fallback.
+
+`safe_recovery.py` packages the exact tracked backend source plus its supported backend installer execution closure: `install.sh`, `obsolete-backend-paths.txt`, and `component_install_lock.py`. Preparation and verification require all three installer inputs in the source manifest and archive. The isolated stage extracts those verified bytes together and invokes the exact included installer against its private `--target`. This keeps the disposable recovery rehearsal aligned with the current installer contract without making it a live recovery path.
+
+Existing active UI trees remain whole immutable releases. The initial real directory is exchanged with a symlink and archived as `release-<content-sha256>`. If the process is killed in the short interval after exchange and before archive, the next publisher verifies and completes that archival under the same lock. Identical pre-existing releases are verified and never overwritten; an identical exchanged tree is retained at its recovery path. A failed postflight reports failure and retains both the active and prior releases without blind automatic rollback. Managed active symlinks must point directly to a content-addressed release below the managed root. The existing Nginx document root can follow this pointer atomically for each filesystem lookup. This guarantees server-side pointer atomicity only; it does not make a browser session or HTML/JavaScript requests across cache and multiple requests one atomic version.
+
+An operator may restore a retained UI release only from a trusted local source tree whose UI digest exactly matches that release and whose canonical backend manifest matches the installed backend. The same publisher validates the release and switches the pointer atomically, retaining the current active release. It never restores or modifies the backend. From a reviewed checkout with the intended UI source and compatible backend, the explicit helper form is:
+
+```bash
+python3 installer/ui_publication.py \
+  --source "$PWD/ui" \
+  --target /opt/fwrouter-ui \
+  --backend-source "$PWD/backend" \
+  --backend-installed /opt/fwrouter-api \
+  --restore-release '<64-character UI content SHA-256>' \
+  --require-root
+```
+
+The source digest must equal the requested release digest. Missing/corrupt releases, a different UI source, or backend-manifest mismatch fail closed before pointer change. The command does not decide whether a rollback is operationally appropriate; it supplies only the same atomic UI publication primitive under the existing deployment lifecycle owner.
+
+The controlled backend lifecycle CLI uses its separate durable rollout lock only for the duration of that CLI operation; that lock is released before the installer is invoked. Do not treat it as nested or held during installer execution. The UI publication helper does not install or stop services, mutate host networking, reset bootstrap state, or download source.

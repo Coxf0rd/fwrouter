@@ -5642,6 +5642,35 @@
       ],
       "slow": false,
       "timeout_seconds": 45
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "installer",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "Synthetic backend/UI source and disposable installer targets",
+      "fixture_owner": "installer/tests/test_atomic_ui_publication.py",
+      "id": "test_atomic_ui_publication",
+      "isolation": "Temporary target trees and child processes only; never production UI or services",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "installer/tests/test_atomic_ui_publication.py",
+      "primary_level": "L4",
+      "risk_notes": "Real installer UI/full target execution and publication interruption regression; host namespace qualification recorded separately",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest",
+        "POSIX shell",
+        "coreutils",
+        "tar"
+      ],
+      "slow": false,
+      "timeout_seconds": 180
     }
   ],
   "version": "2026.10.17.1",
