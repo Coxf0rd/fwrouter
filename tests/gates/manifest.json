@@ -315,6 +315,13 @@
     },
     {
       "domains": [
+        "network",
+        "routing"
+      ],
+      "glob": "backend/fwrouter_api/services/docker_policy.py"
+    },
+    {
+      "domains": [
         "routing",
         "network"
       ],
@@ -1309,6 +1316,32 @@
       ],
       "slow": false,
       "timeout_seconds": 30
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "routing",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "temporary SQLite fixtures, synthetic Docker inventory and isolated nft manifests",
+      "fixture_owner": "backend/tests/test_docker_policy_immunity.py",
+      "id": "test_docker_policy_immunity",
+      "isolation": "temporary test state and fake adapters; no host nft, Docker daemon, production state or network",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_docker_policy_immunity.py",
+      "primary_level": "L3",
+      "risk_notes": "Docker routing policy and immunity precedence; actual packet/native egress is separately covered by the qualified packet profile",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 60
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",

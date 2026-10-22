@@ -17,3 +17,4 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+- Managed Docker immunity identities are exact compose-service/container-name pairs; do not generalize them to all Docker subjects.

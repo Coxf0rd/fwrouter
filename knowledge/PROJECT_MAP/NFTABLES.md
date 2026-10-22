@@ -74,6 +74,11 @@ Missing Docker named counters are treated as stale runtime counters and skipped,
 - `fwrouter_api/services/network_contract.py`
 - `fwrouter_api/services/traffic.py`
 - `fwrouter_api/services/dataplane_status.py`
+- `fwrouter_api/services/docker_policy.py`
+- `fwrouter_api/services/routing_manifest.py`
+- `fwrouter_api/services/scoped_egress.py`
+- `fwrouter_api/services/subject_inventory.py`
+- `host/libexec/fwrouter/docker-inventory.py`
 - `/usr/local/libexec/fwrouter/dataplane-apply.sh`
 - `/usr/local/libexec/fwrouter/dataplane-check.sh`
 - `/usr/local/libexec/fwrouter/dataplane-common.sh`
@@ -88,6 +93,29 @@ Missing Docker named counters are treated as stale runtime counters and skipped,
 - Treating a disabled host-network Docker service as IP-addressable is wrong:
   host-network containers need listener-port enforcement until a cgroup/owner
   egress contour exists.
-- Blocking UID `0` for a disabled host-network container would also block root
+- Blocking UID `0` for a disabled host-network container would also block root host services. Do not add a generic root `skuid` block.
 - Trusted client source CIDRs for transparent ingress, secure-DNS bypass guards, and apply-time conntrack cleanup must come from the unified network contract rather than duplicated literals.
-  host services. Do not add a generic root `skuid` block.
+
+## Docker Direct/VPN Precedence
+
+The infrastructure immunity set protects host and FWRouter traffic, including
+the specifically identified managed Xray and Mihomo containers. It must not
+unconditionally absorb every Docker address: active, resolved Docker subjects
+with `direct`, `vpn`, or `blocked` intent reach the scoped classifier. Inactive
+or unresolved inventory remains protected until a supported matcher exists.
+Explicit Docker VPN is refused when its IPv4 address overlaps a protected
+host/runtime matcher or an `infrastructure_ipv4` address/CIDR; the projection
+is pending and nft candidate rendering independently fails closed. The
+managed Docker identities are recognized only by the exact compose-service
+and container-name pairs in `server_layout.py`.
+
+Docker Full VPN additionally requires complete inventory metadata proving no
+global IPv6 address and an isolatable bridged matcher. Missing/incomplete IPv6
+inventory, observed global IPv6, host-network mode, unresolved matcher, or an
+unready VPN contour cannot be reported as applied. This is a guard against
+silent direct IPv6 bypass; it does not claim IPv6 Full VPN support.
+
+Docker inventory stores `IPv6InventoryComplete` and `IPv6Addresses` in the
+existing `subject_docker.source_json` contract. No schema or separate routing
+owner is introduced. Core remains the owner of classification and routing;
+the early immunity ordering is retained for protected infrastructure.

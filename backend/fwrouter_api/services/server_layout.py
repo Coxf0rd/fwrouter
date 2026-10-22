@@ -7,6 +7,32 @@ from fwrouter_api.core.config import get_settings
 
 SERVER_LAYOUT_CONTRACT_VERSION = "2026-05-07.control-plane"
 
+# These pairs are part of the managed runtime contract: the compose service
+# and container name must both match before a Docker inventory row is treated
+# as FWRouter infrastructure. Ordinary Docker containers remain user-scoped.
+PROTECTED_DOCKER_RUNTIME_IDENTITIES = frozenset(
+    {
+        ("mihomo", "fwrouter-mihomo", "vpn_dataplane"),
+        ("fwrouter-xray", "fwrouter-xray", "explicit_client_runtime"),
+    }
+)
+
+
+def protected_docker_runtime_role(subject: dict[str, Any]) -> str | None:
+    """Return the registered FWRouter runtime role for an exact inventory identity."""
+
+    if str(subject.get("subject_type") or "").strip().lower() != "docker":
+        return None
+    detail = subject.get("detail")
+    if not isinstance(detail, dict):
+        return None
+    service = str(detail.get("compose_service") or "").strip()
+    container_name = str(detail.get("container_name") or "").strip().lstrip("/")
+    for expected_service, expected_name, role in PROTECTED_DOCKER_RUNTIME_IDENTITIES:
+        if service == expected_service and container_name == expected_name:
+            return role
+    return None
+
 
 def get_server_root_layout() -> dict[str, Any]:
     """Return the expected FWRouter server-root layout."""

@@ -7,6 +7,12 @@ the FWRouter owned table. It composes constants, set builders and chain
 builders, including core-bypass rendering, counters, selective/default routing,
 scoped subject steering and transparent Mihomo handoff contracts.
 
+Docker immunity is derived per active inventory record: host/FWRouter and
+exactly identified managed Xray/Mihomo runtime addresses stay protected, while
+resolved ordinary Docker `direct`, `vpn`, and `blocked` paths reach classify.
+The renderer independently rejects a Docker VPN matcher that overlaps a
+protected address/CIDR or is not ready for fail-closed classification.
+
 ## Guardrails
 
 - Renderer output is a runtime contract; compare candidate text when refactoring.

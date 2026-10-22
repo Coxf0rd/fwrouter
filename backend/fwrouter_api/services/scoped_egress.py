@@ -17,6 +17,7 @@ from fwrouter_api.services.subject_taxonomy import (
     subject_needs_transparent_policy,
     transparent_ingress_contract_for_subject,
 )
+from fwrouter_api.services.server_layout import protected_docker_runtime_role
 
 
 SCOPED_EGRESS_ELIGIBLE_SUBJECT_TYPES = {
@@ -42,6 +43,26 @@ SELECTIVE_SCOPED_RUNTIME_SUBJECT_TYPES = TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPE
 def _normalized_detail(subject: dict[str, Any]) -> dict[str, Any]:
     detail = subject.get("detail")
     return detail if isinstance(detail, dict) else {}
+
+
+def _docker_ipv6_inventory_state(subject: dict[str, Any]) -> tuple[str, list[str]]:
+    detail = _normalized_detail(subject)
+    source = detail.get("source") or detail.get("source_json")
+    if not isinstance(source, dict) or source.get("IPv6InventoryComplete") is not True:
+        return "incomplete", []
+    values = source.get("IPv6Addresses")
+    if not isinstance(values, list):
+        return "incomplete", []
+    addresses: set[str] = set()
+    for value in values:
+        try:
+            address = ip_address(str(value).strip())
+        except ValueError:
+            return "incomplete", []
+        if address.version != 6:
+            return "incomplete", []
+        addresses.add(str(address))
+    return ("global_ipv6_present", sorted(addresses)) if addresses else ("complete_no_global_ipv6", [])
 
 
 def _xray_bindings_path() -> Path:
@@ -282,6 +303,7 @@ def build_scoped_subject_runtime(
         dataplane_path=dataplane_path,
         server_override=server_override,
     )
+    infrastructure_role = protected_docker_runtime_role(subject)
     subject_role = (
         "client_plane"
         if subject_type in CLIENT_PLANE_SUBJECT_TYPES
@@ -294,6 +316,7 @@ def build_scoped_subject_runtime(
         subject_type=subject_type,
         dataplane_path=dataplane_path,
         server_override=server_override,
+        infrastructure_role=infrastructure_role,
     )
 
     result = {
@@ -317,6 +340,7 @@ def build_scoped_subject_runtime(
         "subject_role": subject_role,
         "inventory_classification": inventory_classification,
         "control_plane_direct_safe": subject_type in CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES,
+        "infrastructure_role": infrastructure_role,
     }
 
     resolved_vpn_target_id = vpn_target_id if vpn_target_id is not None else selected_server_id
@@ -356,6 +380,30 @@ def build_scoped_subject_runtime(
         result["status"] = "not_applicable"
         result["resolution_reason"] = "subject_not_in_vpn_path"
         return result
+
+    if subject_type == "docker" and infrastructure_role and dataplane_path == "vpn":
+        result["status"] = "pending_infrastructure_immunity_conflict"
+        result["resolution_reason"] = "protected_runtime_cannot_use_scoped_vpn"
+        return result
+
+    if subject_type == "docker" and dataplane_path == "vpn":
+        detail = _normalized_detail(subject)
+        source = detail.get("source") or detail.get("source_json")
+        network_mode = str(source.get("NetworkMode") or "").strip().lower() if isinstance(source, dict) else ""
+        if network_mode == "host":
+            result["status"] = "pending_docker_host_network"
+            result["resolution_reason"] = "docker_host_network_full_vpn_unsupported"
+            return result
+        ipv6_state, _ipv6_addresses = _docker_ipv6_inventory_state(subject)
+        result["docker_ipv6_inventory_status"] = ipv6_state
+        if ipv6_state == "incomplete":
+            result["status"] = "pending_docker_ipv6_inventory"
+            result["resolution_reason"] = "docker_ipv6_inventory_incomplete"
+            return result
+        if ipv6_state == "global_ipv6_present":
+            result["status"] = "pending_docker_ipv6_unsupported"
+            result["resolution_reason"] = "docker_ipv6_full_vpn_unsupported"
+            return result
 
     selective_subject_runtime = (
         dataplane_path == "selective"
@@ -483,7 +531,10 @@ def _inventory_classification(
     subject_type: str,
     dataplane_path: str,
     server_override: dict[str, Any] | None,
+    infrastructure_role: str | None = None,
 ) -> str:
+    if infrastructure_role:
+        return "control_plane_direct_safe"
     if subject_type == "fwrouter":
         return "control_plane_direct_safe"
     if subject_type in SYSTEM_SCOPED_SUBJECT_TYPES and dataplane_path != "vpn" and server_override is None:

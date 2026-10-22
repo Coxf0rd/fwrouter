@@ -4696,6 +4696,96 @@ def _packet_vpn_runtime_selection(stack: dict[str, Any]) -> dict[str, str]:
             "vpn_auto_selected_target": selected_target}
 
 
+def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
+                                   logical_id: str, record_property: Any) -> dict[str, Any]:
+    """Real routed namespace client with Docker subject semantics, not a host Docker daemon.
+
+    Endpoint peer addresses and captured VLESS/direct tuples prove the actual
+    controlled egress. This is not a production/provider Internet E2E claim.
+    """
+    assert stack["profile"].get("profile") == "hosted-kernel-packet"
+    from fwrouter_api.db.connection import db_session
+
+    api = stack["api"]
+    subject_id = "docker:packet-scoped:ordinary"
+    with db_session() as connection:
+        assert connection.execute("SELECT 1 FROM subjects WHERE subject_id=?", (subject_id,)).fetchone() is None
+        connection.execute(
+            "INSERT INTO subjects (subject_id, subject_type, stable_key, display_name, "
+            "desired_mode, applied_mode, runtime_state, is_active) "
+            "VALUES (?, 'docker', ?, 'Scoped packet fixture', 'direct', 'direct', 'running', 1)",
+            (subject_id, subject_id),
+        )
+        connection.execute(
+            "INSERT INTO subject_docker (subject_id, compose_project, compose_service, container_name, "
+            "container_id, image_name, ip_address, network_name, source_json) "
+            "VALUES (?, 'packet-scoped', 'ordinary', 'ordinary', 'owned-fixture', 'fixture:local', ?, 'owned-client-veth', ?)",
+            (subject_id, CLIENT_IP, json.dumps({"IPv6InventoryComplete": True, "IPv6Addresses": []})),
+        )
+
+    def apply_subject(mode: str) -> None:
+        code, accepted = http_json(f"{api}/subjects/{subject_id}/mode", method="POST",
+                                  payload={"mode": mode, "actor_scope": "admin",
+                                           "requested_by": "packet-docker-scoped", "run_now": True})
+        assert code == 200 and accepted.get("ok") is True, {"mode": mode, "status": code}
+        job = await_core_job(api, accepted, timeout_seconds=90)
+        assert job.get("status") == "success", {"mode": mode, "job": _bounded_job_summary(job)}
+        code, readback = http_json(f"{api}/subjects/{subject_id}")
+        assert code == 200 and readback.get("ok") is True
+        subject = readback["data"]["subject"]
+        assert subject["desired_mode"] == mode and subject["applied_mode"] == mode, {
+            "mode": mode, "desired": subject.get("desired_mode"), "applied": subject.get("applied_mode"),
+        }
+
+    phases = {}
+    try:
+        # Explicit Direct must win even while the global Core mode is VPN.
+        _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
+        apply_subject("direct")
+        # _probe_phase already checks endpoint peer observations for TCP, UDP
+        # and DNS; its result retains safe endpoint counts for receipts.
+        direct = _probe_phase(stack, CLIENT_IP, "docker-direct-global-vpn",
+                              _core_counter_snapshot(), record_property, source_ref)
+        phases["direct_under_global_vpn"] = direct["observations"]["last_peers"]
+        _apply_global_mode(api, "direct", stack=stack, record_property=record_property)
+        apply_subject("vpn")
+        before_capture = _packet_counts()
+        vpn = _probe_phase(stack, SERVICE_VIP, "docker-vpn-global-direct",
+                           _core_counter_snapshot(), record_property, source_ref)
+        after_capture = _packet_counts()
+        assert _flow_delta(before_capture, after_capture, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0
+        for protocol, port in (("tcp", 9080), ("udp", 9081), ("udp", 5353)):
+            assert _flow_delta(before_capture, after_capture, (CLIENT_IP, SERVICE_VIP, protocol, port)) == 0
+        phases["vpn_under_global_direct"] = vpn["observations"]["last_peers"]
+        # A complete reapply must preserve the explicit scoped classification.
+        _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
+        apply_subject("vpn")
+        _probe_phase(stack, SERVICE_VIP, "docker-vpn-repeat-apply",
+                     _core_counter_snapshot(), record_property, source_ref)
+        _probe_protected_direct_phase(stack, source_ref, record_property)
+        stopped = _role_json(f"{ENDPOINT_CONTROL}/xray/availability", method="POST", payload={"available": False})
+        assert stopped.get("available") is False
+        try:
+            _probe_vpn_udp_contract_phase(stack, source_ref, logical_id, "supported", True,
+                                          "docker-vpn-endpoint-unavailable", record_property,
+                                          expect_success=False, endpoint_unavailable=True)
+        finally:
+            restarted = _role_json(f"{ENDPOINT_CONTROL}/xray/availability", method="POST", payload={"available": True})
+            assert restarted.get("available") is True
+        apply_subject("direct")
+        restored = _probe_phase(stack, CLIENT_IP, "docker-direct-restored",
+                                _core_counter_snapshot(), record_property, source_ref)
+        phases["direct_restored"] = restored["observations"]["last_peers"]
+        record_property("docker_scoped_packet_paths", json.dumps(phases, sort_keys=True))
+        return phases
+    finally:
+        # Fixture-only CRUD, never production. Preserve the stack's original
+        # global VPN state after removing the temporary scoped subject.
+        with db_session() as connection:
+            connection.execute("DELETE FROM subjects WHERE subject_id=?", (subject_id,))
+        _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
+
+
 def _write_capture_summary(phases: dict[str, Any]) -> None:
     """Write compact packet-proof facts; full diagnostics remain in bounded JUnit properties."""
     def number(value: Any) -> int | None:
@@ -5685,6 +5775,8 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert all(final_binding.get(key) == provider_binding_before_selector.get(key)
                for key in ("logical_server_id", "current_member_id", "applied_member_id", "binding_revision"))
     assert bridge.snapshot_calls() == provider_calls_before_selector
+
+    _qualify_docker_scoped_policy(stack, source_ref, logical_id, record_property)
 
     _write_capture_summary({
         "core_counter_mapping": {
