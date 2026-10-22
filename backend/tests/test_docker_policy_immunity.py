@@ -17,7 +17,7 @@ from fwrouter_api.services.dataplane_nft_render import (
     render_owned_table_candidate,
 )
 from fwrouter_api.services.docker_policy import docker_vpn_immunity_conflict
-from fwrouter_api.services.scoped_egress import build_scoped_subject_runtime
+from fwrouter_api.services.scoped_egress import build_scoped_subject_runtime, build_scoped_egress_diagnostics
 from fwrouter_api.services.server_layout import protected_docker_runtime_role
 from fwrouter_api.services.subjects import list_subjects
 from fwrouter_api.services.jobs import create_job
@@ -422,3 +422,18 @@ def test_duplicate_active_docker_ip_cannot_depend_on_rule_order(isolated_host_ob
     for subjects in ([vpn, other], [other, vpn]):
         with pytest.raises(DockerPolicyConflictError, match="overlaps_infrastructure"):
             render_owned_table_candidate(_manifest(subjects))
+
+
+@pytest.mark.parametrize("status", [
+    "pending_infrastructure_immunity_conflict", "pending_docker_host_network",
+    "pending_docker_ipv4_inventory", "pending_docker_multi_ipv4_unsupported",
+    "pending_docker_ipv6_inventory", "pending_docker_ipv6_unsupported",
+])
+def test_docker_refusal_remains_visible_in_pending_diagnostics(status):
+    binding = {"subject_id": "docker:test:test", "status": status, "applied": False,
+               "resolution_reason": "explicit_fail_closed_reason"}
+    diagnostics = build_scoped_egress_diagnostics(
+        summary={"bindings": [binding]}, runtime_enforcement={}, bypass={},
+    )
+    assert diagnostics["pending_bindings_sample"] == [binding]
+    assert diagnostics["pending_bindings_sample"][0]["resolution_reason"] == "explicit_fail_closed_reason"

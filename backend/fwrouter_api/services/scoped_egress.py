@@ -32,6 +32,12 @@ SCOPED_PENDING_STATUSES = {
     "pending_unresolved_subject_match",
     "pending_inactive_subject",
     "pending_no_selected_server",
+    "pending_infrastructure_immunity_conflict",
+    "pending_docker_host_network",
+    "pending_docker_ipv4_inventory",
+    "pending_docker_multi_ipv4_unsupported",
+    "pending_docker_ipv6_inventory",
+    "pending_docker_ipv6_unsupported",
 }
 SCOPED_RUNTIME_BLOCKER_TRANSPARENT_TCP_UNHEALTHY = (
     "selective_materialized_but_transparent_tcp_unhealthy"
