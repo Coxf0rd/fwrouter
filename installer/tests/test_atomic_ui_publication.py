@@ -115,6 +115,242 @@ class AtomicUiPublicationTests(unittest.TestCase):
         self.assertTrue(self.active.is_symlink())
         self.assertTrue((self.target_root / "opt/fwrouter-api/fwrouter_api").is_dir())
 
+    def test_ui_release_switch_does_not_change_native_proof_backend_identity(self) -> None:
+        """The UI publisher owns UI integrity; missing native owner proof stays INCOMPLETE."""
+        backend_root = ROOT / "backend"
+        sys.path.insert(0, str(backend_root))
+        try:
+            from fwrouter_api.db import connection as db_connection
+            from fwrouter_api.services import native_proof
+        finally:
+            sys.path.remove(str(backend_root))
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def read_guard():
+            yield True
+
+        proof_db = {
+            "schema": {"ok": True, "expected_schema_version": 27, "actual_schema_version": 27},
+            "integrity": ["ok"],
+            "foreign_key_violations": 0,
+            "inventory_digest": "synthetic-inventory-digest",
+            "inventory_count": 1,
+            "generation": {
+                "status": "verified",
+                "candidate_digest": "synthetic-inventory-digest",
+                "verified_digest": "synthetic-inventory-digest",
+                "candidate_revision": 1,
+                "verified_revision": 1,
+            },
+            "selection": {"revision": 1},
+            "core_revision": 1,
+            "latest_apply": {"status": "applied"},
+            "routing": {"apply_state": "clean"},
+            "modules": [],
+            "active_jobs": 0,
+        }
+        expected_backend_sha = native_proof.backend_manifest_sha256(native_proof._backend_root())
+        self.assertEqual(native_proof._backend_root(), backend_root)
+        self.assertNotEqual(native_proof._backend_root(), self.active)
+        before_backend_sha = native_proof.backend_manifest_sha256(backend_root)
+
+        with mock.patch.object(native_proof, "_db_snapshot", return_value=proof_db), \
+                mock.patch.object(native_proof, "_checkpoint_snapshot",
+                                  return_value={"present": False, "valid": True, "sha256": None}), \
+                mock.patch.object(db_connection, "get_db_path", return_value=self.root / "unused.db"), \
+                mock.patch("fwrouter_api.adapters.xray_common.xray_writer_read_guard", read_guard), \
+                mock.patch.object(native_proof, "_xray_readback", side_effect=AssertionError("receipt gate must stop before runtime readback")), \
+                mock.patch.object(native_proof, "_mihomo_readback", side_effect=AssertionError("receipt gate must stop before runtime readback")), \
+                mock.patch.object(native_proof, "_core_readback", side_effect=AssertionError("receipt gate must stop before runtime readback")):
+            before = native_proof.collect_native_proof(
+                scope="ui", expected_backend_manifest_sha256=expected_backend_sha,
+                expected_xray_image_digest="sha256:" + "1" * 64,
+                expected_mihomo_image_digest="sha256:" + "2" * 64,
+            )
+            initial_ui_digest, _ = ui_publication._walk_tree(self.active, owner_uid=os.geteuid(), require_index=True)
+            first_publication = self.publish()
+            first_release = ui_publication._managed_release(
+                self.active, self.active.parent / ".fwrouter-ui-releases", os.geteuid(),
+            )
+            self.assertIsNotNone(first_release)
+            first_ui_digest, _ = ui_publication._walk_tree(first_release, owner_uid=os.geteuid(), require_index=True)
+            after_initial_pointer = native_proof.collect_native_proof(
+                scope="ui", expected_backend_manifest_sha256=expected_backend_sha,
+                expected_xray_image_digest="sha256:" + "1" * 64,
+                expected_mihomo_image_digest="sha256:" + "2" * 64,
+            )
+
+            (self.ui / "index.html").write_text("candidate-v2\n", encoding="utf-8")
+            second_publication = self.publish()
+            active_release = ui_publication._managed_release(
+                self.active, self.active.parent / ".fwrouter-ui-releases", os.geteuid(),
+            )
+            self.assertIsNotNone(active_release)
+            second_ui_digest, _ = ui_publication._walk_tree(active_release, owner_uid=os.geteuid(), require_index=True)
+            after = native_proof.collect_native_proof(
+                scope="ui", expected_backend_manifest_sha256=expected_backend_sha,
+                expected_xray_image_digest="sha256:" + "1" * 64,
+                expected_mihomo_image_digest="sha256:" + "2" * 64,
+            )
+
+        after_backend_sha = native_proof.backend_manifest_sha256(backend_root)
+        self.assertNotEqual(initial_ui_digest, first_ui_digest)
+        self.assertNotEqual(first_ui_digest, second_ui_digest)
+        self.assertEqual((self.active / "index.html").read_text(encoding="utf-8"), "candidate-v2\n")
+        self.assertTrue(first_publication.startswith("Published UI release "))
+        self.assertTrue(second_publication.startswith("Published UI release "))
+        releases = self.active.parent / ".fwrouter-ui-releases"
+        for retained_digest in (initial_ui_digest, first_ui_digest):
+            retained = releases / f"release-{retained_digest}"
+            self.assertEqual(ui_publication._release_digest(retained, os.geteuid()), retained_digest)
+        self.assertEqual(before_backend_sha, after_backend_sha)
+        self.assertEqual(before["source_identity"], after["source_identity"])
+        self.assertEqual(before["source_identity"], after_initial_pointer["source_identity"])
+        self.assertEqual(before["source_identity"]["sha256"], expected_backend_sha)
+        self.assertEqual(before["status"], "INCOMPLETE")
+        self.assertEqual(after_initial_pointer["status"], "INCOMPLETE")
+        self.assertEqual(after["status"], "INCOMPLETE")
+        self.assertEqual(before["reason"], "native_generation_receipt_missing_or_invalid")
+        self.assertEqual(after_initial_pointer["reason"], "native_generation_receipt_missing_or_invalid")
+        self.assertEqual(after["reason"], "native_generation_receipt_missing_or_invalid")
+        self.assertNotIn("xray", before)
+        self.assertNotIn("mihomo", before)
+        self.assertNotIn("core", before)
+        self.assertNotIn("xray", after_initial_pointer)
+        self.assertNotIn("mihomo", after_initial_pointer)
+        self.assertNotIn("core", after_initial_pointer)
+        self.assertNotIn("xray", after)
+        self.assertNotIn("mihomo", after)
+        self.assertNotIn("core", after)
+
+    def test_synthetic_native_proof_fingerprints_stay_stable_across_ui_pointer_switches(self) -> None:
+        """Exercise the complete proof contract with synthetic readers, never live runtimes."""
+        backend_root = ROOT / "backend"
+        sys.path.insert(0, str(backend_root))
+        try:
+            from fwrouter_api.db import connection as db_connection
+            from fwrouter_api.services import native_proof
+        finally:
+            sys.path.remove(str(backend_root))
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def read_guard():
+            yield True
+
+        xray_pin = "sha256:" + "1" * 64
+        mihomo_pin = "sha256:" + "2" * 64
+        inventory_digest = "f" * 64
+        apply_id = "synthetic-apply-id"
+        xray = {
+            "config_sha256": "1" * 64,
+            "runtime_config_sha256": "2" * 64,
+            "runtime_incarnation_sha256": "3" * 64,
+            "durable_bindings_sha256": "4" * 64,
+            "durable_modes_sha256": "5" * 64,
+            "runtime_image_digest": xray_pin,
+            "runtime_image_reference_sha256": "6" * 64,
+            "runtime_version_sha256": "7" * 64,
+        }
+        mihomo = {
+            "config_sha256": "8" * 64,
+            "semantic_config_sha256": "9" * 64,
+            "durable_semantic_config_sha256": "a" * 64,
+            "input_fingerprint_sha256": "b" * 64,
+            "runtime_incarnation_sha256": "c" * 64,
+            "runtime_receipt_config_sha256": "d" * 64,
+            "runtime_receipt_fingerprint_sha256": "e" * 64,
+            "runtime_image_digest": mihomo_pin,
+            "runtime_image_reference_sha256": "f" * 64,
+            "runtime_version_sha256": "0" * 64,
+        }
+        core = {
+            "applied_manifest_sha256": "1" * 64,
+            "applied_nft_sha256": "2" * 64,
+            "native_rule_semantics_sha256": "3" * 64,
+            "native_ip_semantics_sha256": "4" * 64,
+            "latest_apply_id_sha256": __import__("hashlib").sha256(apply_id.encode()).hexdigest(),
+            "core_intent_revision": 7,
+            "selection_revision": 11,
+        }
+        executing_backend_sha = native_proof.backend_manifest_sha256(native_proof._backend_root())
+        proof_db = {
+            "schema": {"ok": True, "expected_schema_version": 27, "actual_schema_version": 27},
+            "integrity": ["ok"],
+            "foreign_key_violations": 0,
+            "inventory_digest": inventory_digest,
+            "inventory_count": 1,
+            "generation": {
+                "status": "verified",
+                "candidate_digest": inventory_digest,
+                "verified_digest": inventory_digest,
+                "candidate_revision": 3,
+                "verified_revision": 3,
+            },
+            "selection": {"revision": 11},
+            "core_revision": 7,
+            "latest_apply": {"apply_id": apply_id, "status": "applied", "core_intent_revision": 7},
+            "routing": {"apply_state": "clean"},
+            "modules": [
+                {"module_name": name, "desired_state": "enabled", "lifecycle_mode": "managed"}
+                for name in ("core", "vpn", "xray")
+            ],
+            "active_jobs": 0,
+        }
+        proof_db["generation"]["native_proof"] = native_proof._make_native_generation_proof(
+            executing_backend_sha, xray=xray, mihomo=mihomo, core=core,
+            inventory_digest=inventory_digest, generation_revision=3,
+        )
+
+        with mock.patch.object(native_proof, "_db_snapshot", return_value=proof_db) as db_snapshot, \
+                mock.patch.object(native_proof, "_checkpoint_snapshot",
+                                  return_value={"present": False, "valid": True, "sha256": None}) as checkpoint_snapshot, \
+                mock.patch.object(db_connection, "get_db_path", return_value=self.root / "unused.db"), \
+                mock.patch("fwrouter_api.adapters.xray_common.xray_writer_read_guard", read_guard), \
+                mock.patch.object(native_proof, "_xray_readback", side_effect=lambda _db: dict(xray)) as xray_read, \
+                mock.patch.object(native_proof, "_mihomo_readback", side_effect=lambda _db: dict(mihomo)) as mihomo_read, \
+                mock.patch.object(native_proof, "_core_readback", side_effect=lambda _db: dict(core)) as core_read:
+            before = native_proof.collect_native_proof(
+                scope="ui", expected_backend_manifest_sha256=executing_backend_sha,
+                expected_xray_image_digest=xray_pin, expected_mihomo_image_digest=mihomo_pin,
+            )
+            first_publication = self.publish()
+            after_initial_pointer = native_proof.collect_native_proof(
+                scope="ui", expected_backend_manifest_sha256=executing_backend_sha,
+                expected_xray_image_digest=xray_pin, expected_mihomo_image_digest=mihomo_pin,
+            )
+            (self.ui / "index.html").write_text("candidate-v2\n", encoding="utf-8")
+            second_publication = self.publish()
+            after_managed_switch = native_proof.collect_native_proof(
+                scope="ui", expected_backend_manifest_sha256=executing_backend_sha,
+                expected_xray_image_digest=xray_pin, expected_mihomo_image_digest=mihomo_pin,
+            )
+
+        # PASS here validates the collector against explicit synthetic component
+        # readers and an owner-shaped fixture. It is not evidence from real engines.
+        proofs = (before, after_initial_pointer, after_managed_switch)
+        self.assertTrue(first_publication.startswith("Published UI release "))
+        self.assertTrue(second_publication.startswith("Published UI release "))
+        self.assertEqual((self.active / "index.html").read_text(encoding="utf-8"), "candidate-v2\n")
+        self.assertEqual(db_snapshot.call_count, 6)
+        self.assertEqual(checkpoint_snapshot.call_count, 6)
+        self.assertEqual(xray_read.call_count, 6)
+        self.assertEqual(mihomo_read.call_count, 6)
+        self.assertEqual(core_read.call_count, 6)
+        for proof in proofs:
+            self.assertEqual(proof["status"], "PASS", proof)
+            self.assertEqual(proof["source_identity"]["sha256"], executing_backend_sha)
+            self.assertEqual(proof["database"], before["database"])
+            self.assertEqual(proof["native_proof_sha256"], before["native_proof_sha256"])
+            self.assertIn("final_native_runtime_fence_recheck", proof["checks_executed"])
+            self.assertIn("generation_native_receipt_exact_match", proof["checks_executed"])
+            self.assertEqual(proof["xray"], {**xray, "runtime_image_digest": xray_pin})
+            self.assertEqual(proof["mihomo"], {**mihomo, "runtime_image_digest": mihomo_pin})
+            self.assertEqual(proof["core"], core)
+
     def test_backend_installer_waits_for_ui_compatibility_check_and_exchange(self) -> None:
         source = self.root / "concurrent-ui-source"
         (source / "installer").mkdir(parents=True)

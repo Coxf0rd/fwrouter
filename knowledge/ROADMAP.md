@@ -1,5 +1,11 @@
 # FWRouter — active roadmap
 
+## Sequential Atomic UI / Native Proof integration — 2026-10-23
+
+PR36 was Squash and Merged by the owner into main `765a355e57c70935fd54699b04ee01f2fb82709e`; the actual-main workflow [39845388758](https://github.com/Coxf0rd/fwrouter/actions/runs/39845388758) passed. PR37 is being integrated from that exact main. Its existing Native Proof implementation and PR36's atomic UI publisher, shared installer lock, safe-recovery dependency closure, tests and catalog entries are retained. Cross-contract regressions run the real publisher through initial directory-to-pointer and managed-pointer-to-pointer transitions. One fixture lacks its owner native receipt and stays `INCOMPLETE`; another uses explicitly synthetic stable component readers to exercise the collector's complete `PASS` contract and checks unchanged backend, durable owner-fence and component-proof hashes across both switches. The synthetic `PASS` is test-contract evidence only and does not claim real Xray/Mihomo/Core fingerprints or live proof.
+
+Focused integration tests and manifest/QCP inventory validation pass locally. Full mandatory CI V2 and independent review are still required on the final integrated PR37 commit; prior PR37 CI does not qualify this combined tree. PR37 remains Draft until those gates complete. Production is unchanged; PR35 remains Draft and its private wrapper stays uninstalled and execution-blocked.
+
 ## Atomic UI publication — bounded implementation qualification (2026-10-23)
 
 The owner authorized a separate installer fix from main `64f3cc7802244c056e2bb1ea156b37e8318e6465` after PR34. Main CI39765147823 passed the exact squash with mandatory main smoke. The confirmed tar-overlay interruption defect can expose a mixed static UI tree. This package prepares and validates a complete immutable release before an atomic same-filesystem pointer exchange, preserving the previous complete tree. Backend compatibility and protected-file/lifecycle ownership remain required; browser requests spanning releases are not a transactional browser session.
@@ -29,6 +35,12 @@ PR33 was user-merged into `d313dcf4f4dc997527c505aa8fbb746c29870c63`; [main CI39
 Normal startup, Gateway, subject worker and four timers resumed. Protected host files and backend configuration were preserved, including the reviewed local traffic-collector readiness guard. StealthSurf VLESS, Core routing intent and existing native identities were retained without forced selection or provider-side changes. The initial controlled-stop systemd observation declined safely; its bounded retry completed.
 
 An isolated temporary alias-only Xray client passed virtual POST, repeat, desired/applied readback, physical NULL FK/kind vpn_auto and native vpn-global checks. An actual systemd subscription refresh preserved explicit intent. DELETE restored inheritance; API deletion removed the temporary client and restored exactly the original65 native identities. Generation18 is verified with candidate/verified digest parity and no active recovery checkpoint. Credentials/accounts/clients, original override targets/TTLs and Core routing were preserved; refresh observation/apply timestamps legitimately changed. These historical acceptance results do not authorize another deployment.
+
+## Read-only fenced native proof — bounded owner contract (2026-10-23)
+
+The owner authorized this independent correction from qualified main `64f3cc7802244c056e2bb1ea156b37e8318e6465` to unblock private manual-deployment qualification. Existing verified inventory metadata does not by itself establish full current native parity. The supported read-only proof must bind SQLite generation/ownership, Xray, Mihomo and Core evidence to stable fences; missing legacy evidence, concurrent mutations and unavailable runtime readback must block PASS. No admission, candidate staging, apply, refresh, reconcile or new generation owner is permitted in the proof path.
+
+Implementation, native/security regression tests, independent QA and exact-HEAD full CI remain separate feature-PR gates. See [bounded source correction](audits/read_only_fenced_native_proof_2026-10-23/REPORT.md). This does not activate the private wrapper or close production/external acceptance. PR35 remains Draft, uninstalled and production-blocked; source changes require separate exact-chain private qualification and eventual user-reviewed integration.
 
 ## Virtual Xray VPN-auto override POST — source correction (2026-10-22)
 

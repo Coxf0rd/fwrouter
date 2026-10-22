@@ -34,6 +34,12 @@ adapter calls, runtime verify, rollback discipline и promotion. Phase tracking
 
 ## Вынесенные модули
 
+After the existing successful native enforcement verification, promotion may
+record an optional Core native proof receipt tied to the exact apply and intent
+revision. Receipt capture is read-only and best-effort: failure does not alter
+existing apply success/fencing semantics, while strict native proof reports
+`INCOMPLETE` if the receipt is absent.
+
 - `apply_plan.py`
   `ApplyMode`, apply exceptions, apply plan DTO, generated result paths и job context validation.
 - `apply_manifest.py`

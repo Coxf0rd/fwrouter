@@ -148,12 +148,24 @@ class RealXrayAdapter(XrayAdapter):
                 details={"action": action},
             )
 
-        DOCKER_CLI_STATE_DIR.mkdir(parents=True, exist_ok=True)
-        env = {
-            **os.environ,
-            "DOCKER_CONFIG": str(DOCKER_CLI_STATE_DIR),
-            "HOME": str(DOCKER_CLI_STATE_DIR),
+        readonly_actions = {
+            "compose_ps", "api_inbound_users", "runtime_container_id", "runtime_inspect",
+            "runtime_config_archive",
         }
+        if action in readonly_actions:
+            # Native proof/readback commands must not bootstrap Docker's
+            # per-user config directory. Compose and Docker inspect/cp are
+            # read-only here; point HOME at a non-writable procfs path and
+            # ignore any caller DOCKER_CONFIG override.
+            env = {**os.environ, "HOME": "/proc"}
+            env.pop("DOCKER_CONFIG", None)
+        else:
+            DOCKER_CLI_STATE_DIR.mkdir(parents=True, exist_ok=True)
+            env = {
+                **os.environ,
+                "DOCKER_CONFIG": str(DOCKER_CLI_STATE_DIR),
+                "HOME": str(DOCKER_CLI_STATE_DIR),
+            }
 
         if action == "runtime_config_archive":
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, bufsize=0)

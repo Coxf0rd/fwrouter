@@ -161,6 +161,20 @@
   ],
   "path_rules": [
     {
+      "glob": "backend/fwrouter_api/services/native_proof.py",
+      "domains": [
+        "xray",
+        "mihomo",
+        "core",
+        "routing",
+        "database"
+      ],
+      "required_native": [
+        "backend/tests/test_xray_native_readback.py",
+        "backend/tests/test_protocol_native_validation.py"
+      ]
+    },
+    {
       "domains": [
         "maintenance"
       ],
@@ -4166,6 +4180,60 @@
       ],
       "slow": false,
       "timeout_seconds": 60
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "xray",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "Synthetic SQLite and injected native observation boundaries",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_native_proof",
+      "isolation": "Disposable database/config/lock state; no live DB or runtime",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_native_proof.py",
+      "primary_level": "L3",
+      "risk_notes": "Read-only owner-fenced proof regression; real Xray/Mihomo evidence requires registered native execution profiles",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest"
+      ],
+      "slow": false,
+      "timeout_seconds": 180
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "xray",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "Pinned Xray/Mihomo child processes with synthetic state/config and real readback",
+      "fixture_owner": "backend/tests/test_native_proof_native.py",
+      "id": "test_native_proof_native",
+      "isolation": "temporary test state and fake adapters per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_native_proof_native.py",
+      "primary_level": "L1",
+      "risk_notes": "Qualified readonly nonroot container, loopback runtime control only; no host policy routing parity claim",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)",
+        "qualified child-process profile; unavailable in the routine gate"
+      ],
+      "slow": false,
+      "timeout_seconds": 180,
+      "execution_profile": "qualified-child-process"
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",

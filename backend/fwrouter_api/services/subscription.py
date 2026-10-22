@@ -187,6 +187,8 @@ def _read_subscription_native_generation(connection: Any) -> dict[str, Any]:
         "candidate_revision": candidate_revision if type(candidate_revision) is int else None,
         "verified_digest": verified_digest if isinstance(verified_digest, str) else None,
         "verified_revision": verified_revision if type(verified_revision) is int else None,
+        # Internal owner receipt only. Public DTOs below deliberately omit it.
+        "native_proof": marker.get("native_proof") if isinstance(marker.get("native_proof"), dict) else None,
         "reason": reason,
         "inventory_digest": current_digest,
         "inventory_count": inventory_count,
@@ -382,6 +384,20 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
         )
         if not _legacy_admission_runtime_fences_match(admission):
             return {"ok": False, "reason": "legacy_admission_fence_changed"}
+    # The receipt is an additional read-only verification capability, not a new
+    # prerequisite for the established inventory promotion path. Legacy source
+    # or Core state may lack enough durable proof to qualify; retain the existing
+    # owner contract but never preserve an obsolete receipt in that case.
+    from fwrouter_api.services.native_proof import capture_native_generation_proof
+
+    native_result = capture_native_generation_proof(
+        expected_digest=admission.digest, expected_revision=admission.revision,
+    )
+    native_proof = (
+        native_result.get("proof")
+        if native_result.get("status") == "PASS" and isinstance(native_result.get("proof"), dict)
+        else None
+    )
     with db_session() as connection:
         if admission.proof_only_source_fingerprint is not None:
             # Serialize the final proof+marker CAS with any SQLite writer and
@@ -425,6 +441,25 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
             ):
                 return {"ok": False, "reason": "legacy_admission_fence_changed"}
         current = _read_subscription_native_generation(connection)
+        from fwrouter_api.services.core_intent import read_core_intent_revision
+        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+        latest_apply_row = connection.execute(
+            "SELECT apply_id, status, core_intent_revision FROM apply_versions "
+            "ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+        ).fetchone()
+        latest_apply = dict(latest_apply_row) if latest_apply_row is not None else None
+        proof_core = (native_proof.get("core")
+                      if isinstance(native_proof, dict) and isinstance(native_proof.get("core"), dict) else {})
+        latest_apply_hash = (
+            hashlib.sha256(str(latest_apply.get("apply_id")).encode("utf-8")).hexdigest()
+            if isinstance(latest_apply, dict) and latest_apply.get("apply_id") else None
+        )
+        if native_proof is not None and (proof_core.get("core_intent_revision") != read_core_intent_revision(connection)
+                or proof_core.get("selection_revision") != read_selection_fence(connection).get("revision")
+                or not isinstance(latest_apply, dict) or latest_apply.get("status") != "applied"
+                or latest_apply.get("core_intent_revision") != proof_core.get("core_intent_revision")
+                or latest_apply_hash != proof_core.get("latest_apply_id_sha256")):
+            native_proof = None
         if (
             current["status"] == "verified"
             and current["candidate_digest"] == admission.digest
@@ -432,6 +467,21 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
             and current["verified_digest"] == admission.digest
             and current["verified_revision"] == admission.revision
         ):
+            # A capability replay cannot replace a previously verified tuple
+            # unless the durable intent fences and fresh proof are identical.
+            if current.get("native_proof") != native_proof:
+                marker = {
+                    "schema": 1, "status": "verified",
+                    "candidate_digest": admission.digest, "candidate_revision": admission.revision,
+                    "verified_digest": admission.digest, "verified_revision": admission.revision,
+                    "reason": None, "inventory_count": current["inventory_count"],
+                }
+                if native_proof is not None:
+                    marker["native_proof"] = native_proof
+                connection.execute(
+                    "UPDATE settings SET value_json=?, updated_at=CURRENT_TIMESTAMP WHERE key=?",
+                    (json.dumps(marker, sort_keys=True, separators=(",", ":")), SUBSCRIPTION_NATIVE_GENERATION_KEY),
+                )
             return {"ok": True, "digest": admission.digest, "revision": admission.revision,
                     "already_promoted": True}
         if (
@@ -451,6 +501,8 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
             "reason": None,
             "inventory_count": current["inventory_count"],
         }
+        if native_proof is not None:
+            marker["native_proof"] = native_proof
         connection.execute(
             "UPDATE settings SET value_json=?, updated_at=CURRENT_TIMESTAMP WHERE key=?",
             (json.dumps(marker, sort_keys=True, separators=(",", ":")), SUBSCRIPTION_NATIVE_GENERATION_KEY),

@@ -21,6 +21,11 @@ upsert, and SQLite source-membership lifecycle.
 - inventory upsert helpers
   Persist parser output into `servers`, `server_preferences`, and
   `subscription_server_memberships`.
+- Verified inventory promotion may attach the optional read-only native proof
+  tuple captured under the existing generation writer guard. A missing or
+  incomplete capture does not block existing promotion; the strict external
+  proof reader returns `INCOMPLETE` until a later normal owner promotion
+  captures a complete tuple.
 
 ## Runtime/Persistent State
 

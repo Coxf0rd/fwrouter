@@ -111,6 +111,7 @@
 75. `opt_fwrouter_api_fwrouter_api_services_xray_clients_py.md`
 76. `opt_fwrouter_api_fwrouter_api_services_xray_materialize_py.md`
 77. `opt_fwrouter_api_fwrouter_api_services_xray_subscription_service_py.md`
+77a. `backend_fwrouter_api_services_native_proof_py.md` — [operator contract](../../NATIVE_PROOF.md)
 78. `opt_fwrouter_api_fwrouter_api_services_live_probe_cache_py.md`
 78a. `opt_fwrouter_api_fwrouter_api_services_external_ingress_py.md`
 78b. `opt_fwrouter_api_fwrouter_api_services_external_provider_registry_py.md`
