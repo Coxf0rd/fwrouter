@@ -248,11 +248,57 @@ def _backend_compatibility(lifecycle, backend_source: Path, backend_installed: P
     return expected
 
 
+def _release_digest(release: Path, owner_uid: int) -> str:
+    info = release.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise PublicationError("managed UI release is not a real directory")
+    _check_mode(str(release), info, owner_uid, "UI release")
+    digest, _ = _walk_tree(release, owner_uid=owner_uid, require_index=True)
+    if release.name != f"release-{digest}":
+        raise PublicationError("managed UI release name does not match its content digest")
+    return digest
+
+
+def _recover_interrupted_exchanges(target: Path, releases: Path, owner_uid: int) -> None:
+    """Finish archiving whole old trees left after a process died just after exchange."""
+    for orphan in sorted(target.parent.glob(".fwrouter-ui-next-*")):
+        suffix = orphan.name.removeprefix(".fwrouter-ui-next-")
+        if len(suffix) != 32 or any(c not in "0123456789abcdef" for c in suffix):
+            raise PublicationError(f"unexpected UI exchange recovery path: {orphan.name}")
+        info = orphan.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            # A managed symlink was the previous active pointer; its release remains immutable.
+            release = _managed_release(orphan, releases, owner_uid)
+            if release is None:
+                raise PublicationError("interrupted UI pointer is not a managed release")
+            _release_digest(release, owner_uid)
+            orphan.unlink()
+            _fsync_dir(target.parent)
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            raise PublicationError(f"unexpected object at interrupted UI exchange path: {orphan.name}")
+        digest, _ = _walk_tree(orphan, owner_uid=owner_uid, require_index=True)
+        destination = releases / f"release-{digest}"
+        try:
+            existing_info = destination.lstat()
+        except FileNotFoundError:
+            os.rename(orphan, destination)
+            _fsync_dir(target.parent)
+            _fsync_dir(releases)
+            continue
+        _check_mode(str(destination), existing_info, owner_uid, "UI release")
+        existing_digest = _release_digest(destination, owner_uid)
+        if existing_digest != digest:
+            raise PublicationError("interrupted UI tree conflicts with an existing content-addressed release")
+        # Keep the duplicate whole tree in place; the verified managed release is its recovery copy.
+
+
 def _signal_as_exception(signum, _frame):
     raise InterruptedError(f"received signal {signum}")
 
 
-def publish(source: Path, target: Path, backend_source: Path, backend_installed: Path, *, require_root: bool = False) -> str:
+def publish(source: Path, target: Path, backend_source: Path, backend_installed: Path, *, require_root: bool = False,
+            restore_release_sha256: str | None = None) -> str:
     import importlib.util
     lifecycle_path = Path(__file__).with_name("controlled_backend_lifecycle.py")
     spec = importlib.util.spec_from_file_location("fwrouter_backend_manifest", lifecycle_path)
@@ -275,6 +321,12 @@ def publish(source: Path, target: Path, backend_source: Path, backend_installed:
         raise PublicationError("live UI source must be owned by root")
     source_uid = source_info.st_uid
     source_digest, _ = _walk_tree(source, owner_uid=source_uid, require_index=True)
+    if restore_release_sha256 is not None:
+        if (len(restore_release_sha256) != 64
+                or any(c not in "0123456789abcdef" for c in restore_release_sha256)):
+            raise PublicationError("restore release must be identified by a lowercase SHA-256 digest")
+        if source_digest != restore_release_sha256:
+            raise PublicationError("trusted source UI digest does not match the requested retained release")
     lock_path = target.parent / ".fwrouter-ui.lock"
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
@@ -300,44 +352,71 @@ def publish(source: Path, target: Path, backend_source: Path, backend_installed:
         _check_mode(str(releases), release_info, owner_uid, "managed UI release directory")
         _fsync_dir(target.parent)
 
+        _recover_interrupted_exchanges(target, releases, owner_uid)
+
         current = _managed_release(target, releases, owner_uid)
+        if current is not None:
+            _release_digest(current, owner_uid)
+        initial_digest: str | None = None
         if current is None and target.exists():
             target_info = target.lstat()
             if not stat.S_ISDIR(target_info.st_mode):
                 raise PublicationError("initial UI target must be a real directory")
             _check_mode(str(target), target_info, owner_uid, "initial UI directory")
-            _walk_tree(target, owner_uid=owner_uid)
+            initial_digest, _ = _walk_tree(target, owner_uid=owner_uid, require_index=True)
+            existing_archive = releases / f"release-{initial_digest}"
+            try:
+                existing_archive.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                try:
+                    archived_digest = _release_digest(existing_archive, owner_uid)
+                except PublicationError as exc:
+                    raise PublicationError("initial UI conflicts with an existing content-addressed release") from exc
+                if archived_digest != initial_digest:
+                    raise PublicationError("initial UI conflicts with an existing content-addressed release")
+        if restore_release_sha256 is not None:
+            release = releases / f"release-{restore_release_sha256}"
+            if not release.exists():
+                raise PublicationError("requested retained UI release does not exist")
+            if _release_digest(release, owner_uid) != restore_release_sha256:
+                raise PublicationError("requested retained UI release failed content verification")
+            if current == release:
+                return f"UI release already active: {restore_release_sha256}"
+        else:
+            release = releases / f"release-{source_digest}"
         if current is not None:
             active_digest, _ = _walk_tree(current, owner_uid=owner_uid)
-            if active_digest == source_digest:
+            if active_digest == source_digest and restore_release_sha256 is None:
                 return f"UI already current: {source_digest}"
 
-        release = releases / f"release-{source_digest}"
-        try:
-            existing = release.lstat()
-        except FileNotFoundError:
-            existing = None
-        if existing is not None:
-            _check_mode(str(release), existing, owner_uid, "UI release")
-            existing_digest, _ = _walk_tree(release, owner_uid=owner_uid)
-            if existing_digest != source_digest:
-                raise PublicationError("existing immutable release digest does not match its contents")
-        else:
-            staging = releases / f".staging-{uuid.uuid4().hex}"
+        if restore_release_sha256 is None:
+            release = releases / f"release-{source_digest}"
             try:
-                copied_digest, _ = _walk_tree(source, owner_uid=source_uid, copy_to=staging, require_index=True)
-                _fsync_tree(staging)
-                prepared_digest, _ = _walk_tree(staging, owner_uid=owner_uid, require_index=True)
-                after_source_digest, _ = _walk_tree(source, owner_uid=source_uid, require_index=True)
-                if copied_digest != source_digest or prepared_digest != source_digest or after_source_digest != source_digest:
-                    raise PublicationError("source or prepared UI changed during release construction")
-                os.rename(staging, release)
-                _fsync_dir(releases)
-            except BaseException:
-                # SIGKILL can leave a private .staging directory; it is never an active release.
-                import shutil
-                shutil.rmtree(staging, ignore_errors=True)
-                raise
+                existing = release.lstat()
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                _check_mode(str(release), existing, owner_uid, "UI release")
+                if _release_digest(release, owner_uid) != source_digest:
+                    raise PublicationError("existing immutable release digest does not match its contents")
+            else:
+                staging = releases / f".staging-{uuid.uuid4().hex}"
+                try:
+                    copied_digest, _ = _walk_tree(source, owner_uid=source_uid, copy_to=staging, require_index=True)
+                    _fsync_tree(staging)
+                    prepared_digest, _ = _walk_tree(staging, owner_uid=owner_uid, require_index=True)
+                    after_source_digest, _ = _walk_tree(source, owner_uid=source_uid, require_index=True)
+                    if copied_digest != source_digest or prepared_digest != source_digest or after_source_digest != source_digest:
+                        raise PublicationError("source or prepared UI changed during release construction")
+                    os.rename(staging, release)
+                    _fsync_dir(releases)
+                except BaseException:
+                    # SIGKILL can leave a private .staging directory; it is never an active release.
+                    import shutil
+                    shutil.rmtree(staging, ignore_errors=True)
+                    raise
 
         # Backend may have changed while the release was prepared; check again under the lock.
         _backend_compatibility(lifecycle, backend_source, backend_installed)
@@ -349,10 +428,21 @@ def publish(source: Path, target: Path, backend_source: Path, backend_installed:
             _fsync_dir(target.parent)
             old = pointer
             if old.is_dir() and not old.is_symlink():
-                archived = releases / f"release-initial-{uuid.uuid4().hex}"
-                os.rename(old, archived)
-                _fsync_dir(target.parent)
-                _fsync_dir(releases)
+                old_digest, _ = _walk_tree(old, owner_uid=owner_uid, require_index=True)
+                if initial_digest is not None and old_digest != initial_digest:
+                    raise PublicationError("initial UI changed between preflight and atomic exchange")
+                archived = releases / f"release-{old_digest}"
+                try:
+                    archived_info = archived.lstat()
+                except FileNotFoundError:
+                    archived_info = None
+                if archived_info is None:
+                    os.rename(old, archived)
+                    _fsync_dir(target.parent)
+                    _fsync_dir(releases)
+                elif _release_digest(archived, owner_uid) != old_digest:
+                    raise PublicationError("previous UI conflicts with an existing content-addressed release")
+                # If an identical archive already exists, preserve the exchanged directory as an orphan.
             else:
                 pointer.unlink()
                 _fsync_dir(target.parent)
@@ -366,6 +456,8 @@ def publish(source: Path, target: Path, backend_source: Path, backend_installed:
         active_digest, _ = _walk_tree(active, owner_uid=owner_uid, require_index=True)
         if active_digest != source_digest:
             raise PublicationError("published UI content failed postflight digest validation")
+        if restore_release_sha256 is not None:
+            return f"Restored UI release {restore_release_sha256}"
         return f"Published UI release {source_digest}"
     finally:
         signal.signal(signal.SIGTERM, old_term)
@@ -379,9 +471,11 @@ def main() -> int:
     parser.add_argument("--backend-source", type=Path, required=True)
     parser.add_argument("--backend-installed", type=Path, required=True)
     parser.add_argument("--require-root", action="store_true")
+    parser.add_argument("--restore-release", help="atomically activate a retained release only when this trusted source UI has the same digest")
     args = parser.parse_args()
     try:
-        print(publish(args.source, args.target, args.backend_source, args.backend_installed, require_root=args.require_root))
+        print(publish(args.source, args.target, args.backend_source, args.backend_installed,
+                      require_root=args.require_root, restore_release_sha256=args.restore_release))
         return 0
     except Exception as exc:
         print(f"ui_publication: {exc}", file=sys.stderr)

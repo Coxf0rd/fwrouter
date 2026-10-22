@@ -40,6 +40,8 @@ class AtomicUiPublicationTests(unittest.TestCase):
         self.active = self.target_root / "opt/fwrouter-ui"
         self.active.mkdir()
         (self.active / "old.txt").write_text("complete prior tree")
+        (self.active / "index.html").write_text("complete prior index")
+        self.initial_digest, _ = ui_publication._walk_tree(self.active, owner_uid=os.geteuid(), require_index=True)
 
     def publish(self) -> str:
         return ui_publication.publish(self.ui, self.active, self.backend_source, self.backend_installed)
@@ -99,7 +101,7 @@ class AtomicUiPublicationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.active.is_symlink())
         self.assertEqual((self.active / "index.html").read_bytes(), (ROOT / "ui/index.html").read_bytes())
-        self.assertEqual(len(list((self.active.parent / ".fwrouter-ui-releases").glob("release-initial-*"))), 1)
+        self.assertTrue((self.active.parent / ".fwrouter-ui-releases" / f"release-{self.initial_digest}").is_dir())
 
     def test_installer_all_installs_backend_before_compatible_ui(self) -> None:
         shutil.rmtree(self.target_root)
@@ -182,8 +184,7 @@ class AtomicUiPublicationTests(unittest.TestCase):
 
         def fail_postflight(root: Path, **kwargs):
             nonlocal count
-            count += 1
-            if count == 6:
+            if root.name.startswith("release-") and kwargs.get("require_index"):
                 raise OSError("injected postflight failure")
             return original(root, **kwargs)
 
@@ -192,9 +193,8 @@ class AtomicUiPublicationTests(unittest.TestCase):
                 self.publish()
         self.assertTrue(self.active.is_symlink())
         self.assertEqual((self.active / "index.html").read_text(), "candidate-v1")
-        preserved = list((self.active.parent / ".fwrouter-ui-releases").glob("release-initial-*"))
-        self.assertEqual(len(preserved), 1)
-        self.assertEqual((preserved[0] / "old.txt").read_text(), "complete prior tree")
+        preserved = self.active.parent / ".fwrouter-ui-releases" / f"release-{self.initial_digest}"
+        self.assertEqual((preserved / "old.txt").read_text(), "complete prior tree")
 
     def test_sigkill_immediately_after_exchange_preserves_old_tree(self) -> None:
         code = textwrap.dedent(f"""
@@ -237,7 +237,7 @@ class AtomicUiPublicationTests(unittest.TestCase):
         self.assertTrue(self.active.is_symlink())
         self.assertEqual((self.active / "index.html").read_text(), "candidate-v1")
         releases = list((self.active.parent / ".fwrouter-ui-releases").glob("release-[0-9a-f]*"))
-        self.assertEqual(len(releases), 1)
+        self.assertEqual(len(releases), 2)  # The initial complete tree is retained as a managed release.
 
     def test_unsupported_exchange_fails_closed(self) -> None:
         with mock.patch.object(ui_publication, "_exchange", side_effect=ui_publication.PublicationError("unsupported")):
@@ -317,7 +317,7 @@ class AtomicUiPublicationTests(unittest.TestCase):
         preserved = [
             path for path in active.parent.iterdir()
             if path.name.startswith(".fwrouter-ui-next-")
-        ] + list((active.parent / ".fwrouter-ui-releases").glob("release-initial-*"))
+        ] + list((active.parent / ".fwrouter-ui-releases").glob("release-[0-9a-f]*"))
         self.assertTrue(any((path / "index.html").read_text() == "old complete ui\n" for path in preserved))
 
     def test_sigkill_after_archive_keeps_new_and_previous_complete(self) -> None:
@@ -337,9 +337,8 @@ class AtomicUiPublicationTests(unittest.TestCase):
         self.assertEqual(result.returncode, -signal.SIGKILL)
         self.assertTrue(self.active.is_symlink())
         self.assertEqual((self.active / "index.html").read_text(), "candidate-v1")
-        archived = list((self.active.parent / ".fwrouter-ui-releases").glob("release-initial-*"))
-        self.assertEqual(len(archived), 1)
-        self.assertEqual((archived[0] / "old.txt").read_text(), "complete prior tree")
+        archived = self.active.parent / ".fwrouter-ui-releases" / f"release-{self.initial_digest}"
+        self.assertEqual((archived / "old.txt").read_text(), "complete prior tree")
 
     def test_sigkill_during_postflight_keeps_both_versions(self) -> None:
         inject = textwrap.dedent("""
@@ -355,9 +354,8 @@ class AtomicUiPublicationTests(unittest.TestCase):
         self.assertEqual(result.returncode, -signal.SIGKILL)
         self.assertTrue(self.active.is_symlink())
         self.assertEqual((self.active / "index.html").read_text(), "candidate-v1")
-        archived = list((self.active.parent / ".fwrouter-ui-releases").glob("release-initial-*"))
-        self.assertEqual(len(archived), 1)
-        self.assertEqual((archived[0] / "old.txt").read_text(), "complete prior tree")
+        archived = self.active.parent / ".fwrouter-ui-releases" / f"release-{self.initial_digest}"
+        self.assertEqual((archived / "old.txt").read_text(), "complete prior tree")
 
     def test_empty_ui_source_fails_without_touching_active_tree(self) -> None:
         (self.ui / "index.html").unlink()
@@ -365,6 +363,114 @@ class AtomicUiPublicationTests(unittest.TestCase):
             self.publish()
         self.assertFalse(self.active.is_symlink())
         self.assertEqual((self.active / "old.txt").read_text(), "complete prior tree")
+
+    def test_restore_release_requires_trusted_source_digest_and_preserves_current(self) -> None:
+        self.publish()
+        old_digest, _ = ui_publication._walk_tree(self.ui, owner_uid=os.geteuid(), require_index=True)
+        (self.ui / "index.html").write_text("candidate-v2")
+        self.publish()
+        current_digest, _ = ui_publication._walk_tree(self.ui, owner_uid=os.geteuid(), require_index=True)
+        self.assertNotEqual(old_digest, current_digest)
+
+        (self.ui / "index.html").write_text("candidate-v1")
+        result = ui_publication.publish(
+            self.ui, self.active, self.backend_source, self.backend_installed,
+            restore_release_sha256=old_digest,
+        )
+        self.assertIn("Restored UI release", result)
+        self.assertEqual((self.active / "index.html").read_text(), "candidate-v1")
+        releases = self.active.parent / ".fwrouter-ui-releases"
+        self.assertEqual(ui_publication._release_digest(releases / f"release-{current_digest}", os.geteuid()), current_digest)
+
+    def test_restore_rejects_source_mismatch_corrupt_or_missing_release_without_switch(self) -> None:
+        self.publish()
+        old_digest, _ = ui_publication._walk_tree(self.ui, owner_uid=os.geteuid(), require_index=True)
+        (self.ui / "index.html").write_text("candidate-v2")
+        self.publish()
+        releases = self.active.parent / ".fwrouter-ui-releases"
+        active_name = ui_publication._managed_release(self.active, releases, os.geteuid()).name
+        with self.assertRaisesRegex(ui_publication.PublicationError, "source UI digest"):
+            ui_publication.publish(self.ui, self.active, self.backend_source, self.backend_installed, restore_release_sha256=old_digest)
+        self.assertEqual(ui_publication._managed_release(self.active, releases, os.geteuid()).name, active_name)
+
+        old_release = releases / f"release-{old_digest}"
+        (old_release / "index.html").write_text("corrupted")
+        (self.ui / "index.html").write_text("candidate-v1")
+        with self.assertRaises(ui_publication.PublicationError):
+            ui_publication.publish(self.ui, self.active, self.backend_source, self.backend_installed, restore_release_sha256=old_digest)
+        self.assertEqual(ui_publication._managed_release(self.active, releases, os.geteuid()).name, active_name)
+
+        shutil.rmtree(old_release)
+        with self.assertRaisesRegex(ui_publication.PublicationError, "does not exist"):
+            ui_publication.publish(self.ui, self.active, self.backend_source, self.backend_installed, restore_release_sha256=old_digest)
+        self.assertEqual(ui_publication._managed_release(self.active, releases, os.geteuid()).name, active_name)
+
+    def test_restore_rejects_backend_mismatch_without_switch(self) -> None:
+        self.publish()
+        old_digest, _ = ui_publication._walk_tree(self.ui, owner_uid=os.geteuid(), require_index=True)
+        (self.ui / "index.html").write_text("candidate-v2")
+        self.publish()
+        active_name = ui_publication._managed_release(
+            self.active, self.active.parent / ".fwrouter-ui-releases", os.geteuid()
+        ).name
+        (self.ui / "index.html").write_text("candidate-v1")
+        (self.backend_installed / "app.py").write_text("incompatible installed backend")
+        with self.assertRaisesRegex(ui_publication.PublicationError, "backend"):
+            ui_publication.publish(self.ui, self.active, self.backend_source, self.backend_installed,
+                                   restore_release_sha256=old_digest)
+        self.assertEqual(ui_publication._managed_release(
+            self.active, self.active.parent / ".fwrouter-ui-releases", os.geteuid()
+        ).name, active_name)
+
+    def test_interrupted_initial_exchange_is_archived_and_restorable(self) -> None:
+        old_digest, _ = ui_publication._walk_tree(self.active, owner_uid=os.geteuid(), require_index=True)
+        code = textwrap.dedent(f"""
+            import os, signal, sys
+            from pathlib import Path
+            sys.path.insert(0, {str(HELPER.parent)!r})
+            import ui_publication as u
+            original = u._exchange
+            def exchange_then_kill(left, right):
+                original(left, right)
+                os.kill(os.getpid(), signal.SIGKILL)
+            u._exchange = exchange_then_kill
+            u.publish(Path({str(self.ui)!r}), Path({str(self.active)!r}), Path({str(self.backend_source)!r}), Path({str(self.backend_installed)!r}))
+        """)
+        result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True)
+        self.assertEqual(result.returncode, -signal.SIGKILL)
+        self.assertTrue(any(p.name.startswith(".fwrouter-ui-next-") for p in self.active.parent.iterdir()))
+
+        (self.ui / "index.html").write_text("complete prior index")
+        (self.ui / "old.txt").write_text("complete prior tree")
+        command = [sys.executable, str(HELPER), "--source", str(self.ui), "--target", str(self.active),
+                   "--backend-source", str(self.backend_source), "--backend-installed", str(self.backend_installed),
+                   "--restore-release", old_digest]
+        restored = subprocess.run(command, cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        self.assertEqual((self.active / "index.html").read_text(), "complete prior index")
+        self.assertEqual(ui_publication._managed_release(self.active, self.active.parent / ".fwrouter-ui-releases", os.geteuid()).name, f"release-{old_digest}")
+
+    def test_identical_existing_archive_is_never_overwritten_or_lost(self) -> None:
+        releases = self.active.parent / ".fwrouter-ui-releases"
+        releases.mkdir()
+        existing = releases / f"release-{self.initial_digest}"
+        shutil.copytree(self.active, existing)
+        self.publish()
+        self.assertEqual((existing / "index.html").read_text(), "complete prior index")
+        orphans = [path for path in self.active.parent.glob(".fwrouter-ui-next-*") if path.is_dir()]
+        self.assertEqual(len(orphans), 1)
+        self.assertEqual((orphans[0] / "old.txt").read_text(), "complete prior tree")
+
+    def test_corrupt_archive_collision_refuses_before_pointer_switch(self) -> None:
+        releases = self.active.parent / ".fwrouter-ui-releases"
+        releases.mkdir()
+        conflict = releases / f"release-{self.initial_digest}"
+        conflict.mkdir()
+        (conflict / "index.html").write_text("different content")
+        with self.assertRaisesRegex(ui_publication.PublicationError, "conflicts"):
+            self.publish()
+        self.assertFalse(self.active.is_symlink())
+        self.assertEqual((self.active / "index.html").read_text(), "complete prior index")
 
     def test_writable_source_and_target_ancestor_are_rejected_without_chmod(self) -> None:
         os.chmod(self.ui, 0o777)
