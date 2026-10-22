@@ -70,6 +70,7 @@ def promote_last_good(
     *,
     manifest: dict[str, Any],
     artifact_paths: dict[str, str],
+    core_intent_revision: int | None = None,
 ) -> None:
     candidate_text = Path(artifact_paths["candidate_nft_path"]).read_text(encoding="utf-8")
     atomic_write_text(Path(artifact_paths["current_nft_path"]), candidate_text)
@@ -82,3 +83,19 @@ def promote_last_good(
     current_manifest_path = artifact_paths.get("current_manifest_path")
     if current_manifest_path:
         atomic_copy_file(applied_manifest_path, Path(current_manifest_path))
+    # The source owner writes a compact read-only receipt only after the
+    # existing apply owner has replaced the complete table and verified the
+    # resulting mode. Failure to capture it never fabricates a proof; future
+    # strict native checks report INCOMPLETE.
+    try:
+        from fwrouter_api.services.native_proof import write_core_native_apply_receipt
+
+        write_core_native_apply_receipt(
+            manifest=manifest,
+            artifact_paths=artifact_paths,
+            core_intent_revision=core_intent_revision,
+        )
+    except Exception:
+        # Optional proof capture is not part of the existing apply result.
+        # The read-only collector fails closed when no owner receipt exists.
+        return

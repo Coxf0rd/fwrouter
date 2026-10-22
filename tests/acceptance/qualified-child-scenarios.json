@@ -43,6 +43,7 @@
     "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[success]",
     "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[receipt_failure]",
     "backend/tests/test_xray.py::test_failed_new_generation_restores_last_good_runtime_and_public_snapshot[readback_failure]",
-    "backend/tests/test_xray.py::test_failed_generation_after_inventory_sync_restores_scoped_derived_rows"
+    "backend/tests/test_xray.py::test_failed_generation_after_inventory_sync_restores_scoped_derived_rows",
+    "backend/tests/test_native_proof_native.py::test_native_proof_collectors_against_pinned_engines"
   ]
 }

@@ -27,7 +27,7 @@ COORDINATOR_ROOT = "/tmp/fwrouter-qcp-test-root"
 COORDINATOR_MARKER = ".fwrouter-gate-test-root-owned"
 COORDINATOR_MARKER_CONTENT = "FWROUTER_GATE_TEST_ROOT_V1\n"
 PYTEST_WORKDIR = "/workspace/backend"
-EXPECTED_TOTAL = 42
+EXPECTED_TOTAL = 43
 SMALL_OUTPUT_LIMIT = 64 * 1024
 DIAGNOSTIC_LIMIT = 4096
 MAX_JUNIT_BYTES = launcher.MAX_RECEIPT_BYTES
@@ -37,6 +37,7 @@ QUALIFIED_CHILD_NODE_FILES = {
     "backend/tests/test_vpn_auto_writer_guard.py": 1,
     "backend/tests/test_xray.py": 16,
     "backend/tests/test_xray_default_runner_archive.py": 3,
+    "backend/tests/test_native_proof_native.py": 1,
 }
 _QUALIFIED_CHILD_NODEID = re.compile(
     r"(backend/tests/(test_[A-Za-z0-9_]+)\.py)::(test_[A-Za-z0-9_]+)(?:\[([^\[\]\r\n]{1,160})\])?"

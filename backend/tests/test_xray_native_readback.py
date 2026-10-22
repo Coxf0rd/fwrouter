@@ -108,6 +108,46 @@ def test_loaded_client_readback_against_isolated_xray_26_2_6(monkeypatch, tmp_pa
                 pytest.fail(f"isolated Xray HandlerService did not become ready ({last_error})")
             assert identities == [expected]
             assert adapter.get_runtime_config_sha256() == hashlib.sha256(config_path.read_bytes()).hexdigest()
+            # HandlerService and mounted-config readbacks must not bootstrap
+            # persistent Docker CLI state in this otherwise private fixture.
+            assert not (root / "docker-cli").exists()
+
+            # Exercise the production Xray collector against the real isolated
+            # engine, using only a synthetic durable identity projection.
+            from fwrouter_api.adapters import xray as xray_adapter
+            from fwrouter_api.services import native_proof
+
+            bindings_path = root / "fwrouter-bindings.json"
+            bindings_path.write_text(json.dumps({"bindings": [], "client_modes": []}), encoding="utf-8")
+            monkeypatch.setattr(xray_adapter, "DEFAULT_XRAY_ADAPTER", adapter)
+            monkeypatch.setattr("fwrouter_api.services.xray_runtime_state._xray_bindings_path", lambda: bindings_path)
+            monkeypatch.setattr("fwrouter_api.services.xray_bindings.collect_xray_runtime_bindings", lambda: [])
+            monkeypatch.setattr("fwrouter_api.services.xray_bindings.collect_xray_client_mode_directives", lambda: [])
+            # The pinned Docker qualification profile already launched this
+            # exact immutable image and verified its actual `xray version`.
+            # Bind that attestation to the live container incarnation read by
+            # the real adapter, while exercising the production collector.
+            def qualified_runtime_identity():
+                return {
+                    "image_digest": image,
+                    "image_reference_sha256": hashlib.sha256(image.encode()).hexdigest(),
+                    "version_sha256": hashlib.sha256(version.encode()).hexdigest(),
+                    "incarnation_sha256": hashlib.sha256(adapter.get_runtime_incarnation().encode()).hexdigest(),
+                }
+
+            proof = native_proof._xray_readback({"xray_identities": [{
+                "client_uuid": expected[0], "email": expected[1],
+            }]}, adapter=adapter, runtime_identity_reader=qualified_runtime_identity)
+            assert proof["bindings_match"] is True
+            assert proof["config_matches_mounted"] is True
+            assert proof["identity_count"] == 1
+
+            # A native identity mismatch must fail closed even while the Xray
+            # process and the mounted config remain healthy.
+            with pytest.raises(ValueError, match="XRAY_LOADED_IDENTITIES_MISMATCH"):
+                native_proof._xray_readback({"xray_identities": [{
+                    "client_uuid": replacement_identity[0], "email": replacement_identity[1],
+                }]}, adapter=adapter, runtime_identity_reader=qualified_runtime_identity)
 
             old_incarnation = adapter.get_runtime_incarnation()
             staged_path = root / "config.next.json"

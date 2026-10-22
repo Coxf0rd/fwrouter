@@ -587,7 +587,11 @@ def run_apply_pipeline(
                     applied_manifest = dict(manifest)
                     applied_manifest["runtime_enforcement"] = result_runtime_enforcement
                     applied_manifest["global_preflight"] = applied_preflight
-                    promote_last_good(manifest=applied_manifest, artifact_paths=manifest_paths)
+                    promote_last_good(
+                        manifest=applied_manifest,
+                        artifact_paths=manifest_paths,
+                        core_intent_revision=core_intent_revision,
+                    )
                     phase_tracker.finish(
                         applied_manifest_path=manifest_paths["applied_manifest_path"],
                         current_manifest_path=manifest_paths["current_manifest_path"],

@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import stat
 import subprocess
 import threading
 import time
@@ -77,6 +78,64 @@ def xray_writer_guard(*, timeout_seconds: float | None = None) -> Iterator[None]
 def xray_writer_guard_is_held() -> bool:
     """Return whether the current thread already owns the shared writer guard."""
     return int(getattr(_XRAY_WRITER_LOCAL, "depth", 0)) > 0
+
+
+@contextmanager
+def xray_writer_read_guard() -> Iterator[bool]:
+    """Try to hold a shared read lease on an existing Xray writer lock.
+
+    This deliberately does not create the run directory or lock file. A missing
+    lock means that a caller cannot establish the owner barrier and must fail
+    closed. The lease is independent from the thread RLock used by writers; a
+    proof requested from inside a writer operation is rejected to avoid self
+    deadlock.
+    """
+    if xray_writer_guard_is_held():
+        yield False
+        return
+    lock_path = get_settings().paths.run_dir / "xray-writer.lock"
+    try:
+        descriptor = os.open(
+            lock_path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except OSError:
+        yield False
+        return
+    try:
+        info = os.fstat(descriptor)
+        try:
+            current = os.stat(lock_path, follow_symlinks=False)
+        except OSError:
+            yield False
+            return
+        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(current.st_mode)
+                or current.st_dev != info.st_dev or current.st_ino != info.st_ino
+                or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077):
+            yield False
+            return
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
+        try:
+            after = os.stat(lock_path, follow_symlinks=False)
+            held = os.fstat(descriptor)
+        except OSError as exc:
+            raise RuntimeError("XRAY_READ_LOCK_CHANGED") from exc
+        if ((after.st_dev, after.st_ino) != (info.st_dev, info.st_ino)
+                or (held.st_dev, held.st_ino) != (info.st_dev, info.st_ino)
+                or stat.S_ISLNK(after.st_mode) or after.st_uid != os.geteuid()
+                or held.st_uid != info.st_uid
+                or stat.S_IMODE(after.st_mode) & 0o077
+                or stat.S_IMODE(held.st_mode) & 0o077):
+            raise RuntimeError("XRAY_READ_LOCK_CHANGED")
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 def xray_writer_guarded(function: _F) -> _F:

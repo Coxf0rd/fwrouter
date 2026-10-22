@@ -25,6 +25,7 @@ QCP_EXPECTED_FILE_COUNTS = {
     "backend/tests/test_vpn_auto_writer_guard.py": 1,
     "backend/tests/test_xray.py": 16,
     "backend/tests/test_xray_default_runner_archive.py": 3,
+    "backend/tests/test_native_proof_native.py": 1,
 }
 QCP_EXPECTED_TOTAL = sum(QCP_EXPECTED_FILE_COUNTS.values())
 
@@ -383,7 +384,7 @@ def validate_qcp_receipt(path: Path, plan: dict[str, Any], runtime_inputs: dict[
                 "backend/tests/test_protocol_native_validation.py::") for nodeid in expected_qcp)
             != QCP_EXPECTED_PROTOCOL_CASES):
         problems.append(
-            "qualified-child exact IDs differ from the checked-in 21 protocol plus 21 supporting scenario contract"
+            "qualified-child exact IDs differ from the checked-in 21 protocol plus 22 supporting scenario contract"
         )
 
     expected_set = set(expected_qcp) if scenario_ids_valid else set()

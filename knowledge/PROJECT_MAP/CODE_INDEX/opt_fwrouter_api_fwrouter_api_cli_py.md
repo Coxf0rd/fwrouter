@@ -12,8 +12,19 @@ Console entrypoint `fwrouter` for read-only operational commands.
 - `fwrouter diagnose`
   Reads the shared diagnostic report and prints a human-readable system state.
   `fwrouter diagnose --json` returns the same object as `GET /api/v2/diagnose`.
+- `fwrouter native-proof --scope ui --expected-backend-manifest-sha256 SHA256 --expected-xray-image-digest sha256:... --expected-mihomo-image-digest sha256:...`
+  Prints a structured redacted result from the read-only native proof collector.
+  Exit status is zero only for `PASS`; `STALE`, `INCOMPLETE`, and `FAIL` return
+  nonzero. The required digest binds the result to exact installed backend
+  content, not to a Git commit. Both immutable Docker image configuration IDs
+  reported by `docker inspect .Image` must also be supplied and match the
+  running containers. The collector separately checks the configured image
+  reference and runtime version; a mutable tag alone is not a pin, and this ID
+  is not the registry manifest digest (`RepoDigest`).
 
 ## Runtime/Persistent State
 
-The commands only read backend state/probes through `services.reconcile` and
-`services.diagnostics`; they do not change the database or runtime.
+`reconcile check`, `diagnose`, and `native-proof` are read-only. Native proof
+does not start admission, refresh, reconcile, apply, reload, or generation
+work; it requires a stable shared Xray writer lease and returns incomplete for
+legacy generations without an owner-captured proof tuple.

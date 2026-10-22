@@ -4303,7 +4303,7 @@ class AcceptanceContractTests(unittest.TestCase):
             encoding="utf-8"))
         expected = [nodeid.removeprefix("backend/") for nodeid in scenarios["nodeids"]]
         self.assertEqual(expected, qualified_child._qualified_child_pytest_selectors())
-        self.assertEqual(42, len(expected))
+        self.assertEqual(43, len(expected))
         self.assertTrue(all("::" in selector for selector in expected))
         self.assertIn(
             "tests/test_protocol_native_validation.py::test_stealthsurf_vless_server_envelope_generates_native_grpc_reality_without_sni_or_seed",

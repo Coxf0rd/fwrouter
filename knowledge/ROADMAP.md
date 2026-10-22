@@ -22,6 +22,12 @@ Normal startup, Gateway, subject worker and four timers resumed. Protected host 
 
 An isolated temporary alias-only Xray client passed virtual POST, repeat, desired/applied readback, physical NULL FK/kind vpn_auto and native vpn-global checks. An actual systemd subscription refresh preserved explicit intent. DELETE restored inheritance; API deletion removed the temporary client and restored exactly the original65 native identities. Generation18 is verified with candidate/verified digest parity and no active recovery checkpoint. Credentials/accounts/clients, original override targets/TTLs and Core routing were preserved; refresh observation/apply timestamps legitimately changed. These historical acceptance results do not authorize another deployment.
 
+## Read-only fenced native proof — bounded owner contract (2026-10-23)
+
+The owner authorized this independent correction from qualified main `64f3cc7802244c056e2bb1ea156b37e8318e6465` to unblock private manual-deployment qualification. Existing verified inventory metadata does not by itself establish full current native parity. The supported read-only proof must bind SQLite generation/ownership, Xray, Mihomo and Core evidence to stable fences; missing legacy evidence, concurrent mutations and unavailable runtime readback must block PASS. No admission, candidate staging, apply, refresh, reconcile or new generation owner is permitted in the proof path.
+
+Implementation, native/security regression tests, independent QA and exact-HEAD full CI remain separate feature-PR gates. See [bounded source correction](audits/read_only_fenced_native_proof_2026-10-23/REPORT.md). This does not activate the private wrapper or close production/external acceptance. PR35 remains Draft, uninstalled and production-blocked; source changes require separate exact-chain private qualification and eventual user-reviewed integration.
+
 ## Virtual Xray VPN-auto override POST — source correction (2026-10-22)
 
 Bounded defect correction from actual main `e1c4aa9` after merged PR31/32. PR32 squash is single-parent with exact qualified feature-tree inclusion; main CI39670417991 passed including mandatory main smoke. This supersedes the pending-integration gate below without changing its historical receipts. [PR33](https://github.com/Coxf0rd/fwrouter/pull/33), `fix/virtual-xray-vpn-auto-override`, fixes virtual target persistence without starting Stage5 or changing production.
