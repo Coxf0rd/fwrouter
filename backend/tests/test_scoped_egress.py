@@ -462,6 +462,8 @@ def _seed_docker_subject(
                 json.dumps(
                     {
                         "NetworkMode": "bridge",
+                        "IPv4InventoryComplete": True,
+                        "IPv4Addresses": [ip_address],
                         "IPv6InventoryComplete": True,
                         "IPv6Addresses": [],
                     }

@@ -4720,7 +4720,7 @@ def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
             "INSERT INTO subject_docker (subject_id, compose_project, compose_service, container_name, "
             "container_id, image_name, ip_address, network_name, source_json) "
             "VALUES (?, 'packet-scoped', 'ordinary', 'ordinary', 'owned-fixture', 'fixture:local', ?, 'owned-client-veth', ?)",
-            (subject_id, CLIENT_IP, json.dumps({"IPv6InventoryComplete": True, "IPv6Addresses": []})),
+            (subject_id, CLIENT_IP, json.dumps({"IPv4InventoryComplete": True, "IPv4Addresses": [CLIENT_IP], "IPv6InventoryComplete": True, "IPv6Addresses": []})),
         )
 
     def apply_subject(mode: str) -> None:

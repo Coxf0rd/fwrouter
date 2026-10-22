@@ -71,7 +71,12 @@ def docker_vpn_immunity_conflicts(
         if not isinstance(runtime, dict) and isinstance(effective, dict):
             runtime = effective.get("scoped_runtime")
         role = runtime.get("infrastructure_role") if isinstance(runtime, dict) else None
-        if subject_type in {"host", "fwrouter"} or role:
+        path = str(subject.get("dataplane_path") or (effective.get("dataplane_path") if isinstance(effective, dict) else "") or "").strip().lower()
+        docker_immune = subject_type == "docker" and (
+            not bool(subject.get("is_active")) or path not in {"direct", "vpn", "blocked"}
+            or (path == "vpn" and not bool(runtime.get("applied") if isinstance(runtime, dict) else False))
+        )
+        if subject_type in {"host", "fwrouter"} or role or docker_immune:
             address = _subject_ipv4(subject)
             if address is not None:
                 protected_addresses.add(address)
@@ -91,11 +96,11 @@ def docker_vpn_immunity_conflicts(
         if address is None:
             conflicts.append((subject_id, "docker_vpn_matcher_not_resolved_ipv4"))
             continue
-        if address in protected_addresses or any(address in network for network in protected_networks):
-            conflicts.append((subject_id, "docker_vpn_matcher_overlaps_infrastructure"))
-            continue
         if not bool(runtime.get("applied")):
             conflicts.append((subject_id, "docker_vpn_runtime_not_ready"))
+            continue
+        if address in protected_addresses or any(address in network for network in protected_networks):
+            conflicts.append((subject_id, "docker_vpn_matcher_overlaps_infrastructure"))
     return conflicts
 
 

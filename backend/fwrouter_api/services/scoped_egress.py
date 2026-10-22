@@ -394,6 +394,20 @@ def build_scoped_subject_runtime(
             result["status"] = "pending_docker_host_network"
             result["resolution_reason"] = "docker_host_network_full_vpn_unsupported"
             return result
+        ipv4_values = source.get("IPv4Addresses") if isinstance(source, dict) else None
+        try:
+            ipv4_addresses = {str(ip_address(value)) for value in ipv4_values} if isinstance(ipv4_values, list) else set()
+            ipv4_valid = all(ip_address(value).version == 4 for value in ipv4_addresses)
+        except (ValueError, TypeError):
+            ipv4_addresses, ipv4_valid = set(), False
+        if not isinstance(source, dict) or source.get("IPv4InventoryComplete") is not True or not ipv4_valid or not ipv4_addresses:
+            result["status"] = "pending_docker_ipv4_inventory"
+            result["resolution_reason"] = "docker_ipv4_inventory_incomplete"
+            return result
+        if len(ipv4_addresses) != 1 or str(detail.get("ip_address") or "") not in ipv4_addresses:
+            result["status"] = "pending_docker_multi_ipv4_unsupported"
+            result["resolution_reason"] = "docker_single_ipv4_matcher_required"
+            return result
         ipv6_state, _ipv6_addresses = _docker_ipv6_inventory_state(subject)
         result["docker_ipv6_inventory_status"] = ipv6_state
         if ipv6_state == "incomplete":

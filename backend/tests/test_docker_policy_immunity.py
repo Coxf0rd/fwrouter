@@ -120,10 +120,10 @@ def test_protected_docker_role_uses_exact_compose_service_and_container_identity
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        ({"NetworkMode": "bridge", "IPv6InventoryComplete": True, "IPv6Addresses": []}, "applied"),
-        ({"NetworkMode": "bridge", "IPv6InventoryComplete": False, "IPv6Addresses": []}, "pending_docker_ipv6_inventory"),
-        ({"NetworkMode": "bridge", "IPv6InventoryComplete": True, "IPv6Addresses": ["2001:db8::2"]}, "pending_docker_ipv6_unsupported"),
-        ({"NetworkMode": "host", "IPv6InventoryComplete": True, "IPv6Addresses": []}, "pending_docker_host_network"),
+        ({"NetworkMode": "bridge", "IPv4InventoryComplete": True, "IPv4Addresses": ["172.25.0.2"], "IPv6InventoryComplete": True, "IPv6Addresses": []}, "applied"),
+        ({"NetworkMode": "bridge", "IPv4InventoryComplete": True, "IPv4Addresses": ["172.25.0.2"], "IPv6InventoryComplete": False, "IPv6Addresses": []}, "pending_docker_ipv6_inventory"),
+        ({"NetworkMode": "bridge", "IPv4InventoryComplete": True, "IPv4Addresses": ["172.25.0.2"], "IPv6InventoryComplete": True, "IPv6Addresses": ["2001:db8::2"]}, "pending_docker_ipv6_unsupported"),
+        ({"NetworkMode": "host", "IPv4InventoryComplete": True, "IPv4Addresses": ["172.25.0.2"], "IPv6InventoryComplete": True, "IPv6Addresses": []}, "pending_docker_host_network"),
     ],
 )
 def test_docker_vpn_runtime_requires_complete_ipv4_only_isolated_inventory(source: dict, expected: str) -> None:
@@ -199,7 +199,7 @@ def _seed_manifest_database(monkeypatch, tmp_path: Path, address: str) -> list[d
     source = {
         "NetworkMode": "bridge",
         "IPAddress": address,
-        "IPv6InventoryComplete": True,
+        "IPv4InventoryComplete": True, "IPv4Addresses": [address], "IPv6InventoryComplete": True,
         "IPv6Addresses": [],
     }
     with db_session() as connection:
@@ -300,7 +300,7 @@ def test_database_manifest_rebuild_uses_current_docker_ip_after_inventory_change
     first_candidate = render_owned_table_candidate(first)
     with db_session() as connection:
         connection.execute(
-            "UPDATE subject_docker SET ip_address = '172.25.0.3', source_json = json_set(source_json, '$.IPAddress', '172.25.0.3') WHERE subject_id = 'docker:openflux:openflux'"
+            "UPDATE subject_docker SET ip_address = '172.25.0.3', source_json = json_set(source_json, '$.IPAddress', '172.25.0.3', '$.IPv4Addresses', json('[\"172.25.0.3\"]')) WHERE subject_id = 'docker:openflux:openflux'"
         )
     refreshed_subjects = list_subjects(subject_type="docker")
     second = routing_manifest.build_dataplane_manifest_from_state(
@@ -358,3 +358,49 @@ def test_policy_conflict_stops_apply_before_native_adapter_or_candidate_publicat
     assert result["dataplane"]["error_code"] == "DOCKER_VPN_POLICY_CONFLICT"
     assert calls == []
     assert not (get_settings().paths.generated_dir / "dataplane" / "current-manifest.json").exists()
+
+
+@pytest.mark.parametrize("inactive_path", ["direct", "vpn", "unknown"])
+def test_stale_docker_ip_reuse_cannot_shadow_full_vpn(isolated_host_observations, inactive_path):
+    active = _subject("vpn")
+    stale = _subject(inactive_path)
+    stale["subject_id"] = "docker:removed:stale"
+    stale["is_active"] = False
+    with pytest.raises(DockerPolicyConflictError, match="overlaps_infrastructure"):
+        render_owned_table_candidate(_manifest([active, stale]))
+
+
+@pytest.mark.parametrize("source_patch", [
+    {"IPv4InventoryComplete": False},
+    {"IPv4Addresses": []},
+    {"IPv4Addresses": ["172.25.0.2", "172.26.0.2"]},
+    {"IPv4Addresses": ["172.25.0.99"]},
+    {"IPv4Addresses": ["invalid"]},
+    {"IPv4Addresses": ["2001:db8::2"]},
+])
+def test_docker_full_vpn_rejects_incomplete_or_multiple_ipv4(source_patch):
+    source = {"IPv4InventoryComplete": True, "IPv4Addresses": ["172.25.0.2"], "IPv6InventoryComplete": True, "IPv6Addresses": []}
+    source.update(source_patch)
+    runtime = build_scoped_subject_runtime(
+        {"subject_id": "docker:test:test", "subject_type": "docker", "is_active": True,
+         "detail": {"ip_address": "172.25.0.2", "source": source}},
+        dataplane_path="vpn", selected_server_id="server-a", selected_server_source="global_fixed",
+        server_override=None, vpn_supported=True, bypass_enabled=False,
+    )
+    assert not runtime["applied"]
+    assert runtime["status"] in {"pending_docker_ipv4_inventory", "pending_docker_multi_ipv4_unsupported"}
+
+
+def test_all_network_ipv4_inventory_is_complete_and_deduplicated():
+    script = Path(__file__).parents[2] / "host/libexec/fwrouter/docker-inventory.py"
+    spec = importlib.util.spec_from_file_location("docker_ipv4_inventory", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    inspect = {"NetworkSettings": {"Networks": {
+        "a": {"IPAddress": "172.25.0.2"}, "b": {"IPAddress": "172.26.0.2"},
+    }}}
+    assert module._network_address_inventory(inspect, 4) == (["172.25.0.2", "172.26.0.2"], True)
+    inspect["NetworkSettings"]["Networks"]["b"]["IPAddress"] = "172.25.0.2"
+    assert module._network_address_inventory(inspect, 4) == (["172.25.0.2"], True)
+    del inspect["NetworkSettings"]["Networks"]["b"]["IPAddress"]
+    assert module._network_address_inventory(inspect, 4) == ([], False)

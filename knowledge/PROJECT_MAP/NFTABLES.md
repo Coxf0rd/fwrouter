@@ -109,13 +109,13 @@ is pending and nft candidate rendering independently fails closed. The
 managed Docker identities are recognized only by the exact compose-service
 and container-name pairs in `server_layout.py`.
 
-Docker Full VPN additionally requires complete inventory metadata proving no
+Docker Full VPN additionally requires complete all-network IPv4 inventory with exactly one matching source address, and metadata proving no
 global IPv6 address and an isolatable bridged matcher. Missing/incomplete IPv6
 inventory, observed global IPv6, host-network mode, unresolved matcher, or an
 unready VPN contour cannot be reported as applied. This is a guard against
 silent direct IPv6 bypass; it does not claim IPv6 Full VPN support.
 
-Docker inventory stores `IPv6InventoryComplete` and `IPv6Addresses` in the
+Docker inventory stores `IPv4InventoryComplete`/`IPv4Addresses` and `IPv6InventoryComplete`/`IPv6Addresses` in the
 existing `subject_docker.source_json` contract. No schema or separate routing
 owner is introduced. Core remains the owner of classification and routing;
 the early immunity ordering is retained for protected infrastructure.
