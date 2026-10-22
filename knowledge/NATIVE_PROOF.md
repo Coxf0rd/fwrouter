@@ -13,7 +13,7 @@ fwrouter native-proof --scope ui \
   --expected-mihomo-image-digest sha256:APPROVED_MIHOMO_IMAGE_ID
 ```
 
-The runtime pins are immutable local Docker image configuration IDs (`docker inspect .Image`), not registry `RepoDigests` or mutable tags. The backend identity uses the installer's canonical filtered content manifest; it is not an invented Git commit identity. The external operator policy must bind those hashes to reviewed source and approved runtime inputs. A public CI result alone cannot approve private wrapper bytes or these pins.
+The runtime pins are immutable local Docker image configuration IDs (`docker inspect .Image`), not registry `RepoDigests` or mutable tags. The backend identity uses the installer's canonical filtered content manifest rooted at the resolved `__file__` of the executing `native_proof` module; `FWROUTER_BACKEND_ROOT` cannot redirect the attested tree. It is not an invented Git commit identity. The external operator policy must bind those hashes to reviewed source and approved runtime inputs. A public CI result alone cannot approve private wrapper bytes or these pins.
 
 ## Consistency boundary
 

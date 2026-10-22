@@ -268,8 +268,10 @@ def backend_manifest_sha256(root: Path) -> str:
 
 
 def _backend_root() -> Path:
-    configured = os.environ.get("FWROUTER_BACKEND_ROOT")
-    return Path(configured) if configured else Path(__file__).resolve().parents[2]
+    # Attest the package tree that supplied this executing module. An
+    # environment-selected directory could otherwise make the CLI report a
+    # matching manifest for a different backend than the code it is running.
+    return Path(__file__).resolve(strict=True).parents[2]
 
 
 def _open_readonly_database(path: Path) -> sqlite3.Connection:

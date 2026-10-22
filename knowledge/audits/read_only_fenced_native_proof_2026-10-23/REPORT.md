@@ -12,6 +12,7 @@ See [operator and result contract](../../NATIVE_PROOF.md).
 
 ## Defects found during qualification
 
+- Independent review found that `FWROUTER_BACKEND_ROOT` could point the source-identity check at a matching decoy tree while the CLI executed an imported module elsewhere. Attestation now derives the manifest root from the resolved executing module path, and a CLI-handler regression sets the override to a decoy whose hash is used as the approved pin; the result reports the executing package hash and returns `STALE` before reading runtime or database state.
 - Nested existing projection helpers used the ordinary DB connector, which chmods files and configures WAL. A context-local read-only mode in the existing connection owner now covers the entire proof projection chain without changing independent threads or the later owner promotion write. Real SQLite tests reject attempted TTL mutation and verify preserved durable bytes, permissions and timestamps.
 - Actual `iproute2` output can use configured table aliases, IPv6 default spelling and numeric RTN_LOCAL. The proof requests numeric names and handles the documented local route forms; unicast remains rejected. Real IPv4/IPv6 network-namespace tests exercise the corrected reader.
 - Per-component fences alone missed a restart after an earlier reader returned. Final cross-component readback now rejects this window.

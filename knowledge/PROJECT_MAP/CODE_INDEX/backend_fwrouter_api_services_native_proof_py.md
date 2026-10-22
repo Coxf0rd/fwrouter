@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`collect_native_proof(scope="ui", expected_backend_manifest_sha256=..., expected_xray_image_digest=..., expected_mihomo_image_digest=...)` produces a bounded, read-only proof for the managed Xray, Mihomo, and Core state consumed by the UI. Its source identity is the exact installed backend content manifest used by the controlled rollout owner; the module does not infer a Git commit from installed files. Runtime pins are the immutable local Docker image configuration IDs (`docker inspect .Image`), not registry manifest digests (`RepoDigest`); missing pins return `INCOMPLETE`, and observed IDs must match. Configured image references and reported runtime versions are checked separately.
+`collect_native_proof(scope="ui", expected_backend_manifest_sha256=..., expected_xray_image_digest=..., expected_mihomo_image_digest=...)` produces a bounded, read-only proof for the managed Xray, Mihomo, and Core state consumed by the UI. Its source identity is the exact installed backend content manifest rooted at the resolved `__file__` of the executing module; `FWROUTER_BACKEND_ROOT` cannot redirect attestation, and the module does not infer a Git commit from installed files. Runtime pins are the immutable local Docker image configuration IDs (`docker inspect .Image`), not registry manifest digests (`RepoDigest`); missing pins return `INCOMPLETE`, and observed IDs must match. Configured image references and reported runtime versions are checked separately.
 
 ## Read and consistency contract
 

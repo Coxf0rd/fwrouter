@@ -280,6 +280,37 @@ def test_collect_native_proof_rejects_wrong_expected_manifest_before_native_read
     assert result["reason"] == "backend_manifest_changed"
 
 
+def test_native_proof_cli_cannot_attest_environment_selected_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from argparse import Namespace
+
+    from fwrouter_api.cli import _run_native_proof
+
+    decoy = tmp_path / "approved-backend"
+    decoy.mkdir()
+    (decoy / "native_proof.py").write_text("different executable source\n", encoding="utf-8")
+    decoy_sha = native_proof.backend_manifest_sha256(decoy)
+    monkeypatch.setenv("FWROUTER_BACKEND_ROOT", str(decoy))
+    monkeypatch.setattr(native_proof, "_db_snapshot", lambda _path: pytest.fail("DB read must not run"))
+
+    assert native_proof._backend_root() == REPO_ROOT / "backend"
+    status = _run_native_proof(Namespace(
+        scope="ui",
+        expected_backend_manifest_sha256=decoy_sha,
+        expected_xray_image_digest=XRAY_IMAGE_PIN,
+        expected_mihomo_image_digest=MIHOMO_IMAGE_PIN,
+    ))
+
+    output = json.loads(capsys.readouterr().out)
+    executing_sha = native_proof.backend_manifest_sha256(REPO_ROOT / "backend")
+    assert status == 1
+    assert output["status"] == "STALE"
+    assert output["reason"] == "backend_manifest_changed"
+    assert output["source_identity"]["sha256"] == executing_sha
+    assert output["source_identity"]["sha256"] != decoy_sha
+
+
 def test_legacy_generation_without_native_tuple_is_incomplete(monkeypatch: pytest.MonkeyPatch) -> None:
     db = _proof_ready_db()
     db["generation"] = {key: value for key, value in db["generation"].items() if key != "native_proof"}
