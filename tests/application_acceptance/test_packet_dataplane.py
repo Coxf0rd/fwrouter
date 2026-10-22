@@ -4696,6 +4696,56 @@ def _packet_vpn_runtime_selection(stack: dict[str, Any]) -> dict[str, str]:
             "vpn_auto_selected_target": selected_target}
 
 
+def _docker_policy_apply_failure_summary(response: dict[str, Any]) -> dict[str, Any]:
+    """Expose only bounded, non-sensitive failure classes in hosted receipts."""
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    error = data.get("error") if isinstance(data.get("error"), dict) else {}
+    message = str(error.get("message") or "").lower()
+    classifications = (
+        (("'subject_role'",), "missing_subject_role"),
+        (("'implementation_kind'",), "missing_implementation_kind"),
+        (("'detail'",), "missing_subject_detail"),
+        (("no such table",), "sqlite_missing_table"),
+        (("no such column",), "sqlite_missing_column"),
+        (("database is locked",), "sqlite_locked"),
+        (("foreign key constraint",), "sqlite_foreign_key"),
+        (("unique constraint",), "sqlite_unique_constraint"),
+        (("permission denied",), "permission_denied"),
+        (("operation not permitted",), "operation_not_permitted"),
+        (("fwrouter tests deny process execution",), "test_isolation_process_denied"),
+        (("tests deny process execution",), "test_isolation_process_denied"),
+        (("operation is not allowed by",), "test_isolation_process_denied"),
+        (("denied subprocess",), "test_isolation_process_denied"),
+        (("fwrouter tests deny file access",), "test_isolation_file_denied"),
+        (("fwrouter tests deny network",), "test_isolation_network_denied"),
+        (("no such file or directory",), "missing_file"),
+        ((" is not defined",), "undefined_name"),
+        (("not subscriptable",), "invalid_subject_projection"),
+        (("dockerpolicyconflicterror",), "docker_policy_conflict"),
+        (("nft", "syntax error"), "nft_syntax_error"),
+        (("nft", "permission"), "nft_permission_error"),
+    )
+    failure_class = "unclassified"
+    for fragments, label in classifications:
+        if all(fragment in message for fragment in fragments):
+            failure_class = label
+            break
+    code = str(error.get("code") or "")
+    stage = str(error.get("stage") or "")
+    return {
+        "api_ok": response.get("ok") is True,
+        "error_code": (
+            code if code.isascii() and code.replace("_", "").isalnum() and len(code) <= 64 else "unknown"
+        ),
+        "stage": (
+            stage
+            if stage in {"validate", "prepare", "apply", "verify", "commit", "unknown"}
+            else "unknown"
+        ),
+        "failure_class": failure_class,
+    }
+
+
 def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
                                    logical_id: str, record_property: Any) -> dict[str, Any]:
     """Real routed namespace client with Docker subject semantics, not a host Docker daemon.
@@ -4711,25 +4761,55 @@ def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
     with db_session() as connection:
         assert connection.execute("SELECT 1 FROM subjects WHERE subject_id=?", (subject_id,)).fetchone() is None
         connection.execute(
-            "INSERT INTO subjects (subject_id, subject_type, stable_key, display_name, "
+            "INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, "
             "desired_mode, applied_mode, runtime_state, is_active) "
-            "VALUES (?, 'docker', ?, 'Scoped packet fixture', 'direct', 'direct', 'running', 1)",
+            "VALUES (?, 'docker', 'docker_runtime', 'docker', ?, 'Scoped packet fixture', 'direct', 'direct', 'running', 1)",
             (subject_id, subject_id),
         )
         connection.execute(
             "INSERT INTO subject_docker (subject_id, compose_project, compose_service, container_name, "
             "container_id, image_name, ip_address, network_name, source_json) "
             "VALUES (?, 'packet-scoped', 'ordinary', 'ordinary', 'owned-fixture', 'fixture:local', ?, 'owned-client-veth', ?)",
-            (subject_id, CLIENT_IP, json.dumps({"IPv4InventoryComplete": True, "IPv4Addresses": [CLIENT_IP], "IPv6InventoryComplete": True, "IPv6Addresses": []})),
+            (subject_id, CLIENT_IP, json.dumps({
+                "NetworkMode": "bridge",
+                "IPv4InventoryComplete": True,
+                "IPv4Addresses": [CLIENT_IP],
+                "IPv6InventoryComplete": True,
+                "IPv6Addresses": [],
+            })),
         )
 
     def apply_subject(mode: str) -> None:
         code, accepted = http_json(f"{api}/subjects/{subject_id}/mode", method="POST",
                                   payload={"mode": mode, "actor_scope": "admin",
                                            "requested_by": "packet-docker-scoped", "run_now": True})
-        assert code == 200 and accepted.get("ok") is True, {"mode": mode, "status": code}
+        if code != 200 or accepted.get("ok") is not True:
+            failure = _docker_policy_apply_failure_summary(accepted)
+            failure["mode"] = mode
+            failure["http_status"] = code
+            record_property(
+                f"docker_policy_apply_failure_{mode}", json.dumps(failure, sort_keys=True)
+            )
+            assert code == 200 and accepted.get("ok") is True, failure
         job = await_core_job(api, accepted, timeout_seconds=90)
-        assert job.get("status") == "success", {"mode": mode, "job": _bounded_job_summary(job)}
+        if job.get("status") != "success":
+            failure_response = {
+                "ok": False,
+                "data": {
+                    "error": {
+                        "code": job.get("error_code"),
+                        "stage": (job.get("result") or {}).get("stage")
+                        if isinstance(job.get("result"), dict) else None,
+                        "message": job.get("error_message"),
+                    }
+                },
+            }
+            failure = _docker_policy_apply_failure_summary(failure_response)
+            failure.update({"mode": mode, "job": _bounded_job_summary(job)})
+            record_property(
+                f"docker_policy_apply_failure_{mode}", json.dumps(failure, sort_keys=True)
+            )
+            assert job.get("status") == "success", failure
         code, readback = http_json(f"{api}/subjects/{subject_id}")
         assert code == 200 and readback.get("ok") is True
         subject = readback["data"]["subject"]
