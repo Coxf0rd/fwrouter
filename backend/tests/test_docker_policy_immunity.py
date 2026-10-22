@@ -404,3 +404,21 @@ def test_all_network_ipv4_inventory_is_complete_and_deduplicated():
     assert module._network_address_inventory(inspect, 4) == (["172.25.0.2"], True)
     del inspect["NetworkSettings"]["Networks"]["b"]["IPAddress"]
     assert module._network_address_inventory(inspect, 4) == ([], False)
+
+
+def test_partial_manifest_nested_vpn_path_cannot_become_immune(isolated_host_observations):
+    subject = _subject("vpn")
+    subject["effective_state"] = {"dataplane_path": subject.pop("dataplane_path")}
+    candidate = render_owned_table_candidate(_manifest([subject]))
+    assert "172.25.0.2" not in candidate.split("set infrastructure_ipv4", 1)[1].split("    }", 1)[0]
+    assert 'ip saddr 172.25.0.2 goto fwrouter_vpn_full' in candidate
+
+
+@pytest.mark.parametrize("other_mode", ["direct", "vpn", "blocked"])
+def test_duplicate_active_docker_ip_cannot_depend_on_rule_order(isolated_host_observations, other_mode):
+    vpn = _subject("vpn")
+    other = _subject(other_mode)
+    other["subject_id"] = "docker:other:other"
+    for subjects in ([vpn, other], [other, vpn]):
+        with pytest.raises(DockerPolicyConflictError, match="overlaps_infrastructure"):
+            render_owned_table_candidate(_manifest(subjects))

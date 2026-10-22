@@ -170,7 +170,8 @@ def render_owned_table_candidate(
         if subject_type != "docker":
             continue
 
-        path = str(s.get("dataplane_path") or "").strip().lower()
+        effective = s.get("effective_state")
+        path = str(s.get("dataplane_path") or (effective.get("dataplane_path") if isinstance(effective, dict) else "") or "").strip().lower()
         if not bool(s.get("is_active")) or path not in {"direct", "vpn", "blocked"}:
             infrastructure_ips.append(str(matcher["value"]))
         elif path == "vpn" and not bool(scoped_runtime.get("applied")):

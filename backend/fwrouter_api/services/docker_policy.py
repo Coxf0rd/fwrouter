@@ -99,6 +99,18 @@ def docker_vpn_immunity_conflicts(
         if not bool(runtime.get("applied")):
             conflicts.append((subject_id, "docker_vpn_runtime_not_ready"))
             continue
+        # An IP-only classifier cannot distinguish two Docker identities with
+        # the same source, even when one is active Direct rather than immune.
+        ambiguous_source = any(
+            other is not subject
+            and isinstance(other, dict)
+            and str(other.get("subject_type") or "") == "docker"
+            and _subject_ipv4(other) == address
+            for other in subjects
+        )
+        if ambiguous_source:
+            conflicts.append((subject_id, "docker_vpn_matcher_overlaps_infrastructure"))
+            continue
         if address in protected_addresses or any(address in network for network in protected_networks):
             conflicts.append((subject_id, "docker_vpn_matcher_overlaps_infrastructure"))
     return conflicts
