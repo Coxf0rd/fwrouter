@@ -1,0 +1,205 @@
+{
+  "schema": "fwrouter-manual-deployment-contract/v1",
+  "execution": "owner-invoked-local-only",
+  "wrapper_distribution": "outside-repository-owner-controlled",
+  "source": "verified-existing-local-git-objects",
+  "remote_purpose": "metadata-and-ci-evidence-only",
+  "automatic_deployment": false,
+  "initial_scopes": [
+    "ui"
+  ],
+  "unsupported_scopes": [
+    "backend",
+    "host",
+    "mihomo",
+    "xray",
+    "schema",
+    "recovery"
+  ],
+  "prohibited_operations": [
+    "git fetch",
+    "git pull",
+    "git checkout",
+    "git reset",
+    "git merge",
+    "git clone",
+    "deploy from downloaded artifacts",
+    "automatic restart",
+    "automatic reconcile"
+  ],
+  "temporary_log_days": 7,
+  "permanent_receipts_in_tmpfiles_scope": false,
+  "required_scenarios": [
+    {
+      "id": 1,
+      "name": "exact_sha_success",
+      "production_allowed": false
+    },
+    {
+      "id": 2,
+      "name": "local_sha_mismatch",
+      "production_allowed": false
+    },
+    {
+      "id": 3,
+      "name": "wrong_branch",
+      "production_allowed": false
+    },
+    {
+      "id": 4,
+      "name": "detached_head",
+      "production_allowed": false
+    },
+    {
+      "id": 5,
+      "name": "dirty_tracked",
+      "production_allowed": false
+    },
+    {
+      "id": 6,
+      "name": "dirty_index",
+      "production_allowed": false
+    },
+    {
+      "id": 7,
+      "name": "unsafe_untracked",
+      "production_allowed": false
+    },
+    {
+      "id": 8,
+      "name": "wrong_remote",
+      "production_allowed": false
+    },
+    {
+      "id": 9,
+      "name": "github_unavailable",
+      "production_allowed": false
+    },
+    {
+      "id": 10,
+      "name": "invalid_api",
+      "production_allowed": false
+    },
+    {
+      "id": 11,
+      "name": "ci_failed",
+      "production_allowed": false
+    },
+    {
+      "id": 12,
+      "name": "ci_cancelled",
+      "production_allowed": false
+    },
+    {
+      "id": 13,
+      "name": "ci_skipped",
+      "production_allowed": false
+    },
+    {
+      "id": 14,
+      "name": "artifact_missing",
+      "production_allowed": false
+    },
+    {
+      "id": 15,
+      "name": "job_missing",
+      "production_allowed": false
+    },
+    {
+      "id": 16,
+      "name": "ci_other_sha",
+      "production_allowed": false
+    },
+    {
+      "id": 17,
+      "name": "ci_other_workflow",
+      "production_allowed": false
+    },
+    {
+      "id": 18,
+      "name": "untrusted_attempt",
+      "production_allowed": false
+    },
+    {
+      "id": 19,
+      "name": "source_tampering",
+      "production_allowed": false
+    },
+    {
+      "id": 20,
+      "name": "installer_substitution",
+      "production_allowed": false
+    },
+    {
+      "id": 21,
+      "name": "log_symlink",
+      "production_allowed": false
+    },
+    {
+      "id": 22,
+      "name": "unsafe_permissions",
+      "production_allowed": false
+    },
+    {
+      "id": 23,
+      "name": "concurrent_invocation",
+      "production_allowed": false
+    },
+    {
+      "id": 24,
+      "name": "interrupted_deployment",
+      "production_allowed": false
+    },
+    {
+      "id": 25,
+      "name": "installer_failure",
+      "production_allowed": false
+    },
+    {
+      "id": 26,
+      "name": "postflight_failure",
+      "production_allowed": false
+    },
+    {
+      "id": 27,
+      "name": "already_deployed",
+      "production_allowed": false
+    },
+    {
+      "id": 28,
+      "name": "schema_incompatible",
+      "production_allowed": false
+    },
+    {
+      "id": 29,
+      "name": "checkpoint_present",
+      "production_allowed": false
+    },
+    {
+      "id": 30,
+      "name": "routing_drift",
+      "production_allowed": false
+    },
+    {
+      "id": 31,
+      "name": "remote_changes",
+      "production_allowed": false
+    },
+    {
+      "id": 32,
+      "name": "secret_redaction",
+      "production_allowed": false
+    },
+    {
+      "id": 33,
+      "name": "seven_day_retention",
+      "production_allowed": false
+    },
+    {
+      "id": 34,
+      "name": "permanent_receipts_preserved",
+      "production_allowed": false
+    }
+  ],
+  "qualification_boundary": "Public CI verifies this contract and synthetic data only; private wrapper qualification must bind separately reviewed private implementation hashes."
+}

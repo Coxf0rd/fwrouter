@@ -5574,6 +5574,32 @@
       ],
       "slow": false,
       "timeout_seconds": 45
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "installer",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "Static public contract and synthetic redacted receipts; no private wrapper or production state",
+      "fixture_owner": "installer/tests/fixtures/manual-deployment-contract.json",
+      "id": "test_manual_deployment_contract",
+      "isolation": "committed static fixture and in-memory synthetic dictionaries only; no host interfaces, temporary host state, live units or network",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "installer/tests/test_manual_deployment_contract.py",
+      "primary_level": "L4",
+      "risk_notes": "Validates public data/interface invariants only; private outside-repository privileged implementation is separately qualified; no deployment permission",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest"
+      ],
+      "slow": false,
+      "timeout_seconds": 180
     }
   ],
   "version": "2026.10.17.1",
