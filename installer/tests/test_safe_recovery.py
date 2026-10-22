@@ -35,6 +35,8 @@ def _source_repo(tmp_path: Path) -> Path:
     shutil.copyfile(REPO / "installer/install.sh", repo / "installer/install.sh")
     shutil.copyfile(REPO / "installer/obsolete-backend-paths.txt",
                     repo / "installer/obsolete-backend-paths.txt")
+    shutil.copyfile(REPO / "installer/component_install_lock.py",
+                    repo / "installer/component_install_lock.py")
     (repo / "backend/fwrouter_api").mkdir()
     (repo / "backend/fwrouter_api/__init__.py").write_text("SAFE_RECOVERY_FIXTURE = True\n")
     (repo / "backend/.gitignore").write_text("secret.env\n__pycache__/\n*.bak\n")
@@ -48,7 +50,8 @@ mkdir -p "$1" "$2" "$3"
     (repo / "installer/install.sh").chmod(0o755)
     _git(repo, "config", "user.email", "safe-recovery@example.invalid")
     _git(repo, "config", "user.name", "Safe Recovery Test")
-    _git(repo, "add", "backend", "installer/install.sh", "installer/obsolete-backend-paths.txt")
+    _git(repo, "add", "backend", "installer/install.sh", "installer/obsolete-backend-paths.txt",
+         "installer/component_install_lock.py")
     _git(repo, "commit", "--quiet", "-m", "fixture")
     return repo
 
@@ -146,6 +149,17 @@ def test_prepare_rejects_unqualified_or_incompatible_hosted_receipt(tmp_path: Pa
     wrong_digest = _receipt(repo, digest="f" * 64)
     with pytest.raises(recovery.RecoveryError, match="another source"):
         recovery.prepare(repo, artifact, wrong_digest)
+    assert not artifact.exists()
+
+
+def test_prepare_rejects_missing_component_installer_lock_helper(tmp_path: Path) -> None:
+    repo = _source_repo(tmp_path)
+    (repo / "installer/component_install_lock.py").unlink()
+    _git(repo, "rm", "--cached", "installer/component_install_lock.py")
+    _git(repo, "commit", "--quiet", "-m", "missing required installer lock helper")
+    artifact = tmp_path / "must-not-exist"
+    with pytest.raises(recovery.RecoveryError, match="missing backend/ or required backend installer inputs"):
+        recovery._tracked_source_files(repo)
     assert not artifact.exists()
 
 

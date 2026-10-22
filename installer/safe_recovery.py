@@ -38,6 +38,11 @@ REQUIRED_GATES = (
     "source_proof", "native", "packet_fail_closed", "rescue_isolation",
     "installer_stage", "cleanup",
 )
+BACKEND_INSTALLER_INPUTS = {
+    "installer/install.sh",
+    "installer/obsolete-backend-paths.txt",
+    "installer/component_install_lock.py",
+}
 
 
 class RecoveryError(RuntimeError):
@@ -66,7 +71,7 @@ def _tracked_source_files(repo_root: Path) -> list[tuple[str, Path, int]]:
     try:
         tracked = subprocess.run(
             ["git", "-C", str(repo_root), "ls-files", "--stage", "-z", "--", "backend",
-             "installer/install.sh", "installer/obsolete-backend-paths.txt"],
+             *sorted(BACKEND_INSTALLER_INPUTS)],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
         ).stdout.decode("utf-8").split("\0")
     except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
@@ -84,12 +89,11 @@ def _tracked_source_files(repo_root: Path) -> list[tuple[str, Path, int]]:
             raise RecoveryError(f"source contains a symlink or non-regular Git entry: {relative}")
         staged.append((relative, mode))
     names = sorted(name for name, _mode in staged)
-    required = {"installer/install.sh", "installer/obsolete-backend-paths.txt"}
-    if not required.issubset(names) or not any(name.startswith("backend/") for name in names):
+    if not BACKEND_INSTALLER_INPUTS.issubset(names) or not any(name.startswith("backend/") for name in names):
         raise RecoveryError("source checkout is missing backend/ or required backend installer inputs")
     for relative, git_mode in sorted(staged):
         safe = _safe_relative(relative)
-        if not (relative.startswith("backend/") or relative in required):
+        if not (relative.startswith("backend/") or relative in BACKEND_INSTALLER_INPUTS):
             raise RecoveryError("Git returned an out-of-scope source path")
         candidate = repo_root.joinpath(*safe.parts)
         current = repo_root
@@ -130,7 +134,7 @@ def _git_source_identity(repo_root: Path) -> str:
         ).stdout.strip()
         dirty = subprocess.run(
             ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=all",
-             "--", "backend", "installer/install.sh", "installer/obsolete-backend-paths.txt"],
+             "--", "backend", *sorted(BACKEND_INSTALLER_INPUTS)],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10,
         ).stdout
     except (OSError, subprocess.SubprocessError) as exc:
@@ -138,7 +142,7 @@ def _git_source_identity(repo_root: Path) -> str:
     if len(revision) != 40 or any(ch not in "0123456789abcdef" for ch in revision.lower()):
         raise RecoveryError("source Git revision is not a full commit SHA")
     if dirty:
-        raise RecoveryError("backend or installer/install.sh has uncommitted or untracked changes")
+        raise RecoveryError("backend or installer inputs have uncommitted or untracked changes")
     return revision.lower()
 
 
@@ -286,7 +290,7 @@ def verify(artifact_dir: Path, receipt_path: Path) -> tuple[dict[str, Any], list
     for entry in entries:
         name = entry.get("path")
         _safe_relative(name if isinstance(name, str) else "")
-        if not (name in {"installer/install.sh", "installer/obsolete-backend-paths.txt"}
+        if not (name in BACKEND_INSTALLER_INPUTS
                 or name.startswith("backend/")):
             raise RecoveryError("artifact manifest contains an out-of-scope path")
         if (not isinstance(entry.get("sha256"), str) or len(entry["sha256"]) != 64
@@ -297,7 +301,7 @@ def verify(artifact_dir: Path, receipt_path: Path) -> tuple[dict[str, Any], list
             raise RecoveryError("artifact manifest entry is invalid")
         names.append(name)
     if (names != sorted(set(names))
-            or not {"installer/install.sh", "installer/obsolete-backend-paths.txt"}.issubset(names)):
+            or not BACKEND_INSTALLER_INPUTS.issubset(names)):
         raise RecoveryError("artifact manifest paths are duplicate, unsorted, or incomplete")
     if sum(entry["size"] for entry in entries) > MAX_SOURCE_BYTES:
         raise RecoveryError("artifact manifest exceeds total source-size limit")
