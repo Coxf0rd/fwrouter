@@ -9,6 +9,7 @@ import stat
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest import mock
 
@@ -49,7 +50,8 @@ class AtomicUiPublicationTests(unittest.TestCase):
     def _actual_installer_fixture(self) -> tuple[Path, Path, Path]:
         source = self.root / "disposable-source"
         (source / "installer").mkdir(parents=True)
-        for name in ("install.sh", "ui_publication.py", "controlled_backend_lifecycle.py"):
+        for name in ("install.sh", "ui_publication.py", "controlled_backend_lifecycle.py",
+                     "component_install_lock.py", "obsolete-backend-paths.txt"):
             shutil.copy2(ROOT / "installer" / name, source / "installer" / name)
         (source / "backend").mkdir()
         (source / "backend" / "source.py").write_text("compatible backend source\n")
@@ -112,6 +114,99 @@ class AtomicUiPublicationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.active.is_symlink())
         self.assertTrue((self.target_root / "opt/fwrouter-api/fwrouter_api").is_dir())
+
+    def test_backend_installer_waits_for_ui_compatibility_check_and_exchange(self) -> None:
+        source = self.root / "concurrent-ui-source"
+        (source / "installer").mkdir(parents=True)
+        for name in ("install.sh", "ui_publication.py", "controlled_backend_lifecycle.py",
+                     "component_install_lock.py", "obsolete-backend-paths.txt"):
+            shutil.copy2(ROOT / "installer" / name, source / "installer" / name)
+        publisher = source / "installer/ui_publication.py"
+        code = publisher.read_text()
+        exchange = "def _exchange(left: Path, right: Path) -> None:\n"
+        self.assertIn(exchange, code)
+        code = code.replace(exchange, "def _exchange_unpaused(left: Path, right: Path) -> None:\n", 1)
+        code = code.replace("import sys\n", "import sys\nimport time\n", 1)
+        barrier = '''
+def _exchange(left: Path, right: Path) -> None:
+    reached = Path(os.environ["FWROUTER_TEST_EXCHANGE_REACHED"])
+    release = Path(os.environ["FWROUTER_TEST_EXCHANGE_RELEASE"])
+    reached.write_text("ready")
+    deadline = time.monotonic() + 20
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not release.exists():
+        raise PublicationError("test exchange barrier timed out")
+    _exchange_unpaused(left, right)
+
+'''
+        code = code.replace("\ndef _fsync_dir(path: Path) -> None:\n",
+                            "\n" + barrier + "def _fsync_dir(path: Path) -> None:\n", 1)
+        publisher.write_text(code)
+
+        backend_a = source / "backend"
+        (backend_a / "scripts").mkdir(parents=True)
+        (backend_a / "source.py").write_text("same compatible backend\n")
+        (backend_a / "scripts/bootstrap-state.sh").write_text("#!/bin/sh\nexit 0\n")
+        os.chmod(backend_a / "scripts/bootstrap-state.sh", 0o755)
+        ui = source / "ui"
+        ui.mkdir()
+        (ui / "index.html").write_text("compatible UI\n")
+
+        target = self.root / "concurrent-target"
+        installed_backend = target / "opt/fwrouter-api"
+        installed_backend.mkdir(parents=True)
+        shutil.copytree(backend_a, installed_backend, dirs_exist_ok=True)
+        active_ui = target / "opt/fwrouter-ui"
+        active_ui.mkdir()
+        (active_ui / "index.html").write_text("old UI\n")
+
+        backend_b_source = self.root / "concurrent-backend-source"
+        (backend_b_source / "installer").mkdir(parents=True)
+        for name in ("install.sh", "component_install_lock.py", "obsolete-backend-paths.txt",
+                     "controlled_backend_lifecycle.py"):
+            shutil.copy2(ROOT / "installer" / name, backend_b_source / "installer" / name)
+        backend_b = backend_b_source / "backend"
+        shutil.copytree(backend_a, backend_b)
+        backend_file_b = backend_b / "source.py"
+        os.utime(backend_file_b, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+
+        reached = self.root / "exchange-reached"
+        release = self.root / "exchange-release"
+        ui_env = os.environ.copy()
+        ui_env.update({"FWROUTER_TEST_EXCHANGE_REACHED": str(reached),
+                       "FWROUTER_TEST_EXCHANGE_RELEASE": str(release)})
+        ui_proc = subprocess.Popen(
+            [str(source / "installer/install.sh"), "--deploy", "--component", "ui", "--target", str(target)],
+            cwd=source, env=ui_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        deadline = time.monotonic() + 15
+        while not reached.exists() and ui_proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(reached.exists(), "UI installer did not reach the post-validation exchange barrier")
+
+        backend_file = installed_backend / "source.py"
+        before_mtime = backend_file.stat().st_mtime_ns
+        backend_proc = subprocess.Popen(
+            [str(backend_b_source / "installer/install.sh"), "--deploy", "--component", "backend",
+             "--target", str(target)],
+            cwd=backend_b_source, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        time.sleep(0.2)
+        backend_waited = backend_proc.poll() is None
+        backend_unchanged = backend_file.stat().st_mtime_ns == before_mtime
+        release.write_text("continue")
+        _, ui_stderr = ui_proc.communicate(timeout=20)
+        self.assertEqual(ui_proc.returncode, 0, ui_stderr.decode(errors="replace"))
+        self.assertTrue(active_ui.is_symlink())
+        self.assertEqual((active_ui / "index.html").read_text(), "compatible UI\n")
+        _, backend_stderr = backend_proc.communicate(timeout=20)
+        self.assertTrue(backend_waited, "competing backend installer was not serialized")
+        self.assertTrue(backend_unchanged, "backend changed before the UI pointer switch")
+        self.assertEqual(backend_proc.returncode, 0, backend_stderr.decode(errors="replace"))
+        self.assertEqual(backend_file.read_text(), "same compatible backend\n")
+        self.assertEqual(backend_file.stat().st_mtime_ns, backend_file_b.stat().st_mtime_ns,
+                         "competing backend installer did not run after UI publication")
 
     def test_backend_mismatch_refuses_without_mutating_active_tree(self) -> None:
         (self.backend_installed / "app.py").write_text("different")
@@ -509,6 +604,16 @@ class AtomicUiPublicationTests(unittest.TestCase):
         os.mkfifo(lock, 0o600)
         with self.assertRaises(ui_publication.PublicationError):
             self.publish()
+        self.assertEqual((self.active / "old.txt").read_text(), "complete prior tree")
+
+    def test_component_lock_symlink_is_rejected_without_touching_target(self) -> None:
+        lock = self.active.parent / ".fwrouter-component-install.lock"
+        outside = self.root / "outside-lock-target"
+        outside.write_text("untouched")
+        lock.symlink_to(outside)
+        with self.assertRaises(ui_publication.PublicationError):
+            self.publish()
+        self.assertEqual(outside.read_text(), "untouched")
         self.assertEqual((self.active / "old.txt").read_text(), "complete prior tree")
 
     def test_directories_and_files_must_be_readable_by_static_server(self) -> None:

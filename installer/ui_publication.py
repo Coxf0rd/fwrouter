@@ -13,6 +13,8 @@ import stat
 import sys
 import uuid
 
+import component_install_lock
+
 RENAME_EXCHANGE = 2
 UNSAFE_WRITE = stat.S_IWGRP | stat.S_IWOTH
 MAX_UI_ENTRIES = 10_000
@@ -297,8 +299,9 @@ def _signal_as_exception(signum, _frame):
     raise InterruptedError(f"received signal {signum}")
 
 
-def publish(source: Path, target: Path, backend_source: Path, backend_installed: Path, *, require_root: bool = False,
-            restore_release_sha256: str | None = None) -> str:
+def _publish_under_component_lock(source: Path, target: Path, backend_source: Path,
+                                  backend_installed: Path, *, require_root: bool = False,
+                                  restore_release_sha256: str | None = None) -> str:
     import importlib.util
     lifecycle_path = Path(__file__).with_name("controlled_backend_lifecycle.py")
     spec = importlib.util.spec_from_file_location("fwrouter_backend_manifest", lifecycle_path)
@@ -464,6 +467,28 @@ def publish(source: Path, target: Path, backend_source: Path, backend_installed:
         os.close(fd)
 
 
+def publish(source: Path, target: Path, backend_source: Path, backend_installed: Path, *,
+            require_root: bool = False, restore_release_sha256: str | None = None,
+            installer_lock_fd: int | None = None) -> str:
+    """Serialize direct publication with installer backend/UI operations."""
+    owned_fd = False
+    try:
+        if installer_lock_fd is None:
+            lock_fd, owned_fd = component_install_lock.acquire(target.parent)
+        else:
+            lock_fd = component_install_lock.verify_inherited_lock(target.parent, installer_lock_fd)
+    except component_install_lock.ComponentInstallLockError as exc:
+        raise PublicationError(str(exc)) from exc
+    try:
+        return _publish_under_component_lock(
+            source, target, backend_source, backend_installed,
+            require_root=require_root, restore_release_sha256=restore_release_sha256,
+        )
+    finally:
+        if owned_fd:
+            os.close(lock_fd)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, required=True)
@@ -472,10 +497,12 @@ def main() -> int:
     parser.add_argument("--backend-installed", type=Path, required=True)
     parser.add_argument("--require-root", action="store_true")
     parser.add_argument("--restore-release", help="atomically activate a retained release only when this trusted source UI has the same digest")
+    parser.add_argument("--component-lock-fd", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         print(publish(args.source, args.target, args.backend_source, args.backend_installed,
-                      require_root=args.require_root, restore_release_sha256=args.restore_release))
+                      require_root=args.require_root, restore_release_sha256=args.restore_release,
+                      installer_lock_fd=args.component_lock_fd))
         return 0
     except Exception as exc:
         print(f"ui_publication: {exc}", file=sys.stderr)

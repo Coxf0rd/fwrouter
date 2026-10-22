@@ -10,6 +10,8 @@ APPLY_SYSCTL="${FWROUTER_APPLY_SYSCTL:-1}"
 CREATE_DOCKER_NETWORK="${FWROUTER_CREATE_DOCKER_NETWORK:-1}"
 COMPONENTS=""
 DEPLOY_MODE=0
+COMPONENT_LOCK_FD=""
+DEPENDENCIES_PREPARED=0
 
 usage() {
   cat >&2 <<'EOF'
@@ -45,6 +47,15 @@ while [ "$#" -gt 0 ]; do
       ;;
     --deploy)
       DEPLOY_MODE=1
+      shift
+      ;;
+    --_component-lock-fd)
+      [ "$#" -ge 2 ] || usage
+      COMPONENT_LOCK_FD="$2"
+      shift 2
+      ;;
+    --_dependencies-prepared)
+      DEPENDENCIES_PREPARED=1
       shift
       ;;
     --target)
@@ -141,6 +152,11 @@ want_component() {
   return 1
 }
 
+if [ "$DEPENDENCIES_PREPARED" = "1" ] && { [ -z "$COMPONENT_LOCK_FD" ] || { ! want_component backend && ! want_component ui; }; }; then
+  echo "install.sh: internal lock-runner options require a backend/UI component lock" >&2
+  exit 1
+fi
+
 want_explicit_component() {
   wanted="$1"
   for component in $COMPONENTS; do
@@ -195,7 +211,8 @@ install_ui() {
     --source "$REPO_ROOT/ui" \
     --target "$(target_path opt/fwrouter-ui)" \
     --backend-source "$REPO_ROOT/backend" \
-    --backend-installed "$(target_path opt/fwrouter-api)"
+    --backend-installed "$(target_path opt/fwrouter-api)" \
+    --component-lock-fd "$COMPONENT_LOCK_FD"
 }
 
 install_mihomo() {
@@ -241,7 +258,7 @@ install_host() {
   ensure_executable "$(target_path usr/local/sbin/fwrouter-subscription-refresh-job)"
 }
 
-if [ "$TARGET_ROOT" = "/" ] && [ "$INSTALL_HOST_DEPS" != "0" ]; then
+if [ "$DEPENDENCIES_PREPARED" = "0" ] && [ "$TARGET_ROOT" = "/" ] && [ "$INSTALL_HOST_DEPS" != "0" ]; then
   dep_args="--yes"
   for component in $(selected_components); do
     case "$component" in
@@ -254,6 +271,29 @@ if [ "$TARGET_ROOT" = "/" ] && [ "$INSTALL_HOST_DEPS" != "0" ]; then
     # shellcheck disable=SC2086
     "$REPO_ROOT/installer/install-host-dependencies.sh" $dep_args
   fi
+fi
+
+# Backend and UI source operations share one lock. The lock starts after host
+# dependency setup (which can provide Python on a clean host) and remains held
+# through bootstrap and the UI compatibility check/pointer exchange.
+if want_component backend || want_component ui; then
+  if [ -z "$COMPONENT_LOCK_FD" ]; then
+    set --
+    for component in $COMPONENTS; do
+      set -- "$@" --component "$component"
+    done
+    [ "$DEPLOY_MODE" = "0" ] || set -- "$@" --deploy
+    [ "$TARGET_ROOT" = "/" ] || set -- "$@" --target "$TARGET_ROOT"
+    set -- "$@" --_dependencies-prepared
+    exec python3 "$REPO_ROOT/installer/component_install_lock.py" \
+      --run-parent "$(target_path opt)" -- "$REPO_ROOT/installer/install.sh" "$@"
+  fi
+  [ "$COMPONENT_LOCK_FD" = "9" ] || {
+    echo "install.sh: invalid inherited component lock descriptor" >&2
+    exit 1
+  }
+  python3 "$REPO_ROOT/installer/component_install_lock.py" \
+    --verify-parent "$(target_path opt)" --fd "$COMPONENT_LOCK_FD"
 fi
 
 want_component backend && install_backend

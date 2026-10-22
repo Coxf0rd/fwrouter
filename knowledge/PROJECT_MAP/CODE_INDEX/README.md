@@ -200,3 +200,4 @@ PY
 Manual diagnostics are documented by `opt_fwrouter_api_fwrouter_api_services_manual_check_py.md`; the same index also covers external observations, health contracts, state snapshots, and subject proxy diagnostics.
 
 - [Atomic installer UI publication](installer_ui_publication_py.md): prepared immutable UI trees, atomic active pointer and retained previous release.
+- [Installer component lock](installer_component_install_lock_py.md): shared serialization for backend/UI installer operations and direct UI publication.
