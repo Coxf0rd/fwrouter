@@ -1,5 +1,11 @@
 # FWRouter — active roadmap
 
+## Atomic UI publication — bounded implementation qualification (2026-10-23)
+
+The owner authorized a separate installer fix from main `64f3cc7802244c056e2bb1ea156b37e8318e6465` after PR34. Main CI39765147823 passed the exact squash with mandatory main smoke. The confirmed tar-overlay interruption defect can expose a mixed static UI tree. This package prepares and validates a complete immutable release before an atomic same-filesystem pointer exchange, preserving the previous complete tree. Backend compatibility and protected-file/lifecycle ownership remain required; browser requests spanning releases are not a transactional browser session.
+
+Source implementation, isolated interruption/security tests, independent review and exact-HEAD CI are separate gates reported in the feature PR. Production is unchanged and this entry grants no deployment or merge authority. PR35 stays Draft; its private wrapper remains outside Git, uninstalled and production-blocked pending exact-chain requalification with both this fix and the separate read-only fenced native-proof contract. Existing manual wrapper results remain 138 isolated tests and independent QA PASS with the two deployment blockers identified, not production readiness.
+
 ## Manual verified local deployment — owner decision (2026-10-22)
 
 This checkpoint supersedes the proposed Secure Gated CD implementation direction without rewriting earlier decisions. CI V2 is implemented; automatic production CD is not. The owner selected a manually invoked, root-controlled local deployment verifier. GitHub provides read-only remote-main and exact-main CI evidence only: no GitHub-to-production administrative access, pull agent, root broker, scheduled deployment or merge-triggered deployment.

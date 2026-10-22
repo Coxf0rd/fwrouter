@@ -185,7 +185,17 @@ install_backend() {
 }
 
 install_ui() {
-  copy_tree "$REPO_ROOT/ui" "$(target_path opt/fwrouter-ui)"
+  require_path "$REPO_ROOT/ui" "UI source directory"
+  require_path "$REPO_ROOT/backend" "backend compatibility source"
+  require_path "$(target_path opt/fwrouter-api)" "installed backend for UI compatibility check"
+  root_arg=""
+  [ "$TARGET_ROOT" != "/" ] || root_arg="--require-root"
+  # shellcheck disable=SC2086
+  python3 "$REPO_ROOT/installer/ui_publication.py" $root_arg \
+    --source "$REPO_ROOT/ui" \
+    --target "$(target_path opt/fwrouter-ui)" \
+    --backend-source "$REPO_ROOT/backend" \
+    --backend-installed "$(target_path opt/fwrouter-api)"
 }
 
 install_mihomo() {

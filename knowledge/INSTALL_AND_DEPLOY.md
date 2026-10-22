@@ -188,3 +188,7 @@ If `docker` and `docker compose` already exist, Docker packages are skipped so D
 5. Deploy the affected component with `installer/install.sh --deploy`.
 6. Restart or reload only the affected services.
 7. Smoke-check runtime with boot/dataplane diagnostics.
+
+### UI publication behavior
+
+The UI component uses immutable releases below `/opt/.fwrouter-ui-releases` and an atomic Linux `renameat2(RENAME_EXCHANGE)` pointer switch at `/opt/fwrouter-ui`. It requires a matching installed backend manifest from the trusted local source. Live deployment checks root ownership; disposable `--target` deployment uses the invoking user's ownership. Candidate files must be readable by the static server, directories traversable, and every entry must pass ownership, symlink, mode, size, hash, and directory durability checks before publication. Unsupported exchange fails closed. The installer preserves the prior complete tree across the switch. This is server-side pointer atomicity; browser caching and HTML/JavaScript fetched across separate requests do not become a single atomic session. See [installer README](../installer/README.md#atomic-ui-publication).
