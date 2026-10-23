@@ -8,9 +8,11 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
+from typing import Any
 
 
 SCRIPT = Path(__file__).with_name("evidence_bundle.py")
@@ -172,6 +174,114 @@ class EvidenceBundleTests(unittest.TestCase):
                 self.assertEqual({"fwrouter-affected-unit.json", "producer.json"},
                                  {path.name for path in failed_destination.iterdir()})
             self.assertEqual("failure", failed["outcome"])
+
+    def test_native_handoff_preserves_qcp_and_docker_xray_profile_closure(self) -> None:
+        # Synthetic contract fixture: this calls the real strict native receipt
+        # validators, but is not a native-runtime qualification result.
+        provision = bundle.strict.provision
+        manifest = bundle.gate.load_manifest()
+        plan = {
+            "source_commit": "a" * 40, "plan_digest": "b" * 64,
+            "manifest_digest": bundle.gate.canonical_digest(manifest),
+            "manifest_version": manifest["version"],
+            "selected_files": [
+                "backend/tests/test_protocol_native_validation.py",
+                "backend/tests/test_xray_native_readback.py",
+            ],
+        }
+        native = {
+            name: {"version": provision.INPUTS[name]["version"],
+                   "source_archive_sha256": provision.INPUTS[name]["sha256"],
+                   "binary_sha256": provision.BINARY_SHA256[name]}
+            for name in ("xray", "mihomo")
+        }
+        runtime_inputs = {
+            "schema": "fwrouter-hosted-inputs/v1", "base_image": provision.BASE_IMAGE,
+            "playwright": provision.PLAYWRIGHT_VERSION, "native": native,
+            "chromium": {"version": provision.CHROMIUM_VERSION,
+                         "source_archive_sha256": provision.INPUTS["chromium"]["sha256"],
+                         "bundle_sha256": provision.CHROMIUM_BUNDLE_SHA256,
+                         "executable_sha256": provision.CHROMIUM_BINARY_SHA256},
+        }
+
+        def archived_profile(value: dict[str, Any]) -> str:
+            return bundle.hashlib.sha256((json.dumps(value, sort_keys=True, indent=2) + "\n").encode()).hexdigest()
+
+        scenario = bundle.strict.read_json(bundle.ROOT / "tests/acceptance/qualified-child-scenarios.json")
+        qcp_nonce = "1" * 32
+        qcp_profile = {
+            "schema": "fwrouter-qualified-child-profile/v1", "profile": "qualified-child-process",
+            "source_revision": plan["source_commit"], "plan_digest": plan["plan_digest"],
+            "suite_nonce": qcp_nonce,
+            "mihomo": {"version": provision.INPUTS["mihomo"]["version"],
+                        "sha256": provision.BINARY_SHA256["mihomo"]},
+        }
+        qcp_statuses = {nodeid: "passed" for nodeid in scenario["nodeids"]}
+        qcp = {
+            "schema": "fwrouter-qualified-child-receipt/v1", "scope": "qualified-child-process",
+            "status": "passed", "source_revision": plan["source_commit"],
+            "plan_digest": plan["plan_digest"], "suite_nonce": qcp_nonce,
+            "cleanup": "owned_resources_removed", "expected_ids": list(scenario["nodeids"]),
+            "profile_sha256": archived_profile(qcp_profile),
+            "tests": {"node_status": qcp_statuses, "tests": bundle.strict.QCP_EXPECTED_TOTAL,
+                      "failed": 0, "skipped": 0, "contract_valid": True},
+        }
+        xray_nonce = "2" * 32
+        image_id = "sha256:" + "c" * 64
+        xray_profile = {
+            "schema": "fwrouter-qualified-docker-xray-profile/v1", "profile": "qualified-docker-xray",
+            "source_revision": plan["source_commit"], "plan_digest": plan["plan_digest"],
+            "suite_nonce": xray_nonce, "image_id": image_id,
+            "xray_binary_sha256": provision.BINARY_SHA256["xray"],
+            "xray_version": provision.INPUTS["xray"]["version"],
+        }
+        xray_nodeid = "backend/tests/test_xray_native_readback.py::test_loaded_client_readback_against_isolated_xray_26_2_6"
+        xray = {
+            "schema": "fwrouter-qualified-docker-xray-receipt/v1", "scope": "qualified-docker-xray",
+            "status": "passed", "source_revision": plan["source_commit"],
+            "plan_digest": plan["plan_digest"], "suite_nonce": xray_nonce,
+            "cleanup": "owned_resources_removed", "expected_ids": [xray_nodeid],
+            "tests": {"node_status": {xray_nodeid: "passed"}, "passed": 1, "failed": 0,
+                      "skipped": 0, "contract_valid": True},
+            "profile_sha256": archived_profile(xray_profile), "image_id": image_id,
+            "xray_binary_sha256": provision.BINARY_SHA256["xray"],
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, destination = root / "native-source", root / "native-handoff"
+            (source / "qcp").mkdir(parents=True)
+            (source / "xray").mkdir(parents=True)
+            (source / "runtime-inputs.json").write_text(json.dumps(runtime_inputs), encoding="utf-8")
+            (source / "qcp/qualified-child-receipt.json").write_text(json.dumps(qcp), encoding="utf-8")
+            (source / "qcp/profile.json").write_text(json.dumps(qcp_profile), encoding="utf-8")
+            (source / "xray/qualified-xray-docker-receipt.json").write_text(json.dumps(xray), encoding="utf-8")
+            (source / "xray/profile.json").write_text(json.dumps(xray_profile), encoding="utf-8")
+            plan_path = root / "plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            args = argparse.Namespace(source=source, destination=destination, plan=plan_path,
+                                      role="native", outcome="success", event="pull_request",
+                                      ref="refs/pull/1/merge")
+            with patch.object(bundle.gate, "ensure_plan"), patch.object(
+                    bundle.parallel_ci, "requirements", return_value={"native": True}), patch.dict(
+                        "os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}, clear=False):
+                bundle.handoff(args)
+
+            qcp_path = destination / "qcp/qualified-child-receipt.json"
+            xray_path = destination / "xray/qualified-xray-docker-receipt.json"
+            self.assertTrue(qcp_path.with_name("profile.json").is_file())
+            self.assertTrue(xray_path.with_name("profile.json").is_file())
+            self.assertEqual(([], qcp_statuses), bundle.strict.validate_qcp_receipt(qcp_path, plan, runtime_inputs))
+            self.assertEqual(([], {xray_nodeid: "passed"}),
+                             bundle.strict.validate_xray_docker_receipt(xray_path, plan, runtime_inputs))
+
+            evidence = root / "evidence"
+            (evidence / "native").mkdir(parents=True)
+            shutil.copytree(destination, evidence / "native", dirs_exist_ok=True)
+            selected = bundle.expected_evidence_paths(evidence, plan, {"native": True})["native"]
+            self.assertIn("qcp/profile.json", selected)
+            self.assertIn("xray/profile.json", selected)
+            self.assertIn("tests/acceptance/qualified-child-scenarios.json", bundle.SOURCE_FILES)
 
     def test_eligibility_requires_exact_run_attempt_and_all_required_job_successes(self) -> None:
         manifest = bundle.gate.load_manifest()

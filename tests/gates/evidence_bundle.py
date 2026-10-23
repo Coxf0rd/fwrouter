@@ -40,6 +40,7 @@ SOURCE_FILES = (
     "tests/gates/manifest.json",
     "tests/gates/requirements-build.txt",
     "tests/acceptance/scenarios.json",
+    "tests/acceptance/qualified-child-scenarios.json",
     "tests/acceptance/provision.py",
     "tests/acceptance/launcher.py",
     "installer/safe_recovery.py",
@@ -50,6 +51,7 @@ SAFE_RECEIPTS = {
     "fwrouter-affected-plan.json", "build-summary.json", "wheel-metadata.json",
     "fwrouter-affected-unit.json", "runtime-inputs.json", "hosted-acceptance-report.json",
     "qualified-child-receipt.json", "qualified-xray-docker-receipt.json",
+    "profile.json",
     "fwrouter-aggregate.json", "required-result.json", "qualification.json", "stage.json",
     "manifest.json", "source.tar", "producer.json",
 }
@@ -268,11 +270,18 @@ def expected_evidence_paths(evidence: Path, plan: dict[str, Any], needed: dict[s
             native_paths.append("qualified-child-receipt.json")
         if needs_xray:
             native_paths.append("qualified-xray-docker-receipt.json")
-        for name in native_paths[1:]:
+        selected_receipts = list(native_paths[1:])
+        native_paths = [native_paths[0]]
+        for name in selected_receipts:
             candidates = list((evidence / "native").rglob(name))
             if len(candidates) != 1 or candidates[0].is_symlink() or not candidates[0].is_file():
                 raise gate.GateError(f"native evidence must contain exactly one {name}")
-            native_paths[native_paths.index(name)] = candidates[0].relative_to(evidence / "native").as_posix()
+            receipt = candidates[0]
+            relative = receipt.relative_to(evidence / "native").as_posix()
+            profile = receipt.with_name("profile.json")
+            if profile.is_symlink() or not profile.is_file():
+                raise gate.GateError(f"native evidence is missing sibling profile.json for {name}")
+            native_paths.extend((relative, profile.relative_to(evidence / "native").as_posix()))
         paths["native"] = native_paths
     return {role: sorted(items) for role, items in paths.items() if needed.get(role)}
 
@@ -409,11 +418,23 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
             if args.outcome == "success" and len(found) != 1:
                 raise gate.GateError("native success requires exactly one qualified-child receipt")
             candidates.extend(p.relative_to(source).as_posix() for p in found)
+            for receipt in found:
+                profile = receipt.with_name("profile.json")
+                if args.outcome == "success" and (profile.is_symlink() or not profile.is_file()):
+                    raise gate.GateError("native success requires the qualified-child sibling profile.json")
+                if profile.is_file() and not profile.is_symlink():
+                    candidates.append(profile.relative_to(source).as_posix())
         if "backend/tests/test_xray_native_readback.py" in selected:
             found = sorted(source.rglob("qualified-xray-docker-receipt.json")) if source.is_dir() else []
             if args.outcome == "success" and len(found) != 1:
                 raise gate.GateError("native success requires exactly one Docker-Xray receipt")
             candidates.extend(p.relative_to(source).as_posix() for p in found)
+            for receipt in found:
+                profile = receipt.with_name("profile.json")
+                if args.outcome == "success" and (profile.is_symlink() or not profile.is_file()):
+                    raise gate.GateError("native success requires the Docker-Xray sibling profile.json")
+                if profile.is_file() and not profile.is_symlink():
+                    candidates.append(profile.relative_to(source).as_posix())
 
     if args.destination.is_symlink():
         raise gate.GateError("handoff destination is unsafe")
