@@ -54,7 +54,9 @@ def main() -> int:
         observed: dict[str, str] = {}
         if node_report.is_file() and node_report.stat().st_size <= 2 * 1024 * 1024:
             payload: Any = json.loads(node_report.read_text(encoding="utf-8"))
-            if payload.get("schema_version") == 1 and isinstance(payload.get("node_status"), dict):
+            # gate_plugin v2 adds same-session collection/execution details;
+            # this exact-node runner only consumes the compatible status map.
+            if payload.get("schema_version") in {1, 2} and isinstance(payload.get("node_status"), dict):
                 observed = payload["node_status"]
         expected = {gate.canonical_node_id(nodeid) for nodeid in args.nodeids}
         exact = set(observed) == expected and all(

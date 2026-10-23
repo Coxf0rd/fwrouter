@@ -1,5 +1,11 @@
 # Manual deployment contract qualification status
 
+## Public contract refresh for CI V3 — 2026-10-23
+
+The local PR35 candidate incorporates the public contract from actual main `ada32a1d350d20fd3b2246a4ca1ab050231d0b86`. Actual-main mandatory run [39960680360](https://github.com/Coxf0rd/fwrouter/actions/runs/39960680360), attempt 1, passed all 16 runner jobs, strict aggregate, main smoke and final bundle publication; actual-main full L6 [39960739951](https://github.com/Coxf0rd/fwrouter/actions/runs/39960739951), attempt 1, passed all 19 jobs and offline verification with 2,659 unique IDs / 2,702 passing executions. The public operator contract describes the current affected-CI workflow and its single seven-day actual-main evidence bundle. A private consumer must obtain fresh read-only GitHub metadata for the exact successful `push` to `main`, source SHA, run ID and current attempt; require all 16 runner jobs, the stable `Affected L0-L5 with hosted profiles` check, successful main smoke and the exact unexpired bundle; then run the offline verifier from a clean trusted checkout at that SHA. The bundle is untrusted data and supplies no executable verifier or deployment code. Missing, expired, stale-attempt or unavailable evidence means STOP; cached ZIPs and historical CI V2 artifacts are not fallbacks. Full L6 remains a separate regression qualification and grants no deployment authority.
+
+The public fixture and synthetic contract tests cover these provenance and fail-closed requirements. They do not implement or qualify the private GitHub API client, artifact handling, pinned local verifier, or privileged execution chain. Private F3 owner-backed end-to-end execution and F5 operating-system execution closure remain independently blocked; the wrapper stays outside Git, uninstalled and production-blocked. This update records compatibility requirements only and does not revise earlier private test counts or qualify private hashes. PR35 remains Draft pending its separate public and private gates.
+
 ## Status update after Atomic UI Publication and Read-only Native Proof
 
 This section supersedes only the forward-looking source assumptions below; the earlier test counts and observations are preserved as historical evidence for the source version that was tested then.

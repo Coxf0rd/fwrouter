@@ -1,9 +1,82 @@
 {
-  "schema": "fwrouter-manual-deployment-contract/v2",
+  "schema": "fwrouter-manual-deployment-contract/v3",
   "execution": "owner-invoked-local-only",
   "wrapper_distribution": "outside-repository-owner-controlled",
   "source": "verified-existing-local-git-objects",
   "remote_purpose": "metadata-and-ci-evidence-only",
+  "ci_evidence": {
+    "source_of_truth": "fresh-read-only-GitHub-API-metadata",
+    "repository": "Coxf0rd/fwrouter",
+    "workflow": "FWRouter affected CI",
+    "workflow_path": ".github/workflows/test-gates.yml",
+    "event": "push",
+    "ref": "refs/heads/main",
+    "required_check": "Affected L0-L5 with hosted profiles",
+    "required_check_conclusion": "success",
+    "workflow_conclusion": "success",
+    "actual_runner_job_count": 16,
+    "expected_runner_job_names": [
+      "Immutable plan and preflight",
+      "Build and verify source once",
+      "Routine and contract shard (core-state)",
+      "Routine and contract shard (routing-adapters)",
+      "Routine and contract shard (services-events)",
+      "Routine and contract shard (ui-tooling)",
+      "Routine and contract shard (api-persistence-contracts)",
+      "Routine and contract shard (ui-provider-contracts)",
+      "Routine and contract shard (local-integration)",
+      "Routine and contract shard (installer-startup)",
+      "Ordinary functional and browser",
+      "Provider and browser cohort",
+      "Kernel packet and fail-closed",
+      "Qualified native profile (qcp)",
+      "Qualified native profile (xray)",
+      "Affected L0-L5 with hosted profiles"
+    ],
+    "job_inventory_policy": "exact-names-no-missing-duplicate-extra-or-skipped-jobs",
+    "current_attempt_jobs_only": true,
+    "main_smoke_required_and_passed": true,
+    "artifact_name_format": "fwrouter-main-evidence-{source_sha}-{run_id}-{run_attempt}",
+    "artifact_retention_days": 7,
+    "artifact_must_be_unexpired_and_available": true,
+    "artifact_metadata_fields": [
+      "artifact_id",
+      "name",
+      "size_in_bytes",
+      "digest",
+      "expired",
+      "expires_at",
+      "workflow_run_id",
+      "workflow_run_head_sha"
+    ],
+    "attempt_binding": "current workflow run_attempt plus attempt-specific jobs API and exact artifact name; artifact API does not expose a run_attempt field",
+    "bundle_must_retain": [
+      "strict-aggregate-and-required-result",
+      "immutable-plan-and-manifest",
+      "source-and-build-digests",
+      "sealed-current-attempt-producer-evidence",
+      "routine-shard-node-inventory",
+      "native-mihomo-xray-proofs",
+      "kernel-packet-receipts",
+      "hosted-provider-and-browser-receipts",
+      "safe-recovery-receipts",
+      "main-smoke-receipt",
+      "offline-verifier-source-and-content-manifest"
+    ],
+    "offline_verifier": "tests/gates/evidence_bundle.py verify --require-main with exact SHA/event/ref/run/attempt from fresh API metadata",
+    "verifier_source": "clean-trusted-local-checkout-at-exact-source-sha",
+    "execute_code_from_bundle": false,
+    "cached_bundle_fallback": false,
+    "legacy_ci_v2_artifact_fallback": false,
+    "missing_or_expired_evidence": "STOP",
+    "artifact_max_size_bytes": 536870912
+  },
+  "l6_policy": {
+    "workflow_path": ".github/workflows/test-full-suite.yml",
+    "qualification": "separate-exact-sha-full-regression",
+    "deployment_authority": false,
+    "required_by_initial_ui_scope": false
+  },
   "automatic_deployment": false,
   "initial_scopes": [
     "ui"
@@ -229,6 +302,66 @@
       "id": 40,
       "name": "post_publication_proof_incomplete_unknown",
       "production_allowed": false
+    },
+    {
+      "id": 41,
+      "name": "ci_v3_partial_current_attempt_jobs",
+      "production_allowed": false,
+      "expected": "One skipped, failed, missing, duplicate, or previous-attempt required job blocks eligibility."
+    },
+    {
+      "id": 42,
+      "name": "ci_v3_wrong_run_event_ref_or_sha",
+      "production_allowed": false,
+      "expected": "Only one successful FWRouter affected CI push to refs/heads/main for the exact local SHA is acceptable."
+    },
+    {
+      "id": 43,
+      "name": "ci_v3_missing_or_expired_main_bundle",
+      "production_allowed": false,
+      "expected": "A missing, expired, or unavailable exact-run main bundle means STOP."
+    },
+    {
+      "id": 44,
+      "name": "ci_v3_cached_bundle_has_no_fallback",
+      "production_allowed": false,
+      "expected": "A locally cached ZIP cannot replace fresh GitHub run and artifact metadata."
+    },
+    {
+      "id": 45,
+      "name": "ci_v3_tampered_content_manifest",
+      "production_allowed": false,
+      "expected": "Any altered, missing, extra, or unsafe bundle member fails offline verification."
+    },
+    {
+      "id": 46,
+      "name": "ci_v3_untrusted_verifier_source",
+      "production_allowed": false,
+      "expected": "Verifier code from the downloaded bundle is data and is never executed."
+    },
+    {
+      "id": 47,
+      "name": "ci_v3_missing_strict_aggregate_or_safe_recovery",
+      "production_allowed": false,
+      "expected": "Bundle summary or missing strict validator inputs cannot establish qualification."
+    },
+    {
+      "id": 48,
+      "name": "ci_v3_missing_main_smoke",
+      "production_allowed": false,
+      "expected": "Actual-main evidence without required successful main smoke is rejected."
+    },
+    {
+      "id": 49,
+      "name": "l6_is_separate_from_ui_deployment_authority",
+      "production_allowed": false,
+      "expected": "Full L6 regression evidence does not authorize production deployment or broaden the initial UI scope."
+    },
+    {
+      "id": 50,
+      "name": "legacy_v2_artifacts_are_not_ci_v3_fallback",
+      "production_allowed": false,
+      "expected": "Old CI V2 artifacts and green badges cannot substitute for the current V3 final main bundle."
     }
   ],
   "qualification_boundary": "Public CI verifies this contract and synthetic data only; private wrapper qualification must bind separately reviewed private implementation hashes.",

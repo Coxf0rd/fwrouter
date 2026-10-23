@@ -9,6 +9,9 @@ from typing import Any
 import pytest
 
 _NODE_STATUSES: dict[str, str] = {}
+_COLLECTED_NODEIDS: list[str] = []
+_NODE_EXECUTIONS: dict[str, dict[str, Any]] = {}
+_EXACT_NODEIDS: dict[str, str] = {}
 _NODE_OVERRIDE_FIELDS = frozenset({"path", "node", "primary_level", "execution_profile"})
 # `execution_profile` is merged only when the override contains that key;
 # explicit null clears the file profile, while absence preserves inheritance.
@@ -40,10 +43,11 @@ def _root_relative(item: pytest.Item) -> str:
 
 
 def _exact_repo_nodeid(nodeid: str) -> str:
-    path, separator, tail = nodeid.partition("::")
-    if path.startswith("tests/") and not path.startswith("tests/gates/"):
-        path = "backend/" + path
-    return path + (separator + tail if separator else "")
+    # The raw pytest path may be relative to either the repository root or
+    # backend/. Resolve it from the actual collected Item.path, never by
+    # guessing from a string prefix. Unknown IDs remain unknown and therefore
+    # fail the exact selected/collected/executed coverage checks downstream.
+    return _EXACT_NODEIDS.get(nodeid, nodeid)
 
 
 def _merged_node_metadata(base_row: dict[str, Any], override: dict[str, Any] | None) -> dict[str, Any]:
@@ -65,18 +69,48 @@ def _merged_node_metadata(base_row: dict[str, Any], override: dict[str, Any] | N
 
 def pytest_sessionstart(session: pytest.Session) -> None:
     _NODE_STATUSES.clear()
+    _COLLECTED_NODEIDS.clear()
+    _NODE_EXECUTIONS.clear()
+    _EXACT_NODEIDS.clear()
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    # Capture the exact same-session inventory, including parametrized suffixes.
+    for item in session.items:
+        _, separator, tail = item.nodeid.partition("::")
+        exact = _root_relative(item) + (separator + tail if separator else "")
+        _EXACT_NODEIDS[item.nodeid] = exact
+        _COLLECTED_NODEIDS.append(exact)
+
+
+def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]) -> None:
+    exact = _exact_repo_nodeid(nodeid)
+    row = _NODE_EXECUTIONS.setdefault(exact, {"start_count": 0, "call_report_count": 0,
+                                               "terminal_report_count": 0, "status": None})
+    row["start_count"] += 1
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     nodeid = _exact_repo_nodeid(report.nodeid)
+    execution = _NODE_EXECUTIONS.setdefault(nodeid, {"start_count": 0, "call_report_count": 0,
+                                                       "terminal_report_count": 0, "status": None})
     previous = _NODE_STATUSES.get(nodeid)
     if report.failed:
         _NODE_STATUSES[nodeid] = "failed"
+        execution["status"] = "failed"
+        if report.when in {"setup", "call"}:
+            execution["terminal_report_count"] += 1
     elif report.skipped and report.when in {"setup", "call"}:
         if previous != "failed":
             _NODE_STATUSES[nodeid] = "skipped"
+            execution["status"] = "skipped"
+        execution["terminal_report_count"] += 1
     elif report.when == "call" and report.passed and previous is None:
         _NODE_STATUSES[nodeid] = "passed"
+        execution["status"] = "passed"
+        execution["terminal_report_count"] += 1
+    if report.when == "call":
+        execution["call_report_count"] += 1
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -85,7 +119,12 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         return
     path = Path(destination)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"schema_version": 1, "node_status": dict(sorted(_NODE_STATUSES.items()))}
+    payload = {
+        "schema_version": 2,
+        "collected_nodeids": _COLLECTED_NODEIDS,
+        "node_status": dict(sorted(_NODE_STATUSES.items())),
+        "node_executions": dict(sorted(_NODE_EXECUTIONS.items())),
+    }
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     temporary.replace(path)

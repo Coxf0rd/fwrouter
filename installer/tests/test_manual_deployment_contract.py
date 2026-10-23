@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 CONTRACT = Path(__file__).parent / 'fixtures/manual-deployment-contract.json'
+MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
 
 
 def validate_public_receipt(value: dict) -> None:
@@ -23,7 +25,7 @@ def validate_public_receipt(value: dict) -> None:
         raise ValueError('unsupported scope')
     gates = value['gates']
     required_gates = {
-        'local_source', 'remote_main', 'ci_v2', 'preflight', 'native_proof',
+        'local_source', 'remote_main', 'ci_v3_main_evidence', 'preflight', 'native_proof',
         'ui_integrity', 'installer', 'postflight',
     }
     if not isinstance(gates, dict) or set(gates) != required_gates:
@@ -43,10 +45,67 @@ def sample() -> dict:
     return {'schema': 'fwrouter-manual-deployment-public-summary/v1', 'source_sha': 'a' * 40,
             'scope': 'ui', 'status': 'PASS',
             'gates': dict.fromkeys([
-                'local_source', 'remote_main', 'ci_v2', 'preflight', 'native_proof',
+                'local_source', 'remote_main', 'ci_v3_main_evidence', 'preflight', 'native_proof',
                 'ui_integrity', 'installer', 'postflight',
             ], 'PASS'),
             'private_qualification': 'separate-private-hash-bound-evidence'}
+
+
+def validate_main_ci_provenance(run: dict, jobs: list[dict], artifact: dict, *,
+                                expected_sha: str, expected_attempt: int,
+                                now: datetime) -> None:
+    """Validate a normalized fresh GitHub API snapshot, not deployment authority."""
+    if (run.get('repository') != 'Coxf0rd/fwrouter'
+            or run.get('workflow') != 'FWRouter affected CI'
+            or run.get('workflow_path') != '.github/workflows/test-gates.yml'
+            or run.get('event') != 'push' or run.get('ref') != 'refs/heads/main'
+            or run.get('head_branch') != 'main' or run.get('status') != 'completed'
+            or run.get('conclusion') != 'success' or run.get('head_sha') != expected_sha
+            or type(run.get('run_id')) is not int or run['run_id'] <= 0
+            or type(run.get('run_attempt')) is not int or run['run_attempt'] != expected_attempt):
+        raise ValueError('main workflow identity or result')
+    expected_names = {'Immutable plan and preflight', 'Build and verify source once'}
+    expected_names.update(
+        f'Routine and contract shard ({group})' for group in (
+            'core-state', 'routing-adapters', 'services-events', 'ui-tooling',
+            'api-persistence-contracts', 'ui-provider-contracts',
+            'local-integration', 'installer-startup',
+        )
+    )
+    expected_names.update({
+        'Ordinary functional and browser', 'Provider and browser cohort',
+        'Kernel packet and fail-closed', 'Qualified native profile (qcp)',
+        'Qualified native profile (xray)', 'Affected L0-L5 with hosted profiles',
+    })
+    names = [job.get('name') for job in jobs]
+    if len(jobs) != 16 or set(names) != expected_names:
+        raise ValueError('required or unique runner jobs')
+    if any(job.get('run_id') != run['run_id']
+           or job.get('run_attempt') != expected_attempt
+           or job.get('status') != 'completed'
+           or job.get('conclusion') != 'success' for job in jobs):
+        raise ValueError('job run/attempt eligibility')
+    required = next(job for job in jobs if job['name'] == 'Affected L0-L5 with hosted profiles')
+    if required.get('required_check') != 'success' or required.get('main_smoke') != 'passed':
+        raise ValueError('strict aggregate or main smoke')
+    name = f"fwrouter-main-evidence-{expected_sha}-{run['run_id']}-{expected_attempt}"
+    try:
+        expires_at = datetime.fromisoformat(artifact['expires_at'].replace('Z', '+00:00'))
+        if expires_at.tzinfo is None or now.tzinfo is None:
+            raise ValueError
+    except (KeyError, AttributeError, TypeError, ValueError):
+        raise ValueError('artifact expiry') from None
+    digest = artifact.get('digest')
+    digest = digest.removeprefix('sha256:') if isinstance(digest, str) else ''
+    if (type(artifact.get('artifact_id')) is not int or artifact['artifact_id'] <= 0
+            or artifact.get('name') != name
+            or type(artifact.get('size_in_bytes')) is not int
+            or not 0 < artifact['size_in_bytes'] <= MAX_ARTIFACT_BYTES
+            or len(digest) != 64 or any(char not in '0123456789abcdef' for char in digest)
+            or artifact.get('expired') is not False or expires_at <= now
+            or artifact.get('workflow_run_id') != run['run_id']
+            or artifact.get('workflow_run_head_sha') != expected_sha):
+        raise ValueError('main artifact provenance, identity, digest, or expiry')
 
 
 REQUIRED_NATIVE_CHECKS = (
@@ -141,7 +200,7 @@ def _valid_sha256(value: object) -> bool:
 
 def test_public_contract_preserves_owner_control_and_local_source():
     contract = json.loads(CONTRACT.read_text())
-    assert contract['schema'] == 'fwrouter-manual-deployment-contract/v2'
+    assert contract['schema'] == 'fwrouter-manual-deployment-contract/v3'
     assert contract['execution'] == 'owner-invoked-local-only'
     assert contract['wrapper_distribution'] == 'outside-repository-owner-controlled'
     assert contract['source'] == 'verified-existing-local-git-objects'
@@ -178,10 +237,112 @@ def test_contract_blocks_legacy_backend_without_native_owner_receipts():
     assert 'no synthetic receipt' in proof['missing_owner_receipt']
 
 
-def test_all_40_safety_scenarios_are_declared_without_production_execution():
+def test_ci_v3_contract_requires_fresh_api_metadata_and_complete_main_bundle():
+    contract = json.loads(CONTRACT.read_text())
+    evidence = contract['ci_evidence']
+    assert evidence['source_of_truth'] == 'fresh-read-only-GitHub-API-metadata'
+    assert evidence['actual_runner_job_count'] == 16
+    assert len(evidence['expected_runner_job_names']) == 16
+    assert evidence['job_inventory_policy'] == 'exact-names-no-missing-duplicate-extra-or-skipped-jobs'
+    assert evidence['required_check'] == 'Affected L0-L5 with hosted profiles'
+    assert evidence['artifact_retention_days'] == 7
+    assert type(evidence['artifact_max_size_bytes']) is int
+    assert evidence['artifact_max_size_bytes'] == MAX_ARTIFACT_BYTES
+    assert evidence['current_attempt_jobs_only'] is True
+    assert evidence['main_smoke_required_and_passed'] is True
+    assert evidence['execute_code_from_bundle'] is False
+    assert evidence['cached_bundle_fallback'] is False
+    assert evidence['legacy_ci_v2_artifact_fallback'] is False
+    assert 'workflow_run_attempt' not in evidence['artifact_metadata_fields']
+    assert 'attempt-specific jobs API' in evidence['attempt_binding']
+    assert {'routine-shard-node-inventory', 'native-mihomo-xray-proofs',
+            'kernel-packet-receipts', 'safe-recovery-receipts'} <= set(evidence['bundle_must_retain'])
+    assert evidence['offline_verifier'].startswith('tests/gates/evidence_bundle.py verify --require-main')
+    assert contract['l6_policy']['deployment_authority'] is False
+    assert contract['l6_policy']['required_by_initial_ui_scope'] is False
+
+
+def valid_main_api_snapshot():
+    sha = 'a' * 40
+    run = {
+        'repository': 'Coxf0rd/fwrouter', 'workflow': 'FWRouter affected CI',
+        'workflow_path': '.github/workflows/test-gates.yml', 'event': 'push',
+        'ref': 'refs/heads/main', 'head_branch': 'main', 'status': 'completed',
+        'conclusion': 'success', 'head_sha': sha, 'run_id': 8123456789,
+        'run_attempt': 2,
+    }
+    names = ['Immutable plan and preflight', 'Build and verify source once']
+    names += [f'Routine and contract shard ({group})' for group in (
+        'core-state', 'routing-adapters', 'services-events', 'ui-tooling',
+        'api-persistence-contracts', 'ui-provider-contracts',
+        'local-integration', 'installer-startup',
+    )]
+    names += ['Ordinary functional and browser', 'Provider and browser cohort',
+              'Kernel packet and fail-closed', 'Qualified native profile (qcp)',
+              'Qualified native profile (xray)', 'Affected L0-L5 with hosted profiles']
+    jobs = [{'name': name, 'run_id': run['run_id'], 'run_attempt': 2,
+             'status': 'completed', 'conclusion': 'success'} for name in names]
+    jobs[-1]['required_check'] = 'success'
+    jobs[-1]['main_smoke'] = 'passed'
+    assert set(names) == set(json.loads(CONTRACT.read_text())['ci_evidence']['expected_runner_job_names'])
+    artifact = {
+        'artifact_id': 54321,
+        'name': f"fwrouter-main-evidence-{sha}-{run['run_id']}-2",
+        'size_in_bytes': 8192, 'digest': 'b' * 64, 'expired': False,
+        'expires_at': '2026-10-30T00:00:00Z',
+        'workflow_run_id': run['run_id'], 'workflow_run_head_sha': sha,
+    }
+    return sha, run, jobs, artifact
+
+
+def test_fresh_current_attempt_main_api_snapshot_is_eligible():
+    sha, run, jobs, artifact = valid_main_api_snapshot()
+    validate_main_ci_provenance(run, jobs, artifact, expected_sha=sha,
+                                expected_attempt=2,
+                                now=datetime(2026, 10, 23, tzinfo=timezone.utc))
+
+
+@pytest.mark.parametrize('change', [
+    'wrong_repo', 'wrong_workflow', 'wrong_event', 'wrong_ref', 'wrong_sha',
+    'failed_run', 'wrong_attempt', 'missing_job', 'duplicate_job', 'failed_job',
+    'wrong_job_attempt', 'missing_aggregate', 'aggregate_failed', 'smoke_missing',
+    'wrong_artifact_name', 'wrong_artifact_run', 'wrong_artifact_sha', 'wrong_artifact_attempt',
+    'expired', 'expired_time', 'missing_digest', 'partial_job_list',
+])
+def test_main_ci_provenance_fails_closed_on_identity_or_evidence_gap(change):
+    sha, run, jobs, artifact = valid_main_api_snapshot()
+    if change == 'wrong_repo': run['repository'] = 'attacker/fwrouter'
+    elif change == 'wrong_workflow': run['workflow_path'] = '.github/workflows/other.yml'
+    elif change == 'wrong_event': run['event'] = 'pull_request'
+    elif change == 'wrong_ref': run['ref'] = 'refs/heads/feature'
+    elif change == 'wrong_sha': run['head_sha'] = 'c' * 40
+    elif change == 'failed_run': run['conclusion'] = 'failure'
+    elif change == 'wrong_attempt': run['run_attempt'] = 1
+    elif change == 'missing_job': jobs.pop()
+    elif change == 'duplicate_job': jobs[-1]['name'] = jobs[0]['name']
+    elif change == 'failed_job': jobs[4]['conclusion'] = 'skipped'
+    elif change == 'wrong_job_attempt': jobs[4]['run_attempt'] = 1
+    elif change == 'missing_aggregate': jobs = [job for job in jobs if not job['name'].startswith('Affected ')]
+    elif change == 'aggregate_failed': jobs[-1]['required_check'] = 'failure'
+    elif change == 'smoke_missing': jobs[-1]['main_smoke'] = 'not-run'
+    elif change == 'wrong_artifact_name': artifact['name'] += '-old'
+    elif change == 'wrong_artifact_run': artifact['workflow_run_id'] += 1
+    elif change == 'wrong_artifact_sha': artifact['workflow_run_head_sha'] = 'c' * 40
+    elif change == 'wrong_artifact_attempt': artifact['name'] += '-1'
+    elif change == 'expired': artifact['expired'] = True
+    elif change == 'expired_time': artifact['expires_at'] = '2026-10-22T00:00:00Z'
+    elif change == 'missing_digest': artifact['digest'] = 'not-a-digest'
+    elif change == 'partial_job_list': jobs = jobs[:8]
+    with pytest.raises(ValueError):
+        validate_main_ci_provenance(run, jobs, artifact, expected_sha=sha,
+                                    expected_attempt=2,
+                                    now=datetime(2026, 10, 23, tzinfo=timezone.utc))
+
+
+def test_all_50_safety_scenarios_are_declared_without_production_execution():
     scenarios = json.loads(CONTRACT.read_text())['required_scenarios']
-    assert [x['id'] for x in scenarios] == list(range(1, 41))
-    assert len({x['name'] for x in scenarios}) == 40
+    assert [x['id'] for x in scenarios] == list(range(1, 51))
+    assert len({x['name'] for x in scenarios}) == 50
     assert all(x['production_allowed'] is False for x in scenarios)
 
 
@@ -195,8 +356,15 @@ def test_complete_redacted_summary_is_valid_data_not_authority():
     validate_public_receipt(sample())
 
 
+def test_old_ci_v2_gate_name_cannot_substitute_for_current_main_evidence():
+    value = sample()
+    value['gates']['ci_v2'] = value['gates'].pop('ci_v3_main_evidence')
+    with pytest.raises(ValueError, match='gate completeness'):
+        validate_public_receipt(value)
+
+
 @pytest.mark.parametrize('gate', [
-    'local_source', 'remote_main', 'ci_v2', 'preflight', 'native_proof',
+    'local_source', 'remote_main', 'ci_v3_main_evidence', 'preflight', 'native_proof',
     'ui_integrity', 'installer', 'postflight',
 ])
 @pytest.mark.parametrize('status', ['FAIL', 'NOT RUN'])
@@ -374,3 +542,21 @@ def test_native_proof_v1_checklist_is_exact_and_ordered(mutation):
         proof["checks_executed"].append(proof["checks_executed"][0])
     with pytest.raises(ValueError, match="checks"):
         validate_native_proof(proof, backend_sha="a" * 64, xray_image="sha256:" + "b" * 64, mihomo_image="sha256:" + "c" * 64)
+
+
+@pytest.mark.parametrize('size', [0, -1, True, 1.0, '8192', MAX_ARTIFACT_BYTES + 1])
+def test_main_evidence_artifact_size_is_bounded_and_strictly_integer(size):
+    sha, run, jobs, artifact = valid_main_api_snapshot()
+    artifact['size_in_bytes'] = size
+    with pytest.raises(ValueError):
+        validate_main_ci_provenance(run, jobs, artifact, expected_sha=sha,
+                                    expected_attempt=2,
+                                    now=datetime(2026, 10, 23, tzinfo=timezone.utc))
+
+
+def test_main_evidence_artifact_exact_maximum_is_permitted():
+    sha, run, jobs, artifact = valid_main_api_snapshot()
+    artifact['size_in_bytes'] = MAX_ARTIFACT_BYTES
+    validate_main_ci_provenance(run, jobs, artifact, expected_sha=sha,
+                                expected_attempt=2,
+                                now=datetime(2026, 10, 23, tzinfo=timezone.utc))

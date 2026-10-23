@@ -204,3 +204,16 @@ Manual diagnostics are documented by `opt_fwrouter_api_fwrouter_api_services_man
 - [Atomic installer UI publication](installer_ui_publication_py.md): prepared immutable UI trees, atomic active pointer and retained previous release.
 - [Installer component lock](installer_component_install_lock_py.md): shared serialization for backend/UI installer operations and direct UI publication.
 - [Safe backend recovery artifact](installer_safe_recovery_py.md): tracked backend artifact verification and isolated staging through the exact installer dependency closure.
+
+
+## CI evidence lifecycle
+
+`tests/gates/evidence_bundle.py` owns bounded evidence packaging and offline validation; existing `parallel_ci.py` and `aggregate_hosted.py` remain qualification authorities. `.github/workflows/test-gates.yml` preserves the stable required check and publishes complete successful evidence only after strict aggregation. CI V3 expands execution visibility through manifest-owned routine shards and independent native profile jobs. See [artifact lifecycle contract](../../../docs/CI_ARTIFACT_LIFECYCLE.md). No production, recovery or routing owner is introduced.
+
+## CI V3 execution ownership
+
+`tests/gates/routine_shards.py` validates deterministic suite ownership, exact node inventories, disjoint coverage and canonical report reconstruction; it is not a second baseline or native qualification authority. `tests/gates/gate.py` and `backend/tests/gate_plugin.py` collect bounded execution evidence. The workflow schedules isolated runners; `aggregate_hosted.py` still owns strict native/hosted eligibility. See [CI V3 design and qualification](../../../docs/CI_V3.md). L6 restructuring is implemented on a separately authorized stacked PR B branch; exact-head L6 execution, offline bundle replay, independent review and actual-main integration remain separate pending gates.
+
+## Parallel L6 full regression
+
+`.github/workflows/test-full-suite.yml` defines the separate scheduled/manual L6 workflow. `tests/gates/l6_ci.py` validates the exact trigger/source scope, complete producer set, repeat count, native inputs, strict aggregation, safe recovery and replayable L6 bundle. It reuses `routine_shards.py`, `parallel_ci.py`, `aggregate_hosted.py`, `evidence_bundle.py` and `visibility_report.py`; it does not create another baseline authority or deployment path. L6 uses eight logical jobs expanded to 19 hosted runner jobs, with eight routine shards capped at four concurrent runners and two independent repeats for each hosted/provider/packet role. L7 is excluded; branch evidence is non-promotional and the bundle always denies deployment eligibility. See [L6 workflow contract and current qualification status](../../../docs/CI_L6.md). Exact-head GitHub execution and bundle replay remain pending for this stacked implementation.

@@ -5,7 +5,29 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/install.sh"
 DEPS_SH="$SCRIPT_DIR/install-host-dependencies.sh"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fwrouter-install-suite.XXXXXX")"
-trap 'rm -rf "$TEST_ROOT"' EXIT
+cleanup_test_root() {
+  result=$?
+  trap - EXIT
+  cleanup_failed() {
+    [ "$result" -ne 0 ] || result=1
+  }
+  # A symlink or unexpected non-directory is a cleanup failure; never inspect
+  # or remove its target. A missing path is already clean.
+  if [ -L "$TEST_ROOT" ]; then
+    cleanup_failed
+  elif [ -e "$TEST_ROOT" ]; then
+    if [ -d "$TEST_ROOT" ]; then
+      # UI releases are immutable (0555). Restore owner write/search only on
+      # real directories under this unique test root; find does not follow links.
+      find "$TEST_ROOT" -xdev -type d -exec chmod u+rwx {} + || cleanup_failed
+      rm -rf -- "$TEST_ROOT" || cleanup_failed
+    else
+      cleanup_failed
+    fi
+  fi
+  exit "$result"
+}
+trap cleanup_test_root EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
