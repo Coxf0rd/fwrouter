@@ -897,6 +897,13 @@
         "documentation"
       ],
       "glob": "docs/MANUAL_VERIFIED_DEPLOYMENT.md"
+    },
+    {
+      "glob": "docs/MANUAL_DEPLOYMENT_BACKEND_PREREQUISITE.md",
+      "domains": [
+        "installer",
+        "documentation"
+      ]
     }
   ],
   "policies": {

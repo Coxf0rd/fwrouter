@@ -603,3 +603,12 @@ def test_backend_preparation_uses_existing_installer_and_proof_interface():
     for flag in ('--expected-operation-id', '--expected-current-manifest-sha256',
                  '--expected-new-manifest-sha256'):
         assert f'parser.add_argument("{flag}"' in lifecycle
+
+
+def test_backend_prerequisite_document_has_an_explicit_affected_domain_rule():
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'tests/gates/manifest.json').read_text())
+    rules = [rule for rule in manifest['path_rules']
+             if rule['glob'] == 'docs/MANUAL_DEPLOYMENT_BACKEND_PREREQUISITE.md']
+    assert len(rules) == 1
+    assert set(rules[0]['domains']) == {'installer', 'documentation'}
