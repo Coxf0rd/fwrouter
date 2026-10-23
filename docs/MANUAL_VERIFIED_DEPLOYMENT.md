@@ -65,3 +65,9 @@ The earlier report and its exact historical test results remain in [the private 
 ## Owner decisions remain separate
 
 After review and merge of the public contract, the owner must separately review hash-bound private qualification, authorize wrapper installation/update, authorize the first read-only invocation, and authorize any specific deployment. Each decision is independent. A Draft PR, green CI, merged documentation, or source qualification does not authorize production use.
+
+## Privileged executable trust boundary
+
+A matching hash is insufficient when an executable or an ancestor directory is writable by an unprivileged identity. Every command actually invoked, including fixed Git/launcher/interpreter paths, must be bound to the reviewed command inventory. Require root-owned regular executable files, non-writable trusted parents, and an execution binding that prevents pathname replacement after verification. Resolve and constrain any supported symlink explicitly; do not accept an arbitrary policy path while executing another hardcoded command. Another malicious root process remains outside this guarantee.
+
+The Python interpreter, standard library, dynamically loaded extensions, ELF loader and shared libraries form a separate required execution-closure gate. Command hashes and a virtual-environment tree alone do not qualify that closure. Never generate and automatically approve pins from an unreviewed current host. Tests of this public declaration do not execute or qualify the private implementation.

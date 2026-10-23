@@ -340,3 +340,17 @@ def test_native_proof_cannot_claim_a_git_sha_for_content_manifest_identity():
             value, backend_sha='a' * 64,
             xray_image='sha256:' + 'b' * 64, mihomo_image='sha256:' + 'c' * 64,
         )
+
+
+def test_public_contract_requires_verified_privileged_execution_identity():
+    trust = json.loads(CONTRACT.read_text())["privileged_execution_trust"]
+    assert trust == {
+        "fixed_executable_paths": True,
+        "root_owned_regular_files": True,
+        "reject_group_or_world_writable": True,
+        "trusted_parent_directories": True,
+        "bind_verified_file_to_execution": True,
+        "os_runtime_closure_separate_gate": True,
+        "automatic_host_pin_approval": False,
+        "malicious_root_peer_excluded": True,
+    }

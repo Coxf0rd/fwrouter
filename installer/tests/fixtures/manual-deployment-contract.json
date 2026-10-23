@@ -286,5 +286,15 @@
     "side_effects": [],
     "missing_owner_receipt": "STOP; no synthetic receipt, legacy admission, staging, refresh, reconcile, apply, or recovery"
   },
-  "legacy_backend_prerequisite": "The installed backend must expose native-proof and have current valid Core and generation owner receipts; otherwise STOP pending a separately authorized normal owner operation. UI-only deployment cannot install this prerequisite."
+  "legacy_backend_prerequisite": "The installed backend must expose native-proof and have current valid Core and generation owner receipts; otherwise STOP pending a separately authorized normal owner operation. UI-only deployment cannot install this prerequisite.",
+  "privileged_execution_trust": {
+    "fixed_executable_paths": true,
+    "root_owned_regular_files": true,
+    "reject_group_or_world_writable": true,
+    "trusted_parent_directories": true,
+    "bind_verified_file_to_execution": true,
+    "os_runtime_closure_separate_gate": true,
+    "automatic_host_pin_approval": false,
+    "malicious_root_peer_excluded": true
+  }
 }

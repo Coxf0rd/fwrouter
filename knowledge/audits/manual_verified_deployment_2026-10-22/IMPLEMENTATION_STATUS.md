@@ -23,3 +23,9 @@ Current public contract checks:33 isolated cases passed locally; the test catalo
 Roadmap publication belongs to PR34 first; this independent PR avoids editing that roadmap while PR34 remains open. A future chronological roadmap checkpoint can link the actual final qualification result after owner review/merge, preserving production d313dcf and formal PARTIALLY VERIFIED external acceptance.
 
 Further isolated qualification executes exact installer/bootstrap, verifies a disposable chroot root target, and confirms interrupted UI overlay is non-atomic. The safe wrapper policy refuses changed-UI publication. Backup/restore and real namespace UI/Gateway/native readback evidence remain private, separately hash-bound and independently reviewed. Public CI does not execute those private tests. Production invocation stays blocked; installation readiness is not inferred from this Draft PR.
+
+## Requalification after Docker policy integration — 2026-10-23
+
+PR35 integrates owner-merged main `0a0ce14e2868c88ea83b29ad31a9ec914800e1ad` without rewriting its branch history. Main-event CI39879519917 passed all eight jobs, strict qualification and main smoke. The public contract adds explicit fixed-command identity, safe file/parent permissions and execution binding requirements; this is a requirement, not evidence that private bytes pass.
+
+A fresh independent private review identified an executable-permission/path-binding defect requiring correction and new negative tests. Private qualification remains INCOMPLETE; full owner-backed proof/installer/final-proof and complete OS execution closure are separate outstanding gates. Existing isolated child/native and mock-based results cannot substitute for them. Production invocation remains blocked. No installation, deployment or merge is authorized by this checkpoint. Earlier reports and exact historical results remain unchanged.
