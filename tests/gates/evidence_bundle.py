@@ -33,8 +33,11 @@ SOURCE_FILES = (
     ".github/workflows/test-gates.yml",
     "tests/gates/evidence_bundle.py",
     "tests/gates/parallel_ci.py",
+    "tests/gates/routine_shards.py",
+    "tests/gates/visibility_report.py",
     "tests/gates/aggregate_hosted.py",
     "tests/gates/gate.py",
+    "backend/tests/gate_plugin.py",
     "tests/gates/ci_inputs.py",
     "tests/gates/verify_backend_wheel.py",
     "tests/gates/manifest.json",
@@ -50,6 +53,7 @@ SOURCE_FILES = (
 SAFE_RECEIPTS = {
     "fwrouter-affected-plan.json", "build-summary.json", "wheel-metadata.json",
     "fwrouter-affected-unit.json", "runtime-inputs.json", "hosted-acceptance-report.json",
+    "shard.json", "visibility.json",
     "qualified-child-receipt.json", "qualified-xray-docker-receipt.json",
     "profile.json",
     "fwrouter-aggregate.json", "required-result.json", "qualification.json", "stage.json",
@@ -61,6 +65,7 @@ FORBIDDEN_NAMES = {".env", "config.json", "config.yaml", "config.yml", "private.
 sys.path.insert(0, str(GATES))
 import gate
 import parallel_ci
+import routine_shards
 import aggregate_hosted as strict
 import ci_inputs
 
@@ -247,6 +252,9 @@ def expected_evidence_paths(evidence: Path, plan: dict[str, Any], needed: dict[s
         "build": ["build/build-summary.json", "build/wheel-metadata.json"],
         "unit": ["fwrouter-affected-unit.json"],
     }
+    if needed.get("unit"):
+        for group in gate.ROUTINE_SHARD_GROUPS:
+            paths["unit"].extend((f"shards/{group}/shard.json", f"shards/{group}/producer.json"))
     wheels = sorted((evidence / "build/build").glob("*.whl"))
     if needed.get("build"):
         if len(wheels) != 1 or wheels[0].is_symlink() or not wheels[0].is_file():
@@ -266,22 +274,33 @@ def expected_evidence_paths(evidence: Path, plan: dict[str, Any], needed: dict[s
                         and path != "backend/tests/test_xray_native_readback.py"
                         for path, row in manifest_rows.items())
         needs_xray = "backend/tests/test_xray_native_readback.py" in selected
-        if needs_qcp:
-            native_paths.append("qualified-child-receipt.json")
-        if needs_xray:
-            native_paths.append("qualified-xray-docker-receipt.json")
-        selected_receipts = list(native_paths[1:])
-        native_paths = [native_paths[0]]
-        for name in selected_receipts:
-            candidates = list((evidence / "native").rglob(name))
-            if len(candidates) != 1 or candidates[0].is_symlink() or not candidates[0].is_file():
-                raise gate.GateError(f"native evidence must contain exactly one {name}")
-            receipt = candidates[0]
-            relative = receipt.relative_to(evidence / "native").as_posix()
-            profile = receipt.with_name("profile.json")
-            if profile.is_symlink() or not profile.is_file():
-                raise gate.GateError(f"native evidence is missing sibling profile.json for {name}")
-            native_paths.extend((relative, profile.relative_to(evidence / "native").as_posix()))
+        profiles = (["qcp"] if needs_qcp else []) + (["xray"] if needs_xray else [])
+        for profile_name in profiles:
+            profile_root = evidence / "native/profiles" / profile_name
+            parallel_ci.verify_producer(profile_root, "native", plan)
+            producer = read_json(profile_root / "producer.json", 64 * 1024)
+            files = producer.get("files")
+            if not isinstance(files, dict) or "runtime-inputs.json" not in files:
+                raise gate.GateError(f"native profile {profile_name} has no sealed runtime manifest")
+            receipt_name = ("qualified-child-receipt.json" if profile_name == "qcp"
+                            else "qualified-xray-docker-receipt.json")
+            receipts = sorted(path for path in files if Path(path).name == receipt_name)
+            if len(receipts) != 1:
+                raise gate.GateError(f"native profile {profile_name} must retain exactly one sealed receipt")
+            sibling = str(Path(receipts[0]).with_name("profile.json"))
+            expected_files = {"runtime-inputs.json", receipts[0], sibling}
+            if set(files) != expected_files:
+                raise gate.GateError(
+                    f"native profile {profile_name} has missing or unapproved sealed files")
+            for relative in sorted(files):
+                safe_path(relative)
+                candidate = profile_root / relative
+                if candidate.is_symlink() or not candidate.is_file():
+                    raise gate.GateError(f"native evidence is missing sealed {profile_name} closure: {relative}")
+                native_paths.append(f"profiles/{profile_name}/{relative}")
+            # The nested envelope itself is part of the combined native producer
+            # inventory and must also survive final-bundle projection.
+            native_paths.append(f"profiles/{profile_name}/producer.json")
         paths["native"] = native_paths
     return {role: sorted(items) for role, items in paths.items() if needed.get(role)}
 
@@ -299,7 +318,7 @@ def validate_projection_metadata(metadata: dict[str, Any], plan: dict[str, Any],
             safe_path(path)
         if sorted(actual) != expected or len(actual) != len(set(actual)):
             raise gate.GateError(f"{role} evidence projection omits or adds required evidence")
-        if role in {"plan", "unit"} and any("/" in path for path in actual):
+        if role == "plan" and any("/" in path for path in actual):
             raise gate.GateError(f"{role} projection contains unexpected nested files")
 
 
@@ -397,7 +416,16 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
     if args.role == "plan":
         candidates = ["fwrouter-affected-plan.json"]
     elif args.role == "unit":
-        candidates = ["fwrouter-affected-unit.json"]
+        group = args.shard_group
+        if group not in gate.ROUTINE_SHARD_GROUPS:
+            raise gate.GateError("unit evidence handoff requires a supported --shard-group")
+        candidates = ["shard.json"]
+        if args.outcome == "success":
+            report = read_json(source / "shard.json")
+            rows = routine_shards.expected_by_group(plan, gate.load_manifest())[group]
+            run_id = os.environ.get("GITHUB_RUN_ID", "")
+            attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+            routine_shards.verify_shard(report, group, plan, rows, run_id=run_id, attempt=attempt)
     elif args.role == "build":
         wheels = sorted((source / "build").glob("*.whl")) if source.is_dir() else []
         candidates = ["build/build-summary.json", "build/wheel-metadata.json"]
@@ -412,8 +440,17 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
         candidates = ["runtime-inputs.json"]
         selected = set(plan.get("selected_files", []))
         rows = {row["path"]: row for row in gate.load_manifest()["test_files"]}
-        if any(path in selected and row.get("execution_profile") == "qualified-child-process"
-               and path != "backend/tests/test_xray_native_readback.py" for path, row in rows.items()):
+        qcp_selected = any(path in selected and row.get("execution_profile") == "qualified-child-process"
+                           and path != "backend/tests/test_xray_native_readback.py" for path, row in rows.items())
+        xray_selected = "backend/tests/test_xray_native_readback.py" in selected
+        native_profile = getattr(args, "native_profile", None)
+        if native_profile not in {None, "qcp", "xray"}:
+            raise gate.GateError("unsupported native profile handoff")
+        if native_profile == "qcp" and not qcp_selected or native_profile == "xray" and not xray_selected:
+            raise gate.GateError("native profile handoff is not selected by the immutable plan")
+        want_qcp = qcp_selected and native_profile in {None, "qcp"}
+        want_xray = xray_selected and native_profile in {None, "xray"}
+        if want_qcp:
             found = sorted(source.rglob("qualified-child-receipt.json")) if source.is_dir() else []
             if args.outcome == "success" and len(found) != 1:
                 raise gate.GateError("native success requires exactly one qualified-child receipt")
@@ -424,7 +461,7 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
                     raise gate.GateError("native success requires the qualified-child sibling profile.json")
                 if profile.is_file() and not profile.is_symlink():
                     candidates.append(profile.relative_to(source).as_posix())
-        if "backend/tests/test_xray_native_readback.py" in selected:
+        if want_xray:
             found = sorted(source.rglob("qualified-xray-docker-receipt.json")) if source.is_dir() else []
             if args.outcome == "success" and len(found) != 1:
                 raise gate.GateError("native success requires exactly one Docker-Xray receipt")
@@ -461,7 +498,9 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
                     shutil.copytree(args.destination, copied_build)
                     ci_inputs.verify(copied_build, args.plan)
         producer = parallel_ci.seal(args.destination, args.role, plan, args.outcome)
-        return {"role": args.role, "outcome": args.outcome, "copied": copied,
+        return {"role": args.role, "shard_group": getattr(args, "shard_group", None),
+                "native_profile": getattr(args, "native_profile", None),
+                "outcome": args.outcome, "copied": copied,
                 "producer_digest": producer["producer_digest"]}
     except BaseException:
         shutil.rmtree(args.destination, ignore_errors=True)
@@ -517,6 +556,16 @@ def build_bundle(args: argparse.Namespace) -> dict[str, Any]:
                            args.destination / "reports/fwrouter-aggregate.json")
         copy_evidence_file(args.required / "required-result.json",
                            args.destination / "reports/required-result.json")
+        import visibility_report
+        visibility = visibility_report.collect(args.evidence, args.required, plan)
+        saved_visibility = read_json(args.required / "visibility.json")
+        if (gate.canonical_digest(visibility) != gate.canonical_digest(saved_visibility)
+                or visibility.get("qualification_status") != "passed"
+                or visibility.get("not_run_selected_files")
+                or visibility.get("diagnostic_limitations")):
+            raise gate.GateError("aggregate visibility report is missing, incomplete, or stale")
+        copy_evidence_file(args.required / "visibility.json",
+                           args.destination / "reports/visibility.json")
         if read_json(args.required / "required-result.json").get("safe_recovery_required") is True:
             for relative in ("qualification.json", "stage.json", "artifact/manifest.json", "artifact/source.tar"):
                 copy_evidence_file(args.required / "safe-recovery" / relative,
@@ -631,6 +680,7 @@ def verify_bundle(args: argparse.Namespace) -> dict[str, Any]:
     expected_bundle_paths = {
         "metadata.json", "content-manifest.json",
         "reports/fwrouter-aggregate.json", "reports/required-result.json",
+        "reports/visibility.json",
     }
     expected_bundle_paths.update(f"verifier-source/{path}" for path in SOURCE_FILES)
     for role, paths in expected_paths.items():
@@ -647,6 +697,14 @@ def verify_bundle(args: argparse.Namespace) -> dict[str, Any]:
     jobs = metadata.get("jobs")
     if not isinstance(jobs, dict) or parallel_ci.validate_results(jobs, needed):
         raise gate.GateError("bundled job result set is incomplete or has failed/skipped evidence")
+    import visibility_report
+    visibility = visibility_report.collect(evidence, args.bundle / "reports", plan)
+    saved_visibility = read_json(args.bundle / "reports/visibility.json")
+    if (gate.canonical_digest(visibility) != gate.canonical_digest(saved_visibility)
+            or visibility.get("qualification_status") != "passed"
+            or visibility.get("not_run_selected_files")
+            or visibility.get("diagnostic_limitations")):
+        raise gate.GateError("bundle visibility report is missing, stale, or incomplete")
     for role, required in needed.items():
         if not required:
             continue
@@ -712,9 +770,12 @@ def verify_bundle(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def replay_strict(evidence: Path, plan: dict[str, Any], *, main_smoke: bool) -> dict[str, Any]:
+    verify_routine_shards(evidence, plan)
     plan_path = evidence / "plan/fwrouter-affected-plan.json"
     unit_path = evidence / "unit/fwrouter-affected-unit.json"
     needed = parallel_ci.requirements(plan, main_smoke)
+    if needed["native"]:
+        verify_native_profiles(evidence, plan)
     hosted: list[Path] = []
     for role in ("hosted", "provider", "packet"):
         if needed[role]:
@@ -739,6 +800,49 @@ def replay_strict(evidence: Path, plan: dict[str, Any], *, main_smoke: bool) -> 
     return strict.aggregate(plan_path, unit_path, hosted, qcp, xray, minimum_repeats=1,
                             runtime_inputs_path=runtime_path, require_main_smoke=main_smoke,
                             main_smoke_path=smoke)
+
+
+def verify_native_profiles(evidence: Path, plan: dict[str, Any]) -> None:
+    """Replay every profile producer seal and prove its runtime pins agree."""
+    profiles = parallel_ci.native_profiles(plan)
+    if not profiles:
+        raise gate.GateError("native profile evidence is required but no profile is plan-selected")
+    manifests = []
+    for profile in profiles:
+        root = evidence / "native/profiles" / profile
+        parallel_ci.verify_producer(root, "native", plan)
+        runtime = read_json(root / "runtime-inputs.json")
+        strict.validate_runtime_inputs(runtime)
+        manifests.append(runtime)
+    if any(parallel_ci.runtime_identity(value) != parallel_ci.runtime_identity(manifests[0])
+           for value in manifests[1:]):
+        raise gate.GateError("offline native profile runners disagree on pinned runtime inputs")
+    combined = read_json(evidence / "native/runtime-inputs.json")
+    strict.validate_runtime_inputs(combined)
+    if parallel_ci.runtime_identity(combined) != parallel_ci.runtime_identity(manifests[0]):
+        raise gate.GateError("combined native runtime input differs from profile-bound manifests")
+
+
+def verify_routine_shards(evidence: Path, plan: dict[str, Any]) -> None:
+    """Re-validate every matrix producer and prove its reports merge to the strict unit input."""
+    manifest = gate.load_manifest()
+    reports = {}
+    for group in gate.ROUTINE_SHARD_GROUPS:
+        root = evidence / "unit/shards" / group
+        parallel_ci.verify_producer(root, "unit", plan)
+        report = read_json(root / "shard.json")
+        routine_shards.verify_shard(
+            report, group, plan, routine_shards.expected_by_group(plan, manifest)[group],
+            run_id=os.environ["GITHUB_RUN_ID"], attempt=os.environ["GITHUB_RUN_ATTEMPT"],
+        )
+        reports[group] = report
+    merged = routine_shards.merge_reports(
+        plan, manifest, reports, run_id=os.environ["GITHUB_RUN_ID"],
+        attempt=os.environ["GITHUB_RUN_ATTEMPT"],
+    )
+    saved = read_json(evidence / "unit/fwrouter-affected-unit.json")
+    if gate.canonical_digest(merged) != gate.canonical_digest(saved):
+        raise gate.GateError("offline routine-shard replay differs from the strict aggregate unit input")
 
 
 def diagnostics(args: argparse.Namespace) -> dict[str, Any]:
@@ -772,6 +876,12 @@ def diagnostics(args: argparse.Namespace) -> dict[str, Any]:
         for role in parallel_ci.ROLES:
             allowed_roots = [args.evidence / role,
                              args.evidence / f"fwrouter-v2-{role}-{args.run_id}-{args.attempt}"]
+            if role == "unit":
+                allowed_roots.extend(args.evidence / f"fwrouter-v2-unit-{group}-{args.run_id}-{args.attempt}"
+                                     for group in gate.ROUTINE_SHARD_GROUPS)
+            elif role == "native":
+                allowed_roots.extend(args.evidence / f"fwrouter-v2-native-{profile}-{args.run_id}-{args.attempt}"
+                                     for profile in ("qcp", "xray"))
             for producer_root in allowed_roots:
                 if producer_root.is_symlink() or not producer_root.is_dir():
                     continue
@@ -828,10 +938,27 @@ def summary(args: argparse.Namespace) -> int:
              f"- Final artifact ID: `{artifact_id or 'unavailable'}`; digest: `{artifact_digest or 'unavailable'}`",
              "- Intermediate evidence retention: 1 day; final evidence: 7 days; failed diagnostics: 3 days.",
              "- Bundle checksums provide integrity checks, not an authenticated signature.", ""]
+    visibility_path = args.required / "visibility.json"
+    visibility_valid = False
+    if visibility_path.is_file() and not visibility_path.is_symlink():
+        import visibility_report
+        visibility = read_json(visibility_path)
+        lines.append(visibility_report.summary(visibility))
+        visibility_valid = (visibility.get("schema") == "fwrouter-ci-visibility/v1"
+                            and visibility.get("qualification_status") == "passed"
+                            and not visibility.get("not_run_selected_files")
+                            and not visibility.get("diagnostic_limitations"))
+    else:
+        reason = ("NOT RUN because strict aggregate did not pass" if outcomes["aggregate"] != "success"
+                  else "missing after aggregate PASS")
+        lines.append(f"## CI V3 test execution\n\n**Visibility report {reason}; qualification is incomplete.**\n")
+    if outcomes["aggregate"] == "success" and not visibility_valid:
+        status = "FAIL / INCOMPLETE"
+        lines[2] = f"- Overall result: **{status}**"
     Path(args.output).write_text("\n".join(lines), encoding="utf-8")
-    return 2 if outcomes["aggregate"] == "success" and (
+    return 2 if (outcomes["aggregate"] == "success" and (
         outcomes["bundle"] != "success" or outcomes["publication"] != "success" or not artifact_record_valid
-    ) else 0
+    )) or (outcomes["aggregate"] == "success" and not visibility_valid) else 0
 
 
 def main() -> int:
@@ -869,6 +996,8 @@ def main() -> int:
     handoff_parser.add_argument("--destination", type=Path, required=True)
     handoff_parser.add_argument("--plan", type=Path, required=True)
     handoff_parser.add_argument("--role", choices=parallel_ci.ROLES, required=True)
+    handoff_parser.add_argument("--shard-group", choices=gate.ROUTINE_SHARD_GROUPS)
+    handoff_parser.add_argument("--native-profile", choices=("qcp", "xray"))
     handoff_parser.add_argument("--outcome", choices=("success", "failure", "cancelled", "skipped"), required=True)
     handoff_parser.add_argument("--event", required=True)
     handoff_parser.add_argument("--ref", required=True)

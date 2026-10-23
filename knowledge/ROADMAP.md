@@ -1,5 +1,13 @@
 # FWRouter — active roadmap
 
+## CI V3 — visible parallel qualification (2026-10-23, in progress)
+
+Owner-merged PR39 is now main `ccb8de81be68585d95a327e6d1835ea7387de24a`. Actual-main [39912198441](https://github.com/Coxf0rd/fwrouter/actions/runs/39912198441), attempt 1, passed all eight jobs; its main Evidence Bundle passed trusted-source offline replay including main smoke and safe recovery. This supersedes only the pending-main-verification wording of the historical PR39 checkpoint below.
+
+CI V3 PR A is a separate source-only workstream: deterministic manifest-owned routine partitions, visible Unit/Contract/Integration/Smoke execution, separate native QCP/Xray jobs, exact node/coverage reporting and preserved strict required check/artifact lifecycle. Implementation checkpoint `d7421ee` passed full CI [39949236288](https://github.com/Coxf0rd/fwrouter/actions/runs/39949236288), all 16 runner jobs, strict aggregate/safe recovery and downloaded-bundle offline replay. Observed execution: 2,646 unique IDs, all PASS, no missing selected file. Wall452s versus baseline458s; runner-minutes29.08 versus26.0, a single-run comparison without a speedup claim. Exact final-head CI/review remains required after this documentation checkpoint; owner merge and actual-main verification remain separate. No production or private-wrapper changes, no CD, no automatic merge. The owner confirmed the separate production rollout was complete before implementation began; this is not a new production acceptance claim.
+
+Initial PR B design-only sequencing was superseded by explicit owner authorization to implement parallel full safe L6 on a separate stacked branch above qualified PR A. Preserve two independent hosted repeats, strict regression aggregation and complete evidence. Stacked qualification does not substitute for actual-main verification; only the owner merges A then B. Existing L6/L7 and feature-push contracts remain separate. See [CI V3](../docs/CI_V3.md). PR35 remains Draft; private qualification and installation authority are unchanged.
+
 ## CI V2 artifact lifecycle — proposed source contract (2026-10-23)
 
 A separate infrastructure package from main `0a0ce14` preserves the eight CI V2 jobs, required check and strict exact-SHA/attempt aggregation while separating runner-local files, one-day cross-job evidence and seven-day complete successful evidence bundles. PR evidence is distinct from actual-main deployment evidence; bounded failed-run diagnostics retain three days. No writable PR token or privileged cleanup workflow is introduced. Historical artifacts are inventoried conservatively; policy changes do not retroactively delete prior evidence. See [artifact lifecycle contract](../docs/CI_ARTIFACT_LIFECYCLE.md).

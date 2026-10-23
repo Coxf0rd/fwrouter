@@ -13,6 +13,7 @@ import tempfile
 import textwrap
 import unittest
 import zipfile
+from types import SimpleNamespace
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -28,6 +29,11 @@ PARALLEL_SPEC = importlib.util.spec_from_file_location("fwrouter_parallel_ci", P
 assert PARALLEL_SPEC and PARALLEL_SPEC.loader
 parallel_ci = importlib.util.module_from_spec(PARALLEL_SPEC)
 PARALLEL_SPEC.loader.exec_module(parallel_ci)
+PLUGIN_SPEC = importlib.util.spec_from_file_location(
+    "fwrouter_gate_plugin", gate.ROOT / "backend/tests/gate_plugin.py")
+assert PLUGIN_SPEC and PLUGIN_SPEC.loader
+gate_plugin = importlib.util.module_from_spec(PLUGIN_SPEC)
+PLUGIN_SPEC.loader.exec_module(gate_plugin)
 PLUGIN_PATH = gate.ROOT / "backend/tests/gate_plugin.py"
 PLUGIN_SPEC = importlib.util.spec_from_file_location("fwrouter_gate_plugin_contract", PLUGIN_PATH)
 assert PLUGIN_SPEC is not None and PLUGIN_SPEC.loader is not None
@@ -78,6 +84,8 @@ class GateContractTests(unittest.TestCase):
             "tests/gates/test_network_fixture_contract.py",
             "tests/gates/test_subscription_identity_contract.py",
             "tests/gates/test_evidence_bundle.py",
+            "tests/gates/test_visibility_report.py",
+            "tests/gates/test_routine_shards.py",
             "tests/acceptance/test_dependency_image_contract.py",
             "tests/acceptance/test_consume_dependency_image_contract.py",
         }, gate.STDLIB_CONTRACT_PATHS - {
@@ -91,6 +99,172 @@ class GateContractTests(unittest.TestCase):
     def test_unknown_changed_path_fails_closed(self) -> None:
         with self.assertRaises(gate.GateError):
             gate.domain_for_path("unmapped/binary.blob", self.manifest)
+
+    def test_ci_v3_architecture_doc_has_explicit_specific_path_classification(self) -> None:
+        domains, rules = gate.domain_for_path("docs/CI_V3.md", self.manifest)
+        self.assertEqual({"test-infrastructure"}, domains)
+        self.assertEqual(["docs/CI_V3.md"], [row["glob"] for row in rules])
+
+    def test_stdlib_pytest_method_ids_are_not_downgraded_to_file_markers(self) -> None:
+        path = "tests/gates/test_evidence_bundle.py"
+        row = next(item for item in self.manifest["test_files"] if item["path"] == path)
+        node = path + "::EvidenceBundleTests::test_native_handoff_preserves_qcp_and_docker_xray_profile_closure"
+        plan = {"source_commit": "a" * 40, "plan_digest": "b" * 64,
+                "manifest_digest": gate.canonical_digest(self.manifest),
+                "manifest_version": self.manifest["version"]}
+        execution = {"suite": row["id"], "path": path, "primary_level": row["primary_level"],
+                     "domain": row["domain"], "execution_group": row["execution_group"],
+                     "execution_profile": None, "status": "passed", "elapsed_seconds": 0.1,
+                     "collected_node_ids": [node], "executed_node_ids": [node]}
+        report = gate._routine_shard_report(
+            plan, self.manifest, row["execution_group"], [row], [execution], {node: "passed"}, [],
+            l0_owned=False, l0_ok=True, l0_elapsed=0, l0_problems=[])
+        self.assertEqual([node], report["collected_node_ids"])
+        self.assertEqual([], report["file_marker_paths"])
+
+    def test_gate_plugin_resolves_root_and_backend_nodeids_from_collected_item_paths(self) -> None:
+        root_relative = "tests/acceptance/test_dependency_image_contract.py"
+        backend_relative = "backend/tests/test_isolation_bootstrap.py"
+        root_raw = "tests/acceptance/test_dependency_image_contract.py::test_contract[param]"
+        backend_raw = "tests/test_isolation_bootstrap.py::test_contract[param]"
+        items = [
+            SimpleNamespace(nodeid=root_raw, path=gate.ROOT / root_relative),
+            SimpleNamespace(nodeid=backend_raw, path=gate.ROOT / backend_relative),
+        ]
+        gate_plugin._EXACT_NODEIDS.clear()
+        gate_plugin._COLLECTED_NODEIDS.clear()
+        gate_plugin.pytest_collection_finish(SimpleNamespace(items=items))
+        self.assertEqual(root_relative + "::test_contract[param]",
+                         gate_plugin._exact_repo_nodeid(root_raw))
+        self.assertEqual(backend_relative + "::test_contract[param]",
+                         gate_plugin._exact_repo_nodeid(backend_raw))
+        self.assertEqual(sorted([root_relative + "::test_contract[param]",
+                                 backend_relative + "::test_contract[param]"]),
+                         sorted(gate_plugin._COLLECTED_NODEIDS))
+        gate_plugin.pytest_runtest_logstart(root_raw, ("", None, ""))
+        gate_plugin.pytest_runtest_logreport(SimpleNamespace(
+            nodeid=root_raw, failed=False, skipped=False, when="call", passed=True))
+        self.assertEqual("passed", gate_plugin._NODE_STATUSES[
+            root_relative + "::test_contract[param]"])
+        self.assertEqual("tests/uncollected.py::test_case",
+                         gate_plugin._exact_repo_nodeid("tests/uncollected.py::test_case"))
+
+    def test_installer_fixture_cleanup_rejects_symlink_without_touching_target(self) -> None:
+        source = (gate.ROOT / "installer/test-install.sh").read_text(encoding="utf-8")
+        start = source.index("cleanup_test_root() {")
+        end = source.index("\ntrap cleanup_test_root EXIT", start)
+        cleanup_function = source[start:end]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "protected-target"
+            target.mkdir()
+            sentinel = target / "keep.txt"
+            sentinel.write_text("owned fixture data", encoding="utf-8")
+            link = root / "fwrouter-install-suite.symlink"
+            link.symlink_to(target, target_is_directory=True)
+            result = subprocess.run(
+                ["/bin/sh", "-c", cleanup_function + '\nTEST_ROOT="$1"\ncleanup_test_root\n',
+                 "cleanup-probe", str(link)], check=False, capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(0, result.returncode)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual("owned fixture data", sentinel.read_text(encoding="utf-8"))
+
+    def test_gate_owned_temp_cleanup_removes_readonly_fixture_without_following_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-gate-cleanup-") as temp:
+            parent = Path(temp)
+            root = parent / "fwrouter-gate-owned"
+            readonly = root / "pytest-tmp" / "test-safe-recovery" / "artifact"
+            readonly.mkdir(parents=True)
+            (readonly / "manifest.json").write_text("synthetic receipt", encoding="utf-8")
+            external = parent / "external-target"
+            external.mkdir()
+            sentinel = external / "keep.txt"
+            sentinel.write_text("outside the owned root", encoding="utf-8")
+            (root / "external-link").symlink_to(external, target_is_directory=True)
+            readonly.chmod(0o555)
+
+            result = gate.cleanup_owned_temp(root)
+
+            self.assertEqual("removed", result["status"])
+            self.assertGreaterEqual(result["readonly_directories_restored"], 1)
+            self.assertFalse(root.exists())
+            self.assertEqual("outside the owned root", sentinel.read_text(encoding="utf-8"))
+
+    def test_gate_owned_temp_cleanup_reports_bounded_metadata_without_file_contents(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-gate-cleanup-report-") as temp:
+            root = Path(temp) / "fwrouter-gate-owned"
+            nested = root / "readonly"
+            nested.mkdir(parents=True)
+            (nested / "private-name.json").write_text("synthetic-secret-value", encoding="utf-8")
+            nested.chmod(0o555)
+            with mock.patch.object(gate.shutil, "rmtree", side_effect=PermissionError):
+                result = gate.cleanup_owned_temp(root)
+
+            self.assertEqual("residual", result["status"])
+            self.assertIn("readonly", [entry["path"] for entry in result["entries"]])
+            self.assertNotIn("synthetic-secret-value", json.dumps(result))
+            self.assertTrue(any(entry.get("mode") == 0o555 for entry in result["entries"]))
+            self.assertEqual(1, result["readonly_directories_restored"])
+            self.assertTrue(root.exists())
+
+    def test_gate_owned_temp_cleanup_rejects_symlink_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-gate-cleanup-link-") as temp:
+            parent = Path(temp)
+            target = parent / "protected"
+            target.mkdir()
+            sentinel = target / "keep.txt"
+            sentinel.write_text("preserve", encoding="utf-8")
+            root = parent / "owned-root-link"
+            root.symlink_to(target, target_is_directory=True)
+
+            result = gate.cleanup_owned_temp(root)
+
+            self.assertEqual("residual", result["status"])
+            self.assertIn("unsafe_root_type_or_owner", result["diagnostic_errors"])
+            self.assertTrue(root.is_symlink())
+            self.assertEqual("preserve", sentinel.read_text(encoding="utf-8"))
+
+    def test_gate_owned_temp_cleanup_detects_root_swap_before_removal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-gate-cleanup-swap-") as temp:
+            parent = Path(temp)
+            root = parent / "fwrouter-gate-owned"
+            readonly = root / "readonly"
+            readonly.mkdir(parents=True)
+            original_sentinel = readonly / "original.txt"
+            original_sentinel.write_text("original tree", encoding="utf-8")
+            readonly.chmod(0o555)
+            target = parent / "protected-target"
+            target.mkdir()
+            target_sentinel = target / "keep.txt"
+            target_sentinel.write_text("protected target", encoding="utf-8")
+            saved_original = parent / "renamed-original"
+            real_stat = gate.os.stat
+            parent_fd: int | None = None
+            root_path_stat_calls = 0
+
+            def swap_before_final_identity_check(path, *args, **kwargs):
+                nonlocal parent_fd, root_path_stat_calls
+                if isinstance(path, str) and path == root.name and "dir_fd" in kwargs:
+                    if parent_fd is None:
+                        parent_fd = kwargs["dir_fd"]
+                    if kwargs["dir_fd"] == parent_fd:
+                        root_path_stat_calls += 1
+                        if root_path_stat_calls == 2:
+                            root.rename(saved_original)
+                            root.symlink_to(target, target_is_directory=True)
+                return real_stat(path, *args, **kwargs)
+
+            with mock.patch.object(gate.os, "stat", side_effect=swap_before_final_identity_check):
+                result = gate.cleanup_owned_temp(root)
+
+            self.assertEqual("residual", result["status"])
+            self.assertIn("root_path_identity_changed_before_cleanup", result["diagnostic_errors"])
+            self.assertTrue(saved_original.is_dir())
+            self.assertEqual("original tree",
+                             (saved_original / "readonly" / "original.txt").read_text(encoding="utf-8"))
+            self.assertTrue(root.is_symlink())
+            self.assertEqual(target, root.resolve())
+            self.assertEqual("protected target", target_sentinel.read_text(encoding="utf-8"))
 
     def test_backend_uv_lock_selects_test_infrastructure_in_quick_and_required_plans(self) -> None:
         path = "backend/uv.lock"
@@ -815,7 +989,7 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("'functional-ordinary' if requirements(plan)['provider'] else 'xray-diagnostic'", source)
         self.assertIn("require_main_smoke=args.main_smoke, main_smoke_path=smoke", source)
         self.assertIn("'xray-diagnostic'", source)
-        self.assertIn("'backend/tests/test_xray_native_readback.py' in plan['selected_files']", source)
+        self.assertIn("any(r['path'] == 'backend/tests/test_xray_native_readback.py' for r in rows)", source)
         self.assertIn("and r['path'] != 'backend/tests/test_xray_native_readback.py'", source)
 
 

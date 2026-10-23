@@ -135,18 +135,36 @@ class EvidenceBundleTests(unittest.TestCase):
             root = Path(temporary)
             source, destination = root / "unit-source", root / "unit-handoff"
             source.mkdir()
-            (source / "fwrouter-affected-unit.json").write_text('{"status":"passed"}\n', encoding="utf-8")
-            (source / "timings.json").write_text('[{"seconds":1}]\n', encoding="utf-8")
-            (source / "runner.log").write_text("verbose output", encoding="utf-8")
-            (source / "capture.pcap").write_bytes(b"raw packet data")
+            plan_path = root / "plan.json"
             manifest = bundle.gate.load_manifest()
             plan = {"source_commit": "a" * 40, "plan_digest": "b" * 64,
                     "manifest_digest": bundle.gate.canonical_digest(manifest),
                     "manifest_version": manifest["version"], "selected_files": []}
-            plan_path = root / "plan.json"
+            report = bundle.gate._routine_shard_report(
+                plan, manifest, "core-state", [], [], {}, [], l0_owned=True, l0_ok=True,
+                l0_elapsed=0.1, l0_problems=[])
+            report.update({"run_id": "123", "run_attempt": "1",
+                           "resources_before": {"cpu_count": 2, "memory": {}, "disk_total_bytes": 4,
+                                                 "disk_used_bytes": 1, "disk_free_bytes": 3},
+                           "resources_after": {"cpu_count": 2, "memory": {}, "disk_total_bytes": 4,
+                                                "disk_used_bytes": 1, "disk_free_bytes": 3},
+                           "process_peak": {"max_rss_kib": 12345},
+                           "cleanup": "verified_owned_gate_temp_removed",
+                           "owned_temp_cleanup": {
+                               "status": "removed", "root_name": f"fwrouter-gate-{'a' * 8}-fixture",
+                               "entries": [], "truncated": False,
+                               "readonly_directories_restored": 0,
+                           }})
+            report.pop("shard_digest", None)
+            report["shard_digest"] = bundle.gate.canonical_digest(report)
+            (source / "shard.json").write_text(json.dumps(report) + "\n", encoding="utf-8")
+            (source / "timings.json").write_text('[{"seconds":1}]\n', encoding="utf-8")
+            (source / "runner.log").write_text("verbose output", encoding="utf-8")
+            (source / "capture.pcap").write_bytes(b"raw packet data")
             plan_path.write_text(json.dumps(plan), encoding="utf-8")
             args = argparse.Namespace(source=source, destination=destination, plan=plan_path, role="unit",
-                                      outcome="success", event="pull_request", ref="refs/pull/35/merge")
+                                      shard_group="core-state", outcome="success", event="pull_request",
+                                      ref="refs/pull/35/merge")
             needs = {"plan": True, "build": True, "unit": True, "hosted": False,
                      "provider": False, "packet": False, "native": False}
             with patch.object(bundle.gate, "ensure_plan"), patch.object(
@@ -155,7 +173,7 @@ class EvidenceBundleTests(unittest.TestCase):
                 result = bundle.handoff(args)
                 bundle.parallel_ci.verify_producer(destination, "unit", plan)
             self.assertEqual("success", result["outcome"])
-            self.assertEqual({"fwrouter-affected-unit.json", "producer.json"},
+            self.assertEqual({"shard.json", "producer.json"},
                              {path.name for path in destination.iterdir()})
             self.assertTrue((source / "runner.log").exists())
             self.assertTrue((source / "capture.pcap").exists())
@@ -163,7 +181,7 @@ class EvidenceBundleTests(unittest.TestCase):
 
             failed_destination = root / "failed-handoff"
             failed_args = argparse.Namespace(source=source, destination=failed_destination, plan=plan_path,
-                                             role="unit", outcome="failure", event="pull_request",
+                                             role="unit", shard_group="core-state", outcome="failure", event="pull_request",
                                              ref="refs/pull/35/merge")
             with patch.object(bundle.gate, "ensure_plan"), patch.object(
                     bundle.parallel_ci, "requirements", return_value=needs), patch.dict(
@@ -171,9 +189,21 @@ class EvidenceBundleTests(unittest.TestCase):
                 failed = bundle.handoff(failed_args)
                 failed_envelope = bundle.read_json(failed_destination / "producer.json")
                 self.assertEqual("failure", failed_envelope["outcome"])
-                self.assertEqual({"fwrouter-affected-unit.json", "producer.json"},
+                self.assertEqual({"shard.json", "producer.json"},
                                  {path.name for path in failed_destination.iterdir()})
             self.assertEqual("failure", failed["outcome"])
+
+    def test_visibility_publication_is_allowlisted_without_allowing_raw_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "visibility.json"
+            source.write_text('{"schema":"fwrouter-ci-visibility/v1"}')
+            bundle.copy_evidence_file(source, root / "out" / "visibility.json")
+            self.assertEqual(source.read_bytes(), (root / "out" / "visibility.json").read_bytes())
+            raw = root / "runtime-dump.json"
+            raw.write_text('{"synthetic":"private"}')
+            with self.assertRaises(bundle.gate.GateError):
+                bundle.copy_evidence_file(raw, root / "out" / "runtime-dump.json")
 
     def test_native_handoff_preserves_qcp_and_docker_xray_profile_closure(self) -> None:
         # Synthetic contract fixture: this calls the real strict native receipt
@@ -276,12 +306,67 @@ class EvidenceBundleTests(unittest.TestCase):
                              bundle.strict.validate_xray_docker_receipt(xray_path, plan, runtime_inputs))
 
             evidence = root / "evidence"
-            (evidence / "native").mkdir(parents=True)
-            shutil.copytree(destination, evidence / "native", dirs_exist_ok=True)
-            selected = bundle.expected_evidence_paths(evidence, plan, {"native": True})["native"]
-            self.assertIn("qcp/profile.json", selected)
-            self.assertIn("xray/profile.json", selected)
+            evidence.mkdir()
+            for profile, receipt_name in (("qcp", "qualified-child-receipt.json"),
+                                          ("xray", "qualified-xray-docker-receipt.json")):
+                target = evidence / f"fwrouter-v2-native-{profile}-123-1"
+                (target / profile).mkdir(parents=True)
+                shutil.copyfile(destination / "runtime-inputs.json", target / "runtime-inputs.json")
+                shutil.copyfile(destination / profile / receipt_name, target / profile / receipt_name)
+                shutil.copyfile(destination / profile / "profile.json", target / profile / "profile.json")
+                with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"},
+                                clear=False):
+                    bundle.parallel_ci.seal(target, "native", plan, "success")
+                self.assertTrue((target / "producer.json").is_file())
+            with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"},
+                            clear=False):
+                native_evidence = bundle.parallel_ci.combine_native_profiles(evidence, plan, ["qcp", "xray"])
+                bundle.parallel_ci.seal(native_evidence, "native", plan, "success")
+            with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"},
+                            clear=False):
+                selected = bundle.expected_evidence_paths(evidence, plan, {"native": True})["native"]
+                self.assertIn("profiles/qcp/qcp/profile.json", selected)
+                self.assertIn("profiles/xray/xray/profile.json", selected)
+                bundle.verify_native_profiles(evidence, plan)
+                unexpected = native_evidence / "profiles/qcp/diagnostic.log"
+                unexpected.write_text("synthetic", encoding="utf-8")
+                bundle.parallel_ci.seal(native_evidence / "profiles/qcp", "native", plan, "success")
+                bundle.parallel_ci.seal(native_evidence, "native", plan, "success")
+                with self.assertRaisesRegex(bundle.gate.GateError, "unapproved sealed files"):
+                    bundle.expected_evidence_paths(evidence, plan, {"native": True})
+                unexpected.unlink()
+                bundle.parallel_ci.seal(native_evidence / "profiles/qcp", "native", plan, "success")
+                bundle.parallel_ci.seal(native_evidence, "native", plan, "success")
+                (native_evidence / "runtime-inputs.json").write_text("{}", encoding="utf-8")
+                with self.assertRaisesRegex(bundle.gate.GateError, "input manifest differs"):
+                    bundle.verify_native_profiles(evidence, plan)
             self.assertIn("tests/acceptance/qualified-child-scenarios.json", bundle.SOURCE_FILES)
+
+    def test_runtime_identity_ignores_only_validated_measurement_timings(self) -> None:
+        provision = bundle.strict.provision
+        measurements = {
+            "xray": {"source_archive_bytes": 1, "executable_bytes": 2,
+                     "download_seconds": 1.0, "extract_seconds": 2.0},
+            "mihomo": {"source_archive_bytes": 3, "executable_bytes": 4,
+                       "download_seconds": 3.0, "extract_seconds": 4.0},
+            "chromium": {"source_archive_bytes": 5, "normalized_bundle_bytes": 6,
+                         "expanded_content_bytes": 7, "chrome_executable_bytes": 8,
+                         "download_seconds": 5.0, "normalize_seconds": 6.0},
+        }
+        self.assertTrue(provision.valid_asset_measurements(measurements))
+        baseline = {"native": {"mihomo": {"sha256": "a"}}, "asset_measurements": measurements}
+        changed_timing = json.loads(json.dumps(baseline))
+        changed_timing["asset_measurements"]["xray"]["download_seconds"] = 19.0
+        self.assertEqual(bundle.parallel_ci.runtime_identity(baseline),
+                         bundle.parallel_ci.runtime_identity(changed_timing))
+        changed_size = json.loads(json.dumps(baseline))
+        changed_size["asset_measurements"]["xray"]["source_archive_bytes"] = 99
+        self.assertNotEqual(bundle.parallel_ci.runtime_identity(baseline),
+                            bundle.parallel_ci.runtime_identity(changed_size))
+        changed_pin = json.loads(json.dumps(baseline))
+        changed_pin["native"]["mihomo"]["sha256"] = "b"
+        self.assertNotEqual(bundle.parallel_ci.runtime_identity(baseline),
+                            bundle.parallel_ci.runtime_identity(changed_pin))
 
     def test_eligibility_requires_exact_run_attempt_and_all_required_job_successes(self) -> None:
         manifest = bundle.gate.load_manifest()
@@ -445,6 +530,7 @@ class EvidenceBundleTests(unittest.TestCase):
             for bundle_outcome, publication, artifact_id, digest in (
                 ("success", "failure", "", ""), ("failure", "skipped", "", ""),
                 ("success", "success", "", ""), ("success", "success", "55", "not-a-digest"),
+                ("success", "success", "55", "a" * 64),
             ):
                 output = root / f"summary-{publication}-{artifact_id}-{len(digest)}.md"
                 args = argparse.Namespace(aggregate_outcome="success", bundle_outcome=bundle_outcome,

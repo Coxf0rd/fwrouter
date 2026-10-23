@@ -208,4 +208,8 @@ Manual diagnostics are documented by `opt_fwrouter_api_fwrouter_api_services_man
 
 ## CI evidence lifecycle
 
-`tests/gates/evidence_bundle.py` owns bounded evidence packaging and offline validation; existing `parallel_ci.py` and `aggregate_hosted.py` remain qualification authorities. `.github/workflows/test-gates.yml` retains the existing eight jobs and publishes complete successful evidence only after strict aggregation. See [artifact lifecycle contract](../../../docs/CI_ARTIFACT_LIFECYCLE.md). No production, recovery or routing owner is introduced.
+`tests/gates/evidence_bundle.py` owns bounded evidence packaging and offline validation; existing `parallel_ci.py` and `aggregate_hosted.py` remain qualification authorities. `.github/workflows/test-gates.yml` preserves the stable required check and publishes complete successful evidence only after strict aggregation. CI V3 expands execution visibility through manifest-owned routine shards and independent native profile jobs. See [artifact lifecycle contract](../../../docs/CI_ARTIFACT_LIFECYCLE.md). No production, recovery or routing owner is introduced.
+
+## CI V3 execution ownership
+
+`tests/gates/routine_shards.py` validates deterministic suite ownership, exact node inventories, disjoint coverage and canonical report reconstruction; it is not a second baseline or native qualification authority. `tests/gates/gate.py` and `backend/tests/gate_plugin.py` collect bounded execution evidence. The workflow schedules isolated runners; `aggregate_hosted.py` still owns strict native/hosted eligibility. See [CI V3 design and qualification](../../../docs/CI_V3.md). L6 restructuring is a separate follow-up gated by owner merge and actual-main verification.

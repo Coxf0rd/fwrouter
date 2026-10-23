@@ -28,6 +28,8 @@ jobs:
       needs_native: ${{ steps.plan.outputs.needs_native }}
       needs_runtime: ${{ steps.plan.outputs.needs_runtime }}
       main_smoke: ${{ steps.plan.outputs.main_smoke }}
+      unit_shards_json: ${{ steps.plan.outputs.unit_shards_json }}
+      native_profiles_json: ${{ steps.plan.outputs.native_profiles_json }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -112,6 +114,15 @@ jobs:
           path: ${{ runner.temp }}/plan/
           if-no-files-found: error
           retention-days: 1
+      - name: Write plan Job Summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/plan/fwrouter-affected-plan.json" ]; then
+            python tests/gates/parallel_ci.py summary --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json" \
+              --root "$RUNNER_TEMP/plan" --role plan --outcome '${{ steps.plan.outcome }}' >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## FWRouter CI plan\n\n**Status:** NOT RUN or plan unavailable.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   build:
     name: Build and verify source once
@@ -155,12 +166,26 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 3
+      - name: Write build Job Summary
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/plan/fwrouter-affected-plan.json" ]; then
+            python tests/gates/parallel_ci.py summary --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json" \
+              --root "$RUNNER_TEMP/build" --role build --outcome '${{ steps.execution.outcome }}' >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## FWRouter CI build\n\n**Status:** NOT RUN or plan unavailable.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   unit:
-    name: Backend installer and frontend tests
+    name: Routine and contract shard (${{ matrix.shard }})
     needs: [plan]
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.unit_shards_json) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 45
     env:
       FWROUTER_CI_PLAN_DIGEST: ${{ needs.plan.outputs.plan_digest }}
     steps:
@@ -187,7 +212,7 @@ jobs:
         id: execution
         run: >-
           python tests/gates/parallel_ci.py worker --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
-          --root "$RUNNER_TEMP/unit" --role unit
+          --root "$RUNNER_TEMP/unit" --role unit --shard-group "${{ matrix.shard }}"
       - name: Project unit evidence for cross-job handoff
         if: always()
         env:
@@ -196,12 +221,24 @@ jobs:
         run: >-
           python tests/gates/evidence_bundle.py handoff --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
           --source "$RUNNER_TEMP/unit" --destination "$RUNNER_TEMP/unit-handoff" --role unit
-          --outcome '${{ steps.execution.outcome }}' --event "$EVENT_NAME" --ref "$EVENT_REF"
+          --shard-group "${{ matrix.shard }}" --outcome '${{ steps.execution.outcome }}'
+          --event "$EVENT_NAME" --ref "$EVENT_REF"
+      - name: Write routine shard Job Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/unit/shard.json"
+          if [ -f "$report" ]; then
+            python tests/gates/routine_shards.py summary --report "$report" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## FWRouter CI routine shard: %s\n\n**Status:** NOT RUN or report unavailable; see failed setup/worker steps.\n' \
+              '${{ matrix.shard }}' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Upload unit evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: fwrouter-v2-unit-${{ github.run_id }}-${{ github.run_attempt }}
+          name: fwrouter-v2-unit-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/unit-handoff/
           if-no-files-found: error
           retention-days: 1
@@ -257,6 +294,12 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 3
+      - name: Write hosted Job Summary
+        if: always()
+        run: >-
+          python tests/gates/parallel_ci.py summary --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/hosted" --role hosted --outcome '${{ steps.execution.outcome }}'
+          >> "$GITHUB_STEP_SUMMARY"
 
   provider:
     name: Provider and browser cohort
@@ -308,6 +351,12 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 3
+      - name: Write provider Job Summary
+        if: always()
+        run: >-
+          python tests/gates/parallel_ci.py summary --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/provider" --role provider --outcome '${{ steps.execution.outcome }}'
+          >> "$GITHUB_STEP_SUMMARY"
 
   packet:
     name: Kernel packet and fail-closed
@@ -359,11 +408,21 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 3
+      - name: Write packet Job Summary
+        if: always()
+        run: >-
+          python tests/gates/parallel_ci.py summary --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/packet" --role packet --outcome '${{ steps.execution.outcome }}'
+          >> "$GITHUB_STEP_SUMMARY"
 
   native:
-    name: Qualified native Mihomo and Xray
+    name: Qualified native profile (${{ matrix.profile }})
     needs: [plan, build]
     if: needs.plan.outputs.needs_native == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: ${{ fromJSON(needs.plan.outputs.native_profiles_json) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -393,7 +452,7 @@ jobs:
         id: execution
         run: >-
           python tests/gates/parallel_ci.py worker --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
-          --root "$RUNNER_TEMP/native" --role native
+          --root "$RUNNER_TEMP/native" --role native --native-profile "${{ matrix.profile }}"
       - name: Project native evidence for cross-job handoff
         if: always()
         env:
@@ -402,16 +461,23 @@ jobs:
         run: >-
           python tests/gates/evidence_bundle.py handoff --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
           --source "$RUNNER_TEMP/native" --destination "$RUNNER_TEMP/native-handoff" --role native
+          --native-profile "${{ matrix.profile }}"
           --outcome '${{ steps.execution.outcome }}' --event "$EVENT_NAME" --ref "$EVENT_REF"
       - name: Upload native evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: fwrouter-v2-native-${{ github.run_id }}-${{ github.run_attempt }}
+          name: fwrouter-v2-native-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/native-handoff/
           if-no-files-found: error
           retention-days: 1
           compression-level: 3
+      - name: Write native Job Summary
+        if: always()
+        run: >-
+          python tests/gates/parallel_ci.py summary --plan "$RUNNER_TEMP/plan/fwrouter-affected-plan.json"
+          --root "$RUNNER_TEMP/native" --role native --native-profile "${{ matrix.profile }}"
+          --outcome '${{ steps.execution.outcome }}' >> "$GITHUB_STEP_SUMMARY"
 
   affected:
     name: Affected L0-L5 with hosted profiles
