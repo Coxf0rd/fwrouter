@@ -884,6 +884,12 @@
         "tests/application_acceptance/test_xray_generation.py",
         "tests/application_acceptance/test_runtime_scale.py"
       ]
+    },
+    {
+      "glob": "docs/CI_L6.md",
+      "domains": [
+        "test-infrastructure"
+      ]
     }
   ],
   "policies": {
@@ -5972,6 +5978,33 @@
       "path": "tests/gates/test_visibility_report.py",
       "primary_level": "L1",
       "risk_notes": "tests unified coverage reporting, status conservatism, repeated execution counts, and omission visibility without granting qualification",
+      "runtime_dependencies": [
+        "Python 3.11 standard library",
+        "git for temporary committed-range fixture"
+      ],
+      "slow": false,
+      "timeout_seconds": 30,
+      "execution_group": "ui-tooling"
+    },
+    {
+      "baseline_policy": "not applicable: tests the baseline classifier",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "synthetic manifest, execution, baseline and child-bootstrap data; temporary Git repos",
+      "fixture_owner": "tests/gates/l6_ci.py",
+      "id": "l6-ci-contract",
+      "isolation": "temporary directories and isolated child process; backend bootstrap probes only owned paths",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/gates/test_l6_ci.py",
+      "primary_level": "L1",
+      "risk_notes": "gate contract tests; no application import; child bootstrap smoke denies production paths/processes/network; installer failure test uses a stub",
       "runtime_dependencies": [
         "Python 3.11 standard library",
         "git for temporary committed-range fixture"

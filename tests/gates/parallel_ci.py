@@ -34,9 +34,11 @@ def identity(plan):
             'run_id': run_id, 'run_attempt': attempt}
 
 
-def load_plan(path):
+def load_plan(path, *, l6=False):
     plan = strict.read_json(Path(path))
-    gate.ensure_plan(plan, gate.load_manifest())
+    gate.ensure_plan(plan, gate.load_manifest(), allow_l6=l6)
+    if l6 and plan.get('full_suite_required') is not True:
+        raise gate.GateError('L6 worker requires the complete immutable full-suite plan')
     expected = os.environ.get('FWROUTER_CI_PLAN_DIGEST')
     if expected and expected != plan['plan_digest']:
         raise gate.GateError('downloaded plan differs from preflight job output')
@@ -314,7 +316,7 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
 
 
 def run_worker(args):
-    plan = load_plan(args.plan); root = Path(args.root); root.mkdir(parents=True, exist_ok=True)
+    plan = load_plan(args.plan, l6=getattr(args, 'l6', False)); root = Path(args.root); root.mkdir(parents=True, exist_ok=True)
     verify_producer(Path(args.plan).parent, 'plan', plan)
     if args.role != 'unit':
         build = Path(os.environ['RUNNER_TEMP']) / 'build'
@@ -330,7 +332,8 @@ def run_worker(args):
         shard_path = root / 'shard.json'
         commands = [('unit', [sys.executable, 'tests/gates/gate.py', 'run', '--plan', str(args.plan),
                               '--include-native', '--defer-hosted', '--shard-group', args.shard_group,
-                              '--output', str(shard_path)])]
+                              '--output', str(shard_path),
+                              *(['--manual-full-suite'] if getattr(args, 'l6', False) else [])])]
     else:
         temp = Path(os.environ['RUNNER_TEMP']); env_file = temp / f'fwrouter-{args.role}-runtime.env'
         env_file.touch(mode=0o600, exist_ok=False)
@@ -593,14 +596,15 @@ def main():
     parser.add_argument('--github-output', type=Path)
     parser.add_argument('--artifacts', type=Path)
     parser.add_argument('--main-smoke', action='store_true')
+    parser.add_argument('--l6', action='store_true')
     args = parser.parse_args()
     try:
         if args.command == 'configure':
             configure(args)
         elif args.command == 'verify-plan':
-            verify_producer(args.plan.parent, 'plan', load_plan(args.plan))
+            verify_producer(args.plan.parent, 'plan', load_plan(args.plan, l6=args.l6))
         elif args.command == 'seal':
-            seal(args.root, args.role, load_plan(args.plan), args.outcome)
+            seal(args.root, args.role, load_plan(args.plan, l6=args.l6), args.outcome)
         elif args.command == 'worker':
             return run_worker(args)
         elif args.command == 'summary':

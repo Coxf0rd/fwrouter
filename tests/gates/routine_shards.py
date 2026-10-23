@@ -25,12 +25,17 @@ def validate_l5_coverage(plan: dict[str, Any], manifest: dict[str, Any],
                          executions: list[dict[str, Any]]) -> dict[str, Any]:
     """Prove every plan-required L5 anchor ran once under its primary owner."""
     policy = plan.get("regression_policy")
+    if plan.get("full_suite_required") is True:
+        if not isinstance(policy, dict) or policy.get("level") != "L6":
+            raise gate.GateError("L6 full plan lacks its regression policy")
+        policy = {"level": "L5", "anchors": sorted(manifest["policies"]["L5"]["anchors"]),
+                  "reasons": sorted(set(plan.get("domains", [])) & set(manifest["policies"]["L5"]["shared_domains"]))}
     if not isinstance(policy, dict) or policy.get("level") != "L5":
         raise gate.GateError("routine aggregate lacks the immutable L5 regression policy")
     canonical = sorted(manifest.get("policies", {}).get("L5", {}).get("anchors", []))
     shared_domains = set(manifest.get("policies", {}).get("L5", {}).get("shared_domains", []))
     reasons = sorted(set(plan.get("domains", [])) & shared_domains)
-    expected = canonical if plan.get("mandatory_suite_required") or reasons else []
+    expected = canonical if plan.get("mandatory_suite_required") or plan.get("full_suite_required") or reasons else []
     anchors = policy.get("anchors")
     if (policy.get("reasons") != reasons or anchors != expected
             or len(anchors) != len(set(anchors))):
@@ -294,7 +299,8 @@ def merge_reports(plan: dict[str, Any], manifest: dict[str, Any], reports: dict[
                      if rows_by_path[row["path"]].get("status") == "passed"}
     report = {
         "schema_version": 1,
-        "evidence_scope": ("mandatory_all_safe_suites" if plan.get("mandatory_suite_required") else
+        "evidence_scope": ("L6_full_suite" if plan.get("full_suite_required") else
+                           "mandatory_all_safe_suites" if plan.get("mandatory_suite_required") else
                            "affected_change"),
         "deploy_eligibility": False if plan.get("manual_subset") else None,
         "source_commit": plan["source_commit"], "baseline_commit": None,

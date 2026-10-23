@@ -85,6 +85,7 @@ class GateContractTests(unittest.TestCase):
             "tests/gates/test_subscription_identity_contract.py",
             "tests/gates/test_evidence_bundle.py",
             "tests/gates/test_visibility_report.py",
+            "tests/gates/test_l6_ci.py",
             "tests/gates/test_routine_shards.py",
             "tests/acceptance/test_dependency_image_contract.py",
             "tests/acceptance/test_consume_dependency_image_contract.py",
@@ -1903,8 +1904,13 @@ class GateContractTests(unittest.TestCase):
                 mutated['unit']['result'] = status
                 self.assertTrue(parallel_ci.validate_results(mutated, required))
         l6 = (gate.ROOT / '.github/workflows/test-full-suite.yml').read_text()
-        self.assertIn('--unit-failure-report --unit-exit-code', l6)
-        self.assertIn('exit "$result"', l6)
+        import l6_ci
+        self.assertEqual('always()', yaml.safe_load(l6)['jobs']['l6']['if'])
+        for status in ('failure', 'cancelled', 'skipped', None):
+            mutated = copy.deepcopy(outcomes)
+            mutated['unit']['result'] = status
+            with self.assertRaises(l6_ci.gate.GateError):
+                l6_ci.check_jobs(mutated)
 
     def test_parallel_producer_envelope_rejects_wrong_identity_role_and_outcome(self) -> None:
         plan = {
@@ -2101,26 +2107,23 @@ class GateContractTests(unittest.TestCase):
 
 
     def test_workflow_unit_exit_normalization_preserves_success_and_fails_closed(self) -> None:
-        for workflow_name in ("test-full-suite.yml",):
-            with self.subTest(workflow=workflow_name):
-                workflow = (gate.ROOT / ".github/workflows" / workflow_name).read_text(encoding="utf-8")
-                normalization = workflow.split('case "$UNIT_EXIT" in', 1)[1].split(
-                    'if [ "$unit_exit" -gt 255 ]', 1)[0]
-                script = (
-                    'UNIT_EXIT="$1"\ncase "$UNIT_EXIT" in' + normalization
-                    + 'printf "%s\\n" "$unit_exit"\n'
-                    + 'if [ "$unit_exit" -gt 255 ]; then unit_exit=1; fi\n'
-                    + 'printf "%s\\n" "$unit_exit"\n'
-                )
-                for raw, expected in (("0", "0\n0\n"), ("1", "1\n1\n"),
-                                      ("255", "255\n255\n"), ("invalid", "1\n1\n"),
-                                      ("", "1\n1\n"), ("256", "256\n1\n")):
-                    completed = subprocess.run(
-                        ["bash", "-c", script, "unit-exit-contract", raw],
-                        capture_output=True, text=True, timeout=3, check=False,
-                    )
-                    self.assertEqual(0, completed.returncode, completed.stderr)
-                    self.assertEqual(expected, completed.stdout)
+        # V3 consumes typed GitHub job conclusions instead of shell exit-code
+        # strings. Preserve the same fail-closed property through the real L6
+        # finalizer: malformed/absent/failed unit outcomes never promote.
+        import l6_ci
+        from types import SimpleNamespace
+        for status in ('failure', 'cancelled', 'skipped', 'timed_out', '', None, '0', 0, 256):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temp:
+                outcomes = {role: {'result': 'success'} for role in l6_ci.ROLES}
+                outcomes['unit']['result'] = status
+                output = Path(temp) / 'required'
+                args = SimpleNamespace(root=output, artifacts=Path(temp) / 'missing', scope='branch-regression-non-promotional')
+                with mock.patch.dict(os.environ, {'FWROUTER_CI_NEEDS': json.dumps(outcomes)}, clear=False):
+                    self.assertEqual(1, l6_ci.aggregate(args))
+                report = json.loads((output / 'required-result.json').read_text())
+                self.assertFalse(report['eligible'])
+                self.assertEqual(outcomes, report['upstream'])
+                self.assertIn('unit', report['error'])
 
     def test_push_fast_lane_includes_stage_but_excludes_main(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/push-fast.yml").read_text(encoding="utf-8")
