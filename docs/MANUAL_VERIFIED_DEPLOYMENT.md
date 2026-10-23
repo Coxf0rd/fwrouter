@@ -69,6 +69,8 @@ The compressed artifact must have an integer size from 1 through 536,870,912 byt
 
 The wrapper must query GitHub again each time to establish that the exact run and artifact still exist and remain within retention. It must not accept a locally cached archive when the API is unavailable or the artifact has expired. The offline verifier must come from the independently trusted local checkout at the exact source SHA; downloaded archive contents are never executed. An offline `evidence_verified_not_deploy_authorized` result is only one gate in the private wrapper.
 
+For final public PR qualification, the existing affected-CI workflow selects the full mandatory plan only when the final commit message contains `ci:full-acceptance` (or for actual-main push). A GitHub label is not that workflow input. Inspect the immutable plan and executed profiles: a successful affected-only run with legitimately deferred runtime groups is not full qualification. Use a meaningful source/documentation qualification commit; the push fast lane rejects an empty change set rather than issuing eligibility from no changes.
+
 Full L6 is a separate exact-SHA regression workflow in `test-full-suite.yml`. Its two independent hosted/provider/packet repeats, native profiles and full safe-manifest coverage improve regression confidence, but L6 does not itself grant deployment authority and is not added as an implicit prerequisite to the initial UI-only scope. Any future policy that makes L6 mandatory must be explicitly versioned and independently qualified. L7 and Debian/systemd/reboot parity remain outside GitHub-hosted L6.
 
 ## Receipts and logs
