@@ -49,13 +49,13 @@ def sample() -> dict:
             'private_qualification': 'separate-private-hash-bound-evidence'}
 
 
-REQUIRED_NATIVE_CHECKS = {
+REQUIRED_NATIVE_CHECKS = (
     'backend_manifest_sha256', 'sqlite_schema_integrity_foreign_keys',
     'generation_owner_state', 'checkpoint_state',
     'xray_identity_bindings_config_runtime', 'mihomo_config_rules_selectors_runtime',
     'core_manifest_nft_ip_routing_runtime', 'final_native_runtime_fence_recheck',
     'generation_native_receipt_exact_match',
-}
+)
 
 
 def validate_native_proof(value: dict, *, backend_sha: str, xray_image: str, mihomo_image: str) -> None:
@@ -66,7 +66,7 @@ def validate_native_proof(value: dict, *, backend_sha: str, xray_image: str, mih
     }
     if not isinstance(value, dict) or set(value) != required:
         raise ValueError('native proof shape')
-    if value['proof_schema_version'] != 1 or value['scope'] != 'ui':
+    if type(value['proof_schema_version']) is not int or value['proof_schema_version'] != 1 or value['scope'] != 'ui':
         raise ValueError('native proof version or scope')
     if value['status'] != 'PASS' or value['reason'] is not None:
         raise ValueError('native proof is not PASS')
@@ -74,8 +74,7 @@ def validate_native_proof(value: dict, *, backend_sha: str, xray_image: str, mih
     if source != {'kind': 'backend_manifest_sha256', 'sha256': backend_sha, 'commit_sha': None}:
         raise ValueError('backend identity')
     checks = value['checks_executed']
-    if (not isinstance(checks, list) or not all(isinstance(item, str) for item in checks)
-            or len(checks) != len(set(checks)) or not REQUIRED_NATIVE_CHECKS <= set(checks)):
+    if checks != list(REQUIRED_NATIVE_CHECKS):
         raise ValueError('required native checks')
     database = value['database']
     if not isinstance(database, dict) or set(database) != {
@@ -242,7 +241,7 @@ def test_public_ci_cannot_certify_unavailable_private_implementation():
 def native_sample() -> dict:
     return {
         'proof_schema_version': 1,
-        'checks_executed': sorted(REQUIRED_NATIVE_CHECKS),
+        'checks_executed': list(REQUIRED_NATIVE_CHECKS),
         'scope': 'ui',
         'source_identity': {'kind': 'backend_manifest_sha256', 'sha256': 'a' * 64, 'commit_sha': None},
         'database': {
@@ -354,3 +353,24 @@ def test_public_contract_requires_verified_privileged_execution_identity():
         "automatic_host_pin_approval": False,
         "malicious_root_peer_excluded": True,
     }
+
+
+@pytest.mark.parametrize("invalid_version", [True, 1.0, "1", None])
+def test_native_proof_schema_version_is_exact_integer(invalid_version):
+    proof = native_sample()
+    proof["proof_schema_version"] = invalid_version
+    with pytest.raises(ValueError, match="version"):
+        validate_native_proof(proof, backend_sha="a" * 64, xray_image="sha256:" + "b" * 64, mihomo_image="sha256:" + "c" * 64)
+
+
+@pytest.mark.parametrize("mutation", ["extra", "reordered", "duplicate"])
+def test_native_proof_v1_checklist_is_exact_and_ordered(mutation):
+    proof = native_sample()
+    if mutation == "extra":
+        proof["checks_executed"].append("unknown_future_check")
+    elif mutation == "reordered":
+        proof["checks_executed"].reverse()
+    else:
+        proof["checks_executed"].append(proof["checks_executed"][0])
+    with pytest.raises(ValueError, match="checks"):
+        validate_native_proof(proof, backend_sha="a" * 64, xray_image="sha256:" + "b" * 64, mihomo_image="sha256:" + "c" * 64)
