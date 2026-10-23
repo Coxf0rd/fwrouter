@@ -101,7 +101,8 @@ class L6ContractTests(unittest.TestCase):
         import yaml
         value = yaml.safe_load((gate.ROOT / '.github/workflows/test-gates.yml').read_text())
         triggers = value.get('on', value.get(True))
-        self.assertEqual(['main', 'ci/v3-visible-parallel'], triggers['pull_request']['branches'])
+        # Keep this existing test method/node ID stable; PR #40 is now in main.
+        self.assertEqual(['main'], triggers['pull_request']['branches'])
         self.assertEqual({'contents': 'read'}, value['permissions'])
         self.assertNotIn('pull_request_target', triggers)
 
