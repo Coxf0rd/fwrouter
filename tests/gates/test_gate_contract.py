@@ -1402,6 +1402,17 @@ class GateContractTests(unittest.TestCase):
         self.assertTrue(all(row["destructive"] == (row["primary_level"] == "L7")
                             for row in acceptance))
 
+    def test_artifact_lifecycle_document_selects_test_infrastructure_contract(self) -> None:
+        path = "docs/CI_ARTIFACT_LIFECYCLE.md"
+        domains, _ = gate.domain_for_path(path, self.manifest)
+        self.assertEqual({"test-infrastructure"}, domains)
+        plan = gate.make_mandatory_suite_plan("0a0ce14e2868c88ea83b29ad31a9ec914800e1ad",
+                                              self.manifest, [path])
+        self.assertIn("tests/gates/test_gate_contract.py", plan["selected_files"])
+        self.assertIn("tests/gates/test_evidence_bundle.py", plan["selected_files"])
+        self.assertTrue(plan["required_execution_profiles"])
+        self.assertTrue(plan["required_native_suites"])
+
     def test_dependency_consumer_helper_selects_its_stdlib_contract(self) -> None:
         path = "tests/acceptance/consume_dependency_image.py"
         domains, _ = gate.domain_for_path(path, self.manifest)

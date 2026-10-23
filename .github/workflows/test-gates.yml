@@ -476,7 +476,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_REF: ${{ github.ref }}
-          SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           printf '%s' "$FWROUTER_CI_NEEDS" > "$RUNNER_TEMP/job-results.json"

@@ -354,6 +354,10 @@ class EvidenceBundleTests(unittest.TestCase):
         self.assertIn("retention-days: 7", workflow)
         self.assertIn("steps.publish_bundle.outputs.artifact-id", workflow)
         self.assertIn("steps.publish_bundle.outputs.artifact-digest", workflow)
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}", workflow)
+        diagnostics_block = workflow.split("Build bounded failed-run diagnostics", 1)[1].split(
+            "Publish bounded failed-run diagnostics", 1)[0]
+        self.assertIn("SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}", diagnostics_block)
         final_upload = workflow.split("Publish successful CI evidence bundle", 1)[1].split(
             "Build bounded failed-run diagnostics", 1)[0]
         self.assertIn("include-hidden-files: true", final_upload)

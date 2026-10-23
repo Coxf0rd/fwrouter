@@ -634,6 +634,12 @@
     },
     {
       "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "docs/CI_ARTIFACT_LIFECYCLE.md"
+    },
+    {
+      "domains": [
         "documentation"
       ],
       "glob": "knowledge/**"
