@@ -149,7 +149,12 @@ class EvidenceBundleTests(unittest.TestCase):
                            "resources_after": {"cpu_count": 2, "memory": {}, "disk_total_bytes": 4,
                                                 "disk_used_bytes": 1, "disk_free_bytes": 3},
                            "process_peak": {"max_rss_kib": 12345},
-                           "cleanup": "verified_owned_gate_temp_removed"})
+                           "cleanup": "verified_owned_gate_temp_removed",
+                           "owned_temp_cleanup": {
+                               "status": "removed", "root_name": f"fwrouter-gate-{'a' * 8}-fixture",
+                               "entries": [], "truncated": False,
+                               "readonly_directories_restored": 0,
+                           }})
             report.pop("shard_digest", None)
             report["shard_digest"] = bundle.gate.canonical_digest(report)
             (source / "shard.json").write_text(json.dumps(report) + "\n", encoding="utf-8")

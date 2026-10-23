@@ -72,7 +72,12 @@ def _fixture(*, mandatory_all=False):
         report.update({"run_id": RUN_ID, "run_attempt": ATTEMPT,
                        "resources_before": _resource(), "resources_after": _resource(),
                        "process_peak": {"max_rss_kib": 12345},
-                       "cleanup": "verified_owned_gate_temp_removed"})
+                       "cleanup": "verified_owned_gate_temp_removed",
+                       "owned_temp_cleanup": {
+                           "status": "removed", "root_name": f"fwrouter-gate-{SOURCE[:8]}-fixture",
+                           "entries": [], "truncated": False,
+                           "readonly_directories_restored": 0,
+                       }})
         report.pop("shard_digest", None)
         report["shard_digest"] = gate.canonical_digest(report)
         reports[group] = report
@@ -230,6 +235,26 @@ class RoutineShardContractTests(unittest.TestCase):
         row["shard_digest"] = gate.canonical_digest({k: v for k, v in row.items() if k != "shard_digest"})
         with self.assertRaisesRegex(gate.GateError, "resource or cleanup"):
             routine_shards.merge_reports(plan, manifest, reports, run_id=RUN_ID, attempt=ATTEMPT)
+
+    def test_owned_temp_cleanup_receipt_is_required_and_bound_to_source(self):
+        plan, manifest, _, reports = _fixture()
+        group = gate.ROUTINE_SHARD_GROUPS[0]
+        for mutation, message in (
+            (lambda row: row.pop("owned_temp_cleanup"), "resource or cleanup"),
+            (lambda row: row["owned_temp_cleanup"].update(status="residual"), "resource or cleanup"),
+            (lambda row: row["owned_temp_cleanup"].update(root_name="fwrouter-gate-deadbeef-fixture"), "resource or cleanup"),
+            (lambda row: row["owned_temp_cleanup"].update(entries=[{"path": "leftover"}]), "resource or cleanup"),
+            (lambda row: row["owned_temp_cleanup"].update(diagnostic_errors=["PermissionError"]), "resource or cleanup"),
+        ):
+            with self.subTest(message=message):
+                mutated_reports = copy.deepcopy(reports)
+                mutated = mutated_reports[group]
+                mutation(mutated)
+                mutated["shard_digest"] = gate.canonical_digest(
+                    {key: value for key, value in mutated.items() if key != "shard_digest"})
+                with self.assertRaisesRegex(gate.GateError, message):
+                    routine_shards.merge_reports(plan, manifest, mutated_reports,
+                                                 run_id=RUN_ID, attempt=ATTEMPT)
 
     def test_pytest_node_receipt_requires_exact_collection_and_one_terminal_execution(self):
         node = "backend/tests/test_contract.py::TestContract::test_roundtrip[param]"

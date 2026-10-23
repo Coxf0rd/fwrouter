@@ -197,7 +197,26 @@ def verify_shard(report: dict[str, Any], group: str, plan: dict[str, Any],
     resources_before = report.get("resources_before")
     resources_after = report.get("resources_after")
     required_resource_keys = {"cpu_count", "memory", "disk_total_bytes", "disk_used_bytes", "disk_free_bytes"}
+    cleanup_receipt = report.get("owned_temp_cleanup")
+    expected_root_prefix = f"fwrouter-gate-{plan['source_commit'][:8]}-"
+    cleanup_root = cleanup_receipt.get("root_name") if isinstance(cleanup_receipt, dict) else None
+    cleanup_suffix = (cleanup_root[len(expected_root_prefix):]
+                      if isinstance(cleanup_root, str) and cleanup_root.startswith(expected_root_prefix)
+                      else "")
     if (report.get("cleanup") != "verified_owned_gate_temp_removed"
+            or not isinstance(cleanup_receipt, dict)
+            or cleanup_receipt.get("status") != "removed"
+            or not isinstance(cleanup_root, str)
+            or not cleanup_root.startswith(expected_root_prefix)
+            or not 1 <= len(cleanup_suffix) <= 64
+            or not all(char.isalnum() or char in "_-" for char in cleanup_suffix)
+            or cleanup_receipt.get("entries") != []
+            or cleanup_receipt.get("truncated") is not False
+            or not isinstance(cleanup_receipt.get("readonly_directories_restored"), int)
+            or isinstance(cleanup_receipt.get("readonly_directories_restored"), bool)
+            or cleanup_receipt["readonly_directories_restored"] < 0
+            or cleanup_receipt.get("diagnostic_errors")
+            or cleanup_receipt.get("cleanup_error")
             or not isinstance(report.get("duration_seconds"), (int, float))
             or isinstance(report.get("duration_seconds"), bool)
             or report["duration_seconds"] < 0

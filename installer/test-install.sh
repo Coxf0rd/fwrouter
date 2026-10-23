@@ -8,12 +8,22 @@ TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fwrouter-install-suite.XXXXXX")"
 cleanup_test_root() {
   result=$?
   trap - EXIT
-  # UI deployment releases are immutable (0555). Restore owner write/search
-  # only on real directories beneath this unique, private test root so the
-  # unprivileged suite can remove its own fixture without following symlinks.
-  if [ -d "$TEST_ROOT" ] && [ ! -L "$TEST_ROOT" ]; then
-    find "$TEST_ROOT" -xdev -type d -exec chmod u+rwx {} + || result=1
-    rm -rf -- "$TEST_ROOT" || result=1
+  cleanup_failed() {
+    [ "$result" -ne 0 ] || result=1
+  }
+  # A symlink or unexpected non-directory is a cleanup failure; never inspect
+  # or remove its target. A missing path is already clean.
+  if [ -L "$TEST_ROOT" ]; then
+    cleanup_failed
+  elif [ -e "$TEST_ROOT" ]; then
+    if [ -d "$TEST_ROOT" ]; then
+      # UI releases are immutable (0555). Restore owner write/search only on
+      # real directories under this unique test root; find does not follow links.
+      find "$TEST_ROOT" -xdev -type d -exec chmod u+rwx {} + || cleanup_failed
+      rm -rf -- "$TEST_ROOT" || cleanup_failed
+    else
+      cleanup_failed
+    fi
   fi
   exit "$result"
 }

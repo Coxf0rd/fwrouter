@@ -328,7 +328,6 @@ def run_worker(args):
         if args.shard_group not in gate.ROUTINE_SHARD_GROUPS:
             raise gate.GateError('unit worker requires a supported --shard-group')
         shard_path = root / 'shard.json'
-        before_tmp = {p.name for p in Path('/tmp').glob(f"fwrouter-gate-{plan['source_commit'][:8]}-*")}
         commands = [('unit', [sys.executable, 'tests/gates/gate.py', 'run', '--plan', str(args.plan),
                               '--include-native', '--defer-hosted', '--shard-group', args.shard_group,
                               '--output', str(shard_path)])]
@@ -381,17 +380,20 @@ def run_worker(args):
     gate.atomic_json(root / 'resources-after.json', resource_snapshot(root))
     if args.role == 'unit' and shard_path.is_file():
         report = strict.read_json(shard_path)
-        remaining = {p.name for p in Path('/tmp').glob(f"fwrouter-gate-{plan['source_commit'][:8]}-*")}
         report['run_id'] = os.environ['GITHUB_RUN_ID']
         report['run_attempt'] = os.environ['GITHUB_RUN_ATTEMPT']
         report['resources_before'] = strict.read_json(root / 'resources-before.json')
         report['resources_after'] = strict.read_json(root / 'resources-after.json')
         report['process_peak'] = process_peak(root / 'unit.log')
-        report['cleanup'] = ('verified_owned_gate_temp_removed' if not (remaining - before_tmp)
+        cleanup = report.get('owned_temp_cleanup')
+        cleanup_ok = isinstance(cleanup, dict) and cleanup.get('status') == 'removed'
+        report['cleanup'] = ('verified_owned_gate_temp_removed' if cleanup_ok
                              else 'failed_owned_gate_temp_remains')
         if report['cleanup'] != 'verified_owned_gate_temp_removed':
             report['status'] = 'failed'
-            report.setdefault('blocked_reasons', []).append('owned gate temporary directory remains after worker exit')
+            remaining_count = len(cleanup.get('entries', [])) if isinstance(cleanup, dict) else 0
+            report.setdefault('blocked_reasons', []).append(
+                f'exact gate-owned temporary root was not proven removed; diagnostic entries={remaining_count}')
         report.pop('shard_digest', None)
         report['shard_digest'] = gate.canonical_digest(report)
         gate.atomic_json(shard_path, report)

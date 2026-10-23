@@ -19,6 +19,7 @@ import threading
 import queue
 import signal
 import shutil
+import stat
 import time
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timezone
@@ -2053,6 +2054,120 @@ def _routine_shard_report(plan: dict[str, Any], manifest: dict[str, Any], shard_
     return result
 
 
+def cleanup_owned_temp(root: Path, *, max_entries: int = 128) -> dict[str, Any]:
+    """Remove one exact private test root, making only its owned dirs removable."""
+    root = Path(root)
+    uid = os.geteuid()
+    entries: list[dict[str, Any]] = []
+    directories: list[tuple[Path, int, int, int]] = []
+    errors: list[str] = []
+    node_count = 0
+    truncated = False
+
+    def inventory() -> bool:
+        nonlocal node_count, truncated
+        if not root.exists() and not root.is_symlink():
+            return True
+        try:
+            root_info = root.lstat()
+        except FileNotFoundError:
+            return True
+        if (not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode)
+                or root_info.st_uid != uid):
+            errors.append("unsafe_root_type_or_owner")
+            return False
+        root_device = root_info.st_dev
+        stack: list[tuple[Path, str]] = [(root, ".")]
+        while stack:
+            current, relative = stack.pop()
+            try:
+                info = current.lstat()
+            except OSError as exc:
+                errors.append(type(exc).__name__)
+                return False
+            node_count += 1
+            if node_count > 20000:
+                errors.append("inventory_limit_exceeded")
+                return False
+            if stat.S_ISLNK(info.st_mode):
+                kind = "symlink"
+            elif stat.S_ISDIR(info.st_mode):
+                kind = "directory"
+            elif stat.S_ISREG(info.st_mode):
+                kind = "file"
+            else:
+                kind = "other"
+            if len(entries) < max_entries:
+                entries.append({"path": relative[:256], "kind": kind,
+                                "mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid})
+            else:
+                truncated = True
+            if info.st_uid != uid or info.st_dev != root_device:
+                errors.append("foreign_owner_or_filesystem")
+                return False
+            if kind == "symlink":
+                continue
+            if kind == "directory":
+                directories.append((current, info.st_dev, info.st_ino, info.st_mode))
+                try:
+                    with os.scandir(current) as children:
+                        child_names = sorted((child.name for child in children), reverse=True)
+                except OSError as exc:
+                    errors.append(type(exc).__name__)
+                    return False
+                for name in child_names:
+                    child = current / name
+                    stack.append((child, child.relative_to(root).as_posix()))
+            elif kind != "file":
+                errors.append("special_file_in_owned_temp_root")
+                return False
+        return True
+
+    safe = inventory()
+    restored = 0
+    if safe:
+        for directory, device, inode, original_mode in reversed(directories):
+            try:
+                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(directory, flags)
+                try:
+                    current = os.fstat(descriptor)
+                    if (not stat.S_ISDIR(current.st_mode) or current.st_uid != uid
+                            or current.st_dev != device or current.st_ino != inode):
+                        errors.append("owned_directory_changed_before_cleanup")
+                        safe = False
+                        break
+                    if (original_mode & stat.S_IRWXU) != stat.S_IRWXU:
+                        os.fchmod(descriptor, original_mode | stat.S_IRWXU)
+                        restored += 1
+                finally:
+                    os.close(descriptor)
+            except OSError as exc:
+                errors.append(type(exc).__name__)
+                safe = False
+                break
+    cleanup_error = None
+    if safe:
+        try:
+            shutil.rmtree(root)
+        except OSError as exc:
+            cleanup_error = type(exc).__name__
+    if not root.exists() and not root.is_symlink():
+        return {"status": "removed", "root_name": root.name, "entries": [],
+                "truncated": False, "readonly_directories_restored": restored}
+    if not entries:
+        directories.clear()
+        inventory()
+    result = {"status": "residual", "root_name": root.name,
+              "entries": entries[:max_entries], "truncated": truncated,
+              "readonly_directories_restored": restored}
+    if errors:
+        result["diagnostic_errors"] = sorted(set(errors))[:8]
+    if cleanup_error:
+        result["cleanup_error"] = cleanup_error
+    return result
+
+
 def command_run(args: argparse.Namespace) -> int:
     manifest = load_manifest(Path(args.manifest))
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
@@ -2382,7 +2497,21 @@ def command_run(args: argparse.Namespace) -> int:
                 return 0
         return 1
     finally:
-        shutil.rmtree(owned, ignore_errors=True)
+        cleanup = cleanup_owned_temp(owned)
+        if shard_group is not None and args.output:
+            report_path = Path(args.output)
+            if report_path.is_file() and not report_path.is_symlink():
+                try:
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                    if isinstance(report, dict):
+                        report["owned_temp_cleanup"] = cleanup
+                        report.pop("shard_digest", None)
+                        report["shard_digest"] = canonical_digest(report)
+                        atomic_json(report_path, report)
+                except (OSError, ValueError, GateError):
+                    # The worker will fail closed if the cleanup receipt cannot
+                    # be written or validated; do not mask the test command result.
+                    pass
 
 
 def parser() -> argparse.ArgumentParser:

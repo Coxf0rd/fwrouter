@@ -149,6 +149,81 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual("tests/uncollected.py::test_case",
                          gate_plugin._exact_repo_nodeid("tests/uncollected.py::test_case"))
 
+    def test_installer_fixture_cleanup_rejects_symlink_without_touching_target(self) -> None:
+        source = (gate.ROOT / "installer/test-install.sh").read_text(encoding="utf-8")
+        start = source.index("cleanup_test_root() {")
+        end = source.index("\ntrap cleanup_test_root EXIT", start)
+        cleanup_function = source[start:end]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "protected-target"
+            target.mkdir()
+            sentinel = target / "keep.txt"
+            sentinel.write_text("owned fixture data", encoding="utf-8")
+            link = root / "fwrouter-install-suite.symlink"
+            link.symlink_to(target, target_is_directory=True)
+            result = subprocess.run(
+                ["/bin/sh", "-c", cleanup_function + '\nTEST_ROOT="$1"\ncleanup_test_root\n',
+                 "cleanup-probe", str(link)], check=False, capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(0, result.returncode)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual("owned fixture data", sentinel.read_text(encoding="utf-8"))
+
+    def test_gate_owned_temp_cleanup_removes_readonly_fixture_without_following_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-gate-cleanup-") as temp:
+            parent = Path(temp)
+            root = parent / "fwrouter-gate-owned"
+            readonly = root / "pytest-tmp" / "test-safe-recovery" / "artifact"
+            readonly.mkdir(parents=True)
+            (readonly / "manifest.json").write_text("synthetic receipt", encoding="utf-8")
+            external = parent / "external-target"
+            external.mkdir()
+            sentinel = external / "keep.txt"
+            sentinel.write_text("outside the owned root", encoding="utf-8")
+            (root / "external-link").symlink_to(external, target_is_directory=True)
+            readonly.chmod(0o555)
+
+            result = gate.cleanup_owned_temp(root)
+
+            self.assertEqual("removed", result["status"])
+            self.assertGreaterEqual(result["readonly_directories_restored"], 1)
+            self.assertFalse(root.exists())
+            self.assertEqual("outside the owned root", sentinel.read_text(encoding="utf-8"))
+
+    def test_gate_owned_temp_cleanup_reports_bounded_metadata_without_file_contents(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-gate-cleanup-report-") as temp:
+            root = Path(temp) / "fwrouter-gate-owned"
+            nested = root / "readonly"
+            nested.mkdir(parents=True)
+            (nested / "private-name.json").write_text("synthetic-secret-value", encoding="utf-8")
+            nested.chmod(0o555)
+            with mock.patch.object(gate.shutil, "rmtree", side_effect=PermissionError):
+                result = gate.cleanup_owned_temp(root)
+
+            self.assertEqual("residual", result["status"])
+            self.assertIn("readonly", [entry["path"] for entry in result["entries"]])
+            self.assertNotIn("synthetic-secret-value", json.dumps(result))
+            self.assertTrue(any(entry.get("mode") == 0o555 for entry in result["entries"]))
+            self.assertEqual(1, result["readonly_directories_restored"])
+            self.assertTrue(root.exists())
+
+    def test_gate_owned_temp_cleanup_rejects_symlink_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-gate-cleanup-link-") as temp:
+            parent = Path(temp)
+            target = parent / "protected"
+            target.mkdir()
+            sentinel = target / "keep.txt"
+            sentinel.write_text("preserve", encoding="utf-8")
+            root = parent / "owned-root-link"
+            root.symlink_to(target, target_is_directory=True)
+
+            result = gate.cleanup_owned_temp(root)
+
+            self.assertEqual("residual", result["status"])
+            self.assertIn("unsafe_root_type_or_owner", result["diagnostic_errors"])
+            self.assertTrue(root.is_symlink())
+            self.assertEqual("preserve", sentinel.read_text(encoding="utf-8"))
+
     def test_backend_uv_lock_selects_test_infrastructure_in_quick_and_required_plans(self) -> None:
         path = "backend/uv.lock"
         expected = {
