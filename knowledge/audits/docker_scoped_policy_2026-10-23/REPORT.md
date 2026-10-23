@@ -19,3 +19,7 @@ IPv6 Full VPN is explicitly unsupported/refused rather than claimed as a success
 ## Operational scope
 
 Source-only correction from main f18859ab49c670d39852ec54017c58d05982dc09. No production deployment, service restart, firewall/routing change, credential or identity mutation, merge or private-wrapper operation is authorized by this work. Existing connections/conntrack are not forcibly reset by the fix; packet transition tests use new flows. Future Go Telemetry attribution requirements are documented in the owning roadmap stage only, with no telemetry routing authority.
+
+## Deployment compatibility prerequisite
+
+No deployment is authorized by this change. A later controlled rollout must install the backend and updated host Docker inventory discovery together. Existing rows without complete all-network IPv4/IPv6 metadata cannot qualify Full VPN, or bridged Direct under global VPN/selective, until a supported inventory refresh supplies those facts. Do not fabricate inventory JSON or mark policies applied manually. Protected runtime/host-network Direct and explicit Core bypass retain their existing safety boundaries; unsupported multi-address VPN is refused rather than downgraded.
