@@ -2,7 +2,8 @@ name: FWRouter affected CI
 
 on:
   pull_request:
-    branches: [main]
+    # Explicit stacked CI V3 PR base; no elevated token or production access.
+    branches: [main, ci/v3-visible-parallel]
   push:
     branches: [main]
 

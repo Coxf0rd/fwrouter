@@ -94,6 +94,7 @@ def safe_path(value: str) -> PurePosixPath:
         raise gate.GateError("unsafe evidence bundle path")
     if any(part.startswith(".") for part in path.parts) and value not in {
         ".github/workflows/test-gates.yml", "verifier-source/.github/workflows/test-gates.yml",
+        ".github/workflows/test-full-suite.yml", "verifier-source/.github/workflows/test-full-suite.yml",
     }:
         raise gate.GateError("hidden paths are not allowed outside the pinned workflow source")
     if path.name.lower() in FORBIDDEN_NAMES or path.suffix.lower() in FORBIDDEN_SUFFIXES:
@@ -405,7 +406,9 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
     if args.destination.exists() or args.destination.is_symlink():
         raise gate.GateError("handoff destination must be a fresh path")
     plan = read_json(args.plan, 8 * 1024 * 1024)
-    gate.ensure_plan(plan, gate.load_manifest())
+    gate.ensure_plan(plan, gate.load_manifest(), allow_l6=getattr(args, "l6", False))
+    if getattr(args, "l6", False) and plan.get("full_suite_required") is not True:
+        raise gate.GateError("L6 handoff requires the full immutable suite")
     source = args.source
     if source.is_symlink():
         raise gate.GateError("handoff source must not be a symlink")
@@ -852,7 +855,7 @@ def diagnostics(args: argparse.Namespace) -> dict[str, Any]:
     args.destination.mkdir(mode=0o700, parents=True)
     payload: dict[str, Any] = {
         "schema": "fwrouter-ci-diagnostic/v1", "status": "failed_or_incomplete",
-        "workflow": "FWRouter affected CI", "event": args.event, "ref": args.ref,
+        "workflow": "FWRouter L6 full regression" if getattr(args, "l6", False) else "FWRouter affected CI", "event": args.event, "ref": args.ref,
         "run_id": str(args.run_id), "run_attempt": str(args.attempt),
         "source_sha": args.source_sha if args.source_sha else None,
         "reason": "strict qualification or final evidence publication did not complete",
@@ -882,6 +885,11 @@ def diagnostics(args: argparse.Namespace) -> dict[str, Any]:
             elif role == "native":
                 allowed_roots.extend(args.evidence / f"fwrouter-v2-native-{profile}-{args.run_id}-{args.attempt}"
                                      for profile in ("qcp", "xray"))
+            if getattr(args, "l6", False):
+                import l6_ci
+                allowed_roots.extend(args.evidence / child for child in l6_ci.expected_children()[role])
+                allowed_roots.extend(args.evidence / f"fwrouter-l6-{child}-{args.run_id}-{args.attempt}"
+                                     for child in l6_ci.expected_children()[role])
             for producer_root in allowed_roots:
                 if producer_root.is_symlink() or not producer_root.is_dir():
                     continue
@@ -896,7 +904,7 @@ def diagnostics(args: argparse.Namespace) -> dict[str, Any]:
                         continue
                     # Producer envelopes contain identity and file digests only; exclude
                     # raw test output and test-provided profile/state payloads.
-                    target = args.destination / "receipts" / role / f"{relative}.diagnostic-projection.json"
+                    target = args.destination / "receipts" / producer_root.name / f"{relative}.diagnostic-projection.json"
                     copy_diagnostic_projection(source, target, 512 * 1024)
                     payload["evidence_included"].append(target.relative_to(args.destination).as_posix())
     projected_payload = project_diagnostic_value(payload)
@@ -931,7 +939,7 @@ def summary(args: argparse.Namespace) -> int:
     if outcomes["aggregate"] == "success" and (
             outcomes["bundle"] != "success" or outcomes["publication"] != "success" or not artifact_record_valid):
         status = "FAIL / INCOMPLETE"
-    lines = ["## FWRouter CI V2 artifact result", "", f"- Overall result: **{status}**",
+    lines = ["## FWRouter CI qualification and artifact result", "", f"- Overall result: **{status}**",
              f"- Aggregate: `{outcomes['aggregate']}`; bundle build/verification: `{outcomes['bundle']}`; publication: `{outcomes['publication']}`",
              f"- Source SHA: `{source}`", f"- Run: `{args.run_id}`, attempt `{args.attempt}`",
              f"- Non-success upstream jobs: `{', '.join(non_success_jobs) if non_success_jobs else 'none recorded'}`",
@@ -982,6 +990,7 @@ def main() -> int:
     verify.add_argument("--attempt", required=True)
     verify.add_argument("--require-main", action="store_true")
     diag = commands.add_parser("diagnostics")
+    diag.add_argument("--l6", action="store_true")
     diag.add_argument("--required", type=Path, required=True)
     diag.add_argument("--jobs", type=Path, required=True)
     diag.add_argument("--destination", type=Path, required=True)
@@ -998,6 +1007,7 @@ def main() -> int:
     handoff_parser.add_argument("--role", choices=parallel_ci.ROLES, required=True)
     handoff_parser.add_argument("--shard-group", choices=gate.ROUTINE_SHARD_GROUPS)
     handoff_parser.add_argument("--native-profile", choices=("qcp", "xray"))
+    handoff_parser.add_argument("--l6", action="store_true")
     handoff_parser.add_argument("--outcome", choices=("success", "failure", "cancelled", "skipped"), required=True)
     handoff_parser.add_argument("--event", required=True)
     handoff_parser.add_argument("--ref", required=True)

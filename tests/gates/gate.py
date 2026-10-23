@@ -205,6 +205,7 @@ STDLIB_CONTRACT_PATHS = {
     "tests/gates/test_evidence_bundle.py",
     "tests/gates/test_routine_shards.py",
     "tests/gates/test_visibility_report.py",
+    "tests/gates/test_l6_ci.py",
     "tests/acceptance/test_dependency_image_contract.py",
     "tests/acceptance/test_consume_dependency_image_contract.py",
 }
