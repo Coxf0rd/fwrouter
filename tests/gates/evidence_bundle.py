@@ -33,8 +33,10 @@ SOURCE_FILES = (
     ".github/workflows/test-gates.yml",
     "tests/gates/evidence_bundle.py",
     "tests/gates/parallel_ci.py",
+    "tests/gates/routine_shards.py",
     "tests/gates/aggregate_hosted.py",
     "tests/gates/gate.py",
+    "backend/tests/gate_plugin.py",
     "tests/gates/ci_inputs.py",
     "tests/gates/verify_backend_wheel.py",
     "tests/gates/manifest.json",
@@ -50,6 +52,7 @@ SOURCE_FILES = (
 SAFE_RECEIPTS = {
     "fwrouter-affected-plan.json", "build-summary.json", "wheel-metadata.json",
     "fwrouter-affected-unit.json", "runtime-inputs.json", "hosted-acceptance-report.json",
+    "shard.json",
     "qualified-child-receipt.json", "qualified-xray-docker-receipt.json",
     "profile.json",
     "fwrouter-aggregate.json", "required-result.json", "qualification.json", "stage.json",
@@ -61,6 +64,7 @@ FORBIDDEN_NAMES = {".env", "config.json", "config.yaml", "config.yml", "private.
 sys.path.insert(0, str(GATES))
 import gate
 import parallel_ci
+import routine_shards
 import aggregate_hosted as strict
 import ci_inputs
 
@@ -247,6 +251,9 @@ def expected_evidence_paths(evidence: Path, plan: dict[str, Any], needed: dict[s
         "build": ["build/build-summary.json", "build/wheel-metadata.json"],
         "unit": ["fwrouter-affected-unit.json"],
     }
+    if needed.get("unit"):
+        for group in gate.ROUTINE_SHARD_GROUPS:
+            paths["unit"].extend((f"shards/{group}/shard.json", f"shards/{group}/producer.json"))
     wheels = sorted((evidence / "build/build").glob("*.whl"))
     if needed.get("build"):
         if len(wheels) != 1 or wheels[0].is_symlink() or not wheels[0].is_file():
@@ -299,7 +306,7 @@ def validate_projection_metadata(metadata: dict[str, Any], plan: dict[str, Any],
             safe_path(path)
         if sorted(actual) != expected or len(actual) != len(set(actual)):
             raise gate.GateError(f"{role} evidence projection omits or adds required evidence")
-        if role in {"plan", "unit"} and any("/" in path for path in actual):
+        if role == "plan" and any("/" in path for path in actual):
             raise gate.GateError(f"{role} projection contains unexpected nested files")
 
 
@@ -397,7 +404,16 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
     if args.role == "plan":
         candidates = ["fwrouter-affected-plan.json"]
     elif args.role == "unit":
-        candidates = ["fwrouter-affected-unit.json"]
+        group = args.shard_group
+        if group not in gate.ROUTINE_SHARD_GROUPS:
+            raise gate.GateError("unit evidence handoff requires a supported --shard-group")
+        candidates = ["shard.json"]
+        if args.outcome == "success":
+            report = read_json(source / "shard.json")
+            rows = routine_shards.expected_by_group(plan, gate.load_manifest())[group]
+            run_id = os.environ.get("GITHUB_RUN_ID", "")
+            attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+            routine_shards.verify_shard(report, group, plan, rows, run_id=run_id, attempt=attempt)
     elif args.role == "build":
         wheels = sorted((source / "build").glob("*.whl")) if source.is_dir() else []
         candidates = ["build/build-summary.json", "build/wheel-metadata.json"]
@@ -412,8 +428,17 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
         candidates = ["runtime-inputs.json"]
         selected = set(plan.get("selected_files", []))
         rows = {row["path"]: row for row in gate.load_manifest()["test_files"]}
-        if any(path in selected and row.get("execution_profile") == "qualified-child-process"
-               and path != "backend/tests/test_xray_native_readback.py" for path, row in rows.items()):
+        qcp_selected = any(path in selected and row.get("execution_profile") == "qualified-child-process"
+                           and path != "backend/tests/test_xray_native_readback.py" for path, row in rows.items())
+        xray_selected = "backend/tests/test_xray_native_readback.py" in selected
+        native_profile = getattr(args, "native_profile", None)
+        if native_profile not in {None, "qcp", "xray"}:
+            raise gate.GateError("unsupported native profile handoff")
+        if native_profile == "qcp" and not qcp_selected or native_profile == "xray" and not xray_selected:
+            raise gate.GateError("native profile handoff is not selected by the immutable plan")
+        want_qcp = qcp_selected and native_profile in {None, "qcp"}
+        want_xray = xray_selected and native_profile in {None, "xray"}
+        if want_qcp:
             found = sorted(source.rglob("qualified-child-receipt.json")) if source.is_dir() else []
             if args.outcome == "success" and len(found) != 1:
                 raise gate.GateError("native success requires exactly one qualified-child receipt")
@@ -424,7 +449,7 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
                     raise gate.GateError("native success requires the qualified-child sibling profile.json")
                 if profile.is_file() and not profile.is_symlink():
                     candidates.append(profile.relative_to(source).as_posix())
-        if "backend/tests/test_xray_native_readback.py" in selected:
+        if want_xray:
             found = sorted(source.rglob("qualified-xray-docker-receipt.json")) if source.is_dir() else []
             if args.outcome == "success" and len(found) != 1:
                 raise gate.GateError("native success requires exactly one Docker-Xray receipt")
@@ -461,7 +486,9 @@ def handoff(args: argparse.Namespace) -> dict[str, Any]:
                     shutil.copytree(args.destination, copied_build)
                     ci_inputs.verify(copied_build, args.plan)
         producer = parallel_ci.seal(args.destination, args.role, plan, args.outcome)
-        return {"role": args.role, "outcome": args.outcome, "copied": copied,
+        return {"role": args.role, "shard_group": getattr(args, "shard_group", None),
+                "native_profile": getattr(args, "native_profile", None),
+                "outcome": args.outcome, "copied": copied,
                 "producer_digest": producer["producer_digest"]}
     except BaseException:
         shutil.rmtree(args.destination, ignore_errors=True)
@@ -712,6 +739,7 @@ def verify_bundle(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def replay_strict(evidence: Path, plan: dict[str, Any], *, main_smoke: bool) -> dict[str, Any]:
+    verify_routine_shards(evidence, plan)
     plan_path = evidence / "plan/fwrouter-affected-plan.json"
     unit_path = evidence / "unit/fwrouter-affected-unit.json"
     needed = parallel_ci.requirements(plan, main_smoke)
@@ -739,6 +767,28 @@ def replay_strict(evidence: Path, plan: dict[str, Any], *, main_smoke: bool) -> 
     return strict.aggregate(plan_path, unit_path, hosted, qcp, xray, minimum_repeats=1,
                             runtime_inputs_path=runtime_path, require_main_smoke=main_smoke,
                             main_smoke_path=smoke)
+
+
+def verify_routine_shards(evidence: Path, plan: dict[str, Any]) -> None:
+    """Re-validate every matrix producer and prove its reports merge to the strict unit input."""
+    manifest = gate.load_manifest()
+    reports = {}
+    for group in gate.ROUTINE_SHARD_GROUPS:
+        root = evidence / "unit/shards" / group
+        parallel_ci.verify_producer(root, "unit", plan)
+        report = read_json(root / "shard.json")
+        routine_shards.verify_shard(
+            report, group, plan, routine_shards.expected_by_group(plan, manifest),
+            run_id=os.environ["GITHUB_RUN_ID"], attempt=os.environ["GITHUB_RUN_ATTEMPT"],
+        )
+        reports[group] = report
+    merged = routine_shards.merge_reports(
+        plan, manifest, reports, run_id=os.environ["GITHUB_RUN_ID"],
+        attempt=os.environ["GITHUB_RUN_ATTEMPT"],
+    )
+    saved = read_json(evidence / "unit/fwrouter-affected-unit.json")
+    if gate.canonical_digest(merged) != gate.canonical_digest(saved):
+        raise gate.GateError("offline routine-shard replay differs from the strict aggregate unit input")
 
 
 def diagnostics(args: argparse.Namespace) -> dict[str, Any]:
@@ -772,6 +822,12 @@ def diagnostics(args: argparse.Namespace) -> dict[str, Any]:
         for role in parallel_ci.ROLES:
             allowed_roots = [args.evidence / role,
                              args.evidence / f"fwrouter-v2-{role}-{args.run_id}-{args.attempt}"]
+            if role == "unit":
+                allowed_roots.extend(args.evidence / f"fwrouter-v2-unit-{group}-{args.run_id}-{args.attempt}"
+                                     for group in gate.ROUTINE_SHARD_GROUPS)
+            elif role == "native":
+                allowed_roots.extend(args.evidence / f"fwrouter-v2-native-{profile}-{args.run_id}-{args.attempt}"
+                                     for profile in ("qcp", "xray"))
             for producer_root in allowed_roots:
                 if producer_root.is_symlink() or not producer_root.is_dir():
                     continue
@@ -869,6 +925,8 @@ def main() -> int:
     handoff_parser.add_argument("--destination", type=Path, required=True)
     handoff_parser.add_argument("--plan", type=Path, required=True)
     handoff_parser.add_argument("--role", choices=parallel_ci.ROLES, required=True)
+    handoff_parser.add_argument("--shard-group", choices=gate.ROUTINE_SHARD_GROUPS)
+    handoff_parser.add_argument("--native-profile", choices=("qcp", "xray"))
     handoff_parser.add_argument("--outcome", choices=("success", "failure", "cancelled", "skipped"), required=True)
     handoff_parser.add_argument("--event", required=True)
     handoff_parser.add_argument("--ref", required=True)

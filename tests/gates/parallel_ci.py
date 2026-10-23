@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import shutil
 import stat
 import subprocess
@@ -16,6 +17,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
 import aggregate_hosted as strict
+import routine_shards
 
 ROLES = ('plan', 'build', 'unit', 'hosted', 'provider', 'packet', 'native')
 MAX_FILES = 6000
@@ -48,6 +50,17 @@ def requirements(plan, main_smoke=False):
             'provider': 'hosted-isolated-compose' in profiles,
             'packet': 'hosted-kernel-packet' in profiles,
             'native': any(r.get('execution_profile') == 'qualified-child-process' for r in rows)}
+
+
+def native_profiles(plan):
+    rows = [r for r in gate.load_manifest()['test_files'] if r['path'] in plan['selected_files']]
+    profiles = []
+    if any(r.get('execution_profile') == 'qualified-child-process'
+           and r['path'] != 'backend/tests/test_xray_native_readback.py' for r in rows):
+        profiles.append('qcp')
+    if any(r['path'] == 'backend/tests/test_xray_native_readback.py' for r in rows):
+        profiles.append('xray')
+    return profiles
 
 
 def file_inventory(root):
@@ -120,7 +133,9 @@ def configure(args):
                'needs_recovery': str({'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
                                       'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'}
                                      <= set(plan['selected_files'])).lower(),
-               'main_smoke': str(args.main_smoke).lower()}
+               'main_smoke': str(args.main_smoke).lower(),
+               'unit_shards_json': json.dumps(list(gate.ROUTINE_SHARD_GROUPS), separators=(',', ':')),
+               'native_profiles_json': json.dumps(native_profiles(plan), separators=(',', ':'))}
     with Path(args.github_output).open('a') as stream:
         for k, v in outputs.items():
             stream.write(f'{k}={v}\n')
@@ -169,6 +184,120 @@ def resource_snapshot(root):
             'disk_free_bytes': disk.free}
 
 
+def process_peak(log_path: Path) -> dict[str, int]:
+    """Parse only bounded numeric resource fields from GNU time -v output."""
+    path = Path(str(log_path) + '.time')
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 64 * 1024:
+        return {}
+    try:
+        content = path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return {}
+    result = {}
+    for label, key in (('Maximum resident set size (kbytes):', 'max_rss_kib'),
+                       ('Percent of CPU this job got:', 'cpu_percent')):
+        match = re.search(rf'^{re.escape(label)}\s*(\d+)\s*$', content, re.MULTILINE)
+        if match:
+            result[key] = int(match.group(1))
+    return result
+
+
+def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
+                   native_profile: str | None = None) -> str:
+    """Render bounded, non-payload job summary from local runner receipts."""
+    plan = strict.read_json(plan_path)
+    lines = [f"## FWRouter CI {role}" + (f" ({native_profile})" if native_profile else ""), "",
+             f"- Status: **{outcome.upper()}**", f"- Source SHA: `{plan.get('source_commit', 'unknown')}`",
+             f"- Plan digest: `{plan.get('plan_digest', 'unknown')}`",
+             f"- Run/attempt: `{os.environ.get('GITHUB_RUN_ID', 'unavailable')}` / "
+             f"`{os.environ.get('GITHUB_RUN_ATTEMPT', 'unavailable')}`"]
+    selected = set(plan.get('selected_files', []))
+    rows = [row for row in gate.load_manifest()['test_files'] if row['path'] in selected]
+    if role == 'plan':
+        by_owner: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            by_owner.setdefault(row['execution_group'], []).append(row)
+        lines += ["", "| Execution owner | Files | Levels | Domains | Profile files |",
+                  "|---|---:|---|---|---:|"]
+        for owner in gate.ROUTINE_SHARD_GROUPS:
+            owned = by_owner.get(owner, [])
+            lines.append(f"| `{owner}` | {len(owned)} | "
+                         f"{', '.join(sorted({row['primary_level'] for row in owned})) or 'none'} | "
+                         f"{', '.join(sorted({row['domain'] for row in owned})) or 'none'} | "
+                         f"{sum(bool(row.get('execution_profile')) for row in owned)} |")
+    root = Path(root)
+    timings_path = root / 'timings.json'
+    if timings_path.is_file() and not timings_path.is_symlink():
+        try:
+            timings = strict.read_json(timings_path) if timings_path.read_text().lstrip().startswith('{') else json.loads(timings_path.read_text())
+            if isinstance(timings, list):
+                lines += ["", "| Stage | Result | Seconds | Peak RSS KiB |", "|---|---:|---:|---:|"]
+                lines += [f"| {item.get('stage', 'unknown')} | {item.get('exit', 'unknown')} | "
+                          f"{float(item.get('seconds', 0)):.3f} | "
+                          f"{process_peak(root / (str(item.get('stage', 'unknown')) + '.log')).get('max_rss_kib', 'n/a')} |"
+                          for item in timings if isinstance(item, dict)]
+        except (OSError, ValueError, TypeError):
+            lines += ["", "Stage timings: unavailable or malformed."]
+    receipt_paths = []
+    for name in ('hosted-acceptance-report.json', 'qualified-child-receipt.json',
+                 'qualified-xray-docker-receipt.json', 'build-summary.json', 'wheel-metadata.json'):
+        receipt_paths.extend(sorted(root.rglob(name)))
+    id_statuses: list[tuple[str, str]] = []
+    cleanup_values: list[str] = []
+    receipt_rows = []
+    for path in receipt_paths:
+        if path.is_symlink() or path.stat().st_size > 8 * 1024 * 1024:
+            continue
+        try:
+            value = strict.read_json(path)
+        except (OSError, ValueError, gate.GateError):
+            continue
+        tests = value.get('tests') if isinstance(value.get('tests'), dict) else {}
+        statuses = tests.get('node_status') if isinstance(tests.get('node_status'), dict) else {}
+        for node, status in statuses.items():
+            if isinstance(node, str) and isinstance(status, str):
+                id_statuses.append((node, status))
+        cleanup = value.get('cleanup')
+        if isinstance(cleanup, str):
+            cleanup_values.append(cleanup)
+        receipt_rows.append((path.name, str(value.get('suite', value.get('scope', value.get('package', 'unknown')))),
+                             str(value.get('status', 'unknown'))))
+    build_summary = root / 'build' / 'build-summary.json'
+    if role == 'build' and build_summary.is_file() and not build_summary.is_symlink():
+        try:
+            data = strict.read_json(build_summary)
+            build_timings = data.get('timings_seconds', {})
+            lines += ["", "| Build check | Seconds |", "|---|---:|"]
+            lines += [f"| {key} | {float(value):.3f} |" for key, value in sorted(build_timings.items())
+                      if isinstance(value, (int, float)) and not isinstance(value, bool)]
+            wheel = data.get('wheel', {})
+            lines.append(f"- Wheel: `{wheel.get('bytes', 'unknown')}` bytes; SHA256 `{wheel.get('sha256', 'unavailable')}`.")
+        except (OSError, ValueError, TypeError, gate.GateError):
+            lines.append("- Build summary unavailable or malformed.")
+    if receipt_rows:
+        lines += ["", "| Receipt | Suite/profile | Status |", "|---|---|---|"]
+        lines += [f"| `{name}` | `{suite}` | `{status}` |" for name, suite, status in receipt_rows]
+    lines += ["", f"Observed test IDs: {len(id_statuses)}; unique IDs: {len({node for node, _ in id_statuses})}."]
+    if id_statuses:
+        lines += ["", "| Test ID | Result |", "|---|---|"]
+        lines += [f"| `{node.replace('|', '&#124;')}` | `{status}` |" for node, status in sorted(id_statuses)]
+    before = root / 'resources-before.json'
+    after = root / 'resources-after.json'
+    for label, path in (("before", before), ("after", after)):
+        if path.is_file() and not path.is_symlink():
+            try:
+                data = strict.read_json(path)
+                memory = data.get('memory', {})
+                lines.append(f"- Runner resources {label}: {data.get('cpu_count', 'unknown')} CPUs; "
+                             f"RAM available {memory.get('MemAvailable_bytes', 'unknown')} bytes; "
+                             f"disk free {data.get('disk_free_bytes', 'unknown')} bytes.")
+            except (OSError, ValueError, gate.GateError):
+                lines.append(f"- Runner resources {label}: unavailable.")
+    lines.append(f"- Receipt cleanup values: `{', '.join(sorted(set(cleanup_values))) if cleanup_values else 'no profile cleanup receipt'}`.")
+    lines.append("- This job summary is diagnostic visibility; only the strict aggregate establishes qualification.")
+    return "\n".join(lines) + "\n"
+
+
 def run_worker(args):
     plan = load_plan(args.plan); root = Path(args.root); root.mkdir(parents=True, exist_ok=True)
     verify_producer(Path(args.plan).parent, 'plan', plan)
@@ -181,8 +310,13 @@ def run_worker(args):
     gate.atomic_json(root / 'resources-before.json', resource_snapshot(root))
     times = []; status = 0
     if args.role == 'unit':
+        if args.shard_group not in gate.ROUTINE_SHARD_GROUPS:
+            raise gate.GateError('unit worker requires a supported --shard-group')
+        shard_path = root / 'shard.json'
+        before_tmp = {p.name for p in Path('/tmp').glob(f"fwrouter-gate-{plan['source_commit'][:8]}-*")}
         commands = [('unit', [sys.executable, 'tests/gates/gate.py', 'run', '--plan', str(args.plan),
-                              '--include-native', '--defer-hosted', '--output', str(root / 'fwrouter-affected-unit.json')])]
+                              '--include-native', '--defer-hosted', '--shard-group', args.shard_group,
+                              '--output', str(shard_path)])]
     else:
         temp = Path(os.environ['RUNNER_TEMP']); env_file = temp / f'fwrouter-{args.role}-runtime.env'
         env_file.touch(mode=0o600, exist_ok=False)
@@ -207,11 +341,18 @@ def run_worker(args):
             commands = [('packet-diagnostic', [sys.executable, 'tests/acceptance/launcher.py', '--run', '--suite', 'packet-diagnostic'])]
         else:
             rows = [r for r in gate.load_manifest()['test_files'] if r['path'] in plan['selected_files']]
-            commands = []
-            if any(r.get('execution_profile') == 'qualified-child-process' and r['path'] != 'backend/tests/test_xray_native_readback.py' for r in rows):
-                commands.append(('qcp', [sys.executable, 'tests/acceptance/qualified_child.py', '--run']))
-            if 'backend/tests/test_xray_native_readback.py' in plan['selected_files']:
-                commands.append(('xray', [sys.executable, 'tests/acceptance/qualified_xray_docker.py', '--run']))
+            selected_profiles = native_profiles(plan)
+            if args.native_profile not in selected_profiles:
+                raise gate.GateError('native worker requires a profile selected by the immutable plan')
+            if args.native_profile == 'qcp':
+                if not any(r.get('execution_profile') == 'qualified-child-process'
+                           and r['path'] != 'backend/tests/test_xray_native_readback.py' for r in rows):
+                    raise gate.GateError('QCP profile is not selected by the immutable plan')
+                commands = [('qcp', [sys.executable, 'tests/acceptance/qualified_child.py', '--run'])]
+            else:
+                if 'backend/tests/test_xray_native_readback.py' not in plan['selected_files']:
+                    raise gate.GateError('Docker-Xray profile is not selected by the immutable plan')
+                commands = [('xray', [sys.executable, 'tests/acceptance/qualified_xray_docker.py', '--run'])]
     for label, command in commands:
         code, elapsed = run_command(command, root / (label + '.log'), env=env)
         times.append({'stage': label, 'seconds': elapsed, 'exit': code})
@@ -223,6 +364,30 @@ def run_worker(args):
                     shutil.copytree(source, root / source.name)
     gate.atomic_json(root / 'timings.json', times)
     gate.atomic_json(root / 'resources-after.json', resource_snapshot(root))
+    if args.role == 'unit' and shard_path.is_file():
+        report = strict.read_json(shard_path)
+        remaining = {p.name for p in Path('/tmp').glob(f"fwrouter-gate-{plan['source_commit'][:8]}-*")}
+        report['run_id'] = os.environ['GITHUB_RUN_ID']
+        report['run_attempt'] = os.environ['GITHUB_RUN_ATTEMPT']
+        report['resources_before'] = strict.read_json(root / 'resources-before.json')
+        report['resources_after'] = strict.read_json(root / 'resources-after.json')
+        report['process_peak'] = process_peak(root / 'unit.log')
+        report['cleanup'] = ('verified_owned_gate_temp_removed' if not (remaining - before_tmp)
+                             else 'failed_owned_gate_temp_remains')
+        if report['cleanup'] != 'verified_owned_gate_temp_removed':
+            report['status'] = 'failed'
+            report.setdefault('blocked_reasons', []).append('owned gate temporary directory remains after worker exit')
+        report.pop('shard_digest', None)
+        report['shard_digest'] = gate.canonical_digest(report)
+        gate.atomic_json(shard_path, report)
+        summary = routine_shards.write_summary(report)
+        summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
+        if summary_path:
+            with Path(summary_path).open('a', encoding='utf-8') as stream:
+                stream.write(summary)
+        print(summary, end='', flush=True)
+        if report['status'] != 'passed':
+            status = status or 1
     return status
 
 
@@ -251,20 +416,78 @@ def aggregate(args):
             raise gate.GateError('; '.join(problems))
         artifact_root = Path(args.artifacts)
         prefix = f"fwrouter-v2-{{role}}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
-        expected_dirs = {prefix.format(role=k) for k, needed in required.items() if needed}
+        selected_native_profiles = native_profiles(plan)
+        expected_dirs = {prefix.format(role=k) for k, needed in required.items()
+                         if needed and k not in {'unit', 'native'}}
+        if required['unit']:
+            expected_dirs.update(prefix.format(role=f"unit-{group}") for group in gate.ROUTINE_SHARD_GROUPS)
+        if required['native']:
+            expected_dirs.update(prefix.format(role=f"native-{profile}")
+                                 for profile in selected_native_profiles)
         if {p.name for p in artifact_root.iterdir()} != expected_dirs:
             raise gate.GateError('missing or unexpected producer artifact directories')
         for role in ROLES:
+            if role in {'unit', 'native'}:
+                continue
             source = artifact_root / prefix.format(role=role)
             if source.exists():
                 source.rename(artifact_root / role)
         args.plan = artifact_root / 'plan' / Path(args.plan).name
         for role, needed in required.items():
+            if role == 'unit':
+                continue
             if needed:
                 directory = Path(args.plan).parent if role == 'plan' else artifact_root / role
                 verify_producer(directory, role, plan)
             elif (artifact_root / role).exists():
                 raise gate.GateError(f'unexpected artifact for unselected profile {role}')
+        if required['unit']:
+            unit_root = artifact_root / 'unit'
+            unit_root.mkdir(mode=0o700)
+            shard_root = unit_root / 'shards'
+            shard_root.mkdir(mode=0o700)
+            shard_reports = {}
+            for group in gate.ROUTINE_SHARD_GROUPS:
+                source = artifact_root / prefix.format(role=f'unit-{group}')
+                verify_producer(source, 'unit', plan)
+                report = strict.read_json(source / 'shard.json')
+                routine_shards.verify_shard(
+                    report, group, plan, routine_shards.expected_by_group(plan, gate.load_manifest())[group],
+                    run_id=os.environ['GITHUB_RUN_ID'], attempt=os.environ['GITHUB_RUN_ATTEMPT'])
+                shard_reports[group] = report
+                source.rename(shard_root / group)
+            merged_unit = routine_shards.merge_reports(
+                plan, gate.load_manifest(), shard_reports,
+                run_id=os.environ['GITHUB_RUN_ID'], attempt=os.environ['GITHUB_RUN_ATTEMPT'])
+            gate.atomic_json(unit_root / 'fwrouter-affected-unit.json', merged_unit)
+            seal(unit_root, 'unit', plan, 'success')
+        if required['native']:
+            native_root = artifact_root / 'native'
+            native_root.mkdir(mode=0o700)
+            native_manifests = []
+            for profile in selected_native_profiles:
+                source = artifact_root / prefix.format(role=f"native-{profile}")
+                verify_producer(source, 'native', plan)
+                profile_manifest = strict.read_json(source / 'runtime-inputs.json')
+                strict.validate_runtime_inputs(profile_manifest)
+                native_manifests.append(profile_manifest)
+                relative = ("qualified-child-receipt.json" if profile == 'qcp'
+                            else "qualified-xray-docker-receipt.json")
+                receipt = one(source, relative)
+                sibling = receipt.with_name('profile.json')
+                if sibling.is_symlink() or not sibling.is_file():
+                    raise gate.GateError(f'{profile}: native receipt is missing its profile.json closure')
+                target = native_root / profile
+                target.mkdir(mode=0o700)
+                shutil.copyfile(receipt, target / receipt.name, follow_symlinks=False)
+                shutil.copyfile(sibling, target / 'profile.json', follow_symlinks=False)
+                if profile == selected_native_profiles[0]:
+                    shutil.copyfile(source / 'runtime-inputs.json', native_root / 'runtime-inputs.json',
+                                    follow_symlinks=False)
+                shutil.rmtree(source)
+            if any(value != native_manifests[0] for value in native_manifests[1:]):
+                raise gate.GateError('native profile runners disagree on pinned runtime input identity')
+            seal(native_root, 'native', plan, 'success')
         import ci_inputs
         ci_inputs.verify(artifact_root / 'build', Path(args.plan))
         manifests = [strict.read_json(one(artifact_root / k, 'runtime-inputs.json'))
@@ -315,10 +538,12 @@ def aggregate(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('configure', 'verify-plan', 'seal', 'worker', 'aggregate'))
+    parser.add_argument('command', choices=('configure', 'verify-plan', 'seal', 'worker', 'aggregate', 'summary'))
     parser.add_argument('--plan', type=Path, required=True)
     parser.add_argument('--root', type=Path)
     parser.add_argument('--role', choices=ROLES)
+    parser.add_argument('--shard-group', choices=gate.ROUTINE_SHARD_GROUPS)
+    parser.add_argument('--native-profile', choices=('qcp', 'xray'))
     parser.add_argument('--outcome', default='failure')
     parser.add_argument('--github-output', type=Path)
     parser.add_argument('--artifacts', type=Path)
@@ -333,6 +558,8 @@ def main():
             seal(args.root, args.role, load_plan(args.plan), args.outcome)
         elif args.command == 'worker':
             return run_worker(args)
+        elif args.command == 'summary':
+            print(worker_summary(args.root, args.plan, args.role, args.outcome, args.native_profile), end='')
         else:
             return aggregate(args)
         return 0

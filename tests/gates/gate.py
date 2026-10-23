@@ -32,6 +32,79 @@ MANIFEST = GATES / "manifest.json"
 REPORT_DIR = ROOT / "knowledge" / "audits" / "test_architecture_cicd_2026-10-04" / "reports"
 SCHEMA_VERSION = 1
 TOOL_VERSION = "fwrouter-test-gate/3"
+ROUTINE_SHARD_GROUPS = (
+    "core-state",
+    "routing-adapters",
+    "services-events",
+    "ui-tooling",
+    "api-persistence-contracts",
+    "ui-provider-contracts",
+    "local-integration",
+    "installer-startup",
+)
+ROUTINE_SHARD_DOMAINS = {
+    "core-state": {"core", "state", "topology"},
+    "routing-adapters": {"routing", "rules", "mihomo", "selector", "protocol", "xray", "subscription", "network"},
+    "services-events": {"events", "runtime", "watchdog", "jobs", "maintenance", "homeassistant"},
+    "ui-tooling": {"ui", "test-infrastructure"},
+    "api-persistence-contracts": {"api-contract", "database"},
+    "ui-provider-contracts": {"provider", "ui"},
+    "local-integration": {"core", "database", "mihomo", "protocol", "provider", "routing",
+                          "runtime", "subscription", "watchdog", "xray", "application-acceptance"},
+    "installer-startup": {"installer"},
+}
+
+
+def routine_shard_group_for_row(row: dict[str, Any]) -> str:
+    """Assign one visible execution owner without changing the manifest test level."""
+    path, domain = row.get("path", ""), row.get("domain")
+    if path.startswith("installer/") or domain == "installer":
+        return "installer-startup"
+    if domain == "ui" and path in UI_PROVIDER_CONTRACT_PATHS:
+        return "ui-provider-contracts"
+    # Hosted/native suites retain their logical domain owner and are explicitly
+    # deferred from routine execution; their profile job owns the actual run.
+    if row.get("execution_profile"):
+        if domain == "application-acceptance":
+            return "local-integration"
+        if domain in {"provider", "ui"}:
+            return "ui-provider-contracts"
+        if domain in {"api-contract", "database"}:
+            return "api-persistence-contracts"
+        if domain in {"core", "state", "topology"}:
+            return "core-state"
+        if domain in {"routing", "selector", "xray", "mihomo", "subscription", "protocol", "rules", "network"}:
+            return "routing-adapters"
+        if domain in {"events", "runtime", "watchdog", "jobs", "maintenance", "homeassistant"}:
+            return "services-events"
+        if domain == "test-infrastructure":
+            return "ui-tooling"
+        raise GateError(f"execution profile has no reviewed shard owner: {path}")
+    if row.get("primary_level") == "L3":
+        return "local-integration"
+    if row.get("primary_level") == "L2" and domain in {"api-contract", "database"}:
+        return "api-persistence-contracts"
+    if row.get("primary_level") == "L2" and domain in {"provider", "ui"}:
+        return "ui-provider-contracts"
+    if domain in {"core", "state", "topology"}:
+        return "core-state"
+    if domain in {"routing", "selector", "xray", "mihomo", "subscription", "protocol", "rules", "network"}:
+        return "routing-adapters"
+    if domain in {"events", "runtime", "watchdog", "jobs", "maintenance", "homeassistant"}:
+        return "services-events"
+    if domain in {"ui", "test-infrastructure"}:
+        return "ui-tooling"
+    if domain in {"api-contract", "database"}:
+        return "api-persistence-contracts"
+    if domain == "provider":
+        return "ui-provider-contracts"
+    if domain == "application-acceptance":
+        return "local-integration"
+    raise GateError(f"test file has no reviewed routine shard owner: {path}")
+UI_PROVIDER_CONTRACT_PATHS = {
+    "ui/tests/admin-provider-members.test.js",
+    "ui/tests/settings-provider-controls.test.js",
+}
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 RUFF_VERSION = "0.17.0"
 RUFF_CONFIG = ROOT / "ruff.toml"
@@ -129,6 +202,7 @@ STDLIB_CONTRACT_PATHS = {
     "tests/gates/test_smoke_contract.py", "tests/gates/test_network_fixture_contract.py",
     "tests/gates/test_subscription_identity_contract.py",
     "tests/gates/test_evidence_bundle.py",
+    "tests/gates/test_routine_shards.py",
     "tests/acceptance/test_dependency_image_contract.py",
     "tests/acceptance/test_consume_dependency_image_contract.py",
 }
@@ -305,6 +379,22 @@ def check_catalog(manifest: dict[str, Any]) -> list[str]:
     stale = sorted(path for path in catalog - expected if not (ROOT / path).is_file())
     errors = [f"unclassified test file: {p}" for p in missing]
     errors.extend(f"catalog path does not exist: {p}" for p in stale)
+    owners: dict[str, list[str]] = {}
+    for row in manifest.get("test_files", []):
+        group = row.get("execution_group") if isinstance(row, dict) else None
+        if group not in ROUTINE_SHARD_GROUPS:
+            errors.append(f"test file has no reviewed execution_group owner: {row.get('path', '<invalid>')}")
+            continue
+        domain = row.get("domain")
+        expected_group = routine_shard_group_for_row(row)
+        if group != expected_group:
+            errors.append(f"execution_group is not the reviewed owner for level/profile/domain: {row.get('path', '<invalid>')}")
+        if domain not in ROUTINE_SHARD_DOMAINS[group]:
+            errors.append(f"execution_group is incompatible with test domain: {row.get('path', '<invalid>')}")
+        owners.setdefault(group, []).append(row.get("path", "<invalid>"))
+    for group in ROUTINE_SHARD_GROUPS:
+        if not owners.get(group):
+            errors.append(f"routine shard has no explicit manifest owners: {group}")
     return errors
 
 
@@ -1347,9 +1437,26 @@ def node_status_from_plugin(path: Path, max_bytes: int) -> dict[str, str]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise GateError("pytest exact-node report is invalid") from exc
-    statuses = payload.get("node_status") if payload.get("schema_version") == 1 else None
-    if not isinstance(statuses, dict) or any(value not in {"passed", "failed", "skipped"} for value in statuses.values()):
+    statuses = payload.get("node_status") if payload.get("schema_version") == 2 else None
+    collected = payload.get("collected_nodeids")
+    executions = payload.get("node_executions")
+    if (not isinstance(statuses, dict)
+            or any(value not in {"passed", "failed", "skipped"} for value in statuses.values())
+            or not isinstance(collected, list)
+            or any(not isinstance(nodeid, str) for nodeid in collected)
+            or len(collected) != len(set(collected))
+            or not isinstance(executions, dict)
+            or set(executions) != set(collected)
+            or set(statuses) != set(collected)):
         raise GateError("pytest exact-node report has unknown schema or status")
+    for nodeid in collected:
+        row = executions[nodeid]
+        if (not isinstance(row, dict) or row.get("start_count") != 1
+                or row.get("terminal_report_count") != 1
+                or row.get("status") != statuses[nodeid]
+                or (statuses[nodeid] == "passed" and row.get("call_report_count") != 1)
+                or (statuses[nodeid] != "passed" and row.get("call_report_count") not in {0, 1})):
+            raise GateError("pytest exact-node report contains missing or repeated test execution")
     return statuses
 
 
@@ -1466,11 +1573,18 @@ def node_tap_results(output: str, test_path: str, *, require_observed: bool = Fa
                      ) -> tuple[dict[str, str], str]:
     """Return actual TAP cases and aggregate file status separately."""
     statuses: dict[str, str] = {}
+    all_nodes: list[str] = []
+    top_level_numbers: list[int] = []
+    top_level_plans: list[int] = []
     wrapper_status: str | None = None
     stack: list[tuple[int, str]] = []
     for line in output.splitlines():
         indent = len(line) - len(line.lstrip(" "))
         text = line.strip()
+        plan = re.fullmatch(r"1\.\.(\d+)", text) if indent == 0 else None
+        if plan:
+            top_level_plans.append(int(plan.group(1)))
+            continue
         subtest = re.match(r"#\s+Subtest:\s+(.+)$", text)
         if subtest:
             while stack and stack[-1][0] >= indent:
@@ -1479,10 +1593,11 @@ def node_tap_results(output: str, test_path: str, *, require_observed: bool = Fa
             if not (indent == 0 and name in {test_path, Path(test_path).name}):
                 stack.append((indent, name))
             continue
-        match = re.match(r"(?:ok|not ok)\s+\d+\s+-\s+(.+?)(?:\s+#\s+(SKIP|TODO).*)?$", text)
+        match = re.match(r"(ok|not ok)\s+(\d+)\s+-\s+(.+?)(?:\s+#\s+(SKIP|TODO).*)?$", text)
         if not match:
             continue
-        name, directive = match.groups()
+        outcome, ordinal_text, name, directive = match.groups()
+        ordinal = int(ordinal_text)
         closes_subtest = bool(stack and stack[-1][0] == indent and stack[-1][1] == name)
         while stack and stack[-1][0] >= indent and not closes_subtest:
             stack.pop()
@@ -1491,15 +1606,24 @@ def node_tap_results(output: str, test_path: str, *, require_observed: bool = Fa
         else:
             parts = [entry[1] for entry in stack] if closes_subtest else [entry[1] for entry in stack] + [name]
             node = test_path + "::" + " > ".join(parts)
-        status = "failed" if text.startswith("not ok") else ("skipped" if directive == "SKIP" else "passed")
+        status = "failed" if outcome == "not ok" else ("skipped" if directive == "SKIP" else "passed")
         if node == test_path:
             wrapper_status = status
+            if indent == 0:
+                top_level_numbers.append(ordinal)
         else:
+            all_nodes.append(node)
+            if node in statuses:
+                raise GateError("Node TAP output contains duplicate test case IDs")
             statuses[node] = status
         if closes_subtest:
             stack.pop()
         elif node != test_path:
             stack.append((indent, name))
+    if require_observed and (len(top_level_plans) != 1
+                             or top_level_plans[0] != len(top_level_numbers)
+                             or sorted(top_level_numbers) != list(range(1, len(top_level_numbers) + 1))):
+        raise GateError("Node TAP plan is missing, duplicated, or inconsistent with observed cases")
     if not statuses and wrapper_status is None and require_observed:
         raise GateError("Node TAP output contains no observed test cases")
     if not statuses and wrapper_status is None and "not ok" in output:
@@ -1507,7 +1631,7 @@ def node_tap_results(output: str, test_path: str, *, require_observed: bool = Fa
     elif not statuses and wrapper_status is not None:
         # The wrapper is the only observed case when no nested cases exist.
         statuses[test_path] = wrapper_status
-    elif not statuses:
+    elif not statuses and not require_observed:
         statuses[f"{test_path}::node-test-file"] = "passed"
     aggregate = "failed" if (wrapper_status == "failed"
                              or any(value == "failed" for value in statuses.values())) else (
@@ -1866,6 +1990,65 @@ def command_validate_unit_fixtures(args: argparse.Namespace) -> int:
         shutil.rmtree(owned, ignore_errors=True)
 
 
+def _routine_shard_report(plan: dict[str, Any], manifest: dict[str, Any], shard_group: str,
+                          selected: list[dict[str, Any]], executions: list[dict[str, Any]],
+                          node_status: dict[str, str], blocked: list[str], *,
+                          l0_owned: bool, l0_ok: bool, l0_elapsed: float,
+                          l0_problems: list[str]) -> dict[str, Any]:
+    expected = [{"suite": row["id"], "path": row["path"],
+                 "primary_level": row["primary_level"], "domain": row["domain"],
+                 "execution_group": shard_group,
+                 "execution_profile": row.get("execution_profile")}
+                for row in selected]
+    expected_paths = [row["path"] for row in expected]
+    observed_paths = [row.get("path") for row in executions]
+    execution_ids = [row.get("suite") for row in executions]
+    collected_nodes = [node for row in executions for node in row.get("collected_node_ids", [])]
+    executed_nodes = [node for row in executions for node in row.get("executed_node_ids", [])]
+    file_markers = sorted(path for path in node_status
+                          if path.split("::", 1)[0] in STDLIB_CONTRACT_PATHS)
+    result = {
+        "schema": "fwrouter-routine-shard/v1",
+        "source_commit": plan["source_commit"],
+        "plan_digest": plan["plan_digest"],
+        "manifest_version": manifest["version"],
+        "manifest_digest": plan["manifest_digest"],
+        "shard_group": shard_group,
+        "expected_suites": expected,
+        "expected_suite_ids": [row["suite"] for row in expected],
+        "collected_suite_ids": execution_ids,
+        "executed_suite_ids": [row.get("suite") for row in executions
+                                if row.get("status") == "passed"],
+        "expected_paths": expected_paths,
+        "collected_paths": observed_paths,
+        "executed_paths": [row.get("path") for row in executions
+                            if row.get("status") == "passed"],
+        "executions": executions,
+        "node_status": node_status,
+        "expected_node_ids": collected_nodes,
+        "collected_node_ids": collected_nodes,
+        "executed_node_ids": executed_nodes,
+        "node_status_count": len(node_status),
+        "unique_node_status_count": len(set(node_status)),
+        "file_marker_paths": file_markers,
+        "file_marker_semantics": "one suite-file marker, not individual test-method IDs",
+        "selected_levels": sorted({row["primary_level"] for row in expected}),
+        "selected_domains": sorted({row["domain"] for row in expected}),
+        "duration_seconds": round(sum(float(row.get("elapsed_seconds", 0.0)) for row in executions)
+                                   + (l0_elapsed if l0_owned else 0.0), 3),
+        "l0": {"owned": l0_owned,
+               "status": ("passed" if l0_ok else "failed") if l0_owned else "not_owned",
+               "elapsed_seconds": l0_elapsed if l0_owned else 0.0,
+               "checks": ["git diff --check", "changed-source syntax"] if l0_owned else [],
+               "problems": l0_problems if l0_owned else []},
+        "blocked_reasons": blocked,
+        "status": "passed" if not blocked and l0_ok else "failed",
+        "qualification_scope": "shard-only; full eligibility requires strict aggregate",
+    }
+    result["shard_digest"] = canonical_digest(result)
+    return result
+
+
 def command_run(args: argparse.Namespace) -> int:
     manifest = load_manifest(Path(args.manifest))
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
@@ -1879,6 +2062,12 @@ def command_run(args: argparse.Namespace) -> int:
     env = clean_test_environment(owned)
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "backend/tests"), str(ROOT / "backend")])
     selected = [row for row in manifest["test_files"] if row["path"] in set(plan["selected_files"]) and row["primary_level"] in set(plan["required_levels"]) - {"L0"}]
+    shard_group = getattr(args, "shard_group", None)
+    if shard_group is not None:
+        if shard_group not in ROUTINE_SHARD_GROUPS:
+            raise GateError("unknown routine shard group")
+        selected = sorted((row for row in selected if row.get("execution_group") == shard_group),
+                          key=lambda row: row["path"])
     hosted_profiles = EXECUTION_PROFILES
     deferred_paths = {
         row["path"] for row in selected
@@ -1889,9 +2078,13 @@ def command_run(args: argparse.Namespace) -> int:
     executions: list[dict[str, Any]] = []
     failure_diagnostics: list[dict[str, Any]] = []
     try:
-        l0_started = time.monotonic()
-        l0_ok, l0_problems = run_l0(plan["changed_paths"], owned, plan["base_commit"])
-        l0_elapsed = round(time.monotonic() - l0_started, 3)
+        l0_owned = shard_group is None or shard_group == ROUTINE_SHARD_GROUPS[0]
+        if l0_owned:
+            l0_started = time.monotonic()
+            l0_ok, l0_problems = run_l0(plan["changed_paths"], owned, plan["base_commit"])
+            l0_elapsed = round(time.monotonic() - l0_started, 3)
+        else:
+            l0_ok, l0_problems, l0_elapsed = True, [], 0.0
         # Required native suites never become green through a pytest skip.
         for row in selected:
             if row["path"] in deferred_paths:
@@ -1982,6 +2175,9 @@ def command_run(args: argparse.Namespace) -> int:
                     "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(),
                     "fixture_owner": row["fixture_owner"],
                     "execution_profile": row["execution_profile"],
+                    "collected_node_ids": sorted(local_node_status),
+                    "executed_node_ids": sorted(local_node_status),
+                    "node_status": local_node_status,
                     **({"routine_node_status": local_node_status,
                         "routine_node_problem": local_node_problem} if local_node_names else {}),
                 })
@@ -2000,7 +2196,7 @@ def command_run(args: argparse.Namespace) -> int:
                 continue
             suite_env = dict(env)
             node_report_path: Path | None = None
-            if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/"):
+            if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/") or path in STDLIB_CONTRACT_PATHS:
                 rel = path.removeprefix("backend/")
                 suite_root, reports_root = create_suite_root(owned, row["id"])
                 report_id = hashlib.sha256(row["id"].encode("utf-8")).hexdigest()[:16]
@@ -2023,13 +2219,6 @@ def command_run(args: argparse.Namespace) -> int:
             elif path == "installer/test-install.sh":
                 argv = ["sh", path]
                 cwd = ROOT
-            elif path in STDLIB_CONTRACT_PATHS:
-                if path == "tests/gates/test_subscription_identity_contract.py":
-                    argv = [sys.executable, "-m", "unittest", "discover", "-s",
-                            str(ROOT / "tests/gates"), "-p", "test_subscription_identity_contract.py"]
-                else:
-                    argv = [sys.executable, path]
-                cwd = ROOT
             else:
                 blocked.append(f"{path}: no reviewed runner adapter")
                 executions.append({"suite": row["id"], "path": path, "status": "blocked_no_runner"})
@@ -2043,16 +2232,26 @@ def command_run(args: argparse.Namespace) -> int:
                 if node_report_path is not None and node_report_path.exists() else 0
             )
             artifact_exceeded = node_report_size > row["max_artifact_bytes"]
-            if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/"):
+            if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/") or path in STDLIB_CONTRACT_PATHS:
                 assert node_report_path is not None
                 observed = {} if artifact_exceeded else node_status_from_plugin(node_report_path, row["max_artifact_bytes"])
             elif path.startswith("ui/"):
-                observed = node_status_from_tap(output, path)
+                observed = node_status_from_tap(output, path, require_observed=True)
             else:
                 observed = {f"{path}::{row['id']}": "passed" if code == 0 else "failed"}
             node_status.update(observed)
             status = "passed" if code == 0 and not truncated and not artifact_exceeded and observed and all(s == "passed" for s in observed.values()) else "failed"
-            executions.append({"suite": row["id"], "path": path, "primary_level": row["primary_level"], "status": status, "exit_code": code, "elapsed_seconds": suite_elapsed, "output_bytes_captured": len(output.encode()), "output_limit_exceeded": truncated, "node_report_bytes": node_report_size, "report_limit_exceeded": artifact_exceeded, "node_count": len(observed), "fixture_identity": row["fixture_identity"], "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(), "fixture_owner": row["fixture_owner"], "command": argv})
+            executions.append({"suite": row["id"], "path": path, "primary_level": row["primary_level"],
+                               "domain": row["domain"], "execution_group": row.get("execution_group"),
+                               "execution_profile": row.get("execution_profile"), "status": status,
+                               "exit_code": code, "elapsed_seconds": suite_elapsed,
+                               "output_bytes_captured": len(output.encode()), "output_limit_exceeded": truncated,
+                               "node_report_bytes": node_report_size, "report_limit_exceeded": artifact_exceeded,
+                               "node_count": len(observed), "collected_node_ids": sorted(observed),
+                               "executed_node_ids": sorted(observed), "node_status": observed,
+                               "fixture_identity": row["fixture_identity"],
+                               "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(),
+                               "fixture_owner": row["fixture_owner"], "command": argv})
             if status != "passed":
                 blocked.append(f"{path}: command or test result failed/was incomplete")
                 if len(failure_diagnostics) < 64:
@@ -2073,6 +2272,16 @@ def command_run(args: argparse.Namespace) -> int:
             completed_levels.insert(0, "L0")
         else:
             blocked.extend(l0_problems)
+        if shard_group is not None:
+            report = _routine_shard_report(
+                plan, manifest, shard_group, selected, executions, node_status, blocked,
+                l0_owned=l0_owned, l0_ok=l0_ok, l0_elapsed=l0_elapsed,
+                l0_problems=l0_problems,
+            )
+            if args.output:
+                atomic_json(Path(args.output), report)
+            print_json(report)
+            return 0 if report["status"] == "passed" else 1
         result = {
             "schema_version": 1,
             "evidence_scope": (
@@ -2232,6 +2441,8 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--include-native", action="store_true")
     run.add_argument("--defer-hosted", action="store_true",
                      help="defer qualified profiles to a separate hosted executor; report remains ineligible")
+    run.add_argument("--shard-group", choices=ROUTINE_SHARD_GROUPS,
+                     help="run exactly one manifest-owned routine CI shard; never grants aggregate eligibility")
     run.add_argument("--mihomo-binary")
     run.add_argument("--xray-image")
     run.set_defaults(func=command_run)

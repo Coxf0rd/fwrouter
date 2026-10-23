@@ -1,13 +1,13 @@
-# CI V2 artifact lifecycle
+# CI artifact lifecycle
 
 ## Dependency and retention model
 
-The `test-gates.yml` workflow keeps its eight jobs and the stable required check `Affected L0-L5 with hosted profiles`. It does not grant `actions: write`, add a cleanup workflow, or change the strict aggregate's eligibility rules.
+The `test-gates.yml` workflow preserves the stable required check `Affected L0-L5 with hosted profiles`. It does not grant `actions: write`, add a cleanup workflow, or change the strict aggregate's eligibility rules.
 
 | Level | Data | Producer to consumer | Retention / lifetime | Purpose |
 | --- | --- | --- | --- | --- |
 | Runner-local | Logs, caches, downloaded runtimes, disposable test state, raw packet captures and intermediate build directories | One job only | Runner lifetime | Keep internal work on its runner; do not upload it merely for retention. |
-| Cross-job handoff | Planner/build outputs; unit result; selected hosted/provider/packet/native receipts and runtime-input manifests, including sibling archived `profile.json` files required by QCP and Docker-Xray validators, each with a producer envelope | Planner/build/unit/profile jobs to dependent jobs and the `affected` strict aggregate | GitHub artifact: 1 day | Transfer only allowlisted immutable validator inputs between isolated runners. Worker logs, resource snapshots, raw hosted profiles, captures, containers and disposable state stay on their producer runner. Current run and attempt names remain mandatory. |
+| Cross-job handoff | Planner/build outputs; manifest-owned routine shard results and their validated canonical unit report; selected hosted/provider/packet/QCP/Xray receipts and runtime-input manifests, including sibling archived `profile.json` files required by QCP and Docker-Xray validators, each with a producer envelope | Planner/build/unit/profile jobs to dependent jobs and the `affected` strict aggregate | GitHub artifact: 1 day | Transfer only allowlisted immutable validator inputs between isolated runners. Worker logs, raw hosted profiles, captures, containers and disposable state stay on their producer runner. Bounded measured timing/resource facts may be retained in validator receipts and summaries; this is not permission to upload raw runtime dumps. Current run and attempt names remain mandatory. |
 | Successful result | Strict aggregate report, required-result, plan, build validation inputs, selected validator receipts/runtime manifests, original producer envelopes, safe-recovery receipts and source archive when required, source/verifier/manifest files, content hashes | `affected` job to reviewers/auditors | 7 days | Preserve a bounded PR review bundle, or an actual-main bundle named `fwrouter-main-evidence-<SHA>-<run_id>-<attempt>`. |
 | Failed/incomplete diagnostics | Redacted diagnostic projections of bounded aggregate/required reports, producer identity/outcome and allowlisted JSON receipts | `affected` job to maintainers | 3 days | Explain failure without retaining raw logs, packet captures, profiles, credentials, raw configs or disposable state. These projections are explicitly not original validated receipts and cannot establish qualification. |
 
@@ -28,3 +28,5 @@ The one-day producer artifacts support immediate workflow handoff only. If they 
 No post-run deletion is used. GitHub's short retention expires cross-job artifacts automatically; successful and failed packages use the minimum duration needed for review and diagnosis. Existing historical artifacts are not changed by this workflow update. Do not bulk-delete old artifacts based only on age or name; historical qualification evidence requires separate dependency review and exact object identification.
 
 Future tasks that create disposable resources should follow: **temporary resource ownership → verification → cleanup → cleanup receipt**. This lifecycle change adds no privileged cleanup service and does not alter the mandatory check or branch protection.
+
+CI V3 extends the producer inventory with deterministic routine shard provenance and separate QCP/Xray owners. The final bundle must retain the original sealed shard evidence and validate the complete disjoint partition before replaying strict qualification; a merged summary alone is insufficient. See [CI_V3.md](CI_V3.md) for coverage and execution-count semantics.

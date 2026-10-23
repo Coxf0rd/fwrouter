@@ -135,18 +135,31 @@ class EvidenceBundleTests(unittest.TestCase):
             root = Path(temporary)
             source, destination = root / "unit-source", root / "unit-handoff"
             source.mkdir()
-            (source / "fwrouter-affected-unit.json").write_text('{"status":"passed"}\n', encoding="utf-8")
-            (source / "timings.json").write_text('[{"seconds":1}]\n', encoding="utf-8")
-            (source / "runner.log").write_text("verbose output", encoding="utf-8")
-            (source / "capture.pcap").write_bytes(b"raw packet data")
+            plan_path = root / "plan.json"
             manifest = bundle.gate.load_manifest()
             plan = {"source_commit": "a" * 40, "plan_digest": "b" * 64,
                     "manifest_digest": bundle.gate.canonical_digest(manifest),
                     "manifest_version": manifest["version"], "selected_files": []}
-            plan_path = root / "plan.json"
+            report = bundle.gate._routine_shard_report(
+                plan, manifest, "core-state", [], [], {}, [], l0_owned=True, l0_ok=True,
+                l0_elapsed=0.1, l0_problems=[])
+            report.update({"run_id": "123", "run_attempt": "1",
+                           "resources_before": {"cpu_count": 2, "memory": {}, "disk_total_bytes": 4,
+                                                 "disk_used_bytes": 1, "disk_free_bytes": 3},
+                           "resources_after": {"cpu_count": 2, "memory": {}, "disk_total_bytes": 4,
+                                                "disk_used_bytes": 1, "disk_free_bytes": 3},
+                           "process_peak": {"max_rss_kib": 12345},
+                           "cleanup": "verified_owned_gate_temp_removed"})
+            report.pop("shard_digest", None)
+            report["shard_digest"] = bundle.gate.canonical_digest(report)
+            (source / "shard.json").write_text(json.dumps(report) + "\n", encoding="utf-8")
+            (source / "timings.json").write_text('[{"seconds":1}]\n', encoding="utf-8")
+            (source / "runner.log").write_text("verbose output", encoding="utf-8")
+            (source / "capture.pcap").write_bytes(b"raw packet data")
             plan_path.write_text(json.dumps(plan), encoding="utf-8")
             args = argparse.Namespace(source=source, destination=destination, plan=plan_path, role="unit",
-                                      outcome="success", event="pull_request", ref="refs/pull/35/merge")
+                                      shard_group="core-state", outcome="success", event="pull_request",
+                                      ref="refs/pull/35/merge")
             needs = {"plan": True, "build": True, "unit": True, "hosted": False,
                      "provider": False, "packet": False, "native": False}
             with patch.object(bundle.gate, "ensure_plan"), patch.object(
@@ -155,7 +168,7 @@ class EvidenceBundleTests(unittest.TestCase):
                 result = bundle.handoff(args)
                 bundle.parallel_ci.verify_producer(destination, "unit", plan)
             self.assertEqual("success", result["outcome"])
-            self.assertEqual({"fwrouter-affected-unit.json", "producer.json"},
+            self.assertEqual({"shard.json", "producer.json"},
                              {path.name for path in destination.iterdir()})
             self.assertTrue((source / "runner.log").exists())
             self.assertTrue((source / "capture.pcap").exists())
@@ -163,7 +176,7 @@ class EvidenceBundleTests(unittest.TestCase):
 
             failed_destination = root / "failed-handoff"
             failed_args = argparse.Namespace(source=source, destination=failed_destination, plan=plan_path,
-                                             role="unit", outcome="failure", event="pull_request",
+                                             role="unit", shard_group="core-state", outcome="failure", event="pull_request",
                                              ref="refs/pull/35/merge")
             with patch.object(bundle.gate, "ensure_plan"), patch.object(
                     bundle.parallel_ci, "requirements", return_value=needs), patch.dict(
@@ -171,7 +184,7 @@ class EvidenceBundleTests(unittest.TestCase):
                 failed = bundle.handoff(failed_args)
                 failed_envelope = bundle.read_json(failed_destination / "producer.json")
                 self.assertEqual("failure", failed_envelope["outcome"])
-                self.assertEqual({"fwrouter-affected-unit.json", "producer.json"},
+                self.assertEqual({"shard.json", "producer.json"},
                                  {path.name for path in failed_destination.iterdir()})
             self.assertEqual("failure", failed["outcome"])
 
