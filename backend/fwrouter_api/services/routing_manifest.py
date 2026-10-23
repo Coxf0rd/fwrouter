@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from fwrouter_api.services.dataplane_nft import (
     write_candidate_artifacts,
 )
 from fwrouter_api.services.server_layout import SERVER_LAYOUT_CONTRACT_VERSION
+from fwrouter_api.services.docker_policy import docker_vpn_immunity_conflicts
 from fwrouter_api.services.scoped_egress import summarize_scoped_subjects
 from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.subject_policy import (
@@ -80,9 +82,11 @@ def _bounded_subject_runtime(value: Any) -> dict[str, Any]:
         "status": status,
         "eligible": value.get("eligible"),
         "applied": value.get("applied"),
-        "reason": value.get("reason"),
+        "reason": value.get("resolution_reason") or value.get("reason"),
         "required_capability": value.get("required_capability"),
         "matcher": value.get("matcher"),
+        "infrastructure_role": value.get("infrastructure_role"),
+        "docker_ipv6_inventory_status": value.get("docker_ipv6_inventory_status"),
     }
 
 
@@ -206,6 +210,22 @@ def _bounded_extra(extra: dict[str, Any]) -> dict[str, Any]:
                 "reason": value.get("reason"),
                 "status": value.get("status"),
             }
+        elif key == "infrastructure_ipv4" and isinstance(value, list):
+            if len(value) > 1024:
+                raise ValueError("infrastructure_ipv4 exceeds the supported manifest limit")
+            addresses = []
+            for item in value:
+                address = str(item).strip()
+                if not address:
+                    continue
+                try:
+                    network = ip_network(address, strict=False)
+                except ValueError as exc:
+                    raise ValueError("infrastructure_ipv4 contains an invalid address or CIDR") from exc
+                if network.version != 4:
+                    raise ValueError("infrastructure_ipv4 contains a non-IPv4 address or CIDR")
+                addresses.append(address)
+            bounded[key] = sorted(set(addresses))
         elif isinstance(value, dict):
             bounded[key] = _summarize_mapping(value, label=f"{key}_summary")
         elif isinstance(value, list):
@@ -345,6 +365,31 @@ def build_dataplane_manifest_from_state(
         if server_override is not None:
             enrich_kwargs["server_override"] = server_override
         normalized_subjects.append(enrich_subject_with_effective_state(subject, **enrich_kwargs))
+
+    bypass_enabled = bool(core_bypass and core_bypass.get("enabled"))
+    immunity_conflicts = (
+        []
+        if bypass_enabled
+        else docker_vpn_immunity_conflicts(
+            normalized_subjects,
+            extra_data.get("infrastructure_ipv4", []),
+        )
+    )
+    for subject_id, reason in immunity_conflicts:
+        conflicted = next(
+            (subject for subject in normalized_subjects if str(subject.get("subject_id") or "") == subject_id),
+            None,
+        )
+        effective_state = conflicted.get("effective_state") if isinstance(conflicted, dict) else None
+        scoped_runtime = effective_state.get("scoped_runtime") if isinstance(effective_state, dict) else None
+        if isinstance(scoped_runtime, dict) and reason in {
+            "protected_runtime_cannot_use_scoped_vpn",
+            "docker_vpn_matcher_overlaps_infrastructure",
+            "invalid_infrastructure_ipv4",
+        }:
+            scoped_runtime["applied"] = False
+            scoped_runtime["status"] = "pending_infrastructure_immunity_conflict"
+            scoped_runtime["resolution_reason"] = reason
     manifest_subjects = [
         {
             "subject_id": subject["subject_id"],

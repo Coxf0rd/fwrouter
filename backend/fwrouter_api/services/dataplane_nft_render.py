@@ -31,11 +31,18 @@ from fwrouter_api.services.dataplane_nft_sets import (
     _resolve_rules_effective_artifact,
     _safe_set_suffix,
 )
+from fwrouter_api.services.docker_policy import docker_vpn_immunity_conflict
 from fwrouter_api.services.network_contract import (
     trusted_client_ipv4_nft_set,
     trusted_client_ipv6_nft_set,
 )
 from fwrouter_api.services.subject_taxonomy import subject_needs_transparent_policy
+
+
+class DockerPolicyConflictError(ValueError):
+    """A Docker VPN intent conflicts with a protected infrastructure path."""
+
+    error_code = "DOCKER_VPN_POLICY_CONFLICT"
 
 
 def render_owned_table_candidate(
@@ -48,6 +55,7 @@ def render_owned_table_candidate(
         if isinstance(manifest, dict)
         else None
     )
+    subjects = (manifest.get("subjects") or []) if isinstance(manifest, dict) else []
     if isinstance(core_bypass, dict) and core_bypass.get("enabled"):
         lines = [
             f"table {OWNED_TABLE} {{",
@@ -98,6 +106,15 @@ def render_owned_table_candidate(
         ]
         return "\n".join(lines)
 
+    if isinstance(manifest, dict):
+        conflict = docker_vpn_immunity_conflict(
+            [subject for subject in subjects if isinstance(subject, dict)],
+            _read_manifest_extra_ipv4_list(manifest, "infrastructure_ipv4"),
+        )
+        if conflict:
+            subject_id, reason = conflict
+            raise DockerPolicyConflictError(f"{subject_id}: {reason}.")
+
     summary = manifest.get("summary") if isinstance(manifest, dict) else {}
     mode = str(summary.get("global_mode") or "direct")
     selective_default = str(summary.get("selective_default") or "direct").lower()
@@ -138,20 +155,28 @@ def render_owned_table_candidate(
     if not vpn_policy_required and isinstance(preflight, dict):
         vpn_policy_required = bool(preflight.get("vpn_policy_required", False))
 
-    subjects = (manifest.get("subjects") or []) if isinstance(manifest, dict) else []
-    
     infrastructure_ips = []
     for s in subjects:
         if not isinstance(s, dict):
             continue
         scoped_runtime = s.get("scoped_runtime")
         matcher = scoped_runtime.get("matcher") if isinstance(scoped_runtime, dict) else None
-        if (
-            s.get("subject_type") in {"docker", "host", "fwrouter"}
-            and isinstance(matcher, dict)
-            and matcher.get("family") == "ipv4"
-            and matcher.get("value")
-        ):
+        subject_type = str(s.get("subject_type") or "")
+        if not isinstance(matcher, dict) or matcher.get("family") != "ipv4" or not matcher.get("value"):
+            continue
+        if subject_type in {"host", "fwrouter"} or scoped_runtime.get("infrastructure_role"):
+            infrastructure_ips.append(str(matcher["value"]))
+            continue
+        if subject_type != "docker":
+            continue
+
+        effective = s.get("effective_state")
+        path = str(s.get("dataplane_path") or (effective.get("dataplane_path") if isinstance(effective, dict) else "") or "").strip().lower()
+        if not bool(s.get("is_active")) or path not in {"direct", "vpn", "blocked"}:
+            infrastructure_ips.append(str(matcher["value"]))
+        elif path == "vpn" and not bool(scoped_runtime.get("applied")):
+            # The conflict validator above normally rejects this state. Keep the
+            # source protected if a future caller renders a partial manifest.
             infrastructure_ips.append(str(matcher["value"]))
 
     infrastructure_ips.extend(

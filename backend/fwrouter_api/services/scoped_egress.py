@@ -17,6 +17,7 @@ from fwrouter_api.services.subject_taxonomy import (
     subject_needs_transparent_policy,
     transparent_ingress_contract_for_subject,
 )
+from fwrouter_api.services.server_layout import protected_docker_runtime_role
 
 
 SCOPED_EGRESS_ELIGIBLE_SUBJECT_TYPES = {
@@ -31,6 +32,13 @@ SCOPED_PENDING_STATUSES = {
     "pending_unresolved_subject_match",
     "pending_inactive_subject",
     "pending_no_selected_server",
+    "pending_infrastructure_immunity_conflict",
+    "pending_docker_host_network",
+    "pending_docker_direct_source_coverage",
+    "pending_docker_ipv4_inventory",
+    "pending_docker_multi_ipv4_unsupported",
+    "pending_docker_ipv6_inventory",
+    "pending_docker_ipv6_unsupported",
 }
 SCOPED_RUNTIME_BLOCKER_TRANSPARENT_TCP_UNHEALTHY = (
     "selective_materialized_but_transparent_tcp_unhealthy"
@@ -42,6 +50,26 @@ SELECTIVE_SCOPED_RUNTIME_SUBJECT_TYPES = TRANSPARENT_INGRESS_CLIENT_SUBJECT_TYPE
 def _normalized_detail(subject: dict[str, Any]) -> dict[str, Any]:
     detail = subject.get("detail")
     return detail if isinstance(detail, dict) else {}
+
+
+def _docker_ipv6_inventory_state(subject: dict[str, Any]) -> tuple[str, list[str]]:
+    detail = _normalized_detail(subject)
+    source = detail.get("source") or detail.get("source_json")
+    if not isinstance(source, dict) or source.get("IPv6InventoryComplete") is not True:
+        return "incomplete", []
+    values = source.get("IPv6Addresses")
+    if not isinstance(values, list):
+        return "incomplete", []
+    addresses: set[str] = set()
+    for value in values:
+        try:
+            address = ip_address(str(value).strip())
+        except ValueError:
+            return "incomplete", []
+        if address.version != 6:
+            return "incomplete", []
+        addresses.add(str(address))
+    return ("global_ipv6_present", sorted(addresses)) if addresses else ("complete_no_global_ipv6", [])
 
 
 def _xray_bindings_path() -> Path:
@@ -273,6 +301,7 @@ def build_scoped_subject_runtime(
     server_override: dict[str, Any] | None,
     vpn_supported: bool,
     bypass_enabled: bool,
+    global_mode: str | None = None,
 ) -> dict[str, Any]:
     subject_id = str(subject.get("subject_id") or "")
     subject_type = str(subject.get("subject_type") or "")
@@ -282,6 +311,7 @@ def build_scoped_subject_runtime(
         dataplane_path=dataplane_path,
         server_override=server_override,
     )
+    infrastructure_role = protected_docker_runtime_role(subject)
     subject_role = (
         "client_plane"
         if subject_type in CLIENT_PLANE_SUBJECT_TYPES
@@ -294,6 +324,7 @@ def build_scoped_subject_runtime(
         subject_type=subject_type,
         dataplane_path=dataplane_path,
         server_override=server_override,
+        infrastructure_role=infrastructure_role,
     )
 
     result = {
@@ -317,6 +348,7 @@ def build_scoped_subject_runtime(
         "subject_role": subject_role,
         "inventory_classification": inventory_classification,
         "control_plane_direct_safe": subject_type in CONTROL_PLANE_DIRECT_SAFE_SUBJECT_TYPES,
+        "infrastructure_role": infrastructure_role,
     }
 
     resolved_vpn_target_id = vpn_target_id if vpn_target_id is not None else selected_server_id
@@ -340,6 +372,34 @@ def build_scoped_subject_runtime(
         result["resolution_reason"] = "subject_type_not_supported"
         return result
 
+    # Direct needs the same complete source coverage when unmatched packets
+    # could enter global VPN. Host-network output and protected runtimes retain
+    # their established direct-safe immunity, independent of global classify.
+    if (subject_type == "docker" and dataplane_path == "direct"
+            and not infrastructure_role and not bypass_enabled
+            and global_mode in {"vpn", "selective"}):
+        detail = _normalized_detail(subject)
+        source = detail.get("source") or detail.get("source_json")
+        network_mode = str(source.get("NetworkMode") or "").strip().lower() if isinstance(source, dict) else ""
+        if network_mode != "host":
+            values = source.get("IPv4Addresses") if isinstance(source, dict) else None
+            try:
+                addresses = {str(ip_address(value)) for value in values} if isinstance(values, list) else set()
+                valid = all(ip_address(value).version == 4 for value in addresses)
+            except (ValueError, TypeError):
+                addresses, valid = set(), False
+            ipv6_state, _ = _docker_ipv6_inventory_state(subject)
+            if (not isinstance(source, dict) or source.get("IPv4InventoryComplete") is not True
+                    or not valid or len(addresses) != 1
+                    or str(detail.get("ip_address") or "") not in addresses
+                    or ipv6_state != "complete_no_global_ipv6"):
+                result["tracked"] = True
+                result["eligible"] = True
+                result["inventory_classification"] = "tracked_only"
+                result["status"] = "pending_docker_direct_source_coverage"
+                result["resolution_reason"] = "docker_direct_source_coverage_incomplete"
+                return result
+
     if (
         server_override is not None
         and dataplane_path != "vpn"
@@ -356,6 +416,44 @@ def build_scoped_subject_runtime(
         result["status"] = "not_applicable"
         result["resolution_reason"] = "subject_not_in_vpn_path"
         return result
+
+    if subject_type == "docker" and infrastructure_role and dataplane_path == "vpn":
+        result["status"] = "pending_infrastructure_immunity_conflict"
+        result["resolution_reason"] = "protected_runtime_cannot_use_scoped_vpn"
+        return result
+
+    if subject_type == "docker" and dataplane_path == "vpn":
+        detail = _normalized_detail(subject)
+        source = detail.get("source") or detail.get("source_json")
+        network_mode = str(source.get("NetworkMode") or "").strip().lower() if isinstance(source, dict) else ""
+        if network_mode == "host":
+            result["status"] = "pending_docker_host_network"
+            result["resolution_reason"] = "docker_host_network_full_vpn_unsupported"
+            return result
+        ipv4_values = source.get("IPv4Addresses") if isinstance(source, dict) else None
+        try:
+            ipv4_addresses = {str(ip_address(value)) for value in ipv4_values} if isinstance(ipv4_values, list) else set()
+            ipv4_valid = all(ip_address(value).version == 4 for value in ipv4_addresses)
+        except (ValueError, TypeError):
+            ipv4_addresses, ipv4_valid = set(), False
+        if not isinstance(source, dict) or source.get("IPv4InventoryComplete") is not True or not ipv4_valid or not ipv4_addresses:
+            result["status"] = "pending_docker_ipv4_inventory"
+            result["resolution_reason"] = "docker_ipv4_inventory_incomplete"
+            return result
+        if len(ipv4_addresses) != 1 or str(detail.get("ip_address") or "") not in ipv4_addresses:
+            result["status"] = "pending_docker_multi_ipv4_unsupported"
+            result["resolution_reason"] = "docker_single_ipv4_matcher_required"
+            return result
+        ipv6_state, _ipv6_addresses = _docker_ipv6_inventory_state(subject)
+        result["docker_ipv6_inventory_status"] = ipv6_state
+        if ipv6_state == "incomplete":
+            result["status"] = "pending_docker_ipv6_inventory"
+            result["resolution_reason"] = "docker_ipv6_inventory_incomplete"
+            return result
+        if ipv6_state == "global_ipv6_present":
+            result["status"] = "pending_docker_ipv6_unsupported"
+            result["resolution_reason"] = "docker_ipv6_full_vpn_unsupported"
+            return result
 
     selective_subject_runtime = (
         dataplane_path == "selective"
@@ -483,7 +581,10 @@ def _inventory_classification(
     subject_type: str,
     dataplane_path: str,
     server_override: dict[str, Any] | None,
+    infrastructure_role: str | None = None,
 ) -> str:
+    if infrastructure_role:
+        return "control_plane_direct_safe"
     if subject_type == "fwrouter":
         return "control_plane_direct_safe"
     if subject_type in SYSTEM_SCOPED_SUBJECT_TYPES and dataplane_path != "vpn" and server_override is None:
