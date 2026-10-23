@@ -5946,6 +5946,33 @@
       "slow": false,
       "timeout_seconds": 30,
       "execution_group": "ui-tooling"
+    },
+    {
+      "baseline_policy": "not applicable: observed test-result visibility projection",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "synthetic routine/hosted/native receipts and temporary evidence roots",
+      "fixture_owner": "tests/gates/test_visibility_report.py",
+      "id": "ci-visibility-report-contract",
+      "isolation": "temporary directories and synthetic JSON; no network or project runtime",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/gates/test_visibility_report.py",
+      "primary_level": "L1",
+      "risk_notes": "tests unified coverage reporting, status conservatism, repeated execution counts, and omission visibility without granting qualification",
+      "runtime_dependencies": [
+        "Python 3.11 standard library",
+        "git for temporary committed-range fixture"
+      ],
+      "slow": false,
+      "timeout_seconds": 30,
+      "execution_group": "ui-tooling"
     }
   ],
   "version": "2026.10.17.1",

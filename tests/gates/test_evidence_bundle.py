@@ -289,11 +289,29 @@ class EvidenceBundleTests(unittest.TestCase):
                              bundle.strict.validate_xray_docker_receipt(xray_path, plan, runtime_inputs))
 
             evidence = root / "evidence"
-            (evidence / "native").mkdir(parents=True)
-            shutil.copytree(destination, evidence / "native", dirs_exist_ok=True)
+            native_evidence = evidence / "native"
+            (native_evidence / "profiles").mkdir(parents=True)
+            shutil.copyfile(destination / "runtime-inputs.json", native_evidence / "runtime-inputs.json")
+            for profile, receipt_name in (("qcp", "qualified-child-receipt.json"),
+                                          ("xray", "qualified-xray-docker-receipt.json")):
+                target = native_evidence / "profiles" / profile
+                target.mkdir()
+                shutil.copyfile(destination / "runtime-inputs.json", target / "runtime-inputs.json")
+                shutil.copyfile(destination / profile / receipt_name, target / receipt_name)
+                shutil.copyfile(destination / profile / "profile.json", target / "profile.json")
+                with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"},
+                                clear=False):
+                    bundle.parallel_ci.seal(target, "native", plan, "success")
+                self.assertTrue((target / "producer.json").is_file())
             selected = bundle.expected_evidence_paths(evidence, plan, {"native": True})["native"]
-            self.assertIn("qcp/profile.json", selected)
-            self.assertIn("xray/profile.json", selected)
+            self.assertIn("profiles/qcp/profile.json", selected)
+            self.assertIn("profiles/xray/profile.json", selected)
+            with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"},
+                            clear=False):
+                bundle.verify_native_profiles(evidence, plan)
+                (native_evidence / "runtime-inputs.json").write_text("{}", encoding="utf-8")
+                with self.assertRaisesRegex(bundle.gate.GateError, "input manifest differs"):
+                    bundle.verify_native_profiles(evidence, plan)
             self.assertIn("tests/acceptance/qualified-child-scenarios.json", bundle.SOURCE_FILES)
 
     def test_eligibility_requires_exact_run_attempt_and_all_required_job_successes(self) -> None:
@@ -458,6 +476,7 @@ class EvidenceBundleTests(unittest.TestCase):
             for bundle_outcome, publication, artifact_id, digest in (
                 ("success", "failure", "", ""), ("failure", "skipped", "", ""),
                 ("success", "success", "", ""), ("success", "success", "55", "not-a-digest"),
+                ("success", "success", "55", "a" * 64),
             ):
                 output = root / f"summary-{publication}-{artifact_id}-{len(digest)}.md"
                 args = argparse.Namespace(aggregate_outcome="success", bundle_outcome=bundle_outcome,

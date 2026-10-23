@@ -78,6 +78,8 @@ class GateContractTests(unittest.TestCase):
             "tests/gates/test_network_fixture_contract.py",
             "tests/gates/test_subscription_identity_contract.py",
             "tests/gates/test_evidence_bundle.py",
+            "tests/gates/test_visibility_report.py",
+            "tests/gates/test_routine_shards.py",
             "tests/acceptance/test_dependency_image_contract.py",
             "tests/acceptance/test_consume_dependency_image_contract.py",
         }, gate.STDLIB_CONTRACT_PATHS - {
@@ -815,7 +817,7 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("'functional-ordinary' if requirements(plan)['provider'] else 'xray-diagnostic'", source)
         self.assertIn("require_main_smoke=args.main_smoke, main_smoke_path=smoke", source)
         self.assertIn("'xray-diagnostic'", source)
-        self.assertIn("'backend/tests/test_xray_native_readback.py' in plan['selected_files']", source)
+        self.assertIn("any(r['path'] == 'backend/tests/test_xray_native_readback.py' for r in rows)", source)
         self.assertIn("and r['path'] != 'backend/tests/test_xray_native_readback.py'", source)
 
 

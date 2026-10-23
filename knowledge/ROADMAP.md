@@ -6,7 +6,7 @@ Owner-merged PR39 is now main `ccb8de81be68585d95a327e6d1835ea7387de24a`. Actual
 
 CI V3 PR A is a separate source-only workstream: deterministic manifest-owned routine partitions, visible Unit/Contract/Integration/Smoke execution, separate native QCP/Xray jobs, exact node/coverage reporting and preserved strict required check/artifact lifecycle. Implementation and qualification remain in progress until exact-head CI, independent review and measurements are recorded. No production or private-wrapper changes, no CD, no automatic merge. The owner confirmed the separate production rollout was complete before implementation began; this is not a new production acceptance claim.
 
-PR B is design-only: parallel full safe L6 with two independent hosted repeats, strict regression aggregation and complete evidence. Do not open it until owner Squash and Merge of PR A and successful actual-main verification. Existing L6/L7 and feature-push contracts remain separate. See [CI V3](../docs/CI_V3.md). PR35 remains Draft; private qualification and installation authority are unchanged.
+Initial PR B design-only sequencing was superseded by explicit owner authorization to implement parallel full safe L6 on a separate stacked branch above qualified PR A. Preserve two independent hosted repeats, strict regression aggregation and complete evidence. Stacked qualification does not substitute for actual-main verification; only the owner merges A then B. Existing L6/L7 and feature-push contracts remain separate. See [CI V3](../docs/CI_V3.md). PR35 remains Draft; private qualification and installation authority are unchanged.
 
 ## CI V2 artifact lifecycle — proposed source contract (2026-10-23)
 

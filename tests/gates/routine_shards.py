@@ -21,6 +21,45 @@ def selected_rows(plan: dict[str, Any], manifest: dict[str, Any]) -> list[dict[s
     return rows
 
 
+def validate_l5_coverage(plan: dict[str, Any], manifest: dict[str, Any],
+                         executions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Prove every plan-required L5 anchor ran once under its primary owner."""
+    policy = plan.get("regression_policy")
+    if not isinstance(policy, dict) or policy.get("level") != "L5":
+        raise gate.GateError("routine aggregate lacks the immutable L5 regression policy")
+    canonical = sorted(manifest.get("policies", {}).get("L5", {}).get("anchors", []))
+    shared_domains = set(manifest.get("policies", {}).get("L5", {}).get("shared_domains", []))
+    reasons = sorted(set(plan.get("domains", [])) & shared_domains)
+    expected = canonical if plan.get("mandatory_suite_required") or reasons else []
+    anchors = policy.get("anchors")
+    if (policy.get("reasons") != reasons or anchors != expected
+            or len(anchors) != len(set(anchors))):
+        raise gate.GateError("plan L5 anchors/reasons differ from manifest-derived policy")
+    selected = {row["path"]: row for row in selected_rows(plan, manifest)}
+    if not set(expected) <= set(selected):
+        raise gate.GateError("required L5 anchor is absent from the immutable selected-file plan")
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for row in executions:
+        by_path.setdefault(row.get("path", ""), []).append(row)
+    evidence = []
+    for path in expected:
+        row = selected[path]
+        matching = by_path.get(path, [])
+        if len(matching) != 1:
+            raise gate.GateError(f"L5 anchor execution is missing or duplicated: {path}")
+        execution = matching[0]
+        nodes = execution.get("collected_node_ids")
+        statuses = execution.get("node_status")
+        if (execution.get("status") != "passed" or execution.get("execution_profile")
+                or not isinstance(nodes, list) or not nodes or not isinstance(statuses, dict)
+                or any(statuses.get(node) != "passed" for node in nodes)):
+            raise gate.GateError(f"L5 anchor lacks completed primary-owner test evidence: {path}")
+        evidence.append({"path": path, "suite": row["id"], "primary_level": row["primary_level"],
+                         "domain": row["domain"], "execution_group": row["execution_group"],
+                         "status": "passed", "node_ids": nodes})
+    return {"status": "passed", "required_count": len(expected), "anchors": evidence}
+
+
 def expected_by_group(plan: dict[str, Any], manifest: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     problems = gate.check_catalog(manifest)
     if problems:
@@ -179,6 +218,7 @@ def merge_reports(plan: dict[str, Any], manifest: dict[str, Any], reports: dict[
         extra = sorted(set(reports) - set(gate.ROUTINE_SHARD_GROUPS))
         raise gate.GateError(f"routine shard report set is incomplete or unexpected; missing={missing}, extra={extra}")
     node_status: dict[str, str] = {}
+    file_markers: list[str] = []
     rows_by_path: dict[str, dict[str, Any]] = {}
     shard_summaries = []
     l0_report = None
@@ -193,6 +233,7 @@ def merge_reports(plan: dict[str, Any], manifest: dict[str, Any], reports: dict[
         if overlap:
             raise gate.GateError("duplicate collected node IDs across shards: " + ", ".join(sorted(overlap)[:8]))
         node_status.update(report["node_status"])
+        file_markers.extend(report["file_marker_paths"])
         if report["l0"]["owned"]:
             if l0_report is not None:
                 raise gate.GateError("L0 has multiple shard owners")
@@ -252,6 +293,7 @@ def merge_reports(plan: dict[str, Any], manifest: dict[str, Any], reports: dict[
         "executions": [{"suite": "L0-static", "path": "@L0", "status": "passed",
                         "primary_level": "L0", "elapsed_seconds": l0_report["elapsed_seconds"]}, *executions],
         "node_status": node_status,
+        "file_marker_paths": sorted(file_markers),
         "node_ownership": node_ownership,
         "blocked_reasons": [], "failure_diagnostics": [],
         "raw_output_retained": False,
@@ -260,6 +302,7 @@ def merge_reports(plan: dict[str, Any], manifest: dict[str, Any], reports: dict[
         "eligible": False,
         "eligibility_note": "routine shards are not a qualification result; strict aggregate validates hosted/native evidence",
     }
+    report["l5_coverage"] = validate_l5_coverage(plan, manifest, executions)
     report["report_digest"] = gate.canonical_digest(report)
     return report
 

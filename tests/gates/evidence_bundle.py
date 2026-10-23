@@ -34,6 +34,7 @@ SOURCE_FILES = (
     "tests/gates/evidence_bundle.py",
     "tests/gates/parallel_ci.py",
     "tests/gates/routine_shards.py",
+    "tests/gates/visibility_report.py",
     "tests/gates/aggregate_hosted.py",
     "tests/gates/gate.py",
     "backend/tests/gate_plugin.py",
@@ -273,22 +274,18 @@ def expected_evidence_paths(evidence: Path, plan: dict[str, Any], needed: dict[s
                         and path != "backend/tests/test_xray_native_readback.py"
                         for path, row in manifest_rows.items())
         needs_xray = "backend/tests/test_xray_native_readback.py" in selected
-        if needs_qcp:
-            native_paths.append("qualified-child-receipt.json")
-        if needs_xray:
-            native_paths.append("qualified-xray-docker-receipt.json")
-        selected_receipts = list(native_paths[1:])
-        native_paths = [native_paths[0]]
-        for name in selected_receipts:
-            candidates = list((evidence / "native").rglob(name))
-            if len(candidates) != 1 or candidates[0].is_symlink() or not candidates[0].is_file():
-                raise gate.GateError(f"native evidence must contain exactly one {name}")
-            receipt = candidates[0]
-            relative = receipt.relative_to(evidence / "native").as_posix()
-            profile = receipt.with_name("profile.json")
-            if profile.is_symlink() or not profile.is_file():
-                raise gate.GateError(f"native evidence is missing sibling profile.json for {name}")
-            native_paths.extend((relative, profile.relative_to(evidence / "native").as_posix()))
+        profiles = (["qcp"] if needs_qcp else []) + (["xray"] if needs_xray else [])
+        for profile_name in profiles:
+            receipt_name = ("qualified-child-receipt.json" if profile_name == "qcp"
+                            else "qualified-xray-docker-receipt.json")
+            for relative in (f"profiles/{profile_name}/producer.json",
+                             f"profiles/{profile_name}/runtime-inputs.json",
+                             f"profiles/{profile_name}/{receipt_name}",
+                             f"profiles/{profile_name}/profile.json"):
+                candidate = evidence / "native" / relative
+                if candidate.is_symlink() or not candidate.is_file():
+                    raise gate.GateError(f"native evidence is missing sealed {profile_name} closure: {candidate.name}")
+                native_paths.append(relative)
         paths["native"] = native_paths
     return {role: sorted(items) for role, items in paths.items() if needed.get(role)}
 
@@ -544,6 +541,16 @@ def build_bundle(args: argparse.Namespace) -> dict[str, Any]:
                            args.destination / "reports/fwrouter-aggregate.json")
         copy_evidence_file(args.required / "required-result.json",
                            args.destination / "reports/required-result.json")
+        import visibility_report
+        visibility = visibility_report.collect(args.evidence, args.required, plan)
+        saved_visibility = read_json(args.required / "visibility.json")
+        if (gate.canonical_digest(visibility) != gate.canonical_digest(saved_visibility)
+                or visibility.get("qualification_status") != "passed"
+                or visibility.get("not_run_selected_files")
+                or visibility.get("diagnostic_limitations")):
+            raise gate.GateError("aggregate visibility report is missing, incomplete, or stale")
+        copy_evidence_file(args.required / "visibility.json",
+                           args.destination / "reports/visibility.json")
         if read_json(args.required / "required-result.json").get("safe_recovery_required") is True:
             for relative in ("qualification.json", "stage.json", "artifact/manifest.json", "artifact/source.tar"):
                 copy_evidence_file(args.required / "safe-recovery" / relative,
@@ -658,6 +665,7 @@ def verify_bundle(args: argparse.Namespace) -> dict[str, Any]:
     expected_bundle_paths = {
         "metadata.json", "content-manifest.json",
         "reports/fwrouter-aggregate.json", "reports/required-result.json",
+        "reports/visibility.json",
     }
     expected_bundle_paths.update(f"verifier-source/{path}" for path in SOURCE_FILES)
     for role, paths in expected_paths.items():
@@ -674,6 +682,14 @@ def verify_bundle(args: argparse.Namespace) -> dict[str, Any]:
     jobs = metadata.get("jobs")
     if not isinstance(jobs, dict) or parallel_ci.validate_results(jobs, needed):
         raise gate.GateError("bundled job result set is incomplete or has failed/skipped evidence")
+    import visibility_report
+    visibility = visibility_report.collect(evidence, args.bundle / "reports", plan)
+    saved_visibility = read_json(args.bundle / "reports/visibility.json")
+    if (gate.canonical_digest(visibility) != gate.canonical_digest(saved_visibility)
+            or visibility.get("qualification_status") != "passed"
+            or visibility.get("not_run_selected_files")
+            or visibility.get("diagnostic_limitations")):
+        raise gate.GateError("bundle visibility report is missing, stale, or incomplete")
     for role, required in needed.items():
         if not required:
             continue
@@ -743,6 +759,8 @@ def replay_strict(evidence: Path, plan: dict[str, Any], *, main_smoke: bool) -> 
     plan_path = evidence / "plan/fwrouter-affected-plan.json"
     unit_path = evidence / "unit/fwrouter-affected-unit.json"
     needed = parallel_ci.requirements(plan, main_smoke)
+    if needed["native"]:
+        verify_native_profiles(evidence, plan)
     hosted: list[Path] = []
     for role in ("hosted", "provider", "packet"):
         if needed[role]:
@@ -769,6 +787,26 @@ def replay_strict(evidence: Path, plan: dict[str, Any], *, main_smoke: bool) -> 
                             main_smoke_path=smoke)
 
 
+def verify_native_profiles(evidence: Path, plan: dict[str, Any]) -> None:
+    """Replay every profile producer seal and prove its runtime pins agree."""
+    profiles = parallel_ci.native_profiles(plan)
+    if not profiles:
+        raise gate.GateError("native profile evidence is required but no profile is plan-selected")
+    manifests = []
+    for profile in profiles:
+        root = evidence / "native/profiles" / profile
+        parallel_ci.verify_producer(root, "native", plan)
+        runtime = read_json(root / "runtime-inputs.json")
+        strict.validate_runtime_inputs(runtime)
+        manifests.append(runtime)
+    if any(value != manifests[0] for value in manifests[1:]):
+        raise gate.GateError("offline native profile runners disagree on pinned runtime inputs")
+    combined = read_json(evidence / "native/runtime-inputs.json")
+    strict.validate_runtime_inputs(combined)
+    if combined != manifests[0]:
+        raise gate.GateError("combined native runtime input differs from profile-bound manifests")
+
+
 def verify_routine_shards(evidence: Path, plan: dict[str, Any]) -> None:
     """Re-validate every matrix producer and prove its reports merge to the strict unit input."""
     manifest = gate.load_manifest()
@@ -778,7 +816,7 @@ def verify_routine_shards(evidence: Path, plan: dict[str, Any]) -> None:
         parallel_ci.verify_producer(root, "unit", plan)
         report = read_json(root / "shard.json")
         routine_shards.verify_shard(
-            report, group, plan, routine_shards.expected_by_group(plan, manifest),
+            report, group, plan, routine_shards.expected_by_group(plan, manifest)[group],
             run_id=os.environ["GITHUB_RUN_ID"], attempt=os.environ["GITHUB_RUN_ATTEMPT"],
         )
         reports[group] = report
@@ -884,10 +922,27 @@ def summary(args: argparse.Namespace) -> int:
              f"- Final artifact ID: `{artifact_id or 'unavailable'}`; digest: `{artifact_digest or 'unavailable'}`",
              "- Intermediate evidence retention: 1 day; final evidence: 7 days; failed diagnostics: 3 days.",
              "- Bundle checksums provide integrity checks, not an authenticated signature.", ""]
+    visibility_path = args.required / "visibility.json"
+    visibility_valid = False
+    if visibility_path.is_file() and not visibility_path.is_symlink():
+        import visibility_report
+        visibility = read_json(visibility_path)
+        lines.append(visibility_report.summary(visibility))
+        visibility_valid = (visibility.get("schema") == "fwrouter-ci-visibility/v1"
+                            and visibility.get("qualification_status") == "passed"
+                            and not visibility.get("not_run_selected_files")
+                            and not visibility.get("diagnostic_limitations"))
+    else:
+        reason = ("NOT RUN because strict aggregate did not pass" if outcomes["aggregate"] != "success"
+                  else "missing after aggregate PASS")
+        lines.append(f"## CI V3 test execution\n\n**Visibility report {reason}; qualification is incomplete.**\n")
+    if outcomes["aggregate"] == "success" and not visibility_valid:
+        status = "FAIL / INCOMPLETE"
+        lines[2] = f"- Overall result: **{status}**"
     Path(args.output).write_text("\n".join(lines), encoding="utf-8")
-    return 2 if outcomes["aggregate"] == "success" and (
+    return 2 if (outcomes["aggregate"] == "success" and (
         outcomes["bundle"] != "success" or outcomes["publication"] != "success" or not artifact_record_valid
-    ) else 0
+    )) or (outcomes["aggregate"] == "success" and not visibility_valid) else 0
 
 
 def main() -> int:

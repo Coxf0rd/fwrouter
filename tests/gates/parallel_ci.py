@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import time
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
@@ -254,9 +255,20 @@ def worker_summary(root: Path, plan_path: Path, role: str, outcome: str,
             continue
         tests = value.get('tests') if isinstance(value.get('tests'), dict) else {}
         statuses = tests.get('node_status') if isinstance(tests.get('node_status'), dict) else {}
-        for node, status in statuses.items():
-            if isinstance(node, str) and isinstance(status, str):
-                id_statuses.append((node, status))
+        if statuses:
+            for node, status in statuses.items():
+                if isinstance(node, str) and isinstance(status, str):
+                    id_statuses.append((node, status))
+        else:
+            # Hosted receipts publish exact IDs but not a per-node status map.
+            # Preserve their declared receipt result without inventing PASS for a
+            # failed or incomplete receipt; strict aggregate remains authoritative.
+            nodeids = tests.get('nodeids') if isinstance(tests.get('nodeids'), list) else []
+            receipt_status = value.get('status')
+            projected_status = 'passed' if receipt_status == 'passed' else 'unverified'
+            for node in nodeids:
+                if isinstance(node, str):
+                    id_statuses.append((node, projected_status))
         cleanup = value.get('cleanup')
         if isinstance(cleanup, str):
             cleanup_values.append(cleanup)
@@ -381,10 +393,6 @@ def run_worker(args):
         report['shard_digest'] = gate.canonical_digest(report)
         gate.atomic_json(shard_path, report)
         summary = routine_shards.write_summary(report)
-        summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
-        if summary_path:
-            with Path(summary_path).open('a', encoding='utf-8') as stream:
-                stream.write(summary)
         print(summary, end='', flush=True)
         if report['status'] != 'passed':
             status = status or 1
@@ -434,7 +442,7 @@ def aggregate(args):
                 source.rename(artifact_root / role)
         args.plan = artifact_root / 'plan' / Path(args.plan).name
         for role, needed in required.items():
-            if role == 'unit':
+            if role in {'unit', 'native'}:
                 continue
             if needed:
                 directory = Path(args.plan).parent if role == 'plan' else artifact_root / role
@@ -479,6 +487,8 @@ def aggregate(args):
                     raise gate.GateError(f'{profile}: native receipt is missing its profile.json closure')
                 target = native_root / profile
                 target.mkdir(mode=0o700)
+                shutil.copyfile(source / 'producer.json', target / 'producer.json', follow_symlinks=False)
+                shutil.copyfile(source / 'runtime-inputs.json', target / 'runtime-inputs.json', follow_symlinks=False)
                 shutil.copyfile(receipt, target / receipt.name, follow_symlinks=False)
                 shutil.copyfile(sibling, target / 'profile.json', follow_symlinks=False)
                 if profile == selected_native_profiles[0]:
@@ -490,7 +500,10 @@ def aggregate(args):
             seal(native_root, 'native', plan, 'success')
         import ci_inputs
         ci_inputs.verify(artifact_root / 'build', Path(args.plan))
-        manifests = [strict.read_json(one(artifact_root / k, 'runtime-inputs.json'))
+        # Native evidence deliberately retains one runtime manifest per profile.
+        # The top-level combined manifest is the common pin set used by strict
+        # aggregation; recursive discovery would be ambiguous by construction.
+        manifests = [strict.read_json(artifact_root / k / 'runtime-inputs.json')
                      for k in ('hosted', 'provider', 'packet', 'native') if required[k]]
         for manifest in manifests:
             strict.validate_runtime_inputs(manifest)
@@ -526,6 +539,13 @@ def aggregate(args):
                             str(output / 'fwrouter-aggregate.json'), '--output', str(output / 'safe-recovery')], check=True)
         gate.atomic_json(output / 'required-result.json', {'schema': 'fwrouter-parallel-required/v1',
                          **identity(plan), 'eligible': True, 'upstream': results, 'safe_recovery_required': recovery})
+        import visibility_report
+        visibility = visibility_report.collect(artifact_root, output, plan)
+        if (visibility.get('qualification_status') != 'passed'
+                or visibility.get('not_run_selected_files')
+                or visibility.get('diagnostic_limitations')):
+            raise gate.GateError('unified test visibility is incomplete after strict aggregate PASS')
+        gate.atomic_json(output / 'visibility.json', visibility)
         return 0
     except (OSError, ValueError, gate.GateError, subprocess.CalledProcessError) as exc:
         gate.atomic_json(output / 'required-result.json', {'schema': 'fwrouter-parallel-required/v1',

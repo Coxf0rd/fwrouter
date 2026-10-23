@@ -23,18 +23,21 @@ def _resource() -> dict:
             "disk_total_bytes": 4096, "disk_used_bytes": 1024, "disk_free_bytes": 3072}
 
 
-def _fixture():
+def _fixture(*, mandatory_all=False):
     manifest = gate.load_manifest()
     selected = []
     for group in gate.ROUTINE_SHARD_GROUPS:
         row = next(item for item in manifest["test_files"]
                    if item["execution_group"] == group)
         selected.append(row["path"])
+    anchors = sorted(manifest["policies"]["L5"]["anchors"]) if mandatory_all else []
+    selected = sorted(set(selected) | set(anchors))
     plan = {
         "source_commit": SOURCE, "plan_digest": "b" * 64,
         "manifest_digest": gate.canonical_digest(manifest), "manifest_version": manifest["version"],
         "selected_files": selected, "required_levels": ["L0", "L1"],
-        "required_execution_profiles": [],
+        "required_execution_profiles": [], "mandatory_suite_required": mandatory_all,
+        "domains": [], "regression_policy": {"level": "L5", "reasons": [], "anchors": anchors},
     }
     grouped = routine_shards.expected_by_group(plan, manifest)
     reports = {}
@@ -95,6 +98,31 @@ class RoutineShardContractTests(unittest.TestCase):
                          {row["path"] for row in merged["executions"] if row["path"] != "@L0"})
         self.assertFalse(merged["eligible"])
         self.assertIn("strict aggregate validates hosted/native evidence", merged["eligibility_note"])
+
+    def test_l5_anchors_are_selected_and_executed_under_their_primary_owner(self):
+        plan, manifest, _, reports = _fixture(mandatory_all=True)
+        merged = routine_shards.merge_reports(plan, manifest, reports, run_id=RUN_ID, attempt=ATTEMPT)
+        expected = sorted(manifest["policies"]["L5"]["anchors"])
+        self.assertEqual("passed", merged["l5_coverage"]["status"])
+        self.assertEqual(expected, [row["path"] for row in merged["l5_coverage"]["anchors"]])
+        self.assertEqual(len(expected), merged["l5_coverage"]["required_count"])
+        for row in merged["l5_coverage"]["anchors"]:
+            self.assertEqual("passed", row["status"])
+            self.assertTrue(row["node_ids"])
+            self.assertEqual(row["execution_group"], next(
+                item["execution_group"] for item in manifest["test_files"] if item["path"] == row["path"]))
+
+    def test_l5_policy_cannot_drop_or_invent_anchors(self):
+        plan, manifest, _, reports = _fixture(mandatory_all=True)
+        plan["regression_policy"]["anchors"] = plan["regression_policy"]["anchors"][:-1]
+        with self.assertRaisesRegex(gate.GateError, "L5 anchors/reasons"):
+            routine_shards.merge_reports(plan, manifest, reports, run_id=RUN_ID, attempt=ATTEMPT)
+
+    def test_l5_anchor_cannot_be_removed_from_selected_plan(self):
+        plan, manifest, _, reports = _fixture(mandatory_all=True)
+        plan["selected_files"].remove(plan["regression_policy"]["anchors"][0])
+        with self.assertRaises(gate.GateError):
+            routine_shards.merge_reports(plan, manifest, reports, run_id=RUN_ID, attempt=ATTEMPT)
 
     def test_missing_or_unexpected_shard_blocks_merge(self):
         plan, manifest, grouped, reports = _fixture()

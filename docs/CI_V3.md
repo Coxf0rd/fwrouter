@@ -36,7 +36,7 @@ flowchart TD
   A --> E[Offline verified complete evidence publication]
 ```
 
-The diagram groups real runner instances rather than implying a new ownership service. QCP and Xray use separate native matrix children; routine matrix concurrency is bounded. Static checks stay with the planner and coverage validation with the required aggregate to avoid two runner startups/artifact handoffs that add no test isolation. Evidence publication remains steps of the required job, so publication failure cannot leave an eligible green required check.
+The diagram groups real runner instances rather than implying a new ownership service. QCP and Xray use separate native matrix children; eight routine matrix children are bounded to four concurrent runners. This gives 16 runner jobs when both native profiles and all hosted profiles are selected (eight logical YAML job identifiers, with matrix expansion), rather than adding jobs only to reach a nominal count of 18. Static checks stay with the planner and coverage validation with the required aggregate to avoid two runner startups/artifact handoffs that add no test isolation. Evidence publication remains steps of the required job, so publication failure cannot leave an eligible green required check.
 
 ## Trigger policy
 
@@ -54,9 +54,9 @@ The diagram groups real runner instances rather than implying a new ownership se
 
 Preserve PR39: runner-local intermediate state; one-day sealed cross-job handoffs; three-day redacted failed diagnostics; seven-day complete final evidence. No writable PR token, privileged cleanup workflow, production credentials or persistent runner is introduced. More visible jobs may increase short-lived handoff count; the long-lived result remains one complete evidence bundle. A checksum inventory detects content changes but is not a GitHub-origin signature; consumers must independently verify workflow/run metadata.
 
-## PR B design: full L6 (not implemented by PR A)
+## PR B: separate stacked full L6 workstream
 
-Implementation must wait for owner Squash and Merge of PR A and successful actual-main verification. Keep the existing nightly/manual workflow operational until then. No PR B is opened in this step.
+The owner subsequently authorized implementation and qualification on a separate stacked branch above qualified PR A, without waiting for merge. Keep the existing nightly/manual workflow operational in PR A. PR B must explicitly declare its PR A dependency; stacked-head qualification is not actual-main qualification. Only the owner merges, first A and then the integrated B after renewed qualification as required.
 
 The full plan must select every safe registered file and exclude L7. Reuse the qualified partition/node-accounting contract from PR A with an explicit L6 mode. Proposed graph: full immutable plan → static/build and independent routine domain shards → independent hosted repeat 1 and repeat 2, QCP, Docker-Xray and packet/runtime-scale profiles → strict L6 aggregate → complete regression evidence. Runtime jobs wait only on their real build/profile prerequisites, not unrelated routine shards.
 
@@ -70,4 +70,4 @@ Baseline run wall time is 458 seconds; sum of eight job durations is 26.0 runner
 
 The latest historical L6 run inspected was [39755095242](https://github.com/Coxf0rd/fwrouter/actions/runs/39755095242) on `d313dcf`, with six hosted receipts and required repeat count two; it is historical evidence, not current-main L6 qualification.
 
-Final implementation graph, partition distribution and exact-head measurements are recorded after qualification. Until then this document describes constraints and baseline evidence, not a completed CI V3 qualification.
+Final implementation graph, partition distribution and exact-head measurements are recorded after qualification. Both packages are explicitly authorized for implementation, commits, push, Draft PRs, independent review and exact-head remote runs. These permissions do not authorize merge or production operations. Until then this document describes constraints and baseline evidence, not a completed CI V3 qualification.
