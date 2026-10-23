@@ -634,6 +634,12 @@
     },
     {
       "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "docs/CI_ARTIFACT_LIFECYCLE.md"
+    },
+    {
+      "domains": [
         "documentation"
       ],
       "glob": "knowledge/**"
@@ -4451,6 +4457,31 @@
       "runtime_dependencies": [
         "Python 3.11 standard library",
         "git for temporary committed-range fixture"
+      ],
+      "slow": false,
+      "timeout_seconds": 30
+    },
+    {
+      "baseline_policy": "not applicable: tests CI evidence bundle and retention contract",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "synthetic CI metadata, producer reports, and temporary bundle directories",
+      "fixture_owner": "tests/gates/test_evidence_bundle.py",
+      "id": "ci-evidence-bundle-contract",
+      "isolation": "temporary directories and synthetic JSON; no network or project runtime",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/gates/test_evidence_bundle.py",
+      "primary_level": "L1",
+      "risk_notes": "tests fail-closed bundle projection, expiry, diagnostics and required publication summary contracts",
+      "runtime_dependencies": [
+        "Python 3.11 standard library"
       ],
       "slow": false,
       "timeout_seconds": 30

@@ -204,3 +204,8 @@ Manual diagnostics are documented by `opt_fwrouter_api_fwrouter_api_services_man
 - [Atomic installer UI publication](installer_ui_publication_py.md): prepared immutable UI trees, atomic active pointer and retained previous release.
 - [Installer component lock](installer_component_install_lock_py.md): shared serialization for backend/UI installer operations and direct UI publication.
 - [Safe backend recovery artifact](installer_safe_recovery_py.md): tracked backend artifact verification and isolated staging through the exact installer dependency closure.
+
+
+## CI evidence lifecycle
+
+`tests/gates/evidence_bundle.py` owns bounded evidence packaging and offline validation; existing `parallel_ci.py` and `aggregate_hosted.py` remain qualification authorities. `.github/workflows/test-gates.yml` retains the existing eight jobs and publishes complete successful evidence only after strict aggregation. See [artifact lifecycle contract](../../../docs/CI_ARTIFACT_LIFECYCLE.md). No production, recovery or routing owner is introduced.
