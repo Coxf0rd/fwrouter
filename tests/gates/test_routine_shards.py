@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
 import routine_shards
+import parallel_ci
 
 
 RUN_ID = "123456"
@@ -79,6 +80,19 @@ def _fixture(*, mandatory_all=False):
 
 
 class RoutineShardContractTests(unittest.TestCase):
+    def test_process_peak_parses_realistic_gnu_time_indentation_and_cpu_percent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "worker.log"
+            Path(str(log) + ".time").write_text(
+                "\tMaximum resident set size (kbytes): 51234\n"
+                "\tPercent of CPU this job got: 97%\n", encoding="utf-8")
+            self.assertEqual({"max_rss_kib": 51234, "cpu_percent": 97},
+                             parallel_ci.process_peak(log))
+            Path(str(log) + ".time").write_text(
+                "\tMaximum resident set size (kbytes): unknown\n"
+                "\tPercent of CPU this job got: 97 percent\n", encoding="utf-8")
+            self.assertEqual({}, parallel_ci.process_peak(log))
+
     def test_manifest_assigns_each_file_to_one_reviewed_execution_group(self):
         manifest = gate.load_manifest()
         self.assertEqual([], gate.check_catalog(manifest))

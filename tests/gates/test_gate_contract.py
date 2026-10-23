@@ -13,6 +13,7 @@ import tempfile
 import textwrap
 import unittest
 import zipfile
+from types import SimpleNamespace
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -28,6 +29,11 @@ PARALLEL_SPEC = importlib.util.spec_from_file_location("fwrouter_parallel_ci", P
 assert PARALLEL_SPEC and PARALLEL_SPEC.loader
 parallel_ci = importlib.util.module_from_spec(PARALLEL_SPEC)
 PARALLEL_SPEC.loader.exec_module(parallel_ci)
+PLUGIN_SPEC = importlib.util.spec_from_file_location(
+    "fwrouter_gate_plugin", gate.ROOT / "backend/tests/gate_plugin.py")
+assert PLUGIN_SPEC and PLUGIN_SPEC.loader
+gate_plugin = importlib.util.module_from_spec(PLUGIN_SPEC)
+PLUGIN_SPEC.loader.exec_module(gate_plugin)
 PLUGIN_PATH = gate.ROOT / "backend/tests/gate_plugin.py"
 PLUGIN_SPEC = importlib.util.spec_from_file_location("fwrouter_gate_plugin_contract", PLUGIN_PATH)
 assert PLUGIN_SPEC is not None and PLUGIN_SPEC.loader is not None
@@ -115,6 +121,33 @@ class GateContractTests(unittest.TestCase):
             l0_owned=False, l0_ok=True, l0_elapsed=0, l0_problems=[])
         self.assertEqual([node], report["collected_node_ids"])
         self.assertEqual([], report["file_marker_paths"])
+
+    def test_gate_plugin_resolves_root_and_backend_nodeids_from_collected_item_paths(self) -> None:
+        root_relative = "tests/acceptance/test_dependency_image_contract.py"
+        backend_relative = "backend/tests/test_isolation_bootstrap.py"
+        root_raw = "tests/acceptance/test_dependency_image_contract.py::test_contract[param]"
+        backend_raw = "tests/test_isolation_bootstrap.py::test_contract[param]"
+        items = [
+            SimpleNamespace(nodeid=root_raw, path=gate.ROOT / root_relative),
+            SimpleNamespace(nodeid=backend_raw, path=gate.ROOT / backend_relative),
+        ]
+        gate_plugin._EXACT_NODEIDS.clear()
+        gate_plugin._COLLECTED_NODEIDS.clear()
+        gate_plugin.pytest_collection_finish(SimpleNamespace(items=items))
+        self.assertEqual(root_relative + "::test_contract[param]",
+                         gate_plugin._exact_repo_nodeid(root_raw))
+        self.assertEqual(backend_relative + "::test_contract[param]",
+                         gate_plugin._exact_repo_nodeid(backend_raw))
+        self.assertEqual(sorted([root_relative + "::test_contract[param]",
+                                 backend_relative + "::test_contract[param]"]),
+                         sorted(gate_plugin._COLLECTED_NODEIDS))
+        gate_plugin.pytest_runtest_logstart(root_raw, ("", None, ""))
+        gate_plugin.pytest_runtest_logreport(SimpleNamespace(
+            nodeid=root_raw, failed=False, skipped=False, when="call", passed=True))
+        self.assertEqual("passed", gate_plugin._NODE_STATUSES[
+            root_relative + "::test_contract[param]"])
+        self.assertEqual("tests/uncollected.py::test_case",
+                         gate_plugin._exact_repo_nodeid("tests/uncollected.py::test_case"))
 
     def test_backend_uv_lock_selects_test_infrastructure_in_quick_and_required_plans(self) -> None:
         path = "backend/uv.lock"

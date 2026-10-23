@@ -195,9 +195,12 @@ def process_peak(log_path: Path) -> dict[str, int]:
     except OSError:
         return {}
     result = {}
-    for label, key in (('Maximum resident set size (kbytes):', 'max_rss_kib'),
-                       ('Percent of CPU this job got:', 'cpu_percent')):
-        match = re.search(rf'^{re.escape(label)}\s*(\d+)\s*$', content, re.MULTILINE)
+    for label, key, suffix in (('Maximum resident set size (kbytes):', 'max_rss_kib', ''),
+                               ('Percent of CPU this job got:', 'cpu_percent', r'(?:%)?')):
+        # GNU time -v indents report labels with tabs; permit only horizontal
+        # leading whitespace and the documented optional CPU percent sign.
+        match = re.search(rf'^[ \t]*{re.escape(label)}[ \t]*(\d+){suffix}[ \t]*$',
+                          content, re.MULTILINE)
         if match:
             result[key] = int(match.group(1))
     return result
