@@ -2172,7 +2172,8 @@ def _refresh_packet_provider(api: str, source_ref: str, *, stack: dict[str, Any]
 
 def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id: str,
                              expected: str, expected_udp: bool,
-                             *, expect_active_server: bool = True) -> dict[str, Any]:
+                             *, expect_active_server: bool = True,
+                             secondary_selector_candidate: bool = False) -> dict[str, Any]:
     from fwrouter_api.db.connection import db_session
     from fwrouter_api.services.logical_topology import get_logical_runtime_name
     from fwrouter_api.services.provider_managed import binding_for
@@ -2192,16 +2193,18 @@ def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id:
     config = yaml.safe_load(config_path.read_bytes())
     proxies = config.get("proxies") if isinstance(config, dict) else None
     vless = [row for row in proxies if isinstance(row, dict) and row.get("type") == "vless"] if isinstance(proxies, list) else []
-    assert len(vless) == 1 and vless[0].get("udp") is expected_udp and vless[0].get("port") == 5301, {
-        "native_vless_count": len(vless),
-        "native_udp": vless[0].get("udp") if len(vless) == 1 else None,
-        "native_target_port": vless[0].get("port") if len(vless) == 1 else None,
-    }
-    assert not any(str(key).startswith("_fwrouter") for key in vless[0]), "internal capability marker leaked into native Mihomo config"
+    expected_count = 2 if secondary_selector_candidate else 1
+    assert len(vless) == expected_count, {"native_vless_count": len(vless), "expected": expected_count}
+    primary = [row for row in vless if row.get("port") == 5301 and row.get("server") == ENDPOINT_IP]
+    assert len(primary) == 1 and primary[0].get("udp") is expected_udp
+    if secondary_selector_candidate:
+        secondary = [row for row in vless if row.get("port") == ENDPOINT_SELECTOR_PORT and row.get("server") == ENDPOINT_IP]
+        assert len(secondary) == 1 and secondary[0].get("udp") is True
+    assert all(not any(str(key).startswith("_fwrouter") for key in row) for row in vless), "internal capability marker leaked into native Mihomo config"
     native = _mihomo_packet_path_proof(stack)
     assert native.get("available") is True and native.get("runtime_running") is True, native
     assert native.get("native_loaded_config_matches_active") is True, native
-    assert native.get("vless_udp_enabled_count") == (1 if expected_udp else 0), native
+    assert native.get("vless_udp_enabled_count") == int(expected_udp) + int(secondary_selector_candidate), native
     binding = binding_for(source_ref)
     assert binding["logical_server_id"] == logical_id
     runtime_name = get_logical_runtime_name(logical_id)
@@ -4099,10 +4102,12 @@ def _probe_vpn_udp_contract_phase(stack: dict[str, Any], source_ref: str, logica
                                   record_property: Any, *, expect_success: bool,
                                   endpoint_unavailable: bool = False,
                                   expect_vpn_handoff: bool | None = None,
-                                  expect_active_server: bool = True) -> dict[str, Any]:
+                                  expect_active_server: bool = True,
+                                  secondary_selector_candidate: bool = False) -> dict[str, Any]:
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     capability_state = _packet_capability_state(stack, source_ref, logical_id, capability, expected_udp,
-                                                 expect_active_server=expect_active_server)
+                                                 expect_active_server=expect_active_server,
+                                                 secondary_selector_candidate=secondary_selector_candidate)
     selection_before = _provider_selection_snapshot(source_ref)
     observations_before = _endpoint_observations()
     capture_before = _packet_counts()
@@ -4824,7 +4829,8 @@ def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
         try:
             _probe_vpn_udp_contract_phase(stack, source_ref, logical_id, "supported", True,
                                           "docker-vpn-endpoint-unavailable", record_property,
-                                          expect_success=False, endpoint_unavailable=True)
+                                          expect_success=False, endpoint_unavailable=True,
+                                          secondary_selector_candidate=True)
         finally:
             restarted = _role_json(f"{ENDPOINT_CONTROL}/xray/availability", method="POST", payload={"available": True})
             assert restarted.get("available") is True
