@@ -1,5 +1,11 @@
 # FWRouter — active roadmap
 
+## CI V2 artifact lifecycle — proposed source contract (2026-10-23)
+
+A separate infrastructure package from main `0a0ce14` preserves the eight CI V2 jobs, required check and strict exact-SHA/attempt aggregation while separating runner-local files, one-day cross-job evidence and seven-day complete successful evidence bundles. PR evidence is distinct from actual-main deployment evidence; bounded failed-run diagnostics retain three days. No writable PR token or privileged cleanup workflow is introduced. Historical artifacts are inventoried conservatively; policy changes do not retroactively delete prior evidence. See [artifact lifecycle contract](../docs/CI_ARTIFACT_LIFECYCLE.md).
+
+Qualification, independent review and exact-HEAD PR CI are required before review readiness. The new actual-main bundle path must be confirmed after an owner merge; a PR event is not actual-main verification. Expired/missing evidence means NO DEPLOY, never a fallback to a green badge. Private wrapper adaptation/pins and PR35 F3/F5 remain separate and blocked; no private files or production resources are modified. Only the owner merges; this package creates no deployment authority or automatic CD. This checkpoint is proposed in the feature branch, not published in main.
+
 ## Sequential Atomic UI / Native Proof integration — 2026-10-23
 
 PR36 was Squash and Merged by the owner into main `765a355e57c70935fd54699b04ee01f2fb82709e`; the actual-main workflow [39845388758](https://github.com/Coxf0rd/fwrouter/actions/runs/39845388758) passed. PR37 is being integrated from that exact main. Its existing Native Proof implementation and PR36's atomic UI publisher, shared installer lock, safe-recovery dependency closure, tests and catalog entries are retained. Cross-contract regressions run the real publisher through initial directory-to-pointer and managed-pointer-to-pointer transitions. One fixture lacks its owner native receipt and stays `INCOMPLETE`; another uses explicitly synthetic stable component readers to exercise the collector's complete `PASS` contract and checks unchanged backend, durable owner-fence and component-proof hashes across both switches. The synthetic `PASS` is test-contract evidence only and does not claim real Xray/Mihomo/Core fingerprints or live proof.

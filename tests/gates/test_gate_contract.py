@@ -77,6 +77,7 @@ class GateContractTests(unittest.TestCase):
         self.assertEqual({
             "tests/gates/test_network_fixture_contract.py",
             "tests/gates/test_subscription_identity_contract.py",
+            "tests/gates/test_evidence_bundle.py",
             "tests/acceptance/test_dependency_image_contract.py",
             "tests/acceptance/test_consume_dependency_image_contract.py",
         }, gate.STDLIB_CONTRACT_PATHS - {

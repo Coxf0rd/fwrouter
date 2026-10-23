@@ -128,6 +128,7 @@ STDLIB_CONTRACT_PATHS = {
     "tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
     "tests/gates/test_smoke_contract.py", "tests/gates/test_network_fixture_contract.py",
     "tests/gates/test_subscription_identity_contract.py",
+    "tests/gates/test_evidence_bundle.py",
     "tests/acceptance/test_dependency_image_contract.py",
     "tests/acceptance/test_consume_dependency_image_contract.py",
 }
