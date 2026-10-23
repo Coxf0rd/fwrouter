@@ -2172,7 +2172,8 @@ def _refresh_packet_provider(api: str, source_ref: str, *, stack: dict[str, Any]
 
 def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id: str,
                              expected: str, expected_udp: bool,
-                             *, expect_active_server: bool = True) -> dict[str, Any]:
+                             *, expect_active_server: bool = True,
+                             secondary_selector_candidate: bool = False) -> dict[str, Any]:
     from fwrouter_api.db.connection import db_session
     from fwrouter_api.services.logical_topology import get_logical_runtime_name
     from fwrouter_api.services.provider_managed import binding_for
@@ -2192,16 +2193,18 @@ def _packet_capability_state(stack: dict[str, Any], source_ref: str, logical_id:
     config = yaml.safe_load(config_path.read_bytes())
     proxies = config.get("proxies") if isinstance(config, dict) else None
     vless = [row for row in proxies if isinstance(row, dict) and row.get("type") == "vless"] if isinstance(proxies, list) else []
-    assert len(vless) == 1 and vless[0].get("udp") is expected_udp and vless[0].get("port") == 5301, {
-        "native_vless_count": len(vless),
-        "native_udp": vless[0].get("udp") if len(vless) == 1 else None,
-        "native_target_port": vless[0].get("port") if len(vless) == 1 else None,
-    }
-    assert not any(str(key).startswith("_fwrouter") for key in vless[0]), "internal capability marker leaked into native Mihomo config"
+    expected_count = 2 if secondary_selector_candidate else 1
+    assert len(vless) == expected_count, {"native_vless_count": len(vless), "expected": expected_count}
+    primary = [row for row in vless if row.get("port") == 5301 and row.get("server") == ENDPOINT_IP]
+    assert len(primary) == 1 and primary[0].get("udp") is expected_udp
+    if secondary_selector_candidate:
+        secondary = [row for row in vless if row.get("port") == ENDPOINT_SELECTOR_PORT and row.get("server") == ENDPOINT_IP]
+        assert len(secondary) == 1 and secondary[0].get("udp") is True
+    assert all(not any(str(key).startswith("_fwrouter") for key in row) for row in vless), "internal capability marker leaked into native Mihomo config"
     native = _mihomo_packet_path_proof(stack)
     assert native.get("available") is True and native.get("runtime_running") is True, native
     assert native.get("native_loaded_config_matches_active") is True, native
-    assert native.get("vless_udp_enabled_count") == (1 if expected_udp else 0), native
+    assert native.get("vless_udp_enabled_count") == int(expected_udp) + int(secondary_selector_candidate), native
     binding = binding_for(source_ref)
     assert binding["logical_server_id"] == logical_id
     runtime_name = get_logical_runtime_name(logical_id)
@@ -3749,7 +3752,9 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "provider-refresh-supported", "provider-refresh-unknown",
                      "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn",
                      "global-mode-selective", "selective-default-vpn", "selective-default-restore",
-                     "native-dns53-selective-direct-priority", "provider-reentry-checkpoint-recovery"}:
+                     "native-dns53-selective-direct-priority", "provider-reentry-checkpoint-recovery",
+                     "docker-direct-global-vpn", "docker-vpn-global-direct", "docker-vpn-repeat-apply",
+                     "docker-vpn-endpoint-unavailable", "docker-direct-restored"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     if label == "provider-reentry-checkpoint-recovery":
         expected_fields = {
@@ -4097,10 +4102,12 @@ def _probe_vpn_udp_contract_phase(stack: dict[str, Any], source_ref: str, logica
                                   record_property: Any, *, expect_success: bool,
                                   endpoint_unavailable: bool = False,
                                   expect_vpn_handoff: bool | None = None,
-                                  expect_active_server: bool = True) -> dict[str, Any]:
+                                  expect_active_server: bool = True,
+                                  secondary_selector_candidate: bool = False) -> dict[str, Any]:
     _assert_packet_runtime(stack, mode="vpn", policy_required=True)
     capability_state = _packet_capability_state(stack, source_ref, logical_id, capability, expected_udp,
-                                                 expect_active_server=expect_active_server)
+                                                 expect_active_server=expect_active_server,
+                                                 secondary_selector_candidate=secondary_selector_candidate)
     selection_before = _provider_selection_snapshot(source_ref)
     observations_before = _endpoint_observations()
     capture_before = _packet_counts()
@@ -4694,6 +4701,155 @@ def _packet_vpn_runtime_selection(stack: dict[str, Any]) -> dict[str, str]:
     assert isinstance(selected_target, str) and selected_target
     return {"vpn_global_now": now, "vpn_auto_now": auto_target,
             "vpn_auto_selected_target": selected_target}
+
+
+def _docker_policy_apply_failure_summary(response: dict[str, Any]) -> dict[str, Any]:
+    """Expose only bounded, non-sensitive failure classes in hosted receipts."""
+    data = response.get("data") if isinstance(response.get("data"), dict) else {}
+    error = data.get("error") if isinstance(data.get("error"), dict) else {}
+    code = str(error.get("code") or "")
+    stage = str(error.get("stage") or "")
+    return {
+        "api_ok": response.get("ok") is True,
+        "error_code": (
+            code if code.isascii() and code.replace("_", "").isalnum() and len(code) <= 64 else "unknown"
+        ),
+        "stage": (
+            stage
+            if stage in {"validate", "prepare", "apply", "verify", "commit", "unknown"}
+            else "unknown"
+        ),
+    }
+
+
+def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
+                                   logical_id: str, record_property: Any) -> dict[str, Any]:
+    """Real routed namespace client with Docker subject semantics, not a host Docker daemon.
+
+    Endpoint peer addresses and captured VLESS/direct tuples prove the actual
+    controlled egress. This is not a production/provider Internet E2E claim.
+    """
+    assert stack["profile"].get("profile") == "hosted-kernel-packet"
+    from fwrouter_api.db.connection import db_session
+
+    api = stack["api"]
+    subject_id = "docker:packet-scoped:ordinary"
+    with db_session() as connection:
+        assert connection.execute("SELECT 1 FROM subjects WHERE subject_id=?", (subject_id,)).fetchone() is None
+        connection.execute(
+            "INSERT INTO subjects (subject_id, subject_type, subject_role, implementation_kind, stable_key, display_name, "
+            "desired_mode, applied_mode, runtime_state, is_active) "
+            "VALUES (?, 'docker', 'docker_runtime', 'docker', ?, 'Scoped packet fixture', 'direct', 'direct', 'running', 1)",
+            (subject_id, subject_id),
+        )
+        connection.execute(
+            "INSERT INTO subject_docker (subject_id, compose_project, compose_service, container_name, "
+            "container_id, image_name, ip_address, network_name, source_json) "
+            "VALUES (?, 'packet-scoped', 'ordinary', 'ordinary', 'owned-fixture', 'fixture:local', ?, 'owned-client-veth', ?)",
+            (subject_id, CLIENT_IP, json.dumps({
+                "NetworkMode": "bridge",
+                "IPv4InventoryComplete": True,
+                "IPv4Addresses": [CLIENT_IP],
+                "IPv6InventoryComplete": True,
+                "IPv6Addresses": [],
+            })),
+        )
+
+    def apply_subject(mode: str) -> None:
+        code, accepted = http_json(f"{api}/subjects/{subject_id}/mode", method="POST",
+                                  payload={"mode": mode, "actor_scope": "admin",
+                                           "requested_by": "packet-docker-scoped", "run_now": True})
+        if code != 200 or accepted.get("ok") is not True:
+            failure = _docker_policy_apply_failure_summary(accepted)
+            failure["mode"] = mode
+            failure["http_status"] = code
+            record_property(
+                f"docker_policy_apply_failure_{mode}", json.dumps(failure, sort_keys=True)
+            )
+            assert code == 200 and accepted.get("ok") is True, failure
+        job = await_core_job(api, accepted, timeout_seconds=90)
+        if job.get("status") != "success":
+            failure_response = {
+                "ok": False,
+                "data": {
+                    "error": {
+                        "code": job.get("error_code"),
+                        "stage": (job.get("result") or {}).get("stage")
+                        if isinstance(job.get("result"), dict) else None,
+                        "message": job.get("error_message"),
+                    }
+                },
+            }
+            failure = _docker_policy_apply_failure_summary(failure_response)
+            failure.update({"mode": mode, "job": _bounded_job_summary(job)})
+            record_property(
+                f"docker_policy_apply_failure_{mode}", json.dumps(failure, sort_keys=True)
+            )
+            assert job.get("status") == "success", failure
+        code, readback = http_json(f"{api}/subjects/{subject_id}")
+        assert code == 200 and readback.get("ok") is True
+        subject = readback["data"]["subject"]
+        assert subject["desired_mode"] == mode and subject["applied_mode"] == mode, {
+            "mode": mode, "desired": subject.get("desired_mode"), "applied": subject.get("applied_mode"),
+        }
+
+    phases = {}
+    try:
+        # Docker subject apply uses full pipeline/DNS reconcile, unlike global
+        # classify hot swaps. The earlier DNS phase has already stopped and
+        # restored its paths: reacquire the existing owned native DNS fixture.
+        dns_code, dns_fixture = http_json(f"{api}/__acceptance/dns53/configure", method="POST")
+        assert dns_code == 200 and dns_fixture.get("ok") is True and dns_fixture.get("fixture_configured") is True
+        # Explicit Direct must win even while the global Core mode is VPN.
+        _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
+        apply_subject("direct")
+        # _probe_phase already checks endpoint peer observations for TCP, UDP
+        # and DNS; its result retains safe endpoint counts for receipts.
+        direct = _probe_phase(stack, CLIENT_IP, "docker-direct-global-vpn",
+                              _core_counter_snapshot(), record_property, source_ref)
+        phases["direct_under_global_vpn"] = direct["observations"]["last_peers"]
+        _apply_global_mode(api, "direct", stack=stack, record_property=record_property)
+        apply_subject("vpn")
+        before_capture = _packet_counts()
+        vpn = _probe_phase(stack, SERVICE_VIP, "docker-vpn-global-direct",
+                           _core_counter_snapshot(), record_property, source_ref)
+        after_capture = _packet_counts()
+        assert _flow_delta(before_capture, after_capture, (ROUTER_WAN_IP, ENDPOINT_IP, "tcp", 5301)) > 0
+        for protocol, port in (("tcp", 9080), ("udp", 9081), ("udp", 5353)):
+            assert _flow_delta(before_capture, after_capture, (CLIENT_IP, SERVICE_VIP, protocol, port)) == 0
+        phases["vpn_under_global_direct"] = vpn["observations"]["last_peers"]
+        # A complete reapply must preserve the explicit scoped classification.
+        _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
+        apply_subject("vpn")
+        _probe_phase(stack, SERVICE_VIP, "docker-vpn-repeat-apply",
+                     _core_counter_snapshot(), record_property, source_ref)
+        _probe_protected_direct_phase(stack, source_ref, record_property)
+        stopped = _role_json(f"{ENDPOINT_CONTROL}/xray/availability", method="POST", payload={"available": False})
+        assert stopped.get("available") is False
+        try:
+            _probe_vpn_udp_contract_phase(stack, source_ref, logical_id, "supported", True,
+                                          "docker-vpn-endpoint-unavailable", record_property,
+                                          expect_success=False, endpoint_unavailable=True,
+                                          secondary_selector_candidate=True)
+        finally:
+            restarted = _role_json(f"{ENDPOINT_CONTROL}/xray/availability", method="POST", payload={"available": True})
+            assert restarted.get("available") is True
+        apply_subject("direct")
+        restored = _probe_phase(stack, CLIENT_IP, "docker-direct-restored",
+                                _core_counter_snapshot(), record_property, source_ref)
+        phases["direct_restored"] = restored["observations"]["last_peers"]
+        record_property("docker_scoped_packet_paths", json.dumps(phases, sort_keys=True))
+        return phases
+    finally:
+        # Fixture-only CRUD, never production. Preserve the stack's original
+        # global VPN state after removing the temporary scoped subject.
+        with db_session() as connection:
+            connection.execute("DELETE FROM subjects WHERE subject_id=?", (subject_id,))
+        try:
+            _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
+        finally:
+            dns_code, dns_cleanup = http_json(f"{api}/__acceptance/dns53/stop", method="POST")
+            assert dns_code == 200 and dns_cleanup.get("stopped") is True and dns_cleanup.get("owned_paths_cleaned") is True
 
 
 def _write_capture_summary(phases: dict[str, Any]) -> None:
@@ -5685,6 +5841,8 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert all(final_binding.get(key) == provider_binding_before_selector.get(key)
                for key in ("logical_server_id", "current_member_id", "applied_member_id", "binding_revision"))
     assert bridge.snapshot_calls() == provider_calls_before_selector
+
+    _qualify_docker_scoped_policy(stack, source_ref, logical_id, record_property)
 
     _write_capture_summary({
         "core_counter_mapping": {

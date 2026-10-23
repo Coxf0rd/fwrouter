@@ -3,6 +3,7 @@ from _test_support import configure_test_state_dir as _configure_env
 from fwrouter_api.db.connection import initialize_database
 
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -450,11 +451,24 @@ def _seed_docker_subject(
                 container_id,
                 image_name,
                 ip_address,
-                network_name
+                network_name,
+                source_json
             )
-            VALUES (?, 'pytest', 'svc', 'svc', 'container-1', 'image:latest', ?, 'bridge')
+            VALUES (?, 'pytest', 'svc', 'svc', 'container-1', 'image:latest', ?, 'bridge', ?)
             """,
-            (subject_id, ip_address),
+            (
+                subject_id,
+                ip_address,
+                json.dumps(
+                    {
+                        "NetworkMode": "bridge",
+                        "IPv4InventoryComplete": True,
+                        "IPv4Addresses": [ip_address],
+                        "IPv6InventoryComplete": True,
+                        "IPv6Addresses": [],
+                    }
+                ),
+            ),
         )
 
 

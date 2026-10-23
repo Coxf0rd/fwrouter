@@ -18,3 +18,5 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
 - For LAN/external ingress `selective` subjects, a subject server override selects the VPN target for matching VPN rules only; it must not imply full-client VPN capture.
+
+Docker scoped policy projections pass the owning global desired mode to source-coverage validation; uncovered Direct sources cannot be reported as enforceable under global VPN/selective.

@@ -211,7 +211,7 @@ def run_apply_pipeline(
         result = _render_failure_result(
             plan=plan,
             stage="render_candidate",
-            error_code="APPLY_RENDER_CANDIDATE_FAILED",
+            error_code=str(getattr(exc, "error_code", "APPLY_RENDER_CANDIDATE_FAILED")),
             error_message=str(exc),
             manifest_state=manifest_state,
             memory_snapshot=_memory_snapshot(),

@@ -1,4 +1,5 @@
 import json
+from ipaddress import ip_address
 import os
 import re
 import subprocess
@@ -160,6 +161,39 @@ def _network_details(inspect_data: dict[str, Any]) -> tuple[str | None, str | No
     return None, None
 
 
+def _network_address_inventory(inspect_data: dict[str, Any], family: int) -> tuple[list[str], bool]:
+    network_settings = inspect_data.get("NetworkSettings")
+    networks = network_settings.get("Networks") if isinstance(network_settings, dict) else None
+    if not isinstance(networks, dict):
+        return [], False
+
+    addresses: set[str] = set()
+    for details in networks.values():
+        if not isinstance(details, dict):
+            return [], False
+        # Docker inspect uses an explicit empty string for an absent address.
+        # Missing/null/non-string fields are incomplete evidence for either
+        # address family, never proof of an absent secondary interface.
+        raw_value = details.get("GlobalIPv6Address" if family == 6 else "IPAddress")
+        if not isinstance(raw_value, str):
+            return [], False
+        value = raw_value.strip()
+        if not value:
+            continue
+        try:
+            address = ip_address(value)
+        except ValueError:
+            return [], False
+        if address.version != family:
+            return [], False
+        addresses.add(str(address))
+    return sorted(addresses), True
+
+
+def _network_ipv6_inventory(inspect_data: dict[str, Any]) -> tuple[list[str], bool]:
+    return _network_address_inventory(inspect_data, 6)
+
+
 def _published_ports(inspect_data: dict[str, Any]) -> list[dict[str, Any]]:
     ports = inspect_data.get("NetworkSettings", {}).get("Ports")
     if not isinstance(ports, dict):
@@ -203,6 +237,8 @@ def get_inventory() -> list[dict[str, Any]]:
         host_config = inspect_data.get("HostConfig") if isinstance(inspect_data.get("HostConfig"), dict) else {}
         state = inspect_data.get("State") if isinstance(inspect_data.get("State"), dict) else {}
         ip_address, network_name = _network_details(inspect_data)
+        ipv6_addresses, ipv6_inventory_complete = _network_ipv6_inventory(inspect_data)
+        ipv4_addresses, ipv4_inventory_complete = _network_address_inventory(inspect_data, 4)
         tokens = _container_cgroup_tokens(inspect_data)
         process_uids = _container_process_uids(inspect_data, tokens)
         item["NetworkMode"] = str(host_config.get("NetworkMode") or "")
@@ -210,6 +246,10 @@ def get_inventory() -> list[dict[str, Any]]:
         item["ProcessUids"] = process_uids
         item["IPAddress"] = ip_address
         item["NetworkName"] = network_name
+        item["IPv4Addresses"] = ipv4_addresses
+        item["IPv4InventoryComplete"] = ipv4_inventory_complete
+        item["IPv6Addresses"] = ipv6_addresses
+        item["IPv6InventoryComplete"] = ipv6_inventory_complete
         item["PublishedPorts"] = _published_ports(inspect_data)
         item["Listeners"] = [
             listener for listener in listeners if _listener_matches_container(listener, tokens)
