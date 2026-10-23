@@ -76,6 +76,19 @@ def check_jobs(jobs):
         raise gate.GateError('L6 required jobs failed/skipped/cancelled: ' + ', '.join(failed))
 
 
+def verify_metadata_plan_identity(metadata, plan):
+    """Bind bundle claims to the independently validated embedded plan."""
+    expected = parallel.identity(plan)
+    verify_exact_fields(metadata, expected, 'L6 bundle metadata differs from validated plan identity')
+
+
+def verify_exact_fields(record, expected, message):
+    """Reject JSON values that compare equal across incompatible types."""
+    if any(type(record.get(key)) is not type(value) or record.get(key) != value
+           for key, value in expected.items()):
+        raise gate.GateError(message)
+
+
 def check_native_files(root, profile, plan):
     parallel.verify_producer(root, 'native', plan)
     value = strict.read_json(root / 'producer.json')
@@ -223,8 +236,7 @@ def verify(args):
                 'workflow_path': '.github/workflows/test-full-suite.yml', 'source_commit': args.expected_sha,
                 'run_id': args.run_id, 'run_attempt': args.attempt, 'event': args.event, 'ref': args.ref,
                 'minimum_repeats': 2, 'deploy_eligibility': False}
-    if any(metadata.get(key) != value for key, value in expected.items()):
-        raise gate.GateError('L6 bundle identity differs from independent expectations')
+    verify_exact_fields(metadata, expected, 'L6 bundle identity differs from independent expectations')
     if args.event not in {'schedule', 'workflow_dispatch'} or not args.ref.startswith('refs/heads/'):
         raise gate.GateError('invalid L6 event/ref')
     scope = 'main-regression' if args.ref == 'refs/heads/main' else 'branch-regression-non-promotional'
@@ -257,11 +269,13 @@ def verify(args):
     os.environ['GITHUB_RUN_ATTEMPT'] = args.attempt
     evidence = args.bundle / 'evidence'
     plan = load(evidence / 'plan/fwrouter-affected-plan.json')
+    verify_metadata_plan_identity(metadata, plan)
     result = strict.read_json(args.bundle / 'reports/required-result.json')
-    if (result.get('schema') != 'fwrouter-l6-required/v1' or result.get('eligible') is not True
-            or result.get('minimum_repeats') != 2 or result.get('qualification_scope') != scope
-            or result.get('safe_recovery_required') is not True
-            or any(result.get(key) != value for key, value in parallel.identity(plan).items())):
+    required_identity = {'schema': 'fwrouter-l6-required/v1', 'minimum_repeats': 2,
+                         'qualification_scope': scope, 'safe_recovery_required': True,
+                         **parallel.identity(plan)}
+    verify_exact_fields(result, required_identity, 'L6 required result is incomplete or stale')
+    if result.get('eligible') is not True:
         raise gate.GateError('L6 required result is incomplete or stale')
     merged, replayed = replay(evidence, plan, result['upstream'])
     if gate.canonical_digest(replayed) != gate.canonical_digest(strict.read_json(args.bundle / 'reports/fwrouter-aggregate.json')):

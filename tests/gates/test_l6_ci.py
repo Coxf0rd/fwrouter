@@ -143,6 +143,42 @@ class L6ContractTests(unittest.TestCase):
             with patch.object(gate, 'git', side_effect=[sha, '']), self.assertRaisesRegex(gate.GateError, 'identity'):
                 l6_ci.verify(args)
 
+    def test_resealed_bundle_metadata_must_match_validated_plan_identity(self):
+        plan = {'source_commit': 'a' * 40, 'plan_digest': 'b' * 64,
+                'manifest_digest': 'c' * 64, 'manifest_version': 3}
+        environment = {'GITHUB_RUN_ID': RUN_ID, 'GITHUB_RUN_ATTEMPT': ATTEMPT}
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(l6_ci.os.environ, environment):
+            root = Path(tmp)
+            metadata = {'schema': l6_ci.SCHEMA, 'repository': 'Coxf0rd/fwrouter',
+                        'workflow': l6_ci.WORKFLOW,
+                        'workflow_path': '.github/workflows/test-full-suite.yml',
+                        **l6_ci.parallel.identity(plan), 'event': 'workflow_dispatch',
+                        'ref': 'refs/heads/feature', 'minimum_repeats': 2,
+                        'deploy_eligibility': False}
+            metadata_path = root / 'l6-metadata.json'
+            manifest_path = root / 'content-manifest.json'
+            cases = [
+                ('plan_digest', 'd' * 64, l6_ci.verify_metadata_plan_identity, plan),
+                ('manifest_digest', 'e' * 64, l6_ci.verify_metadata_plan_identity, plan),
+                ('manifest_version', 4, l6_ci.verify_metadata_plan_identity, plan),
+                ('manifest_version', 3.0, l6_ci.verify_metadata_plan_identity, plan),
+                ('minimum_repeats', 2.0, l6_ci.verify_exact_fields, {'minimum_repeats': 2}),
+                ('deploy_eligibility', 0, l6_ci.verify_exact_fields, {'deploy_eligibility': False}),
+            ]
+            for key, replacement, validator, expected in cases:
+                with self.subTest(key=key):
+                    changed = dict(metadata, **{key: replacement})
+                    metadata_path.write_text(json.dumps(changed))
+                    # Re-sealing the outer inventory establishes file integrity only;
+                    # it must not make inconsistent claims about the plan authoritative.
+                    l6_ci.gate.atomic_json(manifest_path,
+                                           {'schema': l6_ci.SCHEMA,
+                                            'files': l6_ci.bundle.inventory(root)})
+                    with self.assertRaisesRegex(gate.GateError, 'metadata differs'):
+                        validator(changed, expected) if validator is l6_ci.verify_metadata_plan_identity else \
+                            validator(changed, expected, 'metadata differs')
+            l6_ci.verify_metadata_plan_identity(metadata, plan)
+
     def test_l6_full_manifest_excludes_only_l7_and_destructive_suites(self):
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as tmp, patch.object(gate, 'print_json'):
