@@ -70,4 +70,20 @@ Baseline run wall time is 458 seconds; sum of eight job durations is 26.0 runner
 
 The latest historical L6 run inspected was [39755095242](https://github.com/Coxf0rd/fwrouter/actions/runs/39755095242) on `d313dcf`, with six hosted receipts and required repeat count two; it is historical evidence, not current-main L6 qualification.
 
-Final implementation graph, partition distribution and exact-head measurements are recorded after qualification. Both packages are explicitly authorized for implementation, commits, push, Draft PRs, independent review and exact-head remote runs. These permissions do not authorize merge or production operations. Until then this document describes constraints and baseline evidence, not a completed CI V3 qualification.
+## PR A measured qualification checkpoint
+
+[Run 39949236288](https://github.com/Coxf0rd/fwrouter/actions/runs/39949236288), source `d7421ee820cb32a09d357a5312151e73c1ebc55b`, attempt 1: all 16 runner jobs SUCCESS; strict aggregate, safe recovery, complete evidence publication and downloaded-bundle offline replay PASS. The current catalog has 186 files: 185 safe L1–L4 and one excluded L7. All 185 safe files are accounted for. The visibility report records 2,646 unique observed IDs / 2,646 executions / 2,646 PASS / zero FAIL, SKIP, BLOCKED or NOT RUN. L1/L2/L3/L4 counts are 1,506/359/701/80. L0 is a static gate, and ten L5 anchors are coverage assertions over these primary tests, not additional executions.
+
+The higher count than V2's 2,250 reported statuses includes newly visible unittest methods and added orchestration regressions; it is not a claim that 396 previously absent tests were added. Existing manifest rows retain their test IDs, levels, domains and profiles. Exact machine-readable IDs, group ownership and original receipts are in `reports/visibility.json` and sealed producer evidence in the bundle.
+
+| Measurement | V2 actual main 39912198441 | V3 full PR 39949236288 |
+| --- | ---: | ---: |
+| Runner jobs | 8 | 16 |
+| Wall seconds | 458 | 452 |
+| Sum runner-minutes | 26.0 | 29.08 |
+| Artifacts / API-reported bytes | 8 / 3,917,646 | 16 / 4,837,942 |
+| Long-lived successful bundles | 1 | 1 |
+
+This is a one-run comparison, not a repeatable speedup or billing claim. Coverage granularity/source differ, and queue/setup variability remains. Visibility and failure isolation improve at a measured runner/resource cost; hosted functional remains the critical path. Per-job step timings and process/runner resource facts are retained in qualification evidence, with limits stated rather than invented peaks. One-day cross-job / three-day diagnostics / seven-day final retention remains unchanged. No privileged cleanup or extra long-lived intermediate ZIPs were added.
+
+Independent source reviews found and closed native path/producer closure, node normalization, measured-resource parsing and owned-temp cleanup defects; raw failed runs remain historical evidence. Exact final public-source review and current-head CI are recorded in the PR, not inferred from this dated checkpoint. Actual-main verification remains post-owner-merge; PR B is separately stacked and non-promotional. No production or private wrapper changes occurred.
