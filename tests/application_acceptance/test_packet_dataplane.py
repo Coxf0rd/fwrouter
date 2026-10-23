@@ -3749,7 +3749,9 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "provider-refresh-supported", "provider-refresh-unknown",
                      "provider-refresh-unsupported", "global-mode-direct", "global-mode-vpn",
                      "global-mode-selective", "selective-default-vpn", "selective-default-restore",
-                     "native-dns53-selective-direct-priority", "provider-reentry-checkpoint-recovery"}:
+                     "native-dns53-selective-direct-priority", "provider-reentry-checkpoint-recovery",
+                     "docker-direct-global-vpn", "docker-vpn-global-direct", "docker-vpn-repeat-apply",
+                     "docker-vpn-endpoint-unavailable", "docker-direct-restored"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     if label == "provider-reentry-checkpoint-recovery":
         expected_fields = {
