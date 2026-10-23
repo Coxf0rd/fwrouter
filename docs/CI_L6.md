@@ -2,7 +2,7 @@
 
 ## Scope and status
 
-L6 is a scheduled or explicitly dispatched full safe-manifest qualification. It is separate from the stable push/PR required check and never deploys. L7 recovery/host acceptance is excluded. The implementation currently being integrated adds parallel execution and a complete, independently replayable evidence bundle; **the current stacked implementation has not yet earned a real exact-head L6 CI PASS**. Source inspection, local tests, a prior run, or branch qualification must not be described as that missing result.
+L6 is a scheduled or explicitly dispatched full safe-manifest qualification. It is separate from the stable push/PR required check and never deploys. L7 recovery/host acceptance is excluded. The parallel implementation and complete independently replayable bundle have passed the dated branch qualification below. Branch qualification remains distinct from fresh actual-main/release qualification; source inspection, local tests or a previous SHA cannot substitute for a required exact-head run.
 
 ## Trigger and trust boundary
 
@@ -43,4 +43,24 @@ Offline verification must use a separately trusted, clean checkout at the expect
 
 ## Promotion boundary and remaining qualification
 
-Release qualification requires a fresh successful L6 run for the exact current `main` SHA **and** an independent successful actual-main CI run for that same SHA. L6 does not execute L7 or prove Debian host/systemd/reboot parity, production health, external client behavior, or deployment readiness. A branch-mode run cannot substitute for the main run. This workflow has not yet produced a real run of the current stacked implementation, so final L6 qualification and performance claims remain pending until exact-head GitHub execution and offline bundle replay are recorded. No production action is authorized by this document.
+Release qualification requires a fresh successful L6 run for the exact current `main` SHA **and** an independent successful actual-main CI run for that same SHA. L6 does not execute L7 or prove Debian host/systemd/reboot parity, production health, external client behavior, or deployment readiness. A branch-mode run cannot substitute for the main run. The branch evidence below does not close actual-main qualification. After an owner merge, verify a fresh full L6 run and independent mandatory main CI for the exact resulting main SHA. Every subsequent source or documentation change still requires qualification of its own final HEAD; the PR records that current result. No production action is authorized by this document.
+
+
+## Dated branch qualification — 2026-10-23
+
+Source `c2f9defbfee5fbb654646c50c1ac33d2a8cd3007`, attempt 1: [mandatory PR CI 39952092975](https://github.com/Coxf0rd/fwrouter/actions/runs/39952092975) passed all 16 runner jobs; [full L6 39952099257](https://github.com/Coxf0rd/fwrouter/actions/runs/39952099257) passed all 19 runner jobs. Both downloaded final bundles passed offline replay from a separately trusted clean exact-source checkout. Independent source/security review found no implementation blocker; eleven independently resealed adversarial L6 bundles were rejected, including missing/duplicated repeats, attempt/source/run mismatch, manifest/plan/receipt modification and repeat-count downgrade. The stale pending-run documentation was corrected in the follow-up; its final HEAD must also pass both workflows and review before readiness.
+
+The manifest contains 187 files: 186 safe L1–L4 files and one excluded L7 file. All 186 safe files are observed in both qualifications. L6 reports 2,658 unique observed test IDs and 2,701 executions, all PASS, with zero FAIL/SKIP/BLOCKED/NOT RUN. The 43 additional executions are the second independent ordinary/provider/packet repeats; six distinct run-owned nonces and both native profiles were verified. Observed L1/L2/L3/L4 unique coverage is 1,518/359/701/80; L3 has 744 executions. L0 remains static checks, ten L5 anchors are coverage over primary cases, and L6 is the full regression policy. Existing Node scripts with assertions but no nested named tests contribute one observed TAP file case each; no assertion count is invented. Exact IDs and original receipts are in the complete bundle, not inferred from file totals.
+
+| Observation | Mandatory PR CI, same source | Full branch L6, same source |
+| --- | ---: | ---: |
+| Runner jobs | 16 | 19 |
+| Run wall seconds | 446 | 462 |
+| Earliest-job to last-job span seconds | 443 | 458 |
+| Sum runner-minutes | 31.0 | 46.07 |
+| Artifacts / API-reported bytes | 16 / 4,842,579 | 19 / 4,641,542 |
+| Unique IDs / total passing executions | 2,658 / 2,658 | 2,658 / 2,701 |
+
+Both workflows ran concurrently on shared GitHub-hosted capacity, so setup/queue/cache/network variation is included; this is not a controlled speedup or billing experiment. Historical monolithic L6 [39755095242](https://github.com/Coxf0rd/fwrouter/actions/runs/39755095242), source `d313dcf`, took 2,105 runner seconds in one job (35.08 runner-minutes), but its source, coverage granularity and registered inventory differ. It is timing context, not a matched causal comparison or current release evidence. Parallelism purchases independent failure isolation, explicit test/profile visibility and concurrent hosted repeats at higher summed runner cost; no percentage improvement is claimed. The affected-CI V2/V3 comparison is recorded separately in [CI_V3.md](CI_V3.md).
+
+Per-job GitHub step timings distinguish test execution from setup and artifact transfer; routine sealed receipts include bounded process high-water RSS, runner memory/disk snapshots and cleanup. These are not global cgroup/RAM/CPU peaks or measured network-transfer bytes. One complete successful L6 bundle survives seven days; the eighteen temporary producer artifacts expire after one day. Failed diagnostics retain three days. Hard cancellation may prevent diagnostic publication, and final bundle upload failure fails qualification. No mutable host/production resources, private wrapper or GitHub security settings were changed.
