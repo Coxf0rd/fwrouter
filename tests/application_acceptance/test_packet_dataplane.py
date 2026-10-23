@@ -4838,6 +4838,11 @@ def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
 
     phases = {}
     try:
+        # Docker subject apply uses full pipeline/DNS reconcile, unlike global
+        # classify hot swaps. The earlier DNS phase has already stopped and
+        # restored its paths: reacquire the existing owned native DNS fixture.
+        dns_code, dns_fixture = http_json(f"{api}/__acceptance/dns53/configure", method="POST")
+        assert dns_code == 200 and dns_fixture.get("ok") is True and dns_fixture.get("fixture_configured") is True
         # Explicit Direct must win even while the global Core mode is VPN.
         _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
         apply_subject("direct")
@@ -4882,7 +4887,11 @@ def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
         # global VPN state after removing the temporary scoped subject.
         with db_session() as connection:
             connection.execute("DELETE FROM subjects WHERE subject_id=?", (subject_id,))
-        _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
+        try:
+            _apply_global_mode(api, "vpn", stack=stack, record_property=record_property)
+        finally:
+            dns_code, dns_cleanup = http_json(f"{api}/__acceptance/dns53/stop", method="POST")
+            assert dns_code == 200 and dns_cleanup.get("stopped") is True and dns_cleanup.get("owned_paths_cleaned") is True
 
 
 def _write_capture_summary(phases: dict[str, Any]) -> None:

@@ -493,3 +493,18 @@ def test_database_direct_coverage_refusal_survives_manifest_projection(monkeypat
     assert not runtime["applied"]
     with pytest.raises(DockerPolicyConflictError, match="docker_direct_source_coverage_incomplete"):
         render_owned_table_candidate(manifest)
+
+
+@pytest.mark.parametrize("emergency", [False, True])
+def test_direct_source_coverage_uses_effective_emergency_global_policy(monkeypatch, tmp_path, isolated_host_observations, emergency):
+    subjects = _seed_manifest_database(monkeypatch, tmp_path, "172.25.0.2")
+    subject = {**subjects[0], "desired_mode": "direct"}
+    subject["detail"]["source"]["IPv4Addresses"] = ["172.25.0.2", "172.26.0.2"]
+    monkeypatch.setattr(provider_recovery, "emergency_override", lambda: {"emergency_direct": True} if emergency else None)
+    kwargs = {"routing": {"desired_mode": "vpn", "applied_mode": "vpn", "selective_default": "direct", "server_mode": "fixed", "desired_fixed_server_id": "srv-1", "applied_fixed_server_id": "srv-1"},
+              "runtime_enforcement": {"supported_modes": {"vpn": True}},
+              "user_override": None, "server_override": None, "bypass_state": {"enabled": False}}
+    projected = subject_policy.enrich_subject_with_effective_state(subject, **kwargs)["effective_state"]["scoped_runtime"]
+    assert projected["status"] == ("not_applicable" if emergency else "pending_docker_direct_source_coverage")
+    summary = subject_policy._subject_effective_state_summary(subject, **kwargs)
+    assert summary["effective_state"]["scoped_runtime"]["status"] == projected["status"]

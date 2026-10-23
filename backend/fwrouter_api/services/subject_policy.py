@@ -496,7 +496,7 @@ def enrich_subject_with_effective_state(
     scoped_runtime = build_scoped_subject_runtime(
         subject,
         dataplane_path=str(binding["dataplane_path"]),
-        global_mode=str(routing_snapshot.get("desired_mode") or "direct"),
+        global_mode="direct" if emergency else str(routing_snapshot.get("desired_mode") or "direct"),
         selected_server_id=(
             str(binding["selected_server_id"])
             if binding.get("selected_server_id") is not None
@@ -582,10 +582,11 @@ def _subject_effective_state_summary(
         routing=routing,
         runtime_enforcement=runtime_enforcement,
     )
+    from fwrouter_api.services.provider_recovery import emergency_override
     scoped_runtime = build_scoped_subject_runtime(
         subject,
         dataplane_path=str(binding["dataplane_path"]),
-        global_mode=str(routing.get("desired_mode") or "direct"),
+        global_mode="direct" if emergency_override() else str(routing.get("desired_mode") or "direct"),
         selected_server_id=(
             str(binding["selected_server_id"])
             if binding.get("selected_server_id") is not None
