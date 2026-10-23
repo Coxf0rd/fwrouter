@@ -5,7 +5,19 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 INSTALL_SH="$SCRIPT_DIR/install.sh"
 DEPS_SH="$SCRIPT_DIR/install-host-dependencies.sh"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fwrouter-install-suite.XXXXXX")"
-trap 'rm -rf "$TEST_ROOT"' EXIT
+cleanup_test_root() {
+  result=$?
+  trap - EXIT
+  # UI deployment releases are immutable (0555). Restore owner write/search
+  # only on real directories beneath this unique, private test root so the
+  # unprivileged suite can remove its own fixture without following symlinks.
+  if [ -d "$TEST_ROOT" ] && [ ! -L "$TEST_ROOT" ]; then
+    find "$TEST_ROOT" -xdev -type d -exec chmod u+rwx {} + || result=1
+    rm -rf -- "$TEST_ROOT" || result=1
+  fi
+  exit "$result"
+}
+trap cleanup_test_root EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM

@@ -2173,6 +2173,7 @@ def command_run(args: argparse.Namespace) -> int:
                 executions.append({
                     "suite": row["id"], "path": path,
                     "primary_level": row["primary_level"],
+                    "domain": row["domain"], "execution_group": row.get("execution_group"),
                     "status": "deferred_remote_hosted",
                     "elapsed_seconds": 0.0,
                     "fixture_identity": row["fixture_identity"],
@@ -2189,6 +2190,7 @@ def command_run(args: argparse.Namespace) -> int:
             if row.get("execution_profile") in EXECUTION_PROFILES:
                 executions.append({"suite": row["id"], "path": path,
                                    "primary_level": row["primary_level"],
+                                   "domain": row["domain"], "execution_group": row.get("execution_group"),
                                    "status": "blocked_missing_execution_profile",
                                    "elapsed_seconds": 0.0,
                                    "fixture_identity": row["fixture_identity"],
@@ -2196,7 +2198,13 @@ def command_run(args: argparse.Namespace) -> int:
                                    "fixture_owner": row["fixture_owner"]})
                 continue
             if row.get("native") and any(path in reason for reason in blocked):
-                executions.append({"suite": row["id"], "path": path, "primary_level": row["primary_level"], "status": "blocked_missing_required_dependency", "elapsed_seconds": 0.0, "fixture_identity": row["fixture_identity"], "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(), "fixture_owner": row["fixture_owner"]})
+                executions.append({"suite": row["id"], "path": path, "primary_level": row["primary_level"],
+                                   "domain": row["domain"], "execution_group": row.get("execution_group"),
+                                   "execution_profile": row.get("execution_profile"),
+                                   "status": "blocked_missing_required_dependency", "elapsed_seconds": 0.0,
+                                   "fixture_identity": row["fixture_identity"],
+                                   "fixture_identity_sha256": hashlib.sha256(row["fixture_identity"].encode()).hexdigest(),
+                                   "fixture_owner": row["fixture_owner"]})
                 continue
             suite_env = dict(env)
             node_report_path: Path | None = None
@@ -2225,7 +2233,10 @@ def command_run(args: argparse.Namespace) -> int:
                 cwd = ROOT
             else:
                 blocked.append(f"{path}: no reviewed runner adapter")
-                executions.append({"suite": row["id"], "path": path, "status": "blocked_no_runner"})
+                executions.append({"suite": row["id"], "path": path, "primary_level": row["primary_level"],
+                                   "domain": row["domain"], "execution_group": row.get("execution_group"),
+                                   "execution_profile": row.get("execution_profile"),
+                                   "status": "blocked_no_runner"})
                 continue
             max_output = row["max_output_bytes"]
             suite_started = time.monotonic()
