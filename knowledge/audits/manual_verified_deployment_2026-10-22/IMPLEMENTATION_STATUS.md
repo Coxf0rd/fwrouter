@@ -29,3 +29,9 @@ Further isolated qualification executes exact installer/bootstrap, verifies a di
 PR35 integrates owner-merged main `0a0ce14e2868c88ea83b29ad31a9ec914800e1ad` without rewriting its branch history. Main-event CI39879519917 passed all eight jobs, strict qualification and main smoke. The public contract adds explicit fixed-command identity, safe file/parent permissions and execution binding requirements; this is a requirement, not evidence that private bytes pass.
 
 A fresh independent private review identified an executable-permission/path-binding defect requiring correction and new negative tests. Private qualification remains INCOMPLETE; full owner-backed proof/installer/final-proof and complete OS execution closure are separate outstanding gates. Existing isolated child/native and mock-based results cannot substitute for them. Production invocation remains blocked. No installation, deployment or merge is authorized by this checkpoint. Earlier reports and exact historical results remain unchanged.
+
+### Private review correction and explicit environment block
+
+The executable-permission/path-binding defect above was corrected in private staging and passed a separate hash-bound independent F8 review. This does not close complete private qualification. The owner confirmed that no separate disposable host is available and instructed that the full owner-backed proof/installer/final-proof gate remain BLOCKED. A private daemon-only probe is not a container/runtime proof: container creation fails against the current threaded cgroup delegation. No production daemon, host service manager or existing delegation was changed to work around it.
+
+A reviewer-approved OS interpreter/stdlib/dynamic-loader/shared-library execution closure and its trusted bootstrap remain unresolved as a separate gate. The wrapper remains outside Git, uninstalled and operationally blocked. PR35 must remain Draft despite successful public contracts or CI.
