@@ -53,7 +53,7 @@ SOURCE_FILES = (
 SAFE_RECEIPTS = {
     "fwrouter-affected-plan.json", "build-summary.json", "wheel-metadata.json",
     "fwrouter-affected-unit.json", "runtime-inputs.json", "hosted-acceptance-report.json",
-    "shard.json",
+    "shard.json", "visibility.json",
     "qualified-child-receipt.json", "qualified-xray-docker-receipt.json",
     "profile.json",
     "fwrouter-aggregate.json", "required-result.json", "qualification.json", "stage.json",

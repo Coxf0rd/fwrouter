@@ -224,6 +224,48 @@ class GateContractTests(unittest.TestCase):
             self.assertTrue(root.is_symlink())
             self.assertEqual("preserve", sentinel.read_text(encoding="utf-8"))
 
+    def test_gate_owned_temp_cleanup_detects_root_swap_before_removal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="fwrouter-gate-cleanup-swap-") as temp:
+            parent = Path(temp)
+            root = parent / "fwrouter-gate-owned"
+            readonly = root / "readonly"
+            readonly.mkdir(parents=True)
+            original_sentinel = readonly / "original.txt"
+            original_sentinel.write_text("original tree", encoding="utf-8")
+            readonly.chmod(0o555)
+            target = parent / "protected-target"
+            target.mkdir()
+            target_sentinel = target / "keep.txt"
+            target_sentinel.write_text("protected target", encoding="utf-8")
+            saved_original = parent / "renamed-original"
+            real_stat = gate.os.stat
+            parent_fd: int | None = None
+            root_path_stat_calls = 0
+
+            def swap_before_final_identity_check(path, *args, **kwargs):
+                nonlocal parent_fd, root_path_stat_calls
+                if isinstance(path, str) and path == root.name and "dir_fd" in kwargs:
+                    if parent_fd is None:
+                        parent_fd = kwargs["dir_fd"]
+                    if kwargs["dir_fd"] == parent_fd:
+                        root_path_stat_calls += 1
+                        if root_path_stat_calls == 2:
+                            root.rename(saved_original)
+                            root.symlink_to(target, target_is_directory=True)
+                return real_stat(path, *args, **kwargs)
+
+            with mock.patch.object(gate.os, "stat", side_effect=swap_before_final_identity_check):
+                result = gate.cleanup_owned_temp(root)
+
+            self.assertEqual("residual", result["status"])
+            self.assertIn("root_path_identity_changed_before_cleanup", result["diagnostic_errors"])
+            self.assertTrue(saved_original.is_dir())
+            self.assertEqual("original tree",
+                             (saved_original / "readonly" / "original.txt").read_text(encoding="utf-8"))
+            self.assertTrue(root.is_symlink())
+            self.assertEqual(target, root.resolve())
+            self.assertEqual("protected target", target_sentinel.read_text(encoding="utf-8"))
+
     def test_backend_uv_lock_selects_test_infrastructure_in_quick_and_required_plans(self) -> None:
         path = "backend/uv.lock"
         expected = {

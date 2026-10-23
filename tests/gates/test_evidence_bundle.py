@@ -193,6 +193,18 @@ class EvidenceBundleTests(unittest.TestCase):
                                  {path.name for path in failed_destination.iterdir()})
             self.assertEqual("failure", failed["outcome"])
 
+    def test_visibility_publication_is_allowlisted_without_allowing_raw_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "visibility.json"
+            source.write_text('{"schema":"fwrouter-ci-visibility/v1"}')
+            bundle.copy_evidence_file(source, root / "out" / "visibility.json")
+            self.assertEqual(source.read_bytes(), (root / "out" / "visibility.json").read_bytes())
+            raw = root / "runtime-dump.json"
+            raw.write_text('{"synthetic":"private"}')
+            with self.assertRaises(bundle.gate.GateError):
+                bundle.copy_evidence_file(raw, root / "out" / "runtime-dump.json")
+
     def test_native_handoff_preserves_qcp_and_docker_xray_profile_closure(self) -> None:
         # Synthetic contract fixture: this calls the real strict native receipt
         # validators, but is not a native-runtime qualification result.

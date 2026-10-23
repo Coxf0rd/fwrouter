@@ -2059,78 +2059,140 @@ def cleanup_owned_temp(root: Path, *, max_entries: int = 128) -> dict[str, Any]:
     root = Path(root)
     uid = os.geteuid()
     entries: list[dict[str, Any]] = []
-    directories: list[tuple[Path, int, int, int]] = []
+    directories: list[tuple[str, int, int, int]] = []
     errors: list[str] = []
     node_count = 0
     truncated = False
+    parent_fd = root_fd = None
+    root_identity = None
+    restored = 0
+    cleanup_error = None
+    safe = True
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
-    def inventory() -> bool:
-        nonlocal node_count, truncated
-        if not root.exists() and not root.is_symlink():
-            return True
+    def residual(*, path_still_present: bool = True) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "status": "residual", "root_name": root.name,
+            "entries": entries[:max_entries], "truncated": truncated,
+            "readonly_directories_restored": restored,
+        }
+        if errors:
+            result["diagnostic_errors"] = sorted(set(errors))[:8]
+        if cleanup_error:
+            result["cleanup_error"] = cleanup_error
+        if not path_still_present:
+            result["path_absent_but_original_identity_unproven"] = True
+        return result
+
+    try:
+        if not root.is_absolute() or root.name in {"", ".", ".."}:
+            errors.append("unsafe_root_path")
+            return residual()
+        parent_fd = os.open(root.parent, flags)
         try:
-            root_info = root.lstat()
-        except FileNotFoundError:
-            return True
-        if (not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode)
-                or root_info.st_uid != uid):
+            root_lstat = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError as exc:
+            errors.append("root_identity_unavailable_" + type(exc).__name__)
+            return residual(path_still_present=False)
+        if not stat.S_ISDIR(root_lstat.st_mode) or root_lstat.st_uid != uid:
             errors.append("unsafe_root_type_or_owner")
-            return False
-        root_device = root_info.st_dev
-        stack: list[tuple[Path, str]] = [(root, ".")]
+            return residual()
+        root_fd = os.open(root.name, flags, dir_fd=parent_fd)
+        root_identity = os.fstat(root_fd)
+        if (not stat.S_ISDIR(root_identity.st_mode) or root_identity.st_uid != uid
+                or root_identity.st_dev != root_lstat.st_dev
+                or root_identity.st_ino != root_lstat.st_ino):
+            errors.append("root_identity_changed_during_open")
+            return residual()
+        root_device = root_identity.st_dev
+        stack: list[tuple[int, str]] = [(os.dup(root_fd), ".")]
         while stack:
-            current, relative = stack.pop()
+            directory_fd, relative = stack.pop()
             try:
-                info = current.lstat()
+                directory_info = os.fstat(directory_fd)
+                node_count += 1
+                if node_count > 20000:
+                    errors.append("inventory_limit_exceeded")
+                    safe = False
+                    break
+                directories.append((relative, directory_info.st_dev,
+                                    directory_info.st_ino, directory_info.st_mode))
+                if len(entries) < max_entries:
+                    entries.append({"path": relative[:256], "kind": "directory",
+                                    "mode": stat.S_IMODE(directory_info.st_mode),
+                                    "uid": directory_info.st_uid})
+                else:
+                    truncated = True
+                if (directory_info.st_uid != uid or directory_info.st_dev != root_device
+                        or not stat.S_ISDIR(directory_info.st_mode)):
+                    errors.append("foreign_owner_or_filesystem")
+                    safe = False
+                    break
+                with os.scandir(directory_fd) as children:
+                    names = sorted((child.name for child in children), reverse=True)
+                for name in names:
+                    child_info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    node_count += 1
+                    if node_count > 20000:
+                        errors.append("inventory_limit_exceeded")
+                        safe = False
+                        break
+                    if stat.S_ISLNK(child_info.st_mode):
+                        kind = "symlink"
+                    elif stat.S_ISDIR(child_info.st_mode):
+                        kind = "directory"
+                    elif stat.S_ISREG(child_info.st_mode):
+                        kind = "file"
+                    else:
+                        kind = "other"
+                    child_relative = name if relative == "." else f"{relative}/{name}"
+                    if len(entries) < max_entries:
+                        entries.append({"path": child_relative[:256], "kind": kind,
+                                        "mode": stat.S_IMODE(child_info.st_mode),
+                                        "uid": child_info.st_uid})
+                    else:
+                        truncated = True
+                    if child_info.st_uid != uid or child_info.st_dev != root_device:
+                        errors.append("foreign_owner_or_filesystem")
+                        safe = False
+                        break
+                    if kind == "directory":
+                        child_fd = os.open(name, flags, dir_fd=directory_fd)
+                        opened = os.fstat(child_fd)
+                        if (opened.st_dev != child_info.st_dev or opened.st_ino != child_info.st_ino
+                                or opened.st_uid != uid or not stat.S_ISDIR(opened.st_mode)):
+                            os.close(child_fd)
+                            errors.append("owned_directory_changed_during_inventory")
+                            safe = False
+                            break
+                        stack.append((child_fd, child_relative))
+                    elif kind not in {"symlink", "file"}:
+                        errors.append("special_file_in_owned_temp_root")
+                        safe = False
+                        break
+                if not safe:
+                    break
             except OSError as exc:
                 errors.append(type(exc).__name__)
-                return False
-            node_count += 1
-            if node_count > 20000:
-                errors.append("inventory_limit_exceeded")
-                return False
-            if stat.S_ISLNK(info.st_mode):
-                kind = "symlink"
-            elif stat.S_ISDIR(info.st_mode):
-                kind = "directory"
-            elif stat.S_ISREG(info.st_mode):
-                kind = "file"
-            else:
-                kind = "other"
-            if len(entries) < max_entries:
-                entries.append({"path": relative[:256], "kind": kind,
-                                "mode": stat.S_IMODE(info.st_mode), "uid": info.st_uid})
-            else:
-                truncated = True
-            if info.st_uid != uid or info.st_dev != root_device:
-                errors.append("foreign_owner_or_filesystem")
-                return False
-            if kind == "symlink":
-                continue
-            if kind == "directory":
-                directories.append((current, info.st_dev, info.st_ino, info.st_mode))
+                safe = False
+                break
+            finally:
+                os.close(directory_fd)
+        if not safe:
+            for pending_fd, _ in stack:
                 try:
-                    with os.scandir(current) as children:
-                        child_names = sorted((child.name for child in children), reverse=True)
-                except OSError as exc:
-                    errors.append(type(exc).__name__)
-                    return False
-                for name in child_names:
-                    child = current / name
-                    stack.append((child, child.relative_to(root).as_posix()))
-            elif kind != "file":
-                errors.append("special_file_in_owned_temp_root")
-                return False
-        return True
-
-    safe = inventory()
-    restored = 0
-    if safe:
-        for directory, device, inode, original_mode in reversed(directories):
-            try:
-                flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-                descriptor = os.open(directory, flags)
+                    os.close(pending_fd)
+                except OSError:
+                    pass
+        if safe:
+            for relative, device, inode, original_mode in reversed(directories):
+                descriptor = os.dup(root_fd)
                 try:
+                    if relative != ".":
+                        for component in relative.split("/"):
+                            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+                            os.close(descriptor)
+                            descriptor = next_descriptor
                     current = os.fstat(descriptor)
                     if (not stat.S_ISDIR(current.st_mode) or current.st_uid != uid
                             or current.st_dev != device or current.st_ino != inode):
@@ -2140,32 +2202,57 @@ def cleanup_owned_temp(root: Path, *, max_entries: int = 128) -> dict[str, Any]:
                     if (original_mode & stat.S_IRWXU) != stat.S_IRWXU:
                         os.fchmod(descriptor, original_mode | stat.S_IRWXU)
                         restored += 1
+                except OSError as exc:
+                    errors.append(type(exc).__name__)
+                    safe = False
+                    break
                 finally:
                     os.close(descriptor)
+        if safe:
+            try:
+                current_path = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+                if (not stat.S_ISDIR(current_path.st_mode)
+                        or current_path.st_uid != uid
+                        or current_path.st_dev != root_identity.st_dev
+                        or current_path.st_ino != root_identity.st_ino):
+                    errors.append("root_path_identity_changed_before_cleanup")
+                    safe = False
             except OSError as exc:
-                errors.append(type(exc).__name__)
+                errors.append("root_identity_unavailable_before_cleanup_" + type(exc).__name__)
                 safe = False
-                break
-    cleanup_error = None
-    if safe:
+        if safe:
+            if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+                errors.append("descriptor_safe_rmtree_unavailable")
+                safe = False
+            else:
+                try:
+                    shutil.rmtree(root.name, dir_fd=parent_fd)
+                except OSError as exc:
+                    cleanup_error = type(exc).__name__
         try:
-            shutil.rmtree(root)
-        except OSError as exc:
-            cleanup_error = type(exc).__name__
-    if not root.exists() and not root.is_symlink():
-        return {"status": "removed", "root_name": root.name, "entries": [],
-                "truncated": False, "readonly_directories_restored": restored}
-    if not entries:
-        directories.clear()
-        inventory()
-    result = {"status": "residual", "root_name": root.name,
-              "entries": entries[:max_entries], "truncated": truncated,
-              "readonly_directories_restored": restored}
-    if errors:
-        result["diagnostic_errors"] = sorted(set(errors))[:8]
-    if cleanup_error:
-        result["cleanup_error"] = cleanup_error
-    return result
+            remaining_path = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+            path_absent = False
+        except FileNotFoundError:
+            path_absent = True
+            remaining_path = None
+        original_after = os.fstat(root_fd)
+        original_unlinked = original_after.st_nlink == 0
+        if path_absent and original_unlinked:
+            return {"status": "removed", "root_name": root.name, "entries": [],
+                    "truncated": False, "readonly_directories_restored": restored}
+        if path_absent and not original_unlinked:
+            errors.append("original_root_still_linked_after_path_disappeared")
+        elif remaining_path is not None and (remaining_path.st_dev != root_identity.st_dev
+                                              or remaining_path.st_ino != root_identity.st_ino):
+            errors.append("root_path_identity_changed_during_cleanup")
+    except OSError as exc:
+        errors.append(type(exc).__name__)
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
+    return residual(path_still_present=root.exists() or root.is_symlink())
 
 
 def command_run(args: argparse.Namespace) -> int:
