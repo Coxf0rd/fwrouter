@@ -560,3 +560,46 @@ def test_main_evidence_artifact_exact_maximum_is_permitted():
     validate_main_ci_provenance(run, jobs, artifact, expected_sha=sha,
                                 expected_attempt=2,
                                 now=datetime(2026, 10, 23, tzinfo=timezone.utc))
+
+
+def test_backend_prerequisite_is_separate_from_ui_authority():
+    """Synthetic declaration; this never runs installer or grants readiness."""
+    contract = json.loads(CONTRACT.read_text())
+    value = contract['backend_prerequisite']
+    assert value['authority'] == 'separate-owner-authorized-controlled-backend-operation'
+    assert value['wrapper_scope_remains'] == 'ui'
+    assert type(value['expected_schema']) is int and value['expected_schema'] == 27
+    for key in ('implicit_migration', 'automatic_backend_bootstrap',
+                'fabricated_marker_or_projection', 'health_alone_is_sufficient'):
+        assert value[key] is False
+    assert value['old_installed_source_controls_stop'] is True
+    assert value['transfer_requires_operation_and_old_new_manifest_cas'] is True
+    assert value['missing_owner_receipts'] == 'STOP-separate-existing-owner-qualification-required'
+    assert value['restore_or_rollback'] == 'separate-reviewed-recovery-decision-no-automatic-db-restore'
+    assert value['ordered_boundaries'] == [
+        'readonly-preflight', 'verified-backup-and-independent-access',
+        'old-source-controlled-stop', 'new-source-cas-transfer', 'existing-backend-installer',
+        'schema-and-export-verification', 'explicit-api-start-and-health',
+        'fresh-native-proof-replay', 'controlled-resume-and-timer-decision', 'fresh-ui-preflight',
+    ]
+
+
+def test_backend_preparation_uses_existing_installer_and_proof_interface():
+    value = json.loads(CONTRACT.read_text())['backend_prerequisite']
+    assert value['installer_argv'] == ['installer/install.sh', '--deploy', '--component', 'backend']
+    assert value['readiness_command'] == [
+        'fwrouter', 'native-proof', '--scope', 'ui',
+        '--expected-backend-manifest-sha256', 'APPROVED_BACKEND_SHA256',
+        '--expected-xray-image-digest', 'sha256:APPROVED_XRAY_IMAGE_ID',
+        '--expected-mihomo-image-digest', 'sha256:APPROVED_MIHOMO_IMAGE_ID',
+    ]
+    # Inspect source as data: do not import or execute the installed CLI.
+    source = Path(__file__).resolve().parents[2]
+    cli = (source / 'backend/fwrouter_api/cli.py').read_text()
+    for flag in ('--scope', '--expected-backend-manifest-sha256',
+                 '--expected-xray-image-digest', '--expected-mihomo-image-digest'):
+        assert f'native_proof_parser.add_argument("{flag}"' in cli
+    lifecycle = (source / 'installer/controlled_backend_lifecycle.py').read_text()
+    for flag in ('--expected-operation-id', '--expected-current-manifest-sha256',
+                 '--expected-new-manifest-sha256'):
+        assert f'parser.add_argument("{flag}"' in lifecycle

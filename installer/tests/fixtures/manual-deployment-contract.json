@@ -429,5 +429,49 @@
     "os_runtime_closure_separate_gate": true,
     "automatic_host_pin_approval": false,
     "malicious_root_peer_excluded": true
+  },
+  "backend_prerequisite": {
+    "authority": "separate-owner-authorized-controlled-backend-operation",
+    "wrapper_scope_remains": "ui",
+    "expected_schema": 27,
+    "implicit_migration": false,
+    "automatic_backend_bootstrap": false,
+    "old_installed_source_controls_stop": true,
+    "transfer_requires_operation_and_old_new_manifest_cas": true,
+    "installer_argv": [
+      "installer/install.sh",
+      "--deploy",
+      "--component",
+      "backend"
+    ],
+    "readiness_command": [
+      "fwrouter",
+      "native-proof",
+      "--scope",
+      "ui",
+      "--expected-backend-manifest-sha256",
+      "APPROVED_BACKEND_SHA256",
+      "--expected-xray-image-digest",
+      "sha256:APPROVED_XRAY_IMAGE_ID",
+      "--expected-mihomo-image-digest",
+      "sha256:APPROVED_MIHOMO_IMAGE_ID"
+    ],
+    "missing_owner_receipts": "STOP-separate-existing-owner-qualification-required",
+    "fabricated_marker_or_projection": false,
+    "health_alone_is_sufficient": false,
+    "restore_or_rollback": "separate-reviewed-recovery-decision-no-automatic-db-restore",
+    "timer_catchup": "explicit-owner-decision-after-health-and-native-readiness",
+    "ordered_boundaries": [
+      "readonly-preflight",
+      "verified-backup-and-independent-access",
+      "old-source-controlled-stop",
+      "new-source-cas-transfer",
+      "existing-backend-installer",
+      "schema-and-export-verification",
+      "explicit-api-start-and-health",
+      "fresh-native-proof-replay",
+      "controlled-resume-and-timer-decision",
+      "fresh-ui-preflight"
+    ]
   }
 }
