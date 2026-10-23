@@ -276,16 +276,31 @@ def expected_evidence_paths(evidence: Path, plan: dict[str, Any], needed: dict[s
         needs_xray = "backend/tests/test_xray_native_readback.py" in selected
         profiles = (["qcp"] if needs_qcp else []) + (["xray"] if needs_xray else [])
         for profile_name in profiles:
+            profile_root = evidence / "native/profiles" / profile_name
+            parallel_ci.verify_producer(profile_root, "native", plan)
+            producer = read_json(profile_root / "producer.json", 64 * 1024)
+            files = producer.get("files")
+            if not isinstance(files, dict) or "runtime-inputs.json" not in files:
+                raise gate.GateError(f"native profile {profile_name} has no sealed runtime manifest")
             receipt_name = ("qualified-child-receipt.json" if profile_name == "qcp"
                             else "qualified-xray-docker-receipt.json")
-            for relative in (f"profiles/{profile_name}/producer.json",
-                             f"profiles/{profile_name}/runtime-inputs.json",
-                             f"profiles/{profile_name}/{receipt_name}",
-                             f"profiles/{profile_name}/profile.json"):
-                candidate = evidence / "native" / relative
+            receipts = sorted(path for path in files if Path(path).name == receipt_name)
+            if len(receipts) != 1:
+                raise gate.GateError(f"native profile {profile_name} must retain exactly one sealed receipt")
+            sibling = str(Path(receipts[0]).with_name("profile.json"))
+            expected_files = {"runtime-inputs.json", receipts[0], sibling}
+            if set(files) != expected_files:
+                raise gate.GateError(
+                    f"native profile {profile_name} has missing or unapproved sealed files")
+            for relative in sorted(files):
+                safe_path(relative)
+                candidate = profile_root / relative
                 if candidate.is_symlink() or not candidate.is_file():
-                    raise gate.GateError(f"native evidence is missing sealed {profile_name} closure: {candidate.name}")
-                native_paths.append(relative)
+                    raise gate.GateError(f"native evidence is missing sealed {profile_name} closure: {relative}")
+                native_paths.append(f"profiles/{profile_name}/{relative}")
+            # The nested envelope itself is part of the combined native producer
+            # inventory and must also survive final-bundle projection.
+            native_paths.append(f"profiles/{profile_name}/producer.json")
         paths["native"] = native_paths
     return {role: sorted(items) for role, items in paths.items() if needed.get(role)}
 
@@ -799,11 +814,12 @@ def verify_native_profiles(evidence: Path, plan: dict[str, Any]) -> None:
         runtime = read_json(root / "runtime-inputs.json")
         strict.validate_runtime_inputs(runtime)
         manifests.append(runtime)
-    if any(value != manifests[0] for value in manifests[1:]):
+    if any(parallel_ci.runtime_identity(value) != parallel_ci.runtime_identity(manifests[0])
+           for value in manifests[1:]):
         raise gate.GateError("offline native profile runners disagree on pinned runtime inputs")
     combined = read_json(evidence / "native/runtime-inputs.json")
     strict.validate_runtime_inputs(combined)
-    if combined != manifests[0]:
+    if parallel_ci.runtime_identity(combined) != parallel_ci.runtime_identity(manifests[0]):
         raise gate.GateError("combined native runtime input differs from profile-bound manifests")
 
 

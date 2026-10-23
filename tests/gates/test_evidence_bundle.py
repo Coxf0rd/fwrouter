@@ -289,30 +289,67 @@ class EvidenceBundleTests(unittest.TestCase):
                              bundle.strict.validate_xray_docker_receipt(xray_path, plan, runtime_inputs))
 
             evidence = root / "evidence"
-            native_evidence = evidence / "native"
-            (native_evidence / "profiles").mkdir(parents=True)
-            shutil.copyfile(destination / "runtime-inputs.json", native_evidence / "runtime-inputs.json")
+            evidence.mkdir()
             for profile, receipt_name in (("qcp", "qualified-child-receipt.json"),
                                           ("xray", "qualified-xray-docker-receipt.json")):
-                target = native_evidence / "profiles" / profile
-                target.mkdir()
+                target = evidence / f"fwrouter-v2-native-{profile}-123-1"
+                (target / profile).mkdir(parents=True)
                 shutil.copyfile(destination / "runtime-inputs.json", target / "runtime-inputs.json")
-                shutil.copyfile(destination / profile / receipt_name, target / receipt_name)
-                shutil.copyfile(destination / profile / "profile.json", target / "profile.json")
+                shutil.copyfile(destination / profile / receipt_name, target / profile / receipt_name)
+                shutil.copyfile(destination / profile / "profile.json", target / profile / "profile.json")
                 with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"},
                                 clear=False):
                     bundle.parallel_ci.seal(target, "native", plan, "success")
                 self.assertTrue((target / "producer.json").is_file())
-            selected = bundle.expected_evidence_paths(evidence, plan, {"native": True})["native"]
-            self.assertIn("profiles/qcp/profile.json", selected)
-            self.assertIn("profiles/xray/profile.json", selected)
             with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"},
                             clear=False):
+                native_evidence = bundle.parallel_ci.combine_native_profiles(evidence, plan, ["qcp", "xray"])
+                bundle.parallel_ci.seal(native_evidence, "native", plan, "success")
+            with patch.dict("os.environ", {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"},
+                            clear=False):
+                selected = bundle.expected_evidence_paths(evidence, plan, {"native": True})["native"]
+                self.assertIn("profiles/qcp/qcp/profile.json", selected)
+                self.assertIn("profiles/xray/xray/profile.json", selected)
                 bundle.verify_native_profiles(evidence, plan)
+                unexpected = native_evidence / "profiles/qcp/diagnostic.log"
+                unexpected.write_text("synthetic", encoding="utf-8")
+                bundle.parallel_ci.seal(native_evidence / "profiles/qcp", "native", plan, "success")
+                bundle.parallel_ci.seal(native_evidence, "native", plan, "success")
+                with self.assertRaisesRegex(bundle.gate.GateError, "unapproved sealed files"):
+                    bundle.expected_evidence_paths(evidence, plan, {"native": True})
+                unexpected.unlink()
+                bundle.parallel_ci.seal(native_evidence / "profiles/qcp", "native", plan, "success")
+                bundle.parallel_ci.seal(native_evidence, "native", plan, "success")
                 (native_evidence / "runtime-inputs.json").write_text("{}", encoding="utf-8")
                 with self.assertRaisesRegex(bundle.gate.GateError, "input manifest differs"):
                     bundle.verify_native_profiles(evidence, plan)
             self.assertIn("tests/acceptance/qualified-child-scenarios.json", bundle.SOURCE_FILES)
+
+    def test_runtime_identity_ignores_only_validated_measurement_timings(self) -> None:
+        provision = bundle.strict.provision
+        measurements = {
+            "xray": {"source_archive_bytes": 1, "executable_bytes": 2,
+                     "download_seconds": 1.0, "extract_seconds": 2.0},
+            "mihomo": {"source_archive_bytes": 3, "executable_bytes": 4,
+                       "download_seconds": 3.0, "extract_seconds": 4.0},
+            "chromium": {"source_archive_bytes": 5, "normalized_bundle_bytes": 6,
+                         "expanded_content_bytes": 7, "chrome_executable_bytes": 8,
+                         "download_seconds": 5.0, "normalize_seconds": 6.0},
+        }
+        self.assertTrue(provision.valid_asset_measurements(measurements))
+        baseline = {"native": {"mihomo": {"sha256": "a"}}, "asset_measurements": measurements}
+        changed_timing = json.loads(json.dumps(baseline))
+        changed_timing["asset_measurements"]["xray"]["download_seconds"] = 19.0
+        self.assertEqual(bundle.parallel_ci.runtime_identity(baseline),
+                         bundle.parallel_ci.runtime_identity(changed_timing))
+        changed_size = json.loads(json.dumps(baseline))
+        changed_size["asset_measurements"]["xray"]["source_archive_bytes"] = 99
+        self.assertNotEqual(bundle.parallel_ci.runtime_identity(baseline),
+                            bundle.parallel_ci.runtime_identity(changed_size))
+        changed_pin = json.loads(json.dumps(baseline))
+        changed_pin["native"]["mihomo"]["sha256"] = "b"
+        self.assertNotEqual(bundle.parallel_ci.runtime_identity(baseline),
+                            bundle.parallel_ci.runtime_identity(changed_pin))
 
     def test_eligibility_requires_exact_run_attempt_and_all_required_job_successes(self) -> None:
         manifest = bundle.gate.load_manifest()

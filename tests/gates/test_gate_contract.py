@@ -94,6 +94,28 @@ class GateContractTests(unittest.TestCase):
         with self.assertRaises(gate.GateError):
             gate.domain_for_path("unmapped/binary.blob", self.manifest)
 
+    def test_ci_v3_architecture_doc_has_explicit_specific_path_classification(self) -> None:
+        domains, rules = gate.domain_for_path("docs/CI_V3.md", self.manifest)
+        self.assertEqual({"test-infrastructure"}, domains)
+        self.assertEqual(["docs/CI_V3.md"], [row["glob"] for row in rules])
+
+    def test_stdlib_pytest_method_ids_are_not_downgraded_to_file_markers(self) -> None:
+        path = "tests/gates/test_evidence_bundle.py"
+        row = next(item for item in self.manifest["test_files"] if item["path"] == path)
+        node = path + "::EvidenceBundleTests::test_native_handoff_preserves_qcp_and_docker_xray_profile_closure"
+        plan = {"source_commit": "a" * 40, "plan_digest": "b" * 64,
+                "manifest_digest": gate.canonical_digest(self.manifest),
+                "manifest_version": self.manifest["version"]}
+        execution = {"suite": row["id"], "path": path, "primary_level": row["primary_level"],
+                     "domain": row["domain"], "execution_group": row["execution_group"],
+                     "execution_profile": None, "status": "passed", "elapsed_seconds": 0.1,
+                     "collected_node_ids": [node], "executed_node_ids": [node]}
+        report = gate._routine_shard_report(
+            plan, self.manifest, row["execution_group"], [row], [execution], {node: "passed"}, [],
+            l0_owned=False, l0_ok=True, l0_elapsed=0, l0_problems=[])
+        self.assertEqual([node], report["collected_node_ids"])
+        self.assertEqual([], report["file_marker_paths"])
+
     def test_backend_uv_lock_selects_test_infrastructure_in_quick_and_required_plans(self) -> None:
         path = "backend/uv.lock"
         expected = {

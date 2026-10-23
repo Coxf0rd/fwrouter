@@ -640,6 +640,12 @@
     },
     {
       "domains": [
+        "test-infrastructure"
+      ],
+      "glob": "docs/CI_V3.md"
+    },
+    {
+      "domains": [
         "documentation"
       ],
       "glob": "knowledge/**"

@@ -406,6 +406,50 @@ def one(root, pattern):
     return paths[0]
 
 
+def runtime_identity(value: dict[str, Any]) -> dict[str, Any]:
+    """Return pinned runtime identity, excluding only validated per-run timings."""
+    import copy
+    result = copy.deepcopy(value)
+    measurements = result.get("asset_measurements")
+    if measurements is not None:
+        if not strict.provision.valid_asset_measurements(measurements):
+            raise gate.GateError("runtime asset measurements are malformed")
+        for asset in measurements.values():
+            for field in ("download_seconds", "extract_seconds", "normalize_seconds"):
+                asset.pop(field, None)
+    return result
+
+
+def combine_native_profiles(artifact_root: Path, plan: dict[str, Any], profiles: list[str]) -> Path:
+    """Retain each complete, sealed profile tree under one strict native input root."""
+    if not profiles or len(profiles) != len(set(profiles)) or any(p not in {"qcp", "xray"} for p in profiles):
+        raise gate.GateError("native profile set is empty, duplicated, or unsupported")
+    prefix = f"fwrouter-v2-{{role}}-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+    root = Path(artifact_root) / "native"
+    root.mkdir(mode=0o700)
+    manifests = []
+    for index, profile in enumerate(profiles):
+        source = Path(artifact_root) / prefix.format(role=f"native-{profile}")
+        verify_producer(source, "native", plan)
+        runtime = strict.read_json(source / "runtime-inputs.json")
+        strict.validate_runtime_inputs(runtime)
+        manifests.append(runtime)
+        target = root / "profiles" / profile
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        # Preserve the original path layout and every file covered by the
+        # producer seal; flattening would invalidate the seal and lose closure.
+        shutil.copytree(source, target, symlinks=False)
+        verify_producer(target, "native", plan)
+        if index == 0:
+            shutil.copyfile(source / "runtime-inputs.json", root / "runtime-inputs.json",
+                            follow_symlinks=False)
+        shutil.rmtree(source)
+    if any(runtime_identity(value) != runtime_identity(manifests[0]) for value in manifests[1:]):
+        raise gate.GateError("native profile runners disagree on pinned runtime input identity")
+    seal(root, "native", plan, "success")
+    return root
+
+
 def aggregate(args):
     output = Path(args.root); output.mkdir(parents=True, exist_ok=True)
     results = {}
@@ -470,34 +514,7 @@ def aggregate(args):
             gate.atomic_json(unit_root / 'fwrouter-affected-unit.json', merged_unit)
             seal(unit_root, 'unit', plan, 'success')
         if required['native']:
-            native_root = artifact_root / 'native'
-            native_root.mkdir(mode=0o700)
-            native_manifests = []
-            for profile in selected_native_profiles:
-                source = artifact_root / prefix.format(role=f"native-{profile}")
-                verify_producer(source, 'native', plan)
-                profile_manifest = strict.read_json(source / 'runtime-inputs.json')
-                strict.validate_runtime_inputs(profile_manifest)
-                native_manifests.append(profile_manifest)
-                relative = ("qualified-child-receipt.json" if profile == 'qcp'
-                            else "qualified-xray-docker-receipt.json")
-                receipt = one(source, relative)
-                sibling = receipt.with_name('profile.json')
-                if sibling.is_symlink() or not sibling.is_file():
-                    raise gate.GateError(f'{profile}: native receipt is missing its profile.json closure')
-                target = native_root / profile
-                target.mkdir(mode=0o700)
-                shutil.copyfile(source / 'producer.json', target / 'producer.json', follow_symlinks=False)
-                shutil.copyfile(source / 'runtime-inputs.json', target / 'runtime-inputs.json', follow_symlinks=False)
-                shutil.copyfile(receipt, target / receipt.name, follow_symlinks=False)
-                shutil.copyfile(sibling, target / 'profile.json', follow_symlinks=False)
-                if profile == selected_native_profiles[0]:
-                    shutil.copyfile(source / 'runtime-inputs.json', native_root / 'runtime-inputs.json',
-                                    follow_symlinks=False)
-                shutil.rmtree(source)
-            if any(value != native_manifests[0] for value in native_manifests[1:]):
-                raise gate.GateError('native profile runners disagree on pinned runtime input identity')
-            seal(native_root, 'native', plan, 'success')
+            combine_native_profiles(artifact_root, plan, selected_native_profiles)
         import ci_inputs
         ci_inputs.verify(artifact_root / 'build', Path(args.plan))
         # Native evidence deliberately retains one runtime manifest per profile.
@@ -507,6 +524,9 @@ def aggregate(args):
                      for k in ('hosted', 'provider', 'packet', 'native') if required[k]]
         for manifest in manifests:
             strict.validate_runtime_inputs(manifest)
+        if manifests and any(runtime_identity(value) != runtime_identity(manifests[0])
+                             for value in manifests[1:]):
+            raise gate.GateError("producer jobs disagree on pinned runtime input identity")
         runtime = None
         if manifests:
             runtime = output / 'runtime-inputs.json'; gate.atomic_json(runtime, manifests[0])

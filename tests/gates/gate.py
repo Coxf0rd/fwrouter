@@ -2006,8 +2006,11 @@ def _routine_shard_report(plan: dict[str, Any], manifest: dict[str, Any], shard_
     execution_ids = [row.get("suite") for row in executions]
     collected_nodes = [node for row in executions for node in row.get("collected_node_ids", [])]
     executed_nodes = [node for row in executions for node in row.get("executed_node_ids", [])]
+    # Python contract files now run under pytest and emit exact unittest method
+    # IDs.  Only retain a bare path as a marker when an adapter genuinely emits
+    # that synthetic file-level ID; never hide observed method-level coverage.
     file_markers = sorted(path for path in node_status
-                          if path.split("::", 1)[0] in STDLIB_CONTRACT_PATHS)
+                          if path in STDLIB_CONTRACT_PATHS and "::" not in path)
     result = {
         "schema": "fwrouter-routine-shard/v1",
         "source_commit": plan["source_commit"],
