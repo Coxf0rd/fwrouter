@@ -34,6 +34,7 @@ SCOPED_PENDING_STATUSES = {
     "pending_no_selected_server",
     "pending_infrastructure_immunity_conflict",
     "pending_docker_host_network",
+    "pending_docker_direct_source_coverage",
     "pending_docker_ipv4_inventory",
     "pending_docker_multi_ipv4_unsupported",
     "pending_docker_ipv6_inventory",
@@ -300,6 +301,7 @@ def build_scoped_subject_runtime(
     server_override: dict[str, Any] | None,
     vpn_supported: bool,
     bypass_enabled: bool,
+    global_mode: str | None = None,
 ) -> dict[str, Any]:
     subject_id = str(subject.get("subject_id") or "")
     subject_type = str(subject.get("subject_type") or "")
@@ -369,6 +371,34 @@ def build_scoped_subject_runtime(
     if subject_type not in SCOPED_EGRESS_ELIGIBLE_SUBJECT_TYPES:
         result["resolution_reason"] = "subject_type_not_supported"
         return result
+
+    # Direct needs the same complete source coverage when unmatched packets
+    # could enter global VPN. Host-network output and protected runtimes retain
+    # their established direct-safe immunity, independent of global classify.
+    if (subject_type == "docker" and dataplane_path == "direct"
+            and not infrastructure_role and not bypass_enabled
+            and global_mode in {"vpn", "selective"}):
+        detail = _normalized_detail(subject)
+        source = detail.get("source") or detail.get("source_json")
+        network_mode = str(source.get("NetworkMode") or "").strip().lower() if isinstance(source, dict) else ""
+        if network_mode != "host":
+            values = source.get("IPv4Addresses") if isinstance(source, dict) else None
+            try:
+                addresses = {str(ip_address(value)) for value in values} if isinstance(values, list) else set()
+                valid = all(ip_address(value).version == 4 for value in addresses)
+            except (ValueError, TypeError):
+                addresses, valid = set(), False
+            ipv6_state, _ = _docker_ipv6_inventory_state(subject)
+            if (not isinstance(source, dict) or source.get("IPv4InventoryComplete") is not True
+                    or not valid or len(addresses) != 1
+                    or str(detail.get("ip_address") or "") not in addresses
+                    or ipv6_state != "complete_no_global_ipv6"):
+                result["tracked"] = True
+                result["eligible"] = True
+                result["inventory_classification"] = "tracked_only"
+                result["status"] = "pending_docker_direct_source_coverage"
+                result["resolution_reason"] = "docker_direct_source_coverage_incomplete"
+                return result
 
     if (
         server_override is not None

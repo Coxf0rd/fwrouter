@@ -1359,6 +1359,35 @@ def _install_acceptance_preflight_observer() -> None:
     if (os.environ.get("FWROUTER_ENVIRONMENT") != "test"
             or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
         raise RuntimeError("preflight observer requires the qualified acceptance worker")
+    # Observe the real exception while JobManager is handling it. Never emit
+    # exception messages, locals, paths or arguments (which may contain secrets).
+    from fwrouter_api.jobs import manager as jobs_manager
+    from fwrouter_api.core.config import get_settings
+    original_log = jobs_manager.write_technical_log
+
+    def observed_job_log(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("event_type") == "job_handler_exception":
+            exc = sys.exception()
+            frames = []
+            tb = exc.__traceback__ if exc is not None else None
+            while tb is not None:
+                module = str(tb.tb_frame.f_globals.get("__name__") or "")
+                if module.startswith("fwrouter_api.") and re.fullmatch(r"[a-zA-Z0-9_.]+", module):
+                    frames.append({"module": module, "line": tb.tb_lineno})
+                tb = tb.tb_next
+            facts = {"schema": "fwrouter-acceptance-job-exception/v1",
+                     "exception_class": type(exc).__name__ if exc is not None else "unavailable",
+                     "frames": frames[-12:]}
+            try:
+                target = get_settings().paths.state_dir / "acceptance-job-exception-facts.json"
+                fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "w") as stream:
+                    json.dump(facts, stream, sort_keys=True)
+            except OSError:
+                pass  # Diagnostics never change the actual job result.
+        return original_log(*args, **kwargs)
+
+    jobs_manager.write_technical_log = observed_job_log
     allowed_modes = {"direct", "selective", "vpn"}
     allowed_missing = {
         "domain_selective_enforcement_not_implemented",

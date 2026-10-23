@@ -17,7 +17,7 @@ from fwrouter_api.services.dataplane_nft_render import (
     render_owned_table_candidate,
 )
 from fwrouter_api.services.docker_policy import docker_vpn_immunity_conflict
-from fwrouter_api.services.scoped_egress import build_scoped_subject_runtime, build_scoped_egress_diagnostics
+from fwrouter_api.services.scoped_egress import build_scoped_subject_runtime, build_scoped_egress_diagnostics, summarize_scoped_subjects
 from fwrouter_api.services.server_layout import protected_docker_runtime_role
 from fwrouter_api.services.subjects import list_subjects
 from fwrouter_api.services.jobs import create_job
@@ -427,7 +427,7 @@ def test_duplicate_active_docker_ip_cannot_depend_on_rule_order(isolated_host_ob
 @pytest.mark.parametrize("status", [
     "pending_infrastructure_immunity_conflict", "pending_docker_host_network",
     "pending_docker_ipv4_inventory", "pending_docker_multi_ipv4_unsupported",
-    "pending_docker_ipv6_inventory", "pending_docker_ipv6_unsupported",
+    "pending_docker_direct_source_coverage", "pending_docker_ipv6_inventory", "pending_docker_ipv6_unsupported",
 ])
 def test_docker_refusal_remains_visible_in_pending_diagnostics(status):
     binding = {"subject_id": "docker:test:test", "status": status, "applied": False,
@@ -437,3 +437,59 @@ def test_docker_refusal_remains_visible_in_pending_diagnostics(status):
     )
     assert diagnostics["pending_bindings_sample"] == [binding]
     assert diagnostics["pending_bindings_sample"][0]["resolution_reason"] == "explicit_fail_closed_reason"
+
+
+@pytest.mark.parametrize("saved_override", [None, {"selected_server_id": "srv-1"}])
+@pytest.mark.parametrize("patch", [
+    {"IPv4InventoryComplete": False}, {"IPv4Addresses": ["172.25.0.2", "172.26.0.2"]},
+    {"IPv6InventoryComplete": False}, {"IPv6Addresses": ["2001:db8::2"]},
+])
+def test_docker_direct_refuses_uncovered_sources_under_global_vpn(isolated_host_observations, patch, saved_override):
+    source = {"IPv4InventoryComplete": True, "IPv4Addresses": ["172.25.0.2"], "IPv6InventoryComplete": True, "IPv6Addresses": []}
+    source.update(patch)
+    subject = {"subject_id": "docker:test:test", "display_name": "Synthetic Docker", "subject_type": "docker", "is_active": True,
+               "detail": {"ip_address": "172.25.0.2", "source": source}}
+    runtime = build_scoped_subject_runtime(subject, dataplane_path="direct", selected_server_id=None,
+        selected_server_source=None, server_override=saved_override, vpn_supported=True, bypass_enabled=False, global_mode="vpn")
+    assert runtime["status"] == "pending_docker_direct_source_coverage"
+    assert not runtime["applied"]
+    summary = summarize_scoped_subjects([{**subject, "effective_state": {"scoped_runtime": runtime}}])
+    assert summary["state"] == "degraded"
+    assert summary["pending_count"] == 1
+    assert summary["applied_count"] == 0
+    assert len(summary["bindings"]) == 1
+    manifest_subject = {**_subject("direct"), "scoped_runtime": runtime}
+    with pytest.raises(DockerPolicyConflictError, match="docker_direct_source_coverage_incomplete"):
+        render_owned_table_candidate(_manifest([manifest_subject]))
+    # Without global capture, Direct does not need an unavailable VPN matcher.
+    direct = build_scoped_subject_runtime(subject, dataplane_path="direct", selected_server_id=None,
+        selected_server_source=None, server_override=saved_override, vpn_supported=True, bypass_enabled=False, global_mode="direct")
+    assert direct["status"] == ("pending_not_vpn_path" if saved_override is not None else "not_applicable")
+
+
+@pytest.mark.parametrize("detail", [
+    {"source": {"NetworkMode": "host"}},
+    {"compose_service": "mihomo", "container_name": "fwrouter-mihomo"},
+])
+def test_direct_immunity_exemptions_do_not_require_bridged_inventory(detail):
+    runtime = build_scoped_subject_runtime({"subject_type": "docker", "detail": detail}, dataplane_path="direct",
+        selected_server_id=None, selected_server_source=None, server_override=None, vpn_supported=True,
+        bypass_enabled=False, global_mode="vpn")
+    assert runtime["status"] == "not_applicable"
+
+
+def test_database_direct_coverage_refusal_survives_manifest_projection(monkeypatch, tmp_path, isolated_host_observations):
+    _seed_manifest_database(monkeypatch, tmp_path, "172.25.0.2")
+    with db_session() as connection:
+        connection.execute("UPDATE subjects SET desired_mode='direct', applied_mode='direct' WHERE subject_type='docker'")
+        connection.execute("UPDATE subject_docker SET source_json=json_set(source_json, '$.IPv4Addresses', json('[\"172.25.0.2\",\"172.26.0.2\"]'))")
+    manifest = routing_manifest.build_dataplane_manifest_from_state(
+        plan_id="docker-direct-coverage", reason="pytest",
+        routing={"desired_mode": "vpn", "applied_mode": "vpn", "selective_default": "direct", "server_mode": "fixed", "desired_fixed_server_id": "srv-1", "applied_fixed_server_id": "srv-1"},
+        subjects=list_subjects(subject_type="docker"), extra={"rules_effective": {"rules": []}},
+    )
+    runtime = manifest["subjects"][0]["scoped_runtime"]
+    assert runtime["status"] == "pending_docker_direct_source_coverage"
+    assert not runtime["applied"]
+    with pytest.raises(DockerPolicyConflictError, match="docker_direct_source_coverage_incomplete"):
+        render_owned_table_candidate(manifest)

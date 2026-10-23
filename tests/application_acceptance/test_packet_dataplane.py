@@ -4785,6 +4785,25 @@ def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
                                            "requested_by": "packet-docker-scoped", "run_now": True})
         if code != 200 or accepted.get("ok") is not True:
             failure = _docker_policy_apply_failure_summary(accepted)
+            # This file is emitted only by the qualified worker observer and
+            # contains exception class/source line numbers, never error text.
+            from fwrouter_api.core.config import get_settings
+            facts_path = get_settings().paths.state_dir / "acceptance-job-exception-facts.json"
+            if facts_path.is_file() and not facts_path.is_symlink():
+                facts = json.loads(facts_path.read_text())
+                if isinstance(facts, dict) and facts.get("schema") == "fwrouter-acceptance-job-exception/v1":
+                    name = facts.get("exception_class")
+                    frames = facts.get("frames")
+                    if isinstance(name, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name):
+                        failure["exception_class"] = name
+                    if isinstance(frames, list):
+                        failure["source_frames"] = [
+                            {"module": frame["module"], "line": frame["line"]}
+                            for frame in frames[-12:]
+                            if isinstance(frame, dict) and isinstance(frame.get("module"), str)
+                            and re.fullmatch(r"fwrouter_api\.[A-Za-z0-9_.]{1,150}", frame["module"])
+                            and type(frame.get("line")) is int and 0 < frame["line"] < 100000
+                        ]
             failure["mode"] = mode
             failure["http_status"] = code
             record_property(

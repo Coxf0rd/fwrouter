@@ -119,3 +119,10 @@ Docker inventory stores `IPv4InventoryComplete`/`IPv4Addresses` and `IPv6Invento
 existing `subject_docker.source_json` contract. No schema or separate routing
 owner is introduced. Core remains the owner of classification and routing;
 the early immunity ordering is retained for protected infrastructure.
+
+When global VPN/selective can capture unmatched sources, ordinary bridged Docker
+Direct requires complete single-IPv4/no-global-IPv6 source coverage too. Otherwise
+the manifest exposes `pending_docker_direct_source_coverage` and rendering refuses
+publication; additional addresses cannot silently inherit the global VPN policy.
+Host-network Direct remains host-output direct-safe, and protected runtimes retain
+immunity. This does not add multi-address or IPv6 tunneling support.

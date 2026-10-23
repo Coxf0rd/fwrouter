@@ -30,6 +30,19 @@ def docker_vpn_immunity_conflicts(
     still invokes it independently so a hand-built/partial manifest cannot
     bypass the fail-closed guard.
     """
+    direct_conflicts = []
+    for subject in subjects:
+        if not isinstance(subject, dict) or subject.get("subject_type") != "docker" or not subject.get("is_active"):
+            continue
+        effective = subject.get("effective_state")
+        runtime = subject.get("scoped_runtime")
+        if not isinstance(runtime, dict) and isinstance(effective, dict):
+            runtime = effective.get("scoped_runtime")
+        if isinstance(runtime, dict) and runtime.get("status") == "pending_docker_direct_source_coverage":
+            direct_conflicts.append((str(subject.get("subject_id") or "docker-subject"), "docker_direct_source_coverage_incomplete"))
+    if direct_conflicts:
+        return direct_conflicts
+
     vpn_subjects = [
         subject
         for subject in subjects
