@@ -81,7 +81,7 @@ The higher count than V2's 2,250 reported statuses includes newly visible unitte
 | Runner jobs | 8 | 16 |
 | Wall seconds | 458 | 452 |
 | Sum runner-minutes | 26.0 | 29.08 |
-| Artifacts / API-reported bytes | 8 / 3,917,646 | 16 / 4,837,942 |
+| Artifacts / API-reported bytes | 8 / 3,917,305 | 16 / 4,837,942 |
 | Long-lived successful bundles | 1 | 1 |
 
 This is a one-run comparison, not a repeatable speedup or billing claim. Coverage granularity/source differ, and queue/setup variability remains. Visibility and failure isolation improve at a measured runner/resource cost; hosted functional remains the critical path. Per-job step timings and process/runner resource facts are retained in qualification evidence, with limits stated rather than invented peaks. One-day cross-job / three-day diagnostics / seven-day final retention remains unchanged. No privileged cleanup or extra long-lived intermediate ZIPs were added.
