@@ -27,7 +27,7 @@ PASS describes evidence consistent during this bounded capture window, not atomi
 
 ## Existing-owner receipts and legacy readiness
 
-The existing successful Core apply owner can record the complete applied owned-table semantics and relevant IP-rule/table100 state, bound to its apply ID, intent revision and artifacts. Normalized nftables evidence ignores only handles/counter values and elements of the two explicitly dynamic DNS timeout sets; it preserves rule order, static set contents and dynamic-set declarations. Unknown objects fail closed.
+The existing successful Core apply owner can record the complete applied owned-table semantics and relevant IP-rule/table100 state, bound to its apply ID, intent revision and artifacts. Normalized nftables evidence ignores only handles/counter values and elements of the two explicitly dynamic DNS timeout sets; it preserves rule order, static set contents and dynamic-set declarations. Named counters retain their names, declarations and references in the canonical table; only their volatile packet/byte values and handles are excluded. Duplicate or malformed named counter declarations and foreign ownership fail closed. Tables without named counters retain their existing canonical representation. Unknown objects fail closed.
 
 The existing successful subscription-generation owner can attach a compact native proof tuple to its verified marker under its existing exclusive writer lease and promotion CAS. Receipt capture is an additional capability: missing legacy evidence does not reject an otherwise valid established apply or generation promotion and never preserves a stale proof tuple as current.
 
@@ -44,3 +44,10 @@ Consumers must validate the result schema, exact expected identities and all req
 Routine synthetic SQLite/reader tests cover fences, receipt promotion, missing legacy capability, secret-safe failures, lock races and preservation. Qualified native profiles exercise real pinned Mihomo APIs and actual Xray HandlerService/mounted-config readback. Fixture injection used for durable projection or approved runtime identity is explicit; a simulated altered rule response is distinct from a real selector change through the disposable controller API. These do not assert external client connectivity.
 
 Actual network-namespace tests exercise complete nftables hashing and IPv4/IPv6 policy reading without touching host networking. Qualified hosted/native/packet receipts and independent final review remain separate gates, bound to the exact candidate SHA. No source test installs or activates the external private manual wrapper, changes production or enables automatic CD.
+
+
+## Missing receipts after backend preparation
+
+Installing the CLI establishes a reader, not the owner evidence it reads. A verified generation may predate this capability and still lack the required native tuple. A healthy API, unchanged generation, successful subscription response or kernel packet probe must not substitute for that tuple. If the collector returns `native_generation_receipt_missing_or_invalid`, later component checks have not necessarily executed.
+
+Named-counter parsing is a prerequisite to both Core receipt capture and verification. Receipt capture remains owned by the existing successful apply/generation lifecycle; supporting counter declarations does not itself create or backfill any receipt. Existing receipts without a matching semantic digest are not grandfathered. A later source installation or genuine existing-owner operation needs its own exact-source qualification and operation authority. Do not trigger apply, refresh or admission solely because this document or a public CI run is green.

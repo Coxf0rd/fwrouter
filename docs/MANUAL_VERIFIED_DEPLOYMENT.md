@@ -97,4 +97,9 @@ The Python interpreter, standard library, dynamically loaded extensions, ELF loa
 
 ## Legacy backend prerequisite
 
-An installed backend without native-proof must STOP. Follow the separate [controlled backend prerequisite](MANUAL_DEPLOYMENT_BACKEND_PREREQUISITE.md), only after its own authorization and disposable-host qualification. It preserves the UI-only boundary, uses old-source stop and explicit source-transfer CAS before the existing backend installer, and rejects missing owner receipts instead of fabricating readiness. Source merge, API health and advisory planning are not native proof.
+An installed backend without native-proof must STOP. Follow the separate [controlled backend prerequisite](MANUAL_DEPLOYMENT_BACKEND_PREREQUISITE.md), only after its own authorization and applicable hash-bound qualification. An explicitly owner-authorized non-destructive live acceptance can be recorded separately; destructive interruption/reboot/corruption tests still require qualified disposable staging and cannot be relabeled PASS. It preserves the UI-only boundary, uses old-source stop and explicit source-transfer CAS before the existing backend installer, and rejects missing owner receipts instead of fabricating readiness. Source merge, API health and advisory planning are not native proof.
+
+
+### Backend code availability is not owner readiness
+
+The backend prerequisite can install the reader while the verified generation still lacks owner receipts. UI-only preflight must retain STOP in that state, including after successful backend preparation. Named nft counter compatibility is necessary for Core proof but does not backfill receipts. A correction to public backend source changes the installed-backend content pin and therefore requires fresh exact-source qualification and an independently approved installation boundary; it never authorizes the private launcher or policy automatically.

@@ -27,6 +27,7 @@ _SAFE_REASON_CODES = {
     "CORE_IP_READBACK_INVALID", "CORE_IP_READBACK_UNAVAILABLE", "CORE_NATIVE_OWNER_RECEIPT_UNAVAILABLE",
     "CORE_NATIVE_READBACK_UNAVAILABLE", "CORE_NATIVE_RULES_MISMATCH", "CORE_NATIVE_STATE_MISMATCH",
     "CORE_NFT_READBACK_CHAIN_MISSING", "CORE_NFT_READBACK_INCOMPLETE", "CORE_NFT_READBACK_INVALID",
+    "CORE_NFT_READBACK_DUPLICATE_COUNTER",
     "CORE_NFT_READBACK_UNAVAILABLE", "CORE_NFT_READBACK_UNEXPECTED_TABLE",
     "CORE_NFT_READBACK_UNSUPPORTED_OBJECT", "CORE_NFT_READBACK_UNSUPPORTED_RULE",
     "CORE_RUNTIME_CONTEXT_CHANGED", "MIHOMO_DURABLE_CONFIG_PROJECTION_MISMATCH",
@@ -80,18 +81,27 @@ def canonical_nft_table(payload: Any) -> dict[str, Any]:
     table: list[dict[str, Any]] = []
     chains: list[dict[str, Any]] = []
     sets: list[dict[str, Any]] = []
+    counters: list[dict[str, Any]] = []
+    counter_names: set[str] = set()
     elements: list[dict[str, Any]] = []
     rules_by_chain: dict[str, list[dict[str, Any]]] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError("CORE_NFT_READBACK_INVALID")
         if "metainfo" in entry:
+            if len(entry) != 1:
+                raise ValueError("CORE_NFT_READBACK_UNSUPPORTED_OBJECT")
             continue
-        recognized = [name for name in ("table", "chain", "set", "element", "rule") if name in entry]
-        if len(recognized) != 1:
+        recognized = [name for name in ("table", "chain", "set", "counter", "element", "rule") if name in entry]
+        if len(recognized) != 1 or len(entry) != 1:
             raise ValueError("CORE_NFT_READBACK_UNSUPPORTED_OBJECT")
         kind = recognized[0]
         row = entry[kind]
+        if kind == "counter" and (
+                not isinstance(row, dict) or not isinstance(row.get("name"), str) or not row["name"]
+                or type(row.get("packets")) is not int or row["packets"] < 0
+                or type(row.get("bytes")) is not int or row["bytes"] < 0):
+            raise ValueError("CORE_NFT_READBACK_INVALID")
         expected_table_name = row.get("name") if kind == "table" and isinstance(row, dict) else row.get("table") if isinstance(row, dict) else None
         if not isinstance(row, dict) or row.get("family") != "inet" or expected_table_name != "fwrouter_v2":
             raise ValueError("CORE_NFT_READBACK_UNEXPECTED_TABLE")
@@ -114,12 +124,19 @@ def canonical_nft_table(payload: Any) -> dict[str, Any]:
             if str(row.get("name") or "") in _DYNAMIC_NFT_SET_ELEMENTS and "elem" in normalized:
                 normalized.pop("elem", None)
             sets.append(normalized)
+        elif kind == "counter":
+            name = row.get("name")
+            if name in counter_names:
+                raise ValueError("CORE_NFT_READBACK_DUPLICATE_COUNTER")
+            counter_names.add(name)
+            counters.append({key: value for key, value in normalized.items()
+                             if key not in {"packets", "bytes"}})
     if len(table) != 1 or not chains:
         raise ValueError("CORE_NFT_READBACK_INCOMPLETE")
     chain_names = {str(item.get("name") or "") for item in chains}
     if not set(rules_by_chain).issubset(chain_names):
         raise ValueError("CORE_NFT_READBACK_CHAIN_MISSING")
-    return {
+    canonical = {
         "table": table[0],
         "chains": sorted(chains, key=lambda item: str(item.get("name") or "")),
         "sets": sorted(sets, key=lambda item: str(item.get("name") or "")),
@@ -127,6 +144,10 @@ def canonical_nft_table(payload: Any) -> dict[str, Any]:
         # Rule array order within each chain is traffic-policy precedence.
         "rules": {name: rules_by_chain[name] for name in sorted(rules_by_chain)},
     }
+    # Keep historical digests stable for tables that have no named counters.
+    if counters:
+        canonical["counters"] = sorted(counters, key=lambda item: str(item.get("name") or ""))
+    return canonical
 
 
 def canonical_nft_table_sha256(payload: Any) -> str:

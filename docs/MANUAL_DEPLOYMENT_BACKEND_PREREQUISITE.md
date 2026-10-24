@@ -53,7 +53,7 @@ Before activation verify exact installed filtered manifest equals `NEW_MANIFEST`
 
 Require `already_current` and `database_changed=false`; **never add `--apply`** in this prerequisite. This command does not prove that API/native state is ready.
 
-Only after source/schema compatibility is proven, explicitly start the API as separately authorized. The lifecycle helper's `resume` does not start API for you. Check normal API health and database health. Startup may execute normal owner work; it must be qualified on the disposable host and observed, not assumed read-only. Stop on unexpected generation, routing, credential or ownership changes; do not silently reconcile them.
+Only after source/schema compatibility is proven, explicitly start the API as separately authorized. The lifecycle helper's `resume` does not start API for you. Check normal API health and database health. Startup may execute normal owner work; it must be qualified and observed, not assumed read-only. If the owner explicitly accepts non-destructive live-host qualification, record that distinct authority and remaining NOT RUN staging scenarios; never extend it to destructive tests. Stop on unexpected generation, routing, credential or ownership changes; do not silently reconcile them.
 
 Collect a fresh proof through the installed qualified executable with independently approved hashes:
 
@@ -79,3 +79,10 @@ Repeated prerequisite review is read-only. If installed source, readiness and ap
 ## Qualification required before use
 
 A separate disposable Linux host with real managed Docker/systemd/cgroup ownership must demonstrate old-source stop → CAS transfer → exact backend installer/bootstrap → schema27 preservation → API startup → genuine native proof → controlled resume → final proof. Use synthetic accounts/clients/credentials and test-owned runtime inputs. Host provisioning, private execution closure, full UI wrapper E2E and destructive interruption scenarios are separate mandatory private gates; ordinary GitHub CI and pure advisory planners do not close them.
+
+
+## Evidence establishment after preparation
+
+Preparation may finish with healthy API/Gateway but native readiness still INCOMPLETE. Preserve that result and the actual performed-check list; it is not successful UI readiness. In particular, `native_generation_receipt_missing_or_invalid` is a missing owner capability, not permission for the observer to synthesize a tuple. A later Core reader can independently fail on unsupported nft objects; fixing its parser in source is neither a live patch nor a receipt migration.
+
+Before any separately approved owner operation, require the reviewed parser implementation, exact installed source pin, current native image pins, no conflicting writer/recovery and an explicit plan for existing state. Preserve old receipts as history and reject mismatched semantic hashes. No same-value routing request, arbitrary refresh or hidden legacy admission is part of this procedure. Timers held by an incomplete lifecycle remain subject to a separate restoration/catch-up decision.

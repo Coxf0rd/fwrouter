@@ -466,3 +466,12 @@ PR #41 is stacked on qualified PR #40; source `c2f9defbfee5fbb654646c50c1ac33d2a
 ### Manual deployment prerequisite refinement — 2026-10-23
 
 PR35 adds an explicit separately authorized backend/readiness prerequisite contract: old installed source controls stop, new source transfers ownership through operation/manifest CAS, schema27 remains unchanged, missing native owner capability means STOP. UI-only scope is unchanged. Private disposable-host F3 and trusted OS execution closure F5 remain required; no synthetic readiness or automatic pin approval. The reproducible private testbench and bounded execution-closure correction remain separate from public CI and do not authorize installation/deployment.
+
+
+### Manual deployment native-proof prerequisite correction — 2026-10-24
+
+PR35 remains Draft and private UI-only deployment remains STOP. Backend code availability and healthy startup do not create legacy Core/generation native receipts. Controlled backend preparation was performed under separate owner authority; that result is not full native-proof or wrapper acceptance. The actual collector returned INCOMPLETE for a missing generation owner tuple. A separate exact stateless nft readback exposed a parser defect: owned named counter declarations were rejected as unsupported objects.
+
+The PR35 prerequisite correction includes named counter declarations in canonical Core semantics, preserves stable identity/ownership and ignores only volatile packet/byte values and handles. Malformed/duplicate/foreign/ambiguous objects fail closed; no-counter historical digests remain compatible. Pure regressions and an existing real packet-profile scenario exercise the shared reader/owner-receipt path. Exact-HEAD CI/native qualification and independent review are required before adopting the correction; source changes do not update the installed backend or approve new pins.
+
+Genuine existing-owner receipt establishment, final private hash-bound qualification, wrapper installation/invocation and timer restoration remain distinct decisions/gates. Owner accepted non-destructive live-host qualification rather than a separate disposable-host requirement; destructive staging/L7 scenarios remain NOT RUN and are not waived into PASS. No receipt is fabricated, no observer becomes an owner, and no UI wrapper, Core apply/refresh or timer catch-up is authorized by this source change.

@@ -466,6 +466,28 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
     provider_calls_before_fixture = source_bridge.snapshot_calls()
     source = SyntheticSubscriptionSource(_packet_selectable_vless_profile())
 
+    def native_core_table_semantics() -> tuple[str, int]:
+        from fwrouter_api.services.native_proof import canonical_nft_table, canonical_nft_table_sha256
+
+        try:
+            result = subprocess.run(
+                ("/usr/sbin/nft", "-j", "-s", "list", "table", "inet", CORE_NFT_TABLE),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=4, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AssertionError("bounded canonical Core nft readback did not complete") from exc
+        assert (result.returncode == 0 and len(result.stdout) <= MAX_CORE_NFT_JSON
+                and len(result.stderr) <= 4096), "bounded canonical Core nft readback failed"
+        try:
+            payload = json.loads(result.stdout)
+            canonical = canonical_nft_table(payload)
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise AssertionError("canonical Core nft readback was invalid or unsupported") from exc
+        counters = canonical.get("counters")
+        assert isinstance(counters, list) and counters, "owned Core table has no canonical named counters"
+        return canonical_nft_table_sha256(payload), len(counters)
+
     def post_apply(payload: dict[str, Any]) -> dict[str, Any]:
         status, result = http_json(f"{api}/routing/global", method="POST", payload=payload, timeout=45)
         assert status == 200 and result.get("ok") is True, result
@@ -1387,6 +1409,14 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                 phase="terminal_job", terminal_job=rules_job if isinstance(rules_job, dict) else None,
             )
             raise AssertionError(_serialize_rules_apply_failure(failure))
+        named_counter_semantics_before, named_counter_count_before = native_core_table_semantics()
+        named_counter_semantics_after, named_counter_count_after = native_core_table_semantics()
+        assert (named_counter_count_before > 0 and named_counter_count_after > 0
+                and named_counter_semantics_before == named_counter_semantics_after), {
+            "named_counter_count_before": named_counter_count_before,
+            "named_counter_count_after": named_counter_count_after,
+            "contract": "canonical Core digest ignores only volatile named-counter values",
+        }
         rules_artifact = json.loads((state / "generated" / "rules" / "effective-rules.json").read_text(
             encoding="utf-8",
         ))
@@ -1626,6 +1656,19 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
             (state / "generated" / "dataplane" / "applied-manifest.json").read_text(encoding="utf-8"),
         )
         assert core_applied_manifest.get("plan_id") == core_apply_id, core_applied_manifest
+        core_native_receipt = json.loads(
+            (state / "generated" / "dataplane" / "applied-native-proof.json").read_text(encoding="utf-8"),
+        )
+        current_native_semantics, current_native_counter_count = native_core_table_semantics()
+        assert (core_native_receipt.get("apply_id") == core_apply_id
+                and core_native_receipt.get("native_semantics_sha256") == current_native_semantics
+                and current_native_counter_count > 0), {
+            "receipt_matches_current_named_counter_semantics": (
+                core_native_receipt.get("native_semantics_sha256") == current_native_semantics
+            ),
+            "receipt_apply_matches_owner": core_native_receipt.get("apply_id") == core_apply_id,
+            "named_counter_count": current_native_counter_count,
+        }
         assert global_rules_source_fingerprint(
             core_apply_id,
             previous_applied_mode="selective",
