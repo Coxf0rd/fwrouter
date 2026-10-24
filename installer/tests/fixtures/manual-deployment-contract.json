@@ -1,0 +1,477 @@
+{
+  "schema": "fwrouter-manual-deployment-contract/v3",
+  "execution": "owner-invoked-local-only",
+  "wrapper_distribution": "outside-repository-owner-controlled",
+  "source": "verified-existing-local-git-objects",
+  "remote_purpose": "metadata-and-ci-evidence-only",
+  "ci_evidence": {
+    "source_of_truth": "fresh-read-only-GitHub-API-metadata",
+    "repository": "Coxf0rd/fwrouter",
+    "workflow": "FWRouter affected CI",
+    "workflow_path": ".github/workflows/test-gates.yml",
+    "event": "push",
+    "ref": "refs/heads/main",
+    "required_check": "Affected L0-L5 with hosted profiles",
+    "required_check_conclusion": "success",
+    "workflow_conclusion": "success",
+    "actual_runner_job_count": 16,
+    "expected_runner_job_names": [
+      "Immutable plan and preflight",
+      "Build and verify source once",
+      "Routine and contract shard (core-state)",
+      "Routine and contract shard (routing-adapters)",
+      "Routine and contract shard (services-events)",
+      "Routine and contract shard (ui-tooling)",
+      "Routine and contract shard (api-persistence-contracts)",
+      "Routine and contract shard (ui-provider-contracts)",
+      "Routine and contract shard (local-integration)",
+      "Routine and contract shard (installer-startup)",
+      "Ordinary functional and browser",
+      "Provider and browser cohort",
+      "Kernel packet and fail-closed",
+      "Qualified native profile (qcp)",
+      "Qualified native profile (xray)",
+      "Affected L0-L5 with hosted profiles"
+    ],
+    "job_inventory_policy": "exact-names-no-missing-duplicate-extra-or-skipped-jobs",
+    "current_attempt_jobs_only": true,
+    "main_smoke_required_and_passed": true,
+    "artifact_name_format": "fwrouter-main-evidence-{source_sha}-{run_id}-{run_attempt}",
+    "artifact_retention_days": 7,
+    "artifact_must_be_unexpired_and_available": true,
+    "artifact_metadata_fields": [
+      "artifact_id",
+      "name",
+      "size_in_bytes",
+      "digest",
+      "expired",
+      "expires_at",
+      "workflow_run_id",
+      "workflow_run_head_sha"
+    ],
+    "attempt_binding": "current workflow run_attempt plus attempt-specific jobs API and exact artifact name; artifact API does not expose a run_attempt field",
+    "bundle_must_retain": [
+      "strict-aggregate-and-required-result",
+      "immutable-plan-and-manifest",
+      "source-and-build-digests",
+      "sealed-current-attempt-producer-evidence",
+      "routine-shard-node-inventory",
+      "native-mihomo-xray-proofs",
+      "kernel-packet-receipts",
+      "hosted-provider-and-browser-receipts",
+      "safe-recovery-receipts",
+      "main-smoke-receipt",
+      "offline-verifier-source-and-content-manifest"
+    ],
+    "offline_verifier": "tests/gates/evidence_bundle.py verify --require-main with exact SHA/event/ref/run/attempt from fresh API metadata",
+    "verifier_source": "clean-trusted-local-checkout-at-exact-source-sha",
+    "execute_code_from_bundle": false,
+    "cached_bundle_fallback": false,
+    "legacy_ci_v2_artifact_fallback": false,
+    "missing_or_expired_evidence": "STOP",
+    "artifact_max_size_bytes": 536870912
+  },
+  "l6_policy": {
+    "workflow_path": ".github/workflows/test-full-suite.yml",
+    "qualification": "separate-exact-sha-full-regression",
+    "deployment_authority": false,
+    "required_by_initial_ui_scope": false
+  },
+  "automatic_deployment": false,
+  "initial_scopes": [
+    "ui"
+  ],
+  "unsupported_scopes": [
+    "backend",
+    "host",
+    "mihomo",
+    "xray",
+    "schema",
+    "recovery"
+  ],
+  "prohibited_operations": [
+    "git fetch",
+    "git pull",
+    "git checkout",
+    "git reset",
+    "git merge",
+    "git clone",
+    "deploy from downloaded artifacts",
+    "automatic restart",
+    "automatic reconcile"
+  ],
+  "temporary_log_days": 7,
+  "permanent_receipts_in_tmpfiles_scope": false,
+  "required_scenarios": [
+    {
+      "id": 1,
+      "name": "exact_sha_success",
+      "production_allowed": false
+    },
+    {
+      "id": 2,
+      "name": "local_sha_mismatch",
+      "production_allowed": false
+    },
+    {
+      "id": 3,
+      "name": "wrong_branch",
+      "production_allowed": false
+    },
+    {
+      "id": 4,
+      "name": "detached_head",
+      "production_allowed": false
+    },
+    {
+      "id": 5,
+      "name": "dirty_tracked",
+      "production_allowed": false
+    },
+    {
+      "id": 6,
+      "name": "dirty_index",
+      "production_allowed": false
+    },
+    {
+      "id": 7,
+      "name": "unsafe_untracked",
+      "production_allowed": false
+    },
+    {
+      "id": 8,
+      "name": "wrong_remote",
+      "production_allowed": false
+    },
+    {
+      "id": 9,
+      "name": "github_unavailable",
+      "production_allowed": false
+    },
+    {
+      "id": 10,
+      "name": "invalid_api",
+      "production_allowed": false
+    },
+    {
+      "id": 11,
+      "name": "ci_failed",
+      "production_allowed": false
+    },
+    {
+      "id": 12,
+      "name": "ci_cancelled",
+      "production_allowed": false
+    },
+    {
+      "id": 13,
+      "name": "ci_skipped",
+      "production_allowed": false
+    },
+    {
+      "id": 14,
+      "name": "artifact_missing",
+      "production_allowed": false
+    },
+    {
+      "id": 15,
+      "name": "job_missing",
+      "production_allowed": false
+    },
+    {
+      "id": 16,
+      "name": "ci_other_sha",
+      "production_allowed": false
+    },
+    {
+      "id": 17,
+      "name": "ci_other_workflow",
+      "production_allowed": false
+    },
+    {
+      "id": 18,
+      "name": "untrusted_attempt",
+      "production_allowed": false
+    },
+    {
+      "id": 19,
+      "name": "source_tampering",
+      "production_allowed": false
+    },
+    {
+      "id": 20,
+      "name": "installer_substitution",
+      "production_allowed": false
+    },
+    {
+      "id": 21,
+      "name": "log_symlink",
+      "production_allowed": false
+    },
+    {
+      "id": 22,
+      "name": "unsafe_permissions",
+      "production_allowed": false
+    },
+    {
+      "id": 23,
+      "name": "concurrent_invocation",
+      "production_allowed": false
+    },
+    {
+      "id": 24,
+      "name": "interrupted_deployment",
+      "production_allowed": false
+    },
+    {
+      "id": 25,
+      "name": "installer_failure",
+      "production_allowed": false
+    },
+    {
+      "id": 26,
+      "name": "postflight_failure",
+      "production_allowed": false
+    },
+    {
+      "id": 27,
+      "name": "already_deployed",
+      "production_allowed": false
+    },
+    {
+      "id": 28,
+      "name": "schema_incompatible",
+      "production_allowed": false
+    },
+    {
+      "id": 29,
+      "name": "checkpoint_present",
+      "production_allowed": false
+    },
+    {
+      "id": 30,
+      "name": "routing_drift",
+      "production_allowed": false
+    },
+    {
+      "id": 31,
+      "name": "remote_changes",
+      "production_allowed": false
+    },
+    {
+      "id": 32,
+      "name": "secret_redaction",
+      "production_allowed": false
+    },
+    {
+      "id": 33,
+      "name": "seven_day_retention",
+      "production_allowed": false
+    },
+    {
+      "id": 34,
+      "name": "permanent_receipts_preserved",
+      "production_allowed": false
+    },
+    {
+      "id": 35,
+      "name": "native_proof_missing_generation_receipt",
+      "production_allowed": false
+    },
+    {
+      "id": 36,
+      "name": "native_proof_stale_owner_fence",
+      "production_allowed": false
+    },
+    {
+      "id": 37,
+      "name": "native_proof_runtime_image_mismatch",
+      "production_allowed": false
+    },
+    {
+      "id": 38,
+      "name": "ui_pointer_tampering",
+      "production_allowed": false
+    },
+    {
+      "id": 39,
+      "name": "ui_pointer_integrity_not_attested_by_native_proof",
+      "production_allowed": false
+    },
+    {
+      "id": 40,
+      "name": "post_publication_proof_incomplete_unknown",
+      "production_allowed": false
+    },
+    {
+      "id": 41,
+      "name": "ci_v3_partial_current_attempt_jobs",
+      "production_allowed": false,
+      "expected": "One skipped, failed, missing, duplicate, or previous-attempt required job blocks eligibility."
+    },
+    {
+      "id": 42,
+      "name": "ci_v3_wrong_run_event_ref_or_sha",
+      "production_allowed": false,
+      "expected": "Only one successful FWRouter affected CI push to refs/heads/main for the exact local SHA is acceptable."
+    },
+    {
+      "id": 43,
+      "name": "ci_v3_missing_or_expired_main_bundle",
+      "production_allowed": false,
+      "expected": "A missing, expired, or unavailable exact-run main bundle means STOP."
+    },
+    {
+      "id": 44,
+      "name": "ci_v3_cached_bundle_has_no_fallback",
+      "production_allowed": false,
+      "expected": "A locally cached ZIP cannot replace fresh GitHub run and artifact metadata."
+    },
+    {
+      "id": 45,
+      "name": "ci_v3_tampered_content_manifest",
+      "production_allowed": false,
+      "expected": "Any altered, missing, extra, or unsafe bundle member fails offline verification."
+    },
+    {
+      "id": 46,
+      "name": "ci_v3_untrusted_verifier_source",
+      "production_allowed": false,
+      "expected": "Verifier code from the downloaded bundle is data and is never executed."
+    },
+    {
+      "id": 47,
+      "name": "ci_v3_missing_strict_aggregate_or_safe_recovery",
+      "production_allowed": false,
+      "expected": "Bundle summary or missing strict validator inputs cannot establish qualification."
+    },
+    {
+      "id": 48,
+      "name": "ci_v3_missing_main_smoke",
+      "production_allowed": false,
+      "expected": "Actual-main evidence without required successful main smoke is rejected."
+    },
+    {
+      "id": 49,
+      "name": "l6_is_separate_from_ui_deployment_authority",
+      "production_allowed": false,
+      "expected": "Full L6 regression evidence does not authorize production deployment or broaden the initial UI scope."
+    },
+    {
+      "id": 50,
+      "name": "legacy_v2_artifacts_are_not_ci_v3_fallback",
+      "production_allowed": false,
+      "expected": "Old CI V2 artifacts and green badges cannot substitute for the current V3 final main bundle."
+    }
+  ],
+  "qualification_boundary": "Public CI verifies this contract and synthetic data only; private wrapper qualification must bind separately reviewed private implementation hashes.",
+  "ui_publication": {
+    "installer_operation": "installer/install.sh --deploy --component ui",
+    "target": "/opt/fwrouter-ui",
+    "managed_release_root": "/opt/.fwrouter-ui-releases",
+    "publisher": "installer/ui_publication.py",
+    "atomic_switch": "renameat2(RENAME_EXCHANGE)",
+    "shared_lock": "/opt/.fwrouter-component-install.lock",
+    "restore": "explicit-only-through-the-same-publisher",
+    "wrapper_may_mutate_pointer": false,
+    "native_proof_attests_ui_pointer": false,
+    "guarantees": [
+      "server-side-path-resolution"
+    ],
+    "not_guaranteed": [
+      "browser-session-across-requests",
+      "browser-cache-coherence"
+    ],
+    "deploy_side_effects": [
+      "bootstrap-state-directories-and-markers",
+      "state-database-and-backup-permissions",
+      "api-env-mode-0600"
+    ],
+    "automatic_rollback": false
+  },
+  "native_proof": {
+    "command": "fwrouter native-proof --scope ui",
+    "proof_schema_version": 1,
+    "accepted_status": "PASS",
+    "rejected_statuses": [
+      "FAIL",
+      "STALE",
+      "INCOMPLETE"
+    ],
+    "identity_fields": [
+      "source_identity.kind",
+      "source_identity.sha256",
+      "source_identity.commit_sha"
+    ],
+    "backend_identity": "installer-canonical-filtered-content-manifest-rooted-at-executing-module",
+    "runtime_identity": "pinned-local-docker-image-configuration-id",
+    "required_checks": [
+      "backend_manifest_sha256",
+      "sqlite_schema_integrity_foreign_keys",
+      "generation_owner_state",
+      "checkpoint_state",
+      "xray_identity_bindings_config_runtime",
+      "mihomo_config_rules_selectors_runtime",
+      "core_manifest_nft_ip_routing_runtime",
+      "final_native_runtime_fence_recheck",
+      "generation_native_receipt_exact_match"
+    ],
+    "side_effects": [],
+    "missing_owner_receipt": "STOP; no synthetic receipt, legacy admission, staging, refresh, reconcile, apply, or recovery"
+  },
+  "legacy_backend_prerequisite": "The installed backend must expose native-proof and have current valid Core and generation owner receipts; otherwise STOP pending a separately authorized normal owner operation. UI-only deployment cannot install this prerequisite.",
+  "privileged_execution_trust": {
+    "fixed_executable_paths": true,
+    "root_owned_regular_files": true,
+    "reject_group_or_world_writable": true,
+    "trusted_parent_directories": true,
+    "bind_verified_file_to_execution": true,
+    "os_runtime_closure_separate_gate": true,
+    "automatic_host_pin_approval": false,
+    "malicious_root_peer_excluded": true
+  },
+  "backend_prerequisite": {
+    "authority": "separate-owner-authorized-controlled-backend-operation",
+    "wrapper_scope_remains": "ui",
+    "expected_schema": 27,
+    "implicit_migration": false,
+    "automatic_backend_bootstrap": false,
+    "old_installed_source_controls_stop": true,
+    "transfer_requires_operation_and_old_new_manifest_cas": true,
+    "installer_argv": [
+      "installer/install.sh",
+      "--deploy",
+      "--component",
+      "backend"
+    ],
+    "readiness_command": [
+      "fwrouter",
+      "native-proof",
+      "--scope",
+      "ui",
+      "--expected-backend-manifest-sha256",
+      "APPROVED_BACKEND_SHA256",
+      "--expected-xray-image-digest",
+      "sha256:APPROVED_XRAY_IMAGE_ID",
+      "--expected-mihomo-image-digest",
+      "sha256:APPROVED_MIHOMO_IMAGE_ID"
+    ],
+    "missing_owner_receipts": "STOP-separate-existing-owner-qualification-required",
+    "fabricated_marker_or_projection": false,
+    "health_alone_is_sufficient": false,
+    "restore_or_rollback": "separate-reviewed-recovery-decision-no-automatic-db-restore",
+    "timer_catchup": "explicit-owner-decision-after-health-and-native-readiness",
+    "ordered_boundaries": [
+      "readonly-preflight",
+      "verified-backup-and-independent-access",
+      "old-source-controlled-stop",
+      "new-source-cas-transfer",
+      "existing-backend-installer",
+      "schema-and-export-verification",
+      "explicit-api-start-and-health",
+      "fresh-native-proof-replay",
+      "controlled-resume-and-timer-decision",
+      "fresh-ui-preflight"
+    ]
+  }
+}
