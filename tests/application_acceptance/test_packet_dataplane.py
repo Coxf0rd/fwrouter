@@ -1444,7 +1444,7 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                 ),
             }
         finally:
-            nft_counter_probe(f"destroy counter inet {CORE_NFT_TABLE} {counter_probe_name}\n")
+            nft_counter_probe(f"delete counter inet {CORE_NFT_TABLE} {counter_probe_name}\n")
         # This synthetic object exercises native parsing only; remove it before
         # the next normal Core owner apply so no receipt can attest to it.
         _, names_after_probe_cleanup = native_core_table_semantics()
