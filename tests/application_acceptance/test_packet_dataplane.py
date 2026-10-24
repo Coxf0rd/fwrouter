@@ -466,6 +466,45 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
     provider_calls_before_fixture = source_bridge.snapshot_calls()
     source = SyntheticSubscriptionSource(_packet_selectable_vless_profile())
 
+    def native_core_table_semantics() -> tuple[str, list[str]]:
+        from fwrouter_api.services.native_proof import canonical_nft_table, canonical_nft_table_sha256
+
+        try:
+            result = subprocess.run(
+                ("/usr/sbin/nft", "-j", "-s", "list", "table", "inet", CORE_NFT_TABLE),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=4, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AssertionError("bounded canonical Core nft readback did not complete") from exc
+        assert (result.returncode == 0 and len(result.stdout) <= MAX_CORE_NFT_JSON
+                and len(result.stderr) <= 4096), "bounded canonical Core nft readback failed"
+        try:
+            payload = json.loads(result.stdout)
+            canonical = canonical_nft_table(payload)
+        except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise AssertionError("canonical Core nft readback was invalid or unsupported") from exc
+        counters = canonical.get("counters")
+        counter_names = []
+        if isinstance(counters, list):
+            counter_names = [
+                item["name"] for item in counters
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            ]
+        return canonical_nft_table_sha256(payload), counter_names
+
+    def nft_counter_probe(script: str) -> None:
+        try:
+            result = subprocess.run(
+                ("/usr/sbin/nft", "-f", "-"), input=script.encode("ascii"),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=4, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AssertionError("bounded named-counter fixture operation did not complete") from exc
+        assert (result.returncode == 0 and len(result.stdout) <= 4096
+                and len(result.stderr) <= 4096), "bounded named-counter fixture operation failed"
+
     def post_apply(payload: dict[str, Any]) -> dict[str, Any]:
         status, result = http_json(f"{api}/routing/global", method="POST", payload=payload, timeout=45)
         assert status == 200 and result.get("ok") is True, result
@@ -1387,6 +1426,29 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                 phase="terminal_job", terminal_job=rules_job if isinstance(rules_job, dict) else None,
             )
             raise AssertionError(_serialize_rules_apply_failure(failure))
+        _, existing_counter_names = native_core_table_semantics()
+        counter_probe_name = "fwrouter_packet_native_counter_probe"
+        assert counter_probe_name not in existing_counter_names, "packet named-counter probe already exists"
+        try:
+            nft_counter_probe(f"add counter inet {CORE_NFT_TABLE} {counter_probe_name}\n")
+            probe_semantics_before, probe_names_before = native_core_table_semantics()
+            probe_semantics_after, probe_names_after = native_core_table_semantics()
+            assert (counter_probe_name in probe_names_before and counter_probe_name in probe_names_after
+                    and probe_names_before == probe_names_after
+                    and probe_semantics_before == probe_semantics_after), {
+                "probe_present_in_first_readback": counter_probe_name in probe_names_before,
+                "probe_present_in_second_readback": counter_probe_name in probe_names_after,
+                "counter_count": len(probe_names_after),
+                "stable_digest_ignoring_counter_values": (
+                    probe_semantics_before == probe_semantics_after
+                ),
+            }
+        finally:
+            nft_counter_probe(f"delete counter inet {CORE_NFT_TABLE} {counter_probe_name}\n")
+        # This synthetic object exercises native parsing only; remove it before
+        # the next normal Core owner apply so no receipt can attest to it.
+        _, names_after_probe_cleanup = native_core_table_semantics()
+        assert counter_probe_name not in names_after_probe_cleanup, "packet named-counter probe was not removed"
         rules_artifact = json.loads((state / "generated" / "rules" / "effective-rules.json").read_text(
             encoding="utf-8",
         ))
@@ -1626,6 +1688,18 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
             (state / "generated" / "dataplane" / "applied-manifest.json").read_text(encoding="utf-8"),
         )
         assert core_applied_manifest.get("plan_id") == core_apply_id, core_applied_manifest
+        core_native_receipt = json.loads(
+            (state / "generated" / "dataplane" / "applied-native-proof.json").read_text(encoding="utf-8"),
+        )
+        current_native_semantics, current_native_counter_names = native_core_table_semantics()
+        assert (core_native_receipt.get("apply_id") == core_apply_id
+                and core_native_receipt.get("native_semantics_sha256") == current_native_semantics), {
+            "receipt_matches_current_named_counter_semantics": (
+                core_native_receipt.get("native_semantics_sha256") == current_native_semantics
+            ),
+            "receipt_apply_matches_owner": core_native_receipt.get("apply_id") == core_apply_id,
+            "named_counter_count": len(current_native_counter_names),
+        }
         assert global_rules_source_fingerprint(
             core_apply_id,
             previous_applied_mode="selective",

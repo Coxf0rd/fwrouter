@@ -451,8 +451,91 @@ def test_core_native_semantic_digest_preserves_rule_order_and_rejects_unknown_ob
     payload["nftables"] = [entry for entry in payload["nftables"] if "rule" not in entry]
     payload["nftables"].extend({"rule": row} for row in reversed(rules))
     assert native_proof.canonical_nft_table_sha256(payload) != native_proof.canonical_nft_table_sha256(_nft_payload(extra_rule=True))
-    with pytest.raises(ValueError, match="CORE_NFT_READBACK_UNSUPPORTED_OBJECT"):
+    with pytest.raises(ValueError, match="CORE_NFT_READBACK_INVALID"):
         native_proof.canonical_nft_table({"nftables": [{"counter": {}}]})
+
+
+def test_core_native_named_counter_semantics_ignore_only_volatile_fields() -> None:
+    payload = _nft_payload()
+    counter = {"family": "inet", "table": "fwrouter_v2", "name": "traffic_tx",
+               "packets": 12, "bytes": 345, "handle": 99}
+    payload["nftables"].append({"counter": counter})
+    baseline = native_proof.canonical_nft_table_sha256(payload)
+
+    changed_volatile_values = _nft_payload()
+    changed_volatile_values["nftables"].append({"counter": {
+        **counter, "packets": 999, "bytes": 123456, "handle": 101,
+    }})
+    assert native_proof.canonical_nft_table_sha256(changed_volatile_values) == baseline
+
+    changed_name = _nft_payload()
+    changed_name["nftables"].append({"counter": {**counter, "name": "traffic_rx"}})
+    assert native_proof.canonical_nft_table_sha256(changed_name) != baseline
+
+    changed_stable_field = _nft_payload()
+    changed_stable_field["nftables"].append({"counter": {**counter, "comment": "owned"}})
+    assert native_proof.canonical_nft_table_sha256(changed_stable_field) != baseline
+
+
+def test_core_native_receipt_readback_uses_named_counter_canonicalizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _nft_payload()
+    payload["nftables"].append({"counter": {
+        "family": "inet", "table": "fwrouter_v2", "name": "traffic_tx",
+        "packets": 12, "bytes": 345, "handle": 99,
+    }})
+    monkeypatch.setattr(native_proof.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout=json.dumps(payload),
+    ))
+    assert native_proof.read_live_nft_semantic_sha256() == native_proof.canonical_nft_table_sha256(payload)
+
+
+@pytest.mark.parametrize("counter", [
+    {"family": "inet", "table": "fwrouter_v2", "packets": 0, "bytes": 0},
+    {"family": "inet", "table": "fwrouter_v2", "name": "bad", "packets": True, "bytes": 0},
+    {"family": "inet", "table": "fwrouter_v2", "name": "bad", "packets": -1, "bytes": 0},
+    {"family": "inet", "table": "fwrouter_v2", "name": "bad", "packets": 0, "bytes": "0"},
+])
+def test_core_native_named_counter_rejects_malformed_objects(counter: dict[str, object]) -> None:
+    payload = _nft_payload()
+    payload["nftables"].append({"counter": counter})
+    with pytest.raises(ValueError, match="CORE_NFT_READBACK_INVALID"):
+        native_proof.canonical_nft_table(payload)
+
+
+def test_core_native_named_counter_rejects_duplicates_and_wrong_owner() -> None:
+    counter = {"family": "inet", "table": "fwrouter_v2", "name": "traffic_tx",
+               "packets": 0, "bytes": 0}
+    duplicate = _nft_payload()
+    duplicate["nftables"].extend(({"counter": counter}, {"counter": dict(counter)}))
+    with pytest.raises(ValueError, match="CORE_NFT_READBACK_DUPLICATE_COUNTER"):
+        native_proof.canonical_nft_table(duplicate)
+
+    for wrong_counter in (
+        {**counter, "family": "ip"},
+        {key: value for key, value in counter.items() if key != "family"},
+        {key: value for key, value in counter.items() if key != "table"},
+    ):
+        wrong_owner = _nft_payload()
+        wrong_owner["nftables"].append({"counter": wrong_counter})
+        with pytest.raises(ValueError, match="CORE_NFT_READBACK_UNEXPECTED_TABLE"):
+            native_proof.canonical_nft_table(wrong_owner)
+
+    ambiguous = _nft_payload()
+    ambiguous["nftables"].append({"counter": counter, "rule": {}})
+    with pytest.raises(ValueError, match="CORE_NFT_READBACK_UNSUPPORTED_OBJECT"):
+        native_proof.canonical_nft_table(ambiguous)
+
+    unknown_companion = _nft_payload()
+    unknown_companion["nftables"].append({"counter": counter, "flowtable": {}})
+    with pytest.raises(ValueError, match="CORE_NFT_READBACK_UNSUPPORTED_OBJECT"):
+        native_proof.canonical_nft_table(unknown_companion)
+
+    counter_metainfo = _nft_payload()
+    counter_metainfo["nftables"].append({"counter": counter, "metainfo": {}})
+    with pytest.raises(ValueError, match="CORE_NFT_READBACK_UNSUPPORTED_OBJECT"):
+        native_proof.canonical_nft_table(counter_metainfo)
 
 
 def test_core_ip_receipt_hash_covers_priority_rules_and_full_table_routes(monkeypatch: pytest.MonkeyPatch) -> None:
