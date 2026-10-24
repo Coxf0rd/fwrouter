@@ -1,6 +1,14 @@
 # Manual deployment contract qualification status
 
 
+## Owner decision: public-contract merge only — 2026-10-25
+
+The owner explicitly authorized preparing PR35 for merge as **public documentation, a declarative deployment contract and isolated synthetic tests only**. This supersedes the earlier requirement to keep this public PR in Draft until private/live deployment qualification. Public merge readiness requires final exact-HEAD mandatory CI, strict evidence verification and independent public-source review. It does not require performing or claiming the deferred production operation. Earlier Draft checkpoints and private test results remain historical evidence.
+
+This decision does not approve private implementation bytes or pins and does not qualify or activate deployment. Private status remains **IMPLEMENTED, QUALIFICATION INCOMPLETE / STOP**. Genuine installed native-proof and existing-owner receipts, complete applicable private execution/security qualification, source/pin approvals, controlled backend preparation, wrapper installation and first invocation, timer restoration/catch-up and live acceptance remain separate uncompleted gates and owner decisions. The owner declined a production backend update during this source-only continuation. No production command, private policy update or automatic CD is added by this PR. The privileged wrapper remains outside Git and is not distributed by the public contract.
+
+
+
 ## 2026-10-25 verified PR42 merge and PR35 integration
 
 This checkpoint supersedes only earlier PR42 merge/main-verification-pending and PR35 a302 CI-pending statements; prior results remain historical. The owner squash-merged PR42 as main `e960dddb1100144ede6971365e35840c973e7d6b`, with one parent `ada32a1d` and a tree identical to qualified PR42 HEAD `486f56e`. Actual-main run [40113831263](https://github.com/Coxf0rd/fwrouter/actions/runs/40113831263), attempt 1, passed all 16 jobs, strict qualification, Main Smoke, native Mihomo/QCP and Docker Xray, hosted/provider/browser, kernel packet and safe recovery: 2666 unique cases and 2666 PASS, zero FAIL/SKIP/BLOCKED/NOT RUN in the requested scope. Actual-main bundle `12567279917` passed independent trusted-local offline verification at that exact main SHA. PR35's previous HEAD `a302e8d` run [40112432988](https://github.com/Coxf0rd/fwrouter/actions/runs/40112432988) also completed 16/16 SUCCESS with 2761 PASS; its earlier pending state is historical.
