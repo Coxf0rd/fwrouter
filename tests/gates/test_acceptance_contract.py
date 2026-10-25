@@ -20,6 +20,7 @@ import zipfile
 import stat
 import sys
 import socket
+import struct
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -3155,6 +3156,54 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertEqual("cleanup_unconfirmed", precondition_receipt["cleanup"])
             self.assertEqual("failed", precondition_receipt["status"])
 
+    def test_packet_capture_secondary_source_allowlist_is_exact_for_tcp_and_udp(self):
+        allowlists = {name: destinations for name, _protocol, _snaplen, destinations
+                      in launcher.packet_capture_allowed_destinations()}
+
+        def capture(source, destination, protocol, port, snaplen):
+            if protocol == 6:
+                transport = struct.pack("!HHIIHHHH", 45678, port, 0, 0, 0x5000, 0, 0, 0)
+                total_length = 20 + len(transport)
+            else:
+                transport = struct.pack("!HHHH", 45678, port, 8, 0)
+                total_length = 20 + len(transport)
+            ip = bytearray(20)
+            ip[0] = 0x45
+            struct.pack_into("!H", ip, 2, total_length)
+            ip[8] = 64
+            ip[9] = protocol
+            ip[12:16] = socket.inet_aton(source)
+            ip[16:20] = socket.inet_aton(destination)
+            frame = b"\x00" * 12 + b"\x08\x00" + bytes(ip) + transport
+            header = b"\xd4\xc3\xb2\xa1" + struct.pack("<HHIIII", 2, 4, 0, 0, snaplen, 1)
+            record = struct.pack("<IIII", 1, 0, len(frame), len(frame)) + frame
+            return header + record
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-secondary-pcap-contract-") as temp:
+            root = Path(temp)
+            for name, protocol, snaplen, port in (("tcp", 6, 54, 9080), ("udp", 17, 42, 9081)):
+                cases = (
+                    ("accepted", "10.240.0.3", "203.0.113.53", port, True),
+                    ("wrong_source", "10.240.0.4", "203.0.113.53", port, False),
+                    ("wrong_destination", "10.240.0.3", "203.0.113.54", port, False),
+                    ("wrong_port", "10.240.0.3", "203.0.113.53", port + 1, False),
+                )
+                for label, source, destination, destination_port, accepted in cases:
+                    path = root / f"{name}-{label}.pcap"
+                    path.write_bytes(capture(source, destination, protocol, destination_port, snaplen))
+                    with self.subTest(protocol=name, case=label):
+                        if accepted:
+                            result = launcher.validate_packet_capture(
+                                path, protocol=protocol, snaplen=snaplen,
+                                allowed_destinations=allowlists[name])
+                            self.assertEqual(1, result["records"])
+                            self.assertIn(f"10.240.0.3>203.0.113.53:{port}", result["flows"])
+                        else:
+                            with self.assertRaises(launcher.NotRun):
+                                launcher.validate_packet_capture(
+                                    path, protocol=protocol, snaplen=snaplen,
+                                    allowed_destinations=allowlists[name])
+
     def test_packet_router_guard_generates_fixed_nft_sets_and_order(self):
         generated = launcher.packet_router_guard_setup_code("eth0", "eth1")
         # Evaluate only the deterministic rule construction prefix. Do not run
@@ -3175,6 +3224,21 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertFalse(any("tcp dport 5302" in rule and "198.18.240.2" not in rule for rule in rules))
         self.assertTrue(any("udp dport { 5203, 5205 } accept" in rule for rule in rules))
         self.assertTrue(any("udp dport { 9081, 5353 } accept" in rule and "forward" in rule for rule in rules))
+        secondary_rules = (
+            'forward iifname "eth0" oifname "eth1" ip saddr 10.240.0.3 ip daddr 203.0.113.53 tcp dport 9080 accept',
+            'forward iifname "eth0" oifname "eth1" ip saddr 10.240.0.3 ip daddr 203.0.113.53 udp dport 9081 accept',
+        )
+        for expected in secondary_rules:
+            matching = [index for index, rule in enumerate(rules) if expected in rule]
+            self.assertEqual(1, len(matching), expected)
+            self.assertLess(matching[0], len(rules) - 1)
+            self.assertIn('comment "fwrouter packet guard lan secondary vip', rules[matching[0]])
+        self.assertEqual(2, sum('ip saddr 10.240.0.3' in rule and 'forward' in rule for rule in rules))
+        ipv6_forward_drop = next(index for index, rule in enumerate(rules)
+                                 if 'forward meta nfproto ipv6 counter name router_ipv6_forward_drop drop' in rule)
+        self.assertEqual('add rule inet fwrouter_packet_guard forward counter name router_forward_drop drop comment "fwrouter packet guard forward deny v1"',
+                         rules[-1])
+        self.assertLess(ipv6_forward_drop, len(rules) - 1)
         exact_rules = (
             'output ip daddr 10.250.240.2 tcp dport 9080 counter name router_protected_tcp_output accept',
             'output ip daddr 10.250.240.2 udp dport 9081 counter name router_protected_udp_output accept',
