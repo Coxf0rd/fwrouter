@@ -453,6 +453,111 @@ def _recorded_native_proof(*, inventory_digest: str = "internal", generation_rev
     }
 
 
+def _prepare_mihomo_readback_dependencies(monkeypatch: pytest.MonkeyPatch, config_path: Path):
+    from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+    from fwrouter_api.services import mihomo_config, mihomo_config_status, servers
+    from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint
+    from fwrouter_api.services import mihomo_config_yaml
+    from fwrouter_api.services import xray_bindings, xray_handoff
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.config_path = config_path
+
+        def _config_text(self) -> str:
+            # This fixture injects alternate stale text; production adapter
+            # currently uses its own strict file reader.
+            return "mode: global\n"
+
+        def _proxies(self, **_kwargs):
+            return {}
+
+        def _get_json(self, *_args, **_kwargs):
+            return {"rules": []}
+
+    adapter = Adapter()
+    parsed = MihomoHttpAdapter._parse_vpn_udp_policy_config(
+        mihomo_config_yaml.read_mihomo_yaml_text(config_path)
+    )
+    monkeypatch.setattr(servers, "get_routing_global_state", lambda **_kwargs: {})
+    monkeypatch.setattr(xray_bindings, "collect_xray_runtime_bindings", lambda: [])
+    monkeypatch.setattr(xray_handoff, "build_xray_handoff_assignments", lambda _bindings: [])
+    monkeypatch.setattr(mihomo_config, "build_mihomo_config", lambda *_args, **_kwargs: parsed)
+    monkeypatch.setattr(mihomo_config_status, "_configs_equal", lambda _left, _right: True)
+    monkeypatch.setattr(fingerprint, "current_mihomo_input_fingerprint", lambda _routing: {"hash": "fixture"})
+    monkeypatch.setattr(fingerprint, "mihomo_input_unchanged", lambda _value: True)
+    monkeypatch.setattr(fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: {"active_config_hash": "fixture", "fingerprint_hash": "fixture"})
+    monkeypatch.setattr(MihomoHttpAdapter, "_vpn_udp_policy_readback", staticmethod(
+        lambda *_args, **_kwargs: {
+            "native_top_level_rules_match": True,
+            "selector_membership_matches": True,
+            "guarded_rules_match": True,
+        }
+    ))
+    monkeypatch.setattr(native_proof, "_mihomo_selection_target_matches", lambda *_args: True)
+    return adapter, {"image_digest": MIHOMO_IMAGE_PIN, "image_reference_sha256": "a" * 64,
+                     "version_sha256": "b" * 64, "incarnation_sha256": "c" * 64}
+
+
+def test_mihomo_readback_accepts_20mb_config_and_binds_parsed_bytes_to_hash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.yaml"
+    content = b"mode: rule\n#" + b"x" * (20 * 1024 * 1024)
+    config.write_bytes(content)
+    adapter, runtime = _prepare_mihomo_readback_dependencies(monkeypatch, config)
+
+    result = native_proof._mihomo_readback({}, adapter=adapter, runtime_identity_reader=lambda: runtime)
+
+    assert result["config_sha256"] == __import__("hashlib").sha256(content).hexdigest()
+    assert result["semantic_config_sha256"] == result["durable_semantic_config_sha256"]
+    assert result["config_stable"] is True
+
+
+@pytest.mark.parametrize("kind", ["oversized", "symlink"])
+def test_mihomo_readback_rejects_oversized_or_symlinked_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str,
+) -> None:
+    config = tmp_path / "config.yaml"
+    if kind == "oversized":
+        with config.open("wb") as stream:
+            stream.truncate(32 * 1024 * 1024 + 1)
+    else:
+        target = tmp_path / "target.yaml"
+        target.write_text("mode: rule\n", encoding="utf-8")
+        config.symlink_to(target)
+    adapter = SimpleNamespace(config_path=config)
+    with pytest.raises(ValueError):
+        native_proof._mihomo_readback({}, adapter=adapter, runtime_identity_reader=lambda: {})
+
+
+def test_mihomo_readback_rejects_config_replacement_after_initial_parse(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import mihomo_config_yaml
+
+    config = tmp_path / "config.yaml"
+    config.write_text("mode: rule\n", encoding="utf-8")
+    replacement = tmp_path / "replacement.yaml"
+    replacement.write_text("mode: global\n", encoding="utf-8")
+    adapter, runtime = _prepare_mihomo_readback_dependencies(monkeypatch, config)
+    original_reader = mihomo_config_yaml.read_mihomo_yaml_text
+    replaced = False
+
+    def replace_after_read(path, **kwargs):
+        nonlocal replaced
+        text = original_reader(path, **kwargs)
+        if not replaced:
+            replacement.replace(config)
+            replaced = True
+        return text
+
+    monkeypatch.setattr(mihomo_config_yaml, "read_mihomo_yaml_text", replace_after_read)
+    with pytest.raises(RuntimeError, match="MIHOMO_READBACK_FENCE_CHANGED"):
+        native_proof._mihomo_readback({}, adapter=adapter, runtime_identity_reader=lambda: runtime)
+
+
 def _patch_pass_dependencies(monkeypatch: pytest.MonkeyPatch, *, after_db: dict[str, object] | None = None) -> str:
     expected = "a" * 64
     monkeypatch.setattr(native_proof, "backend_manifest_sha256", lambda _root: expected)

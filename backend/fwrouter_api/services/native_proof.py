@@ -607,17 +607,20 @@ def _mihomo_readback(
 
     adapter = adapter or DEFAULT_MIHOMO_ADAPTER
     config_path = Path(adapter.config_path)
-    config_sha = _hash_regular_file(config_path)
+    from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file, read_mihomo_yaml_text
+
+    # Read and parse one bounded, no-follow snapshot here. The proof must not
+    # depend on an adapter-provided text override separate from this file read.
+    config_text = read_mihomo_yaml_text(config_path)
+    config_sha = hashlib.sha256(config_text.encode("utf-8")).hexdigest()
     identity_reader = runtime_identity_reader or (lambda: _mihomo_runtime_identity(adapter))
     runtime_identity_before = identity_reader()
-    config_text = adapter._config_text()
     parsed = MihomoHttpAdapter._parse_vpn_udp_policy_config(config_text)
     # Import the established routing facade first: `mihomo_config` imports the
     # custom-server projection, which shares this facade's override contracts.
     from fwrouter_api.services import servers
     from fwrouter_api.services import mihomo_config
     from fwrouter_api.services.mihomo_config_status import _configs_equal
-    from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file
     from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
     from fwrouter_api.services.xray_bindings import collect_xray_runtime_bindings
     from fwrouter_api.services.mihomo_reconcile_fingerprint import (
@@ -664,13 +667,13 @@ def _mihomo_readback(
     if not selection_match:
         raise ValueError("MIHOMO_SELECTION_TARGET_MISMATCH")
     runtime_identity_after = identity_reader()
-    config_after = _hash_regular_file(config_path)
+    config_after = hash_mihomo_yaml_file(config_path)
     if runtime_identity_before != runtime_identity_after or config_sha != config_after:
         raise RuntimeError("MIHOMO_READBACK_FENCE_CHANGED")
     return {
         "config_stable": True,
         "runtime_incarnation_stable": True,
-        "config_sha256": hash_mihomo_yaml_file(config_path),
+        "config_sha256": config_sha,
         "semantic_config_sha256": hashlib.sha256(_canonical_json(parsed)).hexdigest(),
         "durable_semantic_config_sha256": hashlib.sha256(_canonical_json(expected_config)).hexdigest(),
         "input_fingerprint_sha256": str(fingerprint.get("hash") or ""),
