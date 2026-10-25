@@ -59,12 +59,14 @@ KERNEL_SCRIPT_SOURCES = (
     "host/libexec/fwrouter/dataplane-check.sh",
     "host/libexec/fwrouter/dataplane-apply.sh",
     "host/libexec/fwrouter/dataplane-rollback.sh",
+    "host/libexec/fwrouter/dataplane-snapshot-state.py",
 )
 KERNEL_SCRIPT_TARGETS = {
     "host/libexec/fwrouter/dataplane-common.sh": "/usr/local/libexec/fwrouter/dataplane-common.sh",
     "host/libexec/fwrouter/dataplane-check.sh": "/usr/local/libexec/fwrouter/dataplane-check.sh",
     "host/libexec/fwrouter/dataplane-apply.sh": "/usr/local/libexec/fwrouter/dataplane-apply.sh",
     "host/libexec/fwrouter/dataplane-rollback.sh": "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+    "host/libexec/fwrouter/dataplane-snapshot-state.py": "/usr/local/libexec/fwrouter/dataplane-snapshot-state.py",
 }
 KERNEL_DEBIAN_SNAPSHOT = "https://snapshot.debian.org/archive/debian/20261009T000000Z"
 FORBIDDEN_PARTS = {
@@ -2590,7 +2592,8 @@ source_files.extend((pathlib.Path("/workspace/backend/pyproject.toml"), pathlib.
 source_files.append(pathlib.Path("/workspace/host/libexec/fwrouter/traffic-collect.sh"))
 source_files.extend(pathlib.Path("/workspace", name) for name in (
     "host/libexec/fwrouter/dataplane-common.sh", "host/libexec/fwrouter/dataplane-check.sh",
-    "host/libexec/fwrouter/dataplane-apply.sh", "host/libexec/fwrouter/dataplane-rollback.sh"))
+    "host/libexec/fwrouter/dataplane-apply.sh", "host/libexec/fwrouter/dataplane-rollback.sh",
+    "host/libexec/fwrouter/dataplane-snapshot-state.py"))
 source_files = sorted(source_files, key=lambda item: item.relative_to("/workspace").as_posix())
 source_hash = hashlib.sha256(); ui_hash = hashlib.sha256()
 for path in source_files:
@@ -2626,6 +2629,7 @@ if kernel_mode:
       "host/libexec/fwrouter/dataplane-check.sh": "/usr/local/libexec/fwrouter/dataplane-check.sh",
       "host/libexec/fwrouter/dataplane-apply.sh": "/usr/local/libexec/fwrouter/dataplane-apply.sh",
       "host/libexec/fwrouter/dataplane-rollback.sh": "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+      "host/libexec/fwrouter/dataplane-snapshot-state.py": "/usr/local/libexec/fwrouter/dataplane-snapshot-state.py",
     }
     assert set(k["dataplane_scripts"]) == set(expected_scripts)
     for source, target in expected_scripts.items():
@@ -2722,6 +2726,7 @@ paths = {
  "host/libexec/fwrouter/dataplane-check.sh":"/usr/local/libexec/fwrouter/dataplane-check.sh",
  "host/libexec/fwrouter/dataplane-apply.sh":"/usr/local/libexec/fwrouter/dataplane-apply.sh",
  "host/libexec/fwrouter/dataplane-rollback.sh":"/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+ "host/libexec/fwrouter/dataplane-snapshot-state.py":"/usr/local/libexec/fwrouter/dataplane-snapshot-state.py",
 }
 env = {"PATH":"/usr/sbin:/usr/bin:/sbin:/bin", "HOME":"/tmp", "LANG":"C.UTF-8", "TZ":"UTC"}
 last_command, last_stderr, last_exit = "", "", None

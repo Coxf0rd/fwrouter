@@ -7,6 +7,7 @@ CANDIDATE_PATH="${1:-}"
 MANIFEST_PATH="${2:-}"
 SNAPSHOT_PATH="${3:-}"
 SNAPSHOT_STATE_PATH="${4:-}"
+SNAPSHOT_HELPER="/usr/local/libexec/fwrouter/dataplane-snapshot-state.py"
 
 if ! command -v nft >/dev/null 2>&1; then
     echo '{"ok":false,"operation":"apply","stage":"init","adapter":"nft-owned-table","error_code":"NFT_NOT_AVAILABLE","message":"nft command is not available."}'
@@ -30,16 +31,12 @@ cleanup_policy_routing() {
     if ! command -v ip >/dev/null 2>&1; then
         return 0
     fi
-    # Delete active and legacy FWRouter rules for this routing table to ensure
-    # a clean slate across mark migrations.
-    while ip -4 rule del priority "$IP_RULE_PRIORITY" table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
-    while ip -6 rule del priority "$IP_RULE_PRIORITY" table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
-    while ip -4 rule del fwmark 0x100 table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
-    while ip -4 rule del fwmark 0x102 table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
-    while ip -4 rule del fwmark 0x200 table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
-    while ip -6 rule del fwmark 0x100 table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
-    while ip -6 rule del fwmark 0x102 table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
-    while ip -6 rule del fwmark 0x200 table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
+    # Remove only the exact FWRouter-owned mark/priority tuples. The snapshot
+    # helper rejects ambiguous table-100 state before any apply mutation.
+    while ip -4 rule del priority "$IP_RULE_PRIORITY" fwmark "$FWMARK_HEX" table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
+    while ip -4 rule del priority "$((IP_RULE_PRIORITY + 1))" fwmark "$FULL_VPN_FWMARK_HEX" table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
+    while ip -6 rule del priority "$IP_RULE_PRIORITY" fwmark "$FWMARK_HEX" table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
+    while ip -6 rule del priority "$((IP_RULE_PRIORITY + 1))" fwmark "$FULL_VPN_FWMARK_HEX" table "$ROUTING_TABLE_ID" 2>/dev/null; do :; done
     ip -4 route del local default dev lo table "$ROUTING_TABLE_ID" 2>/dev/null || true
     ip -6 route del local ::/0 dev lo table "$ROUTING_TABLE_ID" 2>/dev/null || true
 }
@@ -75,17 +72,26 @@ flush_client_conntrack_for_vpn_contract() {
     done
 }
 
-PREVIOUS_STATE="missing"
-if nft list table inet fwrouter_v2 >/dev/null 2>&1; then
-    PREVIOUS_STATE="present"
-    nft list table inet fwrouter_v2 > "$SNAPSHOT_PATH"
+# Capture actual owned nft and policy-routing state and durably publish the
+# explicit presence/hash receipt before changing live state. A failed capture
+# leaves nft/ip untouched.
+if [ ! -f "$SNAPSHOT_HELPER" ]; then
+    echo '{"ok":false,"operation":"apply","stage":"snapshot","adapter":"nft-owned-table","error_code":"NFT_SNAPSHOT_HELPER_MISSING","message":"Snapshot state helper is missing."}'
+    exit 1
+fi
+if ! PREVIOUS_STATE="$(python3 "$SNAPSHOT_HELPER" capture "$SNAPSHOT_PATH" "$SNAPSHOT_STATE_PATH")"; then
+    printf '%s\n' "$PREVIOUS_STATE"
+    exit 1
+fi
+if [ "$PREVIOUS_STATE" != "present" ] && [ "$PREVIOUS_STATE" != "missing" ]; then
+    echo '{"ok":false,"operation":"apply","stage":"snapshot","adapter":"nft-owned-table","error_code":"NFT_SNAPSHOT_STATE_INVALID","message":"Snapshot helper returned an invalid previous state."}'
+    exit 1
 fi
 
-# Ensure clean apply by removing the table first if it exists
-nft delete table inet fwrouter_v2 2>/dev/null || true
-
-if ! nft -f "$CANDIDATE_PATH"; then
-    echo '{"ok":false,"operation":"apply","stage":"apply","adapter":"nft-owned-table","error_code":"NFT_APPLY_FAILED","message":"Dataplane operation failed."}'
+# The helper validates the snapshot fence and applies delete+candidate in one
+# native nft batch. It never exposes a separate delete/load window.
+if ! APPLY_RESULT="$(python3 "$SNAPSHOT_HELPER" apply-candidate "$CANDIDATE_PATH" "$SNAPSHOT_PATH" "$SNAPSHOT_STATE_PATH")"; then
+    printf '%s\n' "$APPLY_RESULT"
     exit 1
 fi
 

@@ -7,6 +7,10 @@ Applies FWRouter-owned nftables candidate and policy routing contract from gener
 ## Behavior Notes
 
 - Sources `dataplane-common.sh` for manifest readers and policy-routing helpers.
+- Uses `dataplane-snapshot-state.py` to persist validated prior nft/IP recovery
+  material before mutation; owned nft replacement is one native transaction.
+  Cross-component/session atomicity is not claimed. See
+  [Core snapshot recovery](../../CORE_SNAPSHOT_RECOVERY.md).
 - When VPN policy routing is required, optional conntrack cleanup reads source CIDRs from `extra.network_contract.trusted_client_ipv4_networks`. If an old manifest has no network contract, cleanup is skipped so shell does not become a hidden owner of deployment CIDRs.
 
 ## Review Notes

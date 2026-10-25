@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import struct
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 import urllib.error
@@ -5152,6 +5153,70 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
         os.fsync(stream.fileno())
 
 
+def _qualify_core_snapshot_recovery(stack: dict[str, Any], record_property: Any) -> None:
+    """Run real recovery scripts only inside the qualified packet router namespace."""
+    assert stack["profile"].get("profile") == "hosted-kernel-packet"
+    from fwrouter_api.core.config import get_settings
+    from fwrouter_api.services.native_proof import canonical_nft_table_sha256
+
+    def command(argv: list[str]) -> subprocess.CompletedProcess:
+        result = subprocess.run(argv, capture_output=True, timeout=20, check=False)
+        assert len(result.stdout) < MAX_CORE_NFT_JSON and len(result.stderr) < 65536
+        return result
+
+    def facts() -> dict[str, Any]:
+        nft = command(["/usr/sbin/nft", "-j", "list", "table", "inet", "fwrouter_v2"])
+        assert nft.returncode == 0
+        result: dict[str, Any] = {"nft": canonical_nft_table_sha256(json.loads(nft.stdout))}
+        for family in ("-4", "-6"):
+            for name, args in (("rules", ["rule", "show"]),
+                               ("routes", ["route", "show", "table", "all"])):
+                readback = command(["/usr/sbin/ip", "-j", family, *args])
+                assert readback.returncode == 0
+                result[family + name] = sorted(json.loads(readback.stdout),
+                                               key=lambda row: json.dumps(row, sort_keys=True))
+        return result
+
+    before = facts()
+    with tempfile.TemporaryDirectory(prefix="core-recovery-", dir=get_settings().paths.state_dir) as temporary:
+        root = Path(temporary)
+        candidate, manifest = root / "candidate.nft", root / "manifest.json"
+        snapshot, state = root / "before.nft", root / "snapshot-state.json"
+        # A real native parse failure must not remove an existing live table.
+        candidate.write_text("table inet fwrouter_v2 { chain intentionally_incomplete {\n")
+        manifest.write_text(json.dumps({"routing_mode": "direct", "summary": {
+            "requires_vpn_policy_routing": False,
+        }}))
+        applied = command(["/bin/sh", "/usr/local/libexec/fwrouter/dataplane-apply.sh",
+                           str(candidate), str(manifest), str(snapshot), str(state)])
+        assert applied.returncode != 0
+        assert snapshot.is_file() and state.is_file()
+        assert json.loads(state.read_text())["previous_table_state"] == "present"
+        assert facts() == before, "Rejected native candidate changed prior nft/IP policy"
+        saved = state.read_bytes()
+        for damage in ("missing", "corrupt"):
+            if damage == "missing":
+                state.unlink()
+            else:
+                state.write_text('{"previous_table_state":')
+            rejected = command(["/bin/sh", "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+                                str(snapshot), str(state), str(manifest)])
+            assert rejected.returncode != 0, damage
+            assert facts() == before, f"{damage} recovery metadata changed native policy"
+        state.write_bytes(saved)
+        restored = command(["/bin/sh", "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+                            str(snapshot), str(state), str(manifest)])
+        assert restored.returncode == 0
+        assert json.loads(restored.stdout)["restored_previous_table"] is True
+        assert facts() == before, "Valid recovery did not preserve exact previous native policy"
+    _record_phase_diagnostic(record_property, {
+        "phase": "core-snapshot-recovery", "real_shell_and_kernel": True,
+        "invalid_candidate_preserved_policy": True,
+        "missing_and_corrupt_metadata_rejected_without_mutation": True,
+        "verified_previous_policy_restored": True,
+    })
+
+
 def _qualify_stale_rescue_lan_cleanup(api: str, stack: dict[str, Any], record_property: Any) -> None:
     """Seed historical owned drift only in the already-qualified router namespace."""
     assert stack["profile"].get("profile") == "hosted-kernel-packet"
@@ -5917,6 +5982,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert bridge.snapshot_calls() == provider_calls_before_selector
 
     _qualify_docker_scoped_policy(stack, source_ref, logical_id, record_property)
+    _qualify_core_snapshot_recovery(stack, record_property)
 
     _write_capture_summary({
         "core_counter_mapping": {

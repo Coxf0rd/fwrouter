@@ -28,6 +28,7 @@ COPY host/libexec/fwrouter/dataplane-common.sh /workspace/host/libexec/fwrouter/
 COPY host/libexec/fwrouter/dataplane-check.sh /workspace/host/libexec/fwrouter/dataplane-check.sh
 COPY host/libexec/fwrouter/dataplane-apply.sh /workspace/host/libexec/fwrouter/dataplane-apply.sh
 COPY host/libexec/fwrouter/dataplane-rollback.sh /workspace/host/libexec/fwrouter/dataplane-rollback.sh
+COPY host/libexec/fwrouter/dataplane-snapshot-state.py /workspace/host/libexec/fwrouter/dataplane-snapshot-state.py
 COPY .fwrouter-acceptance-revision /workspace/.fwrouter-acceptance-revision
 COPY native/xray /opt/fwrouter-test/bin/xray
 COPY native/mihomo /opt/fwrouter-test/bin/mihomo
@@ -52,6 +53,7 @@ RUN set -eu; if [ "${FWROUTER_KERNEL_PREFLIGHT}" = "1" ]; then \
       install -m 0755 /workspace/host/libexec/fwrouter/dataplane-check.sh /usr/local/libexec/fwrouter/dataplane-check.sh; \
       install -m 0755 /workspace/host/libexec/fwrouter/dataplane-apply.sh /usr/local/libexec/fwrouter/dataplane-apply.sh; \
       install -m 0755 /workspace/host/libexec/fwrouter/dataplane-rollback.sh /usr/local/libexec/fwrouter/dataplane-rollback.sh; \
+      install -m 0755 /workspace/host/libexec/fwrouter/dataplane-snapshot-state.py /usr/local/libexec/fwrouter/dataplane-snapshot-state.py; \
       rm -rf /var/lib/apt/lists/* /tmp/fwrouter-snapshot.list; \
     else \
       test "${FWROUTER_KERNEL_PREFLIGHT}" = "0"; \

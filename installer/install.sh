@@ -247,7 +247,7 @@ install_host() {
   install_file "$REPO_ROOT/host/sbin/fwrouter-subscription-refresh-job" "$(target_path usr/local/sbin/fwrouter-subscription-refresh-job)"
 
   for helper in \
-    dataplane-common.sh dataplane-check.sh dataplane-apply.sh dataplane-rollback.sh \
+    dataplane-common.sh dataplane-check.sh dataplane-apply.sh dataplane-rollback.sh dataplane-snapshot-state.py \
     traffic-collect.sh traffic-collect-api.sh fwrouter-boot-preflight.sh \
     fwrouter-wait-port.sh fwrouter-xray-sub-gateway.py host-services.py \
     docker-subject-events.sh

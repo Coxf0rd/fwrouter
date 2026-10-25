@@ -1,5 +1,22 @@
 # FWRouter — active roadmap
 
+## Core rollback snapshot-state correction — implementation (2026-10-25)
+
+`CORE-ROLLBACK-SNAPSHOT-STATE` is a high-priority prerequisite of Manual Verified
+Deployment completion, not Stage 5. Apply saved the prior nft table but did not
+persist the metadata consumed by rollback. Missing metadata could cause a
+false-success rollback that removed policy without restoring the saved table.
+Source review and isolated actual-shell control flow reproduced the defect;
+this does not establish a production outage or real-kernel failure injection.
+
+The separate fix preserves the existing Core owner/revision/CAS contract, adds
+durable prior-state capture and validation before destructive recovery, and
+qualifies atomic owned-nft replacement and prior routing restoration. Actual
+shell negative tests and a real hosted packet recovery scenario are required.
+Exact-HEAD CI and independent QA remain pending until final results are recorded.
+No live host-helper installation, Core apply, generation reproof, timer catch-up
+or private wrapper activation is authorized. Historical checkpoints are retained.
+
 ## CI V3 integration complete on main — 2026-10-23
 
 PR40 and PR41 are integrated in actual main `ada32a1d350d20fd3b2246a4ca1ab050231d0b86`. Actual-main mandatory CI run [39960680360](https://github.com/Coxf0rd/fwrouter/actions/runs/39960680360), attempt 1, passed all 16 runner jobs, strict aggregate, main smoke and final evidence publication. Full main-mode L6 run [39960739951](https://github.com/Coxf0rd/fwrouter/actions/runs/39960739951), attempt 1, passed all 19 runner jobs and offline evidence verification: 2,659 unique test IDs, 2,702 executions, all PASS. Native, packet, hosted/provider repeats, cleanup and safe-recovery qualification passed. This supersedes the implementation-pending CI V3 wording in the chronological checkpoints below without changing their historical results. It does not establish Debian/systemd/reboot parity, L7, private wrapper qualification or production deployment authority. PR35 remains Draft; its private F3/F5 gates and deployment STOP are separate.

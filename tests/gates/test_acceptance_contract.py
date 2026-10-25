@@ -7591,7 +7591,8 @@ class AcceptanceContractTests(unittest.TestCase):
             collector.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             collector.chmod(0o755)
             kernel_scripts = {}
-            for name in ("dataplane-common.sh", "dataplane-check.sh", "dataplane-apply.sh", "dataplane-rollback.sh"):
+            for name in ("dataplane-common.sh", "dataplane-check.sh", "dataplane-apply.sh", "dataplane-rollback.sh",
+                         "dataplane-snapshot-state.py"):
                 script = root / "host/libexec/fwrouter" / name
                 script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                 script.chmod(0o755)
