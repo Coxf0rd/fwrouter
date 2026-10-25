@@ -22,6 +22,8 @@ Transparent ingress subjects use taxonomy/provider contracts to resolve LAN-styl
 - Selective LAN/external ingress subjects with a server override are applied when the transparent selective runtime is materialized; only direct-only subjects stay `pending_not_vpn_path`.
 - Keep concrete provider details inside provider registries, matcher/runtime resolvers, or adapters. Generic scoped-egress decisions should use `subject_taxonomy` helpers.
 - Docker Full VPN is pending unless inventory source JSON proves a complete IPv6 address inventory with no global IPv6 address and the container has an isolatable matcher. Host-network Docker Full VPN is unsupported. Exact managed Xray/Mihomo identities are direct-safe and cannot receive scoped VPN.
+- When global VPN or selective policy can capture unmatched packets, a non-exempt Docker Direct subject requires complete bounded IPv4 and IPv6 inventory. Its existing primary matcher fields remain compatible, while the matcher carries the full canonical IPv4 set and explicit coverage evidence through the bounded manifest projection.
+- Full VPN Docker multi-IPv4 remains unsupported. Direct inventory changes are re-materialized from current collector-owned source data on normal apply; they are not a second persisted intent or cache.
 
 
 ### 2026-10-07 — source-only binding admission correction

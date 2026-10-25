@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ipaddress import ip_address
 from typing import Any, Callable
 
 from fwrouter_api.services.dataplane_global import build_nft_rule_sets, read_effective_rules_artifact
@@ -31,7 +32,10 @@ from fwrouter_api.services.dataplane_nft_sets import (
     _resolve_rules_effective_artifact,
     _safe_set_suffix,
 )
-from fwrouter_api.services.docker_policy import docker_vpn_immunity_conflict
+from fwrouter_api.services.docker_policy import (
+    MAX_DOCKER_IPV4_SOURCE_ADDRESSES,
+    docker_vpn_immunity_conflict,
+)
 from fwrouter_api.services.network_contract import (
     trusted_client_ipv4_nft_set,
     trusted_client_ipv6_nft_set,
@@ -110,6 +114,7 @@ def render_owned_table_candidate(
         conflict = docker_vpn_immunity_conflict(
             [subject for subject in subjects if isinstance(subject, dict)],
             _read_manifest_extra_ipv4_list(manifest, "infrastructure_ipv4"),
+            global_mode=str((manifest.get("summary") or {}).get("global_mode") or "direct"),
         )
         if conflict:
             subject_id, reason = conflict
@@ -225,7 +230,9 @@ def render_owned_table_candidate(
                 return effective_mode
         return ""
 
-    def _scoped_matcher(subject: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    def _scoped_matcher(
+        subject: dict[str, Any], *, include_inventory: bool = True,
+    ) -> tuple[str | None, str | None, str | None]:
         scoped = subject.get("scoped_runtime")
         if not isinstance(scoped, dict):
             return None, None, None
@@ -239,6 +246,26 @@ def render_owned_table_candidate(
         family = matcher.get("family")
         if not expr or not val:
             return None, None, None
+
+        values = matcher.get("values") if include_inventory else None
+        if values is not None:
+            if (not isinstance(values, list) or not values
+                    or len(values) > MAX_DOCKER_IPV4_SOURCE_ADDRESSES
+                    or any(type(value) is not str for value in values)):
+                raise DockerPolicyConflictError("invalid scoped source matcher values")
+            try:
+                parsed = {ip_address(value) for value in values}
+                primary = ip_address(val) if type(val) is str else None
+            except ValueError as exc:
+                raise DockerPolicyConflictError("invalid scoped source matcher values") from exc
+            expected_version = 4 if family == "ipv4" and expr == "ip saddr" else 6 if family == "ipv6" and expr == "ip6 saddr" else 0
+            if (not expected_version or primary is None or primary.version != expected_version
+                    or any(address.version != expected_version for address in parsed)
+                    or any(str(ip_address(value)) != value for value in values)
+                    or str(primary) != val or primary not in parsed):
+                raise DockerPolicyConflictError("inconsistent scoped source matcher values")
+            normalized = sorted(str(address) for address in parsed)
+            val = normalized[0] if len(normalized) == 1 else "{ " + ", ".join(normalized) + " }"
 
         return str(expr), str(val), str(family or "")
 
@@ -264,7 +291,9 @@ def render_owned_table_candidate(
         counter_declarations.append(f'    counter cnt_{slug}_vpn_tx {{ }}')
         counter_declarations.append(f'    counter cnt_{slug}_vpn_rx {{ }}')
 
-        expr, val, _family = _scoped_matcher(subject)
+        # Keep the established single-primary-address traffic accounting
+        # projection; complete inventory is used for routing classification.
+        expr, val, _family = _scoped_matcher(subject, include_inventory=False)
         if expr and val:
             direct_counter_rules.append(f'        {expr} {val} counter name "cnt_{slug}_direct_tx"')
             vpn_counter_rules.append(f'        {expr} {val} counter name "cnt_{slug}_vpn_tx"')

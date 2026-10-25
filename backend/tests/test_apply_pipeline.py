@@ -15,6 +15,7 @@ from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services import apply as apply_service
+from fwrouter_api.services import apply_orchestrator as orchestrator
 from fwrouter_api.services import dataplane_global as dataplane_global_service
 from fwrouter_api.services import dataplane_status as dataplane_status_service
 from fwrouter_api.services import dnsmasq as dnsmasq_service
@@ -155,6 +156,109 @@ def test_apply_pipeline_writes_render_failure_artifact(
     payload = json.loads(result_path.read_text(encoding="utf-8"))
     assert payload["stage"] == "render_candidate"
     assert payload["dataplane"]["error_code"] == "APPLY_RENDER_CANDIDATE_FAILED"
+
+
+def test_manual_rules_render_exception_fails_job_and_bound_rules_state(
+    monkeypatch, tmp_path: Path, isolated_host_observations,
+) -> None:
+    """A real renderer exception terminalizes its apply job and rules owner before rethrow."""
+    from fwrouter_api.jobs.manager import JobManager
+    from fwrouter_api.services.native_proof import core_native_proof_path
+    from fwrouter_api.services.rules import validate_manual_rules
+    from fwrouter_api.services.rules_state_files import get_manual_rules_texts
+    from fwrouter_api.services.rules_state_metadata import get_rules_state
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    paths = get_manual_rules_texts()
+    active_path = paths["active_path"]
+    active_path.parent.mkdir(parents=True, exist_ok=True)
+    active_path.write_text("DIRECT prior.example\n", encoding="utf-8")
+    last_good_path = paths["last_good_paths"]["last_good_manual_active_path"]
+    last_good_path.parent.mkdir(parents=True, exist_ok=True)
+    last_good_path.write_text("DIRECT prior.example\n", encoding="utf-8")
+    prior_bytes = active_path.read_bytes()
+    last_good_bytes = last_good_path.read_bytes()
+    receipt_path = core_native_proof_path()
+    receipt_before = receipt_path.read_bytes() if receipt_path.exists() else None
+
+    subject = {
+        "subject_id": "docker:render-failure:source",
+        "subject_type": "docker",
+        "display_name": "Render failure fixture",
+        "desired_mode": "direct",
+        "applied_mode": "direct",
+        "runtime_state": "running",
+        "is_active": True,
+        "detail": {
+            "ip_address": "172.25.0.2",
+            "source": {
+                "NetworkMode": "bridge",
+                "IPv4InventoryComplete": False,
+                "IPv4Addresses": ["172.25.0.2", "172.26.0.2"],
+                "IPv6InventoryComplete": True,
+                "IPv6Addresses": [],
+            },
+        },
+    }
+    monkeypatch.setattr(orchestrator, "prepare_manual_rules_candidate", lambda **_kwargs: {
+        "manual_validation": validate_manual_rules("DIRECT candidate.example\n"),
+        "effective_artifact": {"rules": []},
+    })
+    monkeypatch.setattr(orchestrator, "get_routing_snapshot", lambda: {
+        "desired_mode": "vpn", "applied_mode": "vpn", "selective_default": "direct",
+        "server_mode": "fixed", "desired_fixed_server_id": "fixture-server",
+        "applied_fixed_server_id": "fixture-server",
+    })
+    monkeypatch.setattr(orchestrator, "_load_subjects_with_overrides", lambda **_kwargs: [subject])
+    monkeypatch.setattr(orchestrator, "_load_user_override_map", lambda: {})
+    monkeypatch.setattr(orchestrator, "_load_server_override_map", lambda: {})
+    adapter_calls = []
+    monkeypatch.setattr(apply_service.DEFAULT_DATAPLANE_ADAPTER, "apply", lambda plan: adapter_calls.append(plan))
+
+    manager = JobManager()
+    manager.register_handler(orchestrator.JOB_TYPE_APPLY_MUTATION, orchestrator.execute_apply_mutation)
+    job = manager.create(
+        orchestrator.JOB_TYPE_APPLY_MUTATION,
+        lock_key=orchestrator.LOCK_RULES_APPLY,
+        requested_by="pytest:rules-render-failure",
+        input_data={"intent": orchestrator.INTENT_APPLY_MANUAL_RULES, "payload": {}},
+    )
+    terminal = manager.run_job(str(job["job_id"]))
+
+    assert terminal["status"] == "failed"
+    assert terminal["error_code"] == "JOB_HANDLER_FAILED"
+    rules_state = get_rules_state()
+    assert rules_state["status"] == "failed"
+    assert rules_state["last_apply_job_id"] == job["job_id"]
+    assert rules_state["error_code"] == "DOCKER_VPN_POLICY_CONFLICT"
+    assert active_path.read_bytes() == prior_bytes
+    assert last_good_path.read_bytes() == last_good_bytes
+    assert adapter_calls == []
+    assert (receipt_path.read_bytes() if receipt_path.exists() else None) == receipt_before
+
+
+def test_manual_rules_failure_cas_does_not_overwrite_newer_apply(monkeypatch, tmp_path: Path) -> None:
+    from _test_support import configure_test_state_dir
+    from fwrouter_api.services.rules_state_metadata import (
+        get_rules_state, mark_rules_job_failed, mark_rules_job_running,
+    )
+    from fwrouter_api.services.jobs import create_job
+
+    configure_test_state_dir(monkeypatch, tmp_path)
+    initialize_database()
+    older = create_job("apply_mutation", requested_by="pytest")
+    newer = create_job("apply_mutation", requested_by="pytest")
+    mark_rules_job_running(job_id=older["job_id"], update_type="manual_apply")
+    mark_rules_job_running(job_id=newer["job_id"], update_type="manual_apply")
+    state = mark_rules_job_failed(
+        job_id=older["job_id"], code="OLD_FAILURE", message="stale exception",
+        update_type="manual_apply",
+    )
+    assert state["status"] == "running"
+    assert state["last_apply_job_id"] == newer["job_id"]
+    assert state["error_code"] is None
+    assert get_rules_state()["last_apply_job_id"] == newer["job_id"]
 
 
 def test_apply_pipeline_accepts_prebuilt_manifest(

@@ -13,6 +13,7 @@ import re
 import stat
 import tempfile
 import unittest
+from types import SimpleNamespace
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -386,7 +387,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
     def test_packet_phase_diagnostics_are_bounded_junit_json_emitted_before_probes_assert(self):
         tree = ast.parse(PACKET_TEST.read_text(encoding="utf-8"))
         functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-        namespace = {"Any": object, "json": json, "MAX_PHASE_DIAGNOSTIC_BYTES": 4096}
+        namespace = {"Any": object, "json": json, "MAX_PHASE_DIAGNOSTIC_BYTES": 4096,
+                     "CLIENT_SECONDARY_IP": "10.240.0.3"}
         helper = functions["_record_phase_diagnostic"]
         exec(compile(ast.Module(body=[helper], type_ignores=[]), str(PACKET_TEST), "exec"), namespace)
         properties = []
@@ -403,6 +405,19 @@ class NetworkFixtureContractTests(unittest.TestCase):
             namespace["_record_phase_diagnostic"](lambda *args: self.fail("oversize diagnostic was emitted"),
                                                    {"phase": "vpn", "detail": "x" * 4096})
 
+        secondary = {
+            "phase": "docker-direct-secondary-source-under-global-vpn",
+            "inventory_persisted": True, "global_mode": "vpn",
+            "tcp_peer": "10.240.0.3", "udp_peer": "10.240.0.3",
+            "endpoint_http_count_delta": 1, "endpoint_udp_count_delta": 1,
+        }
+        namespace["_record_phase_diagnostic"](lambda name, value: properties.append((name, value)), secondary)
+        self.assertEqual(properties[-1][0], "packet_phase_docker_direct_secondary_source_under_global_vpn")
+        with self.assertRaises(AssertionError):
+            namespace["_record_phase_diagnostic"](
+                lambda *args: self.fail("incomplete secondary-source proof was emitted"),
+                {**secondary, "tcp_peer": "10.240.0.2"})
+
         probe = functions["_probe_phase"]
         first_assert_line = min(node.lineno for node in ast.walk(probe) if isinstance(node, ast.Assert))
         record_calls = [node for node in ast.walk(probe) if isinstance(node, ast.Call)
@@ -415,6 +430,12 @@ class NetworkFixtureContractTests(unittest.TestCase):
                        and isinstance(node.func, ast.Name) and node.func.id == "_probe_phase"]
         self.assertEqual(len(phase_calls), 5)
         source = PACKET_TEST.read_text(encoding="utf-8")
+        docker_flow = next(node for node in ast.parse(source).body
+                           if isinstance(node, ast.FunctionDef)
+                           and node.name == "_qualify_docker_scoped_policy")
+        docker_flow_source = "\n".join(source.splitlines()[docker_flow.lineno - 1:docker_flow.end_lineno])
+        self.assertIn('"direct_secondary_source_under_global_vpn"', docker_flow_source)
+        self.assertIn('"phase": "docker-direct-secondary-source-under-global-vpn"', docker_flow_source)
         for label in ("vpn-supported-udp", "vpn-unknown-udp", "vpn-unsupported-udp",
                       "vpn-endpoint-unavailable", "vpn-empty-pool", "vpn-tcp-after-unknown",
                       "vpn-tcp-after-unsupported", "vpn-empty-pool-tcp",
@@ -1561,6 +1582,151 @@ class NetworkFixtureContractTests(unittest.TestCase):
         positions = [main.index(name + "(") for name in expected_order]
         self.assertEqual(sorted(positions), positions)
         self.assertLess(main.index("_install_guard(args.role)"), main.index("_serve(args.role, profile)"))
+        self.assertLess(main.index("_validate_role_network(args.role, allow_secondary_missing="),
+                        main.index("_ensure_client_secondary_alias()"))
+        self.assertLess(main.index("_ensure_client_secondary_alias()"),
+                        main.index("_validate_role_network(args.role)"))
+        self.assertIn("allow_secondary_missing: bool = False", _function_source("_validate_role_network"))
+
+    def test_client_alias_preflight_binds_full_address_ownership_before_mutation(self):
+        tree = _tree()
+        selected = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name in {"_validate_role_network", "_ensure_client_secondary_alias"}]
+        self.assertEqual({node.name for node in selected}, {
+            "_validate_role_network", "_ensure_client_secondary_alias",
+        })
+
+        def run_fixture(addresses, routes):
+            calls = []
+            namespace = {
+                "Any": object, "json": json, "re": re, "FixtureError": RuntimeError,
+                "CLIENT_IP": "10.240.0.2", "CLIENT_SECONDARY_IP": "10.240.0.3",
+                "ROUTER_LAN_IP": "10.240.0.1", "CLIENT_NET": "10.240.0.0/29",
+                "ENDPOINT_WAN_IP": "198.18.240.2", "SERVICE_VIP": "203.0.113.53",
+                "PROTECTED_VIP": "10.250.240.2", "DNS_UPSTREAM_IP": "1.1.1.1",
+                "DNS_VPN_SERVICE_VIP": "198.51.100.77", "WAN_NET": "198.18.240.0/29",
+                "ROUTER_WAN_IP": "198.18.240.1",
+            }
+
+            def run_fixed(argv):
+                calls.append(argv)
+                if argv[:4] == ("ip", "-json", "-4", "address"):
+                    payload = addresses
+                elif argv[:6] == ("ip", "-json", "-4", "route", "show", "table"):
+                    payload = routes
+                elif argv[:3] == ("ip", "address", "add"):
+                    addresses[1]["addr_info"].append({
+                        "family": "inet", "local": "10.240.0.3", "prefixlen": 29,
+                    })
+                    return SimpleNamespace(returncode=0, stdout=b"")
+                else:
+                    raise AssertionError(f"unexpected fixed command: {argv!r}")
+                return SimpleNamespace(returncode=0, stdout=json.dumps(payload).encode("ascii"))
+
+            namespace["_run_fixed"] = run_fixed
+            exec(compile(ast.Module(body=selected, type_ignores=[]), str(FIXTURE), "exec"), namespace)
+            return namespace, calls
+
+        def base_addresses():
+            return [
+                {"ifname": "lo", "addr_info": [
+                    {"family": "inet", "local": "127.0.0.1", "prefixlen": 8},
+                ]},
+                {"ifname": "eth0", "addr_info": [
+                    {"family": "inet", "local": "10.240.0.2", "prefixlen": 29},
+                ]},
+            ]
+
+        base_routes = [
+            {"dst": "default", "gateway": "10.240.0.1"},
+            {"dst": "10.240.0.0/29"},
+        ]
+        namespace, calls = run_fixture(base_addresses(), list(base_routes))
+        namespace["_validate_role_network"]("client", allow_secondary_missing=True)
+        namespace["_ensure_client_secondary_alias"]()
+        self.assertTrue(any(call[:3] == ("ip", "address", "add") for call in calls))
+
+        valid_with_alias = base_addresses()
+        valid_with_alias[1]["addr_info"].append({
+            "family": "inet", "local": "10.240.0.3", "prefixlen": 29,
+        })
+        namespace, calls = run_fixture(valid_with_alias, list(base_routes))
+        namespace["_ensure_client_secondary_alias"]()
+        self.assertFalse(any(call[:3] == ("ip", "address", "add") for call in calls))
+
+        endpoint_addresses = [
+            {"ifname": "lo", "addr_info": [
+                {"family": "inet", "local": "127.0.0.1", "prefixlen": 8},
+                {"family": "inet", "local": "203.0.113.53", "prefixlen": 32},
+                {"family": "inet", "local": "10.250.240.2", "prefixlen": 32},
+                {"family": "inet", "local": "1.1.1.1", "prefixlen": 32},
+                {"family": "inet", "local": "198.51.100.77", "prefixlen": 32},
+            ]},
+            {"ifname": "eth0", "addr_info": [
+                {"family": "inet", "local": "198.18.240.2", "prefixlen": 29},
+            ]},
+        ]
+        endpoint_routes = [
+            {"dst": "198.18.240.0/29"},
+            {"dst": "10.240.0.0/29", "gateway": "198.18.240.1"},
+        ]
+        namespace, _calls = run_fixture(endpoint_addresses, endpoint_routes)
+        namespace["_validate_role_network"]("endpoint")
+
+        wrong_interface_vip = json.loads(json.dumps(endpoint_addresses))
+        wrong_interface_vip[0]["addr_info"] = [
+            item for item in wrong_interface_vip[0]["addr_info"]
+            if item.get("local") != "203.0.113.53"
+        ]
+        wrong_interface_vip[1]["addr_info"].append({
+            "family": "inet", "local": "203.0.113.53", "prefixlen": 32,
+        })
+        missing_endpoint_vip = json.loads(json.dumps(endpoint_addresses))
+        missing_endpoint_vip[0]["addr_info"] = [
+            item for item in missing_endpoint_vip[0]["addr_info"]
+            if item.get("local") != "198.51.100.77"
+        ]
+        extra_endpoint_vip = json.loads(json.dumps(endpoint_addresses))
+        extra_endpoint_vip[0]["addr_info"].append({
+            "family": "inet", "local": "192.0.2.9", "prefixlen": 32,
+        })
+        for invalid_endpoint in (wrong_interface_vip, missing_endpoint_vip, extra_endpoint_vip):
+            namespace, _calls = run_fixture(invalid_endpoint, list(endpoint_routes))
+            with self.assertRaises(RuntimeError):
+                namespace["_validate_role_network"]("endpoint")
+
+        invalid_cases = []
+        primary_on_loopback = base_addresses()
+        primary_on_loopback[0]["addr_info"].append({
+            "family": "inet", "local": "10.240.0.2", "prefixlen": 29,
+        })
+        primary_on_loopback[1]["addr_info"] = []
+        invalid_cases.append((primary_on_loopback, list(base_routes)))
+
+        alias_on_loopback = base_addresses()
+        alias_on_loopback[0]["addr_info"].append({
+            "family": "inet", "local": "10.240.0.3", "prefixlen": 29,
+        })
+        invalid_cases.append((alias_on_loopback, list(base_routes)))
+
+        alias_on_foreign_interface = base_addresses()
+        alias_on_foreign_interface.append({"ifname": "eth1", "addr_info": [
+            {"family": "inet", "local": "10.240.0.3", "prefixlen": 29},
+        ]})
+        invalid_cases.append((alias_on_foreign_interface, list(base_routes)))
+
+        unknown_interface = base_addresses()
+        unknown_interface.append({"ifname": "eth1", "addr_info": []})
+        invalid_cases.append((unknown_interface, list(base_routes)))
+
+        unexpected_route = [*base_routes, {"dst": "192.0.2.0/24"}]
+        invalid_cases.append((base_addresses(), unexpected_route))
+
+        for addresses, routes in invalid_cases:
+            namespace, calls = run_fixture(addresses, routes)
+            with self.assertRaises(RuntimeError):
+                namespace["_ensure_client_secondary_alias"]()
+            self.assertFalse(any(call[:3] == ("ip", "address", "add") for call in calls))
 
     def test_guard_is_private_owned_drop_default_and_blocks_stub_before_loopback(self):
         guard = _function_source("_install_guard")
@@ -1592,6 +1758,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "FixtureError": RuntimeError,
             "TABLE_NAME": "fwrouter_packet_fixture",
             "ROUTER_LAN_IP": "10.240.0.1", "CLIENT_IP": "10.240.0.2",
+            "CLIENT_SECONDARY_IP": "10.240.0.3",
             "ROUTER_WAN_IP": "198.18.240.1",
             "ENDPOINT_WAN_IP": "198.18.240.2", "SERVICE_VIP": "203.0.113.53",
             "DNS_VPN_SERVICE_VIP": "198.51.100.77", "PROTECTED_VIP": "10.250.240.2",
@@ -1624,7 +1791,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         namespace["_install_guard"]("endpoint")
         endpoint_rules = captured["script"].decode("ascii").splitlines()
         self.assertIn(
-            "add rule inet fwrouter_packet_fixture input ip saddr { 10.240.0.2, 198.18.240.1, "
+            "add rule inet fwrouter_packet_fixture input ip saddr { 10.240.0.2, 10.240.0.3, 198.18.240.1, "
             "198.18.240.2, 203.0.113.53, 198.51.100.77, 10.250.240.2 } ip daddr 198.18.240.2 "
             "tcp dport { 5301, 5302, 5303, 8082 } accept", endpoint_rules)
         self.assertIn(
@@ -1643,7 +1810,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "FixtureError": type("FixtureError", (RuntimeError,), {}),
             "DNS53ProbeFailure": type("DNS53ProbeFailure", (RuntimeError,), {}),
             "DNS53FlowProbeFailure": type("DNS53FlowProbeFailure", (RuntimeError,), {}),
-            "CLIENT_IP": "10.240.0.2", "ENDPOINT_WAN_IP": "198.18.240.2",
+            "CLIENT_IP": "10.240.0.2", "CLIENT_SECONDARY_IP": "10.240.0.3",
+            "ENDPOINT_WAN_IP": "198.18.240.2",
             "ROUTER_WAN_IP": "198.18.240.1",
         }
         exec(compile(ast.Module(body=selected, type_ignores=[]), str(FIXTURE), "exec"), fixture_ns)
@@ -1759,7 +1927,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
             "FixtureError": type("FixtureError", (RuntimeError,), {}),
             "DNS53FlowProbeFailure": type("DNS53FlowProbeFailure", (RuntimeError,), {}),
             "DNS_VPN_SERVICE_VIP": "198.51.100.77", "SERVICE_VIP": "203.0.113.53",
-            "CLIENT_IP": "10.240.0.2", "ENDPOINT_WAN_IP": "198.18.240.2",
+            "CLIENT_IP": "10.240.0.2", "CLIENT_SECONDARY_IP": "10.240.0.3",
+            "ENDPOINT_WAN_IP": "198.18.240.2",
             "ROUTER_WAN_IP": "198.18.240.1", "HTTP_PORT": 9080, "UDP_ECHO_PORT": 9081,
             "CONTROL_TIMEOUT": 3.0, "DNS_SELECTED_PROBE_BODY": b"fixed-probe", "json": json,
         }

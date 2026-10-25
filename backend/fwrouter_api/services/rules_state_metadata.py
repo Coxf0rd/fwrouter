@@ -322,8 +322,25 @@ def mark_rules_job_failed(
     source_urls: dict[str, list[str]] | None = None,
     fetch_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    del update_type
     now = rules_service._utc_now_iso()
+    if update_type == "manual_apply":
+        # A delayed failure must not replace a newer apply owner's state.
+        # Bind the terminal projection to the job that established `running`.
+        with rules_service.db_session() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE rules_state
+                SET status = 'failed', last_failed_at = ?, error_code = ?,
+                    error_message = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1 AND status = 'running' AND last_apply_job_id = ?
+                """,
+                (now, code, message, job_id),
+            )
+            if cursor.rowcount != 1:
+                return get_rules_state(connection)
+        mark_rules_metadata_update_failed(job_id=job_id, code=code, message=message)
+        return get_rules_state()
+
     state = get_rules_state()
     updated = _upsert_rules_state_record(
         {**state, "status": "failed", "last_failed_at": now, "error_code": code, "error_message": message}

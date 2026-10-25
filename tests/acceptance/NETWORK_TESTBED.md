@@ -73,6 +73,14 @@ and neither has an Internet default route. The client default route is the
 router LAN address. No SNAT is required. A native synthetic VLESS endpoint
 provides the VPN hop: DIRECT preserves the client source address; VPN produces
 the service VIP source address on the endpoint's local freedom connection.
+
+The hosted Docker Direct source-set scenario first validates the complete
+isolated role interface/address/route surface, then installs the fixed client
+alias `.3/29` on that same interface and binds its TCP/UDP probes to the alias.
+The fixture records endpoint-observed source addresses; this exercises
+secondary-address DIRECT routing without adding host networking. The Docker
+inventory is synthetic collector input for the native packet path, not a
+Docker discovery or provenance end-to-end test.
 The WAN capture proves the separate router-to-endpoint VLESS transport hop.
 The endpoint address alone is insufficient proof: each phase requires actual
 Core rule-counter deltas, client responses and WAN header captures.

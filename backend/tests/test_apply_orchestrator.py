@@ -8,6 +8,7 @@ from fwrouter_api.services import apply_orchestrator_server_handlers as server_h
 from fwrouter_api.services import rules, rules_state
 from fwrouter_api.services.apply_orchestrator import _commit_manual_rules_apply
 from fwrouter_api.services.apply_orchestrator_rules_handlers import _execute_apply_manual_rules
+from fwrouter_api.services import apply_orchestrator_rules_handlers as rules_handlers
 from fwrouter_api.services.rules import validate_manual_rules
 
 
@@ -202,6 +203,16 @@ def test_manual_rules_apply_audit_counts_prior_rules(monkeypatch):
         "rule_count": 1,
     }
     assert audit["new_value"]["rule_count"] == 1
+
+
+def test_manual_rules_persistence_failure_does_not_mask_original_exception(monkeypatch):
+    monkeypatch.setattr(orchestrator, "mark_rules_job_running", lambda **_kwargs: None)
+    monkeypatch.setattr(rules_handlers, "_execute_apply_manual_rules_running",
+                        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("renderer root cause")))
+    monkeypatch.setattr(orchestrator, "_persist_rules_error",
+                        lambda **_kwargs: (_ for _ in ()).throw(OSError("projection unavailable")))
+    with pytest.raises(RuntimeError, match="renderer root cause"):
+        _execute_apply_manual_rules({"job_id": "job-failed", "requested_by": "pytest"}, {})
 
 
 def test_mark_rules_job_success_forwards_audit_change_without_mutating_it(monkeypatch):

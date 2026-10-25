@@ -18,6 +18,7 @@ from fwrouter_api.services.subject_taxonomy import (
     transparent_ingress_contract_for_subject,
 )
 from fwrouter_api.services.server_layout import protected_docker_runtime_role
+from fwrouter_api.services.docker_policy import MAX_DOCKER_IPV4_SOURCE_ADDRESSES
 
 
 SCOPED_EGRESS_ELIGIBLE_SUBJECT_TYPES = {
@@ -372,32 +373,77 @@ def build_scoped_subject_runtime(
         result["resolution_reason"] = "subject_type_not_supported"
         return result
 
+    detail = _normalized_detail(subject)
+    source = detail.get("source") or detail.get("source_json")
+    network_mode = str(source.get("NetworkMode") or "").strip().lower() if isinstance(source, dict) else ""
+    direct_coverage_applies = (
+        subject_type == "docker" and dataplane_path == "direct"
+        and not infrastructure_role and not bypass_enabled
+        and network_mode != "host" and global_mode in {"vpn", "selective"}
+    )
+    if direct_coverage_applies and not bool(subject.get("is_active")):
+        # Stale inactive inventory is visible but cannot claim a rule that the
+        # renderer omits, or make global scoped-egress readiness degraded.
+        result["eligible"] = False
+        result["applied"] = False
+        result["status"] = "not_applicable"
+        result["resolution_reason"] = "subject_inactive"
+        return result
+
     # Direct needs the same complete source coverage when unmatched packets
     # could enter global VPN. Host-network output and protected runtimes retain
     # their established direct-safe immunity, independent of global classify.
     if (subject_type == "docker" and dataplane_path == "direct"
             and not infrastructure_role and not bypass_enabled
             and global_mode in {"vpn", "selective"}):
-        detail = _normalized_detail(subject)
-        source = detail.get("source") or detail.get("source_json")
-        network_mode = str(source.get("NetworkMode") or "").strip().lower() if isinstance(source, dict) else ""
         if network_mode != "host":
             values = source.get("IPv4Addresses") if isinstance(source, dict) else None
             try:
-                addresses = {str(ip_address(value)) for value in values} if isinstance(values, list) else set()
-                valid = all(ip_address(value).version == 4 for value in addresses)
+                valid_values = (
+                    isinstance(values, list) and bool(values)
+                    and len(values) <= MAX_DOCKER_IPV4_SOURCE_ADDRESSES
+                    and all(type(value) is str for value in values)
+                )
+                addresses = {str(ip_address(value)) for value in values} if valid_values else set()
+                valid = valid_values and all(
+                    ip_address(value).version == 4 and str(ip_address(value)) == value
+                    for value in values
+                )
+                primary_address = str(ip_address(str(detail.get("ip_address") or "")))
             except (ValueError, TypeError):
-                addresses, valid = set(), False
+                addresses, valid, primary_address = set(), False, ""
             ipv6_state, _ = _docker_ipv6_inventory_state(subject)
             if (not isinstance(source, dict) or source.get("IPv4InventoryComplete") is not True
-                    or not valid or len(addresses) != 1
-                    or str(detail.get("ip_address") or "") not in addresses
+                    or not valid or not addresses
+                    or primary_address not in addresses
                     or ipv6_state != "complete_no_global_ipv6"):
                 result["tracked"] = True
                 result["eligible"] = True
                 result["inventory_classification"] = "tracked_only"
                 result["status"] = "pending_docker_direct_source_coverage"
                 result["resolution_reason"] = "docker_direct_source_coverage_incomplete"
+                return result
+            # Keep the legacy primary matcher fields for readers that need one
+            # representative address, while nft source matching consumes this
+            # complete validated inventory.
+            matcher = dict(result.get("matcher") or {})
+            matcher["values"] = sorted(addresses)
+            result["matcher"] = matcher
+            result["direct_source_coverage"] = {
+                "ipv4_addresses": sorted(addresses),
+                "ipv4_inventory_complete": True,
+                "ipv6_inventory_status": ipv6_state,
+            }
+            if server_override is None:
+                result.update({
+                    "tracked": True,
+                    "eligible": True,
+                    "applied": True,
+                    "inventory_classification": "tracked_only",
+                    "status": "applied",
+                    "resolution_reason": "docker_direct_source_coverage_materialized",
+                    "materialized_by": "nft_subject_classify",
+                })
                 return result
 
     if (

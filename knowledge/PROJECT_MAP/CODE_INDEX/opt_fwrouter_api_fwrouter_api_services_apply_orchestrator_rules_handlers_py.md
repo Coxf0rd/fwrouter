@@ -10,3 +10,5 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 - Preserve monkeypatch-compatible facade paths used by tests and integration code.
 
 On successful apply, compares the normalized candidate with the prior active set and passes hash/count-only audit metadata to the SQLite success transaction. Failed applies do not produce a successful-intent audit.
+
+The manual-apply entry point persists terminal domain failure against the current job before re-raising pipeline exceptions; persistence failures never replace the original apply exception.

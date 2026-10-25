@@ -7,11 +7,32 @@ from fwrouter_api.services import apply_orchestrator as orchestrator
 
 
 def _execute_apply_manual_rules(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    job_id = str(job["job_id"])
+    orchestrator.mark_rules_job_running(job_id=job_id, update_type="manual_apply")
+    try:
+        return _execute_apply_manual_rules_running(job, payload)
+    except Exception as exc:
+        # The job manager owns the terminal job failure. Persist its matching
+        # rules-domain failure here, before allowing that original exception
+        # to reach the manager; never convert render/write failures to success.
+        try:
+            orchestrator._persist_rules_error(
+                job_id=job_id,
+                code=str(getattr(exc, "error_code", "RULES_APPLY_FAILED")),
+                message=str(exc),
+            )
+        except Exception:
+            # Keep the original apply exception as the job's observable cause.
+            pass
+        raise
+
+
+def _execute_apply_manual_rules_running(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     del payload
     requested_by = str(job.get("requested_by") or "api")
-    orchestrator.mark_rules_job_running(job_id=str(job["job_id"]), update_type="manual_apply")
+    job_id = str(job["job_id"])
     previous_active_text = str(orchestrator.get_manual_rules_texts().get("active_text") or "")
-    candidate = orchestrator.prepare_manual_rules_candidate(job_id=str(job["job_id"]))
+    candidate = orchestrator.prepare_manual_rules_candidate(job_id=job_id)
     validation = candidate["manual_validation"]
 
     if not validation["valid"]:
