@@ -2588,7 +2588,7 @@ def _legacy_admission_checkpoint_payload(path: Path) -> dict[str, Any] | None:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     allowed = {
-        "schema", "operation_mode", "operation_id", "phase", "candidate_digest",
+        "schema", "operation_mode", "operation_id", "phase", "require_native_proof", "candidate_digest",
         "candidate_revision", "source_fingerprint", "selection_revision",
         "selection_decision_id", "created_at", "proof_summary",
         "xray_runtime_incarnation", "mihomo_runtime_incarnation",
@@ -2601,6 +2601,7 @@ def _legacy_admission_checkpoint_payload(path: Path) -> dict[str, Any] | None:
         or payload.get("schema") != 1
         or payload.get("operation_mode") != "proof_only_legacy_admission"
         or payload.get("phase") not in {"proof_started", "proof_complete", "verified"}
+        or ("require_native_proof" in payload and type(payload.get("require_native_proof")) is not bool)
         or not isinstance(payload.get("operation_id"), str)
         or not re.fullmatch(r"[0-9a-f]{32}", payload.get("operation_id", ""))
         or not isinstance(payload.get("candidate_digest"), str)
@@ -3050,7 +3051,7 @@ class _AdmissionFenceView:
 
 
 def admit_legacy_subscription_inventory(
-    *, expected_digest: str, operator_confirmation: str,
+    *, expected_digest: str, operator_confirmation: str, require_native_proof: bool = False,
 ) -> dict[str, Any]:
     """Explicitly admit an unmarked legacy inventory after fresh native proof.
 
@@ -3090,12 +3091,19 @@ def admit_legacy_subscription_inventory(
                     return {"ok": False, "status": "blocked", "reason": "inventory_digest_mismatch"}
                 if core_unavailable is not None:
                     return {"ok": False, "status": "blocked", "reason": core_unavailable}
+                if require_native_proof and state.get("status") != "verified":
+                    return {"ok": False, "status": "blocked", "reason": "native_proof_refresh_requires_verified_generation"}
 
             checkpoint_entry_exists = checkpoint_path.exists() or checkpoint_path.is_symlink()
             checkpoint = _legacy_admission_checkpoint_payload(checkpoint_path) if checkpoint_entry_exists else None
             if checkpoint_entry_exists and checkpoint is None:
                 return {"ok": False, "status": "blocked", "reason": "checkpoint_unverifiable"}
             if checkpoint is not None:
+                checkpoint_requires_native_proof = checkpoint.get("require_native_proof", False)
+                if type(checkpoint_requires_native_proof) is not bool:
+                    return {"ok": False, "status": "blocked", "reason": "checkpoint_unverifiable"}
+                if checkpoint_requires_native_proof is not require_native_proof:
+                    return {"ok": False, "status": "blocked", "reason": "checkpoint_proof_requirement_mismatch"}
                 if checkpoint.get("candidate_digest") != expected_digest:
                     return {"ok": False, "status": "blocked", "reason": "checkpoint_inventory_mismatch"}
                 if checkpoint.get("source_fingerprint") != source_fingerprint:
@@ -3149,6 +3157,8 @@ def admit_legacy_subscription_inventory(
                     "selection_decision_id": selection.get("decision_id"),
                     "created_at": time.time(),
                 }
+                if require_native_proof:
+                    checkpoint["require_native_proof"] = True
                 if not _legacy_admission_checkpoint_parent_ready(checkpoint_path):
                     return {"ok": False, "status": "blocked", "reason": "checkpoint_directory_untrusted"}
                 _atomic_write_private_checkpoint(
@@ -3326,6 +3336,21 @@ def admit_legacy_subscription_inventory(
             if not _publish_legacy_admission_mihomo_receipt(proof, str(checkpoint["operation_id"])):
                 return {"ok": False, "status": "blocked", "reason": "native_receipt_unverified",
                         "last_good_retained": True}
+            if state.get("status") == "verified" and not require_native_proof:
+                # Preserve the established verified-legacy reproof contract:
+                # this owner refreshes the Mihomo receipt and closes its
+                # checkpoint, but does not require or rewrite the newer full
+                # Native Generation proof tuple. Operators can explicitly opt
+                # into that stronger persisted-proof refresh when needed.
+                checkpoint["phase"] = "verified"
+                _atomic_write_private_checkpoint(
+                    checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
+                )
+                checkpoint_path.unlink(missing_ok=True)
+                _fsync_directory(checkpoint_path.parent)
+                return {"ok": True, "status": "verified", "digest": expected_digest,
+                        "revision": state.get("candidate_revision"), "already_admitted": True,
+                        "proof_receipt_written": True}
             promoted = _promote_subscription_inventory_generation(admission)
             if not promoted.get("ok"):
                 return {"ok": False, "status": "blocked", "reason": promoted.get("reason") or "inventory_promotion_failed",
@@ -3347,7 +3372,7 @@ def admit_legacy_subscription_inventory(
                 "last_good_retained": True}
 
 
-def inspect_legacy_subscription_inventory_admission() -> dict[str, Any]:
+def inspect_legacy_subscription_inventory_admission(*, require_native_proof: bool = False) -> dict[str, Any]:
     """Return a read-only operator plan without native reads or state writes."""
     try:
         from fwrouter_api.db.connection import get_db_path
@@ -3388,7 +3413,12 @@ def inspect_legacy_subscription_inventory_admission() -> dict[str, Any]:
         elif checkpoint_entry_exists and checkpoint is None:
             reason = "checkpoint_unverifiable"
         elif checkpoint is not None:
-            if checkpoint.get("candidate_digest") != digest:
+            checkpoint_requires_native_proof = checkpoint.get("require_native_proof", False)
+            if type(checkpoint_requires_native_proof) is not bool:
+                reason = "checkpoint_unverifiable"
+            elif checkpoint_requires_native_proof is not require_native_proof:
+                reason = "checkpoint_proof_requirement_mismatch"
+            elif checkpoint.get("candidate_digest") != digest:
                 reason = "checkpoint_inventory_mismatch"
             elif checkpoint.get("source_fingerprint") != source_fingerprint:
                 reason = "legacy_admission_fence_changed"
@@ -3430,10 +3460,15 @@ def inspect_legacy_subscription_inventory_admission() -> dict[str, Any]:
             action = "reprove_verified"
         else:
             reason = "generation_marker_not_admissible"
+        if require_native_proof and action != "reprove_verified":
+            if reason is None and generation.get("status") != "verified":
+                reason = "native_proof_refresh_requires_verified_generation"
+            action = "blocked"
         eligible = action != "blocked"
         return {
             "ok": True, "status": "plan", "eligible": eligible,
             "action": action, "reason": reason, "native_proof_required": True,
+            "native_generation_proof_refresh": require_native_proof,
             "inventory_digest": digest, "inventory_count": count,
             "generation_status": generation.get("status"),
             "generation_reason": generation.get("reason"),

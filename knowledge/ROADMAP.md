@@ -9,17 +9,19 @@ Core and Mihomo evidence for this case, but its already-verified branch closed
 the private checkpoint after writing only the Mihomo UDP receipt. It skipped
 the existing generation promoter, so `generation.native_proof` remained absent.
 
-The bounded source correction issues a private capability only for an exact
-verified digest/revision reproof and routes that path through the existing
-promoter and its final durable/runtime fences. A complete strict-reader
-compatible receipt is mandatory for this verified-refresh capability. Any
-incomplete capture, revision change or stale fence leaves the checkpoint and
-last-good marker intact; an existing good proof is not overwritten. Normal
+The bounded source correction adds a strict opt-in that issues a private
+capability only for an exact verified digest/revision reproof and routes that
+path through the existing promoter and its final durable/runtime fences. A
+complete strict-reader compatible receipt is mandatory only for this opt-in.
+The default verified legacy reproof keeps its established Mihomo receipt
+behavior and does not require the newer full Native Generation tuple. Any
+incomplete strict capture, revision change or stale fence leaves the checkpoint
+and last-good marker intact; an existing good proof is not overwritten. Normal
 pending generation promotion retains its existing optional receipt behavior.
 Regression coverage reads the persisted SQLite field with the strict native
-proof validator and checks retry/idempotence, revision and identity/config
-preservation. This records source/test scope only; no production admission,
-reproof, deployment or live proof is claimed.
+proof validator and preserves the default legacy reproof behavior. This records
+source/test scope only; no production admission, reproof, deployment or live
+proof is claimed.
 
 ## Preserve host traffic collector readiness guard — source implementation (2026-10-25)
 

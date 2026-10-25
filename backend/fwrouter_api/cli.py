@@ -224,11 +224,12 @@ def _run_legacy_inventory_admission(args: argparse.Namespace) -> int:
         )
 
         if args.plan:
-            result = inspect_legacy_subscription_inventory_admission()
+            plan_kwargs = {"require_native_proof": True} if args.require_native_proof else {}
+            result = inspect_legacy_subscription_inventory_admission(**plan_kwargs)
             safe_keys = {
                 "ok", "status", "eligible", "action", "native_proof_required", "inventory_digest", "inventory_count",
                 "generation_status", "generation_reason", "checkpoint_mode", "checkpoint_phase",
-                "source_fingerprint", "reason",
+                "source_fingerprint", "reason", "native_generation_proof_refresh",
             }
             output = {key: result[key] for key in safe_keys if key in result}
             print(json.dumps(output, ensure_ascii=False, sort_keys=True))
@@ -237,10 +238,13 @@ def _run_legacy_inventory_admission(args: argparse.Namespace) -> int:
             print(json.dumps({"ok": False, "status": "blocked", "error_code": "ADMISSION_CONFIRMATION_REQUIRED"}))
             return 2
 
-        result = admit_legacy_subscription_inventory(
-            expected_digest=args.expected_inventory_digest,
-            operator_confirmation=args.confirm,
-        )
+        admission_kwargs = {
+            "expected_digest": args.expected_inventory_digest,
+            "operator_confirmation": args.confirm,
+        }
+        if args.require_native_proof:
+            admission_kwargs["require_native_proof"] = True
+        result = admit_legacy_subscription_inventory(**admission_kwargs)
         safe_keys = {
             "ok", "status", "reason", "digest", "revision", "already_admitted",
             "last_good_retained",
@@ -635,6 +639,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     legacy_admission_parser.add_argument("--plan", action="store_true")
     legacy_admission_parser.add_argument("--expected-inventory-digest")
     legacy_admission_parser.add_argument("--confirm")
+    legacy_admission_parser.add_argument(
+        "--require-native-proof", action="store_true",
+        help="require a complete persisted Native Generation proof when re-proving a verified generation",
+    )
     database_parser = subparsers.add_parser("database")
     database_subparsers = database_parser.add_subparsers(dest="database_command")
     upgrade_parser = database_subparsers.add_parser("upgrade")

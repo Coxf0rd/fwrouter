@@ -900,6 +900,14 @@ def test_legacy_admission_requires_explicit_confirmation_and_exact_digest(monkey
     monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof",
                         lambda *_args, **_kwargs: proof_calls.append(True) or {"ok": True})
 
+    strict_nonverified = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
+    )
+    assert strict_nonverified["ok"] is False
+    assert strict_nonverified["reason"] == "native_proof_refresh_requires_verified_generation"
+    assert proof_calls == []
+    assert not checkpoint.exists()
+
     wrong_confirmation = xray_subscription_service.admit_legacy_subscription_inventory(
         expected_digest=digest, operator_confirmation="yes",
     )
@@ -1003,7 +1011,9 @@ def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed
     digest = _seed_legacy_inventory()
     revision = _seed_verified_generation_state(digest)
     adapter = object()
-    checkpoint = tmp_path / "generation-checkpoint.json"
+    checkpoint = tmp_path / ".generation" / "generation-checkpoint.json"
+    checkpoint.parent.mkdir(mode=0o700)
+    checkpoint.parent.chmod(0o700)
     config_path = tmp_path / "xray.json"
     config_before = b'{"log":{"loglevel":"warning"},"synthetic":"preserve"}\n'
     config_path.write_bytes(config_before)
@@ -1019,6 +1029,14 @@ def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed
                         lambda _routing=None: {"hash": "3" * 64})
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
     monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
+    from fwrouter_api.adapters import xray_common
+    monkeypatch.setattr(xray_common, "_default_xray_config_path", lambda: str(tmp_path / "xray.json"))
+    strict_plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission(
+        require_native_proof=True,
+    )
+    assert strict_plan["action"] == "reprove_verified"
+    assert strict_plan["eligible"] is True
+    assert strict_plan["native_generation_proof_refresh"] is True
 
     with db_session() as connection:
         connection.execute(
@@ -1067,18 +1085,49 @@ def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed
         lambda **_kwargs: {"status": "INCOMPLETE", "reason": "synthetic_native_capture_incomplete"},
     )
     failed = xray_subscription_service.admit_legacy_subscription_inventory(
-        expected_digest=digest, operator_confirmation=CONFIRMATION,
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
     )
     assert failed["ok"] is False
     assert failed["reason"] == "native_generation_receipt_incomplete"
     assert checkpoint.is_file()
+    legacy_plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission()
+    assert legacy_plan["eligible"] is False
+    assert legacy_plan["reason"] == "checkpoint_proof_requirement_mismatch"
+    strict_resume_plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission(
+        require_native_proof=True,
+    )
+    assert strict_resume_plan["action"] == "reprove_verified"
+    assert strict_resume_plan["eligible"] is True
+    strict_checkpoint = json.loads(checkpoint.read_text(encoding="utf-8"))
+    strict_checkpoint["require_native_proof"] = False
+    xray_subscription_service._atomic_write_private_checkpoint(
+        checkpoint, json.dumps(strict_checkpoint, sort_keys=True, separators=(",", ":")),
+    )
+    incompatible_checkpoint_bytes = checkpoint.read_bytes()
+    incompatible_strict_plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission(
+        require_native_proof=True,
+    )
+    assert incompatible_strict_plan["eligible"] is False
+    assert incompatible_strict_plan["reason"] == "checkpoint_proof_requirement_mismatch"
+    assert checkpoint.read_bytes() == incompatible_checkpoint_bytes
+    strict_checkpoint["require_native_proof"] = True
+    xray_subscription_service._atomic_write_private_checkpoint(
+        checkpoint, json.dumps(strict_checkpoint, sort_keys=True, separators=(",", ":")),
+    )
     with db_session() as connection:
         marker = json.loads(connection.execute(
             "SELECT value_json FROM settings WHERE key=?",
             (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
         ).fetchone()["value_json"])
         assert "native_proof" not in marker
-        assert marker["candidate_revision"] == revision
+    assert marker["candidate_revision"] == revision
+
+    downgrade = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION,
+    )
+    assert downgrade["ok"] is False
+    assert downgrade["reason"] == "checkpoint_proof_requirement_mismatch"
+    assert checkpoint.is_file()
 
     # A stale generation revision is refused before another native capture.
     calls_before_stale_revision = []
@@ -1097,7 +1146,7 @@ def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed
              subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
         )
     stale_revision = xray_subscription_service.admit_legacy_subscription_inventory(
-        expected_digest=digest, operator_confirmation=CONFIRMATION,
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
     )
     assert stale_revision["ok"] is False
     assert stale_revision["reason"] == "inventory_generation_stale"
@@ -1115,7 +1164,7 @@ def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed
     # A runtime-fence change after the expensive proof also leaves the owner open.
     monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: False)
     stale_fence = xray_subscription_service.admit_legacy_subscription_inventory(
-        expected_digest=digest, operator_confirmation=CONFIRMATION,
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
     )
     assert stale_fence["ok"] is False
     assert stale_fence["reason"] == "legacy_admission_fence_changed"
@@ -1131,7 +1180,7 @@ def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed
     # Resume the same verified owner; the persisted field passes the strict native reader.
     monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: True)
     resumed = xray_subscription_service.admit_legacy_subscription_inventory(
-        expected_digest=digest, operator_confirmation=CONFIRMATION,
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
     )
     assert resumed["ok"] is True, resumed
     assert resumed["already_admitted"] is True
@@ -1161,7 +1210,7 @@ def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed
         lambda **_kwargs: {"status": "INCOMPLETE", "reason": "synthetic_native_capture_incomplete"},
     )
     failed_again = xray_subscription_service.admit_legacy_subscription_inventory(
-        expected_digest=digest, operator_confirmation=CONFIRMATION,
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
     )
     assert failed_again["ok"] is False
     assert failed_again["reason"] == "native_generation_receipt_incomplete"
@@ -1173,6 +1222,70 @@ def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed
         ).fetchone()["value_json"])
     assert marker_after_failure["native_proof"] == saved_proof
     assert marker_after_failure["candidate_revision"] == revision
+
+
+def test_verified_legacy_reproof_default_preserves_compatibility_without_full_native_tuple(monkeypatch, tmp_path):
+    digest = _seed_legacy_inventory()
+    revision = _seed_verified_generation_state(digest)
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
+    monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof",
+                        lambda *_args, **_kwargs: _positive_synthetic_proof())
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: True)
+    monkeypatch.setattr(xray_subscription_service, "_publish_legacy_admission_mihomo_receipt", lambda *_args: True)
+    monkeypatch.setattr(
+        "fwrouter_api.services.native_proof.capture_native_generation_proof",
+        lambda **_kwargs: pytest.fail("default legacy reproof must not require full native-generation capture"),
+    )
+
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+                        lambda _routing=None: {"hash": "3" * 64})
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
+
+    result = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION,
+    )
+
+    assert result["ok"] is True, result
+    assert result["already_admitted"] is True
+    assert result["proof_receipt_written"] is True
+    assert result["revision"] == revision
+    assert not checkpoint.exists()
+    with db_session() as connection:
+        marker = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+    assert "native_proof" not in marker
+    assert marker["candidate_revision"] == revision
+
+
+def test_admission_cli_forwards_strict_native_proof_only_when_requested(monkeypatch, capsys):
+    from fwrouter_api import cli
+
+    calls = []
+    monkeypatch.setattr(
+        xray_subscription_service, "admit_legacy_subscription_inventory",
+        lambda **kwargs: calls.append(kwargs) or {"ok": False, "status": "blocked", "reason": "test"},
+    )
+    base_args = [
+        "xray", "generation", "admit-legacy", "--expected-inventory-digest", "a" * 64,
+        "--confirm", CONFIRMATION,
+    ]
+    assert cli.main(base_args) == 1
+    capsys.readouterr()
+    assert calls[-1] == {"expected_digest": "a" * 64, "operator_confirmation": CONFIRMATION}
+
+    assert cli.main([*base_args, "--require-native-proof"]) == 1
+    capsys.readouterr()
+    assert calls[-1] == {
+        "expected_digest": "a" * 64,
+        "operator_confirmation": CONFIRMATION,
+        "require_native_proof": True,
+    }
 
 
 def test_legacy_admission_reproves_after_pending_marker_and_resumes_receipt_close_crash(
@@ -2437,6 +2550,23 @@ def test_admission_plan_cli_is_read_only_and_never_calls_admission(monkeypatch, 
     assert output["eligible"] is True
     assert output["action"] == "fresh_admission"
     assert output["native_proof_required"] is True
+
+    strict_plan_calls = []
+    monkeypatch.setattr(
+        xray_subscription_service, "inspect_legacy_subscription_inventory_admission",
+        lambda **kwargs: strict_plan_calls.append(kwargs) or {
+            **plan, "eligible": False, "action": "blocked",
+            "reason": "native_proof_refresh_requires_verified_generation",
+            "native_generation_proof_refresh": True,
+        },
+    )
+    result = cli.main(["xray", "generation", "admit-legacy", "--plan", "--require-native-proof"])
+    output = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert strict_plan_calls == [{"require_native_proof": True}]
+    assert output["eligible"] is False
+    assert output["native_generation_proof_refresh"] is True
+    assert output["reason"] == "native_proof_refresh_requires_verified_generation"
 
 
 def test_admission_cli_requires_explicit_digest_and_confirmation(monkeypatch, capsys):
