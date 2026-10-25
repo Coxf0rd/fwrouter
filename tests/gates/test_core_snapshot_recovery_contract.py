@@ -514,6 +514,30 @@ def test_rollback_rejects_successful_native_restore_with_different_semantics(
     _raises_code("NFT_ROLLBACK_SEMANTIC_MISMATCH", lambda: HELPER.rollback(snapshot, state))
 
 
+def test_apply_rejects_duplicate_keys_in_native_json_before_native_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native, snapshot, state, candidate = _fixture(monkeypatch, tmp_path, table=_table("direct"))
+    HELPER.capture(snapshot, state)
+    _candidate(candidate, "vpn", "fwrouter vpn policy contract required v1")
+    run = HELPER._run
+
+    def duplicate_native_inventory(argv: list[str], *, input_bytes: bytes | None = None):
+        if argv == ["nft", "-j", "-s", "list", "table", "inet", "fwrouter_v2"]:
+            return subprocess.CompletedProcess(
+                argv, 0,
+                stdout=(b'{"nftables":[{"table":{"family":"inet","name":"fwrouter_v2",'
+                        b'"name":"attacker_table"}}]}'),
+                stderr=b"",
+            )
+        return run(argv, input_bytes=input_bytes)
+
+    monkeypatch.setattr(HELPER, "_run", duplicate_native_inventory)
+    before = (native.table, list(native.mutations))
+    _raises_code("NFT_SEMANTIC_READBACK_FAILED", lambda: HELPER._apply_candidate(candidate, snapshot, state))
+    assert (native.table, native.mutations) == before
+
+
 def _write_executable(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")

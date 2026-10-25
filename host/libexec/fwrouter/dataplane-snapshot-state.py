@@ -59,8 +59,8 @@ def _json_command(argv: list[str], *, code: str) -> Any:
     if result.returncode != 0:
         raise SnapshotError(code, f"Read-only command failed: {argv[0]}.")
     try:
-        return json.loads(result.stdout)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return json.loads(result.stdout, object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise SnapshotError(code, f"Read-only command returned invalid JSON: {argv[0]}.") from exc
 
 
