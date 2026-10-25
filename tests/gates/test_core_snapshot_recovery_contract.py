@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -30,6 +31,18 @@ def _table(mode: str, marker: str | None = None) -> bytes:
         "    }\n"
         "}\n"
     ).encode()
+
+
+def _nft_payload_for_table(table: bytes) -> dict[str, Any]:
+    text = table.decode("utf-8")
+    comments = re.findall(r'comment "([^"]+)"', text)
+    return {"nftables": [
+        {"table": {"family": "inet", "name": "fwrouter_v2", "handle": 1}},
+        {"chain": {"family": "inet", "table": "fwrouter_v2", "name": "fwrouter_classify",
+                    "handle": 2, "comment": comments[0] if comments else ""}},
+        {"rule": {"family": "inet", "table": "fwrouter_v2", "chain": "fwrouter_classify",
+                   "handle": 3, "expr": [{"comment": comment} for comment in comments]}},
+    ]}
 
 
 def _table_id_for_test(value: Any) -> bool:
@@ -61,6 +74,11 @@ class NativeFixture:
                 result.returncode = 1
             else:
                 result.stdout = self.table
+        elif argv == ["nft", "-j", "-s", "list", "table", "inet", "fwrouter_v2"]:
+            if self.table is None:
+                result.returncode = 1
+            else:
+                result.stdout = json.dumps(_nft_payload_for_table(self.table)).encode()
         elif argv in (["nft", "-c", "-f", "-"], ["nft", "-f", "-"]):
             batch = input_bytes or b""
             if argv[1] == "-c":
@@ -213,17 +231,22 @@ def test_present_snapshot_is_durable_before_atomic_apply_and_restores_actual_own
     assert len([argv for argv in native.mutations if argv[:2] == ["nft", "-f"]]) == 2
 
 
-@pytest.mark.parametrize("receipt_state", ["missing", "corrupt", "hash-mismatch", "invalid-schema"])
+@pytest.mark.parametrize("receipt_state", ["missing", "corrupt", "hash-mismatch", "invalid-schema", "duplicate-key"])
 def test_rollback_rejects_missing_or_invalid_receipt_before_native_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt_state: str,
 ) -> None:
     native, snapshot, state, _ = _fixture(monkeypatch, tmp_path, table=_table("direct"))
     if receipt_state != "missing":
-        snapshot.write_bytes(_table("vpn", "fwrouter vpn policy contract required v1"))
+        if receipt_state == "duplicate-key":
+            HELPER.capture(snapshot, state)
+            original = state.read_text(encoding="utf-8").rstrip("\n")
+            state.write_text(original[:-1] + ',"previous_table_state":"missing"}' + "\n", encoding="utf-8")
+        else:
+            snapshot.write_bytes(_table("vpn", "fwrouter vpn policy contract required v1"))
         if receipt_state == "corrupt":
             state.write_text("{", encoding="utf-8")
         elif receipt_state == "hash-mismatch":
-            state.write_text(json.dumps({"schema": "fwrouter-dataplane-snapshot-state/v1", "previous_table_state": "present"}), encoding="utf-8")
+            state.write_text(json.dumps({"schema": "fwrouter-dataplane-snapshot-state/v2", "previous_table_state": "present"}), encoding="utf-8")
         else:
             state.write_text(json.dumps({"previous_table_state": "present"}), encoding="utf-8")
     before = (native.table, list(native.mutations))
@@ -404,6 +427,93 @@ def test_shell_entrypoints_delegate_snapshot_and_rollback_to_same_helper() -> No
     assert 'resolve_vpn_policy_required "$SNAPSHOT_PATH"' not in rollback
 
 
+def test_nft_semantic_fingerprint_ignores_only_volatile_or_unordered_data() -> None:
+    base_entries: list[dict[str, Any]] = [
+        {"metainfo": {"version": "1.0"}},
+        {"table": {"family": "inet", "name": "fwrouter_v2", "handle": 1}},
+        {"chain": {"family": "inet", "table": "fwrouter_v2", "name": "first", "handle": 2}},
+        {"chain": {"family": "inet", "table": "fwrouter_v2", "name": "second", "handle": 3}},
+        {"set": {"family": "inet", "table": "fwrouter_v2", "name": "static_allow",
+                  "type": "ipv4_addr", "handle": 4}},
+        {"set": {"family": "inet", "table": "fwrouter_v2", "name": "dns_direct_ipv4",
+                  "type": "ipv4_addr", "flags": ["timeout"], "handle": 5}},
+        {"set": {"family": "inet", "table": "fwrouter_v2", "name": "dns_vpn_ipv4",
+                  "type": "ipv4_addr", "flags": ["timeout"], "handle": 9}},
+        {"element": {"family": "inet", "table": "fwrouter_v2", "name": "static_allow",
+                      "elem": ["192.0.2.1", "192.0.2.2"]}},
+        {"element": {"family": "inet", "table": "fwrouter_v2", "name": "dns_direct_ipv4",
+                      "elem": ["198.51.100.1"]}},
+        {"element": {"family": "inet", "table": "fwrouter_v2", "name": "dns_vpn_ipv4",
+                      "elem": ["198.51.100.2"]}},
+        {"rule": {"family": "inet", "table": "fwrouter_v2", "chain": "first", "handle": 6,
+                   "expr": [{"counter": {"packets": 1, "bytes": 64}}, {"accept": None}]}},
+        {"rule": {"family": "inet", "table": "fwrouter_v2", "chain": "first", "handle": 7,
+                   "expr": [{"drop": None}]}},
+        {"rule": {"family": "inet", "table": "fwrouter_v2", "chain": "second", "handle": 8,
+                   "expr": [{"return": None}]}},
+        {"counter": {"family": "inet", "table": "fwrouter_v2", "name": "traffic_tx",
+                      "packets": 4, "bytes": 256}},
+    ]
+    baseline = HELPER._nft_semantic_sha256({"nftables": base_entries})
+    reordered = [base_entries[0], base_entries[1], base_entries[3], base_entries[2],
+                 base_entries[6], base_entries[5], base_entries[4], base_entries[9], base_entries[8],
+                 base_entries[7], base_entries[10], base_entries[11], base_entries[12], base_entries[13]]
+    reordered[9] = {"element": {"family": "inet", "table": "fwrouter_v2", "name": "static_allow",
+                                "elem": ["192.0.2.2", "192.0.2.1"]}}
+    assert HELPER._nft_semantic_sha256({"nftables": reordered}) == baseline
+
+    volatile = json.loads(json.dumps({"nftables": base_entries}))
+    volatile["nftables"][10]["rule"]["expr"][0]["counter"].update({"packets": 900, "bytes": 8192})
+    volatile["nftables"][8]["element"]["elem"] = ["203.0.113.9"]
+    volatile["nftables"][9]["element"]["elem"] = ["203.0.113.10"]
+    volatile["nftables"][13]["counter"].update({"packets": 901, "bytes": 8193})
+    assert HELPER._nft_semantic_sha256(volatile) == baseline
+
+    # The exemption is limited to the two named timeout sets; arbitrary
+    # runtime-populated-looking sets remain part of recovery identity.
+    unrelated_dynamic = [*base_entries,
+                         {"set": {"family": "inet", "table": "fwrouter_v2", "name": "other_runtime_set",
+                                  "type": "ipv4_addr", "flags": ["timeout"]}},
+                         {"element": {"family": "inet", "table": "fwrouter_v2", "name": "other_runtime_set",
+                                       "elem": ["198.51.100.7"]}}]
+    changed_unrelated = json.loads(json.dumps({"nftables": unrelated_dynamic}))
+    changed_unrelated["nftables"][-1]["element"]["elem"] = ["198.51.100.8"]
+    assert HELPER._nft_semantic_sha256(changed_unrelated) != HELPER._nft_semantic_sha256(
+        {"nftables": unrelated_dynamic}
+    )
+
+    changed_rule_order = list(base_entries)
+    changed_rule_order[10], changed_rule_order[11] = changed_rule_order[11], changed_rule_order[10]
+    assert HELPER._nft_semantic_sha256({"nftables": changed_rule_order}) != baseline
+    changed_static_set = list(base_entries)
+    changed_static_set[7] = {"element": {"family": "inet", "table": "fwrouter_v2", "name": "static_allow",
+                                         "elem": ["192.0.2.1", "192.0.2.3"]}}
+    assert HELPER._nft_semantic_sha256({"nftables": changed_static_set}) != baseline
+    unsupported = [*base_entries, {"unexpected": {"family": "inet", "table": "fwrouter_v2"}}]
+    with pytest.raises(ValueError, match="unsupported nftables object"):
+        HELPER._nft_semantic_sha256({"nftables": unsupported})
+
+
+def test_rollback_rejects_successful_native_restore_with_different_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _table("direct")
+    native, snapshot, state, candidate = _fixture(monkeypatch, tmp_path, table=old)
+    _candidate(candidate, "vpn", "fwrouter vpn policy contract required v1")
+    HELPER.capture(snapshot, state)
+    HELPER._apply_candidate(candidate, snapshot, state)
+    run = native.run
+
+    def altered_restore(argv: list[str], *, input_bytes: bytes | None = None):
+        result = run(argv, input_bytes=input_bytes)
+        if argv == ["nft", "-f", "-"] and result.returncode == 0:
+            native.table = _table("vpn", "fwrouter vpn policy contract required v1")
+        return result
+
+    monkeypatch.setattr(HELPER, "_run", altered_restore)
+    _raises_code("NFT_ROLLBACK_SEMANTIC_MISMATCH", lambda: HELPER.rollback(snapshot, state))
+
+
 def _write_executable(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -425,6 +535,14 @@ if a == ["-j","list","tables"]:
 if a in (["list","table","inet","fwrouter_v2"],["-s","list","table","inet","fwrouter_v2"]):
  if s["table"] is None: raise SystemExit(1)
  sys.stdout.write(s["table"]); raise SystemExit(0)
+if a == ["-j","-s","list","table","inet","fwrouter_v2"]:
+ if s["table"] is None: raise SystemExit(1)
+ comments=re.findall(r'comment "([^"]+)"',s["table"])
+ marker=comments[0] if comments else ""
+ print(json.dumps({"nftables":[
+  {"table":{"family":"inet","name":"fwrouter_v2","handle":1}},
+  {"chain":{"family":"inet","table":"fwrouter_v2","name":"fwrouter_classify","handle":2,"comment":marker}},
+  {"rule":{"family":"inet","table":"fwrouter_v2","chain":"fwrouter_classify","handle":3,"expr":[{"comment":x} for x in comments]}}]})); raise SystemExit(0)
 if a in (["-c","-f","-"],["-f","-"]):
  d=sys.stdin.read()
  if "INVALID" in d: print("synthetic nft validation failure",file=sys.stderr); raise SystemExit(1)

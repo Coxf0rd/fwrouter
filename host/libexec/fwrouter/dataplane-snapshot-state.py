@@ -24,9 +24,13 @@ TABLE_FAMILY = "inet"
 TABLE_NAME = "fwrouter_v2"
 ROUTE_TABLE = 100
 ROUTE_TABLE_NAME = "fwrouter_vpn"
-STATE_SCHEMA = "fwrouter-dataplane-snapshot-state/v1"
+STATE_SCHEMA = "fwrouter-dataplane-snapshot-state/v2"
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MARKS = {"ipv4": ((100, 256), (101, 258)), "ipv6": ((100, 256), (101, 258))}
+# These two timeout sets are populated from current DNS observations and their
+# elements are intentionally not recovery identity. Every other set's members
+# remain significant; this is not a general exemption for dynamic sets.
+_DYNAMIC_NFT_SET_ELEMENTS = {"dns_direct_ipv4", "dns_vpn_ipv4"}
 
 
 class SnapshotError(Exception):
@@ -58,6 +62,148 @@ def _json_command(argv: list[str], *, code: str) -> Any:
         return json.loads(result.stdout)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise SnapshotError(code, f"Read-only command returned invalid JSON: {argv[0]}.") from exc
+
+
+def _canonical_json(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def _normalize_nft_expression(value: Any) -> Any:
+    """Drop only volatile packet counters while preserving ordered expressions."""
+    if isinstance(value, list):
+        return [_normalize_nft_expression(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "counter" and isinstance(item, dict):
+            normalized[key] = {name: data for name, data in item.items() if name not in {"packets", "bytes"}}
+        else:
+            normalized[key] = _normalize_nft_expression(item)
+    return normalized
+
+
+def _canonical_nft_table(payload: Any) -> dict[str, Any]:
+    """Canonicalize nft JSON while preserving per-chain rule precedence."""
+    entries = payload.get("nftables") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise ValueError("invalid nftables inventory")
+    tables: list[dict[str, Any]] = []
+    chains: list[dict[str, Any]] = []
+    sets: list[dict[str, Any]] = []
+    counters: list[dict[str, Any]] = []
+    elements: list[dict[str, Any]] = []
+    rules_by_chain: dict[str, list[dict[str, Any]]] = {}
+    counter_names: set[str] = set()
+    chain_names: set[str] = set()
+    set_names: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("invalid nftables entry")
+        if "metainfo" in entry:
+            if len(entry) != 1:
+                raise ValueError("unsupported nftables metadata")
+            continue
+        kinds = [kind for kind in ("table", "chain", "set", "counter", "element", "rule") if kind in entry]
+        if len(kinds) != 1 or len(entry) != 1:
+            raise ValueError("unsupported nftables object")
+        kind = kinds[0]
+        row = entry[kind]
+        if not isinstance(row, dict):
+            raise ValueError("invalid nftables object body")
+        if kind == "table":
+            if row.get("family") != TABLE_FAMILY or row.get("name") != TABLE_NAME:
+                raise ValueError("unexpected nftables table")
+        elif row.get("family") != TABLE_FAMILY or row.get("table") != TABLE_NAME:
+            raise ValueError("unexpected nftables owner")
+        normalized = {key: _normalize_nft_expression(value) for key, value in row.items() if key != "handle"}
+        if kind == "table":
+            tables.append(normalized)
+        elif kind == "chain":
+            name = row.get("name")
+            if not isinstance(name, str) or not name or name in chain_names:
+                raise ValueError("invalid or duplicate nftables chain")
+            chain_names.add(name)
+            chains.append(normalized)
+        elif kind == "set":
+            name = row.get("name")
+            if not isinstance(name, str) or not name or name in set_names:
+                raise ValueError("invalid or duplicate nftables set")
+            set_names.add(name)
+            if name in _DYNAMIC_NFT_SET_ELEMENTS:
+                normalized.pop("elem", None)
+            elif "elem" in normalized:
+                # A set's members are unordered, but nested address/range
+                # expressions are not. Sort only the outer member list.
+                elems = normalized["elem"]
+                if not isinstance(elems, list):
+                    elems = [elems]
+                normalized["elem"] = sorted(elems, key=_canonical_json)
+            sets.append(normalized)
+        elif kind == "counter":
+            name = row.get("name")
+            if (not isinstance(name, str) or not name or name in counter_names
+                    or type(row.get("packets")) is not int or row["packets"] < 0
+                    or type(row.get("bytes")) is not int or row["bytes"] < 0):
+                raise ValueError("invalid or duplicate nftables counter")
+            counter_names.add(name)
+            counters.append({key: value for key, value in normalized.items() if key not in {"packets", "bytes"}})
+        elif kind == "element":
+            name = row.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError("invalid nftables set element")
+            if name in _DYNAMIC_NFT_SET_ELEMENTS:
+                continue
+            if "elem" in normalized:
+                elems = normalized["elem"]
+                if not isinstance(elems, list):
+                    elems = [elems]
+                normalized["elem"] = sorted(elems, key=_canonical_json)
+            elements.append(normalized)
+        else:  # rule
+            chain = row.get("chain")
+            if not isinstance(chain, str) or not chain or not isinstance(row.get("expr"), list):
+                raise ValueError("invalid nftables rule")
+            rules_by_chain.setdefault(chain, []).append(normalized)
+    if len(tables) != 1 or not chains or len({str(row.get("name")) for row in tables}) != 1:
+        raise ValueError("incomplete nftables table")
+    if not set(rules_by_chain).issubset(chain_names):
+        raise ValueError("nftables rule references an absent chain")
+    canonical: dict[str, Any] = {
+        "table": tables[0],
+        "chains": sorted(chains, key=lambda row: str(row.get("name"))),
+        "sets": sorted(sets, key=lambda row: str(row.get("name"))),
+        "elements": sorted(elements, key=lambda row: (str(row.get("name")), _canonical_json(row))),
+        # Array order inside each chain is policy precedence and is retained.
+        "rules": {name: rules_by_chain[name] for name in sorted(rules_by_chain)},
+    }
+    if counters:
+        canonical["counters"] = sorted(counters, key=lambda row: str(row.get("name")))
+    return canonical
+
+
+def _nft_semantic_sha256(payload: Any) -> str:
+    return hashlib.sha256(_canonical_json(_canonical_nft_table(payload))).hexdigest()
+
+
+def _read_nft_semantic_sha256() -> str:
+    payload = _json_command(
+        ["nft", "-j", "-s", "list", "table", TABLE_FAMILY, TABLE_NAME],
+        code="NFT_SEMANTIC_READBACK_FAILED",
+    )
+    try:
+        return _nft_semantic_sha256(payload)
+    except (TypeError, ValueError) as exc:
+        raise SnapshotError("NFT_SEMANTIC_READBACK_INVALID", "Owned nft semantic readback is incomplete or unsupported.") from exc
 
 
 def _table_exists() -> bool:
@@ -320,11 +466,12 @@ def _snapshot_state(snapshot_path: Path, state_path: Path, *, require_absent: bo
     if state_raw is None:
         raise SnapshotError("NFT_SNAPSHOT_STATE_MISSING", "Previous owned-table state metadata is missing.")
     try:
-        state = json.loads(state_raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        state = json.loads(state_raw, object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Previous owned-table state metadata is invalid JSON.") from exc
     expected_keys = {
-        "schema", "previous_table_state", "snapshot_sha256", "previous_table_vpn_policy_required",
+        "schema", "previous_table_state", "snapshot_sha256", "snapshot_semantic_sha256",
+        "previous_table_vpn_policy_required",
         "previous_routing_mode", "routing",
     }
     if not isinstance(state, dict) or set(state) != expected_keys or state.get("schema") != STATE_SCHEMA:
@@ -339,12 +486,18 @@ def _snapshot_state(snapshot_path: Path, state_path: Path, *, require_absent: bo
         digest = hashlib.sha256(snapshot).hexdigest()
         if state.get("snapshot_sha256") != digest:
             raise SnapshotError("NFT_ROLLBACK_SNAPSHOT_HASH_MISMATCH", "Previous owned-table snapshot does not match its state receipt.")
+        if not isinstance(state.get("snapshot_semantic_sha256"), str) or not re.fullmatch(
+                r"[0-9a-f]{64}", state["snapshot_semantic_sha256"]):
+            raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Previous nft semantic fingerprint is invalid.")
         _parse_table_vpn_requirement(snapshot, True)
         if state.get("previous_routing_mode") != _parse_table_mode(snapshot, True):
             raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Captured routing mode does not match the snapshot.")
         if state.get("previous_table_vpn_policy_required") != _parse_table_vpn_requirement(snapshot, True):
             raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Captured VPN requirement does not match the snapshot.")
-    elif snapshot is not None or state.get("snapshot_sha256") is not None or state.get("previous_table_vpn_policy_required") is not False or state.get("previous_routing_mode") is not None:
+    elif (snapshot is not None or state.get("snapshot_sha256") is not None
+          or state.get("snapshot_semantic_sha256") is not None
+          or state.get("previous_table_vpn_policy_required") is not False
+          or state.get("previous_routing_mode") is not None):
         raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Missing-table receipt unexpectedly references a prior table.")
     if not isinstance(state.get("previous_table_vpn_policy_required"), bool):
         raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Previous VPN policy requirement is invalid.")
@@ -437,8 +590,7 @@ def _apply_candidate(candidate_path: Path, snapshot_path: Path, state_path: Path
     if table_present != (state["previous_table_state"] == "present"):
         raise SnapshotError("NFT_SNAPSHOT_STALE", "Owned table presence changed after snapshot capture.")
     if table_present:
-        live = _run(["nft", "-s", "list", "table", TABLE_FAMILY, TABLE_NAME])
-        if live.returncode != 0 or hashlib.sha256(live.stdout).hexdigest() != state["snapshot_sha256"]:
+        if _read_nft_semantic_sha256() != state["snapshot_semantic_sha256"]:
             raise SnapshotError("NFT_SNAPSHOT_STALE", "Owned table changed after snapshot capture.")
     if _capture_routing() != state["routing"]:
         raise SnapshotError("IP_ROUTING_SNAPSHOT_STALE", "FWRouter policy-routing facts changed after snapshot capture.")
@@ -506,6 +658,7 @@ def capture(snapshot_path: Path, state_path: Path) -> str:
     _ensure_safe_destination(state_path)
     present = _table_exists()
     snapshot: bytes | None = None
+    semantic_sha256: str | None = None
     if present:
         # `-s` omits volatile stateful counter values. The recovery artifact is
         # a ruleset snapshot, not a promise to restore packet counters.
@@ -514,11 +667,16 @@ def capture(snapshot_path: Path, state_path: Path) -> str:
             raise SnapshotError("NFT_SNAPSHOT_CAPTURE_FAILED", "Owned table exists but its exact snapshot could not be read.")
         snapshot = result.stdout
         _parse_table_vpn_requirement(snapshot, True)
+        semantic_sha256 = _read_nft_semantic_sha256()
+        verify = _run(["nft", "-s", "list", "table", TABLE_FAMILY, TABLE_NAME])
+        if verify.returncode != 0 or verify.stdout != snapshot:
+            raise SnapshotError("NFT_SNAPSHOT_CAPTURE_STALE", "Owned nft table changed while the recovery snapshot was captured.")
     routing = _capture_routing()
     state = {
         "schema": STATE_SCHEMA,
         "previous_table_state": "present" if present else "missing",
         "snapshot_sha256": hashlib.sha256(snapshot).hexdigest() if snapshot is not None else None,
+        "snapshot_semantic_sha256": semantic_sha256,
         "previous_table_vpn_policy_required": _parse_table_vpn_requirement(snapshot, True) if present else False,
         "previous_routing_mode": _parse_table_mode(snapshot, True) if present else None,
         "routing": routing,
@@ -548,14 +706,23 @@ def rollback(snapshot_path: Path, state_path: Path) -> dict[str, Any]:
         raise SnapshotError("NFT_ROLLBACK_VERIFY_FAILED", "Owned table presence does not match the captured previous state.")
     if target_present:
         assert snapshot is not None
-        live = _run(["nft", "-s", "list", "table", TABLE_FAMILY, TABLE_NAME])
-        if live.returncode != 0:
-            raise SnapshotError("NFT_ROLLBACK_VERIFY_FAILED", "Restored owned table could not be read back.")
-        if live.stdout.rstrip() != snapshot.rstrip():
-            raise SnapshotError("NFT_ROLLBACK_VERIFY_FAILED", "Restored owned table does not match the captured stateless snapshot.")
         try:
-            live_vpn_required = _parse_table_vpn_requirement(live.stdout, True)
-            live_mode = _parse_table_mode(live.stdout, True)
+            live_semantic_sha256 = _read_nft_semantic_sha256()
+        except SnapshotError as exc:
+            raise SnapshotError("NFT_ROLLBACK_SEMANTIC_READBACK_FAILED", "Restored owned table could not be semantically read back.") from exc
+        if live_semantic_sha256 != state["snapshot_semantic_sha256"]:
+            expected = state["snapshot_semantic_sha256"][:12]
+            observed = live_semantic_sha256[:12]
+            raise SnapshotError(
+                "NFT_ROLLBACK_SEMANTIC_MISMATCH",
+                f"Restored owned table semantic fingerprint differs (expected {expected}, observed {observed}).",
+            )
+        try:
+            live_snapshot = _run(["nft", "-s", "list", "table", TABLE_FAMILY, TABLE_NAME])
+            if live_snapshot.returncode != 0:
+                raise SnapshotError("NFT_ROLLBACK_VERIFY_FAILED", "Restored owned table could not be read as stateless ruleset text.")
+            live_vpn_required = _parse_table_vpn_requirement(live_snapshot.stdout, True)
+            live_mode = _parse_table_mode(live_snapshot.stdout, True)
         except SnapshotError as exc:
             raise SnapshotError("NFT_ROLLBACK_VERIFY_FAILED", "Restored owned table has invalid identity or routing markers.") from exc
         if live_vpn_required != state["previous_table_vpn_policy_required"] or live_mode != state["previous_routing_mode"]:

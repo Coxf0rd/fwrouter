@@ -13,7 +13,11 @@ The adapter supplies both the prior nft snapshot path and snapshot-state path.
 Before runtime mutation, apply must commit explicit durable previous-state
 metadata and bind a previously present table to its saved snapshot.
 `dataplane-snapshot-state.py` implements bounded persistence/validation for the
-existing scripts. Previous owner-routing facts are captured from observation,
+existing scripts. The raw snapshot digest protects persisted recovery bytes; a
+separate recovery-only native JSON fingerprint verifies reconstructed policy
+without depending on nft text serialization. Rule order and static set content
+remain significant. This is not a native-proof owner receipt.
+Previous owner-routing facts are captured from observation,
 not reconstructed from the new candidate's desired contract.
 
 Rollback validates metadata and snapshot identity before touching nft/IP policy.
