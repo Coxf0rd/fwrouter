@@ -7,6 +7,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
+defer_collection() {
+  printf '{"ok":false,"deferred":true,"reason":"%s"}\n' "$1"
+  exit 0
+}
+
+# systemd After= orders unit starts; it does not mean the Type=simple API is
+# already serving. Admit collection only after the cached-schema health check
+# reports ready. The regular timer provides the retry.
+if ! command -v jq >/dev/null 2>&1; then
+  defer_collection "READINESS_CHECK_UNAVAILABLE"
+fi
+
+if ! HEALTH_RESPONSE="$(/usr/bin/curl -fsS --connect-timeout 1 --max-time 2 \
+  http://127.0.0.1:5000/api/v2/health 2>/dev/null)"; then
+  defer_collection "API_UNAVAILABLE"
+fi
+
+if ! printf '%s' "$HEALTH_RESPONSE" \
+  | jq -e '.ok == true and .data.status == "healthy" and .data.database.status == "healthy"' >/dev/null 2>&1; then
+  defer_collection "API_NOT_READY"
+fi
+
 if ! /usr/bin/curl -fsS --max-time 40 \
   -X POST http://127.0.0.1:5000/api/v2/traffic/collect \
   -H 'Content-Type: application/json' \

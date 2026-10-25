@@ -235,6 +235,94 @@ def test_interrupted_stage_retains_partial_target_and_can_be_repeated(tmp_path: 
         shutil.rmtree(private_root)
 
 
+def test_traffic_collector_defers_until_fake_api_reports_ready(tmp_path: Path) -> None:
+    """Adapt only curl's absolute path; use real jq and a private fake API."""
+    script = REPO / "host/libexec/fwrouter/traffic-collect-api.sh"
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "curl-calls"
+    mode = tmp_path / "mode"
+    mode.write_text("unavailable")
+    curl = bin_dir / "curl"
+    curl.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {str(calls)!r}\n"
+        f"case \"$(cat {str(mode)!r})\" in\n"
+        "  unavailable) exit 7 ;;\n"
+        "  unhealthy) printf '%s' '{\"ok\":true,\"data\":{\"status\":\"healthy\",\"database\":{\"status\":\"degraded\"}}}' ;;\n"
+        "  malformed) printf '%s' '{not-json' ;;\n"
+        "  ready) printf '%s' '{\"ok\":true,\"data\":{\"status\":\"healthy\",\"database\":{\"status\":\"healthy\"}}}' ;;\n"
+        "esac\n"
+        "case \"$*\" in\n"
+        "  *'/api/v2/traffic/collect'*)\n"
+        "    while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then shift; printf '%s' '{\"ok\":true,\"data\":{\"job\":{\"status\":\"success\"}}}' > \"$1\"; fi; shift; done ;;\n"
+        "esac\n"
+    )
+    curl.chmod(0o755)
+    source = script.read_text()
+    assert source.count("/usr/bin/curl") == 2
+    adapted = tmp_path / "traffic-collect-api.sh"
+    adapted.write_text(source.replace("/usr/bin/curl", str(curl)))
+    adapted.chmod(0o755)
+
+    for status, reason in (("unavailable", "API_UNAVAILABLE"),
+                           ("unhealthy", "API_NOT_READY"),
+                           ("malformed", "API_NOT_READY")):
+        calls.unlink(missing_ok=True)
+        mode.write_text(status)
+        deferred = subprocess.run([str(adapted)], text=True, capture_output=True, check=True)
+        assert json.loads(deferred.stdout) == {
+            "ok": False, "deferred": True, "reason": reason
+        }
+        requests = calls.read_text().splitlines()
+        assert len(requests) == 1
+        assert "/api/v2/health" in requests[0]
+        assert all("/api/v2/traffic/collect" not in request for request in requests)
+
+    calls.unlink()
+    no_jq_path = tmp_path / "without-jq"
+    no_jq_path.mkdir()
+    for utility in ("cat", "mktemp", "rm"):
+        (no_jq_path / utility).symlink_to(Path("/bin") / utility)
+    missing_jq_env = {**os.environ, "PATH": str(no_jq_path)}
+    missing_jq = subprocess.run(
+        [str(adapted)], env=missing_jq_env, text=True, capture_output=True, check=True
+    )
+    assert json.loads(missing_jq.stdout) == {
+        "ok": False, "deferred": True, "reason": "READINESS_CHECK_UNAVAILABLE"
+    }
+    assert not calls.exists()
+
+    mode.write_text("ready")
+    collected = subprocess.run([str(adapted)], text=True, capture_output=True, check=True)
+    assert collected.returncode == 0
+    requests = calls.read_text().splitlines()
+    assert len(requests) == 2
+    assert "/api/v2/health" in requests[0]
+    assert "/api/v2/traffic/collect" in requests[1]
+
+
+def test_host_component_installs_exact_readiness_guard_into_disposable_target(tmp_path: Path) -> None:
+    source = REPO / "host/libexec/fwrouter/traffic-collect-api.sh"
+    target = tmp_path / "target"
+    result = subprocess.run(
+        [str(REPO / "installer/install.sh"), "--deploy", "--component", "host",
+         "--target", str(target)],
+        text=True, capture_output=True, check=True,
+    )
+    installed = target / "usr/local/libexec/fwrouter/traffic-collect-api.sh"
+    assert installed.read_bytes() == source.read_bytes()
+    assert "host" in result.stdout
+
+    repeated = subprocess.run(
+        [str(REPO / "installer/install.sh"), "--deploy", "--component", "host",
+         "--target", str(target)],
+        text=True, capture_output=True, check=True,
+    )
+    assert installed.read_bytes() == source.read_bytes()
+    assert "host" in repeated.stdout
+
+
 def test_stage_refuses_to_report_complete_with_stale_executable_module(tmp_path: Path) -> None:
     _, artifact, receipt = _artifact(tmp_path)
     private_root, target = _private_target("stale-module")

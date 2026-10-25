@@ -1,5 +1,24 @@
 # FWRouter — active roadmap
 
+## Preserve host traffic collector readiness guard — source implementation (2026-10-25)
+
+Historical source `69bc636` added an API and database readiness check to the
+host traffic collector, but that shell change was absent from the current main
+source while the installed host retained it. Since the host installer copies
+`host/libexec/fwrouter` into `/usr/local/libexec/fwrouter`, a later standard
+host deployment could replace the working installed guard with the unguarded
+source wrapper. The source now restores the bounded health gate: unavailable
+`jq`, unreachable API, and non-ready health defer this timer run successfully;
+healthy status continues through the existing traffic collection API. A
+private curl and real-jq subprocess regression covers defer and ready paths. This is a
+source-only correction; no host install, live check, commit, or push is claimed.
+
+The historical commit also changed backend startup scrub behavior, startup
+tracing, and event contracts. These are separate backend changes and are not
+part of this host preservation package; compare each against current source
+before considering any further port. The historical accounting test and shell
+readiness change are distinct: no accounting rewrite is included here.
+
 ## Core rollback snapshot-state correction — implementation (2026-10-25)
 
 `CORE-ROLLBACK-SNAPSHOT-STATE` is a high-priority prerequisite of Manual Verified
