@@ -3829,7 +3829,8 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "global-mode-selective", "selective-default-vpn", "selective-default-restore",
                      "native-dns53-selective-direct-priority", "provider-reentry-checkpoint-recovery",
                      "docker-direct-global-vpn", "docker-vpn-global-direct", "docker-vpn-repeat-apply",
-                     "docker-vpn-endpoint-unavailable", "docker-direct-restored"}:
+                     "docker-vpn-endpoint-unavailable", "docker-direct-restored",
+                     "core-snapshot-recovery"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     if label == "provider-reentry-checkpoint-recovery":
         expected_fields = {
@@ -3847,6 +3848,17 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
         if (diagnostic.get("routing_mode") not in valid_modes
                 or diagnostic.get("live_global_mode") not in valid_modes):
             raise AssertionError("provider re-entry checkpoint diagnostic has an unknown routing mode")
+    if label == "core-snapshot-recovery":
+        expected_fields = {
+            "phase", "real_shell_and_kernel", "invalid_candidate_preserved_policy",
+            "missing_and_corrupt_metadata_rejected_without_mutation",
+            "verified_previous_policy_restored", "actual_post_snapshot_table_drift_removed",
+        }
+        if set(diagnostic) != expected_fields:
+            raise AssertionError("core snapshot recovery diagnostic has an unknown field")
+        proof_fields = expected_fields - {"phase"}
+        if any(type(diagnostic.get(field)) is not bool for field in proof_fields):
+            raise AssertionError("core snapshot recovery diagnostic has a non-boolean proof field")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
         raise AssertionError("packet phase diagnostic exceeded its fixed byte bound")
