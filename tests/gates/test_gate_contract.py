@@ -81,6 +81,7 @@ class GateContractTests(unittest.TestCase):
     def test_existing_standard_library_contracts_have_explicit_routine_runner_adapters(self) -> None:
         paths = {row["path"] for row in self.manifest["test_files"]}
         self.assertEqual({
+            "tests/gates/test_core_snapshot_recovery_contract.py",
             "tests/gates/test_network_fixture_contract.py",
             "tests/gates/test_subscription_identity_contract.py",
             "tests/gates/test_evidence_bundle.py",

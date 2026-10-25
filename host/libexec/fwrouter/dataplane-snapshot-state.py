@@ -255,8 +255,7 @@ def _capture_local_route(family: str) -> dict[str, Any] | None:
     if not isinstance(payload, list):
         raise SnapshotError("IP_ROUTE_READ_FAILED", f"{family} table-100 route inventory has an unsupported shape.")
     found = 0
-    allowed_keys = {"type", "dst", "dev", "table", "protocol", "scope", "flags", "prefsrc"}
-    expected_dst = "default" if family == "ipv4" else "::/0"
+    allowed_keys = {"type", "dst", "dev", "table", "protocol", "scope", "flags", "prefsrc", "metric", "pref"}
     captured: dict[str, Any] | None = None
     for route in payload:
         if not isinstance(route, dict):
@@ -266,9 +265,10 @@ def _capture_local_route(family: str) -> dict[str, Any] | None:
         # or restored by this snapshot contract.
         if not _table_id(route.get("table")):
             continue
-        # The query is scoped to table 100. Any route other than the exact local
-        # intercept route is outside this helper's ownership and blocks mutation.
-        if route.get("type") != "local" or route.get("dev") != "lo" or route.get("dst") not in {expected_dst, "0.0.0.0/0" if family == "ipv4" else expected_dst}:
+        # Any route in table 100 other than the exact local intercept route is
+        # outside this helper's ownership and blocks mutation.
+        allowed_destinations = {"default", "0.0.0.0/0"} if family == "ipv4" else {"default", "::/0"}
+        if route.get("type") != "local" or route.get("dev") != "lo" or route.get("dst") not in allowed_destinations:
             raise SnapshotError("IP_ROUTE_STATE_UNSUPPORTED", f"{family} table 100 contains a noncanonical route.")
         if set(route) - allowed_keys:
             raise SnapshotError("IP_ROUTE_STATE_UNSUPPORTED", f"{family} table-100 route has unsupported fields.")
@@ -282,6 +282,12 @@ def _capture_local_route(family: str) -> dict[str, Any] | None:
         scope = route.get("scope")
         if scope not in {None, "host"}:
             raise SnapshotError("IP_ROUTE_STATE_UNSUPPORTED", f"{family} local route has unsupported scope.")
+        metric = route.get("metric")
+        if metric is not None and (type(metric) is not int or not 0 <= metric <= 0xFFFFFFFF):
+            raise SnapshotError("IP_ROUTE_STATE_UNSUPPORTED", f"{family} local route has an unsupported metric.")
+        preference = route.get("pref")
+        if preference is not None and (not isinstance(preference, str) or preference not in {"low", "medium", "high"}):
+            raise SnapshotError("IP_ROUTE_STATE_UNSUPPORTED", f"{family} local route has an unsupported preference.")
         captured = {
             "type": "local",
             "dst": route["dst"],
@@ -289,6 +295,8 @@ def _capture_local_route(family: str) -> dict[str, Any] | None:
             "table": ROUTE_TABLE,
             "protocol": protocol,
             "scope": scope,
+            "metric": metric,
+            "pref": preference,
         }
         found += 1
     if found > 1:
@@ -370,12 +378,22 @@ def _valid_routing_state(value: Any) -> bool:
     for family in ("ipv4", "ipv6"):
         route = value.get(f"{family}_local_default_route")
         if route is not None:
-            if not isinstance(route, dict) or set(route) != {"type", "dst", "dev", "table", "protocol", "scope"}:
+            if not isinstance(route, dict) or set(route) != {
+                "type", "dst", "dev", "table", "protocol", "scope", "metric", "pref",
+            }:
                 return False
             if route["type"] != "local" or route["dev"] != "lo" or route["table"] != ROUTE_TABLE:
                 return False
-            expected = {"default", "0.0.0.0/0"} if family == "ipv4" else {"::/0"}
-            if route["dst"] not in expected or route["protocol"] not in {None, "unspec", 0, "static", "kernel", "boot"} or route["scope"] not in {None, "host"}:
+            expected = {"default", "0.0.0.0/0"} if family == "ipv4" else {"default", "::/0"}
+            metric = route["metric"]
+            if metric is not None and (type(metric) is not int or not 0 <= metric <= 0xFFFFFFFF):
+                return False
+            if (route["dst"] not in expected
+                    or route["protocol"] not in {None, "unspec", 0, "static", "kernel", "boot"}
+                    or route["scope"] not in {None, "host"}
+                    or (route["pref"] is not None
+                        and (not isinstance(route["pref"], str)
+                             or route["pref"] not in {"low", "medium", "high"}))):
                 return False
     return True
 
@@ -444,6 +462,10 @@ def _ip_sync_routing(target: dict[str, Any]) -> None:
             route = ["ip", ip_family, "route", "del", "local", current_route["dst"], "dev", current_route["dev"], "table", str(current_route["table"])]
             if current_route["scope"]:
                 route.extend(["scope", current_route["scope"]])
+            if current_route["metric"] is not None:
+                route.extend(["metric", str(current_route["metric"])])
+            if current_route["pref"] is not None:
+                route.extend(["pref", current_route["pref"]])
             if current_route["protocol"] not in {None, "unspec", 0}:
                 route.extend(["proto", str(current_route["protocol"])])
             result = _run(route)
@@ -454,6 +476,10 @@ def _ip_sync_routing(target: dict[str, Any]) -> None:
             route = ["ip", ip_family, "route", "replace", "local", wanted_route["dst"], "dev", wanted_route["dev"], "table", str(wanted_route["table"])]
             if wanted_route["scope"]:
                 route.extend(["scope", wanted_route["scope"]])
+            if wanted_route["metric"] is not None:
+                route.extend(["metric", str(wanted_route["metric"])])
+            if wanted_route["pref"] is not None:
+                route.extend(["pref", wanted_route["pref"]])
             if wanted_route["protocol"] not in {None, "unspec", 0}:
                 route.extend(["proto", str(wanted_route["protocol"])])
             result = _run(route)

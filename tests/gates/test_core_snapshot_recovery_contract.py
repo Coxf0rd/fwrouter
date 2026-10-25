@@ -3,8 +3,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import signal
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +116,10 @@ class NativeFixture:
                 route = {"type": "local", "dst": argv[argv.index("local") + 1], "dev": "lo", "table": 100}
                 if "scope" in argv:
                     route["scope"] = argv[argv.index("scope") + 1]
+                if "metric" in argv:
+                    route["metric"] = int(argv[argv.index("metric") + 1])
+                if "pref" in argv:
+                    route["pref"] = argv[argv.index("pref") + 1]
                 if "proto" in argv:
                     route["protocol"] = argv[argv.index("proto") + 1]
                 self.routes[family] = [item for item in self.routes[family] if not (
@@ -177,9 +183,11 @@ def test_present_snapshot_is_durable_before_atomic_apply_and_restores_actual_own
     old_rule6 = [{"priority": 100, "fwmark": 256, "table": 100}]
     old_route4 = [
         {"type": "unicast", "dst": "192.0.2.0/24", "dev": "eth0", "table": "main"},
-        {"type": "local", "dst": "default", "dev": "lo", "table": 100, "protocol": "static", "scope": "host"},
+        {"type": "local", "dst": "default", "dev": "lo", "table": 100, "protocol": "static",
+         "scope": "host", "metric": None, "pref": None},
     ]
-    old_route6 = [{"type": "local", "dst": "::/0", "dev": "lo", "table": 100, "scope": "host"}]
+    old_route6 = [{"type": "local", "dst": "::/0", "dev": "lo", "table": 100,
+                   "scope": "host", "metric": None, "pref": None}]
     native, snapshot, state, candidate = _fixture(
         monkeypatch, tmp_path, table=old, rules4=old_rule4, rules6=old_rule6,
         routes4=old_route4, routes6=old_route6,
@@ -310,7 +318,7 @@ def test_rollback_reconciles_exact_owned_rule_and_route_protocols(
     old = _table("direct")
     rule = {"priority": 100, "fwmark": 256, "table": 100, "protocol": "static"}
     route = {"type": "local", "dst": "default", "dev": "lo", "table": 100,
-             "protocol": "static", "scope": "host"}
+             "protocol": "static", "scope": "host", "metric": None, "pref": None}
     native, snapshot, state, candidate = _fixture(
         monkeypatch, tmp_path, table=old, rules4=[rule], routes4=[route],
     )
@@ -323,7 +331,53 @@ def test_rollback_reconciles_exact_owned_rule_and_route_protocols(
     HELPER.rollback(snapshot, state)
 
     assert native.rules["ipv4"] == [rule]
-    assert native.routes["ipv4"] == [route]
+    assert HELPER._capture_local_route("ipv4") == {
+        "type": "local", "dst": "default", "dev": "lo", "table": 100,
+        "protocol": "static", "scope": "host", "metric": None, "pref": None,
+    }
+
+
+def test_ipv6_default_route_metric_and_preference_are_captured_and_restored_exactly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _table("direct")
+    observed = {
+        "type": "local", "dst": "default", "dev": "lo", "table": "fwrouter_vpn",
+        "scope": "host", "metric": 1024, "pref": "medium",
+    }
+    native, snapshot, state, candidate = _fixture(
+        monkeypatch, tmp_path, table=old, routes6=[observed],
+    )
+    _candidate(candidate)
+    HELPER.capture(snapshot, state)
+    captured = json.loads(state.read_text(encoding="utf-8"))["routing"]["ipv6_local_default_route"]
+    assert captured == {
+        "type": "local", "dst": "default", "dev": "lo", "table": 100,
+        "protocol": None, "scope": "host", "metric": 1024, "pref": "medium",
+    }
+
+    HELPER._apply_candidate(candidate, snapshot, state)
+    native.routes["ipv6"] = []
+    HELPER.rollback(snapshot, state)
+    assert HELPER._capture_local_route("ipv6") == captured
+    restored_route_command = next(
+        argv for argv in native.mutations if argv[:4] == ["ip", "-6", "route", "replace"]
+    )
+    assert restored_route_command[restored_route_command.index("metric") + 1] == "1024"
+    assert restored_route_command[restored_route_command.index("pref") + 1] == "medium"
+
+
+def test_ipv6_default_route_rejects_unrecognized_native_fields_before_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unknown = {
+        "type": "local", "dst": "default", "dev": "lo", "table": 100,
+        "metric": 1024, "pref": "medium", "expires": 30,
+    }
+    native, snapshot, state, _ = _fixture(monkeypatch, tmp_path, routes6=[unknown])
+    _raises_code("IP_ROUTE_STATE_UNSUPPORTED", lambda: HELPER.capture(snapshot, state))
+    assert native.mutations == []
+    assert not snapshot.exists() and not state.exists()
 
 
 def test_nft_restore_validation_failure_is_not_reported_as_success(
@@ -374,7 +428,12 @@ if a in (["list","table","inet","fwrouter_v2"],["-s","list","table","inet","fwro
 if a in (["-c","-f","-"],["-f","-"]):
  d=sys.stdin.read()
  if "INVALID" in d: print("synthetic nft validation failure",file=sys.stderr); raise SystemExit(1)
- if a[0] == "-c": raise SystemExit(0)
+ if a[0] == "-c":
+  if os.environ.get("FWTEST_BLOCK_NFT_CHECK") == "1":
+   pathlib.Path(os.environ["FWTEST_NFT_READY"]).write_text("ready")
+   import time
+   while True: time.sleep(1)
+  raise SystemExit(0)
  if os.environ.get("FWTEST_FAIL_NFT_APPLY") == "1":
   print("synthetic atomic nft apply failure",file=sys.stderr); raise SystemExit(1)
  with open(os.environ["FWTEST_LOG"],"a") as f: f.write("nft\n")
@@ -512,3 +571,55 @@ def test_real_shell_missing_previous_table_is_explicit_and_restored_as_missing(
     assert restored.returncode == 0, restored.stdout + restored.stderr
     assert json.loads(restored.stdout)["previous_table_state"] == "missing"
     assert json.loads((tmp_path / "runtime.json").read_text())["table"] is None
+
+
+def test_real_shell_interruption_after_durable_capture_preserves_and_restores_old_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _table("vpn", "fwrouter vpn policy contract required v1").decode()
+    apply, rollback, snapshot, state, candidate, manifest = _shell_fixture(tmp_path, monkeypatch, old.encode())
+    ready = tmp_path / "nft-validation-ready"
+    environment = {
+        "PATH": os.environ["PATH"], "HOME": str(tmp_path), "LC_ALL": "C",
+        "FWTEST_STATE": os.environ["FWTEST_STATE"], "FWTEST_LOG": os.environ["FWTEST_LOG"],
+        "FWTEST_BLOCK_NFT_CHECK": "1", "FWTEST_NFT_READY": str(ready),
+    }
+    for command in ("nft", "ip"):
+        resolved = shutil.which(command, path=environment["PATH"])
+        assert resolved is not None and Path(resolved).parent == tmp_path / "bin"
+
+    process = subprocess.Popen(
+        ["/bin/sh", str(apply), str(candidate), str(manifest), str(snapshot), str(state)],
+        cwd=tmp_path, env=environment, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+    )
+    try:
+        assert os.getpgid(process.pid) == process.pid, "test subprocess must own its process group"
+        deadline = time.monotonic() + 8
+        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), "apply did not reach post-capture native validation stub"
+        assert snapshot.is_file() and state.is_file()
+        receipt = json.loads(state.read_text(encoding="utf-8"))
+        assert receipt["previous_table_state"] == "present"
+        os.killpg(process.pid, signal.SIGKILL)
+        stdout, stderr = process.communicate(timeout=5)
+        assert process.returncode == -signal.SIGKILL, (stdout, stderr)
+
+        # No candidate batch ran before interruption, so the old table remains
+        # active; now exercise the actual rollback entrypoint using the same
+        # durable receipt and synthetic nft/ip adapters.
+        assert json.loads((tmp_path / "runtime.json").read_text())["table"].rstrip() == old.rstrip()
+        assert not (tmp_path / "mutations.jsonl").exists()
+        restored = _invoke_shell(rollback, [str(snapshot), str(state)], tmp_path)
+        assert restored.returncode == 0, restored.stdout + restored.stderr
+        assert json.loads(restored.stdout)["restored_previous_table"] is True
+        assert json.loads((tmp_path / "runtime.json").read_text())["table"].rstrip() == old.rstrip()
+        assert (tmp_path / "mutations.jsonl").read_text().splitlines() == ["nft"]
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate(timeout=5)
