@@ -66,6 +66,12 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
   materialization both succeed. Failures retain the committed intent for retry.
 - Profile create/delete/reconcile writers run under the shared Xray writer
   guard; callers acquire it before starting SQLite write transactions.
+- Explicit legacy inventory admission can re-prove an exact already-verified
+  digest/revision that lacks the native generation tuple. It routes through the
+  existing generation promoter, keeps its owner checkpoint until the strict
+  native proof is persisted, and leaves generation revision and Xray inventory
+  or configuration unchanged. Incomplete proof or stale fences retain the
+  checkpoint; generic startup recovery does not initiate this operation.
 
 ### Generation recovery status — 2026-10-04
 

@@ -1,5 +1,26 @@
 # FWRouter — active roadmap
 
+## Explicit reproof for verified subscription generations missing native receipt — source implementation (2026-10-26)
+
+The strict native-proof reader can report `INCOMPLETE` for a verified
+subscription generation created before native owner receipts existed. The
+operator-confirmed `admit-legacy` path already collects fresh source, runtime,
+Core and Mihomo evidence for this case, but its already-verified branch closed
+the private checkpoint after writing only the Mihomo UDP receipt. It skipped
+the existing generation promoter, so `generation.native_proof` remained absent.
+
+The bounded source correction issues a private capability only for an exact
+verified digest/revision reproof and routes that path through the existing
+promoter and its final durable/runtime fences. A complete strict-reader
+compatible receipt is mandatory for this verified-refresh capability. Any
+incomplete capture, revision change or stale fence leaves the checkpoint and
+last-good marker intact; an existing good proof is not overwritten. Normal
+pending generation promotion retains its existing optional receipt behavior.
+Regression coverage reads the persisted SQLite field with the strict native
+proof validator and checks retry/idempotence, revision and identity/config
+preservation. This records source/test scope only; no production admission,
+reproof, deployment or live proof is claimed.
+
 ## Preserve host traffic collector readiness guard — source implementation (2026-10-25)
 
 Historical source `69bc636` added an API and database readiness check to the

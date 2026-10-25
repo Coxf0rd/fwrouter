@@ -3230,10 +3230,7 @@ def admit_legacy_subscription_inventory(
             # transaction that verifies every durable source and selection
             # fence. Existing verified exact-generation retries do not bump it.
             if state.get("status") == "verified":
-                if not _publish_legacy_admission_mihomo_receipt(proof, str(checkpoint["operation_id"])):
-                    return {"ok": False, "status": "blocked", "reason": "native_receipt_unverified",
-                            "last_good_retained": True}
-                already_admitted = _AdmissionFenceView(
+                verified_fences = _AdmissionFenceView(
                     proof_only_source_fingerprint=source_fingerprint,
                     proof_only_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
                     proof_only_selection_revision=int(proof["selection_revision"]),
@@ -3251,7 +3248,7 @@ def admit_legacy_subscription_inventory(
                     proof_only_core_live_mode=str(proof["core_dataplane_proof"]["live_global_mode"]),
                 )
                 if (
-                    not _legacy_admission_runtime_fences_match(already_admitted)
+                    not _legacy_admission_runtime_fences_match(verified_fences)
                     or not _legacy_admission_durable_fences_match(
                         expected_digest=expected_digest, expected_source=source_fingerprint,
                         selection_revision=int(proof["selection_revision"]),
@@ -3262,15 +3259,6 @@ def admit_legacy_subscription_inventory(
                 ):
                     return {"ok": False, "status": "blocked", "reason": "legacy_admission_fence_changed",
                             "last_good_retained": True}
-                checkpoint["phase"] = "verified"
-                _atomic_write_private_checkpoint(
-                    checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),
-                )
-                checkpoint_path.unlink(missing_ok=True)
-                _fsync_directory(checkpoint_path.parent)
-                return {"ok": True, "status": "verified", "already_admitted": True,
-                        "digest": expected_digest, "revision": state["candidate_revision"],
-                        "proof_receipt_written": True}
             if state.get("status") == "unknown":
                 with db_session() as connection:
                     connection.execute("BEGIN IMMEDIATE")
@@ -3308,7 +3296,11 @@ def admit_legacy_subscription_inventory(
                     return {"ok": False, "status": "blocked", "reason": proof_error or "native_proof_incomplete",
                             "last_good_retained": True}
                 record_proof_complete(proof)
-            admission = _claim_subscription_inventory_admission()
+            admission = _claim_subscription_inventory_admission(
+                allow_verified_proof_refresh=state.get("status") == "verified",
+                expected_digest=expected_digest,
+                expected_revision=checkpoint.get("candidate_revision"),
+            )
             if admission is None:
                 return {"ok": False, "status": "blocked", "reason": "inventory_generation_admission_missing",
                         "last_good_retained": True}
@@ -3345,7 +3337,8 @@ def admit_legacy_subscription_inventory(
             checkpoint_path.unlink(missing_ok=True)
             _fsync_directory(checkpoint_path.parent)
             return {"ok": True, "status": "verified", "digest": expected_digest,
-                    "revision": promoted.get("revision", admission.revision), "already_admitted": False,
+                    "revision": promoted.get("revision", admission.revision),
+                    "already_admitted": promoted.get("already_promoted") is True,
                     "proof_receipt_written": True}
     except Exception as exc:
         name = type(exc).__name__

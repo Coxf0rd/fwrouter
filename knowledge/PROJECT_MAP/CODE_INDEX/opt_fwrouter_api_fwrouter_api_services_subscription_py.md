@@ -26,6 +26,11 @@ upsert, and SQLite source-membership lifecycle.
   incomplete capture does not block existing promotion; the strict external
   proof reader returns `INCOMPLETE` until a later normal owner promotion
   captures a complete tuple.
+- The private admission capability can request an exact verified-generation
+  proof refresh only for the explicit legacy reproof owner. That capability is
+  bound to the existing digest/revision and requires a complete native tuple;
+  ordinary verified claims still return no capability, and pending promotion
+  keeps its optional receipt behavior.
 
 ## Runtime/Persistent State
 
