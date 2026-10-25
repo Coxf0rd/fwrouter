@@ -5158,6 +5158,14 @@ def _qualify_core_snapshot_recovery(stack: dict[str, Any], record_property: Any)
     assert stack["profile"].get("profile") == "hosted-kernel-packet"
     from fwrouter_api.core.config import get_settings
     from fwrouter_api.services.native_proof import canonical_nft_table_sha256
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "qualified_snapshot_recovery", "/usr/local/libexec/fwrouter/dataplane-snapshot-state.py",
+    )
+    assert spec is not None and spec.loader is not None
+    recovery = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(recovery)
 
     def command(argv: list[str]) -> subprocess.CompletedProcess:
         result = subprocess.run(argv, capture_output=True, timeout=20, check=False)
@@ -5177,7 +5185,34 @@ def _qualify_core_snapshot_recovery(stack: dict[str, Any], record_property: Any)
                                                key=lambda row: json.dumps(row, sort_keys=True))
         return result
 
+    def recovery_policy() -> dict[str, Any]:
+        result = command(["/usr/sbin/nft", "-j", "-s", "list", "table", "inet", "fwrouter_v2"])
+        assert result.returncode == 0
+        return recovery._canonical_nft_table(json.loads(result.stdout))
+
+    def changed_paths(left: Any, right: Any, path: str = "") -> list[str]:
+        # Synthetic fixture diagnostics expose structural paths only, never
+        # raw policies, endpoints, credentials or client identities.
+        if type(left) is not type(right):
+            return [path + ":type"]
+        if isinstance(left, dict):
+            result = []
+            for key in sorted(set(left) | set(right)):
+                item = path + "/" + str(key)
+                if key not in left or key not in right:
+                    result.append(item + ":presence")
+                else:
+                    result.extend(changed_paths(left[key], right[key], item))
+            return result
+        if isinstance(left, list):
+            result = [path + ":length"] if len(left) != len(right) else []
+            for index, (a, b) in enumerate(zip(left, right)):
+                result.extend(changed_paths(a, b, path + "/" + str(index)))
+            return result
+        return [path + ":value"] if left != right else []
+
     before = facts()
+    policy_before = recovery_policy()
     with tempfile.TemporaryDirectory(prefix="core-recovery-", dir=get_settings().paths.state_dir) as temporary:
         root = Path(temporary)
         candidate, manifest = root / "candidate.nft", root / "manifest.json"
@@ -5206,7 +5241,11 @@ def _qualify_core_snapshot_recovery(stack: dict[str, Any], record_property: Any)
         state.write_bytes(saved)
         restored = command(["/bin/sh", "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
                             str(snapshot), str(state), str(manifest)])
-        assert restored.returncode == 0
+        assert restored.returncode == 0, {
+            "recovery_error": json.loads(restored.stdout),
+            "changed_semantic_paths": changed_paths(policy_before, recovery_policy())[:80],
+            "independent_native_policy_equal": facts() == before,
+        }
         assert json.loads(restored.stdout)["restored_previous_table"] is True
         assert facts() == before, "Valid recovery did not preserve exact previous native policy"
     _record_phase_diagnostic(record_property, {
