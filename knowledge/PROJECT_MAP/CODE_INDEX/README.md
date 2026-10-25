@@ -157,6 +157,7 @@
 - [Core recovery metadata](usr_local_libexec_fwrouter_dataplane_snapshot_state_py.md): `host/libexec/fwrouter/dataplane-snapshot-state.py`
   supports existing apply/rollback, without owning intent or native proof.
   See [Core snapshot recovery](../../CORE_SNAPSHOT_RECOVERY.md).
+- [Host traffic collector API wrapper](host_libexec_fwrouter_traffic_collect_api_sh.md): readiness gate before the timer submits traffic collection.
 - policy/routing: `subject_policy.py`, `scoped_egress.py`, `servers.py` facade, `server_state.py`, `server_global_selection.py`, `server_subject_overrides.py`, `server_preferences.py`, `routing_manifest.py`, `dataplane_global.py`, `network_contract.py`, `core/network_defaults.py`
 - runtime adapters/selector: `runtime_adapters.py` maps roles to active runtime
   implementations; `selector.py` selects `vpn-auto` through the active
