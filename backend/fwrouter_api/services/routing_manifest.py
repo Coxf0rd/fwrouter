@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from ipaddress import ip_network
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,10 @@ from fwrouter_api.services.dataplane_nft import (
     write_candidate_artifacts,
 )
 from fwrouter_api.services.server_layout import SERVER_LAYOUT_CONTRACT_VERSION
-from fwrouter_api.services.docker_policy import docker_vpn_immunity_conflicts
+from fwrouter_api.services.docker_policy import (
+    MAX_DOCKER_IPV4_SOURCE_ADDRESSES,
+    docker_vpn_immunity_conflicts,
+)
 from fwrouter_api.services.scoped_egress import summarize_scoped_subjects
 from fwrouter_api.services.servers import ensure_routing_global_state
 from fwrouter_api.services.subject_policy import (
@@ -85,8 +88,69 @@ def _bounded_subject_runtime(value: Any) -> dict[str, Any]:
         "reason": value.get("resolution_reason") or value.get("reason"),
         "required_capability": value.get("required_capability"),
         "matcher": value.get("matcher"),
+        "direct_source_coverage": value.get("direct_source_coverage"),
         "infrastructure_role": value.get("infrastructure_role"),
         "docker_ipv6_inventory_status": value.get("docker_ipv6_inventory_status"),
+    }
+
+
+def _bounded_docker_source_inventory(subject: dict[str, Any]) -> dict[str, Any] | None:
+    """Project only bounded collector-observed identity facts into the manifest.
+
+    This preserves the existing collector's source snapshot; it is not a new
+    or independent Docker provenance claim. Raw Docker config/environment is
+    deliberately excluded.
+    """
+    if str(subject.get("subject_type") or "") != "docker":
+        return None
+    detail = subject.get("detail")
+    source = (detail.get("source") or detail.get("source_json")) if isinstance(detail, dict) else None
+    if not isinstance(source, dict):
+        return {"available": False, "valid": False}
+    raw_ipv4 = source.get("IPv4Addresses")
+    raw_ipv6 = source.get("IPv6Addresses")
+    valid = (
+        source.get("IPv4InventoryComplete") is True
+        and isinstance(raw_ipv4, list) and bool(raw_ipv4)
+        and len(raw_ipv4) <= MAX_DOCKER_IPV4_SOURCE_ADDRESSES
+        and all(type(value) is str for value in raw_ipv4)
+        and isinstance(raw_ipv6, list) and len(raw_ipv6) <= MAX_DOCKER_IPV4_SOURCE_ADDRESSES
+        and source.get("IPv6InventoryComplete") is True
+        and all(type(value) is str for value in raw_ipv6)
+    )
+    ipv4_addresses: set[str] = set()
+    ipv6_status = "incomplete"
+    parsed_primary = None
+    primary = detail.get("ip_address") if isinstance(detail, dict) else None
+    try:
+        if valid:
+            for value in raw_ipv4:
+                parsed = ip_address(value)
+                if parsed.version != 4 or str(parsed) != value:
+                    valid = False
+                    break
+                ipv4_addresses.add(str(parsed))
+            for value in raw_ipv6:
+                parsed = ip_address(value)
+                if parsed.version != 6 or str(parsed) != value:
+                    valid = False
+                    break
+            ipv6_status = "complete_no_global_ipv6" if valid and not raw_ipv6 else "global_ipv6_present" if valid else "incomplete"
+        parsed_primary = ip_address(primary) if type(primary) is str else None
+        if (parsed_primary is None or parsed_primary.version != 4
+                or str(parsed_primary) != primary or str(parsed_primary) not in ipv4_addresses):
+            valid = False
+    except ValueError:
+        valid = False
+    return {
+        "available": True,
+        "valid": bool(valid),
+        "ipv4_addresses": sorted(ipv4_addresses) if isinstance(raw_ipv4, list)
+        and len(raw_ipv4) <= MAX_DOCKER_IPV4_SOURCE_ADDRESSES else [],
+        "ipv4_inventory_complete": source.get("IPv4InventoryComplete") is True,
+        "ipv6_inventory_status": ipv6_status,
+        "primary_ipv4": str(parsed_primary) if valid and parsed_primary is not None else None,
+        "host_network": str(source.get("NetworkMode") or "").strip().lower() == "host",
     }
 
 
@@ -373,6 +437,7 @@ def build_dataplane_manifest_from_state(
         else docker_vpn_immunity_conflicts(
             normalized_subjects,
             extra_data.get("infrastructure_ipv4", []),
+            global_mode=str(routing.get("desired_mode") or routing.get("applied_mode") or "direct"),
         )
     )
     for subject_id, reason in immunity_conflicts:
@@ -410,6 +475,7 @@ def build_dataplane_manifest_from_state(
             "scoped_runtime": _bounded_subject_runtime(
                 subject["effective_state"].get("scoped_runtime", {})
             ),
+            "observed_docker_source": _bounded_docker_source_inventory(subject),
             "network_listeners": _bounded_network_listeners(subject),
             "process_uids": _bounded_process_uids(subject),
         }

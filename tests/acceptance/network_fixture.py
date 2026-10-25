@@ -44,6 +44,7 @@ PRODUCTION_MARKERS = (
 
 CLIENT_NET = "10.240.0.0/29"
 CLIENT_IP = "10.240.0.2"
+CLIENT_SECONDARY_IP = "10.240.0.3"
 ROUTER_LAN_IP = "10.240.0.1"
 ROUTER_WAN_IP = "198.18.240.1"
 ENDPOINT_WAN_IP = "198.18.240.2"
@@ -343,8 +344,10 @@ def _validate_owned_root() -> None:
         raise FixtureError("packet fixture temporary root ownership marker is unsafe")
 
 
-def _validate_role_network(role: str) -> None:
-    """Require only the fixed role addresses and the fixed return/default route."""
+def _validate_role_network(role: str, *, allow_secondary_missing: bool = False) -> None:
+    """Validate the complete isolated role surface before installing an alias."""
+    if role not in {"client", "endpoint"}:
+        raise FixtureError("packet fixture role is not supported")
     address_result = _run_fixed(("ip", "-json", "-4", "address", "show"))
     route_result = _run_fixed(("ip", "-json", "-4", "route", "show", "table", "main"))
     if address_result.returncode or route_result.returncode:
@@ -356,29 +359,78 @@ def _validate_role_network(role: str) -> None:
         raise FixtureError("fixed role address/route facts were not valid JSON") from exc
     found: set[tuple[str, int]] = set()
     vip_interfaces: set[str] = set()
+    interface_names: set[str] = set()
+    address_owners: dict[str, list[tuple[str, int]]] = {}
     if not isinstance(addresses, list):
         raise FixtureError("fixed role address facts have an invalid shape")
     for interface in addresses:
         if not isinstance(interface, dict) or not isinstance(interface.get("addr_info"), list):
             raise FixtureError("fixed role address facts have an invalid interface")
+        if not isinstance(interface.get("ifname"), str) or not interface["ifname"]:
+            raise FixtureError("fixed role address facts have an invalid interface name")
+        interface_names.add(interface["ifname"])
         for item in interface["addr_info"]:
-            if (isinstance(item, dict) and item.get("family") == "inet"
-                    and isinstance(item.get("local"), str) and isinstance(item.get("prefixlen"), int)):
+            if isinstance(item, dict) and item.get("family") == "inet":
+                if not isinstance(item.get("local"), str) or type(item.get("prefixlen")) is not int:
+                    raise FixtureError("fixed role address facts have an invalid IPv4 address")
                 found.add((item["local"], item["prefixlen"]))
+                address_owners.setdefault(item["local"], []).append(
+                    (interface["ifname"], item["prefixlen"])
+                )
                 if item["local"] in {SERVICE_VIP, PROTECTED_VIP, DNS_UPSTREAM_IP, DNS_VPN_SERVICE_VIP}:
                     vip_interfaces.add(str(interface.get("ifname", "")))
     if role == "client":
-        required_addresses = {("127.0.0.1", 8), (CLIENT_IP, 29)}
+        required_addresses = {("127.0.0.1", 8), (CLIENT_IP, 29), (CLIENT_SECONDARY_IP, 29)}
+        if allow_secondary_missing:
+            required_addresses.remove((CLIENT_SECONDARY_IP, 29))
         required_route = ("default", ROUTER_LAN_IP)
     else:
         required_addresses = {("127.0.0.1", 8), (ENDPOINT_WAN_IP, 29),
                               (SERVICE_VIP, 32), (PROTECTED_VIP, 32), (DNS_UPSTREAM_IP, 32),
                               (DNS_VPN_SERVICE_VIP, 32)}
         required_route = (CLIENT_NET, ROUTER_WAN_IP)
-    if found != required_addresses:
+    allowed_address_sets = {frozenset(required_addresses)}
+    if role == "client" and allow_secondary_missing:
+        allowed_address_sets.add(frozenset(required_addresses | {(CLIENT_SECONDARY_IP, 29)}))
+    if frozenset(found) not in allowed_address_sets:
         raise FixtureError("role network addresses differ from the fixed packet topology")
-    if role == "endpoint" and vip_interfaces != {"lo"}:
-        raise FixtureError("service VIPs must be owned only by endpoint loopback")
+    if len(interface_names - {"lo"}) != 1 or "lo" not in interface_names:
+        raise FixtureError("role network interfaces differ from the fixed packet topology")
+    if len(interface_names) != len(addresses):
+        raise FixtureError("role network interface names are duplicated")
+    loopback_addresses = {
+        (item["local"], item["prefixlen"])
+        for interface in addresses if interface.get("ifname") == "lo"
+        for item in interface["addr_info"]
+        if isinstance(item, dict) and item.get("family") == "inet"
+    }
+    if role == "client":
+        client_interface = next(iter(interface_names - {"lo"}))
+        expected_loopback = {("127.0.0.1", 8)}
+        expected_non_loopback: dict[str, tuple[str, int]] = {CLIENT_IP: (client_interface, 29)}
+        if (loopback_addresses != expected_loopback
+                or address_owners.get("127.0.0.1") != [("lo", 8)]):
+            raise FixtureError("client loopback IPv4 ownership differs from the fixed topology")
+        if address_owners.get(CLIENT_IP) != [(client_interface, 29)]:
+            raise FixtureError("fixed client primary source is not owned by the client interface")
+        secondary_owners = address_owners.get(CLIENT_SECONDARY_IP, [])
+        if secondary_owners and secondary_owners != [(client_interface, 29)]:
+            raise FixtureError("fixed client secondary source is not owned by the client interface")
+        if secondary_owners:
+            expected_non_loopback[CLIENT_SECONDARY_IP] = (client_interface, 29)
+        if any(address_owners.get(ip) != [owner] for ip, owner in expected_non_loopback.items()):
+            raise FixtureError("client source addresses have unexpected IPv4 owners")
+    else:
+        endpoint_interface = next(iter(interface_names - {"lo"}))
+        endpoint_vips = {SERVICE_VIP, PROTECTED_VIP, DNS_UPSTREAM_IP, DNS_VPN_SERVICE_VIP}
+        expected_loopback = {("127.0.0.1", 8), *((value, 32) for value in endpoint_vips)}
+        if loopback_addresses != expected_loopback:
+            raise FixtureError("endpoint loopback IPv4 ownership differs from the fixed topology")
+        if (address_owners.get("127.0.0.1") != [("lo", 8)]
+                or any(address_owners.get(value) != [("lo", 32)] for value in endpoint_vips)
+                or address_owners.get(ENDPOINT_WAN_IP) != [(endpoint_interface, 29)]
+                or vip_interfaces != {"lo"}):
+            raise FixtureError("endpoint service/WAN IPv4 ownership differs from the fixed topology")
     if not isinstance(routes, list):
         raise FixtureError("fixed role route facts have an invalid shape")
     route_pairs = {(item.get("dst", "default"), item.get("gateway")) for item in routes if isinstance(item, dict)}
@@ -388,6 +440,42 @@ def _validate_role_network(role: str) -> None:
         raise FixtureError("client role has an unreviewed IPv4 route")
     if role == "endpoint" and route_pairs != {(WAN_NET, None), (CLIENT_NET, ROUTER_WAN_IP)}:
         raise FixtureError("endpoint role has an unreviewed IPv4 route")
+    expected_route_count = 2
+    if len(routes) != expected_route_count or any(not isinstance(item, dict) for item in routes):
+        raise FixtureError("role network has an unreviewed IPv4 route")
+
+
+def _ensure_client_secondary_alias() -> None:
+    """Install only the fixed test alias on the interface already owning CLIENT_IP."""
+    _validate_role_network("client", allow_secondary_missing=True)
+    result = _run_fixed(("ip", "-json", "-4", "address", "show"))
+    if result.returncode:
+        raise FixtureError("fixed client alias interface facts could not be read")
+    try:
+        interfaces = json.loads(result.stdout)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise FixtureError("fixed client alias interface facts were malformed") from exc
+    owners = []
+    alias_owners = []
+    for interface in interfaces if isinstance(interfaces, list) else []:
+        if not isinstance(interface, dict) or not isinstance(interface.get("addr_info"), list):
+            continue
+        locals_ = {item.get("local") for item in interface["addr_info"] if isinstance(item, dict)}
+        if CLIENT_IP in locals_:
+            owners.append(str(interface.get("ifname") or ""))
+        if CLIENT_SECONDARY_IP in locals_:
+            alias_owners.append(str(interface.get("ifname") or ""))
+    if len(owners) != 1 or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,15}", owners[0]):
+        raise FixtureError("fixed client primary source did not identify one safe interface")
+    if alias_owners:
+        if alias_owners != owners:
+            raise FixtureError("fixed client secondary source is not owned by the client interface")
+        _validate_role_network("client")
+        return
+    added = _run_fixed(("ip", "address", "add", f"{CLIENT_SECONDARY_IP}/29", "dev", owners[0]))
+    if added.returncode:
+        raise FixtureError("fixed client secondary source alias could not be installed")
+    _validate_role_network("client")
 
 
 def _run_fixed(argv: tuple[str, ...], *, input_bytes: bytes | None = None,
@@ -505,7 +593,7 @@ def _install_guard(role: str) -> None:
             f'add rule inet {TABLE_NAME} output ip daddr {DNS_BYPASS_NEGATIVE_IP} tcp dport 53 accept',
         ))
     else:
-        allowed_sources = f"{{ {CLIENT_IP}, {ROUTER_WAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP} }}"
+        allowed_sources = f"{{ {CLIENT_IP}, {CLIENT_SECONDARY_IP}, {ROUTER_WAN_IP}, {ENDPOINT_WAN_IP}, {SERVICE_VIP}, {DNS_VPN_SERVICE_VIP}, {PROTECTED_VIP} }}"
         input_rules.append(
             f'add rule inet {TABLE_NAME} input ip saddr {allowed_sources} ct state established,related accept')
         input_rules.extend((
@@ -984,7 +1072,7 @@ class _ClientHandler(_QuietHandler):
         if self.path not in {"/probe/tcp", "/probe/tcp-negative", "/probe/udp", "/probe/udp-negative",
                              "/probe/protected-tcp", "/probe/protected-udp", "/probe/dns", "/probe/dns-negative",
                              "/probe/dns53", "/probe/dns53-external", "/probe/dns53-flows",
-                             "/probe/leak", "/probe/router-forward-leak"}:
+                             "/probe/leak", "/probe/router-forward-leak", "/probe/direct-secondary-source"}:
             self._send_json(404, {"error": "not_found"})
             return
         length = self.headers.get("Content-Length", "0")
@@ -994,6 +1082,8 @@ class _ClientHandler(_QuietHandler):
         try:
             if self.path == "/probe/tcp":
                 result = _probe_http()
+            elif self.path == "/probe/direct-secondary-source":
+                result = _probe_direct_secondary_source()
             elif self.path == "/probe/tcp-negative":
                 result = _probe_tcp_negative()
             elif self.path == "/probe/udp":
@@ -1036,6 +1126,9 @@ class _ClientHandler(_QuietHandler):
         }.get(self.path)
         if observation_kind is not None:
             _OBS.record(observation_kind, result.get("peer", SERVICE_VIP))
+        if self.path == "/probe/direct-secondary-source":
+            _OBS.record("http", result["tcp_peer"])
+            _OBS.record("udp", result["udp_peer"])
         self._send_json(200, {"ok": True, **result})
 
 
@@ -1272,7 +1365,7 @@ def _probe_http() -> dict[str, Any]:
             raise FixtureError("bounded HTTP probe response was not an object")
         peer = response.get("peer")
         if response.get("ok") is not True or peer not in {
-                CLIENT_IP, ROUTER_WAN_IP, SERVICE_VIP, DNS_VPN_SERVICE_VIP}:
+                CLIENT_IP, CLIENT_SECONDARY_IP, ROUTER_WAN_IP, SERVICE_VIP, DNS_VPN_SERVICE_VIP}:
             raise FixtureError("bounded HTTP probe did not prove a fixed fixture peer")
         return {"service": "http", "response_bytes": len(data), "peer": peer}
 
@@ -1296,6 +1389,38 @@ def _probe_udp() -> dict[str, Any]:
         if data != PROBE_BODY or peer[0] != SERVICE_VIP or peer[1] != UDP_ECHO_PORT:
             raise FixtureError("bounded UDP probe received an invalid response")
     return {"service": "udp", "peer": peer[0]}
+
+
+def _probe_direct_secondary_source() -> dict[str, Any]:
+    """Prove TCP and UDP egress from the one fixed secondary client alias."""
+    with socket.create_connection(
+        (SERVICE_VIP, HTTP_PORT), timeout=CONTROL_TIMEOUT,
+        source_address=(CLIENT_SECONDARY_IP, 0),
+    ) as conn:
+        conn.settimeout(CONTROL_TIMEOUT)
+        conn.sendall(b"GET /probe HTTP/1.1\r\nHost: fixture\r\nConnection: close\r\n\r\n")
+        data = bytearray()
+        while len(data) <= MAX_HTTP_BODY:
+            chunk = conn.recv(min(512, MAX_HTTP_BODY + 1 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+    if len(data) > MAX_HTTP_BODY or b" 200 " not in data[:64] or b"\r\n\r\n" not in data:
+        raise FixtureError("secondary-source TCP probe received an invalid response")
+    try:
+        tcp_payload = json.loads(bytes(data).split(b"\r\n\r\n", 1)[1])
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise FixtureError("secondary-source TCP response was not valid JSON") from exc
+    if not isinstance(tcp_payload, dict) or tcp_payload.get("peer") != CLIENT_SECONDARY_IP:
+        raise FixtureError("secondary-source TCP probe did not preserve its fixed source")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(CONTROL_TIMEOUT)
+        sock.bind((CLIENT_SECONDARY_IP, 0))
+        sock.sendto(PROBE_BODY, (SERVICE_VIP, UDP_ECHO_PORT))
+        payload, peer = sock.recvfrom(128)
+    if payload != PROBE_BODY or peer != (SERVICE_VIP, UDP_ECHO_PORT):
+        raise FixtureError("secondary-source UDP probe received an invalid response")
+    return {"tcp_peer": tcp_payload["peer"], "udp_peer": CLIENT_SECONDARY_IP}
 
 
 def _probe_udp_negative() -> dict[str, Any]:
@@ -1327,7 +1452,7 @@ def _probe_protected_tcp() -> dict[str, Any]:
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise FixtureError("protected TCP endpoint response was not valid JSON") from exc
     peer = payload.get("peer") if isinstance(payload, dict) else None
-    if not isinstance(payload, dict) or payload.get("ok") is not True or peer not in {CLIENT_IP, ROUTER_WAN_IP}:
+    if not isinstance(payload, dict) or payload.get("ok") is not True or peer not in {CLIENT_IP, CLIENT_SECONDARY_IP, ROUTER_WAN_IP}:
         raise FixtureError("protected TCP endpoint did not report a fixed peer")
     return {"service": "protected-tcp", "peer": peer}
 
@@ -1493,7 +1618,7 @@ def _probe_dns53_resolved_flows() -> dict[str, Any]:
         # by the DIRECT path. The acceptance phase separately checks the
         # recorded peer for each domain and transport, so DIRECT-versus-VPN
         # policy remains an explicit assertion.
-        allowed_peers = {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP, CLIENT_IP}
+        allowed_peers = {"127.0.0.1", SERVICE_VIP, DNS_VPN_SERVICE_VIP, CLIENT_IP, CLIENT_SECONDARY_IP}
         if peer not in allowed_peers:
             peer_class = ("missing" if not isinstance(peer, str) else "allowed" if peer in allowed_peers
                           else "endpoint_wan" if peer == ENDPOINT_WAN_IP
@@ -1796,6 +1921,9 @@ def main(argv: list[str] | None = None) -> int:
         _validate_owned_root()
         if _ROLE_STOP.is_set():
             return 0
+        _validate_role_network(args.role, allow_secondary_missing=args.role == "client")
+        if args.role == "client":
+            _ensure_client_secondary_alias()
         _validate_role_network(args.role)
         if _ROLE_STOP.is_set():
             return 0

@@ -19,6 +19,7 @@
 - Failed full-update не должен затирать last-good metadata counts.
 - `mark_rules_job_running(...)` обязан сохранять `last_apply_job_id` / `last_update_job_id` по update type.
 - `_repair_stale_running_rules_state(...)` repairs stale running state without an active `apply+rules` job.
+- Manual-apply failure projection is compare-and-set against the matching running `last_apply_job_id`, so an older failure cannot overwrite newer rules ownership.
 
 ## Audit behavior (2026-09-27)
 

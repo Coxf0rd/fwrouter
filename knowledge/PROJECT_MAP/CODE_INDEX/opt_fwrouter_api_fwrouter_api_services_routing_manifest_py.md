@@ -29,3 +29,6 @@ egress must be snapshotted here; renderers must not probe Docker, systemd,
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+## Docker Direct inventory projection
+
+Docker Direct source-set manifests carry a bounded projection of the existing collector-owned `IPv4Addresses`, inventory-complete flags, IPv6-empty status, primary address, and host-network indicator. This projection excludes raw Docker configuration/environment and is a transport of the collector snapshot, not independent Docker provenance. Renderer validation must require the projection, runtime coverage, and matcher set to agree for multi-address Direct.

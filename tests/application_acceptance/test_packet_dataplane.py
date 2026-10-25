@@ -40,6 +40,7 @@ from .xray_support import (
 
 
 CLIENT_IP = "10.240.0.2"
+CLIENT_SECONDARY_IP = "10.240.0.3"
 ROUTER_WAN_IP = "198.18.240.1"
 ENDPOINT_IP = "198.18.240.2"
 ENDPOINT_SELECTOR_PORT = 5302
@@ -3830,6 +3831,7 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "native-dns53-selective-direct-priority", "provider-reentry-checkpoint-recovery",
                      "docker-direct-global-vpn", "docker-vpn-global-direct", "docker-vpn-repeat-apply",
                      "docker-vpn-endpoint-unavailable", "docker-direct-restored",
+                     "docker-direct-secondary-source-under-global-vpn",
                      "core-snapshot-recovery"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     if label == "provider-reentry-checkpoint-recovery":
@@ -3859,6 +3861,22 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
         proof_fields = expected_fields - {"phase"}
         if any(type(diagnostic.get(field)) is not bool for field in proof_fields):
             raise AssertionError("core snapshot recovery diagnostic has a non-boolean proof field")
+    if label == "docker-direct-secondary-source-under-global-vpn":
+        expected_fields = {
+            "phase", "inventory_persisted", "global_mode", "tcp_peer", "udp_peer",
+            "endpoint_http_count_delta", "endpoint_udp_count_delta",
+        }
+        if set(diagnostic) != expected_fields:
+            raise AssertionError("Docker Direct secondary-source diagnostic has an unknown field")
+        if (diagnostic.get("inventory_persisted") is not True
+                or diagnostic.get("global_mode") != "vpn"
+                or diagnostic.get("tcp_peer") != CLIENT_SECONDARY_IP
+                or diagnostic.get("udp_peer") != CLIENT_SECONDARY_IP
+                or type(diagnostic.get("endpoint_http_count_delta")) is not int
+                or diagnostic.get("endpoint_http_count_delta") != 1
+                or type(diagnostic.get("endpoint_udp_count_delta")) is not int
+                or diagnostic.get("endpoint_udp_count_delta") != 1):
+            raise AssertionError("Docker Direct secondary-source packet proof is incomplete")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
         raise AssertionError("packet phase diagnostic exceeded its fixed byte bound")
@@ -4925,6 +4943,51 @@ def _qualify_docker_scoped_policy(stack: dict[str, Any], source_ref: str,
         restored = _probe_phase(stack, CLIENT_IP, "docker-direct-restored",
                                 _core_counter_snapshot(), record_property, source_ref)
         phases["direct_restored"] = restored["observations"]["last_peers"]
+
+        # Preserve the legacy single-address Docker VPN phases above. Only
+        # after they pass, expand the same collector-owned source inventory
+        # for the new native secondary-address Direct proof.
+        with db_session() as connection:
+            row = connection.execute(
+                "SELECT source_json FROM subject_docker WHERE subject_id=?", (subject_id,)
+            ).fetchone()
+            assert row is not None
+            source_inventory = json.loads(row[0])
+            assert source_inventory.get("IPv4Addresses") == [CLIENT_IP]
+            source_inventory["IPv4Addresses"] = [CLIENT_IP, CLIENT_SECONDARY_IP]
+            connection.execute(
+                "UPDATE subject_docker SET source_json=? WHERE subject_id=?",
+                (json.dumps(source_inventory, sort_keys=True), subject_id),
+            )
+            persisted = json.loads(connection.execute(
+                "SELECT source_json FROM subject_docker WHERE subject_id=?", (subject_id,)
+            ).fetchone()[0])
+            assert persisted.get("IPv4Addresses") == [CLIENT_IP, CLIENT_SECONDARY_IP]
+        apply_subject("direct")
+        secondary_before = _endpoint_observations()
+        secondary_result = _role_json(f"{CLIENT_CONTROL}/probe/direct-secondary-source", method="POST")
+        secondary_after = _endpoint_observations()
+        assert secondary_result.get("ok") is True
+        assert secondary_result.get("tcp_peer") == CLIENT_SECONDARY_IP
+        assert secondary_result.get("udp_peer") == CLIENT_SECONDARY_IP
+        for protocol in ("http", "udp"):
+            assert secondary_after["counts"].get(protocol, -1) == secondary_before["counts"].get(protocol, 0) + 1
+            assert secondary_after["last_peers"].get(protocol) == CLIENT_SECONDARY_IP
+        phases["direct_secondary_source_under_global_vpn"] = {
+            "tcp_peer": secondary_result["tcp_peer"],
+            "udp_peer": secondary_result["udp_peer"],
+        }
+        _record_phase_diagnostic(record_property, {
+            "phase": "docker-direct-secondary-source-under-global-vpn",
+            "inventory_persisted": persisted.get("IPv4Addresses") == [CLIENT_IP, CLIENT_SECONDARY_IP],
+            "global_mode": "vpn",
+            "tcp_peer": secondary_result["tcp_peer"],
+            "udp_peer": secondary_result["udp_peer"],
+            "endpoint_http_count_delta": secondary_after["counts"].get("http", -1)
+            - secondary_before["counts"].get("http", 0),
+            "endpoint_udp_count_delta": secondary_after["counts"].get("udp", -1)
+            - secondary_before["counts"].get("udp", 0),
+        })
         record_property("docker_scoped_packet_paths", json.dumps(phases, sort_keys=True))
         return phases
     finally:

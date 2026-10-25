@@ -2325,6 +2325,8 @@ rules=[
  'add rule inet fwrouter_packet_guard forward ct state {{ established, related }} accept comment "fwrouter packet guard established forward allow v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 203.0.113.53 tcp dport 9080 accept comment "fwrouter packet guard lan vip tcp forward allow v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 203.0.113.53 udp dport {{{{ 9081, 5353 }}}} accept comment "fwrouter packet guard lan vip udp forward allow v1"',
+ f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.3 ip daddr 203.0.113.53 tcp dport 9080 accept comment "fwrouter packet guard lan secondary vip tcp forward allow v1"',
+ f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.3 ip daddr 203.0.113.53 udp dport 9081 accept comment "fwrouter packet guard lan secondary vip udp forward allow v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 198.51.100.77 tcp dport 9080 counter name router_dns_vpn_direct_forward accept comment "fwrouter packet guard dns-selected vpn direct-route observation v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 198.51.100.77 udp dport 9081 counter name router_dns_vpn_direct_forward accept comment "fwrouter packet guard dns-selected vpn direct-route observation v1"',
  f'add rule inet fwrouter_packet_guard forward iifname "{{lan}}" oifname "{{wan}}" ip saddr 10.240.0.2 ip daddr 10.250.240.2 tcp dport 9080 counter name router_protected_tcp_forward accept comment "fwrouter packet guard protected tcp forward exact allow v1"',
@@ -2358,6 +2360,25 @@ print(json.dumps({{"status":"passed","table":"inet fwrouter_packet_guard","chain
                   "counters":sorted(counter_names),"rules":len(comments),"priority":-10,
                   "dns_stub_drop_precedes_loopback_allow":True}},sort_keys=True,separators=(",",":")))
 '''
+
+
+def packet_capture_allowed_destinations() -> tuple[tuple[str, int, int, dict[tuple[str, str, int], set[int]]], ...]:
+    """Return the exact per-protocol flow allowlists for owned packet evidence."""
+    return (
+        ("tcp", 6, 54, {("10.240.0.2", "203.0.113.53", 6): {9080},
+                         ("10.240.0.3", "203.0.113.53", 6): {9080},
+                         ("10.240.0.2", "198.51.100.77", 6): {9080},
+                         ("198.18.240.1", "198.51.100.77", 6): {9080},
+                         ("198.18.240.1", "198.18.240.2", 6): {5301, 5302, 5303},
+                         ("10.240.0.2", "10.250.240.2", 6): {9080},
+                         ("198.18.240.1", "1.1.1.1", 6): {53}}),
+        ("udp", 17, 42, {("10.240.0.2", "203.0.113.53", 17): {9081, 5353},
+                          ("10.240.0.3", "203.0.113.53", 17): {9081},
+                          ("10.240.0.2", "198.51.100.77", 17): {9081},
+                          ("198.18.240.1", "198.51.100.77", 17): {9081},
+                          ("10.240.0.2", "10.250.240.2", 17): {9081},
+                          ("198.18.240.1", "1.1.1.1", 17): {53}}),
+    )
 
 
 def _docker_json(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 30,
@@ -4018,19 +4039,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             else:
                 receipt["packet_capture_stop"] = stop_result
             capture_exports = {}
-            for name, protocol, snaplen, destinations in (
-                ("tcp", 6, 54, {("10.240.0.2", "203.0.113.53", 6): {9080},
-                                ("10.240.0.2", "198.51.100.77", 6): {9080},
-                                ("198.18.240.1", "198.51.100.77", 6): {9080},
-                                ("198.18.240.1", "198.18.240.2", 6): {5301, 5302, 5303},
-                                ("10.240.0.2", "10.250.240.2", 6): {9080},
-                                ("198.18.240.1", "1.1.1.1", 6): {53}}),
-                ("udp", 17, 42, {("10.240.0.2", "203.0.113.53", 17): {9081, 5353},
-                                 ("10.240.0.2", "198.51.100.77", 17): {9081},
-                                 ("198.18.240.1", "198.51.100.77", 17): {9081},
-                                 ("10.240.0.2", "10.250.240.2", 17): {9081},
-                                 ("198.18.240.1", "1.1.1.1", 17): {53}}),
-            ):
+            for name, protocol, snaplen, destinations in packet_capture_allowed_destinations():
                 destination = artifact_dir / f"packet-{name}.pcap"
                 if stopped["exit_code"] != 0 or stop_result.get("status") != "stopped":
                     capture_exports[name] = {"copied": False, "reason": "capture stop unconfirmed"}
