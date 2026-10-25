@@ -7,9 +7,11 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import selectors
 import sqlite3
 import stat
 import subprocess
+import time
 from typing import Any
 from functools import wraps
 
@@ -23,6 +25,8 @@ _CORE_NATIVE_PROOF_NAME = "applied-native-proof.json"
 _IPV6_SYSCTL_CONF_PATH = Path("/proc/sys/net/ipv6/conf")
 _MAX_IP_INTERFACES = 256
 _MAX_IP_READBACK_BYTES = 4 * 1024 * 1024
+_MAX_IP_STDERR_BYTES = 64 * 1024
+_IP_COMMAND_TIMEOUT_SECONDS = 3
 _DYNAMIC_NFT_SET_ELEMENTS = {"dns_direct_ipv4", "dns_vpn_ipv4"}
 _SAFE_REASON_CODES = {
     "BACKEND_FILE_CHANGED", "BACKEND_FILE_INVALID", "BACKEND_FILE_TOO_LARGE",
@@ -730,6 +734,89 @@ def _routing_manifest_matches(manifest_routing: Any, routing: Any) -> bool:
     return all(str(manifest_routing.get(key) or "") == str(routing.get(key) or "") for key in keys)
 
 
+def _run_bounded_ip_json(command: list[str]) -> list[Any]:
+    """Run one read-only iproute2 query with bounded stdout/stderr and lifetime."""
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+    except OSError as exc:
+        raise ValueError("CORE_IP_READBACK_UNAVAILABLE") from exc
+    assert process.stdout is not None and process.stderr is not None
+    streams = {process.stdout: (_MAX_IP_READBACK_BYTES, bytearray()),
+               process.stderr: (_MAX_IP_STDERR_BYTES, bytearray())}
+    selector = selectors.DefaultSelector()
+    reason: str | None = None
+    return_code: int | None = None
+    deadline = time.monotonic() + _IP_COMMAND_TIMEOUT_SECONDS
+    try:
+        for stream in streams:
+            selector.register(stream, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                reason = "CORE_IP_READBACK_UNAVAILABLE"
+                break
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, _mask in events:
+                stream = key.fileobj
+                limit, data = streams[stream]
+                chunk = os.read(stream.fileno(), min(64 * 1024, limit - len(data) + 1))
+                if not chunk:
+                    selector.unregister(stream)
+                    continue
+                data.extend(chunk)
+                if len(data) > limit:
+                    reason = "CORE_IP_READBACK_INVALID"
+                    break
+            if reason is not None:
+                break
+        if reason is None:
+            try:
+                return_code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                reason = "CORE_IP_READBACK_UNAVAILABLE"
+    except OSError as exc:
+        reason = "CORE_IP_READBACK_UNAVAILABLE"
+        cause = exc
+    finally:
+        if reason is not None or process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        if process.poll() is None:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+        if return_code is None:
+            return_code = process.poll()
+        selector.close()
+        for stream in streams:
+            stream.close()
+    if reason is not None:
+        if "cause" in locals():
+            raise ValueError(reason) from cause
+        raise ValueError(reason)
+    if return_code != 0:
+        raise ValueError("CORE_IP_READBACK_UNAVAILABLE")
+    try:
+        payload = json.loads(streams[process.stdout][1].decode("utf-8", "strict"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("CORE_IP_READBACK_INVALID") from exc
+    if not isinstance(payload, list):
+        raise ValueError("CORE_IP_READBACK_INVALID")
+    return payload
+
+
 def _ipv6_host_facts() -> dict[str, Any]:
     """Read a bounded host IPv6 state snapshot for strict active/disabled proof."""
     commands = {
@@ -737,21 +824,7 @@ def _ipv6_host_facts() -> dict[str, Any]:
         "addresses": ["ip", "-N", "-j", "-6", "address", "show"],
         "routes": ["ip", "-N", "-j", "-6", "route", "show", "table", "all"],
     }
-    payloads: dict[str, Any] = {}
-    for name, command in commands.items():
-        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=3)
-        if result.returncode != 0:
-            raise ValueError("CORE_IP_READBACK_UNAVAILABLE")
-        raw = result.stdout or ""
-        if len(raw.encode("utf-8", "replace")) > _MAX_IP_READBACK_BYTES:
-            raise ValueError("CORE_IP_READBACK_INVALID")
-        try:
-            payload = json.loads(raw or "[]")
-        except json.JSONDecodeError as exc:
-            raise ValueError("CORE_IP_READBACK_INVALID") from exc
-        if not isinstance(payload, list):
-            raise ValueError("CORE_IP_READBACK_INVALID")
-        payloads[name] = payload
+    payloads = {name: _run_bounded_ip_json(command) for name, command in commands.items()}
 
     links = payloads["links"]
     interface_indexes: dict[str, int] = {}

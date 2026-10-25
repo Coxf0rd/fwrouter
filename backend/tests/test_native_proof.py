@@ -107,6 +107,101 @@ def test_core_applied_manifest_reader_rejects_oversized_and_non_object_artifacts
         native_proof._read_core_applied_manifest(malformed)
 
 
+class _SyntheticBoundedProcess:
+    """Pipe-backed Popen double; routine tests never execute child processes."""
+
+    def __init__(self, stdout_bytes: bytes, stderr_bytes: bytes = b"", returncode: int = 0,
+                 *, hold_open: bool = False) -> None:
+        import threading
+
+        stdout_read, stdout_write = os.pipe()
+        stderr_read, stderr_write = os.pipe()
+        self.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+        self.stderr = os.fdopen(stderr_read, "rb", buffering=0)
+        self._writers = [stdout_write, stderr_write]
+        self._returncode = None if hold_open else returncode
+        self.killed = False
+
+        def write_payload() -> None:
+            try:
+                for fd, payload in ((stdout_write, stdout_bytes), (stderr_write, stderr_bytes)):
+                    view = memoryview(payload)
+                    while view:
+                        written = os.write(fd, view[:64 * 1024])
+                        view = view[written:]
+            except OSError:
+                pass
+            finally:
+                for fd in (stdout_write, stderr_write):
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                self._writers.clear()
+
+        self._thread = None
+        if not hold_open:
+            self._thread = threading.Thread(target=write_payload, daemon=True)
+            self._thread.start()
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._returncode is None:
+            raise subprocess.TimeoutExpired("synthetic-ip", timeout)
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        return self._returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self._returncode = -9
+        for fd in self._writers:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._writers.clear()
+
+
+@pytest.mark.parametrize("stream,limit", [("stdout", 4 * 1024 * 1024), ("stderr", 64 * 1024)])
+def test_bounded_ip_json_reader_bounds_both_pipes_and_reaps(
+    monkeypatch: pytest.MonkeyPatch, stream: str, limit: int,
+) -> None:
+    process = _SyntheticBoundedProcess(
+        b"x" * (limit + 1) if stream == "stdout" else b"[]",
+        b"x" * (limit + 1) if stream == "stderr" else b"",
+    )
+    monkeypatch.setattr(native_proof.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    with pytest.raises(ValueError, match="CORE_IP_READBACK_INVALID"):
+        native_proof._run_bounded_ip_json(["ip", "-j"])
+    assert process.killed and process.poll() is not None
+
+
+def test_bounded_ip_json_reader_timeout_kills_and_reaps(monkeypatch: pytest.MonkeyPatch) -> None:
+    process = _SyntheticBoundedProcess(b"", hold_open=True)
+    monkeypatch.setattr(native_proof, "_IP_COMMAND_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(native_proof.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    with pytest.raises(ValueError, match="CORE_IP_READBACK_UNAVAILABLE"):
+        native_proof._run_bounded_ip_json(["ip", "-j"])
+    assert process.killed and process.poll() is not None
+
+
+def test_bounded_ip_json_reader_requires_zero_exit_and_valid_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    for stdout, stderr, returncode, reason in (
+        (b"[]", b"", 7, "CORE_IP_READBACK_UNAVAILABLE"),
+        (b"not-json", b"", 0, "CORE_IP_READBACK_INVALID"),
+    ):
+        process = _SyntheticBoundedProcess(stdout, stderr, returncode)
+        monkeypatch.setattr(native_proof.subprocess, "Popen", lambda *_args, **_kwargs: process)
+        with pytest.raises(ValueError, match=reason):
+            native_proof._run_bounded_ip_json(["ip", "-j"])
+    process = _SyntheticBoundedProcess(b"[1]")
+    monkeypatch.setattr(native_proof.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    assert native_proof._run_bounded_ip_json(["ip", "-j"]) == [1]
+
+
 def test_core_apply_receipt_hashes_large_manifest_and_rejects_cross_fence_replacement(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -821,7 +916,7 @@ def test_ipv6_host_disabled_mode_requires_exact_stable_inventory_and_empty_netwo
     current = {"addresses": [], "routes": [],
                "links": [{"ifname": "lo", "ifindex": 1}, {"ifname": "eth0", "ifindex": 2}]}
 
-    def run(command, **_kwargs):
+    def run(command):
         if command[1:4] == ["-j", "link", "show"]:
             payload = current["links"]
         elif "address" in command:
@@ -830,9 +925,9 @@ def test_ipv6_host_disabled_mode_requires_exact_stable_inventory_and_empty_netwo
             payload = current["routes"]
         else:
             raise AssertionError(command)
-        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        return payload
 
-    monkeypatch.setattr(native_proof.subprocess, "run", run)
+    monkeypatch.setattr(native_proof, "_run_bounded_ip_json", run)
     baseline = native_proof._ipv6_host_facts()
     assert baseline["mode"] == "disabled"
     assert baseline["interfaces"] == ["eth0", "lo"]
@@ -893,14 +988,14 @@ def test_ipv6_host_facts_reject_incomplete_duplicate_or_malformed_interfaces(
     monkeypatch.setattr(native_proof, "_IPV6_SYSCTL_CONF_PATH", conf)
     _fake_root_owned_sysctl_tree(monkeypatch)
 
-    def run(command, **_kwargs):
+    def run(command):
         if "link" in command:
             payload = bad_inventory
         else:
             payload = []
-        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        return payload
 
-    monkeypatch.setattr(native_proof.subprocess, "run", run)
+    monkeypatch.setattr(native_proof, "_run_bounded_ip_json", run)
     with pytest.raises(ValueError, match="CORE_IP_READBACK_INVALID"):
         native_proof._ipv6_host_facts()
 
@@ -913,11 +1008,11 @@ def test_ipv6_host_facts_rejects_symlinked_sysctl_tree(monkeypatch: pytest.Monke
     monkeypatch.setattr(native_proof, "_IPV6_SYSCTL_CONF_PATH", linked)
     _fake_root_owned_sysctl_tree(monkeypatch)
 
-    def run(command, **_kwargs):
+    def run(command):
         payload = [{"ifname": "lo"}] if "link" in command else []
-        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+        return payload
 
-    monkeypatch.setattr(native_proof.subprocess, "run", run)
+    monkeypatch.setattr(native_proof, "_run_bounded_ip_json", run)
     with pytest.raises(ValueError, match="CORE_IP_READBACK_INVALID"):
         native_proof._ipv6_host_facts()
 
