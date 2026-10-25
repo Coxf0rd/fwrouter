@@ -199,6 +199,7 @@ TEST_FILE_GLOBS = (
     "tests/gates/test_*.py",
 )
 STDLIB_CONTRACT_PATHS = {
+    "tests/gates/test_core_snapshot_recovery_contract.py",
     "tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
     "tests/gates/test_smoke_contract.py", "tests/gates/test_network_fixture_contract.py",
     "tests/gates/test_subscription_identity_contract.py",

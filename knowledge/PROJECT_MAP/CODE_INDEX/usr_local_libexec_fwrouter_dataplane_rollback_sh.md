@@ -2,7 +2,11 @@
 
 ## Purpose
 
-Generated code-index entry for `/usr/local/libexec/fwrouter/dataplane_rollback.sh`.
+Restores verified per-apply nft/IP snapshots under the existing Core owner.
+Metadata and snapshot identity must validate before mutation; missing/corrupt
+metadata is an error, never an implicit previously missing table. Restore uses
+captured prior owner-routing facts, not the new manifest's desired contract.
+See [Core snapshot recovery](../../CORE_SNAPSHOT_RECOVERY.md).
 
 ## Review Notes
 

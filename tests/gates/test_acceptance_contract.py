@@ -6386,6 +6386,44 @@ class AcceptanceContractTests(unittest.TestCase):
                 {**diagnostic, "phase": "arbitrary-user-phase"},
             )
 
+    def test_core_snapshot_recovery_junit_diagnostic_is_closed_and_boolean_only(self):
+        packet_tree = ast.parse(PACKET_ACCEPTANCE_SOURCE.read_text(encoding="utf-8"))
+        recorder = next(
+            node for node in packet_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_record_phase_diagnostic"
+        )
+        namespace = {"Any": Any, "json": json, "MAX_PHASE_DIAGNOSTIC_BYTES": 4096}
+        exec(compile(ast.Module(body=[recorder], type_ignores=[]),
+                     str(PACKET_ACCEPTANCE_SOURCE), "exec"), namespace)
+        diagnostic = {
+            "phase": "core-snapshot-recovery",
+            "real_shell_and_kernel": True,
+            "invalid_candidate_preserved_policy": True,
+            "missing_and_corrupt_metadata_rejected_without_mutation": True,
+            "verified_previous_policy_restored": True,
+            "actual_post_snapshot_table_drift_removed": True,
+        }
+        recorded = []
+        namespace["_record_phase_diagnostic"](
+            lambda name, value: recorded.append((name, value)), diagnostic,
+        )
+        self.assertEqual("packet_phase_core_snapshot_recovery", recorded[0][0])
+        encoded = recorded[0][1]
+        self.assertEqual(json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True), encoded)
+        self.assertLessEqual(len(encoded.encode("ascii")), 4096)
+        self.assertTrue(all(type(diagnostic[field]) is bool for field in diagnostic if field != "phase"))
+        self.assertNotIn("table inet", encoded)
+        self.assertNotIn("secret", encoded.lower())
+
+        for invalid, message in (
+            ({**diagnostic, "raw_snapshot": "sensitive native config"}, "unknown field"),
+            ({**diagnostic, "verified_previous_policy_restored": 1}, "non-boolean"),
+        ):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(AssertionError, message):
+                namespace["_record_phase_diagnostic"](
+                    lambda *_args: self.fail("rejected diagnostic must not be recorded"), invalid,
+                )
+
     def test_xray_generation_rollback_observer_is_bounded_and_installed(self):
         worker_source = WORKER_PATH.read_text(encoding="utf-8")
         worker_tree = ast.parse(worker_source, filename=str(WORKER_PATH))
@@ -7591,7 +7629,8 @@ class AcceptanceContractTests(unittest.TestCase):
             collector.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             collector.chmod(0o755)
             kernel_scripts = {}
-            for name in ("dataplane-common.sh", "dataplane-check.sh", "dataplane-apply.sh", "dataplane-rollback.sh"):
+            for name in ("dataplane-common.sh", "dataplane-check.sh", "dataplane-apply.sh", "dataplane-rollback.sh",
+                         "dataplane-snapshot-state.py"):
                 script = root / "host/libexec/fwrouter" / name
                 script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                 script.chmod(0o755)

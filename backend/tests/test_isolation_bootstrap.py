@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import socket
 import sqlite3
@@ -89,6 +90,17 @@ def test_qualified_source_digest_uses_shared_complete_allowlisted_inventory(tmp_
         "host/libexec/fwrouter/dataplane-apply.sh",
         "host/libexec/fwrouter/dataplane-rollback.sh",
     } <= set(isolation_bootstrap.QUALIFIED_SOURCE_FILES)
+    launcher_path = Path(__file__).resolve().parents[2] / "tests/acceptance/launcher.py"
+    launcher_spec = importlib.util.spec_from_file_location("fwrouter_acceptance_launcher", launcher_path)
+    assert launcher_spec is not None and launcher_spec.loader is not None
+    launcher = importlib.util.module_from_spec(launcher_spec)
+    launcher_spec.loader.exec_module(launcher)
+    expected_host_surface = set(launcher.KERNEL_SCRIPT_SOURCES) | {
+        "backend/pyproject.toml",
+        "tests/gates/requirements-ci.txt",
+        "host/libexec/fwrouter/traffic-collect.sh",
+    }
+    assert set(isolation_bootstrap.QUALIFIED_SOURCE_FILES) == expected_host_surface
     source_paths = list(isolation_bootstrap.QUALIFIED_SOURCE_FILES)
     for root in isolation_bootstrap.QUALIFIED_SOURCE_ROOTS:
         source_paths.append(f"{root}/source.py")

@@ -12,6 +12,7 @@ import sqlite3
 import stat
 import struct
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 import urllib.error
@@ -3828,7 +3829,8 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
                      "global-mode-selective", "selective-default-vpn", "selective-default-restore",
                      "native-dns53-selective-direct-priority", "provider-reentry-checkpoint-recovery",
                      "docker-direct-global-vpn", "docker-vpn-global-direct", "docker-vpn-repeat-apply",
-                     "docker-vpn-endpoint-unavailable", "docker-direct-restored"}:
+                     "docker-vpn-endpoint-unavailable", "docker-direct-restored",
+                     "core-snapshot-recovery"}:
         raise AssertionError("packet phase diagnostic has an unknown fixed phase")
     if label == "provider-reentry-checkpoint-recovery":
         expected_fields = {
@@ -3846,6 +3848,17 @@ def _record_phase_diagnostic(record_property: Any, diagnostic: dict[str, Any]) -
         if (diagnostic.get("routing_mode") not in valid_modes
                 or diagnostic.get("live_global_mode") not in valid_modes):
             raise AssertionError("provider re-entry checkpoint diagnostic has an unknown routing mode")
+    if label == "core-snapshot-recovery":
+        expected_fields = {
+            "phase", "real_shell_and_kernel", "invalid_candidate_preserved_policy",
+            "missing_and_corrupt_metadata_rejected_without_mutation",
+            "verified_previous_policy_restored", "actual_post_snapshot_table_drift_removed",
+        }
+        if set(diagnostic) != expected_fields:
+            raise AssertionError("core snapshot recovery diagnostic has an unknown field")
+        proof_fields = expected_fields - {"phase"}
+        if any(type(diagnostic.get(field)) is not bool for field in proof_fields):
+            raise AssertionError("core snapshot recovery diagnostic has a non-boolean proof field")
     encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     if len(encoded.encode("ascii")) > MAX_PHASE_DIAGNOSTIC_BYTES:
         raise AssertionError("packet phase diagnostic exceeded its fixed byte bound")
@@ -5152,6 +5165,116 @@ def _write_capture_summary(phases: dict[str, Any]) -> None:
         os.fsync(stream.fileno())
 
 
+def _qualify_core_snapshot_recovery(stack: dict[str, Any], record_property: Any) -> None:
+    """Run real recovery scripts only inside the qualified packet router namespace."""
+    assert stack["profile"].get("profile") == "hosted-kernel-packet"
+    from fwrouter_api.core.config import get_settings
+    from fwrouter_api.services.native_proof import canonical_nft_table_sha256
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "qualified_snapshot_recovery", "/usr/local/libexec/fwrouter/dataplane-snapshot-state.py",
+    )
+    assert spec is not None and spec.loader is not None
+    recovery = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(recovery)
+
+    def command(argv: list[str]) -> subprocess.CompletedProcess:
+        result = subprocess.run(argv, capture_output=True, timeout=20, check=False)
+        assert len(result.stdout) < MAX_CORE_NFT_JSON and len(result.stderr) < 65536
+        return result
+
+    def facts() -> dict[str, Any]:
+        nft = command(["/usr/sbin/nft", "-j", "list", "table", "inet", "fwrouter_v2"])
+        assert nft.returncode == 0
+        result: dict[str, Any] = {"nft": canonical_nft_table_sha256(json.loads(nft.stdout))}
+        for family in ("-4", "-6"):
+            for name, args in (("rules", ["rule", "show"]),
+                               ("routes", ["route", "show", "table", "all"])):
+                readback = command(["/usr/sbin/ip", "-j", family, *args])
+                assert readback.returncode == 0
+                result[family + name] = sorted(json.loads(readback.stdout),
+                                               key=lambda row: json.dumps(row, sort_keys=True))
+        return result
+
+    def recovery_policy() -> dict[str, Any]:
+        result = command(["/usr/sbin/nft", "-j", "-s", "list", "table", "inet", "fwrouter_v2"])
+        assert result.returncode == 0
+        return recovery._canonical_nft_table(json.loads(result.stdout))
+
+    def changed_paths(left: Any, right: Any, path: str = "") -> list[str]:
+        # Synthetic fixture diagnostics expose structural paths only, never
+        # raw policies, endpoints, credentials or client identities.
+        if type(left) is not type(right):
+            return [path + ":type"]
+        if isinstance(left, dict):
+            result = []
+            for key in sorted(set(left) | set(right)):
+                item = path + "/" + str(key)
+                if key not in left or key not in right:
+                    result.append(item + ":presence")
+                else:
+                    result.extend(changed_paths(left[key], right[key], item))
+            return result
+        if isinstance(left, list):
+            result = [path + ":length"] if len(left) != len(right) else []
+            for index, (a, b) in enumerate(zip(left, right)):
+                result.extend(changed_paths(a, b, path + "/" + str(index)))
+            return result
+        return [path + ":value"] if left != right else []
+
+    before = facts()
+    policy_before = recovery_policy()
+    with tempfile.TemporaryDirectory(prefix="core-recovery-", dir=get_settings().paths.state_dir) as temporary:
+        root = Path(temporary)
+        candidate, manifest = root / "candidate.nft", root / "manifest.json"
+        snapshot, state = root / "before.nft", root / "snapshot-state.json"
+        # A real native parse failure must not remove an existing live table.
+        candidate.write_text("table inet fwrouter_v2 { chain intentionally_incomplete {\n")
+        manifest.write_text(json.dumps({"routing_mode": "direct", "summary": {
+            "requires_vpn_policy_routing": False,
+        }}))
+        applied = command(["/bin/sh", "/usr/local/libexec/fwrouter/dataplane-apply.sh",
+                           str(candidate), str(manifest), str(snapshot), str(state)])
+        assert applied.returncode != 0
+        assert snapshot.is_file() and state.is_file()
+        assert json.loads(state.read_text())["previous_table_state"] == "present"
+        assert facts() == before, "Rejected native candidate changed prior nft/IP policy"
+        saved = state.read_bytes()
+        for damage in ("missing", "corrupt"):
+            if damage == "missing":
+                state.unlink()
+            else:
+                state.write_text('{"previous_table_state":')
+            rejected = command(["/bin/sh", "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+                                str(snapshot), str(state), str(manifest)])
+            assert rejected.returncode != 0, damage
+            assert facts() == before, f"{damage} recovery metadata changed native policy"
+        state.write_bytes(saved)
+        # A test-owned, unreferenced counter proves restoration removes actual
+        # post-snapshot table drift rather than succeeding through a no-op.
+        mutated = command(["/usr/sbin/nft", "add", "counter", "inet", "fwrouter_v2",
+                           "snapshot_recovery_qualification_probe"])
+        assert mutated.returncode == 0
+        assert facts() != before
+        restored = command(["/bin/sh", "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
+                            str(snapshot), str(state), str(manifest)])
+        assert restored.returncode == 0, {
+            "recovery_error": json.loads(restored.stdout),
+            "changed_semantic_paths": changed_paths(policy_before, recovery_policy())[:80],
+            "independent_native_policy_equal": facts() == before,
+        }
+        assert json.loads(restored.stdout)["restored_previous_table"] is True
+        assert facts() == before, "Valid recovery did not preserve exact previous native policy"
+    _record_phase_diagnostic(record_property, {
+        "phase": "core-snapshot-recovery", "real_shell_and_kernel": True,
+        "invalid_candidate_preserved_policy": True,
+        "missing_and_corrupt_metadata_rejected_without_mutation": True,
+        "verified_previous_policy_restored": True,
+        "actual_post_snapshot_table_drift_removed": True,
+    })
+
+
 def _qualify_stale_rescue_lan_cleanup(api: str, stack: dict[str, Any], record_property: Any) -> None:
     """Seed historical owned drift only in the already-qualified router namespace."""
     assert stack["profile"].get("profile") == "hosted-kernel-packet"
@@ -5917,6 +6040,7 @@ def test_core_vpn_emergency_direct_reentry_forwards_owned_tcp_udp_dns_without_le
     assert bridge.snapshot_calls() == provider_calls_before_selector
 
     _qualify_docker_scoped_policy(stack, source_ref, logical_id, record_property)
+    _qualify_core_snapshot_recovery(stack, record_property)
 
     _write_capture_summary({
         "core_counter_mapping": {

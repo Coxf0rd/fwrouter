@@ -47,13 +47,15 @@
           "type": "object", "additionalProperties": false,
           "required": [
             "host/libexec/fwrouter/dataplane-common.sh", "host/libexec/fwrouter/dataplane-check.sh",
-            "host/libexec/fwrouter/dataplane-apply.sh", "host/libexec/fwrouter/dataplane-rollback.sh"
+            "host/libexec/fwrouter/dataplane-apply.sh", "host/libexec/fwrouter/dataplane-rollback.sh",
+            "host/libexec/fwrouter/dataplane-snapshot-state.py"
           ],
           "properties": {
             "host/libexec/fwrouter/dataplane-common.sh": {"$ref": "#/definitions/sha256"},
             "host/libexec/fwrouter/dataplane-check.sh": {"$ref": "#/definitions/sha256"},
             "host/libexec/fwrouter/dataplane-apply.sh": {"$ref": "#/definitions/sha256"},
-            "host/libexec/fwrouter/dataplane-rollback.sh": {"$ref": "#/definitions/sha256"}
+            "host/libexec/fwrouter/dataplane-rollback.sh": {"$ref": "#/definitions/sha256"},
+            "host/libexec/fwrouter/dataplane-snapshot-state.py": {"$ref": "#/definitions/sha256"}
           }
         }
       }

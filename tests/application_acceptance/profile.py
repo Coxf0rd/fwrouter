@@ -47,6 +47,7 @@ KERNEL_DATAPLANE_SCRIPTS = {
     "host/libexec/fwrouter/dataplane-check.sh": Path("/usr/local/libexec/fwrouter/dataplane-check.sh"),
     "host/libexec/fwrouter/dataplane-apply.sh": Path("/usr/local/libexec/fwrouter/dataplane-apply.sh"),
     "host/libexec/fwrouter/dataplane-rollback.sh": Path("/usr/local/libexec/fwrouter/dataplane-rollback.sh"),
+    "host/libexec/fwrouter/dataplane-snapshot-state.py": Path("/usr/local/libexec/fwrouter/dataplane-snapshot-state.py"),
 }
 
 
@@ -317,7 +318,8 @@ def _source_manifest_digest(workspace: Path) -> str:
              workspace / "host/libexec/fwrouter/dataplane-common.sh",
              workspace / "host/libexec/fwrouter/dataplane-check.sh",
              workspace / "host/libexec/fwrouter/dataplane-apply.sh",
-             workspace / "host/libexec/fwrouter/dataplane-rollback.sh"]
+             workspace / "host/libexec/fwrouter/dataplane-rollback.sh",
+             workspace / "host/libexec/fwrouter/dataplane-snapshot-state.py"]
     files: list[Path] = []
     for root in roots:
         if root.is_file():

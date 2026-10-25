@@ -718,8 +718,10 @@ def test_dataplane_scripts_are_safe_owned_table_only(monkeypatch, tmp_path: Path
 
     assert 'printf \'delete table inet fwrouter_v2\\n\' > "$CHECK_INPUT"' in check_content
     assert 'nft -c -f "$CHECK_INPUT"' in check_content
-    assert "nft delete table inet fwrouter_v2" in apply_content
-    assert "nft delete table inet fwrouter_v2" in rollback_content
+    assert '"$SNAPSHOT_HELPER" capture' in apply_content
+    assert '"$SNAPSHOT_HELPER" apply-candidate' in apply_content
+    assert '"$SNAPSHOT_HELPER" rollback' in rollback_content
+    assert "nft delete table inet fwrouter_v2" not in apply_content + rollback_content
     assert "fwrouter_classify" in check_content
     assert "fwrouter_classify" in apply_content
     assert "fwrouter redirect handoff tcp:" in check_content
@@ -730,7 +732,7 @@ def test_dataplane_scripts_are_safe_owned_table_only(monkeypatch, tmp_path: Path
     assert "summary.requires_vpn_policy_routing" in common_content
     assert 'resolve_vpn_policy_required "$CANDIDATE_PATH"' in apply_content
     assert 'resolve_vpn_policy_required "$CANDIDATE_PATH"' in check_content
-    assert 'resolve_vpn_policy_required "$SNAPSHOT_PATH"' in rollback_content
+    assert 'resolve_vpn_policy_required "$SNAPSHOT_PATH"' not in rollback_content
 
 
 def test_apply_pipeline_writes_candidate_artifacts(

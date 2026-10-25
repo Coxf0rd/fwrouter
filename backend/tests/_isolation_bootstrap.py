@@ -79,6 +79,7 @@ QUALIFIED_SOURCE_FILES = (
     "host/libexec/fwrouter/dataplane-check.sh",
     "host/libexec/fwrouter/dataplane-apply.sh",
     "host/libexec/fwrouter/dataplane-rollback.sh",
+    "host/libexec/fwrouter/dataplane-snapshot-state.py",
 )
 
 
