@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -54,6 +56,8 @@ class NativeFixture:
 
     def __init__(self, *, table: bytes | None = None) -> None:
         self.table = table
+        self.initial_table = table
+        self.nft_payload = _nft_payload_for_table(table) if table is not None else {"nftables": []}
         self.rules: dict[str, list[dict[str, Any]]] = {"ipv4": [], "ipv6": []}
         self.routes: dict[str, list[dict[str, Any]]] = {"ipv4": [], "ipv6": []}
         self.mutations: list[list[str]] = []
@@ -68,6 +72,15 @@ class NativeFixture:
         if argv[:3] == ["nft", "-j", "list"] and argv[3:] == ["tables"]:
             entries = [] if self.table is None else [{"table": {"family": "inet", "name": "fwrouter_v2"}}]
             result.stdout = json.dumps({"nftables": entries}).encode()
+        elif argv in (["nft", "-j", "-c", "-f", "-"], ["nft", "-j", "-f", "-"]):
+            batch = json.loads(input_bytes or b"{}")
+            if argv[2] == "-c":
+                return result
+            self.mutations.append(argv)
+            rows = [next(iter(entry["add"].items())) for entry in batch.get("nftables", [])
+                    if isinstance(entry, dict) and "add" in entry]
+            self.nft_payload = {"nftables": [{kind: row} for kind, row in rows]}
+            self.table = self.initial_table
         elif argv in (["nft", "list", "table", "inet", "fwrouter_v2"],
                       ["nft", "-s", "list", "table", "inet", "fwrouter_v2"]):
             if self.table is None:
@@ -78,7 +91,7 @@ class NativeFixture:
             if self.table is None:
                 result.returncode = 1
             else:
-                result.stdout = json.dumps(_nft_payload_for_table(self.table)).encode()
+                result.stdout = json.dumps(self.nft_payload).encode()
         elif argv in (["nft", "-c", "-f", "-"], ["nft", "-f", "-"]):
             batch = input_bytes or b""
             if argv[1] == "-c":
@@ -96,6 +109,7 @@ class NativeFixture:
             start = batch.find(b"table inet fwrouter_v2 {")
             if start >= 0:
                 self.table = batch[start:].rstrip() + b"\n"
+                self.nft_payload = _nft_payload_for_table(self.table)
         elif argv[0] == "ip":
             family = "ipv4" if "-4" in argv else "ipv6"
             if argv[:2] == ["ip", "-j"] and argv[3:5] == ["rule", "show"]:
@@ -228,25 +242,42 @@ def test_present_snapshot_is_durable_before_atomic_apply_and_restores_actual_own
     assert native.rules["ipv6"] == old_rule6
     assert native.routes["ipv4"] == old_route4
     assert native.routes["ipv6"] == old_route6
-    assert len([argv for argv in native.mutations if argv[:2] == ["nft", "-f"]]) == 2
+    assert len([argv for argv in native.mutations if argv == ["nft", "-f", "-"]]) == 1
+    assert len([argv for argv in native.mutations if argv == ["nft", "-j", "-f", "-"]]) == 1
 
 
-@pytest.mark.parametrize("receipt_state", ["missing", "corrupt", "hash-mismatch", "invalid-schema", "duplicate-key"])
+@pytest.mark.parametrize("receipt_state", [
+    "missing", "corrupt", "hash-mismatch", "invalid-schema", "duplicate-key",
+    "native-json-hash-mismatch", "native-json-unknown-object",
+])
 def test_rollback_rejects_missing_or_invalid_receipt_before_native_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt_state: str,
 ) -> None:
     native, snapshot, state, _ = _fixture(monkeypatch, tmp_path, table=_table("direct"))
-    if receipt_state != "missing":
+    if receipt_state in {"duplicate-key", "native-json-hash-mismatch", "native-json-unknown-object"}:
+        HELPER.capture(snapshot, state)
+        receipt = json.loads(state.read_text(encoding="utf-8"))
         if receipt_state == "duplicate-key":
-            HELPER.capture(snapshot, state)
             original = state.read_text(encoding="utf-8").rstrip("\n")
             state.write_text(original[:-1] + ',"previous_table_state":"missing"}' + "\n", encoding="utf-8")
+        elif receipt_state == "native-json-hash-mismatch":
+            encoded = receipt["snapshot_native_json_b64"]
+            receipt["snapshot_native_json_b64"] = ("A" if encoded[0] != "A" else "B") + encoded[1:]
+            state.write_text(json.dumps(receipt), encoding="utf-8")
         else:
-            snapshot.write_bytes(_table("vpn", "fwrouter vpn policy contract required v1"))
+            raw = json.dumps({"nftables": [
+                {"table": {"family": "inet", "name": "fwrouter_v2"}},
+                {"flowtable": {"family": "inet", "table": "fwrouter_v2", "name": "unexpected"}},
+            ]}, separators=(",", ":")).encode()
+            receipt["snapshot_native_json_b64"] = base64.b64encode(raw).decode("ascii")
+            receipt["snapshot_native_json_sha256"] = hashlib.sha256(raw).hexdigest()
+            state.write_text(json.dumps(receipt), encoding="utf-8")
+    elif receipt_state != "missing":
+        snapshot.write_bytes(_table("vpn", "fwrouter vpn policy contract required v1"))
         if receipt_state == "corrupt":
             state.write_text("{", encoding="utf-8")
         elif receipt_state == "hash-mismatch":
-            state.write_text(json.dumps({"schema": "fwrouter-dataplane-snapshot-state/v2", "previous_table_state": "present"}), encoding="utf-8")
+            state.write_text(json.dumps({"schema": "fwrouter-dataplane-snapshot-state/v3", "previous_table_state": "present"}), encoding="utf-8")
         else:
             state.write_text(json.dumps({"previous_table_state": "present"}), encoding="utf-8")
     before = (native.table, list(native.mutations))
@@ -506,12 +537,29 @@ def test_rollback_rejects_successful_native_restore_with_different_semantics(
 
     def altered_restore(argv: list[str], *, input_bytes: bytes | None = None):
         result = run(argv, input_bytes=input_bytes)
-        if argv == ["nft", "-f", "-"] and result.returncode == 0:
+        if argv == ["nft", "-j", "-f", "-"] and result.returncode == 0:
             native.table = _table("vpn", "fwrouter vpn policy contract required v1")
+            native.nft_payload = _nft_payload_for_table(native.table)
         return result
 
     monkeypatch.setattr(HELPER, "_run", altered_restore)
     _raises_code("NFT_ROLLBACK_SEMANTIC_MISMATCH", lambda: HELPER.rollback(snapshot, state))
+
+
+def test_native_json_restore_preserves_reject_family_and_removes_handles() -> None:
+    payload = _nft_payload_for_table(_table("direct"))
+    payload["nftables"].append({"rule": {
+        "family": "inet", "table": "fwrouter_v2", "chain": "fwrouter_classify", "handle": 991,
+        "expr": [{"reject": {"type": "icmpx", "expr": "admin-prohibited"}}],
+    }})
+    batch = json.loads(HELPER._native_restore_batch(payload, table_present=True))
+    commands = batch["nftables"]
+    assert commands[0] == {"delete": {"table": {"family": "inet", "name": "fwrouter_v2"}}}
+    restored_rules = [command["add"]["rule"] for command in commands if "add" in command and "rule" in command["add"]]
+    assert restored_rules[-1]["expr"] == [{"reject": {"type": "icmpx", "expr": "admin-prohibited"}}]
+    assert all("handle" not in row for command in commands for kind, row in command.get("add", {}).items())
+    with pytest.raises(ValueError, match="unsupported nftables object"):
+        HELPER._native_restore_batch({"nftables": [*payload["nftables"], {"flowtable": {}}]}, table_present=True)
 
 
 def test_apply_rejects_duplicate_keys_in_native_json_before_native_mutation(
@@ -534,7 +582,7 @@ def test_apply_rejects_duplicate_keys_in_native_json_before_native_mutation(
 
     monkeypatch.setattr(HELPER, "_run", duplicate_native_inventory)
     before = (native.table, list(native.mutations))
-    _raises_code("NFT_SEMANTIC_READBACK_FAILED", lambda: HELPER._apply_candidate(candidate, snapshot, state))
+    _raises_code("NFT_SEMANTIC_READBACK_INVALID", lambda: HELPER._apply_candidate(candidate, snapshot, state))
     assert (native.table, native.mutations) == before
 
 
@@ -547,7 +595,9 @@ def _write_executable(path: Path, content: str) -> None:
 def _shell_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, table: bytes | None) -> tuple[Path, Path, Path, Path, Path, Path]:
     runtime = tmp_path / "runtime.json"
     log = tmp_path / "mutations.jsonl"
-    runtime.write_text(json.dumps({"table": table.decode() if table else None, "rules": [], "routes": []}), encoding="utf-8")
+    runtime.write_text(json.dumps({"table": table.decode() if table else None,
+                                   "initial_table": table.decode() if table else None,
+                                   "rules": [], "routes": []}), encoding="utf-8")
     nft = tmp_path / "bin/nft"
     ip = tmp_path / "bin/ip"
     _write_executable(nft, r'''#!/usr/bin/python3
@@ -567,6 +617,13 @@ if a == ["-j","-s","list","table","inet","fwrouter_v2"]:
   {"table":{"family":"inet","name":"fwrouter_v2","handle":1}},
   {"chain":{"family":"inet","table":"fwrouter_v2","name":"fwrouter_classify","handle":2,"comment":marker}},
   {"rule":{"family":"inet","table":"fwrouter_v2","chain":"fwrouter_classify","handle":3,"expr":[{"comment":x} for x in comments]}}]})); raise SystemExit(0)
+if a in (["-j","-c","-f","-"],["-j","-f","-"]):
+ d=json.load(sys.stdin)
+ if a[1] == "-c": raise SystemExit(0)
+ adds=[entry["add"] for entry in d.get("nftables",[]) if isinstance(entry,dict) and "add" in entry]
+ s["table"]=s.get("initial_table") if any("table" in item for item in adds) else None
+ with open(os.environ["FWTEST_LOG"],"a") as f: f.write("nft-json\n")
+ save(); raise SystemExit(0)
 if a in (["-c","-f","-"],["-f","-"]):
  d=sys.stdin.read()
  if "INVALID" in d: print("synthetic nft validation failure",file=sys.stderr); raise SystemExit(1)
@@ -647,7 +704,7 @@ def test_real_shell_apply_and_rollback_use_owned_stubs_and_restore_snapshot(
     restored = _invoke_shell(rollback, [str(snapshot), str(state), str(manifest)], tmp_path)
     assert restored.returncode == 0, restored.stdout + restored.stderr
     assert json.loads((tmp_path / "runtime.json").read_text())["table"].rstrip() == old.rstrip()
-    assert (tmp_path / "mutations.jsonl").read_text().splitlines() == ["nft", "nft"]
+    assert (tmp_path / "mutations.jsonl").read_text().splitlines() == ["nft", "nft-json"]
 
 
 def test_real_shell_rejects_invalid_nft_candidate_without_removing_old_table(
@@ -757,7 +814,7 @@ def test_real_shell_interruption_after_durable_capture_preserves_and_restores_ol
         assert restored.returncode == 0, restored.stdout + restored.stderr
         assert json.loads(restored.stdout)["restored_previous_table"] is True
         assert json.loads((tmp_path / "runtime.json").read_text())["table"].rstrip() == old.rstrip()
-        assert (tmp_path / "mutations.jsonl").read_text().splitlines() == ["nft"]
+        assert (tmp_path / "mutations.jsonl").read_text().splitlines() == ["nft-json"]
     finally:
         if process.poll() is None:
             try:

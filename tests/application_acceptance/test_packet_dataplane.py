@@ -5239,6 +5239,12 @@ def _qualify_core_snapshot_recovery(stack: dict[str, Any], record_property: Any)
             assert rejected.returncode != 0, damage
             assert facts() == before, f"{damage} recovery metadata changed native policy"
         state.write_bytes(saved)
+        # A test-owned, unreferenced counter proves restoration removes actual
+        # post-snapshot table drift rather than succeeding through a no-op.
+        mutated = command(["/usr/sbin/nft", "add", "counter", "inet", "fwrouter_v2",
+                           "snapshot_recovery_qualification_probe"])
+        assert mutated.returncode == 0
+        assert facts() != before
         restored = command(["/bin/sh", "/usr/local/libexec/fwrouter/dataplane-rollback.sh",
                             str(snapshot), str(state), str(manifest)])
         assert restored.returncode == 0, {
@@ -5253,6 +5259,7 @@ def _qualify_core_snapshot_recovery(stack: dict[str, Any], record_property: Any)
         "invalid_candidate_preserved_policy": True,
         "missing_and_corrupt_metadata_rejected_without_mutation": True,
         "verified_previous_policy_restored": True,
+        "actual_post_snapshot_table_drift_removed": True,
     })
 
 

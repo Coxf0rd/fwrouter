@@ -13,8 +13,9 @@ The adapter supplies both the prior nft snapshot path and snapshot-state path.
 Before runtime mutation, apply must commit explicit durable previous-state
 metadata and bind a previously present table to its saved snapshot.
 `dataplane-snapshot-state.py` implements bounded persistence/validation for the
-existing scripts. The raw snapshot digest protects persisted recovery bytes; a
-separate recovery-only native JSON fingerprint verifies reconstructed policy
+existing scripts. The raw snapshot digest protects persisted recovery bytes.
+Hash-bound captured native JSON preserves expression semantics (including reject
+types) during restoration; a separate recovery-only fingerprint verifies policy
 without depending on nft text serialization. Rule order and static set content
 remain significant. This is not a native-proof owner receipt.
 Previous owner-routing facts are captured from observation,
@@ -45,8 +46,8 @@ Routine regressions run actual shell control flow with synthetic nft/IP adapters
 and disposable files. They do not prove kernel behavior. The existing qualified
 hosted packet scenario additionally runs installed scripts with real nft/IP
 state: rejected candidate preservation, non-mutating rejection of missing/corrupt
-metadata, and verified restoration of previous policy. No destructive scenario
-is run against production.
+metadata, and verified restoration of previous policy after test-owned drift.
+No destructive scenario is run against production.
 
 Exact-HEAD mandatory CI, native/packet/recovery evidence and independent QA are
 required. Owner merge/actual-main verification and host-helper installation are

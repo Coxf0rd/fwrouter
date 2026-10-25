@@ -8,6 +8,7 @@ is rejected before any mutation instead of being guessed at by rollback.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -24,8 +25,9 @@ TABLE_FAMILY = "inet"
 TABLE_NAME = "fwrouter_v2"
 ROUTE_TABLE = 100
 ROUTE_TABLE_NAME = "fwrouter_vpn"
-STATE_SCHEMA = "fwrouter-dataplane-snapshot-state/v2"
+STATE_SCHEMA = "fwrouter-dataplane-snapshot-state/v3"
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
+MAX_NATIVE_SNAPSHOT_BYTES = 4 * 1024 * 1024
 MARKS = {"ipv4": ((100, 256), (101, 258)), "ipv6": ((100, 256), (101, 258))}
 # These two timeout sets are populated from current DNS observations and their
 # elements are intentionally not recovery identity. Every other set's members
@@ -195,15 +197,23 @@ def _nft_semantic_sha256(payload: Any) -> str:
     return hashlib.sha256(_canonical_json(_canonical_nft_table(payload))).hexdigest()
 
 
-def _read_nft_semantic_sha256() -> str:
-    payload = _json_command(
-        ["nft", "-j", "-s", "list", "table", TABLE_FAMILY, TABLE_NAME],
-        code="NFT_SEMANTIC_READBACK_FAILED",
-    )
+def _read_nft_snapshot_payload() -> tuple[bytes, Any]:
+    result = _run(["nft", "-j", "-s", "list", "table", TABLE_FAMILY, TABLE_NAME])
+    if result.returncode != 0:
+        raise SnapshotError("NFT_SEMANTIC_READBACK_FAILED", "Read-only owned nft JSON snapshot failed.")
+    if not result.stdout or len(result.stdout) > MAX_NATIVE_SNAPSHOT_BYTES:
+        raise SnapshotError("NFT_SEMANTIC_READBACK_INVALID", "Owned nft JSON snapshot is empty or exceeds the size limit.")
     try:
-        return _nft_semantic_sha256(payload)
-    except (TypeError, ValueError) as exc:
-        raise SnapshotError("NFT_SEMANTIC_READBACK_INVALID", "Owned nft semantic readback is incomplete or unsupported.") from exc
+        payload = json.loads(result.stdout, object_pairs_hook=_unique_json_object)
+        _canonical_nft_table(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        raise SnapshotError("NFT_SEMANTIC_READBACK_INVALID", "Owned nft JSON snapshot is incomplete or unsupported.") from exc
+    return result.stdout, payload
+
+
+def _read_nft_semantic_sha256() -> str:
+    _, payload = _read_nft_snapshot_payload()
+    return _nft_semantic_sha256(payload)
 
 
 def _table_exists() -> bool:
@@ -471,6 +481,7 @@ def _snapshot_state(snapshot_path: Path, state_path: Path, *, require_absent: bo
         raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Previous owned-table state metadata is invalid JSON.") from exc
     expected_keys = {
         "schema", "previous_table_state", "snapshot_sha256", "snapshot_semantic_sha256",
+        "snapshot_native_json_b64", "snapshot_native_json_sha256",
         "previous_table_vpn_policy_required",
         "previous_routing_mode", "routing",
     }
@@ -489,6 +500,21 @@ def _snapshot_state(snapshot_path: Path, state_path: Path, *, require_absent: bo
         if not isinstance(state.get("snapshot_semantic_sha256"), str) or not re.fullmatch(
                 r"[0-9a-f]{64}", state["snapshot_semantic_sha256"]):
             raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Previous nft semantic fingerprint is invalid.")
+        encoded_native = state.get("snapshot_native_json_b64")
+        native_digest = state.get("snapshot_native_json_sha256")
+        if (not isinstance(encoded_native, str) or len(encoded_native) > ((MAX_NATIVE_SNAPSHOT_BYTES + 2) // 3) * 4
+                or not isinstance(native_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", native_digest)):
+            raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Previous native JSON snapshot identity is invalid.")
+        try:
+            native_raw = base64.b64decode(encoded_native, validate=True)
+            native_payload = json.loads(native_raw, object_pairs_hook=_unique_json_object)
+            native_semantic_sha256 = _nft_semantic_sha256(native_payload)
+        except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Previous native JSON snapshot is invalid or unsupported.") from exc
+        if (not native_raw or len(native_raw) > MAX_NATIVE_SNAPSHOT_BYTES
+                or hashlib.sha256(native_raw).hexdigest() != native_digest
+                or native_semantic_sha256 != state["snapshot_semantic_sha256"]):
+            raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Previous native JSON snapshot does not match its recovery fingerprint.")
         _parse_table_vpn_requirement(snapshot, True)
         if state.get("previous_routing_mode") != _parse_table_mode(snapshot, True):
             raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Captured routing mode does not match the snapshot.")
@@ -496,6 +522,8 @@ def _snapshot_state(snapshot_path: Path, state_path: Path, *, require_absent: bo
             raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Captured VPN requirement does not match the snapshot.")
     elif (snapshot is not None or state.get("snapshot_sha256") is not None
           or state.get("snapshot_semantic_sha256") is not None
+          or state.get("snapshot_native_json_b64") is not None
+          or state.get("snapshot_native_json_sha256") is not None
           or state.get("previous_table_vpn_policy_required") is not False
           or state.get("previous_routing_mode") is not None):
         raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Missing-table receipt unexpectedly references a prior table.")
@@ -504,6 +532,8 @@ def _snapshot_state(snapshot_path: Path, state_path: Path, *, require_absent: bo
     routing = state.get("routing")
     if not _valid_routing_state(routing):
         raise SnapshotError("NFT_SNAPSHOT_STATE_INVALID", "Captured policy-routing state is invalid or unsupported.")
+    if previous == "present":
+        state["_snapshot_native_payload"] = native_payload
     return state, snapshot
 
 
@@ -579,6 +609,55 @@ def _run_nft_batch(batch: bytes) -> None:
     applied = _run(["nft", "-f", "-"], input_bytes=batch)
     if applied.returncode != 0:
         raise SnapshotError("NFT_BATCH_APPLY_FAILED", "Atomic nft batch failed; nftables rejected the transaction.")
+
+
+def _without_native_counter_values(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_without_native_counter_values(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if key == "counter" and isinstance(item, dict):
+            result[key] = {name: _without_native_counter_values(data)
+                           for name, data in item.items() if name not in {"packets", "bytes"}}
+            continue
+        result[key] = _without_native_counter_values(item)
+    return result
+
+
+def _native_restore_batch(payload: Any, *, table_present: bool) -> bytes:
+    """Build one allowlisted JSON transaction from the captured native table."""
+    _canonical_nft_table(payload)
+    entries = payload["nftables"]
+    rows: list[tuple[int, str, dict[str, Any]]] = []
+    for entry in entries:
+        if "metainfo" in entry:
+            continue
+        kind = next(name for name in ("table", "chain", "set", "counter", "element", "rule") if name in entry)
+        row = _without_native_counter_values({key: value for key, value in entry[kind].items() if key != "handle"})
+        if kind == "counter":
+            row.pop("packets", None)
+            row.pop("bytes", None)
+        rank = {"table": 0, "chain": 1, "set": 1, "counter": 1, "element": 2, "rule": 3}[kind]
+        rows.append((rank, kind, row))
+    if sum(kind == "table" for _, kind, _ in rows) != 1:
+        raise SnapshotError("NFT_RESTORE_JSON_INVALID", "Captured native snapshot must contain exactly one owned table.")
+    rows.sort(key=lambda item: item[0])
+    commands: list[dict[str, Any]] = []
+    if table_present:
+        commands.append({"delete": {"table": {"family": TABLE_FAMILY, "name": TABLE_NAME}}})
+    commands.extend({"add": {kind: row}} for _, kind, row in rows)
+    return _canonical_json({"nftables": commands}) + b"\n"
+
+
+def _run_nft_json_batch(batch: bytes) -> None:
+    checked = _run(["nft", "-j", "-c", "-f", "-"], input_bytes=batch)
+    if checked.returncode != 0:
+        raise SnapshotError("NFT_BATCH_VALIDATION_FAILED", "Atomic native nft JSON batch failed validation; live table was not changed.")
+    applied = _run(["nft", "-j", "-f", "-"], input_bytes=batch)
+    if applied.returncode != 0:
+        raise SnapshotError("NFT_BATCH_APPLY_FAILED", "Atomic native nft JSON batch failed; nftables rejected the transaction.")
 
 
 def _apply_candidate(candidate_path: Path, snapshot_path: Path, state_path: Path) -> dict[str, Any]:
@@ -659,6 +738,8 @@ def capture(snapshot_path: Path, state_path: Path) -> str:
     present = _table_exists()
     snapshot: bytes | None = None
     semantic_sha256: str | None = None
+    native_snapshot: bytes | None = None
+    native_payload: Any = None
     if present:
         # `-s` omits volatile stateful counter values. The recovery artifact is
         # a ruleset snapshot, not a promise to restore packet counters.
@@ -667,7 +748,8 @@ def capture(snapshot_path: Path, state_path: Path) -> str:
             raise SnapshotError("NFT_SNAPSHOT_CAPTURE_FAILED", "Owned table exists but its exact snapshot could not be read.")
         snapshot = result.stdout
         _parse_table_vpn_requirement(snapshot, True)
-        semantic_sha256 = _read_nft_semantic_sha256()
+        native_snapshot, native_payload = _read_nft_snapshot_payload()
+        semantic_sha256 = _nft_semantic_sha256(native_payload)
         verify = _run(["nft", "-s", "list", "table", TABLE_FAMILY, TABLE_NAME])
         if verify.returncode != 0 or verify.stdout != snapshot:
             raise SnapshotError("NFT_SNAPSHOT_CAPTURE_STALE", "Owned nft table changed while the recovery snapshot was captured.")
@@ -677,11 +759,15 @@ def capture(snapshot_path: Path, state_path: Path) -> str:
         "previous_table_state": "present" if present else "missing",
         "snapshot_sha256": hashlib.sha256(snapshot).hexdigest() if snapshot is not None else None,
         "snapshot_semantic_sha256": semantic_sha256,
+        "snapshot_native_json_b64": base64.b64encode(native_snapshot).decode("ascii") if native_snapshot is not None else None,
+        "snapshot_native_json_sha256": hashlib.sha256(native_snapshot).hexdigest() if native_snapshot is not None else None,
         "previous_table_vpn_policy_required": _parse_table_vpn_requirement(snapshot, True) if present else False,
         "previous_routing_mode": _parse_table_mode(snapshot, True) if present else None,
         "routing": routing,
     }
     state_bytes = (json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    if len(state_bytes) > MAX_ARTIFACT_BYTES:
+        raise SnapshotError("NFT_SNAPSHOT_STATE_TOO_LARGE", "Native snapshot receipt exceeds the supported size limit.")
     if snapshot is not None:
         _write_new_durable(snapshot_path, snapshot)
     _write_new_durable(state_path, state_bytes)
@@ -696,8 +782,7 @@ def rollback(snapshot_path: Path, state_path: Path) -> dict[str, Any]:
     present = _table_exists()
     target_present = state["previous_table_state"] == "present"
     if target_present:
-        assert snapshot is not None
-        _run_nft_batch(_batch(present, snapshot))
+        _run_nft_json_batch(_native_restore_batch(state["_snapshot_native_payload"], table_present=present))
     elif present:
         _run_nft_batch(_batch(True, None))
     _ip_sync_routing(state["routing"])
