@@ -21,6 +21,24 @@ XRAY_IMAGE_PIN = "sha256:" + "1" * 64
 MIHOMO_IMAGE_PIN = "sha256:" + "6" * 64
 
 
+def _fake_root_owned_sysctl_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Model procfs ownership while exercising the reader on a test-owned tmp tree."""
+    original_lstat = Path.lstat
+    original_fstat = os.fstat
+
+    def root_owned_lstat(path: Path):
+        observed = original_lstat(path)
+        return SimpleNamespace(st_mode=observed.st_mode, st_uid=0)
+
+    def root_owned_fstat(descriptor: int):
+        observed = original_fstat(descriptor)
+        return SimpleNamespace(st_mode=observed.st_mode, st_uid=0, st_dev=observed.st_dev,
+                               st_ino=observed.st_ino, st_mtime_ns=observed.st_mtime_ns)
+
+    monkeypatch.setattr(Path, "lstat", root_owned_lstat)
+    monkeypatch.setattr(os, "fstat", root_owned_fstat)
+
+
 def _installer_manifest_module():
     path = REPO_ROOT / "installer" / "controlled_backend_lifecycle.py"
     spec = importlib.util.spec_from_file_location("controlled_backend_lifecycle_for_manifest_test", path)
@@ -60,6 +78,241 @@ def test_backend_manifest_rejects_symlink_directory(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="BACKEND_SYMLINK_DIRECTORY"):
         native_proof.backend_manifest(root)
+
+
+def test_core_applied_manifest_reader_accepts_bounded_streamed_artifact_over_16_mib(tmp_path: Path) -> None:
+    path = tmp_path / "applied-manifest.json"
+    prefix = b'{"padding":"'
+    suffix = b'"}'
+    payload = prefix + b"x" * (16 * 1024 * 1024 + 17) + suffix
+    path.write_bytes(payload)
+
+    manifest, digest = native_proof._read_core_applied_manifest(path)
+
+    assert len(manifest["padding"]) == 16 * 1024 * 1024 + 17
+    assert digest == __import__("hashlib").sha256(payload).hexdigest()
+    assert native_proof._hash_core_applied_manifest(path) == digest
+
+
+def test_core_applied_manifest_reader_rejects_oversized_and_non_object_artifacts(tmp_path: Path) -> None:
+    oversized = tmp_path / "oversized-manifest.json"
+    with oversized.open("wb") as stream:
+        stream.truncate(native_proof._MAX_CORE_APPLIED_MANIFEST_BYTES + 1)
+    with pytest.raises(ValueError):
+        native_proof._read_core_applied_manifest(oversized)
+
+    malformed = tmp_path / "non-object-manifest.json"
+    malformed.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="CORE_NATIVE_READBACK_INVALID"):
+        native_proof._read_core_applied_manifest(malformed)
+
+
+class _SyntheticBoundedProcess:
+    """Pipe-backed Popen double; routine tests never execute child processes."""
+
+    def __init__(self, stdout_bytes: bytes, stderr_bytes: bytes = b"", returncode: int = 0,
+                 *, hold_open: bool = False) -> None:
+        import threading
+
+        stdout_read, stdout_write = os.pipe()
+        stderr_read, stderr_write = os.pipe()
+        self.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+        self.stderr = os.fdopen(stderr_read, "rb", buffering=0)
+        self._writers = [stdout_write, stderr_write]
+        self._returncode = None if hold_open else returncode
+        self.killed = False
+
+        def write_payload() -> None:
+            try:
+                for fd, payload in ((stdout_write, stdout_bytes), (stderr_write, stderr_bytes)):
+                    view = memoryview(payload)
+                    while view:
+                        written = os.write(fd, view[:64 * 1024])
+                        view = view[written:]
+            except OSError:
+                pass
+            finally:
+                for fd in (stdout_write, stderr_write):
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                self._writers.clear()
+
+        self._thread = None
+        if not hold_open:
+            self._thread = threading.Thread(target=write_payload, daemon=True)
+            self._thread.start()
+
+    def poll(self) -> int | None:
+        return self._returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._returncode is None:
+            raise subprocess.TimeoutExpired("synthetic-ip", timeout)
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+        return self._returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self._returncode = -9
+        for fd in self._writers:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._writers.clear()
+
+
+@pytest.mark.parametrize("stream,limit", [("stdout", 4 * 1024 * 1024), ("stderr", 64 * 1024)])
+def test_bounded_ip_json_reader_bounds_both_pipes_and_reaps(
+    monkeypatch: pytest.MonkeyPatch, stream: str, limit: int,
+) -> None:
+    process = _SyntheticBoundedProcess(
+        b"x" * (limit + 1) if stream == "stdout" else b"[]",
+        b"x" * (limit + 1) if stream == "stderr" else b"",
+    )
+    monkeypatch.setattr(native_proof.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    with pytest.raises(ValueError, match="CORE_IP_READBACK_INVALID"):
+        native_proof._run_bounded_ip_json(["ip", "-j"])
+    assert process.killed and process.poll() is not None
+
+
+def test_bounded_ip_json_reader_timeout_kills_and_reaps(monkeypatch: pytest.MonkeyPatch) -> None:
+    process = _SyntheticBoundedProcess(b"", hold_open=True)
+    monkeypatch.setattr(native_proof, "_IP_COMMAND_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(native_proof.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    with pytest.raises(ValueError, match="CORE_IP_READBACK_UNAVAILABLE"):
+        native_proof._run_bounded_ip_json(["ip", "-j"])
+    assert process.killed and process.poll() is not None
+
+
+def test_bounded_ip_json_reader_requires_zero_exit_and_valid_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    for stdout, stderr, returncode, reason in (
+        (b"[]", b"", 7, "CORE_IP_READBACK_UNAVAILABLE"),
+        (b"not-json", b"", 0, "CORE_IP_READBACK_INVALID"),
+    ):
+        process = _SyntheticBoundedProcess(stdout, stderr, returncode)
+        monkeypatch.setattr(native_proof.subprocess, "Popen", lambda *_args, **_kwargs: process)
+        with pytest.raises(ValueError, match=reason):
+            native_proof._run_bounded_ip_json(["ip", "-j"])
+    process = _SyntheticBoundedProcess(b"[1]")
+    monkeypatch.setattr(native_proof.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    assert native_proof._run_bounded_ip_json(["ip", "-j"]) == [1]
+
+
+def test_core_apply_receipt_hashes_large_manifest_and_rejects_cross_fence_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate.nft"
+    applied = tmp_path / "applied.nft"
+    manifest_path = tmp_path / "applied-manifest.json"
+    candidate.write_text("table inet fwrouter_v2 {}\n", encoding="utf-8")
+    applied.write_text(candidate.read_text(encoding="utf-8"), encoding="utf-8")
+    original = b'{"plan_id":"fixture-apply","padding":"' + b"x" * (16 * 1024 * 1024 + 17) + b'"}'
+    manifest_path.write_bytes(original)
+    proof_path = tmp_path / "receipt.json"
+    paths = {"candidate_nft_path": str(candidate), "applied_nft_path": str(applied),
+             "applied_manifest_path": str(manifest_path)}
+    monkeypatch.setattr(native_proof, "core_native_proof_path", lambda: proof_path)
+    monkeypatch.setattr(native_proof, "read_live_nft_semantic_sha256", lambda: "a" * 64)
+    monkeypatch.setattr(native_proof, "_core_ip_facts", lambda: {"semantic_sha256": "b" * 64})
+
+    assert native_proof.write_core_native_apply_receipt(
+        manifest={"plan_id": "fixture-apply"}, artifact_paths=paths, core_intent_revision=12,
+    ) is True
+    stored = json.loads(proof_path.read_text(encoding="utf-8"))
+    assert stored["applied_manifest_sha256"] == __import__("hashlib").sha256(original).hexdigest()
+
+    proof_path.unlink()
+    replacement = original.replace(b"fixture-apply", b"fixture-change")
+    calls = 0
+
+    def replace_during_native_capture() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            manifest_path.write_bytes(replacement)
+        return "a" * 64
+
+    monkeypatch.setattr(native_proof, "read_live_nft_semantic_sha256", replace_during_native_capture)
+    assert native_proof.write_core_native_apply_receipt(
+        manifest={"plan_id": "fixture-apply"}, artifact_paths=paths, core_intent_revision=12,
+    ) is False
+    assert not proof_path.exists()
+
+    with manifest_path.open("wb") as stream:
+        stream.truncate(native_proof._MAX_CORE_APPLIED_MANIFEST_BYTES + 1)
+    assert native_proof.write_core_native_apply_receipt(
+        manifest={"plan_id": "fixture-apply"}, artifact_paths=paths, core_intent_revision=12,
+    ) is False
+    assert not proof_path.exists()
+
+
+def test_core_readback_binds_large_manifest_bytes_and_rejects_cross_fence_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
+
+    generated = tmp_path / "generated"
+    dataplane = generated / "dataplane"
+    dataplane.mkdir(parents=True)
+    manifest_path = dataplane / "applied-manifest.json"
+    nft_path = dataplane / "applied.nft"
+    padding = "x" * (16 * 1024 * 1024 + 17)
+    routing = {"desired_mode": "direct", "applied_mode": "direct", "selective_default": "direct",
+               "server_mode": "auto", "desired_fixed_server_id": None, "applied_fixed_server_id": None}
+
+    def write_manifest(marker: str) -> bytes:
+        raw = json.dumps({"plan_id": "fixture-apply", "routing_global_state": routing,
+                          "padding": marker + padding[1:]}, sort_keys=True).encode()
+        manifest_path.write_bytes(raw)
+        return raw
+
+    applied_bytes = write_manifest("x")
+    nft_path.write_text("table inet fwrouter_v2 {}\n", encoding="utf-8")
+    monkeypatch.setattr(dataplane_global, "get_settings", lambda: SimpleNamespace(
+        paths=SimpleNamespace(generated_dir=generated)))
+    monkeypatch.setattr("fwrouter_api.services.core_intent.read_core_runtime_context", lambda: {"context": 1})
+    monkeypatch.setattr(dataplane_status, "_read_live_dataplane_payload", lambda: {"required_chains": {"input": True}})
+    monkeypatch.setattr(dataplane_status, "_live_owned_table_ready", lambda _payload: True)
+    monkeypatch.setattr(dataplane_live, "_probe_live_global_mode_uncached", lambda: {"ok": True, "mode": "direct"})
+    ip_facts = {"semantic_sha256": "b" * 64, "checks": {"ipv6": True}}
+    monkeypatch.setattr(native_proof, "_core_ip_facts", lambda: ip_facts)
+    monkeypatch.setattr(native_proof, "read_live_nft_semantic_sha256", lambda: "a" * 64)
+    monkeypatch.setattr(native_proof, "_read_core_native_receipt", lambda: {
+        "apply_id": "fixture-apply", "core_intent_revision": 5,
+        "applied_manifest_sha256": __import__("hashlib").sha256(applied_bytes).hexdigest(),
+        "candidate_nft_sha256": native_proof._hash_regular_file(nft_path),
+        "native_semantics_sha256": "a" * 64, "native_ip_semantics_sha256": "b" * 64,
+    })
+    db = {"latest_apply": {"apply_id": "fixture-apply", "status": "applied", "core_intent_revision": 5},
+          "core_revision": 5, "routing": {**routing, "apply_state": "clean"}, "selection": {"revision": 7}}
+
+    result = native_proof._core_readback(db)
+    assert result["applied_manifest_stable"] is True
+    assert result["applied_manifest_sha256"] == __import__("hashlib").sha256(applied_bytes).hexdigest()
+
+    applied_bytes = write_manifest("y")
+    monkeypatch.setattr(native_proof, "_read_core_native_receipt", lambda: {
+        "apply_id": "fixture-apply", "core_intent_revision": 5,
+        "applied_manifest_sha256": __import__("hashlib").sha256(applied_bytes).hexdigest(),
+        "candidate_nft_sha256": native_proof._hash_regular_file(nft_path),
+        "native_semantics_sha256": "a" * 64, "native_ip_semantics_sha256": "b" * 64,
+    })
+    changed = False
+
+    def mutate_during_readback() -> str:
+        nonlocal changed
+        if not changed:
+            changed = True
+            write_manifest("z")
+        return "a" * 64
+
+    monkeypatch.setattr(native_proof, "read_live_nft_semantic_sha256", mutate_during_readback)
+    with pytest.raises(RuntimeError, match="CORE_RUNTIME_CONTEXT_CHANGED"):
+        native_proof._core_readback(db)
 
 
 def test_readonly_database_sets_query_only_and_does_not_change_database(tmp_path: Path) -> None:
@@ -557,6 +810,12 @@ def test_core_ip_receipt_hash_covers_priority_rules_and_full_table_routes(monkey
     }
 
     def install(monkeypatch, facts):
+        monkeypatch.setattr(native_proof, "_ipv6_host_facts", lambda: {
+            "mode": "active", "interfaces": ["lo", "eth0"],
+            "disable_ipv6": {"all": 0, "default": 0, "lo": 0, "eth0": 0},
+            "addresses": [], "routes": [],
+        })
+
         def run(command, **_kwargs):
             assert command[1] == "-N", "iproute2 table aliases must be disabled for semantic comparisons"
             family = command[3]
@@ -579,7 +838,6 @@ def test_core_ip_receipt_hash_covers_priority_rules_and_full_table_routes(monkey
     install(monkeypatch, unicast_route_facts)
     with pytest.raises(ValueError, match="CORE_IP_POLICY_MISMATCH"):
         native_proof._core_ip_facts()
-
     install(monkeypatch, fixtures)
     default_spelling = json.loads(json.dumps(fixtures))
     default_spelling["-6"]["routes"][0]["dst"] = "default"
@@ -595,6 +853,168 @@ def test_core_ip_receipt_hash_covers_priority_rules_and_full_table_routes(monkey
     install(monkeypatch, changed_route)
     with pytest.raises(ValueError, match="CORE_IP_POLICY_MISMATCH"):
         native_proof._core_ip_facts()
+
+
+def test_core_ip_facts_accepts_proven_disabled_ipv6_only_without_relaxing_mark_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixtures = {
+        "-4": {
+            "rules": [{"priority": 100, "fwmark": "0x100", "table": 100},
+                      {"priority": 101, "fwmark": "0x102", "table": 100}],
+            "routes": [{"type": "local", "dst": "default", "dev": "lo", "table": 100}],
+        },
+        "-6": {
+            "rules": [{"priority": 100, "fwmark": "0x100", "table": 100},
+                      {"priority": 101, "fwmark": "0x102", "table": 100}],
+            "routes": [],
+        },
+    }
+    monkeypatch.setattr(native_proof, "_ipv6_host_facts", lambda: {
+        "mode": "disabled", "interfaces": ["lo"], "interface_indexes": {"lo": 1},
+        "disable_ipv6": {"all": 1, "default": 1, "lo": 1},
+        "addresses": [], "routes": [],
+    })
+
+    def run(command, **_kwargs):
+        family = command[3]
+        payload = fixtures[family]["rules"] if "rule" in command else fixtures[family]["routes"]
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(native_proof.subprocess, "run", run)
+    result = native_proof._core_ip_facts()
+    assert result["checks"]["-6_mark_rule"] is True
+    assert result["checks"]["-6_full_vpn_mark_rule"] is True
+    assert result["checks"]["-6_local_default_route"] is False
+    assert result["checks"]["-6_disabled_mode_proven"] is True
+    assert result["checks"]["-6_policy_enforced"] is True
+    baseline_semantics = result["semantic_sha256"]
+
+    monkeypatch.setattr(native_proof, "_ipv6_host_facts", lambda: {
+        "mode": "disabled", "interfaces": ["eth0", "lo"],
+        "interface_indexes": {"eth0": 2, "lo": 1},
+        "disable_ipv6": {"all": 1, "default": 1, "eth0": 1, "lo": 1},
+        "addresses": [], "routes": [],
+    })
+    assert native_proof._core_ip_facts()["semantic_sha256"] != baseline_semantics
+
+    fixtures["-6"]["rules"] = fixtures["-6"]["rules"][:1]
+    with pytest.raises(ValueError, match="CORE_IP_POLICY_MISMATCH"):
+        native_proof._core_ip_facts()
+
+
+def test_ipv6_host_disabled_mode_requires_exact_stable_inventory_and_empty_network_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    conf = tmp_path / "conf"
+    for name in ("all", "default", "lo", "eth0"):
+        directory = conf / name
+        directory.mkdir(parents=True)
+        (directory / "disable_ipv6").write_text("1\n", encoding="ascii")
+    monkeypatch.setattr(native_proof, "_IPV6_SYSCTL_CONF_PATH", conf)
+    _fake_root_owned_sysctl_tree(monkeypatch)
+    current = {"addresses": [], "routes": [],
+               "links": [{"ifname": "lo", "ifindex": 1}, {"ifname": "eth0", "ifindex": 2}]}
+
+    def run(command):
+        if command[1:4] == ["-j", "link", "show"]:
+            payload = current["links"]
+        elif "address" in command:
+            payload = current["addresses"]
+        elif "route" in command:
+            payload = current["routes"]
+        else:
+            raise AssertionError(command)
+        return payload
+
+    monkeypatch.setattr(native_proof, "_run_bounded_ip_json", run)
+    baseline = native_proof._ipv6_host_facts()
+    assert baseline["mode"] == "disabled"
+    assert baseline["interfaces"] == ["eth0", "lo"]
+
+    # Any live address or route contradicts an all-interfaces-disabled claim.
+    current["addresses"] = [{"ifname": "eth0", "addr_info": [{"family": "inet6", "local": "fe80::1"}]}]
+    with pytest.raises(ValueError, match="CORE_IP_POLICY_MISMATCH"):
+        native_proof._ipv6_host_facts()
+    current["addresses"] = []
+    current["routes"] = [{"dst": "default", "type": "unicast", "dev": "eth0"}]
+    with pytest.raises(ValueError, match="CORE_IP_POLICY_MISMATCH"):
+        native_proof._ipv6_host_facts()
+    current["routes"] = []
+
+    (conf / "eth0" / "disable_ipv6").write_text("0\n", encoding="ascii")
+    active = native_proof._ipv6_host_facts()
+    assert active["mode"] == "active"
+    assert active != baseline
+    current["links"] = [{"ifname": "lo", "ifindex": 1}, {"ifname": "eth0", "ifindex": 3}]
+    replacement = native_proof._ipv6_host_facts()
+    assert replacement["interface_indexes"]["eth0"] == 3
+    assert replacement != active
+    current["links"] = [{"ifname": "lo", "ifindex": 1}, {"ifname": "eth0", "ifindex": 2}]
+
+    current["addresses"] = [{"ifname": "eth0", "addr_info": [{
+        "family": "inet6", "local": "2001:db8::1", "valid_life_time": 100,
+        "preferred_life_time": 80,
+    }]}]
+    current["routes"] = [{"dst": "default", "type": "unicast", "dev": "eth0", "expires": 80}]
+    first_timed = native_proof._ipv6_host_facts()
+    current["addresses"][0]["addr_info"][0]["valid_life_time"] = 90
+    current["addresses"][0]["addr_info"][0]["preferred_life_time"] = 70
+    current["routes"][0]["expires"] = 70
+    second_timed = native_proof._ipv6_host_facts()
+    assert first_timed == second_timed
+
+    (conf / "eth0" / "disable_ipv6").write_text("2\n", encoding="ascii")
+    with pytest.raises(ValueError, match="CORE_IP_READBACK_INVALID"):
+        native_proof._ipv6_host_facts()
+
+
+@pytest.mark.parametrize("bad_inventory", [
+    [{"ifname": "eth0", "ifindex": 2}],
+    [{"ifname": "lo", "ifindex": 1}],
+    [{"ifname": "lo", "ifindex": 1}, {"ifname": "eth0", "ifindex": 2},
+     {"ifname": "eth0", "ifindex": 3}],
+    [{"ifname": "lo", "ifindex": 1}, {"ifname": "bad/name", "ifindex": 2}],
+    [{"ifname": "lo", "ifindex": 1}, {"ifname": "eth0", "ifindex": 1}],
+])
+def test_ipv6_host_facts_reject_incomplete_duplicate_or_malformed_interfaces(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bad_inventory: list[dict[str, str]],
+) -> None:
+    conf = tmp_path / "conf"
+    for name in ("all", "default", "lo", "eth0"):
+        directory = conf / name
+        directory.mkdir(parents=True)
+        (directory / "disable_ipv6").write_text("1\n", encoding="ascii")
+    monkeypatch.setattr(native_proof, "_IPV6_SYSCTL_CONF_PATH", conf)
+    _fake_root_owned_sysctl_tree(monkeypatch)
+
+    def run(command):
+        if "link" in command:
+            payload = bad_inventory
+        else:
+            payload = []
+        return payload
+
+    monkeypatch.setattr(native_proof, "_run_bounded_ip_json", run)
+    with pytest.raises(ValueError, match="CORE_IP_READBACK_INVALID"):
+        native_proof._ipv6_host_facts()
+
+
+def test_ipv6_host_facts_rejects_symlinked_sysctl_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(native_proof, "_IPV6_SYSCTL_CONF_PATH", linked)
+    _fake_root_owned_sysctl_tree(monkeypatch)
+
+    def run(command):
+        payload = [{"ifname": "lo"}] if "link" in command else []
+        return payload
+
+    monkeypatch.setattr(native_proof, "_run_bounded_ip_json", run)
+    with pytest.raises(ValueError, match="CORE_IP_READBACK_INVALID"):
+        native_proof._ipv6_host_facts()
 
 
 def test_optional_core_receipt_runtime_error_does_not_fail_existing_promotion(
