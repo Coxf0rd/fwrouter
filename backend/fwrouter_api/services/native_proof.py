@@ -16,9 +16,13 @@ from functools import wraps
 
 _MAX_BACKEND_FILES = 10_000
 _MAX_BACKEND_BYTES = 512 * 1024 * 1024
+_MAX_CORE_APPLIED_MANIFEST_BYTES = 64 * 1024 * 1024
 _EXPECTED_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _ACTIVE_JOB_STATES = ("queued", "running")
 _CORE_NATIVE_PROOF_NAME = "applied-native-proof.json"
+_IPV6_SYSCTL_CONF_PATH = Path("/proc/sys/net/ipv6/conf")
+_MAX_IP_INTERFACES = 256
+_MAX_IP_READBACK_BYTES = 4 * 1024 * 1024
 _DYNAMIC_NFT_SET_ELEMENTS = {"dns_direct_ipv4", "dns_vpn_ipv4"}
 _SAFE_REASON_CODES = {
     "BACKEND_FILE_CHANGED", "BACKEND_FILE_INVALID", "BACKEND_FILE_TOO_LARGE",
@@ -191,7 +195,7 @@ def write_core_native_apply_receipt(
             return False
         candidate_sha = _hash_regular_file(candidate_path, maximum_bytes=_MAX_BACKEND_BYTES)
         applied_sha = _hash_regular_file(applied_path, maximum_bytes=_MAX_BACKEND_BYTES)
-        manifest_sha = _hash_regular_file(applied_manifest_path)
+        manifest_sha = _hash_core_applied_manifest(applied_manifest_path)
         if candidate_sha != applied_sha:
             return False
         semantic_sha = read_live_nft_semantic_sha256()
@@ -200,7 +204,7 @@ def write_core_native_apply_receipt(
         # mistaken for the owner input that was just applied.
         if (_hash_regular_file(candidate_path, maximum_bytes=_MAX_BACKEND_BYTES) != candidate_sha
                 or _hash_regular_file(applied_path, maximum_bytes=_MAX_BACKEND_BYTES) != applied_sha
-                or _hash_regular_file(applied_manifest_path) != manifest_sha):
+                or _hash_core_applied_manifest(applied_manifest_path) != manifest_sha):
             return False
         if (read_live_nft_semantic_sha256() != semantic_sha
                 or _core_ip_facts()["semantic_sha256"] != ip_semantic_sha):
@@ -321,6 +325,23 @@ def _hash_regular_file(path: Path, *, maximum_bytes: int = 16 * 1024 * 1024) -> 
                 or before.st_mtime_ns != after.st_mtime_ns):
             raise ValueError("NATIVE_ARTIFACT_CHANGED")
     return digest.hexdigest()
+
+
+def _hash_core_applied_manifest(path: Path) -> str:
+    """Stream the bounded Core owner artifact used to bind native receipts."""
+    return _hash_regular_file(path, maximum_bytes=_MAX_CORE_APPLIED_MANIFEST_BYTES)
+
+
+def _read_core_applied_manifest(path: Path) -> tuple[dict[str, Any], str]:
+    """Read and hash the exact bounded manifest bytes consumed by this proof."""
+    raw = _read_regular_file(path, maximum_bytes=_MAX_CORE_APPLIED_MANIFEST_BYTES)
+    try:
+        manifest = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("CORE_NATIVE_READBACK_INVALID") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("CORE_NATIVE_READBACK_INVALID")
+    return manifest, hashlib.sha256(raw).hexdigest()
 
 
 def _read_regular_file(path: Path, *, maximum_bytes: int = 16 * 1024 * 1024) -> bytes:
@@ -709,7 +730,146 @@ def _routing_manifest_matches(manifest_routing: Any, routing: Any) -> bool:
     return all(str(manifest_routing.get(key) or "") == str(routing.get(key) or "") for key in keys)
 
 
+def _ipv6_host_facts() -> dict[str, Any]:
+    """Read a bounded host IPv6 state snapshot for strict active/disabled proof."""
+    commands = {
+        "links": ["ip", "-j", "link", "show"],
+        "addresses": ["ip", "-N", "-j", "-6", "address", "show"],
+        "routes": ["ip", "-N", "-j", "-6", "route", "show", "table", "all"],
+    }
+    payloads: dict[str, Any] = {}
+    for name, command in commands.items():
+        result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=3)
+        if result.returncode != 0:
+            raise ValueError("CORE_IP_READBACK_UNAVAILABLE")
+        raw = result.stdout or ""
+        if len(raw.encode("utf-8", "replace")) > _MAX_IP_READBACK_BYTES:
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        try:
+            payload = json.loads(raw or "[]")
+        except json.JSONDecodeError as exc:
+            raise ValueError("CORE_IP_READBACK_INVALID") from exc
+        if not isinstance(payload, list):
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        payloads[name] = payload
+
+    links = payloads["links"]
+    interface_indexes: dict[str, int] = {}
+    interface_names: list[str] = []
+    for row in links:
+        if not isinstance(row, dict):
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        name = row.get("ifname")
+        if not isinstance(name, str) or name in {".", ".."} or "/" in name or "\x00" in name:
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        try:
+            if not name or len(name.encode("utf-8", "strict")) > 15:
+                raise ValueError("CORE_IP_READBACK_INVALID")
+        except UnicodeEncodeError as exc:
+            raise ValueError("CORE_IP_READBACK_INVALID") from exc
+        if type(row.get("ifindex")) is not int or row["ifindex"] < 1:
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        interface_indexes[name] = row["ifindex"]
+        interface_names.append(name)
+    if (not interface_names or "lo" not in interface_names or len(interface_names) > _MAX_IP_INTERFACES
+            or len(set(interface_names)) != len(interface_names)
+            or len(set(interface_indexes.values())) != len(interface_indexes)):
+        raise ValueError("CORE_IP_READBACK_INVALID")
+    interfaces = sorted(interface_names)
+
+    try:
+        for component in reversed((_IPV6_SYSCTL_CONF_PATH, *_IPV6_SYSCTL_CONF_PATH.parents)):
+            component_info = component.lstat()
+            if not stat.S_ISDIR(component_info.st_mode) or component_info.st_uid != 0:
+                raise ValueError("CORE_IP_READBACK_INVALID")
+        conf_entries = sorted(entry.name for entry in _IPV6_SYSCTL_CONF_PATH.iterdir())
+    except OSError as exc:
+        raise ValueError("CORE_IP_READBACK_UNAVAILABLE") from exc
+    expected_conf_entries = sorted({"all", "default", *interfaces})
+    if conf_entries != expected_conf_entries:
+        raise ValueError("CORE_IP_READBACK_INVALID")
+
+    disable_ipv6: dict[str, int] = {}
+    for name in expected_conf_entries:
+        interface_conf = _IPV6_SYSCTL_CONF_PATH / name
+        path = interface_conf / "disable_ipv6"
+        try:
+            interface_info = interface_conf.lstat()
+            if not stat.S_ISDIR(interface_info.st_mode) or interface_info.st_uid != 0:
+                raise ValueError("CORE_IP_READBACK_INVALID")
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+            with os.fdopen(descriptor, "rb") as stream:
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode) or before.st_uid != 0:
+                    raise ValueError("CORE_IP_READBACK_INVALID")
+                raw = stream.read(17)
+                after = os.fstat(stream.fileno())
+        except OSError as exc:
+            raise ValueError("CORE_IP_READBACK_UNAVAILABLE") from exc
+        if (len(raw) > 16 or before.st_dev != after.st_dev or before.st_ino != after.st_ino
+                or before.st_mtime_ns != after.st_mtime_ns):
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        if raw not in {b"0", b"0\n", b"1", b"1\n"}:
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        try:
+            value = raw.decode("ascii", "strict").strip()
+        except UnicodeDecodeError as exc:
+            raise ValueError("CORE_IP_READBACK_INVALID") from exc
+        if value not in {"0", "1"}:
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        disable_ipv6[name] = int(value)
+
+    addresses = payloads["addresses"]
+    address_rows: list[dict[str, Any]] = []
+
+    def normalize_expiry(value: Any) -> str:
+        if value == "forever":
+            return "forever"
+        if type(value) in {int, float} and value >= 0:
+            return "finite"
+        raise ValueError("CORE_IP_READBACK_INVALID")
+
+    for row in addresses:
+        if not isinstance(row, dict) or not isinstance(row.get("addr_info"), list):
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        ifname = row.get("ifname")
+        if ifname not in interfaces:
+            raise ValueError("CORE_IP_READBACK_INVALID")
+        for address in row.get("addr_info", []):
+            if not isinstance(address, dict) or address.get("family") != "inet6":
+                raise ValueError("CORE_IP_READBACK_INVALID")
+            normalized_address = {
+                key: (normalize_expiry(value) if key in {"valid_life_time", "preferred_life_time"} else value)
+                for key, value in address.items()
+            }
+            address_rows.append({"ifname": ifname, "address": normalized_address})
+    routes = payloads["routes"]
+    if any(not isinstance(row, dict) for row in routes):
+        raise ValueError("CORE_IP_READBACK_INVALID")
+    normalized_routes = []
+    for row in routes:
+        normalized_routes.append({
+            key: (normalize_expiry(value) if key == "expires" else value)
+            for key, value in row.items()
+        })
+    address_rows.sort(key=lambda item: (item["ifname"], _canonical_json(item)))
+    normalized_routes.sort(key=_canonical_json)
+
+    disabled = all(value == 1 for value in disable_ipv6.values())
+    if disabled and (address_rows or normalized_routes):
+        raise ValueError("CORE_IP_POLICY_MISMATCH")
+    return {
+        "mode": "disabled" if disabled else "active",
+        "interfaces": interfaces,
+        "interface_indexes": {name: interface_indexes[name] for name in interfaces},
+        "disable_ipv6": disable_ipv6,
+        "addresses": address_rows,
+        "routes": normalized_routes,
+    }
+
+
 def _core_ip_facts() -> dict[str, Any]:
+    ipv6_host = _ipv6_host_facts()
     required: dict[str, bool] = {}
     observed: dict[str, list[Any]] = {}
     for family in ("-4", "-6"):
@@ -752,12 +912,16 @@ def _core_ip_facts() -> dict[str, Any]:
             "rules": rule_rows,
             "table_100_routes": sorted(route_rows, key=_canonical_json),
         }
-    if not all(required.values()):
+    required["-6_disabled_mode_proven"] = ipv6_host["mode"] == "disabled"
+    required["-6_policy_enforced"] = required["-6_local_default_route"] or required["-6_disabled_mode_proven"]
+    if (not all(value for key, value in required.items()
+                if key not in {"-6_local_default_route", "-6_disabled_mode_proven"})
+            or not required["-6_policy_enforced"]):
         raise ValueError("CORE_IP_POLICY_MISMATCH")
     return {
         "checks": required,
-        "semantic_sha256": hashlib.sha256(_canonical_json(observed)).hexdigest(),
-        "observed": observed,
+        "semantic_sha256": hashlib.sha256(_canonical_json({"ip": observed, "ipv6_host": ipv6_host})).hexdigest(),
+        "observed": {"ip": observed, "ipv6_host": ipv6_host},
     }
 
 
@@ -766,7 +930,11 @@ def _core_readback(db: dict[str, Any]) -> dict[str, Any]:
     from fwrouter_api.services.core_intent import read_core_runtime_context
 
     context_before = read_core_runtime_context()
-    manifest = dataplane_global._read_applied_manifest_uncached()
+    manifest_path = dataplane_global.get_settings().paths.generated_dir / "dataplane" / "applied-manifest.json"
+    try:
+        manifest, manifest_sha = _read_core_applied_manifest(manifest_path)
+    except FileNotFoundError as exc:
+        raise ValueError("CORE_NATIVE_READBACK_UNAVAILABLE") from exc
     live_payload = dataplane_status._read_live_dataplane_payload()
     live_mode = dataplane_live._probe_live_global_mode_uncached()
     if context_before is None or not isinstance(manifest, dict) or not isinstance(live_payload, dict):
@@ -785,9 +953,7 @@ def _core_readback(db: dict[str, Any]) -> dict[str, Any]:
     manifest_routing = manifest.get("routing_global_state")
     if not _routing_manifest_matches(manifest_routing, routing):
         raise ValueError("CORE_APPLIED_MANIFEST_MISMATCH")
-    manifest_path = dataplane_global.get_settings().paths.generated_dir / "dataplane" / "applied-manifest.json"
     nft_path = dataplane_global.get_settings().paths.generated_dir / "dataplane" / "applied.nft"
-    manifest_sha = _hash_regular_file(manifest_path)
     nft_sha = _hash_regular_file(nft_path)
     receipt = _read_core_native_receipt()
     if (receipt is None
@@ -802,13 +968,17 @@ def _core_readback(db: dict[str, Any]) -> dict[str, Any]:
     ip_facts_before = _core_ip_facts()
     if ip_facts_before["semantic_sha256"] != receipt.get("native_ip_semantics_sha256"):
         raise ValueError("CORE_IP_POLICY_MISMATCH")
-    manifest_after = dataplane_global._read_applied_manifest_uncached()
+    try:
+        manifest_after, manifest_sha_after = _read_core_applied_manifest(manifest_path)
+    except FileNotFoundError as exc:
+        raise RuntimeError("CORE_RUNTIME_CONTEXT_CHANGED") from exc
     live_payload_after = dataplane_status._read_live_dataplane_payload()
     live_mode_after = dataplane_live._probe_live_global_mode_uncached()
     ip_facts_after = _core_ip_facts()
     semantic_sha_after = read_live_nft_semantic_sha256()
     if (read_core_runtime_context() != context_before or manifest_after != manifest
-            or _hash_regular_file(manifest_path) != manifest_sha or _hash_regular_file(nft_path) != nft_sha
+            or manifest_sha_after != manifest_sha
+            or _hash_regular_file(nft_path) != nft_sha
             or semantic_sha_after != semantic_sha_before
             or not isinstance(live_payload_after, dict)
             or live_payload_after.get("required_chains") != live_payload.get("required_chains")
