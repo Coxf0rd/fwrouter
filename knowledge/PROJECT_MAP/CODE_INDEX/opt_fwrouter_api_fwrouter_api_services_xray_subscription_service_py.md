@@ -66,6 +66,15 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
   materialization both succeed. Failures retain the committed intent for retry.
 - Profile create/delete/reconcile writers run under the shared Xray writer
   guard; callers acquire it before starting SQLite write transactions.
+- Explicit legacy inventory admission can re-prove an exact already-verified
+  digest/revision that lacks the native generation tuple. Its default
+  compatibility behavior refreshes the existing Mihomo receipt without
+  requiring or rewriting that newer tuple. The explicit `require_native_proof`
+  option instead routes through the existing generation promoter, requiring a
+  strict-reader-compatible proof under the same owner checkpoint, digest,
+  revision and fences. Incomplete strict proof or stale fences retain the
+  checkpoint; the option is limited to already verified generations and
+  generic startup recovery does not initiate this operation.
 
 ### Generation recovery status — 2026-10-04
 

@@ -728,6 +728,91 @@ def _positive_synthetic_proof() -> dict[str, object]:
     }
 
 
+def _install_native_generation_capture(monkeypatch, *, status="PASS"):
+    """Return a schema-valid persisted receipt bound to this isolated DB generation."""
+    import hashlib
+    from fwrouter_api.services import native_proof
+    from fwrouter_api.services.core_intent import read_core_intent_revision
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    def capture(*, expected_digest, expected_revision):
+        if status != "PASS":
+            return {"status": status, "reason": "synthetic_native_capture_incomplete"}
+        with db_session() as connection:
+            core_revision = read_core_intent_revision(connection)
+            selection_revision = read_selection_fence(connection)["revision"]
+            latest = connection.execute(
+                "SELECT apply_id FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
+            ).fetchone()
+        assert latest is not None
+        hashes = "a" * 64
+        image_digest = "sha256:" + "b" * 64
+        proof = native_proof._make_native_generation_proof(
+            "c" * 64,
+            xray={
+                key: hashes for key in (
+                    "config_sha256", "runtime_config_sha256", "runtime_incarnation_sha256",
+                    "durable_bindings_sha256", "durable_modes_sha256",
+                    "runtime_image_reference_sha256", "runtime_version_sha256",
+                )
+            } | {"runtime_image_digest": image_digest},
+            mihomo={
+                key: hashes for key in (
+                    "config_sha256", "semantic_config_sha256", "durable_semantic_config_sha256",
+                    "input_fingerprint_sha256", "runtime_incarnation_sha256",
+                    "runtime_receipt_config_sha256", "runtime_receipt_fingerprint_sha256",
+                    "runtime_image_reference_sha256", "runtime_version_sha256",
+                )
+            } | {"runtime_image_digest": image_digest},
+            core={
+                "applied_manifest_sha256": hashes,
+                "applied_nft_sha256": hashes,
+                "native_rule_semantics_sha256": hashes,
+                "native_ip_semantics_sha256": hashes,
+                "latest_apply_id_sha256": hashlib.sha256(str(latest["apply_id"]).encode()).hexdigest(),
+                "core_intent_revision": core_revision,
+                "selection_revision": selection_revision,
+            },
+            inventory_digest=expected_digest,
+            generation_revision=expected_revision,
+        )
+        assert native_proof._valid_native_generation_proof(
+            proof,
+            generation={"verified_digest": expected_digest, "verified_revision": expected_revision},
+            inventory_digest=expected_digest,
+        )
+        return {"status": "PASS", "proof": proof}
+
+    monkeypatch.setattr(native_proof, "capture_native_generation_proof", capture)
+    return capture
+
+
+def _seed_verified_generation_state(digest: str, *, native_receipt=None) -> int:
+    """Create a disposable exact verified marker representing legacy missing-proof state."""
+    with db_session() as connection:
+        subscription._write_subscription_inventory_candidate(connection, force_pending=True)
+        marker = subscription._read_subscription_native_generation(connection)
+        assert marker["status"] == "pending"
+        stored = {
+            "schema": 1,
+            "status": "verified",
+            "candidate_digest": digest,
+            "candidate_revision": marker["candidate_revision"],
+            "verified_digest": digest,
+            "verified_revision": marker["candidate_revision"],
+            "reason": None,
+            "inventory_count": marker["inventory_count"],
+        }
+        if native_receipt is not None:
+            stored["native_proof"] = native_receipt
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            (json.dumps(stored, sort_keys=True, separators=(",", ":")),
+             subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+        return marker["candidate_revision"]
+
+
 def test_proof_only_receipt_publishes_with_captured_routing_projection(monkeypatch):
     from fwrouter_api.services import mihomo_reconcile, mihomo_reconcile_fingerprint
 
@@ -815,6 +900,14 @@ def test_legacy_admission_requires_explicit_confirmation_and_exact_digest(monkey
     monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof",
                         lambda *_args, **_kwargs: proof_calls.append(True) or {"ok": True})
 
+    strict_nonverified = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
+    )
+    assert strict_nonverified["ok"] is False
+    assert strict_nonverified["reason"] == "native_proof_refresh_requires_verified_generation"
+    assert proof_calls == []
+    assert not checkpoint.exists()
+
     wrong_confirmation = xray_subscription_service.admit_legacy_subscription_inventory(
         expected_digest=digest, operator_confirmation="yes",
     )
@@ -859,6 +952,7 @@ def test_legacy_admission_checkpoint_is_explicit_and_generic_recovery_never_muta
 
 def test_proof_only_admission_promotes_only_after_fresh_proof_and_is_idempotent(monkeypatch, tmp_path):
     digest = _seed_legacy_inventory()
+    _install_native_generation_capture(monkeypatch)
     adapter = object()
     checkpoint = tmp_path / "generation-checkpoint.json"
     monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: adapter)
@@ -913,11 +1007,293 @@ def test_proof_only_admission_promotes_only_after_fresh_proof_and_is_idempotent(
     assert subscription.get_subscription_native_generation_state()["candidate_revision"] == 1
 
 
+def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed(monkeypatch, tmp_path):
+    digest = _seed_legacy_inventory()
+    revision = _seed_verified_generation_state(digest)
+    adapter = object()
+    checkpoint = tmp_path / ".generation" / "generation-checkpoint.json"
+    checkpoint.parent.mkdir(mode=0o700)
+    checkpoint.parent.chmod(0o700)
+    config_path = tmp_path / "xray.json"
+    config_before = b'{"log":{"loglevel":"warning"},"synthetic":"preserve"}\n'
+    config_path.write_bytes(config_before)
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: adapter)
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
+    monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof",
+                        lambda *_args, **_kwargs: _positive_synthetic_proof())
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: True)
+    monkeypatch.setattr(xray_subscription_service, "_publish_legacy_admission_mihomo_receipt", lambda *_args: True)
+    native_capture = _install_native_generation_capture(monkeypatch)
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+                        lambda _routing=None: {"hash": "3" * 64})
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
+    from fwrouter_api.adapters import xray_common
+    monkeypatch.setattr(xray_common, "_default_xray_config_path", lambda: str(tmp_path / "xray.json"))
+    strict_plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission(
+        require_native_proof=True,
+    )
+    assert strict_plan["action"] == "reprove_verified"
+    assert strict_plan["eligible"] is True
+    assert strict_plan["native_generation_proof_refresh"] is True
+
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO subscription_node_identities "
+            "(identity_id, origin_server_id, current_server_id, revision, provenance_sha256) "
+            "VALUES ('proof-receipt-identity', 'legacy-admission-node', 'legacy-admission-node', 1, ?)",
+            ("d" * 64,),
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_aliases VALUES ('legacy-admission-node', 'proof-receipt-identity')",
+        )
+        connection.execute(
+            "INSERT INTO subscription_node_credentials "
+            "(scope, identity_id, client_uuid, client_email) VALUES (?, ?, ?, ?)",
+            ("subscription:proof-receipt", "proof-receipt-identity",
+             "00000000-0000-4000-8000-000000000123", "proof-receipt@acceptance.invalid"),
+        )
+        identity_before = {
+            table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2")]
+            for table in (
+                "subscription_node_identities", "subscription_node_aliases",
+                "subscription_node_credentials",
+            )
+        }
+
+    # The ordinary claim remains unavailable for a verified generation; only
+    # the explicit verified-reproof path may issue this narrow capability.
+    with xray_writer_guard():
+        assert subscription._claim_subscription_inventory_admission() is None
+        refresh_capability = subscription._claim_subscription_inventory_admission(
+            allow_verified_proof_refresh=True,
+        )
+        assert subscription._claim_subscription_inventory_admission(
+            allow_verified_proof_refresh=True,
+            expected_digest=digest,
+            expected_revision=revision + 1,
+        ) is None
+    assert refresh_capability is not None
+    assert refresh_capability.requires_native_proof_refresh is True
+    assert refresh_capability.digest == digest
+    assert refresh_capability.revision == revision
+
+    # A failed native capture must keep the old verified tuple and the resumable owner.
+    monkeypatch.setattr(
+        "fwrouter_api.services.native_proof.capture_native_generation_proof",
+        lambda **_kwargs: {"status": "INCOMPLETE", "reason": "synthetic_native_capture_incomplete"},
+    )
+    failed = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
+    )
+    assert failed["ok"] is False
+    assert failed["reason"] == "native_generation_receipt_incomplete"
+    assert checkpoint.is_file()
+    legacy_plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission()
+    assert legacy_plan["eligible"] is False
+    assert legacy_plan["reason"] == "checkpoint_proof_requirement_mismatch"
+    strict_resume_plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission(
+        require_native_proof=True,
+    )
+    assert strict_resume_plan["action"] == "reprove_verified"
+    assert strict_resume_plan["eligible"] is True
+    strict_checkpoint = json.loads(checkpoint.read_text(encoding="utf-8"))
+    strict_checkpoint["require_native_proof"] = False
+    xray_subscription_service._atomic_write_private_checkpoint(
+        checkpoint, json.dumps(strict_checkpoint, sort_keys=True, separators=(",", ":")),
+    )
+    incompatible_checkpoint_bytes = checkpoint.read_bytes()
+    incompatible_strict_plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission(
+        require_native_proof=True,
+    )
+    assert incompatible_strict_plan["eligible"] is False
+    assert incompatible_strict_plan["reason"] == "checkpoint_proof_requirement_mismatch"
+    assert checkpoint.read_bytes() == incompatible_checkpoint_bytes
+    strict_checkpoint["require_native_proof"] = True
+    xray_subscription_service._atomic_write_private_checkpoint(
+        checkpoint, json.dumps(strict_checkpoint, sort_keys=True, separators=(",", ":")),
+    )
+    with db_session() as connection:
+        marker = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+        assert "native_proof" not in marker
+    assert marker["candidate_revision"] == revision
+
+    downgrade = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION,
+    )
+    assert downgrade["ok"] is False
+    assert downgrade["reason"] == "checkpoint_proof_requirement_mismatch"
+    assert checkpoint.is_file()
+
+    # A stale generation revision is refused before another native capture.
+    calls_before_stale_revision = []
+    monkeypatch.setattr(
+        "fwrouter_api.services.native_proof.capture_native_generation_proof",
+        lambda **_kwargs: calls_before_stale_revision.append(True) or native_capture(
+            expected_digest=digest, expected_revision=revision,
+        ),
+    )
+    with db_session() as connection:
+        marker["candidate_revision"] += 1
+        marker["verified_revision"] += 1
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            (json.dumps(marker, sort_keys=True, separators=(",", ":")),
+             subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+    stale_revision = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
+    )
+    assert stale_revision["ok"] is False
+    assert stale_revision["reason"] == "inventory_generation_stale"
+    assert calls_before_stale_revision == []
+    assert checkpoint.is_file()
+    with db_session() as connection:
+        marker["candidate_revision"] = revision
+        marker["verified_revision"] = revision
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            (json.dumps(marker, sort_keys=True, separators=(",", ":")),
+             subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+
+    # A runtime-fence change after the expensive proof also leaves the owner open.
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: False)
+    stale_fence = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
+    )
+    assert stale_fence["ok"] is False
+    assert stale_fence["reason"] == "legacy_admission_fence_changed"
+    assert checkpoint.is_file()
+    with db_session() as connection:
+        marker = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+        assert "native_proof" not in marker
+        assert marker["candidate_revision"] == revision
+
+    # Resume the same verified owner; the persisted field passes the strict native reader.
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: True)
+    resumed = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
+    )
+    assert resumed["ok"] is True, resumed
+    assert resumed["already_admitted"] is True
+    assert resumed["revision"] == revision
+    assert not checkpoint.exists()
+    with db_session() as connection:
+        marker = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+        from fwrouter_api.services.native_proof import _valid_native_generation_proof
+        assert _valid_native_generation_proof(
+            marker.get("native_proof"), generation=marker, inventory_digest=digest,
+        ) is True
+        assert marker["candidate_revision"] == revision
+        identity_after = {
+            table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY 1, 2")]
+            for table in identity_before
+        }
+    assert identity_after == identity_before
+    assert config_path.read_bytes() == config_before
+
+    # A failed later reproof must not erase the now-good proof or claim success.
+    saved_proof = marker["native_proof"]
+    monkeypatch.setattr(
+        "fwrouter_api.services.native_proof.capture_native_generation_proof",
+        lambda **_kwargs: {"status": "INCOMPLETE", "reason": "synthetic_native_capture_incomplete"},
+    )
+    failed_again = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
+    )
+    assert failed_again["ok"] is False
+    assert failed_again["reason"] == "native_generation_receipt_incomplete"
+    assert checkpoint.is_file()
+    with db_session() as connection:
+        marker_after_failure = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+    assert marker_after_failure["native_proof"] == saved_proof
+    assert marker_after_failure["candidate_revision"] == revision
+
+
+def test_verified_legacy_reproof_default_preserves_compatibility_without_full_native_tuple(monkeypatch, tmp_path):
+    digest = _seed_legacy_inventory()
+    revision = _seed_verified_generation_state(digest)
+    checkpoint = tmp_path / "generation-checkpoint.json"
+    monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
+    monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
+    monkeypatch.setattr(xray_subscription_service, "_collect_legacy_inventory_native_proof",
+                        lambda *_args, **_kwargs: _positive_synthetic_proof())
+    monkeypatch.setattr(xray_subscription_service, "_legacy_admission_runtime_fences_match", lambda _view: True)
+    monkeypatch.setattr(xray_subscription_service, "_publish_legacy_admission_mihomo_receipt", lambda *_args: True)
+    monkeypatch.setattr(
+        "fwrouter_api.services.native_proof.capture_native_generation_proof",
+        lambda **_kwargs: pytest.fail("default legacy reproof must not require full native-generation capture"),
+    )
+
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+                        lambda _routing=None: {"hash": "3" * 64})
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
+
+    result = xray_subscription_service.admit_legacy_subscription_inventory(
+        expected_digest=digest, operator_confirmation=CONFIRMATION,
+    )
+
+    assert result["ok"] is True, result
+    assert result["already_admitted"] is True
+    assert result["proof_receipt_written"] is True
+    assert result["revision"] == revision
+    assert not checkpoint.exists()
+    with db_session() as connection:
+        marker = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+    assert "native_proof" not in marker
+    assert marker["candidate_revision"] == revision
+
+
+def test_admission_cli_forwards_strict_native_proof_only_when_requested(monkeypatch, capsys):
+    from fwrouter_api import cli
+
+    calls = []
+    monkeypatch.setattr(
+        xray_subscription_service, "admit_legacy_subscription_inventory",
+        lambda **kwargs: calls.append(kwargs) or {"ok": False, "status": "blocked", "reason": "test"},
+    )
+    base_args = [
+        "xray", "generation", "admit-legacy", "--expected-inventory-digest", "a" * 64,
+        "--confirm", CONFIRMATION,
+    ]
+    assert cli.main(base_args) == 1
+    capsys.readouterr()
+    assert calls[-1] == {"expected_digest": "a" * 64, "operator_confirmation": CONFIRMATION}
+
+    assert cli.main([*base_args, "--require-native-proof"]) == 1
+    capsys.readouterr()
+    assert calls[-1] == {
+        "expected_digest": "a" * 64,
+        "operator_confirmation": CONFIRMATION,
+        "require_native_proof": True,
+    }
+
+
 def test_legacy_admission_reproves_after_pending_marker_and_resumes_receipt_close_crash(
     monkeypatch, tmp_path, capsys,
 ):
     """Exercise real DB/receipt/promotion/CLI across marker change and checkpoint-close retry."""
     digest = _seed_legacy_inventory()
+    _install_native_generation_capture(monkeypatch)
     checkpoint = tmp_path / "generation-checkpoint.json"
     monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: object())
     monkeypatch.setattr(xray_subscription_service, "_xray_generation_checkpoint_path", lambda _adapter: checkpoint)
@@ -2175,6 +2551,23 @@ def test_admission_plan_cli_is_read_only_and_never_calls_admission(monkeypatch, 
     assert output["action"] == "fresh_admission"
     assert output["native_proof_required"] is True
 
+    strict_plan_calls = []
+    monkeypatch.setattr(
+        xray_subscription_service, "inspect_legacy_subscription_inventory_admission",
+        lambda **kwargs: strict_plan_calls.append(kwargs) or {
+            **plan, "eligible": False, "action": "blocked",
+            "reason": "native_proof_refresh_requires_verified_generation",
+            "native_generation_proof_refresh": True,
+        },
+    )
+    result = cli.main(["xray", "generation", "admit-legacy", "--plan", "--require-native-proof"])
+    output = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert strict_plan_calls == [{"require_native_proof": True}]
+    assert output["eligible"] is False
+    assert output["native_generation_proof_refresh"] is True
+    assert output["reason"] == "native_proof_refresh_requires_verified_generation"
+
 
 def test_admission_cli_requires_explicit_digest_and_confirmation(monkeypatch, capsys):
     from fwrouter_api import cli
@@ -2343,6 +2736,7 @@ def test_proof_only_checkpoint_unknown_mode_fails_closed_without_mutation(tmp_pa
 
 def test_proof_only_checkpoint_closes_verified_commit_after_restart_window(monkeypatch, tmp_path):
     digest = _seed_legacy_inventory()
+    _install_native_generation_capture(monkeypatch)
     adapter = object()
     checkpoint = tmp_path / "generation-checkpoint.json"
     monkeypatch.setattr(xray_subscription_service, "_xray_adapter", lambda: adapter)

@@ -50,4 +50,20 @@ Actual network-namespace tests exercise complete nftables hashing and IPv4/IPv6 
 
 Installing the CLI establishes a reader, not the owner evidence it reads. A verified generation may predate this capability and still lack the required native tuple. A healthy API, unchanged generation, successful subscription response or kernel packet probe must not substitute for that tuple. If the collector returns `native_generation_receipt_missing_or_invalid`, later component checks have not necessarily executed.
 
+The existing operator-confirmed `admit-legacy` operation has the plan action
+`reprove_verified` for this exact verified-generation case. Its plan remains
+read-only. By default, execution preserves the established legacy contract: it
+rechecks the existing runtime/source fences and refreshes the Mihomo receipt,
+without requiring or rewriting the newer Native Generation tuple. An operator
+may explicitly pass `--require-native-proof` to use the existing generation
+promoter with an exact digest/revision capability; that mode requires a
+complete strict-reader-compatible tuple before updating the marker. It does
+not bump the verified generation revision or change inventory, identities,
+credentials or runtime configuration. Incomplete capture or a changed fence
+returns blocked and retains the checkpoint; an existing good proof remains
+untouched. The strict option is rejected before checkpoint creation for
+non-verified generations. Ordinary pending-generation promotion keeps its
+established optional-receipt behavior. Generic startup recovery does not invoke
+this explicit reproof operation.
+
 Named-counter parsing is a prerequisite to both Core receipt capture and verification. Receipt capture remains owned by the existing successful apply/generation lifecycle; supporting counter declarations does not itself create or backfill any receipt. Existing receipts without a matching semantic digest are not grandfathered. A later source installation or genuine existing-owner operation needs its own exact-source qualification and operation authority. Do not trigger apply, refresh or admission solely because this document or a public CI run is green.

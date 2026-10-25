@@ -37,6 +37,7 @@ class _SubscriptionInventoryAdmission:
     digest: str
     revision: int
     issuer: object
+    requires_native_proof_refresh: bool = False
     proof_only_source_fingerprint: str | None = None
     proof_only_core_runtime_fingerprint: str | None = None
     proof_only_selection_revision: int | None = None
@@ -332,11 +333,36 @@ def _subscription_inventory_generation_gate(
             "last_good_retained": True}
 
 
-def _claim_subscription_inventory_admission() -> _SubscriptionInventoryAdmission | None:
+def _claim_subscription_inventory_admission(
+    *, allow_verified_proof_refresh: bool = False,
+    expected_digest: str | None = None,
+    expected_revision: int | None = None,
+) -> _SubscriptionInventoryAdmission | None:
+    """Issue the normal pending capability, or an exact guarded proof-refresh capability.
+
+    The verified refresh form is reserved for the explicit proof-only legacy
+    admission owner. Ordinary callers retain the historical ``None`` result
+    for verified/empty generations.
+    """
     if not xray_writer_guard_is_held():
         raise RuntimeError("SUBSCRIPTION_INVENTORY_ADMISSION_REQUIRES_WRITER_GUARD")
     with db_session() as connection:
         state = _read_subscription_native_generation(connection)
+    if state["status"] == "verified" and allow_verified_proof_refresh:
+        if (
+            state["candidate_digest"] != state["verified_digest"]
+            or state["candidate_revision"] != state["verified_revision"]
+            or type(state["candidate_revision"]) is not int
+            or (expected_digest is not None and state["candidate_digest"] != expected_digest)
+            or (expected_revision is not None and state["candidate_revision"] != expected_revision)
+        ):
+            return None
+        return _SubscriptionInventoryAdmission(
+            digest=str(state["candidate_digest"]),
+            revision=int(state["candidate_revision"]),
+            issuer=_SUBSCRIPTION_ADMISSION_ISSUER,
+            requires_native_proof_refresh=True,
+        )
     if state["status"] == "verified" or state["status"] == "empty":
         return None
     if state["status"] != "pending" or type(state["candidate_revision"]) is not int:
@@ -398,6 +424,9 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
         if native_result.get("status") == "PASS" and isinstance(native_result.get("proof"), dict)
         else None
     )
+    proof_refresh_admission = admission.requires_native_proof_refresh is True
+    if proof_refresh_admission and native_proof is None:
+        return {"ok": False, "reason": "native_generation_receipt_incomplete"}
     with db_session() as connection:
         if admission.proof_only_source_fingerprint is not None:
             # Serialize the final proof+marker CAS with any SQLite writer and
@@ -460,6 +489,8 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
                 or latest_apply.get("core_intent_revision") != proof_core.get("core_intent_revision")
                 or latest_apply_hash != proof_core.get("latest_apply_id_sha256")):
             native_proof = None
+        if proof_refresh_admission and native_proof is None:
+            return {"ok": False, "reason": "native_generation_receipt_stale"}
         if (
             current["status"] == "verified"
             and current["candidate_digest"] == admission.digest
