@@ -1017,12 +1017,16 @@ def test_core_manifest_comparison_ignores_selector_owned_auto_target_but_checks_
 def test_mihomo_native_selector_must_match_persistent_auto_and_fixed_targets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fwrouter_api.services import mihomo_config_status
+    from fwrouter_api.services import mihomo_config_proxies, mihomo_config_status
 
     monkeypatch.setattr(mihomo_config_status, "_resolve_active_auto_runtime_target",
                         lambda _server_id, *, expected_targets: "server-a" if "server-a" in expected_targets else None)
     monkeypatch.setattr(mihomo_config_status, "_resolve_active_fixed_runtime_target",
                         lambda _server_id, *, expected_targets: "server-b" if "server-b" in expected_targets else None)
+    monkeypatch.setattr(
+        mihomo_config_proxies, "_logical_profile_groups",
+        lambda **_kwargs: pytest.fail("concrete target readback must not query logical profile storage"),
+    )
     config = {"proxies": [{"name": "server-a"}, {"name": "server-b"}]}
 
     assert native_proof._mihomo_selection_target_matches(
@@ -1045,6 +1049,162 @@ def test_mihomo_native_selector_must_match_persistent_auto_and_fixed_targets(
         {"routing": {"server_mode": "fixed", "applied_fixed_server_id": "durable-b"}},
         config, {"vpn-global": {"now": "server-a"}},
     )
+
+
+def test_mihomo_native_selector_accepts_only_proven_logical_profile_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fwrouter_api.services import custom_servers, mihomo_config_proxies, mihomo_config_status
+
+    group_name = "Logical Profile [logical-id]"
+    fixed_group_name = "Fixed Logical Profile [logical-id]"
+    rows = [
+        {"server_id": "logical-auto", "raw": {"name": "display", "_fwrouter_runtime_name": group_name}},
+        {"server_id": "logical-fixed", "raw": {"name": "fixed display", "_fwrouter_runtime_name": fixed_group_name}},
+    ]
+
+    def runtime_rows(*, explicit_server_ids=None, **_kwargs):
+        if explicit_server_ids:
+            return [row for row in rows if row["server_id"] in explicit_server_ids]
+        return rows
+
+    monkeypatch.setattr(custom_servers, "resolve_mihomo_runtime_proxy_rows", runtime_rows)
+    monkeypatch.setattr(mihomo_config_status, "resolve_mihomo_runtime_proxy_rows", runtime_rows)
+    config = {
+        "proxies": [{"name": "member-a"}, {"name": "member-b"}],
+        "proxy-groups": [
+            {"name": group_name, "type": "fallback", "proxies": ["member-a", "member-b"]},
+            {"name": fixed_group_name, "type": "fallback", "proxies": ["member-a", "member-b"]},
+        ],
+    }
+    native_group = {"type": "fallback", "all": ["member-a", "member-b"], "now": "member-a"}
+    generated_groups = [
+        {"name": name, "type": "fallback", "proxies": ["member-a", "member-b"]}
+        for name in (group_name, fixed_group_name)
+    ]
+    monkeypatch.setattr(mihomo_config_proxies, "_logical_profile_groups", lambda **_kwargs: generated_groups)
+
+    assert native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config,
+        {"vpn-auto": {"now": group_name}, "vpn-global": {"now": "vpn-auto"}, group_name: native_group},
+    )
+    assert native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "fixed", "applied_fixed_server_id": "logical-fixed"}},
+        config,
+        {"vpn-global": {"now": fixed_group_name}, fixed_group_name: native_group},
+    )
+    # Missing runtime group, incomplete membership, or an untrusted group shape
+    # must not turn a durable logical ID into a native PASS.
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config, {"vpn-auto": {"now": group_name}, "vpn-global": {"now": "vpn-auto"}},
+    )
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config, {"vpn-auto": {"now": group_name}, group_name: {"type": "fallback", "all": ["member-a"], "now": "member-a"}},
+    )
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config,
+        {"vpn-auto": {"now": group_name}, group_name: {**native_group, "now": "REJECT"}},
+    )
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        {**config, "proxy-groups": [{"name": group_name, "type": "fallback", "proxies": ["member-a", "missing"]}]},
+        {"vpn-auto": {"now": group_name}, group_name: native_group},
+    )
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        {**config, "proxy-groups": [{"name": group_name, "type": "select", "proxies": ["member-a", "member-b"]}]},
+        {"vpn-auto": {"now": group_name}, group_name: {"type": "select", "all": ["member-a", "member-b"], "now": "member-a"}},
+    )
+    rows.append({"server_id": "ambiguous-alias", "raw": {"name": group_name, "_fwrouter_runtime_name": group_name}})
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config,
+        {"vpn-auto": {"now": group_name}, group_name: native_group},
+    )
+
+
+def test_mihomo_fixed_logical_target_rejects_colliding_runtime_group_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fwrouter_api.services import mihomo_config_proxies, mihomo_config_status
+
+    group_name = "Shared Logical Profile [collision]"
+    fixed_id = "durable-profile-a"
+    fixed_row = {
+        "server_id": fixed_id,
+        "raw": {"name": "profile-a", "_fwrouter_runtime_name": group_name},
+    }
+    resolver_calls: list[set[str] | None] = []
+
+    def explicit_target_rows(*, explicit_server_ids=None, **_kwargs):
+        resolver_calls.append(set(explicit_server_ids) if explicit_server_ids is not None else None)
+        return [fixed_row] if explicit_server_ids == {fixed_id} else []
+
+    monkeypatch.setattr(mihomo_config_status, "resolve_mihomo_runtime_proxy_rows", explicit_target_rows)
+    generated_profile_a = {
+        "name": group_name, "type": "fallback", "proxies": ["member-a"],
+    }
+    generated_profile_b = {
+        "name": group_name, "type": "fallback", "proxies": ["member-b"],
+    }
+    monkeypatch.setattr(
+        mihomo_config_proxies, "_logical_profile_groups",
+        lambda **_kwargs: [generated_profile_a, generated_profile_b],
+    )
+    config_for_profile_b = {
+        "proxies": [{"name": "member-a"}, {"name": "member-b"}],
+        "proxy-groups": [generated_profile_b],
+    }
+    native = {
+        "vpn-global": {"now": group_name},
+        group_name: {"type": "fallback", "all": ["member-b"], "now": "member-b"},
+    }
+    fixed_db = {"routing": {"server_mode": "fixed", "applied_fixed_server_id": fixed_id}}
+
+    # The real fixed-target resolver only fetches the explicit durable ID, so
+    # its single-row result cannot reveal another profile's aliased group name.
+    assert not native_proof._mihomo_selection_target_matches(fixed_db, config_for_profile_b, native)
+    assert resolver_calls == [{fixed_id}]
+
+    # Duplicate names in candidate config are independently ambiguous even
+    # when one generated durable profile exactly matches the winning config.
+    monkeypatch.setattr(
+        mihomo_config_proxies, "_logical_profile_groups", lambda **_kwargs: [generated_profile_b],
+    )
+    duplicate_config = {
+        **config_for_profile_b,
+        "proxy-groups": [generated_profile_a, generated_profile_b],
+    }
+    assert not native_proof._mihomo_selection_target_matches(fixed_db, duplicate_config, native)
+    malformed_duplicate_config = {
+        **config_for_profile_b,
+        "proxy-groups": [
+            generated_profile_b,
+            {"name": group_name, "type": "fallback", "proxies": ["member-a", "missing"]},
+        ],
+    }
+    assert not native_proof._mihomo_selection_target_matches(fixed_db, malformed_duplicate_config, native)
+
+    # A logical group name colliding with a concrete proxy name is ambiguous;
+    # it must not take the early concrete-target success path.
+    collision_group = {"name": "member-a", "type": "fallback", "proxies": ["member-b"]}
+    monkeypatch.setattr(
+        mihomo_config_proxies, "_logical_profile_groups", lambda **_kwargs: [collision_group],
+    )
+    collision_config = {
+        "proxies": [{"name": "member-a"}, {"name": "member-b"}],
+        "proxy-groups": [collision_group],
+    }
+    collision_native = {
+        "vpn-global": {"now": "member-a"},
+        "member-a": {"type": "fallback", "all": ["member-b"], "now": "member-b"},
+    }
+    assert not native_proof._mihomo_selection_target_matches(fixed_db, collision_config, collision_native)
+    assert resolver_calls == [{fixed_id}, {fixed_id}, {fixed_id}, {fixed_id}]
 
 
 def test_unknown_exception_text_is_never_returned_as_public_reason() -> None:
