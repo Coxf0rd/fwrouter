@@ -101,6 +101,7 @@ def main() -> int:
             preflight = subprocess.run(
                 ["/usr/local/libexec/fwrouter/fwrouter-boot-preflight.sh"],
                 check=False,
+                pass_fds=(fd,),
             )
             if preflight.returncode != 0:
                 return int(preflight.returncode)
