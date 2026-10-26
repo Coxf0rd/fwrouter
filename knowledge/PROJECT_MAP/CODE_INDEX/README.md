@@ -95,6 +95,7 @@
 63. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_validation_py.md`
 64. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_plan_py.md`
 65. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_import_py.md`
+65b. `backend_fwrouter_api_services_control_plane_import_admission_py.md`
 65a. `opt_fwrouter_api_fwrouter_api_services_core_intent_py.md`
 66. `opt_fwrouter_api_fwrouter_api_routes_system_py.md`
 66a. `opt_fwrouter_api_fwrouter_api_routes_state_py.md`

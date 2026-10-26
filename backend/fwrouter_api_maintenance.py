@@ -103,6 +103,8 @@ def main() -> None:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        if args.command == "rebuild-db" and not bool(result.get("ok")):
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

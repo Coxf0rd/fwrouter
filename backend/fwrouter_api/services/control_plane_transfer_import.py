@@ -12,6 +12,10 @@ from fwrouter_api.services.control_plane_transfer_common import (
     _state_from_snapshot,
 )
 from fwrouter_api.services.control_plane_transfer_validation import validate_control_plane_snapshot
+from fwrouter_api.services.control_plane_import_admission import (
+    control_plane_import_is_admitted,
+    maintenance_import_admitted,
+)
 from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.rules import get_manual_rules_texts, get_rules_state
 from fwrouter_api.services.runtime import get_scoped_egress_runtime_summary
@@ -242,13 +246,12 @@ def _normalized_rules_state(
     return normalized
 
 
-@xray_writer_guarded
+@maintenance_import_admitted
 def import_control_plane_snapshot(
     snapshot: dict[str, Any],
     *,
     normalize_runtime_state: bool = True,
 ) -> dict[str, Any]:
-    initialize_database()
     validation = validate_control_plane_snapshot(snapshot)
     if not validation["ok"]:
         return {
@@ -256,6 +259,34 @@ def import_control_plane_snapshot(
             "validation": validation,
             "imported": False,
         }
+
+    return _import_control_plane_snapshot_validated(
+        snapshot,
+        normalize_runtime_state=normalize_runtime_state,
+        validation=validation,
+    )
+
+
+@maintenance_import_admitted
+@xray_writer_guarded
+def _import_control_plane_snapshot_validated(
+    snapshot: dict[str, Any],
+    *,
+    normalize_runtime_state: bool,
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    # The writer guard may have waited while the originating request finished.
+    # Recheck the shared, revocable grant after acquiring that guard and before
+    # database initialization or any import side effect.
+    if not control_plane_import_is_admitted():
+        return {
+            "ok": False,
+            "imported": False,
+            "error_code": "CONTROL_PLANE_IMPORT_MAINTENANCE_ADMISSION_REQUIRED",
+            "error_message": "A verified maintenance import request is required.",
+        }
+
+    initialize_database()
 
     state = _state_from_snapshot(snapshot)
     imported_server_ids = {
@@ -979,6 +1010,8 @@ def import_control_plane_snapshot(
         "ok": True,
         "validation": validation,
         "imported": True,
+        "persistence_status": "persisted",
+        "selection_reconcile_status": "required" if selection_reconcile_required else "not_requested",
         "normalize_runtime_state": normalize_runtime_state,
         "summary": {
             "subjects_count": len(subjects),

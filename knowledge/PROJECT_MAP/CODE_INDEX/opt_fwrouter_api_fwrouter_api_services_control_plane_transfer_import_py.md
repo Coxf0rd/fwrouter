@@ -19,3 +19,11 @@ Applies validated control-plane snapshots into SQLite and rules artifact files.
 - Legacy subscription snapshots with `subscription_state.url` but no `metadata.subscriptions.items` are normalized into the backend-side subscription registry while preserving the compatibility URL.
 - Successful import writes `control_plane_snapshot_imported` operational log.
 Control-plane import never accepts a foreign Core revision. It preserves and advances the local monotonic fence transactionally and normalizes imported enabled Core to pending.
+
+The public import service validates the snapshot before database initialization,
+then requires the request-scoped maintenance admission before acquiring the
+Xray writer guard. The API route verifies the fixed root-owned bearer verifier
+before transfer-path resolution. See
+`docs/CONTROL_PLANE_MAINTENANCE_ADMISSION.md`. This does not qualify atomic
+recovery across rules files and SQLite; partial filesystem publication remains
+an explicit failure limitation.

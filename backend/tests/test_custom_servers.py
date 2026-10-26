@@ -1,5 +1,8 @@
 from __future__ import annotations
-from _test_support import configure_test_state_dir_without_schedulers as _configure_env
+from _test_support import (
+    configure_test_state_dir_without_schedulers as _configure_env,
+    maintenance_import_test_client as _maintenance_client,
+)
 from fwrouter_api.db.connection import initialize_database
 
 
@@ -11,7 +14,7 @@ from fastapi.testclient import TestClient
 from fwrouter_api.adapters.subscription import SubscriptionRefreshResult, SubscriptionRefreshStatus, SubscriptionServer
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.main import create_app
-from fwrouter_api.services.control_plane_transfer import export_control_plane_snapshot, import_control_plane_snapshot
+from fwrouter_api.services.control_plane_transfer import export_control_plane_snapshot
 from fwrouter_api.services.custom_servers import (
     VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
     resolve_runtime_proxy_rows,
@@ -481,8 +484,13 @@ def test_custom_server_transfer_redacts_credentials_by_default_and_imports_with_
     with db_session() as connection:
         connection.execute("DELETE FROM servers")
 
-    imported = import_control_plane_snapshot(full_snapshot, normalize_runtime_state=True)
-    assert imported["ok"] is True
+    with _maintenance_client(monkeypatch, tmp_path) as client:
+        import_response = client.post(
+            "/api/v2/transfer/control-plane/import",
+            json={"snapshot": full_snapshot, "normalize_runtime_state": True},
+        )
+    assert import_response.status_code == 200
+    assert import_response.json()["data"]["import"]["ok"] is True
 
     with db_session() as connection:
         row = connection.execute(

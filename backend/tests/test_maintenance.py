@@ -368,11 +368,28 @@ def test_rebuild_cli_defers_all_work_to_rebuild_preflight(monkeypatch, capsys) -
         ["fwrouter_api_maintenance", "rebuild-db", "--file-path", "/snapshot.json"],
     )
 
-    fwrouter_api_maintenance.main()
+    with pytest.raises(SystemExit) as exc_info:
+        fwrouter_api_maintenance.main()
 
+    assert exc_info.value.code == 1
     assert calls == [{
         "file_path": "/snapshot.json",
         "normalize_runtime_state": True,
         "requested_by": "fwrouter_api_maintenance",
     }]
     assert json.loads(capsys.readouterr().out)["stage"] == "resolve_snapshot"
+
+
+def test_rebuild_cli_reports_unqualified_offline_context_as_failure(monkeypatch, tmp_path: Path, capsys) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "fwrouter_api_maintenance", "rebuild-db", "--file-path", "missing.json",
+    ])
+
+    with pytest.raises(SystemExit) as exc_info:
+        fwrouter_api_maintenance.main()
+
+    assert exc_info.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stage"] == "maintenance_admission"
+    assert payload["error"]["code"] == "DATABASE_REBUILD_MAINTENANCE_CONTEXT_UNQUALIFIED"

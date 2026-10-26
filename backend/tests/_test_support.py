@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 from pathlib import Path
+import secrets
 from typing import Any
 
 
@@ -35,6 +38,40 @@ def configure_test_state_dir_without_schedulers(monkeypatch: Any, tmp_path: Path
     from fwrouter_api.core.config import get_settings
 
     get_settings.cache_clear()
+
+
+def maintenance_import_test_client(
+    monkeypatch: Any, tmp_path: Path, *, raise_server_exceptions: bool = True,
+):
+    """Create an isolated TestClient and synthetic, request-scoped import grant."""
+    from fastapi.testclient import TestClient
+
+    from fwrouter_api.main import create_app
+    from fwrouter_api.services import control_plane_import_admission as admission
+
+    token = secrets.token_hex(32)
+    verifier = tmp_path / "etc" / "fwrouter" / "maintenance-import-verifier.json"
+    verifier.parent.mkdir(mode=0o700, parents=True)
+    verifier.parent.chmod(0o700)
+    verifier.write_text(json.dumps({
+        "schema_version": 1,
+        "principal": "maintenance-operator",
+        "scope": "control-plane.import",
+        "token_sha256": hashlib.sha256(token.encode("ascii")).hexdigest(),
+    }), encoding="utf-8")
+    verifier.chmod(0o600)
+    monkeypatch.setattr(admission, "VERIFIER_PATH", verifier)
+    monkeypatch.setattr(admission, "_trusted_uid", lambda: os.getuid())
+    monkeypatch.setattr(admission, "_effective_uid", lambda: os.getuid())
+    return TestClient(
+        create_app(enable_startup_tasks=False),
+        client=("127.0.0.1", 45678),
+        raise_server_exceptions=raise_server_exceptions,
+        headers={
+            "Host": "127.0.0.1:5000",
+            "Authorization": f"Bearer {token}",
+        },
+    )
 
 
 def database_table_snapshot() -> dict[str, list[dict[str, object]]]:

@@ -14,7 +14,7 @@ The transfer workflow is intentionally split into five steps:
 2. copy the snapshot file into the Linux server transfer directory;
 3. inspect available snapshot files on the server;
 4. run validation and dry-run import planning;
-5. import the snapshot, then run Linux-side apply/verify.
+5. import the snapshot using the maintenance-only credential, then run Linux-side apply/verify.
 
 ## Scope
 
@@ -127,6 +127,14 @@ Recommended request:
 
 `POST /transfer/control-plane/import`
 
+This mutation endpoint is unavailable to browser/UI clients. It requires a
+separately provisioned maintenance bearer credential, sent to the API directly
+over its loopback listener with `Host: 127.0.0.1:5000` and no `Origin` or
+forwarding headers. `requested_by`, role headers, and reverse-proxy identity
+are not authorization. See [maintenance admission](../docs/CONTROL_PLANE_MAINTENANCE_ADMISSION.md)
+for the fixed verifier contract and current restore limitations. The
+credential is not stored in the snapshot or the FWRouter database.
+
 Recommended request:
 
 ```json
@@ -140,7 +148,10 @@ After success:
 
 - database control-plane tables are replaced by snapshot state;
 - rules files are restored from the snapshot bundle;
-- runtime/apply state is reset to a fresh host baseline when normalization is enabled.
+- runtime/apply state is reset to a fresh host baseline when normalization is enabled;
+- the result distinguishes durable persistence from a required or completed
+  selection reconcile; even completed selection reconcile does not mean Core
+  apply or native verification succeeded.
 
 ## Linux Playbook
 
@@ -154,8 +165,15 @@ Recommended server-side flow:
    - validation is `ok=true`
    - `scoped_egress.readiness.state` is understood
    - warnings are acceptable
-6. Run `POST /api/v2/transfer/control-plane/import`.
+6. Run `POST /api/v2/transfer/control-plane/import` from an approved local
+   maintenance client with the separately provisioned bearer credential.
 7. After import, run the normal Linux apply/verify workflow for routing, rules, scoped egress and watchdog.
+
+The offline `rebuild-db` maintenance command currently fails closed because no
+host-wide quiescence/lifecycle context issuer is qualified. Do not treat it as
+an alternate supported restore path. Existing eligibility checks and backup
+ordering remain in source for regression coverage, but that does not authorize
+production rebuild.
 
 ## Selective Import Strategy
 

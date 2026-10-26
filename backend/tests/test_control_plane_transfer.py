@@ -1,5 +1,8 @@
 from __future__ import annotations
-from _test_support import configure_test_state_dir as _configure_env
+from _test_support import (
+    configure_test_state_dir as _configure_env,
+    maintenance_import_test_client as _maintenance_client,
+)
 from fwrouter_api.db.connection import initialize_database
 
 
@@ -22,6 +25,7 @@ from fwrouter_api.services.subscription import (
     refresh_subscription_inventory,
     save_subscription_url,
 )
+from fwrouter_api.services.control_plane_transfer import export_control_plane_snapshot
 
 
 
@@ -234,7 +238,7 @@ def test_control_plane_plan_and_import_from_file(
     _seed_routing()
     save_manual_draft("DIRECT plan.example\n")
 
-    with _client() as client:
+    with _maintenance_client(monkeypatch, tmp_path) as client:
         export_response = client.get(
             "/api/v2/transfer/control-plane/export",
             params={"include_secrets": "false", "write_file": "true"},
@@ -306,6 +310,61 @@ def test_control_plane_snapshot_file_path_must_stay_in_transfer_dir(
     assert payload["error"]["code"] == "CONTROL_PLANE_SNAPSHOT_FILE_PATH_INVALID"
 
 
+def test_partial_rules_publication_fails_honestly_without_claiming_database_import(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import control_plane_transfer_import as transfer_import
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    rules_files = get_manual_rules_texts()
+    rules_files["draft_path"].parent.mkdir(parents=True, exist_ok=True)
+    rules_files["active_path"].parent.mkdir(parents=True, exist_ok=True)
+    rules_files["draft_path"].write_text("old draft\n", encoding="utf-8")
+    rules_files["active_path"].write_text("old active\n", encoding="utf-8")
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO settings (key, value_json) VALUES ('pytest.partial_import', ?)",
+            (json.dumps("old"),),
+        )
+    snapshot = export_control_plane_snapshot(include_secrets=False, write_file=False)["snapshot"]
+    snapshot["state"]["settings"] = [
+        *[row for row in snapshot["state"].get("settings", []) if row.get("key") != "pytest.partial_import"],
+        {"key": "pytest.partial_import", "value": "new", "updated_at": None},
+    ]
+    snapshot["state"]["rules"]["content"].update({
+        "manual_draft_text": "new draft\n",
+        "manual_active_text": "new active\n",
+    })
+    original_write = transfer_import.atomic_write_text
+    writes = 0
+
+    def fail_second_rules_write(path: Path, text: str) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == 2:
+            raise OSError("synthetic partial rules publication")
+        original_write(path, text)
+
+    monkeypatch.setattr(transfer_import, "atomic_write_text", fail_second_rules_write)
+    with _maintenance_client(
+        monkeypatch, tmp_path, raise_server_exceptions=False,
+    ) as client:
+        response = client.post(
+            "/api/v2/transfer/control-plane/import",
+            json={"snapshot": snapshot, "normalize_runtime_state": True},
+        )
+
+    assert response.status_code == 500
+    assert rules_files["draft_path"].read_text(encoding="utf-8") == "new draft\n"
+    assert rules_files["active_path"].read_text(encoding="utf-8") == "old active\n"
+    with db_session() as connection:
+        value = connection.execute(
+            "SELECT value_json FROM settings WHERE key='pytest.partial_import'"
+        ).fetchone()["value_json"]
+    assert value == '"old"'
+
+
 def test_control_plane_import_restores_snapshot_with_runtime_normalization(
     monkeypatch,
     tmp_path: Path,
@@ -342,7 +401,7 @@ def test_control_plane_import_restores_snapshot_with_runtime_normalization(
             """
         )
 
-    with _client() as client:
+    with _maintenance_client(monkeypatch, tmp_path) as client:
         export_response = client.get(
             "/api/v2/transfer/control-plane/export",
             params={"include_secrets": "true", "write_file": "false"},
@@ -527,7 +586,7 @@ def test_control_plane_import_normalizes_fwrouter_subject_and_override(
         "warnings": [],
     }
 
-    with _client() as client:
+    with _maintenance_client(monkeypatch, tmp_path) as client:
         import_response = client.post(
             "/api/v2/transfer/control-plane/import",
             json={"snapshot": snapshot, "normalize_runtime_state": True},
@@ -590,7 +649,7 @@ def test_control_plane_import_legacy_subscription_state_creates_backend_registry
         "warnings": [],
     }
 
-    with _client() as client:
+    with _maintenance_client(monkeypatch, tmp_path) as client:
         import_response = client.post(
             "/api/v2/transfer/control-plane/import",
             json={"snapshot": snapshot, "normalize_runtime_state": True},

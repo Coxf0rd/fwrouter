@@ -20,6 +20,19 @@ from fwrouter_api.services.vpn_auto_selection_state import advance_selection_rev
 from fwrouter_api.services.database_backup import create_sqlite_backup
 
 
+class _OfflineMaintenanceContextUnqualified(RuntimeError):
+    pass
+
+
+def _require_qualified_offline_maintenance_context() -> None:
+    """Refuse rebuild until a real host lifecycle/quiescence issuer is qualified.
+
+    A caller-supplied flag, root UID, or observed stopped-unit list is not an
+    offline maintenance context. This package intentionally provides no issuer.
+    """
+    raise _OfflineMaintenanceContextUnqualified
+
+
 def get_database_schema_state() -> dict[str, Any]:
     initialize_database()
     with connect() as connection:
@@ -96,6 +109,18 @@ def rebuild_control_plane_database(
     normalize_runtime_state: bool = True,
     requested_by: str = "database_rebuild",
 ) -> dict[str, Any]:
+    try:
+        _require_qualified_offline_maintenance_context()
+    except _OfflineMaintenanceContextUnqualified:
+        return {
+            "ok": False,
+            "stage": "maintenance_admission",
+            "error": {
+                "code": "DATABASE_REBUILD_MAINTENANCE_CONTEXT_UNQUALIFIED",
+                "message": "Offline rebuild is blocked until lifecycle exclusion and quiescence are qualified.",
+            },
+        }
+
     source = resolve_control_plane_snapshot_source(snapshot=snapshot, file_path=file_path)
     if not source["ok"]:
         return {

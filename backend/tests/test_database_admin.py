@@ -17,8 +17,22 @@ from fwrouter_api.services.database_admin import (
     get_database_schema_state,
     rebuild_control_plane_database,
 )
+from fwrouter_api.services import database_admin as database_admin_module
 
 
+
+
+def _allow_unqualified_rebuild_body_for_legacy_logic_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise preserved body only; this does not qualify offline admission."""
+    from fwrouter_api.services import control_plane_import_admission
+
+    monkeypatch.setattr(database_admin_module, "_require_qualified_offline_maintenance_context", lambda: None)
+    monkeypatch.setattr(control_plane_import_admission, "control_plane_import_is_admitted", lambda: True)
+    # The owner also checks the imported alias after acquiring its writer lock.
+    monkeypatch.setattr(
+        "fwrouter_api.services.control_plane_transfer_import.control_plane_import_is_admitted",
+        lambda: True,
+    )
 
 
 def test_clean_database_does_not_seed_provider_specific_instances(monkeypatch, tmp_path: Path) -> None:
@@ -537,6 +551,7 @@ def test_rebuild_control_plane_database_restores_snapshot(
     tmp_path: Path,
     isolated_host_observations,
 ) -> None:
+    _allow_unqualified_rebuild_body_for_legacy_logic_test(monkeypatch)
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
 
@@ -632,6 +647,7 @@ def test_rebuild_control_plane_database_restores_snapshot(
 def test_online_database_rebuild_refuses_existing_selection_fence_without_mutation(monkeypatch, tmp_path: Path) -> None:
     from fwrouter_api.db.connection import get_db_path
 
+    _allow_unqualified_rebuild_body_for_legacy_logic_test(monkeypatch)
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     with db_session() as connection:
@@ -649,6 +665,35 @@ def test_online_database_rebuild_refuses_existing_selection_fence_without_mutati
     assert result["error"]["code"] == "DATABASE_REBUILD_SELECTION_FENCE_REQUIRED"
     assert db_path.read_bytes() == before
     assert set((tmp_path / "state" / "backups").glob("*")) == backups_before
+
+
+@pytest.mark.no_database_autoinit
+def test_unqualified_rebuild_denies_before_resolution_lock_backup_or_database_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.core.config import get_settings
+    from fwrouter_api.db.connection import get_db_path
+
+    _configure_env(monkeypatch, tmp_path)
+    settings = get_settings()
+    db_path = get_db_path()
+    monkeypatch.setattr(
+        database_admin_module, "resolve_control_plane_snapshot_source",
+        lambda **_kwargs: pytest.fail("snapshot resolution must follow offline admission"),
+    )
+    monkeypatch.setattr(
+        database_admin_module, "backup_database_file",
+        lambda: pytest.fail("backup must follow offline admission"),
+    )
+
+    result = rebuild_control_plane_database(file_path="missing.json")
+
+    assert result["ok"] is False
+    assert result["stage"] == "maintenance_admission"
+    assert result["error"]["code"] == "DATABASE_REBUILD_MAINTENANCE_CONTEXT_UNQUALIFIED"
+    assert not db_path.exists()
+    assert not settings.paths.run_dir.exists()
+    assert not (settings.paths.state_dir / "backups").exists()
 
 
 def test_get_database_schema_state_includes_summary(monkeypatch, tmp_path: Path) -> None:

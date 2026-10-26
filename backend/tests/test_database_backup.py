@@ -316,6 +316,11 @@ def test_truncated_online_backup_is_rejected_and_cleaned(
 def test_backup_failure_aborts_rebuild_before_source_unlink_or_import(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
+    # Test-only bypass keeps this regression focused on the pre-existing
+    # backup-before-unlink behavior; it is not offline admission evidence.
+    monkeypatch.setattr(database_admin, "_require_qualified_offline_maintenance_context", lambda: None)
+    from fwrouter_api.services import control_plane_import_admission
+    monkeypatch.setattr(control_plane_import_admission, "control_plane_import_is_admitted", lambda: True)
     db_path = _configure(monkeypatch, tmp_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as connection:
