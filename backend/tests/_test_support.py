@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 from pathlib import Path
+import secrets
 from typing import Any
 
 
@@ -35,6 +38,40 @@ def configure_test_state_dir_without_schedulers(monkeypatch: Any, tmp_path: Path
     from fwrouter_api.core.config import get_settings
 
     get_settings.cache_clear()
+
+
+def maintenance_import_test_client(
+    monkeypatch: Any, tmp_path: Path, *, raise_server_exceptions: bool = True,
+):
+    """Create an isolated TestClient and synthetic, request-scoped import grant."""
+    from fastapi.testclient import TestClient
+
+    from fwrouter_api.main import create_app
+    from fwrouter_api.services import control_plane_import_admission as admission
+
+    token = secrets.token_hex(32)
+    verifier = tmp_path / "etc" / "fwrouter" / "maintenance-import-verifier.json"
+    verifier.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    verifier.parent.chmod(0o700)
+    verifier.write_text(json.dumps({
+        "schema_version": 1,
+        "principal": "maintenance-operator",
+        "scope": "control-plane.import",
+        "token_sha256": hashlib.sha256(token.encode("ascii")).hexdigest(),
+    }), encoding="utf-8")
+    verifier.chmod(0o600)
+    monkeypatch.setattr(admission, "VERIFIER_PATH", verifier)
+    monkeypatch.setattr(admission, "_trusted_uid", lambda: os.getuid())
+    monkeypatch.setattr(admission, "_effective_uid", lambda: os.getuid())
+    return TestClient(
+        create_app(enable_startup_tasks=False),
+        client=("127.0.0.1", 45678),
+        raise_server_exceptions=raise_server_exceptions,
+        headers={
+            "Host": "127.0.0.1:5000",
+            "Authorization": f"Bearer {token}",
+        },
+    )
 
 
 def database_table_snapshot() -> dict[str, list[dict[str, object]]]:
@@ -81,3 +118,39 @@ def database_table_diff(
             "added": [new_index[key] for key in sorted(new_index.keys() - old_index.keys())],
         }
     return changed
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def offline_maintenance_test_lease(monkeypatch: Any):
+    """Real owned file locks; host unit state alone is a synthetic fixture."""
+    import fcntl
+    import uuid
+    from fwrouter_api.core.config import get_settings
+    from fwrouter_api.services import maintenance_lifecycle_admission as admission
+
+    root = get_settings().paths.state_dir
+    directory = root / "state" / "controlled-rollout"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for path in (root, root / "state", directory):
+        path.chmod(0o700)
+    checkpoint = directory / "pending.json"
+    checkpoint.write_text(json.dumps({
+        "operation_id": str(uuid.uuid4()), "status": "pending",
+        "maintenance_operation": {"kind": "database_rebuild", "status": "pending"},
+    }))
+    checkpoint.chmod(0o600)
+    lifecycle_fd = os.open(directory / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    maintenance_fd = os.open(directory / ".maintenance.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(lifecycle_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with monkeypatch.context() as patch:
+            patch.setattr(admission, "_trusted_uid", os.getuid)
+            patch.setattr(admission, "_require_units_stopped", lambda: None)
+            with admission.offline_rebuild_lease(maintenance_fd, lifecycle_fd, state_root=root):
+                yield
+    finally:
+        os.close(maintenance_fd)
+        os.close(lifecycle_fd)

@@ -11,6 +11,7 @@ CREATE_DOCKER_NETWORK="${FWROUTER_CREATE_DOCKER_NETWORK:-1}"
 COMPONENTS=""
 DEPLOY_MODE=0
 COMPONENT_LOCK_FD=""
+MAINTENANCE_LOCK_MODE=""
 DEPENDENCIES_PREPARED=0
 
 usage() {
@@ -52,6 +53,11 @@ while [ "$#" -gt 0 ]; do
     --_component-lock-fd)
       [ "$#" -ge 2 ] || usage
       COMPONENT_LOCK_FD="$2"
+      shift 2
+      ;;
+    --_maintenance-lock-mode)
+      [ "$#" -ge 2 ] || usage
+      MAINTENANCE_LOCK_MODE="$2"
       shift 2
       ;;
     --_dependencies-prepared)
@@ -277,6 +283,7 @@ fi
 # dependency setup (which can provide Python on a clean host) and remains held
 # through bootstrap and the UI compatibility check/pointer exchange.
 if want_component backend || want_component ui; then
+  REQUIRED_MAINTENANCE_LOCK_MODE="shared"
   if [ -z "$COMPONENT_LOCK_FD" ]; then
     set --
     for component in $COMPONENTS; do
@@ -292,8 +299,13 @@ if want_component backend || want_component ui; then
     echo "install.sh: invalid inherited component lock descriptor" >&2
     exit 1
   }
+  [ "$MAINTENANCE_LOCK_MODE" = "$REQUIRED_MAINTENANCE_LOCK_MODE" ] || {
+    echo "install.sh: inherited maintenance lease mode does not match selected components" >&2
+    exit 1
+  }
   python3 "$REPO_ROOT/installer/component_install_lock.py" \
-    --verify-parent "$(target_path opt)" --fd "$COMPONENT_LOCK_FD"
+    --verify-parent "$(target_path opt)" --fd "$COMPONENT_LOCK_FD" \
+    --mode "$REQUIRED_MAINTENANCE_LOCK_MODE"
 fi
 
 want_component backend && install_backend

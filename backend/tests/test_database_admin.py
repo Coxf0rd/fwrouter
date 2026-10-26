@@ -1,5 +1,5 @@
 from __future__ import annotations
-from _test_support import configure_test_state_dir as _configure_env
+from _test_support import configure_test_state_dir as _configure_env, offline_maintenance_test_lease
 
 import json
 import sqlite3
@@ -17,6 +17,8 @@ from fwrouter_api.services.database_admin import (
     get_database_schema_state,
     rebuild_control_plane_database,
 )
+from fwrouter_api.services import database_admin as database_admin_module
+
 
 
 
@@ -608,11 +610,12 @@ def test_rebuild_control_plane_database_restores_snapshot(
         lambda: [],
     )
 
-    result = rebuild_control_plane_database(
-        file_path=snapshot_path,
-        normalize_runtime_state=True,
-        requested_by="pytest",
-    )
+    with offline_maintenance_test_lease(monkeypatch):
+        result = rebuild_control_plane_database(
+            file_path=snapshot_path,
+            normalize_runtime_state=True,
+            requested_by="pytest",
+        )
 
     assert result["ok"] is True
     assert result["schema"]["summary"]["ok"] is True
@@ -643,12 +646,42 @@ def test_online_database_rebuild_refuses_existing_selection_fence_without_mutati
     before = db_path.read_bytes()
     backups_before = set((tmp_path / "state" / "backups").glob("*"))
 
-    result = rebuild_control_plane_database(snapshot=exported["snapshot"], requested_by="pytest")
+    with offline_maintenance_test_lease(monkeypatch):
+        result = rebuild_control_plane_database(snapshot=exported["snapshot"], requested_by="pytest")
 
     assert result["ok"] is False
     assert result["error"]["code"] == "DATABASE_REBUILD_SELECTION_FENCE_REQUIRED"
     assert db_path.read_bytes() == before
     assert set((tmp_path / "state" / "backups").glob("*")) == backups_before
+
+
+@pytest.mark.no_database_autoinit
+def test_unqualified_rebuild_denies_before_resolution_lock_backup_or_database_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.core.config import get_settings
+    from fwrouter_api.db.connection import get_db_path
+
+    _configure_env(monkeypatch, tmp_path)
+    settings = get_settings()
+    db_path = get_db_path()
+    monkeypatch.setattr(
+        database_admin_module, "resolve_control_plane_snapshot_source",
+        lambda **_kwargs: pytest.fail("snapshot resolution must follow offline admission"),
+    )
+    monkeypatch.setattr(
+        database_admin_module, "backup_database_file",
+        lambda: pytest.fail("backup must follow offline admission"),
+    )
+
+    result = rebuild_control_plane_database(file_path="missing.json")
+
+    assert result["ok"] is False
+    assert result["stage"] == "maintenance_admission"
+    assert result["error"]["code"] == "DATABASE_REBUILD_MAINTENANCE_CONTEXT_UNQUALIFIED"
+    assert not db_path.exists()
+    assert not settings.paths.run_dir.exists()
+    assert not (settings.paths.state_dir / "backups").exists()
 
 
 def test_get_database_schema_state_includes_summary(monkeypatch, tmp_path: Path) -> None:

@@ -156,7 +156,7 @@ def _upsert_rules_state_record(
     state: dict[str, Any], *, connection: Any | None = None
 ) -> dict[str, Any]:
     def write(target: Any) -> dict[str, Any]:
-        target.execute(
+        cursor = target.execute(
             """
             INSERT INTO rules_state (
                 id,
@@ -197,6 +197,14 @@ def _upsert_rules_state_record(
                 error_code = excluded.error_code,
                 error_message = excluded.error_message,
                 updated_at = CURRENT_TIMESTAMP
+            WHERE (rules_state.manual_draft_path IS NULL OR rules_state.manual_draft_path = excluded.manual_draft_path)
+              AND (rules_state.manual_active_path IS NULL OR rules_state.manual_active_path = excluded.manual_active_path)
+              AND (rules_state.static_direct_path IS NULL OR rules_state.static_direct_path = excluded.static_direct_path)
+              AND (rules_state.big_direct_path IS NULL OR rules_state.big_direct_path = excluded.big_direct_path)
+              AND (rules_state.big_vpn_path IS NULL OR rules_state.big_vpn_path = excluded.big_vpn_path)
+              AND (rules_state.effective_json_path IS NULL OR rules_state.effective_json_path = excluded.effective_json_path)
+              AND (rules_state.effective_text_path IS NULL OR rules_state.effective_text_path = excluded.effective_text_path)
+              AND (rules_state.metadata_path IS NULL OR rules_state.metadata_path = excluded.metadata_path)
             """,
             (
                 state["manual_draft_path"],
@@ -217,6 +225,8 @@ def _upsert_rules_state_record(
                 state["error_message"],
             ),
         )
+        if cursor.rowcount != 1:
+            raise ValueError("RULES_PUBLICATION_STALE")
         return get_rules_state(target)
 
     if connection is not None:

@@ -4,6 +4,7 @@ from contextvars import ContextVar
 import sqlite3
 import time
 import os
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,11 +17,69 @@ from fwrouter_api.services.live_probe_cache import get_live_probe_cache
 
 
 _READ_ONLY_DB_SESSIONS: ContextVar[bool] = ContextVar("fwrouter_read_only_db_sessions", default=False)
+_OFFLINE_CANDIDATE_DB_PATH: ContextVar[Path | None] = ContextVar(
+    "fwrouter_offline_candidate_database_path", default=None,
+)
 
 
 def get_db_path() -> Path:
+    candidate = _OFFLINE_CANDIDATE_DB_PATH.get()
+    if candidate is not None:
+        from fwrouter_api.services.maintenance_lifecycle_admission import offline_rebuild_is_held
+
+        if not offline_rebuild_is_held():
+            raise RuntimeError("offline candidate database path outlived its maintenance lease")
+        return candidate
     settings = get_settings()
     return settings.paths.db_path
+
+
+@contextmanager
+def offline_candidate_database_path(path: Path) -> Iterator[None]:
+    """Bind canonical DB helpers to a private candidate during held rebuild.
+
+    This process-local override does not change environment or global settings
+    and is revoked on every exit path. The candidate directory must be an
+    immediate, private child of the configured state root.
+    """
+    from fwrouter_api.services.maintenance_lifecycle_admission import offline_rebuild_is_held
+
+    if not offline_rebuild_is_held():
+        raise RuntimeError("offline candidate database requires held maintenance admission")
+    from fwrouter_api.services.maintenance_lifecycle_admission import active_offline_rebuild_state_root
+
+    state_root = Path(os.path.abspath(get_settings().paths.state_dir))
+    admitted_state_root = Path(os.path.abspath(active_offline_rebuild_state_root()))
+    if state_root != admitted_state_root:
+        raise ValueError("offline candidate state root differs from held maintenance root")
+    candidate = Path(os.path.abspath(path))
+    parent = candidate.parent
+    if parent.parent != state_root:
+        raise ValueError("offline candidate database must be in a private state-root child")
+    root_info = state_root.lstat()
+    if (not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode)
+            or root_info.st_uid != os.geteuid() or stat.S_IMODE(root_info.st_mode) & 0o077):
+        raise ValueError("offline candidate state root is not private")
+    parent_info = parent.lstat()
+    if (not stat.S_ISDIR(parent_info.st_mode) or parent_info.st_uid != os.geteuid()
+            or stat.S_IMODE(parent_info.st_mode) != 0o700):
+        raise ValueError("offline candidate database directory is not private")
+    for component in (parent, candidate):
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError("offline candidate database path contains a symlink")
+    if candidate.exists():
+        info = candidate.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            raise ValueError("offline candidate database file is not owned and regular")
+    token = _OFFLINE_CANDIDATE_DB_PATH.set(candidate)
+    try:
+        yield
+    finally:
+        _OFFLINE_CANDIDATE_DB_PATH.reset(token)
 
 
 def get_schema_path() -> Path:

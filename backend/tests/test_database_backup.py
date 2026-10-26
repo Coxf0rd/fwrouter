@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from _test_support import configure_test_state_dir
+from _test_support import configure_test_state_dir, offline_maintenance_test_lease
 from fwrouter_api.db.connection import get_db_path
 from fwrouter_api.services import database_backup
 from fwrouter_api.services import database_admin
@@ -316,25 +316,39 @@ def test_truncated_online_backup_is_rejected_and_cleaned(
 def test_backup_failure_aborts_rebuild_before_source_unlink_or_import(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
+    from fwrouter_api.db.connection import initialize_database
+
     db_path = _configure(monkeypatch, tmp_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute("CREATE TABLE durable(value TEXT)")
-        connection.execute("INSERT INTO durable VALUES ('preserve-me')")
+    initialize_database()
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.execute(
+            "INSERT INTO settings(key,value_json,updated_at) VALUES ('test.restore.marker','\"preserve-me\"','test')",
+        )
+        connection.commit()
+    finally:
+        connection.close()
     source = {"ok": True, "snapshot": {"fixture": True}, "source": {"kind": "test"}}
     monkeypatch.setattr(database_admin, "resolve_control_plane_snapshot_source", lambda **_kwargs: source)
 
-    def fail_backup() -> dict[str, object]:
+    def fail_backup(**_kwargs) -> dict[str, object]:
         raise OSError("injected backup I/O failure")
 
     monkeypatch.setattr(database_admin, "backup_database_file", fail_backup)
     monkeypatch.setattr(database_admin, "initialize_database", lambda: pytest.fail("database recreated"))
     monkeypatch.setattr(database_admin, "import_control_plane_snapshot", lambda *_args, **_kwargs: pytest.fail("snapshot imported"))
-    with pytest.raises(OSError, match="injected backup I/O failure"):
-        database_admin.rebuild_control_plane_database()
+    with offline_maintenance_test_lease(monkeypatch):
+        with pytest.raises(OSError, match="injected backup I/O failure"):
+            database_admin.rebuild_control_plane_database()
     assert db_path.exists()
-    with sqlite3.connect(db_path) as connection:
-        assert connection.execute("SELECT value FROM durable").fetchall() == [("preserve-me",)]
+    connection = sqlite3.connect(db_path)
+    try:
+        assert connection.execute(
+            "SELECT value_json FROM settings WHERE key='test.restore.marker'",
+        ).fetchall() == [("\"preserve-me\"",)]
+    finally:
+        connection.close()
 
 
 @pytest.mark.no_database_autoinit

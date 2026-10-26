@@ -93,7 +93,6 @@ def _manual_rules_audit_summary(text: str) -> dict[str, Any]:
 
 
 def save_manual_draft(text: str, *, requested_by: str = "api") -> dict[str, Any]:
-    defaults = _default_rules_paths()
     current = get_manual_rules_texts()
     previous_text = str(current.get("draft_text") or "")
     changed = previous_text != text
@@ -103,18 +102,18 @@ def save_manual_draft(text: str, *, requested_by: str = "api") -> dict[str, Any]
         overview["manual"]["draft_validation"] = validation
         return overview
 
-    rules_service.atomic_write_text(defaults["manual_draft_path"], text)
+    rules_service.atomic_write_text(current["draft_path"], text)
     with rules_service.db_session() as connection:
         _rules_state_with_updates(
             connection=connection,
-            manual_draft_path=str(defaults["manual_draft_path"]),
-            manual_active_path=str(defaults["manual_active_path"]),
-            static_direct_path=str(defaults["static_direct_path"]),
-            big_direct_path=str(defaults["big_direct_path"]),
-            big_vpn_path=str(defaults["big_vpn_path"]),
-            effective_json_path=str(defaults["effective_json_path"]),
-            effective_text_path=str(defaults["effective_text_path"]),
-            metadata_path=str(defaults["metadata_path"]),
+            manual_draft_path=str(current["draft_path"]),
+            manual_active_path=str(current["state"]["manual_active_path"]),
+            static_direct_path=str(current["state"]["static_direct_path"]),
+            big_direct_path=str(current["state"]["big_direct_path"]),
+            big_vpn_path=str(current["state"]["big_vpn_path"]),
+            effective_json_path=str(current["state"]["effective_json_path"]),
+            effective_text_path=str(current["state"]["effective_text_path"]),
+            metadata_path=str(current["state"]["metadata_path"]),
             status="pending",
             error_code=None,
             error_message=None,

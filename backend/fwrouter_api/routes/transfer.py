@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from fwrouter_api.schemas import ApiResponse
@@ -11,6 +11,9 @@ from fwrouter_api.services.control_plane_transfer import (
     plan_control_plane_import,
     resolve_control_plane_snapshot_source,
     validate_control_plane_snapshot,
+)
+from fwrouter_api.services.control_plane_import_admission import (
+    require_control_plane_import_admission,
 )
 
 
@@ -26,6 +29,7 @@ class ControlPlaneImportRequest(BaseModel):
     snapshot: dict = Field(default_factory=dict)
     file_path: str | None = None
     normalize_runtime_state: bool = True
+    operation_id: str | None = None
 
 
 class ControlPlanePlanRequest(BaseModel):
@@ -81,7 +85,10 @@ def plan_control_plane_endpoint(request: ControlPlanePlanRequest) -> ApiResponse
 
 
 @router.post("/transfer/control-plane/import", response_model=ApiResponse)
-def import_control_plane_endpoint(request: ControlPlaneImportRequest) -> ApiResponse:
+def import_control_plane_endpoint(
+    request: ControlPlaneImportRequest,
+    _maintenance_admission: None = Depends(require_control_plane_import_admission),
+) -> ApiResponse:
     resolved = resolve_control_plane_snapshot_source(
         snapshot=request.snapshot,
         file_path=request.file_path,
@@ -91,6 +98,7 @@ def import_control_plane_endpoint(request: ControlPlaneImportRequest) -> ApiResp
     result = import_control_plane_snapshot(
         resolved["snapshot"],
         normalize_runtime_state=request.normalize_runtime_state,
+        operation_id=request.operation_id,
     )
     if not result["ok"]:
         return ApiResponse(
@@ -100,11 +108,11 @@ def import_control_plane_endpoint(request: ControlPlaneImportRequest) -> ApiResp
                 "source": resolved.get("source") if isinstance(resolved.get("source"), dict) else {},
             },
             error={
-                "code": "CONTROL_PLANE_SNAPSHOT_INVALID",
-                "message": "Control-plane snapshot validation failed.",
+                "code": result.get("error_code") or "CONTROL_PLANE_SNAPSHOT_INVALID",
+                "message": result.get("error_message") or "Control-plane import was not committed.",
             },
         )
-    if result.get("selection_reconcile_required"):
+    if result.get("selection_reconcile_required") and not result.get("replayed"):
         from fwrouter_api.services.selector import select_vpn_auto_server
         selection = select_vpn_auto_server(
             apply=True, check_on_demand=True, exclude_active=False, post_check=True,
@@ -113,7 +121,12 @@ def import_control_plane_endpoint(request: ControlPlaneImportRequest) -> ApiResp
             expected_selection_revision=result.get("selection_revision"),
         )
         result = {**result, "selection_reconcile": selection,
-                  "selection_reconcile_required": selection.get("selection_outcome") not in {"selected", "noop"}}
+                  "selection_reconcile_required": selection.get("selection_outcome") not in {"selected", "noop"},
+                  "selection_reconcile_status": (
+                      "pending"
+                      if selection.get("selection_outcome") not in {"selected", "noop"}
+                      else "complete"
+                  )}
     return ApiResponse(
         ok=True,
         data={

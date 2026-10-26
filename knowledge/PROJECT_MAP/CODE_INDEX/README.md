@@ -95,6 +95,7 @@
 63. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_validation_py.md`
 64. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_plan_py.md`
 65. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_import_py.md`
+65b. `backend_fwrouter_api_services_control_plane_import_admission_py.md`
 65a. `opt_fwrouter_api_fwrouter_api_services_core_intent_py.md`
 66. `opt_fwrouter_api_fwrouter_api_routes_system_py.md`
 66a. `opt_fwrouter_api_fwrouter_api_routes_state_py.md`
@@ -240,3 +241,9 @@ missing/altered/ambiguous evidence. See `knowledge/NATIVE_PROOF.md`.
 ### Stage 5 — bounded WAL-safe database-admin backup
 
 `backend/fwrouter_api/services/database_admin.py:backup_database_file` owns the existing snapshot API; its SQLite helper performs read-snapshot online copying, content/integrity/FK validation and private no-replace publication. This does not change selection/rebuild admission or create a backup/recovery subsystem. See [contract](../../../docs/DATABASE_BACKUP.md) and the registered disposable SQLite regression suite `backend/tests/test_database_backup.py`. Deployment, real restore and host/L7 qualification remain separate.
+
+### Stage 5 — control-plane restore extension (qualification pending)
+
+- [Import file preparation](backend_fwrouter_api_services_control_plane_import_files_py.md): prepared files become selected through existing SQLite rules-state references.
+- [Lifecycle-held exclusion](backend_fwrouter_api_services_maintenance_lifecycle_admission_py.md): supported-process leases, durable interrupted-operation gate and scoped offline authority.
+- [Publication/retry/exclusion contract](../../../docs/CONTROL_PLANE_RESTORE_CONTRACT.md): current source extension, separate from historical admission-only CI results.

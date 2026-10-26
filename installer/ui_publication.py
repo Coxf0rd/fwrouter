@@ -476,7 +476,9 @@ def publish(source: Path, target: Path, backend_source: Path, backend_installed:
         if installer_lock_fd is None:
             lock_fd, owned_fd = component_install_lock.acquire(target.parent)
         else:
-            lock_fd = component_install_lock.verify_inherited_lock(target.parent, installer_lock_fd)
+            lock_fd = component_install_lock.verify_inherited_lock(
+                target.parent, installer_lock_fd, maintenance_mode="shared",
+            )
     except component_install_lock.ComponentInstallLockError as exc:
         raise PublicationError(str(exc)) from exc
     try:
@@ -486,7 +488,7 @@ def publish(source: Path, target: Path, backend_source: Path, backend_installed:
         )
     finally:
         if owned_fd:
-            os.close(lock_fd)
+            component_install_lock.release(lock_fd)
 
 
 def main() -> int:

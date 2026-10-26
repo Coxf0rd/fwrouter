@@ -276,6 +276,7 @@ def test_transfer_upgrades_schema_one_checkpoint_and_preserves_operation(tmp_pat
     legacy["schema"] = lifecycle.LEGACY_SCHEMA
     legacy.pop("initial_backend_manifest_sha256")
     legacy.pop("source_transitions")
+    legacy.pop("maintenance_operation")
     checkpoint_path.write_text(json.dumps(legacy), encoding="utf-8")
 
     assert lifecycle._read_checkpoint(checkpoint_path)["schema"] == lifecycle.LEGACY_SCHEMA

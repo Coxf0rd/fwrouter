@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -355,7 +357,7 @@ def test_cleanup_missing_database_fails_admission_without_cleanup(monkeypatch, t
     assert not db_path.exists()
 
 
-def test_rebuild_cli_defers_all_work_to_rebuild_preflight(monkeypatch, capsys) -> None:
+def test_rebuild_cli_requires_held_lifecycle_before_calling_rebuild_owner(monkeypatch, capsys) -> None:
     calls = []
     monkeypatch.setattr(
         fwrouter_api_maintenance,
@@ -368,11 +370,71 @@ def test_rebuild_cli_defers_all_work_to_rebuild_preflight(monkeypatch, capsys) -
         ["fwrouter_api_maintenance", "rebuild-db", "--file-path", "/snapshot.json"],
     )
 
-    fwrouter_api_maintenance.main()
+    with pytest.raises(SystemExit) as exc_info:
+        fwrouter_api_maintenance.main()
 
-    assert calls == [{
-        "file_path": "/snapshot.json",
-        "normalize_runtime_state": True,
-        "requested_by": "fwrouter_api_maintenance",
-    }]
-    assert json.loads(capsys.readouterr().out)["stage"] == "resolve_snapshot"
+    assert exc_info.value.code == 1
+    assert calls == []
+    denied = json.loads(capsys.readouterr().out)
+    assert denied["stage"] == "maintenance_admission"
+    assert denied["error"]["code"] == "DATABASE_REBUILD_MAINTENANCE_CONTEXT_UNQUALIFIED"
+
+
+def test_rebuild_cli_reports_unqualified_offline_context_as_failure(monkeypatch, tmp_path: Path, capsys) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "fwrouter_api_maintenance", "rebuild-db", "--file-path", "missing.json",
+    ])
+
+    with pytest.raises(SystemExit) as exc_info:
+        fwrouter_api_maintenance.main()
+
+    assert exc_info.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stage"] == "maintenance_admission"
+    assert payload["error"]["code"] == "DATABASE_REBUILD_MAINTENANCE_CONTEXT_UNQUALIFIED"
+
+
+def test_run_api_preflight_receives_held_shared_lease_fd(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    def preflight(command, *, check, pass_fds):
+        assert command == ["/usr/local/libexec/fwrouter/fwrouter-boot-preflight.sh"]
+        assert check is False
+        assert len(pass_fds) == 1
+        fd = pass_fds[0]
+        assert os.get_inheritable(fd)
+        lock_path = (
+            fwrouter_api_maintenance.DEFAULT_STATE_ROOT
+            / "state" / "controlled-rollout" / ".maintenance.lock"
+        )
+        probe = os.open(lock_path, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(probe)
+        observed["fd"] = fd
+        return SimpleNamespace(returncode=0)
+
+    class ExecReached(Exception):
+        pass
+
+    def stop_at_exec(path, argv):
+        observed["exec_path"] = path
+        observed["exec_argv"] = argv
+        raise ExecReached
+
+    monkeypatch.setattr(fwrouter_api_maintenance.subprocess, "run", preflight)
+    monkeypatch.setattr(fwrouter_api_maintenance.os, "execv", stop_at_exec)
+    monkeypatch.setattr(sys, "argv", ["fwrouter_api_maintenance", "run-api"])
+
+    with pytest.raises(ExecReached):
+        fwrouter_api_maintenance.main()
+
+    assert observed["exec_path"] == sys.executable
+    assert observed["exec_argv"][:4] == [
+        sys.executable, "-m", "uvicorn", "fwrouter_api.main:app",
+    ]
+    with pytest.raises(OSError):
+        os.fstat(observed["fd"])

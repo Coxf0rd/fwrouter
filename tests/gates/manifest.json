@@ -161,6 +161,136 @@
   ],
   "path_rules": [
     {
+      "glob": "installer/tests/restore_process_fixture.py",
+      "domains": [
+        "database",
+        "maintenance",
+        "installer"
+      ]
+    },
+    {
+      "glob": "installer/tests/test_control_plane_restore_process.py",
+      "domains": [
+        "database",
+        "maintenance",
+        "installer"
+      ]
+    },
+    {
+      "glob": "docs/CONTROL_PLANE_RESTORE_CONTRACT.md",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/tests/test_offline_maintenance_admission.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/tests/test_import_publication.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/fwrouter_api/services/maintenance_lifecycle_admission.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/fwrouter_api/services/control_plane_import_files.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/fwrouter_api/services/control_plane_import_admission.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/fwrouter_api/services/control_plane_transfer_import.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/fwrouter_api/routes/transfer.py",
+      "domains": [
+        "api-contract",
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/CONTROL_PLANE_TRANSFER.md",
+      "domains": [
+        "database",
+        "maintenance",
+        "documentation"
+      ]
+    },
+    {
+      "glob": "docs/CONTROL_PLANE_MAINTENANCE_ADMISSION.md",
+      "domains": [
+        "database",
+        "maintenance",
+        "documentation"
+      ]
+    },
+    {
+      "glob": "backend/tests/test_control_plane_transfer.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/tests/test_custom_servers.py",
+      "domains": [
+        "core",
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/tests/test_database_admin.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/tests/test_database_backup.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/tests/test_maintenance.py",
+      "domains": [
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "backend/tests/test_maintenance_admission.py",
+      "domains": [
+        "maintenance"
+      ]
+    },
+    {
       "glob": "docs/DATABASE_BACKUP.md",
       "domains": [
         "database",
@@ -2134,6 +2264,34 @@
       ],
       "slow": false,
       "timeout_seconds": 30,
+      "execution_group": "services-events"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "maintenance",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "isolated verifier files and request-scoped TestClient; no host files or network",
+      "fixture_owner": "backend/tests/test_maintenance_admission.py",
+      "id": "test_maintenance_admission",
+      "isolation": "private temporary state and synthetic root-policy verifier; no production files/services or network",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_maintenance_admission.py",
+      "primary_level": "L2",
+      "risk_notes": "auth boundary, no-side-effect denial, path/policy tampering, context propagation, and admission revocation contracts",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)",
+        "FastAPI TestClient"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
       "execution_group": "services-events"
     },
     {
@@ -6123,9 +6281,93 @@
       "slow": false,
       "timeout_seconds": 180,
       "execution_group": "installer-startup"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "database",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "disposable SQLite, private files and owned child processes; no host runtime",
+      "fixture_owner": "backend/tests/test_import_publication.py",
+      "id": "test_import_publication",
+      "isolation": "coordinator-owned temporary state; no real systemd, services, network or credentials",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_import_publication.py",
+      "primary_level": "L3",
+      "risk_notes": "crash/retry/concurrency/publication/exclusion contracts; synthetic host-service state is not live qualification",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)",
+        "FastAPI TestClient"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "local-integration"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "database",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "disposable SQLite, private files and owned child processes; no host runtime",
+      "fixture_owner": "backend/tests/test_offline_maintenance_admission.py",
+      "id": "test_offline_maintenance_admission",
+      "isolation": "coordinator-owned temporary state; no real systemd, services, network or credentials",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_offline_maintenance_admission.py",
+      "primary_level": "L3",
+      "risk_notes": "crash/retry/concurrency/publication/exclusion contracts; synthetic host-service state is not live qualification",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)",
+        "FastAPI TestClient"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "local-integration"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "installer",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "fixed source fixture child, coordinator-owned roots and inherited descriptors",
+      "fixture_owner": "installer/tests/restore_process_fixture.py",
+      "id": "test_control_plane_restore_process",
+      "isolation": "coordinator-owned temporary state; no real systemd, services, network or credentials",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "installer/tests/test_control_plane_restore_process.py",
+      "primary_level": "L3",
+      "risk_notes": "real SIGKILL of an owned test child only; kernel lock inheritance; no host services or runtime; child bootstrap retains capability denial",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)",
+        "FastAPI TestClient"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "installer-startup"
     }
   ],
-  "version": "2026.10.17.1",
+  "version": "2026.10.27.2",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
