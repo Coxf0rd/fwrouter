@@ -49,15 +49,21 @@ def _isolate_fixed_maintenance_host_lease(monkeypatch: pytest.MonkeyPatch, tmp_p
     Production uses a fixed root independent of Settings/environment. Tests
     substitute module constants only, never disable lease or pending checks.
     """
-    from fwrouter_api import main, cli
     from fwrouter_api.services import maintenance_lifecycle_admission
-    import fwrouter_api_maintenance
     import os
+    import sys
 
     root = tmp_path / "maintenance-host"
     assert not _ISOLATION_BOOTSTRAP.path_is_protected(root)
-    for module in (main, cli, fwrouter_api_maintenance):
-        monkeypatch.setattr(module, "DEFAULT_STATE_ROOT", root)
+    # Patch the shared authority first. Late imports then inherit this owned
+    # test root without importing application entrypoints into every test.
+    monkeypatch.setattr(maintenance_lifecycle_admission, "DEFAULT_STATE_ROOT", root)
+    # Some tests import these entrypoints during collection, before fixtures
+    # run. Retarget only modules already loaded; never import them here.
+    for module_name in ("fwrouter_api.main", "fwrouter_api.cli", "fwrouter_api_maintenance"):
+        module = sys.modules.get(module_name)
+        if module is not None and hasattr(module, "DEFAULT_STATE_ROOT"):
+            monkeypatch.setattr(module, "DEFAULT_STATE_ROOT", root)
     monkeypatch.setattr(maintenance_lifecycle_admission, "_trusted_uid", os.getuid)
 
 

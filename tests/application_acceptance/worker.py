@@ -3744,6 +3744,37 @@ def build_app(socket_path: Path):
     root_real = root.resolve(strict=True)
     if not state_real.is_relative_to(root_real) or state.is_symlink():
         raise RuntimeError("application state escapes the owned acceptance root")
+    if os.environ.get("FWROUTER_ENVIRONMENT") != "test":
+        raise RuntimeError("maintenance lease retargeting is limited to the test worker")
+    state_info = state.lstat()
+    if (not stat.S_ISDIR(state_info.st_mode) or state_info.st_uid != os.getuid()
+            or stat.S_IMODE(state_info.st_mode) != 0o700):
+        raise RuntimeError("application state is not an owned private acceptance directory")
+
+    # The API's maintenance lease intentionally uses a fixed host path rather
+    # than FWROUTER_STATE_DIR. In this disposable worker, bind that same real
+    # lease protocol to a private directory inside the already-qualified test
+    # state before importing the application entrypoint. Keep all admission,
+    # file checks, and pending-operation checks active.
+    maintenance_root = state / "maintenance-host"
+    if maintenance_root.is_symlink():
+        raise RuntimeError("acceptance maintenance state must not be a symlink")
+    maintenance_root.mkdir(mode=0o700, exist_ok=True)
+    maintenance_info = maintenance_root.lstat()
+    if (not stat.S_ISDIR(maintenance_info.st_mode) or maintenance_info.st_uid != os.getuid()
+            or stat.S_IMODE(maintenance_info.st_mode) != 0o700
+            or not maintenance_root.resolve(strict=True).is_relative_to(state_real)):
+        raise RuntimeError("acceptance maintenance state is not an owned private child directory")
+
+    from fwrouter_api.services import maintenance_lifecycle_admission
+    maintenance_lifecycle_admission.DEFAULT_STATE_ROOT = maintenance_root
+    maintenance_lifecycle_admission._trusted_uid = os.getuid
+    # If a facade was imported by an earlier qualified helper, its entrypoint
+    # constant is already bound; retarget only those loaded modules.
+    for module_name in ("fwrouter_api.main", "fwrouter_api.cli", "fwrouter_api_maintenance"):
+        module = sys.modules.get(module_name)
+        if module is not None and hasattr(module, "DEFAULT_STATE_ROOT"):
+            module.DEFAULT_STATE_ROOT = maintenance_root
     if socket_path.is_symlink() or not socket_path.is_socket() or socket_path.stat().st_uid != os.getuid() or socket_path.stat().st_mode & 0o077:
         raise RuntimeError("native runner socket is not an owned private AF_UNIX socket")
     socket_real = socket_path.resolve(strict=True)
