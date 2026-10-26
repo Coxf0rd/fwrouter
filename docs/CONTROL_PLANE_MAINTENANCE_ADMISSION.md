@@ -107,3 +107,20 @@ publication and rebase its incarnation/revision inside the existing import
 transaction, while preserving local fences and import compatibility. That hook
 must be designed with the eventual resource owner; it cannot be inferred or
 qualified by this package.
+
+## Qualification evidence boundaries
+
+The isolated admission regressions exercise real request credential validation,
+including synthetic non-root verifier ownership, copied-context revocation and
+an admitted context waiting for the existing writer lock. Legacy rebuild-body
+regressions explicitly replace the unavailable offline precondition; they do
+not establish an operational maintenance lease. A rules-publication fault
+regression records mixed file/database state as a failed import, never as a
+successful restore.
+
+Full mandatory PR CI additionally checks the existing WAL backup, selection
+fences, native profiles, hosted/packet qualification and isolated recovery
+contracts. Those results qualify the source package, not host-wide quiescence,
+production ingress, live restore, or future managed-resource incarnation
+handling. Preserve that distinction when reviewing CI receipts and before any
+operational enablement.
