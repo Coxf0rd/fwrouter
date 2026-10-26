@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from fwrouter_api.adapters.xray_common import xray_writer_guarded
+
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.services.artifacts import atomic_write_json
@@ -70,7 +72,8 @@ def _export_settings_rows() -> list[dict[str, Any]]:
         """
         SELECT key, value_json, updated_at
         FROM settings
-        WHERE key != 'core.intent_revision'
+        WHERE key NOT IN ('core.intent_revision', 'subscriptions.native_generation.v1')
+          AND key NOT GLOB 'maintenance.import.receipt.*'
         ORDER BY key
         """
     )
@@ -103,6 +106,7 @@ def _export_rules_bundle() -> dict[str, Any]:
     }
 
 
+@xray_writer_guarded
 def export_control_plane_snapshot(*, include_secrets: bool = False, write_file: bool = True) -> dict[str, Any]:
     initialize_database()
     subscription_state, redaction_warnings = _redact_subscription_state(

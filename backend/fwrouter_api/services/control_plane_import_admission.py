@@ -236,7 +236,14 @@ async def require_control_plane_import_admission(request: Request) -> AsyncItera
 
 def control_plane_import_is_admitted() -> bool:
     grant = _IMPORT_ADMISSION.get()
-    return grant is not None and grant.is_active()
+    if grant is not None and grant.is_active():
+        return True
+    # Offline import is admitted only while the lifecycle owner has an active,
+    # process-local grant backed by the held exclusive lease. It is not a
+    # caller-provided request flag and cannot be serialized into a context.
+    from fwrouter_api.services.maintenance_lifecycle_admission import offline_rebuild_is_held
+
+    return offline_rebuild_is_held()
 
 
 def maintenance_import_admitted(function: _F) -> _F:

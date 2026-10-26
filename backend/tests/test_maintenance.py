@@ -355,7 +355,7 @@ def test_cleanup_missing_database_fails_admission_without_cleanup(monkeypatch, t
     assert not db_path.exists()
 
 
-def test_rebuild_cli_defers_all_work_to_rebuild_preflight(monkeypatch, capsys) -> None:
+def test_rebuild_cli_requires_held_lifecycle_before_calling_rebuild_owner(monkeypatch, capsys) -> None:
     calls = []
     monkeypatch.setattr(
         fwrouter_api_maintenance,
@@ -372,12 +372,10 @@ def test_rebuild_cli_defers_all_work_to_rebuild_preflight(monkeypatch, capsys) -
         fwrouter_api_maintenance.main()
 
     assert exc_info.value.code == 1
-    assert calls == [{
-        "file_path": "/snapshot.json",
-        "normalize_runtime_state": True,
-        "requested_by": "fwrouter_api_maintenance",
-    }]
-    assert json.loads(capsys.readouterr().out)["stage"] == "resolve_snapshot"
+    assert calls == []
+    denied = json.loads(capsys.readouterr().out)
+    assert denied["stage"] == "maintenance_admission"
+    assert denied["error"]["code"] == "DATABASE_REBUILD_MAINTENANCE_CONTEXT_UNQUALIFIED"
 
 
 def test_rebuild_cli_reports_unqualified_offline_context_as_failure(monkeypatch, tmp_path: Path, capsys) -> None:

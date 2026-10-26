@@ -2,6 +2,11 @@
 
 ## Current status
 
+The admission-only status below is historical for HEAD `6919908`. The current
+restore extension and its unqualified failure boundaries are specified in
+[CONTROL_PLANE_RESTORE_CONTRACT.md](CONTROL_PLANE_RESTORE_CONTRACT.md). Do not
+use the earlier CI PASS as evidence for the extended implementation.
+
 Online snapshot import has a narrow maintenance-only API admission. Offline
 database rebuild remains **blocked**: this package does not provide a genuine
 host-wide lifecycle/quiescence context. Control-plane restore as a complete

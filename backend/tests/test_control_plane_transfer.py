@@ -313,7 +313,7 @@ def test_control_plane_snapshot_file_path_must_stay_in_transfer_dir(
 def test_partial_rules_publication_fails_honestly_without_claiming_database_import(
     monkeypatch, tmp_path: Path,
 ) -> None:
-    from fwrouter_api.services import control_plane_transfer_import as transfer_import
+    from fwrouter_api.services import control_plane_import_files as transfer_files
 
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
@@ -336,17 +336,17 @@ def test_partial_rules_publication_fails_honestly_without_claiming_database_impo
         "manual_draft_text": "new draft\n",
         "manual_active_text": "new active\n",
     })
-    original_write = transfer_import.atomic_write_text
+    original_write = transfer_files.os.fsync
     writes = 0
 
-    def fail_second_rules_write(path: Path, text: str) -> None:
+    def fail_second_rules_write(descriptor: int) -> None:
         nonlocal writes
         writes += 1
         if writes == 2:
             raise OSError("synthetic partial rules publication")
-        original_write(path, text)
+        original_write(descriptor)
 
-    monkeypatch.setattr(transfer_import, "atomic_write_text", fail_second_rules_write)
+    monkeypatch.setattr(transfer_files.os, "fsync", fail_second_rules_write)
     with _maintenance_client(
         monkeypatch, tmp_path, raise_server_exceptions=False,
     ) as client:
@@ -356,7 +356,7 @@ def test_partial_rules_publication_fails_honestly_without_claiming_database_impo
         )
 
     assert response.status_code == 500
-    assert rules_files["draft_path"].read_text(encoding="utf-8") == "new draft\n"
+    assert rules_files["draft_path"].read_text(encoding="utf-8") == "old draft\n"
     assert rules_files["active_path"].read_text(encoding="utf-8") == "old active\n"
     with db_session() as connection:
         value = connection.execute(

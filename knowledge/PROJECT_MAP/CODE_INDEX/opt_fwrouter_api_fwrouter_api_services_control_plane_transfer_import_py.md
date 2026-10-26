@@ -27,3 +27,14 @@ before transfer-path resolution. See
 `docs/CONTROL_PLANE_MAINTENANCE_ADMISSION.md`. This does not qualify atomic
 recovery across rules files and SQLite; partial filesystem publication remains
 an explicit failure limitation.
+
+## Restore extension under qualification
+
+Import now prepares private rules files and publishes their existing path columns
+with all imported rows in one SQLite transaction. The owner holds its existing
+Xray guard and an immediate SQLite writer transaction; active jobs conflict.
+Local import receipts support idempotent retry, cannot be restored as foreign
+authority, and are excluded from exports. Native generation authority stays
+local and is invalidated by the existing subscription owner after import.
+See `docs/CONTROL_PLANE_RESTORE_CONTRACT.md`; historical admission-only PASS does
+not qualify this extended implementation.

@@ -42,6 +42,25 @@ from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
 
 
+@pytest.fixture(autouse=True)
+def _isolate_fixed_maintenance_host_lease(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Retarget host admission before any TestClient/CLI starts.
+
+    Production uses a fixed root independent of Settings/environment. Tests
+    substitute module constants only, never disable lease or pending checks.
+    """
+    from fwrouter_api import main, cli
+    from fwrouter_api.services import maintenance_lifecycle_admission
+    import fwrouter_api_maintenance
+    import os
+
+    root = tmp_path / "maintenance-host"
+    assert not _ISOLATION_BOOTSTRAP.path_is_protected(root)
+    for module in (main, cli, fwrouter_api_maintenance):
+        monkeypatch.setattr(module, "DEFAULT_STATE_ROOT", root)
+    monkeypatch.setattr(maintenance_lifecycle_admission, "_trusted_uid", os.getuid)
+
+
 class _TestDataplaneAdapter:
     def check(self, plan):  # noqa: ANN001
         return self._result(plan, operation=DataplaneOperation.CHECK, stage="check")

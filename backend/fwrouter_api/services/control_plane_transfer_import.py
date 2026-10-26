@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 from typing import Any
 
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.adapters.xray_common import xray_writer_guarded
-from fwrouter_api.services.artifacts import atomic_write_json, atomic_write_text
+from fwrouter_api.services.control_plane_import_files import prepare_rules_files, RECEIPT_PREFIX
 from fwrouter_api.services.control_plane_transfer_common import (
     _detail_table_for_subject_type,
     _insert_rows,
@@ -17,37 +19,14 @@ from fwrouter_api.services.control_plane_import_admission import (
     maintenance_import_admitted,
 )
 from fwrouter_api.services.logs import write_operational_log
-from fwrouter_api.services.rules import get_manual_rules_texts, get_rules_state
+from fwrouter_api.services.rules import get_rules_state
 from fwrouter_api.services.runtime import get_scoped_egress_runtime_summary
 from fwrouter_api.services.subject_taxonomy import normalize_subject_type
 from fwrouter_api.services.system_summary import build_system_summary
 
 
 def _write_rules_files_from_snapshot(rules_snapshot: dict[str, Any]) -> dict[str, str]:
-    current = get_manual_rules_texts()
-    content = rules_snapshot.get("content") if isinstance(rules_snapshot.get("content"), dict) else {}
-    effective_json = content.get("effective_json")
-    metadata_json = content.get("metadata_json")
-
-    atomic_write_text(current["draft_path"], str(content.get("manual_draft_text") or ""))
-    atomic_write_text(current["active_path"], str(content.get("manual_active_text") or ""))
-    atomic_write_text(current["static_direct_path"], str(content.get("static_direct_text") or ""))
-    atomic_write_text(current["big_direct_path"], str(content.get("big_direct_text") or ""))
-    atomic_write_text(current["big_vpn_path"], str(content.get("big_vpn_text") or ""))
-    atomic_write_text(current["effective_text_path"], str(content.get("effective_text") or ""))
-    atomic_write_json(current["effective_json_path"], effective_json if isinstance(effective_json, dict) else {})
-    atomic_write_json(current["metadata_path"], metadata_json if isinstance(metadata_json, dict) else {})
-
-    return {
-        "manual_draft_path": str(current["draft_path"]),
-        "manual_active_path": str(current["active_path"]),
-        "static_direct_path": str(current["static_direct_path"]),
-        "big_direct_path": str(current["big_direct_path"]),
-        "big_vpn_path": str(current["big_vpn_path"]),
-        "effective_json_path": str(current["effective_json_path"]),
-        "effective_text_path": str(current["effective_text_path"]),
-        "metadata_path": str(current["metadata_path"]),
-    }
+    return prepare_rules_files(rules_snapshot)
 
 
 def _normalized_module_row(row: dict[str, Any], *, normalize_runtime_state: bool) -> dict[str, Any]:
@@ -251,6 +230,7 @@ def import_control_plane_snapshot(
     snapshot: dict[str, Any],
     *,
     normalize_runtime_state: bool = True,
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     validation = validate_control_plane_snapshot(snapshot)
     if not validation["ok"]:
@@ -264,6 +244,7 @@ def import_control_plane_snapshot(
         snapshot,
         normalize_runtime_state=normalize_runtime_state,
         validation=validation,
+        operation_id=operation_id,
     )
 
 
@@ -274,6 +255,7 @@ def _import_control_plane_snapshot_validated(
     *,
     normalize_runtime_state: bool,
     validation: dict[str, Any],
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
     # The writer guard may have waited while the originating request finished.
     # Recheck the shared, revocable grant after acquiring that guard and before
@@ -286,26 +268,76 @@ def _import_control_plane_snapshot_validated(
             "error_message": "A verified maintenance import request is required.",
         }
 
+    fingerprint = hashlib.sha256(json.dumps(
+        {"snapshot": snapshot, "normalize_runtime_state": normalize_runtime_state},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    operation_id = fingerprint if operation_id is None else operation_id
+    if not isinstance(operation_id, str) or not re.fullmatch(r"(?:[0-9a-f]{32}|[0-9a-f]{64})", operation_id):
+        return {"ok": False, "imported": False, "error_code": "IMPORT_OPERATION_ID_INVALID"}
     initialize_database()
+    key = RECEIPT_PREFIX + operation_id
+    with db_session() as connection:
+        # Reserve the existing database writer before eligibility/read-modify-write.
+        # Readers keep the previous committed row/file set throughout preparation.
+        # Prepared files are already durable. The selecting row/receipt must
+        # survive a power loss as well as process death before reporting success.
+        # This is connection-local; ordinary runtime writers retain their policy.
+        connection.execute("PRAGMA synchronous = FULL")
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT value_json FROM settings WHERE key=?", (key,)).fetchone()
+        if row is not None:
+            receipt = json.loads(row["value_json"])
+            if receipt["fingerprint"] != fingerprint:
+                return {"ok": False, "imported": False, "error_code": "IMPORT_OPERATION_ID_CONFLICT"}
+            return {**receipt["result"], "replayed": True,
+                    "persistence_status": "previously_persisted",
+                    "receipt_scope": "historical_operation"}
+        if connection.execute("SELECT 1 FROM jobs WHERE status='running' LIMIT 1").fetchone():
+            return {"ok": False, "imported": False, "error_code": "IMPORT_ACTIVE_JOB_CONFLICT"}
+        count = connection.execute("SELECT count(*) FROM settings WHERE key GLOB ?", (RECEIPT_PREFIX + "*",)).fetchone()[0]
+        if count >= 4096:
+            return {"ok": False, "imported": False, "error_code": "IMPORT_RECEIPT_CAPACITY_REACHED"}
+        result = _import_in_transaction(snapshot, normalize_runtime_state=normalize_runtime_state,
+                                        validation=validation, connection=connection)
+        if not result["ok"]:
+            return result
+        result = {**result, "operation_id": operation_id, "replayed": False}
+        connection.execute("INSERT INTO settings(key,value_json) VALUES (?,?)",
+                           (key, json.dumps({"fingerprint": fingerprint, "result": result}, sort_keys=True)))
+    # Receipt and all imported rows/path references have committed together.
+    # A failure of projections/logging cannot turn persisted state into "not imported".
+    try:
+        result["post_import"] = {"scoped_egress": get_scoped_egress_runtime_summary(),
+                                 "system_summary": build_system_summary()}
+        write_operational_log(event_type="control_plane_snapshot_imported",
+                              message="Control-plane snapshot imported into local backend state.",
+                              details={"operation_id": operation_id, "normalize_runtime_state": normalize_runtime_state})
+    except Exception:
+        result["post_import_status"] = "unavailable"
+    return result
 
+
+@maintenance_import_admitted
+def _import_in_transaction(snapshot: dict[str, Any], *, normalize_runtime_state: bool,
+                           validation: dict[str, Any], connection: Any) -> dict[str, Any]:
     state = _state_from_snapshot(snapshot)
     imported_server_ids = {
         str(row.get("server_id") or "").strip()
         for row in (state.get("servers") or []) if isinstance(row, dict)
     }
     from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
-    with db_session() as connection:
-        current_auto = connection.execute(
-            "SELECT active_auto_server_id FROM routing_global_state WHERE id=1"
-        ).fetchone()
-        try:
-            read_selection_revision(connection)
-        except ValueError:
-            return {
-                "ok": False, "validation": validation, "imported": False,
-                "error_code": "VPN_AUTO_SELECTION_FENCE_INVALID",
-                "error_message": "The local selection fence is malformed; import was not applied.",
-            }
+    current_auto = connection.execute(
+        "SELECT active_auto_server_id FROM routing_global_state WHERE id=1"
+    ).fetchone()
+    try:
+        read_selection_revision(connection)
+    except ValueError:
+        return {
+            "ok": False, "validation": validation, "imported": False,
+            "error_code": "VPN_AUTO_SELECTION_FENCE_INVALID",
+            "error_message": "The local selection fence is malformed; import was not applied.",
+        }
     current_auto_id = str(current_auto["active_auto_server_id"] or "").strip() or None if current_auto else None
     if current_auto_id and current_auto_id not in imported_server_ids:
         return {
@@ -354,9 +386,9 @@ def _import_control_plane_snapshot_validated(
         advance_selection_revision, read_selection_revision, selection_pool_signature,
         update_imported_routing_intent,
     )
-    settings_rows = [row for row in settings_rows if str(row.get("key") or "") not in {
+    settings_rows = [row for row in settings_rows if not str(row.get("key") or "").startswith(RECEIPT_PREFIX) and str(row.get("key") or "") not in {
         SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY,
-        "core.intent_revision",
+        "core.intent_revision", "subscriptions.native_generation.v1",
     }]
     servers = [dict(row) for row in (state.get("servers") or []) if isinstance(row, dict)]
     custom_https_proxy_rows = [
@@ -380,632 +412,630 @@ def _import_control_plane_snapshot_validated(
     rules_metadata_rows = [
         dict(row) for row in (rules_snapshot.get("metadata_rows") or []) if isinstance(row, dict)
     ]
+    metadata_paths = {
+        "manual": "manual_active_path", "static_direct": "static_direct_path",
+        "big_direct": "big_direct_path", "big_vpn": "big_vpn_path",
+        "effective": "effective_json_path",
+    }
+    for row in rules_metadata_rows:
+        field = metadata_paths.get(str(row.get("ruleset_type") or ""))
+        row["active_path"] = rules_file_paths.get(field) if field else None
 
     selection_reconcile_required = False
-    with db_session() as connection:
-        from fwrouter_api.services.core_intent import advance_core_intent_revision
-        advance_core_intent_revision(connection)
-        before_pool_signature = selection_pool_signature(connection)
-        local_revision = read_selection_revision(connection)
-        local_routing = connection.execute(
-            "SELECT * FROM routing_global_state WHERE id=1"
-        ).fetchone()
-        local_routing_state = dict(local_routing) if local_routing else None
-        local_active_auto_server_id = (
-            str(local_routing["active_auto_server_id"] or "").strip() or None if local_routing else None
-        )
-        for table in (
-            "subject_server_overrides",
-            "subject_user_overrides",
-            "subject_lan",
-            "subject_docker",
-            "subject_host",
-            "subject_fwrouter",
-            "server_ping_state",
-            "server_preferences",
-            "server_custom_https_proxy",
-            "subjects",
-            "servers",
-            "subscription_state",
-            "rules_metadata",
-            "rules_state",
-            "modules",
-        ):
-            connection.execute(f"DELETE FROM {table}")
-        connection.execute(
-            "DELETE FROM settings WHERE key NOT IN (?, ?, ?)",
-            (SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY, "core.intent_revision"),
-        )
+    from fwrouter_api.services.core_intent import advance_core_intent_revision
+    advance_core_intent_revision(connection)
+    before_pool_signature = selection_pool_signature(connection)
+    local_revision = read_selection_revision(connection)
+    local_routing = connection.execute(
+        "SELECT * FROM routing_global_state WHERE id=1"
+    ).fetchone()
+    local_routing_state = dict(local_routing) if local_routing else None
+    local_active_auto_server_id = (
+        str(local_routing["active_auto_server_id"] or "").strip() or None if local_routing else None
+    )
+    for table in (
+        "subject_server_overrides",
+        "subject_user_overrides",
+        "subject_lan",
+        "subject_docker",
+        "subject_host",
+        "subject_fwrouter",
+        "server_ping_state",
+        "server_preferences",
+        "server_custom_https_proxy",
+        "subjects",
+        "servers",
+        "subscription_state",
+        "rules_metadata",
+        "rules_state",
+        "modules",
+    ):
+        connection.execute(f"DELETE FROM {table}")
+    connection.execute(
+        "DELETE FROM settings WHERE key NOT IN (?, ?, ?, ?) AND key NOT GLOB 'maintenance.import.receipt.*'",
+        (SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY, "core.intent_revision", "subscriptions.native_generation.v1"),
+    )
 
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO settings (key, value_json, updated_at)
-            VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["key"],
-                    json.dumps(row.get("value"), ensure_ascii=False, sort_keys=True),
-                    row.get("updated_at"),
-                )
-                for row in settings_rows
-            ],
-        )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO modules (
-                module_name,
-                desired_state,
-                lifecycle_mode,
-                runtime_state,
-                apply_state,
-                status_text,
-                error_code,
-                error_message,
-                updated_at
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO settings (key, value_json, updated_at)
+        VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["key"],
+                json.dumps(row.get("value"), ensure_ascii=False, sort_keys=True),
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["module_name"],
-                    row["desired_state"],
-                    row.get("lifecycle_mode") or "none",
-                    row["runtime_state"],
-                    row["apply_state"],
-                    row.get("status_text"),
-                    row.get("error_code"),
-                    row.get("error_message"),
-                    row.get("updated_at"),
-                )
-                for row in modules
-            ],
+            for row in settings_rows
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO modules (
+            module_name,
+            desired_state,
+            lifecycle_mode,
+            runtime_state,
+            apply_state,
+            status_text,
+            error_code,
+            error_message,
+            updated_at
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO subjects (
-                subject_id,
-                subject_type,
-                subject_role,
-                implementation_kind,
-                stable_key,
-                display_name,
-                alias,
-                desired_mode,
-                applied_mode,
-                apply_state,
-                runtime_state,
-                is_active,
-                is_deleted,
-                first_seen_at,
-                last_seen_at,
-                last_traffic_at,
-                inactive_since,
-                deleted_at,
-                metadata_json,
-                created_at,
-                updated_at
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["module_name"],
+                row["desired_state"],
+                row.get("lifecycle_mode") or "none",
+                row["runtime_state"],
+                row["apply_state"],
+                row.get("status_text"),
+                row.get("error_code"),
+                row.get("error_message"),
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["subject_id"],
-                    row["subject_type"],
-                    row.get("subject_role") or "unknown",
-                    row.get("implementation_kind") or row.get("stored_subject_type") or row["subject_type"],
-                    row["stable_key"],
-                    row.get("display_name"),
-                    row.get("alias"),
-                    row["desired_mode"],
-                    row.get("applied_mode"),
-                    row["apply_state"],
-                    row["runtime_state"],
-                    1 if row.get("is_active") else 0,
-                    1 if row.get("is_deleted") else 0,
-                    row.get("first_seen_at"),
-                    row.get("last_seen_at"),
-                    row.get("last_traffic_at"),
-                    row.get("inactive_since"),
-                    row.get("deleted_at"),
-                    json.dumps(row.get("metadata"), ensure_ascii=False, sort_keys=True)
-                    if row.get("metadata") is not None
-                    else None,
-                    row.get("created_at"),
-                    row.get("updated_at"),
-                )
-                for row in subjects
-            ],
+            for row in modules
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO subjects (
+            subject_id,
+            subject_type,
+            subject_role,
+            implementation_kind,
+            stable_key,
+            display_name,
+            alias,
+            desired_mode,
+            applied_mode,
+            apply_state,
+            runtime_state,
+            is_active,
+            is_deleted,
+            first_seen_at,
+            last_seen_at,
+            last_traffic_at,
+            inactive_since,
+            deleted_at,
+            metadata_json,
+            created_at,
+            updated_at
         )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["subject_id"],
+                row["subject_type"],
+                row.get("subject_role") or "unknown",
+                row.get("implementation_kind") or row.get("stored_subject_type") or row["subject_type"],
+                row["stable_key"],
+                row.get("display_name"),
+                row.get("alias"),
+                row["desired_mode"],
+                row.get("applied_mode"),
+                row["apply_state"],
+                row["runtime_state"],
+                1 if row.get("is_active") else 0,
+                1 if row.get("is_deleted") else 0,
+                row.get("first_seen_at"),
+                row.get("last_seen_at"),
+                row.get("last_traffic_at"),
+                row.get("inactive_since"),
+                row.get("deleted_at"),
+                json.dumps(row.get("metadata"), ensure_ascii=False, sort_keys=True)
+                if row.get("metadata") is not None
+                else None,
+                row.get("created_at"),
+                row.get("updated_at"),
+            )
+            for row in subjects
+        ],
+    )
 
-        subject_detail_rows: dict[str, list[dict[str, Any]]] = {
-            "subject_lan": [],
-            "subject_docker": [],
-            "subject_host": [],
-            "subject_fwrouter": [],
-        }
-        for subject in subjects:
-            detail = subject.get("detail")
-            if not isinstance(detail, dict):
-                continue
-            table = _detail_table_for_subject_type(str(subject["subject_type"]))
-            if table is None:
-                continue
-            subject_detail_rows[table].append({"subject_id": subject["subject_id"], **detail})
+    subject_detail_rows: dict[str, list[dict[str, Any]]] = {
+        "subject_lan": [],
+        "subject_docker": [],
+        "subject_host": [],
+        "subject_fwrouter": [],
+    }
+    for subject in subjects:
+        detail = subject.get("detail")
+        if not isinstance(detail, dict):
+            continue
+        table = _detail_table_for_subject_type(str(subject["subject_type"]))
+        if table is None:
+            continue
+        subject_detail_rows[table].append({"subject_id": subject["subject_id"], **detail})
 
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO subject_lan (
-                subject_id,
-                mac_address,
-                ip_address,
-                hostname,
-                dhcp_hostname,
-                source_json,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["subject_id"],
-                    row.get("mac_address"),
-                    row.get("ip_address"),
-                    row.get("hostname"),
-                    row.get("dhcp_hostname"),
-                    json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
-                    if row.get("source") is not None
-                    else None,
-                    row.get("updated_at"),
-                )
-                for row in subject_detail_rows["subject_lan"]
-            ],
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO subject_lan (
+            subject_id,
+            mac_address,
+            ip_address,
+            hostname,
+            dhcp_hostname,
+            source_json,
+            updated_at
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO subject_docker (
-                subject_id,
-                compose_project,
-                compose_service,
-                container_name,
-                container_id,
-                image_name,
-                ip_address,
-                network_name,
-                source_json,
-                updated_at
+        VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["subject_id"],
+                row.get("mac_address"),
+                row.get("ip_address"),
+                row.get("hostname"),
+                row.get("dhcp_hostname"),
+                json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
+                if row.get("source") is not None
+                else None,
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["subject_id"],
-                    row.get("compose_project"),
-                    row.get("compose_service"),
-                    row.get("container_name"),
-                    row.get("container_id"),
-                    row.get("image_name"),
-                    row.get("ip_address"),
-                    row.get("network_name"),
-                    json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
-                    if row.get("source") is not None
-                    else None,
-                    row.get("updated_at"),
-                )
-                for row in subject_detail_rows["subject_docker"]
-            ],
+            for row in subject_detail_rows["subject_lan"]
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO subject_docker (
+            subject_id,
+            compose_project,
+            compose_service,
+            container_name,
+            container_id,
+            image_name,
+            ip_address,
+            network_name,
+            source_json,
+            updated_at
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO subject_host (
-                subject_id,
-                systemd_unit,
-                listen_proto,
-                listen_port,
-                executable,
-                process_name,
-                source_json,
-                updated_at
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["subject_id"],
+                row.get("compose_project"),
+                row.get("compose_service"),
+                row.get("container_name"),
+                row.get("container_id"),
+                row.get("image_name"),
+                row.get("ip_address"),
+                row.get("network_name"),
+                json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
+                if row.get("source") is not None
+                else None,
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["subject_id"],
-                    row.get("systemd_unit"),
-                    row.get("listen_proto"),
-                    row.get("listen_port"),
-                    row.get("executable"),
-                    row.get("process_name"),
-                    json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
-                    if row.get("source") is not None
-                    else None,
-                    row.get("updated_at"),
-                )
-                for row in subject_detail_rows["subject_host"]
-            ],
+            for row in subject_detail_rows["subject_docker"]
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO subject_host (
+            subject_id,
+            systemd_unit,
+            listen_proto,
+            listen_port,
+            executable,
+            process_name,
+            source_json,
+            updated_at
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO subject_fwrouter (
-                subject_id,
-                component_name,
-                source_json,
-                updated_at
+        VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["subject_id"],
+                row.get("systemd_unit"),
+                row.get("listen_proto"),
+                row.get("listen_port"),
+                row.get("executable"),
+                row.get("process_name"),
+                json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
+                if row.get("source") is not None
+                else None,
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["subject_id"],
-                    row.get("component_name"),
-                    json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
-                    if row.get("source") is not None
-                    else None,
-                    row.get("updated_at"),
-                )
-                for row in subject_detail_rows["subject_fwrouter"]
-            ],
+            for row in subject_detail_rows["subject_host"]
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO subject_fwrouter (
+            subject_id,
+            component_name,
+            source_json,
+            updated_at
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO servers (
-                server_id,
-                server_name,
-                provider_name,
-                country_code,
-                region,
-                raw_json,
-                inventory_state,
-                first_seen_at,
-                last_seen_at,
-                missing_since,
-                updated_at
+        VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["subject_id"],
+                row.get("component_name"),
+                json.dumps(row.get("source"), ensure_ascii=False, sort_keys=True)
+                if row.get("source") is not None
+                else None,
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["server_id"],
-                    row["server_name"],
-                    row.get("provider_name"),
-                    row.get("country_code"),
-                    row.get("region"),
-                    row.get("raw_json"),
-                    row["inventory_state"],
-                    row.get("first_seen_at"),
-                    row.get("last_seen_at"),
-                    row.get("missing_since"),
-                    row.get("updated_at"),
-                )
-                for row in servers
-            ],
+            for row in subject_detail_rows["subject_fwrouter"]
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO servers (
+            server_id,
+            server_name,
+            provider_name,
+            country_code,
+            region,
+            raw_json,
+            inventory_state,
+            first_seen_at,
+            last_seen_at,
+            missing_since,
+            updated_at
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO server_custom_https_proxy (
-                server_id,
-                proxy_type,
-                host,
-                port,
-                username,
-                password,
-                tls,
-                sni,
-                skip_cert_verify,
-                path,
-                updated_at
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["server_id"],
+                row["server_name"],
+                row.get("provider_name"),
+                row.get("country_code"),
+                row.get("region"),
+                row.get("raw_json"),
+                row["inventory_state"],
+                row.get("first_seen_at"),
+                row.get("last_seen_at"),
+                row.get("missing_since"),
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["server_id"],
-                    row.get("proxy_type", "http"),
-                    row["host"],
-                    row["port"],
-                    row.get("username"),
-                    row.get("password"),
-                    row.get("tls", 1),
-                    row.get("sni"),
-                    row.get("skip_cert_verify", 0),
-                    row.get("path"),
-                    row.get("updated_at"),
-                )
-                for row in custom_https_proxy_rows
-            ],
+            for row in servers
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO server_custom_https_proxy (
+            server_id,
+            proxy_type,
+            host,
+            port,
+            username,
+            password,
+            tls,
+            sni,
+            skip_cert_verify,
+            path,
+            updated_at
         )
-        routing_to_apply = routing or local_routing_state
-        if routing_to_apply is not None:
-            if update_imported_routing_intent(
-                connection, routing_to_apply, preserved_active_server_id=local_active_auto_server_id,
-            ) is None:
-                raise ValueError("Imported snapshot omits the locally selected vpn-auto server; import was rejected before selection state could change.")
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO server_preferences (
-                server_id,
-                vpn_auto,
-                vpn_auto_priority,
-                vpn_auto_priority_origin,
-                global_list,
-                remembered_until,
-                manually_deleted_at,
-                updated_at
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["server_id"],
+                row.get("proxy_type", "http"),
+                row["host"],
+                row["port"],
+                row.get("username"),
+                row.get("password"),
+                row.get("tls", 1),
+                row.get("sni"),
+                row.get("skip_cert_verify", 0),
+                row.get("path"),
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["server_id"],
-                    row.get("vpn_auto", 0),
-                    row.get("vpn_auto_priority", 0),
-                    row.get("vpn_auto_priority_origin") or "legacy",
-                    row.get("global_list", 1),
-                    row.get("remembered_until"),
-                    row.get("manually_deleted_at"),
-                    row.get("updated_at"),
-                )
-                for row in server_preferences
-            ],
+            for row in custom_https_proxy_rows
+        ],
+    )
+    routing_to_apply = routing or local_routing_state
+    if routing_to_apply is not None:
+        if update_imported_routing_intent(
+            connection, routing_to_apply, preserved_active_server_id=local_active_auto_server_id,
+        ) is None:
+            raise ValueError("Imported snapshot omits the locally selected vpn-auto server; import was rejected before selection state could change.")
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO server_preferences (
+            server_id,
+            vpn_auto,
+            vpn_auto_priority,
+            vpn_auto_priority_origin,
+            global_list,
+            remembered_until,
+            manually_deleted_at,
+            updated_at
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO server_ping_state (
-                server_id,
-                status,
-                last_ping_ms,
-                checked_at,
-                checked_by,
-                error_code,
-                error_message,
-                metadata_json,
-                manual_status,
-                manual_ping_ms,
-                manual_checked_at,
-                manual_checked_by,
-                manual_error_code,
-                manual_error_message,
-                manual_metadata_json
+        VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["server_id"],
+                row.get("vpn_auto", 0),
+                row.get("vpn_auto_priority", 0),
+                row.get("vpn_auto_priority_origin") or "legacy",
+                row.get("global_list", 1),
+                row.get("remembered_until"),
+                row.get("manually_deleted_at"),
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    row["server_id"],
-                    row.get("status", "unknown"),
-                    row.get("last_ping_ms"),
-                    row.get("checked_at"),
-                    row.get("checked_by"),
-                    row.get("error_code"),
-                    row.get("error_message"),
-                    row.get("metadata_json"),
-                    row.get("manual_status"),
-                    row.get("manual_ping_ms"),
-                    row.get("manual_checked_at"),
-                    row.get("manual_checked_by"),
-                    row.get("manual_error_code"),
-                    row.get("manual_error_message"),
-                    row.get("manual_metadata_json"),
-                )
-                for row in server_ping_state
-            ],
+            for row in server_preferences
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO server_ping_state (
+            server_id,
+            status,
+            last_ping_ms,
+            checked_at,
+            checked_by,
+            error_code,
+            error_message,
+            metadata_json,
+            manual_status,
+            manual_ping_ms,
+            manual_checked_at,
+            manual_checked_by,
+            manual_error_code,
+            manual_error_message,
+            manual_metadata_json
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO subject_user_overrides (
-                subject_id,
-                override_mode,
-                override_until,
-                created_by,
-                updated_at
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                row["server_id"],
+                row.get("status", "unknown"),
+                row.get("last_ping_ms"),
+                row.get("checked_at"),
+                row.get("checked_by"),
+                row.get("error_code"),
+                row.get("error_message"),
+                row.get("metadata_json"),
+                row.get("manual_status"),
+                row.get("manual_ping_ms"),
+                row.get("manual_checked_at"),
+                row.get("manual_checked_by"),
+                row.get("manual_error_code"),
+                row.get("manual_error_message"),
+                row.get("manual_metadata_json"),
             )
-            VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["subject_id"],
-                    row.get("override_mode"),
-                    row.get("override_until"),
-                    row.get("created_by"),
-                    row.get("updated_at"),
-                )
-                for row in subject_user_overrides
-            ],
+            for row in server_ping_state
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO subject_user_overrides (
+            subject_id,
+            override_mode,
+            override_until,
+            created_by,
+            updated_at
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO subject_server_overrides (
-                subject_id,
-                selected_server_id,
-                selected_target_kind,
-                selected_until,
-                apply_state,
-                error_code,
-                error_message,
-                updated_at
+        VALUES (?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["subject_id"],
+                row.get("override_mode"),
+                row.get("override_until"),
+                row.get("created_by"),
+                row.get("updated_at"),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-            """,
-            [
-                (
-                    row["subject_id"],
-                    row.get("selected_server_id"),
-                    row.get("selected_target_kind") or "server",
-                    row.get("selected_until"),
-                    row.get("apply_state", "clean"),
-                    row.get("error_code"),
-                    row.get("error_message"),
-                    row.get("updated_at"),
-                )
-                for row in subject_server_overrides
-            ],
+            for row in subject_user_overrides
+        ],
+    )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO subject_server_overrides (
+            subject_id,
+            selected_server_id,
+            selected_target_kind,
+            selected_until,
+            apply_state,
+            error_code,
+            error_message,
+            updated_at
         )
+        VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        [
+            (
+                row["subject_id"],
+                row.get("selected_server_id"),
+                row.get("selected_target_kind") or "server",
+                row.get("selected_until"),
+                row.get("apply_state", "clean"),
+                row.get("error_code"),
+                row.get("error_message"),
+                row.get("updated_at"),
+            )
+            for row in subject_server_overrides
+        ],
+    )
 
-        if subscription_state:
-            connection.execute(
-                """
-                INSERT INTO subscription_state (
-                    id,
-                    url,
-                    status,
-                    last_refresh_at,
-                    last_success_at,
-                    server_inventory_updated_at,
-                    error_code,
-                    error_message,
-                    metadata_json,
-                    updated_at
-                )
-                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
-                """,
-                (
-                    subscription_state.get("url"),
-                    subscription_state.get("status", "not_configured"),
-                    subscription_state.get("last_refresh_at"),
-                    subscription_state.get("last_success_at"),
-                    subscription_state.get("server_inventory_updated_at"),
-                    subscription_state.get("error_code"),
-                    subscription_state.get("error_message"),
-                    json.dumps(subscription_state.get("metadata"), ensure_ascii=False, sort_keys=True)
-                    if subscription_state.get("metadata") is not None
-                    else None,
-                    subscription_state.get("updated_at"),
-                ),
-            )
-
+    if subscription_state:
         connection.execute(
             """
-            INSERT INTO rules_state (
+            INSERT INTO subscription_state (
                 id,
-                manual_draft_path,
-                manual_active_path,
-                static_direct_path,
-                big_direct_path,
-                big_vpn_path,
-                effective_json_path,
-                effective_text_path,
-                metadata_path,
-                selective_default,
-                last_apply_job_id,
-                last_update_job_id,
+                url,
                 status,
+                last_refresh_at,
                 last_success_at,
-                last_failed_at,
+                server_inventory_updated_at,
                 error_code,
                 error_message,
+                metadata_json,
                 updated_at
             )
-            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
             """,
             (
-                rules_state["manual_draft_path"],
-                rules_state["manual_active_path"],
-                rules_state["static_direct_path"],
-                rules_state["big_direct_path"],
-                rules_state["big_vpn_path"],
-                rules_state["effective_json_path"],
-                rules_state["effective_text_path"],
-                rules_state["metadata_path"],
-                rules_state["selective_default"],
-                rules_state.get("last_apply_job_id"),
-                rules_state.get("last_update_job_id"),
-                rules_state["status"],
-                rules_state.get("last_success_at"),
-                rules_state.get("last_failed_at"),
-                rules_state.get("error_code"),
-                rules_state.get("error_message"),
-                rules_state.get("updated_at"),
+                subscription_state.get("url"),
+                subscription_state.get("status", "not_configured"),
+                subscription_state.get("last_refresh_at"),
+                subscription_state.get("last_success_at"),
+                subscription_state.get("server_inventory_updated_at"),
+                subscription_state.get("error_code"),
+                subscription_state.get("error_message"),
+                json.dumps(subscription_state.get("metadata"), ensure_ascii=False, sort_keys=True)
+                if subscription_state.get("metadata") is not None
+                else None,
+                subscription_state.get("updated_at"),
             ),
         )
-        _insert_rows(
-            connection,
-            """
-            INSERT INTO rules_metadata (
-                ruleset_id,
-                ruleset_type,
-                version_name,
-                source_url,
-                active_path,
-                downloaded_at,
-                activated_at,
-                status,
-                last_success_at,
-                last_failed_at,
-                last_error_code,
-                last_error_message,
-                last_job_id,
-                metadata_json
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    row["ruleset_id"],
-                    row["ruleset_type"],
-                    row.get("version_name"),
-                    row.get("source_url"),
-                    row.get("active_path"),
-                    row.get("downloaded_at"),
-                    row.get("activated_at"),
-                    row.get("status"),
-                    row.get("last_success_at"),
-                    row.get("last_failed_at"),
-                    row.get("last_error_code"),
-                    row.get("last_error_message"),
-                    row.get("last_job_id"),
-                    json.dumps(row.get("metadata_json"), ensure_ascii=False, sort_keys=True)
-                    if row.get("metadata_json") is not None
-                    else None,
-                )
-                for row in rules_metadata_rows
-            ],
-        )
-        after_pool_signature = selection_pool_signature(connection)
-        if before_pool_signature != after_pool_signature:
-            if advance_selection_revision(connection, expected_revision=local_revision) is None:
-                raise ValueError("VPN_AUTO_SELECTION_REVISION_CONFLICT")
-        current = connection.execute(
-            "SELECT server_mode, active_auto_server_id FROM routing_global_state WHERE id=1"
-        ).fetchone()
-        current_auto = str(current["active_auto_server_id"] or "").strip() if current else ""
-        if current and str(current["server_mode"] or "auto").lower() == "auto" and current_auto:
-            from fwrouter_api.services.auto_eligibility import auto_eligible_sql
-            eligible = connection.execute(
-                f"SELECT 1 FROM servers s LEFT JOIN server_preferences p ON p.server_id=s.server_id WHERE s.server_id=? AND {auto_eligible_sql()} LIMIT 1",
-                (current_auto,),
-            ).fetchone()
-            if eligible is None:
-                selection_reconcile_required = True
-                connection.execute(
-                    "UPDATE routing_global_state SET apply_state='pending', error_code='VPN_AUTO_SELECTION_RECONCILE_REQUIRED', error_message='Imported eligibility excludes the retained last-good vpn-auto target.', updated_at=CURRENT_TIMESTAMP WHERE id=1"
-                )
-        selection_revision = read_selection_revision(connection)
 
-    scoped_egress = get_scoped_egress_runtime_summary()
-    system_summary = build_system_summary()
-    write_operational_log(
-        event_type="control_plane_snapshot_imported",
-        message="Control-plane snapshot imported into local backend state.",
-        details={
-            "normalize_runtime_state": normalize_runtime_state,
-            "subjects_count": len(subjects),
-            "servers_count": len(servers),
-        },
+    connection.execute(
+        """
+        INSERT INTO rules_state (
+            id,
+            manual_draft_path,
+            manual_active_path,
+            static_direct_path,
+            big_direct_path,
+            big_vpn_path,
+            effective_json_path,
+            effective_text_path,
+            metadata_path,
+            selective_default,
+            last_apply_job_id,
+            last_update_job_id,
+            status,
+            last_success_at,
+            last_failed_at,
+            error_code,
+            error_message,
+            updated_at
+        )
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        """,
+        (
+            rules_state["manual_draft_path"],
+            rules_state["manual_active_path"],
+            rules_state["static_direct_path"],
+            rules_state["big_direct_path"],
+            rules_state["big_vpn_path"],
+            rules_state["effective_json_path"],
+            rules_state["effective_text_path"],
+            rules_state["metadata_path"],
+            rules_state["selective_default"],
+            rules_state.get("last_apply_job_id"),
+            rules_state.get("last_update_job_id"),
+            rules_state["status"],
+            rules_state.get("last_success_at"),
+            rules_state.get("last_failed_at"),
+            rules_state.get("error_code"),
+            rules_state.get("error_message"),
+            rules_state.get("updated_at"),
+        ),
     )
+    _insert_rows(
+        connection,
+        """
+        INSERT INTO rules_metadata (
+            ruleset_id,
+            ruleset_type,
+            version_name,
+            source_url,
+            active_path,
+            downloaded_at,
+            activated_at,
+            status,
+            last_success_at,
+            last_failed_at,
+            last_error_code,
+            last_error_message,
+            last_job_id,
+            metadata_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                row["ruleset_id"],
+                row["ruleset_type"],
+                row.get("version_name"),
+                row.get("source_url"),
+                row.get("active_path"),
+                row.get("downloaded_at"),
+                row.get("activated_at"),
+                row.get("status"),
+                row.get("last_success_at"),
+                row.get("last_failed_at"),
+                row.get("last_error_code"),
+                row.get("last_error_message"),
+                row.get("last_job_id"),
+                json.dumps(row.get("metadata_json"), ensure_ascii=False, sort_keys=True)
+                if row.get("metadata_json") is not None
+                else None,
+            )
+            for row in rules_metadata_rows
+        ],
+    )
+    after_pool_signature = selection_pool_signature(connection)
+    if before_pool_signature != after_pool_signature:
+        if advance_selection_revision(connection, expected_revision=local_revision) is None:
+            raise ValueError("VPN_AUTO_SELECTION_REVISION_CONFLICT")
+    current = connection.execute(
+        "SELECT server_mode, active_auto_server_id FROM routing_global_state WHERE id=1"
+    ).fetchone()
+    current_auto = str(current["active_auto_server_id"] or "").strip() if current else ""
+    if current and str(current["server_mode"] or "auto").lower() == "auto" and current_auto:
+        from fwrouter_api.services.auto_eligibility import auto_eligible_sql
+        eligible = connection.execute(
+            f"SELECT 1 FROM servers s LEFT JOIN server_preferences p ON p.server_id=s.server_id WHERE s.server_id=? AND {auto_eligible_sql()} LIMIT 1",
+            (current_auto,),
+        ).fetchone()
+        if eligible is None:
+            selection_reconcile_required = True
+            connection.execute(
+                "UPDATE routing_global_state SET apply_state='pending', error_code='VPN_AUTO_SELECTION_RECONCILE_REQUIRED', error_message='Imported eligibility excludes the retained last-good vpn-auto target.', updated_at=CURRENT_TIMESTAMP WHERE id=1"
+            )
+    selection_revision = read_selection_revision(connection)
+    from fwrouter_api.services.subscription import _write_subscription_inventory_candidate
+    _write_subscription_inventory_candidate(connection, force_pending=True)
+
     return {
         "ok": True,
         "validation": validation,
@@ -1022,8 +1052,4 @@ def _import_control_plane_snapshot_validated(
         "rules_files": rules_file_paths,
         "selection_reconcile_required": selection_reconcile_required,
         "selection_revision": selection_revision,
-        "post_import": {
-            "scoped_egress": scoped_egress,
-            "system_summary": system_summary,
-        },
     }

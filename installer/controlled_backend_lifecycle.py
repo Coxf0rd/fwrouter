@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import hashlib
 import http.client
+import importlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -20,13 +21,16 @@ from typing import Any
 import uuid
 
 
-SCHEMA = 2
+SCHEMA = 3
+PREVIOUS_SCHEMA = 2
 LEGACY_SCHEMA = 1
 MAX_SOURCE_TRANSITIONS = 16
 DEFAULT_STATE_DIR = Path("/var/lib/fwrouter-v2/state/controlled-rollout")
 SOURCE_BACKEND = Path(__file__).resolve().parents[1] / "backend"
 TARGET_BACKEND = Path("/opt/fwrouter-api")
 API_UNIT = "fwrouter-api.service"
+API_EXECUTABLE = "/opt/fwrouter-api/.venv/bin/python"
+API_MAINTENANCE_ARGV = "fwrouter_api_maintenance run-api"
 GATEWAY_UNIT = "fwrouter-xray-sub-gateway.service"
 GATEWAY_ADDRESS = ("172.18.0.1", 5055)
 HEALTH_TIMEOUT_SECONDS = 8
@@ -59,9 +63,10 @@ STOP_ORDER = (*reversed(PERSISTENT_TIMERS), *reversed(LONG_RUNNING_DEPENDENTS))
 CHECKPOINT_KEYS = {
     "schema", "operation_id", "status", "created_at", "backend_manifest",
     "backend_manifest_sha256", "active_units", "pending_units",
-    "initial_backend_manifest_sha256", "source_transitions",
+    "initial_backend_manifest_sha256", "source_transitions", "maintenance_operation",
 }
-LEGACY_CHECKPOINT_KEYS = CHECKPOINT_KEYS - {
+PREVIOUS_CHECKPOINT_KEYS = CHECKPOINT_KEYS - {"maintenance_operation"}
+LEGACY_CHECKPOINT_KEYS = PREVIOUS_CHECKPOINT_KEYS - {
     "initial_backend_manifest_sha256", "source_transitions",
 }
 
@@ -227,6 +232,8 @@ def _verify_export(expected: list[dict[str, Any]]) -> None:
 def _validate_state_dir(path: Path) -> Path:
     if not path.is_absolute():
         raise LifecycleError("state directory must be absolute")
+    if ".." in path.parts:
+        raise LifecycleError("state directory must not contain traversal components")
     cursor = Path(path.anchor)
     for part in path.parts[1:]:
         cursor = cursor / part
@@ -316,8 +323,9 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
     schema = value.get("schema")
     if (type(schema) is not int
             or (schema == LEGACY_SCHEMA and set(value) != LEGACY_CHECKPOINT_KEYS)
+            or (schema == PREVIOUS_SCHEMA and set(value) != PREVIOUS_CHECKPOINT_KEYS)
             or (schema == SCHEMA and set(value) != CHECKPOINT_KEYS)
-            or schema not in {LEGACY_SCHEMA, SCHEMA}):
+            or schema not in {LEGACY_SCHEMA, PREVIOUS_SCHEMA, SCHEMA}):
         raise LifecycleError("rollout checkpoint schema or keys are invalid")
     if value.get("status") not in {"pending", "complete"}:
         raise LifecycleError("rollout checkpoint status is invalid")
@@ -328,7 +336,7 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
     manifest = _validate_manifest(value["backend_manifest"])
     if value["backend_manifest_sha256"] != _manifest_digest(manifest):
         raise LifecycleError("checkpoint source identity does not match its backend manifest")
-    if schema == SCHEMA:
+    if schema in {PREVIOUS_SCHEMA, SCHEMA}:
         initial = value["initial_backend_manifest_sha256"]
         transitions = value["source_transitions"]
         if (not isinstance(initial, str) or len(initial) != 64
@@ -358,6 +366,19 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
             previous = to_digest
         if previous != value["backend_manifest_sha256"]:
             raise LifecycleError("rollout source transition history does not bind current source")
+    if schema == SCHEMA:
+        maintenance = value["maintenance_operation"]
+        if maintenance is not None:
+            _validate_maintenance_operation(maintenance, value["operation_id"])
+            if maintenance.get("status") != "pending" and maintenance.get("backup") is None:
+                raise LifecycleError("offline rebuild phase has no pinned backup")
+            if maintenance.get("status") == "verified" and maintenance.get("backup") is None:
+                raise LifecycleError("verified rebuild has no pinned backup")
+            if maintenance.get("status") == "verified" and value["status"] not in {"pending", "complete"}:
+                raise LifecycleError("verified rebuild checkpoint has an invalid rollout status")
+            if maintenance.get("status") not in {
+                    "pending", "candidate_ready", "source_quiesced", "published", "verified"}:
+                raise LifecycleError("rollout maintenance operation is invalid")
     units = value["active_units"]
     pending = value["pending_units"]
     expected_units = {*RESTORE_ORDER, *TRANSIENT_JOBS, API_UNIT}
@@ -370,16 +391,90 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
     return value
 
 
+def _validate_maintenance_operation(value: object, operation_id: str) -> None:
+    if not isinstance(value, dict) or set(value) not in (
+            {"kind", "status"}, {"kind", "status", "backup"}):
+        raise LifecycleError("rollout maintenance operation is invalid")
+    if value.get("kind") != "database_rebuild" or value.get("status") not in {
+            "pending", "candidate_ready", "source_quiesced", "published", "verified"}:
+        raise LifecycleError("rollout maintenance operation is invalid")
+    backup = value.get("backup")
+    if backup is None:
+        if value.get("status") != "pending":
+            raise LifecycleError("offline rebuild phase has no pinned backup")
+        return
+    if not isinstance(backup, dict) or set(backup) != {"filename", "sha256"}:
+        raise LifecycleError("rollout maintenance backup pin is invalid")
+    filename = backup.get("filename")
+    digest = backup.get("sha256")
+    prefix = f"fwrouter.db.rebuild-{uuid.UUID(operation_id).hex}."
+    if (not isinstance(filename, str) or filename != Path(filename).name
+            or not filename.startswith(prefix) or not filename.endswith(".bak")
+            or not isinstance(digest, str) or len(digest) != 64
+            or any(ch not in "0123456789abcdef" for ch in digest)):
+        raise LifecycleError("rollout maintenance backup pin is invalid")
+
+
+def _verify_operation_backup_pin(state_dir: Path, operation_id: str, backup: object) -> None:
+    _validate_maintenance_operation(
+        {"kind": "database_rebuild", "status": "published", "backup": backup}, operation_id,
+    )
+    assert isinstance(backup, dict)
+    backup_dir = state_dir.parents[1] / "backups"
+    try:
+        parent = backup_dir.lstat()
+        path = backup_dir / str(backup["filename"])
+        info = path.lstat()
+    except OSError as exc:
+        raise LifecycleError("pinned operation backup is unavailable") from exc
+    if (not stat.S_ISDIR(parent.st_mode) or stat.S_ISLNK(parent.st_mode)
+            or parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) != 0o700
+            or not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1):
+        raise LifecycleError("pinned operation backup path is unsafe")
+    digest = _sha256_file(path)
+    if digest != backup["sha256"]:
+        raise LifecycleError("pinned operation backup digest changed")
+
+
+def _sha256_file(path: Path) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+                or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1):
+            raise LifecycleError("pinned operation backup file is unsafe")
+        digest = hashlib.sha256()
+        while chunk := os.read(fd, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(fd)
+        named = path.lstat()
+        if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                or after.st_uid != os.geteuid() or stat.S_IMODE(after.st_mode) != 0o600
+                or after.st_nlink != 1
+                or (after.st_dev, after.st_ino) != (named.st_dev, named.st_ino)):
+            raise LifecycleError("pinned operation backup changed while hashing")
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
 def _checkpoint_as_current_schema(checkpoint: dict[str, Any]) -> dict[str, Any]:
     """Upgrade an in-memory legacy checkpoint without changing its ownership."""
     if checkpoint["schema"] == SCHEMA:
         return checkpoint
+    if checkpoint["schema"] == PREVIOUS_SCHEMA:
+        return {**checkpoint, "schema": SCHEMA, "maintenance_operation": None}
     digest = checkpoint["backend_manifest_sha256"]
     return {
         **checkpoint,
         "schema": SCHEMA,
         "initial_backend_manifest_sha256": digest,
         "source_transitions": [],
+        "maintenance_operation": None,
     }
 
 
@@ -395,6 +490,8 @@ def _transfer(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
     checkpoint = _read_checkpoint(checkpoint_path)
     if checkpoint["status"] != "pending":
         raise LifecycleError("only a pending rollout checkpoint can transfer source ownership")
+    if checkpoint.get("maintenance_operation") is not None:
+        raise LifecycleError("source transfer is unavailable during database maintenance")
     try:
         expected_operation_id = str(uuid.UUID(args.expected_operation_id))
     except (ValueError, TypeError, AttributeError) as exc:
@@ -466,7 +563,7 @@ def _systemctl(action: str, unit: str) -> None:
     if unit not in ALLOWED_UNITS:
         raise LifecycleError("refusing non-allowlisted systemd unit")
     try:
-        result = subprocess.run(["systemctl", action, unit], check=False,
+        result = subprocess.run(["/usr/bin/systemctl", action, unit], check=False,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -479,7 +576,7 @@ def _is_active(unit: str) -> bool:
     if unit not in ALLOWED_UNITS:
         raise LifecycleError("refusing non-allowlisted systemd unit")
     try:
-        result = subprocess.run(["systemctl", "is-active", unit], check=False,
+        result = subprocess.run(["/usr/bin/systemctl", "is-active", unit], check=False,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -525,6 +622,22 @@ def _gateway_listener_ready() -> bool:
         return False
 
 
+def _require_maintenance_compatible_api_unit() -> None:
+    """Refuse a rebuild while a legacy/direct-uvicorn unit can bypass leases."""
+    try:
+        result = subprocess.run(
+            ["/usr/bin/systemctl", "show", "--property=ExecStart", "--value", API_UNIT],
+            check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LifecycleError("cannot verify API maintenance launcher before stop") from exc
+    command = result.stdout.strip()
+    if (result.returncode != 0 or API_EXECUTABLE not in command
+            or API_MAINTENANCE_ARGV not in command or "uvicorn" in command):
+        raise LifecycleError("installed API unit does not hold the shared maintenance lease")
+
+
 def _wait_gateway_listener() -> None:
     deadline = time.monotonic() + GATEWAY_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -534,7 +647,11 @@ def _wait_gateway_listener() -> None:
     raise LifecycleError("Gateway listener did not become ready")
 
 
-def _stop(state_dir: Path) -> dict[str, Any]:
+def _stop(
+    state_dir: Path,
+    *,
+    maintenance_operation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     checkpoint_path = state_dir / "pending.json"
     backend_manifest = _backend_manifest(SOURCE_BACKEND)
     _preflight_export(backend_manifest)
@@ -542,9 +659,11 @@ def _stop(state_dir: Path) -> dict[str, Any]:
     if checkpoint_path.exists():
         old = _read_checkpoint(checkpoint_path)
         if old["status"] == "pending":
-            checkpoint = old
+            checkpoint = _checkpoint_as_current_schema(old)
             if _manifest_digest(backend_manifest) != checkpoint["backend_manifest_sha256"]:
                 raise LifecycleError("source identity changed since rollout stop")
+            if checkpoint.get("maintenance_operation") != maintenance_operation:
+                raise LifecycleError("another controlled lifecycle operation is pending")
     if checkpoint is None:
         active = {unit: _is_active(unit) for unit in (*RESTORE_ORDER, *TRANSIENT_JOBS, API_UNIT)}
         if not active.get(API_UNIT):
@@ -561,6 +680,7 @@ def _stop(state_dir: Path) -> dict[str, Any]:
             "backend_manifest_sha256": _manifest_digest(backend_manifest),
             "initial_backend_manifest_sha256": _manifest_digest(backend_manifest),
             "source_transitions": [],
+            "maintenance_operation": maintenance_operation,
             "active_units": active,
             "pending_units": [],
         }
@@ -578,12 +698,151 @@ def _stop(state_dir: Path) -> dict[str, Any]:
             "active_units": [unit for unit, enabled in active.items() if enabled]}
 
 
+def _run_database_rebuild(
+    args: argparse.Namespace, state_dir: Path, lifecycle_lock_fd: int,
+) -> dict[str, Any]:
+    """Run snapshot rebuild only while the lifecycle owner holds exclusive admission."""
+    checkpoint_path = state_dir / "pending.json"
+    maintenance_kind = "database_rebuild"
+    source_manifest = _backend_manifest(SOURCE_BACKEND)
+    # Rebuild requires the exact trusted source to already be installed; it is
+    # not an installer/bootstrap shortcut and must not run against stale code.
+    _verify_export(source_manifest)
+    # This check precedes the first stop/checkpoint/backup: older unit files
+    # that launch uvicorn directly cannot participate in the shared barrier.
+    _require_maintenance_compatible_api_unit()
+
+    if checkpoint_path.exists():
+        checkpoint = _read_checkpoint(checkpoint_path)
+        maintenance = checkpoint.get("maintenance_operation")
+        if (checkpoint["status"] != "pending" or not isinstance(maintenance, dict)
+                or set(maintenance) not in ({"kind", "status"}, {"kind", "status", "backup"})
+                or maintenance.get("kind") != maintenance_kind
+                or maintenance.get("status") not in {
+                    "pending", "candidate_ready", "source_quiesced", "published",
+                }):
+            raise LifecycleError("another lifecycle operation is pending")
+        if checkpoint["backend_manifest_sha256"] != _manifest_digest(source_manifest):
+            raise LifecycleError("installed backend identity changed during pending rebuild")
+        if maintenance.get("backup") is not None:
+            _verify_operation_backup_pin(state_dir, checkpoint["operation_id"], maintenance["backup"])
+        operation_id = checkpoint["operation_id"]
+    else:
+        stopped = _stop(state_dir, maintenance_operation={
+            "kind": maintenance_kind, "status": "pending", "backup": None,
+        })
+        operation_id = str(stopped["operation_id"])
+
+    # Repeated stop checks are intentional: another systemd/operator action
+    # can start a writer after the initial stop has completed.
+    _require_units_stopped()
+    if _backend_manifest(TARGET_BACKEND) != source_manifest:
+        raise LifecycleError("installed backend identity changed before rebuild")
+
+    sys.path.insert(0, str(SOURCE_BACKEND))
+    try:
+        admission = importlib.import_module(
+            "fwrouter_api.services.maintenance_lifecycle_admission"
+        )
+        get_held_fd = admission.active_offline_rebuild_fd
+        lease_context = admission._lifecycle_owner_offline_rebuild_lease
+    except (ImportError, AttributeError) as exc:
+        raise LifecycleError("installed lifecycle admission helper is unavailable") from exc
+
+    state_root = state_dir.parents[1]
+    try:
+        with lease_context(lifecycle_lock_fd, state_root=state_root) as held_operation_id:
+            if held_operation_id != operation_id:
+                raise LifecycleError("offline operation identity changed before rebuild")
+            lock_fd = get_held_fd()
+            python = _verified_backend_interpreter()
+            try:
+                result = subprocess.run(
+                    [str(python), "-m", "fwrouter_api_maintenance", "rebuild-db",
+                     "--file-path", args.file_path,
+                     "--operation-id", uuid.UUID(operation_id).hex,
+                     "--maintenance-lock-fd", str(lock_fd),
+                     "--lifecycle-lock-fd", str(lifecycle_lock_fd),
+                     "--lifecycle-state-root", str(state_root)],
+                    check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, timeout=1800, pass_fds=(lock_fd, lifecycle_lock_fd),
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise LifecycleError("offline database rebuild process did not complete") from exc
+            if result.returncode != 0:
+                raise LifecycleError("offline database rebuild failed; API startup remains blocked")
+            try:
+                lines = [line for line in result.stdout.splitlines() if line.strip()]
+                receipt = json.loads(lines[-1]) if lines else None
+            except (json.JSONDecodeError, IndexError) as exc:
+                raise LifecycleError("offline rebuild returned no verifiable receipt") from exc
+            expected_receipt_id = uuid.UUID(operation_id).hex
+            if (not isinstance(receipt, dict) or receipt.get("ok") is not True
+                    or receipt.get("operation_id") != expected_receipt_id):
+                raise LifecycleError("offline rebuild receipt identity or status is invalid")
+
+            checkpoint = _read_checkpoint(checkpoint_path)
+            current_maintenance = checkpoint.get("maintenance_operation")
+            if (checkpoint["status"] != "pending" or checkpoint["operation_id"] != operation_id
+                    or not isinstance(current_maintenance, dict)
+                    or current_maintenance.get("kind") != maintenance_kind
+                    or current_maintenance.get("status") != "published"):
+                raise LifecycleError("offline rebuild checkpoint changed before verification")
+            _verify_operation_backup_pin(state_dir, operation_id, current_maintenance.get("backup"))
+            checkpoint["maintenance_operation"] = {**current_maintenance, "status": "verified"}
+            _atomic_write(checkpoint_path, checkpoint)
+            return {"status": "verified", "operation_id": operation_id,
+                    "pending_units": [unit for unit in PERSISTENT_TIMERS
+                                      if checkpoint["active_units"].get(unit)]}
+    except LifecycleError:
+        raise
+    except Exception as exc:
+        raise LifecycleError("cannot establish offline rebuild admission") from exc
+
+
+def _verified_backend_interpreter() -> Path:
+    """Verify the venv launcher and resolved executable before invoking it."""
+    path = TARGET_BACKEND / ".venv" / "bin" / "python"
+    try:
+        for parent in (TARGET_BACKEND, TARGET_BACKEND / ".venv", TARGET_BACKEND / ".venv" / "bin"):
+            parent_info = parent.lstat()
+            if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
+                    or parent_info.st_uid != 0
+                    or parent_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+                raise LifecycleError("installed backend interpreter parent is writable or untrusted")
+        link_info = path.lstat()
+        if (not stat.S_ISREG(link_info.st_mode) and not stat.S_ISLNK(link_info.st_mode)):
+            raise LifecycleError("installed backend interpreter has an unsafe type")
+        if link_info.st_uid != 0:
+            raise LifecycleError("installed backend interpreter is not root-owned")
+        resolved = path.resolve(strict=True)
+        cursor = Path(resolved.anchor)
+        for part in resolved.parts[1:]:
+            cursor = cursor / part
+            info = cursor.lstat()
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) and cursor != resolved:
+                raise LifecycleError("resolved backend interpreter path is unsafe")
+            if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                raise LifecycleError("resolved backend interpreter path is writable or untrusted")
+        final = resolved.lstat()
+    except LifecycleError:
+        raise
+    except OSError as exc:
+        raise LifecycleError("installed backend interpreter is unavailable") from exc
+    if not stat.S_ISREG(final.st_mode) or not final.st_mode & 0o111:
+        raise LifecycleError("resolved backend interpreter is not an executable regular file")
+    return path
+
+
 def _resume(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
     checkpoint_path = state_dir / "pending.json"
     checkpoint = _read_checkpoint(checkpoint_path)
     if checkpoint["status"] == "complete":
         return {"status": "complete", "operation_id": checkpoint["operation_id"],
                 "pending_units": []}
+    maintenance = checkpoint.get("maintenance_operation")
+    if maintenance is not None and maintenance.get("status") != "verified":
+        raise LifecycleError("offline rebuild is incomplete; API startup remains blocked")
     if not _api_health():
         raise LifecycleError("API health gate failed; dependent units were not restored")
     expected = checkpoint["backend_manifest"]
@@ -618,11 +877,12 @@ def _resume(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
 
 def run_command(argv: list[str] | None = None) -> dict[str, Any]:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("stop", "resume", "transfer"))
+    parser.add_argument("command", choices=("stop", "resume", "transfer", "rebuild-db"))
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--expected-operation-id")
     parser.add_argument("--expected-current-manifest-sha256")
     parser.add_argument("--expected-new-manifest-sha256")
+    parser.add_argument("--file-path", help="snapshot path for the lifecycle-owned database rebuild")
     parser.add_argument("--allow-timer-catchup", action="store_true",
                         help="explicitly allow reactivation of previously active Persistent=true timers")
     args = parser.parse_args(argv)
@@ -634,6 +894,13 @@ def run_command(argv: list[str] | None = None) -> dict[str, Any]:
                                                 args.expected_current_manifest_sha256,
                                                 args.expected_new_manifest_sha256)):
         raise LifecycleError("transfer requires expected operation id and old/new manifest digests")
+    if args.command == "rebuild-db" and not args.file_path:
+        raise LifecycleError("rebuild-db requires --file-path")
+    if (args.command == "rebuild-db"
+            and Path(os.path.abspath(args.state_dir)) != Path(os.path.abspath(DEFAULT_STATE_DIR))):
+        raise LifecycleError("database rebuild lifecycle state directory is fixed")
+    if args.command != "rebuild-db" and args.file_path:
+        raise LifecycleError("--file-path applies only to rebuild-db")
     if args.command != "transfer" and any((args.expected_operation_id,
                                              args.expected_current_manifest_sha256,
                                              args.expected_new_manifest_sha256)):
@@ -645,6 +912,8 @@ def run_command(argv: list[str] | None = None) -> dict[str, Any]:
             return _stop(state_dir)
         if args.command == "transfer":
             return _transfer(args, state_dir)
+        if args.command == "rebuild-db":
+            return _run_database_rebuild(args, state_dir, lock_fd)
         return _resume(args, state_dir)
     finally:
         os.close(lock_fd)

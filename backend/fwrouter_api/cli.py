@@ -14,6 +14,10 @@ from uuid import uuid4
 
 from fwrouter_api.services import diagnostics
 from fwrouter_api.services.reconcile import ReconcileResult, build_reconcile_response
+from fwrouter_api.services.maintenance_lifecycle_admission import (
+    DEFAULT_STATE_ROOT,
+    runtime_shared_lease,
+)
 
 
 def _count(results: list[ReconcileResult], entity_type: str, state: str | None = None) -> int:
@@ -653,23 +657,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="confirm the API and background workers are stopped before applying the migration",
     )
     args = parser.parse_args(argv)
-
-    if args.command == "reconcile" and args.reconcile_command == "check":
-        return _print_reconcile_check()
-    if args.command == "diagnose":
-        return _print_diagnose(json_output=bool(args.json_output))
-    if args.command == "native-proof":
-        return _run_native_proof(args)
-    if args.command == "xray" and args.xray_command == "identity-migration":
-        return _run_identity_migration(args)
-    if args.command == "xray" and args.xray_command == "generation" and args.generation_command == "supersede":
-        return _run_checkpoint_supersession(args)
-    if args.command == "xray" and args.xray_command == "generation" and args.generation_command == "admit-legacy":
-        return _run_legacy_inventory_admission(args)
-    if args.command == "database" and args.database_command == "upgrade":
-        return _run_database_upgrade(args)
-    parser.print_help()
-    return 2
+    with runtime_shared_lease(DEFAULT_STATE_ROOT):
+        if args.command == "reconcile" and args.reconcile_command == "check":
+            return _print_reconcile_check()
+        if args.command == "diagnose":
+            return _print_diagnose(json_output=bool(args.json_output))
+        if args.command == "native-proof":
+            return _run_native_proof(args)
+        if args.command == "xray" and args.xray_command == "identity-migration":
+            return _run_identity_migration(args)
+        if args.command == "xray" and args.xray_command == "generation" and args.generation_command == "supersede":
+            return _run_checkpoint_supersession(args)
+        if args.command == "xray" and args.xray_command == "generation" and args.generation_command == "admit-legacy":
+            return _run_legacy_inventory_admission(args)
+        if args.command == "database" and args.database_command == "upgrade":
+            return _run_database_upgrade(args)
+        parser.print_help()
+        return 2
 
 
 if __name__ == "__main__":
