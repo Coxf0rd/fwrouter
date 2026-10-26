@@ -624,7 +624,8 @@ def _mihomo_readback(
     from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
     from fwrouter_api.services.xray_bindings import collect_xray_runtime_bindings
     from fwrouter_api.services.mihomo_reconcile_fingerprint import (
-        _load_state, current_mihomo_input_fingerprint, mihomo_input_unchanged,
+        matching_mihomo_input_fingerprint, mihomo_input_receipt_snapshot_matches,
+        mihomo_input_fingerprint_profiles,
         mihomo_udp_policy_receipt_matches,
     )
     expected_bindings = collect_xray_runtime_bindings()
@@ -633,11 +634,24 @@ def _mihomo_readback(
     expected_config = mihomo_config.build_mihomo_config(routing, xray_handoff_assignments=expected_handoffs)
     if not _configs_equal(parsed, expected_config):
         raise ValueError("MIHOMO_DURABLE_CONFIG_PROJECTION_MISMATCH")
-    fingerprint = current_mihomo_input_fingerprint(routing)
-    if not mihomo_input_unchanged(fingerprint) or not mihomo_udp_policy_receipt_matches():
+    profiles = mihomo_input_fingerprint_profiles(routing)
+    generation_profile = next(
+        (value for name, value in profiles if name == "proof_only_generation"), None,
+    )
+    if generation_profile is not None:
+        # The proof-only producer captures these exact durable fields directly
+        # from routing_global_state. Bind its accepted profile to that owner
+        # projection so API error metadata cannot mask actual routing drift.
+        from fwrouter_api.services.xray_subscription_service import _capture_generation_auto_selection
+
+        owner_selection = _capture_generation_auto_selection()
+        if not _mihomo_generation_owner_snapshot_matches(owner_selection, db, routing):
+            raise ValueError("MIHOMO_OWNER_RECEIPT_UNAVAILABLE")
+    receipt_match = matching_mihomo_input_fingerprint([item for _name, item in profiles])
+    if receipt_match is None:
         raise ValueError("MIHOMO_OWNER_RECEIPT_UNAVAILABLE")
-    input_state = _load_state()
-    if not isinstance(input_state, dict):
+    fingerprint, input_state = receipt_match
+    if not mihomo_udp_policy_receipt_matches(input_state):
         raise ValueError("MIHOMO_OWNER_RECEIPT_UNAVAILABLE")
     proxies = adapter._proxies(timeout_seconds=2.0)
     rules_payload = adapter._get_json("/rules", timeout_seconds=2.0)
@@ -670,6 +684,8 @@ def _mihomo_readback(
     config_after = hash_mihomo_yaml_file(config_path)
     if runtime_identity_before != runtime_identity_after or config_sha != config_after:
         raise RuntimeError("MIHOMO_READBACK_FENCE_CHANGED")
+    if not mihomo_input_receipt_snapshot_matches(input_state):
+        raise RuntimeError("MIHOMO_READBACK_FENCE_CHANGED")
     return {
         "config_stable": True,
         "runtime_incarnation_stable": True,
@@ -690,6 +706,35 @@ def _mihomo_readback(
         "native_rule_count": len(rules),
         **checks,
     }
+
+
+def _mihomo_generation_owner_snapshot_matches(
+    owner_selection: Any, db: dict[str, Any], current_routing: Any,
+) -> bool:
+    """Bind the proof-only generation projection to its opening DB snapshot."""
+    if not isinstance(owner_selection, dict) or not isinstance(current_routing, dict):
+        return False
+    owner_routing = owner_selection.get("routing")
+    db_selection = db.get("selection") if isinstance(db.get("selection"), dict) else {}
+    db_routing = db.get("routing") if isinstance(db.get("routing"), dict) else {}
+    generation_fields = (
+        "server_mode", "desired_fixed_server_id", "applied_fixed_server_id",
+        "fixed_server_until", "active_auto_server_id", "desired_mode",
+        "applied_mode", "selective_default", "apply_state", "updated_at",
+    )
+    db_fields = (
+        "desired_mode", "applied_mode", "selective_default", "server_mode",
+        "desired_fixed_server_id", "applied_fixed_server_id", "active_auto_server_id", "apply_state",
+    )
+    return bool(
+        isinstance(owner_routing, dict)
+        and all(key in owner_routing and key in current_routing for key in generation_fields)
+        and all(key in db_routing for key in db_fields)
+        and owner_selection.get("selection_revision") == db_selection.get("revision")
+        and owner_selection.get("selection_decision_id") == db_selection.get("decision_id")
+        and all(owner_routing[key] == current_routing[key] for key in generation_fields)
+        and all(owner_routing[key] == db_routing[key] for key in db_fields)
+    )
 
 
 def _mihomo_selection_target_matches(

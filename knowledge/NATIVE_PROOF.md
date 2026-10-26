@@ -33,6 +33,27 @@ The existing successful subscription-generation owner can attach a compact nativ
 
 The external collector is strict. Existing verified markers without the required owner evidence yield INCOMPLETE. It never manufactures receipts or performs an owner operation to establish readiness. Initial capability establishment, if needed, is a separately qualified normal owner operation with separate production authority. There is no automatic migration or recovery fallback.
 
+The Mihomo UDP receipt stores a full input fingerprint hash, while existing
+owners use four supported input forms: ordinary reconciliation passes its full
+routing projection or `None`; proof-only legacy admission captures the exact
+ten durable `routing_global_state` fields; fixed-generation ownership uses its
+existing eight-field projection. Native proof derives these finite profiles
+from one current fingerprint payload, with identical canonical payloads
+deduplicated, and accepts exactly one profile matching the receipt's complete
+hash. The proof-only profile must also match the direct owner snapshot, the
+initial database routing/selection snapshot, and the current routing projection.
+`None` remains a supported ordinary-owner profile because its full fingerprint
+still binds the durable routing rows in its table inputs, while the separate
+selection revision fence binds active selection. Arbitrary subsets, missing
+required profile fields, changed durable intent, malformed/unknown receipt
+versions, or an unstable receipt/config/runtime fence remain INCOMPLETE. This
+does not change fingerprint version, persisted intent, or receipt format.
+The exact matched receipt snapshot is used for UDP receipt checks and returned
+receipt evidence, then receipt state, active config hash, and runtime
+incarnation are rechecked after native proxy/rule reads before the Mihomo
+readback returns. Replacement during that window is STALE/INCOMPLETE and cannot
+combine fields from two receipts.
+
 Core's applied-manifest receipt uses a streamed, stable file hash with a dedicated 64 MiB cap. The proof reads the exact manifest bytes under the same cap and binds the parsed object to those bytes; its closing read must match. The limit accommodates the observed roughly 24 MB generated manifest while bounding resource use and rejecting larger artifacts. It does not change limits for other native artifacts.
 
 Mihomo's generated YAML is read using its existing no-follow, stable-file reader and 32 MiB YAML envelope. The proof parses exactly that read's UTF-8 text and hashes those same bytes; the closing stable hash must still match. This keeps parsing and identity bound to one proof-owned snapshot rather than alternate adapter-supplied text, without widening the generic 16 MiB artifact limit.
