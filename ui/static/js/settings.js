@@ -17,6 +17,7 @@
   let vpnSubscriptionSources = [];
   let settingsBootstrapped = false;
   let settingsWorkspace = null;
+  let clientListSettingController = null;
   let settingsClientsTab = "all";
   let settingsServers = [];
   let settingsInventoryItems = [];
@@ -597,12 +598,6 @@
     `;
   }
 
-  function setCheckbox(id, value) {
-    const node = el(id);
-    if (!node) return;
-    node.checked = Boolean(value);
-  }
-
   function slugifySystemId(value) {
     return String(value || "")
       .trim()
@@ -1082,12 +1077,6 @@
 
   function getSettingsDisplayPayload() {
     const current = (settingsWorkspace && settingsWorkspace.display_settings) || {};
-    const checkedOrCurrent = (id, key, fallback = true) => {
-      const node = el(id);
-      if (node) return Boolean(node.checked);
-      if (typeof current[key] === "boolean") return current[key];
-      return fallback;
-    };
     const systemVisibility = {
       ...systemVisibilityFromSettings(current),
       ...settingsSystemVisibility,
@@ -1097,9 +1086,13 @@
       if (displayKey) systemVisibility[displayKey] = node.getAttribute("aria-pressed") !== "false";
     });
 
-    return {
+    return window.FwrouterClientListSetting?.legacyDisplayPayload({
       system_visibility: systemVisibility,
-      show_inactive: checkedOrCurrent("settingsShowInactive", "show_inactive", false),
+      show_internal_vless: Boolean(current.show_internal_vless),
+      hidden_subject_ids: Array.from(settingsHiddenSubjectIds),
+      subject_traffic_preferences: settingsTrafficPreferences,
+    }) || {
+      system_visibility: systemVisibility,
       show_internal_vless: Boolean(current.show_internal_vless),
       hidden_subject_ids: Array.from(settingsHiddenSubjectIds),
       subject_traffic_preferences: settingsTrafficPreferences,
@@ -1483,8 +1476,37 @@
     );
     settingsTrafficPreferences = normalizeTrafficPreferences(settings.subject_traffic_preferences);
     settingsSystemVisibility = systemVisibilityFromSettings(settings);
-    setCheckbox("settingsShowInactive", settings.show_inactive);
     if (settingsClientsTab === "connections") renderSettingsConnections();
+  }
+
+  function mountClientListSetting() {
+    if (clientListSettingController || !window.FwrouterClientListSetting?.mount) return;
+    clientListSettingController = window.FwrouterClientListSetting.mount({
+      root: "settingsClientListSetting",
+      credential: "settingsClientListCapability",
+      unlock: "settingsClientListUnlock",
+      lock: "settingsClientListLock",
+      checkbox: "settingsClientListShowInactive",
+      refresh: "settingsClientListRefresh",
+      save: "settingsClientListSave",
+      useServer: "settingsClientListUseServer",
+      status: "settingsClientListStatus",
+      current: "settingsClientListCurrent",
+    }, {
+      t,
+      onSaved: async (resource) => {
+        settingsWorkspace = settingsWorkspace || {};
+        settingsWorkspace.display_settings = {
+          ...(settingsWorkspace.display_settings || {}),
+          show_inactive: resource.show_inactive,
+        };
+        document.dispatchEvent(new CustomEvent("fwrouter:display-settings-updated", {
+          detail: { display_settings: settingsWorkspace.display_settings },
+        }));
+        invalidateSettingsCaches(["workspace", "inventory", "display"]);
+        await loadSettingsWorkspace();
+      },
+    });
   }
 
   function syncSettingsClientTabs() {
@@ -3921,6 +3943,7 @@
   function wire() {
     if (settingsBootstrapped) return;
     settingsBootstrapped = true;
+    mountClientListSetting();
 
     el("adminLogsRefresh")?.addEventListener("click", () => {
       if (settingsTab === "rules") {

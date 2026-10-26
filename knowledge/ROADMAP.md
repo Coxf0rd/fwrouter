@@ -602,3 +602,19 @@ This package does not approve the proposed configuration D2/D4 contracts, change
 The WAL-safe backup prerequisite is merged as PR51 (`b15db5a3`). The next source-only package introduces an independent API-verified `control-plane.import` capability before resolver/schema/writer side effects and preserves domain selection/CAS fences. See [maintenance admission contract](../docs/CONTROL_PLANE_MAINTENANCE_ADMISSION.md). Caller attribution, root API process identity and proxy roles are not maintenance authentication.
 
 Full restore qualification remains **BLOCKED**: the existing importer publishes individual rules files before its SQLite commit without a qualified forward-completion journal, and current lifecycle/Xray locks do not establish a held global offline exclusion. Rebuild refuses before backup/unlink until that context is qualified; isolated legacy-body tests do not prove admission. Future managed-resource validation/incarnation rebase must be implemented with its actual domain owner inside the existing import transaction; no `show_inactive` metadata or generic registry is introduced early. The next architectural decisions are a lifecycle-owner held exclusion and an import-specific commit/forward-recovery contract, not weaker guards. Source/security tests and CI are separate from restore/live qualification. No production operation, deployment, migration, routing change, or subsequent configuration slice is authorized by this package.
+
+## Stage 5 presentation first slice — implementation under qualification (2026-10-27)
+
+The authorized bounded slice manages `show_inactive` through the existing
+presentation owner and SQLite row, with field-local incarnation/revision,
+conditional HTTP writes, a separately scoped presentation capability, API-first
+CLI, in-memory browser unlock and revision-fenced read projections. Existing
+maintenance import/rebuild owners from PR52 perform value validation and local
+incarnation rebase; no new recovery/generation owner or eligibility is added.
+WAL-safe backup PR51 and maintenance PR52 are merged prerequisites.
+
+Source/tests/QA/CI are under qualification, not deployment. Deployed proxy/TLS,
+canonical origin, script integrity and credential custody remain UNKNOWN;
+browser/CLI production activation remains BLOCKED until separately qualified.
+See [client-list configuration contract](../docs/CLIENT_LIST_CONFIGURATION.md).
+No routing, adapter, host service or private deployment code is changed.

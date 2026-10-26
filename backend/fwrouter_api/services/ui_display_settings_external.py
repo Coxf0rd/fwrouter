@@ -25,8 +25,8 @@ from fwrouter_api.services.ui_display_settings_guides import _external_connectio
 from fwrouter_api.services.ui_display_settings_store import (
     _load_display_settings_raw,
     _normalized_display_settings_for_response,
-    _save_display_settings_raw,
 )
+from fwrouter_api.services.ui_client_list_settings import merge_external_visibility_delta
 
 
 def preview_custom_external_connection(payload: dict[str, Any], *, connection_id: str | None = None) -> dict[str, Any]:
@@ -66,7 +66,6 @@ def upsert_custom_external_connection(connection_id: str, payload: dict[str, Any
             {"connection_id": "required"},
         )
 
-    saved = _load_display_settings_raw()
     from fwrouter_api.services.external_connections_registry import get_external_connection
 
     existing = get_external_connection(normalized_id)
@@ -84,11 +83,8 @@ def upsert_custom_external_connection(connection_id: str, payload: dict[str, Any
     )
     item["connection_id"] = existing.get("connection_id") if existing else normalized_id
     stored = upsert_external_connection_record(item)
-    visibility = saved.get("system_visibility") if isinstance(saved.get("system_visibility"), dict) else {}
-    visibility = dict(visibility)
-    visibility.setdefault(normalized_id, True)
-    saved["system_visibility"] = visibility
-    _save_display_settings_raw(saved)
+    merge_external_visibility_delta({normalized_id: True})
+    saved = _load_display_settings_raw()
     return {
         "external_connection": _external_connection_response(stored)["external_connection"],
         "display_settings": _normalized_display_settings_for_response(saved),
@@ -105,19 +101,14 @@ def delete_custom_external_connection(connection_id: str) -> dict[str, Any]:
             "External connection id is required.",
             {"connection_id": "required"},
         )
-    saved = _load_display_settings_raw()
     if not delete_external_connection_record(normalized_id):
         raise ExternalConnectionValidationError(
             "EXTERNAL_CONNECTION_NOT_FOUND",
             "Only custom external connections can be deleted here.",
             {"connection_id": "not_found"},
         )
-    visibility = saved.get("system_visibility")
-    if isinstance(visibility, dict):
-        visibility = dict(visibility)
-        visibility.pop(normalized_id, None)
-        saved["system_visibility"] = visibility
-    _save_display_settings_raw(saved, clear_cache=False)
+    merge_external_visibility_delta({normalized_id: None})
+    saved = _load_display_settings_raw()
     return {"display_settings": _normalized_display_settings_for_response(saved)}
 
 

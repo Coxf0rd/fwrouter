@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
@@ -22,7 +23,8 @@ from fwrouter_api.services.ui_state_clients import _ui_workspace_counts
 from fwrouter_api.services.ui_state_common import _active_job, _job_summary, _system_subject_counts
 from fwrouter_api.services.ui_state_inventory import list_ui_settings_inventory as list_ui_settings_inventory
 from fwrouter_api.services.ui_state_logs import _summarize_log_event, summarize_ui_log_events
-from fwrouter_api.services.ui_state_settings import get_ui_display_settings
+from fwrouter_api.services.ui_state_settings import get_ui_display_settings, get_ui_display_snapshot
+from fwrouter_api.services.ui_client_list_settings import ClientListSettingsError, read_client_list_settings
 
 
 def get_router_self_subject() -> dict[str, Any] | None:
@@ -139,15 +141,23 @@ def _build_ui_router_summary() -> dict[str, Any]:
 
 
 def get_ui_settings_workspace() -> dict[str, Any]:
-    return get_live_probe_cache(
-        "ui_state.settings_workspace",
-        ttl_seconds=2.0,
-        loader=_build_ui_settings_workspace,
-    )
+    for _attempt in range(2):
+        snapshot = get_ui_display_snapshot()
+        cache_tag = hashlib.sha256(snapshot["etag"].encode("ascii")).hexdigest()
+        workspace = get_live_probe_cache(
+            f"ui_state.settings_workspace.{cache_tag}",
+            ttl_seconds=2.0,
+            loader=lambda captured=snapshot["display_settings"]: _build_ui_settings_workspace(
+                display_settings=captured,
+            ),
+        )
+        if read_client_list_settings()["etag"] == snapshot["etag"]:
+            return workspace
+    raise ClientListSettingsError("CONFIG_READ_MODEL_STALE", 503, retryable=True)
 
 
-def _build_ui_settings_workspace() -> dict[str, Any]:
-    display_settings = get_ui_display_settings()
+def _build_ui_settings_workspace(*, display_settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    display_settings = display_settings if display_settings is not None else get_ui_display_settings()
     counts = _ui_workspace_counts(display_settings=display_settings)
     modules = fetch_modules()
     subscription = dict(get_subscription_state() or {})

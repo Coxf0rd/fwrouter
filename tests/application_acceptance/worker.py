@@ -3769,6 +3769,12 @@ def build_app(socket_path: Path):
     from fwrouter_api.services import maintenance_lifecycle_admission
     maintenance_lifecycle_admission.DEFAULT_STATE_ROOT = maintenance_root
     maintenance_lifecycle_admission._trusted_uid = os.getuid
+    # Presentation authorization remains a real verifier/file operation. Only
+    # its fixed host location and owner are retargeted in this already-qualified
+    # disposable worker, never via a production environment setting.
+    from fwrouter_api.services import presentation_client_list_admission
+    presentation_client_list_admission.VERIFIER_PATH = state / "presentation-verifier.json"
+    presentation_client_list_admission._trusted_uid = os.getuid
     # If a facade was imported by an earlier qualified helper, its entrypoint
     # constant is already bound; retarget only those loaded modules.
     for module_name in ("fwrouter_api.main", "fwrouter_api.cli", "fwrouter_api_maintenance"):
@@ -6143,6 +6149,12 @@ def main() -> None:
 
     try:
         app = build_app(socket_path)
+        from fwrouter_api.services import presentation_client_list_admission
+        # The fixed CLI authority is rebound solely in this owned worker; the
+        # API still verifies the bearer, file policy, request Host and peer.
+        if args.host != "127.0.0.1" or not 1 <= args.port <= 65535:
+            raise RuntimeError("presentation worker must use an owned loopback port")
+        presentation_client_list_admission.LOCAL_AUTHORITY = f"127.0.0.1:{args.port}"
         from contextlib import asynccontextmanager
         original_lifespan = app.router.lifespan_context
 

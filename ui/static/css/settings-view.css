@@ -4104,3 +4104,29 @@ html[data-view="settings"] #settings-top .settings-inline-check input {
     padding: 10px;
   }
 }
+.settings-client-list-setting__body {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-client-list-setting__credential {
+  max-width: 520px;
+}
+
+.settings-client-list-setting__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-client-list-setting__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.settings-client-list-setting__note {
+  font-size: 0.85em;
+}

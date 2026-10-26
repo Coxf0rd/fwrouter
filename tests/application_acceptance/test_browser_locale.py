@@ -233,6 +233,11 @@ def _bounded_browser_api_response(response) -> dict[str, object]:
     return summary
 
 
+class _BridgeNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class _UiAndApiBridge(http.server.SimpleHTTPRequestHandler):
     api_base = ""
     ui_root = Path("/workspace/ui")
@@ -279,20 +284,33 @@ class _UiAndApiBridge(http.server.SimpleHTTPRequestHandler):
             self.send_error(413)
             return
         body = self.rfile.read(content_length) if self.command in {"POST", "PUT", "PATCH", "DELETE"} else None
+        # Forward only the explicit conditional presentation transport headers;
+        # never derive authority from role or forwarding headers.
+        forwarded = {"Content-Type": self.headers.get("Content-Type", "application/json")}
+        for name in ("Authorization", "Origin", "If-Match", "If-None-Match", "Host"):
+            if self.headers.get(name) is not None:
+                forwarded[name] = self.headers[name]
         request = urllib.request.Request(self.api_base + self.path, data=body, method=self.command,
-                                         headers={"Content-Type": self.headers.get("Content-Type", "application/json")})
+                                         headers=forwarded)
         try:
-            with urllib.request.urlopen(request, timeout=8) as response:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _BridgeNoRedirect())
+            with opener.open(request, timeout=8) as response:
                 content = response.read(1024 * 1024 + 1)
                 if len(content) > 1024 * 1024:
                     self.send_error(502)
                     return
                 self.send_response(response.status)
                 self.send_header("Content-Type", response.headers.get("Content-Type", "application/json"))
+                if response.headers.get("ETag"):
+                    self.send_header("ETag", response.headers["ETag"])
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
                 self.wfile.write(content)
         except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                self.send_error(502, "Upstream redirect rejected")
+                exc.close()
+                return
             content = exc.read(1024 * 1024 + 1)
             if len(content) > 1024 * 1024:
                 self.send_error(502)
@@ -897,3 +915,167 @@ def test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+@pytest.mark.browser
+def test_real_chromium_client_list_unlock_conditional_edit_and_conflict(acceptance_stack):
+    """Real browser→owned TLS bridge→API; not deployed TLS/custody proof."""
+    import secrets
+    import ssl
+    import subprocess
+    from playwright.sync_api import sync_playwright
+    from .test_database_application import _presentation_http, _presentation_policy
+
+    stack = acceptance_stack
+    token = secrets.token_hex(32)
+    server_type = type("PresentationUiApiBridge", (_UiAndApiBridge,), {
+        "api_base": stack["api"].removesuffix("/api/v2"), "ui_root": Path("/workspace/ui"),
+    })
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), server_type)
+    server.daemon_threads = False
+    server.block_on_close = True
+    origin = f"https://127.0.0.1:{server.server_port}"
+    cert = stack["state"] / "browser-test-cert.pem"
+    key = stack["state"] / "browser-test-key.pem"
+    try:
+        subprocess.run(
+            ["/usr/bin/openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", str(key), "-out", str(cert), "-days", "1",
+             "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"],
+            check=True, capture_output=True, timeout=10,
+        )
+        key.chmod(0o600)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert, key)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        _presentation_policy(stack, token, origin=origin)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05}, daemon=True)
+        thread.start()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(
+                    executable_path=stack["profile"]["chromium"]["path"],
+                    args=["--disable-dev-shm-usage", "--no-sandbox"], headless=True,
+                )
+                try:
+                    # Self-signed certificate belongs only to this fixture. This
+                    # explicit exception is not production certificate validation.
+                    page = browser.new_page(ignore_https_errors=True)
+                    page.goto(origin + "/", wait_until="domcontentloaded", timeout=20000)
+                    page.locator(".seg__btn[data-view='settings']").click()
+                    flag = page.locator("#settingsClientListShowInactive")
+                    flag.wait_for(state="visible", timeout=15000)
+                    page.wait_for_function("document.querySelector('#settingsClientListCurrent').textContent.length > 0")
+                    assert flag.is_disabled()
+                    page.locator("#settingsClientListCapability").fill(token)
+                    page.locator("#settingsClientListUnlock").click()
+                    page.wait_for_function("!document.querySelector('#settingsClientListShowInactive').disabled")
+                    assert page.locator("#settingsClientListCapability").input_value() == ""
+                    initial = flag.is_checked()
+                    flag.set_checked(not initial)
+                    with page.expect_response(lambda r: r.url.endswith("/api/v2/ui/settings/client-list") and r.request.method == "PATCH" and r.status == 200):
+                        page.locator("#settingsClientListSave").click()
+                    code, observed = _presentation_http(stack)
+                    assert code == 200
+                    current = observed["data"]["client_list"]
+                    assert current["show_inactive"] is not initial
+                    # Another real API client performs A→B→A. The old UI token
+                    # must conflict even though the displayed value is unchanged.
+                    for value in (initial, not initial):
+                        code, changed = _presentation_http(stack, method="PATCH", token=token,
+                                                           etag=current["etag"], value=value)
+                        assert code == 200
+                        current = changed["data"]["client_list"]
+                    flag.set_checked(initial)
+                    with page.expect_response(lambda r: r.url.endswith("/api/v2/ui/settings/client-list") and r.request.method == "PATCH" and r.status == 412):
+                        page.locator("#settingsClientListSave").click()
+                    page.wait_for_function("document.querySelector('#settingsClientListStatus').dataset.state === 'conflict'")
+                    assert flag.is_checked() is initial
+                    code, after_conflict = _presentation_http(stack)
+                    assert code == 200 and after_conflict["data"]["client_list"]["show_inactive"] is not initial
+                    assert page.evaluate("token => !JSON.stringify([Object.assign({}, localStorage), Object.assign({}, sessionStorage)]).includes(token)", token)
+                    credential_leaked = token in page.url
+                    assert credential_leaked is False
+                    _presentation_policy(stack, secrets.token_hex(32), origin=origin)
+                    with page.expect_response(lambda r: r.url.endswith("/api/v2/ui/settings/client-list") and r.request.method == "PATCH" and r.status in (401, 403)):
+                        page.locator("#settingsClientListSave").click()
+                    page.wait_for_function("document.querySelector('#settingsClientListSetting').dataset.authorization === 'locked'")
+                    assert flag.is_checked() is initial
+                    assert flag.is_disabled()
+                finally:
+                    browser.close()
+        finally:
+            server.shutdown()
+            thread.join(timeout=3)
+    finally:
+        server.server_close()
+        cert.unlink(missing_ok=True)
+        key.unlink(missing_ok=True)
+
+
+def test_presentation_bridge_rejects_redirect_and_environment_proxy(acceptance_stack, monkeypatch):
+    """Actual owned listeners; redirect/proxy sink must receive no request."""
+    import secrets
+
+    hits = []
+    token = secrets.token_hex(32)
+
+    class Sink(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(True)
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    sink = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Sink)
+
+    class Redirect(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{sink.server_port}/credential-sink")
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    upstream = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+    bridge_type = type("NoRedirectPresentationBridge", (_UiAndApiBridge,), {
+        "api_base": f"http://127.0.0.1:{upstream.server_port}",
+        "ui_root": acceptance_stack["state"],
+    })
+    bridge = http.server.ThreadingHTTPServer(("127.0.0.1", 0), bridge_type)
+    servers = (sink, upstream, bridge)
+    threads = []
+    try:
+        for server in servers:
+            server.daemon_threads = False
+            thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .05}, daemon=True)
+            thread.start()
+            threads.append(thread)
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{sink.server_port}")
+        monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{sink.server_port}")
+        monkeypatch.setenv("no_proxy", "")
+        monkeypatch.setenv("NO_PROXY", "")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{bridge.server_port}/api/v2/ui/settings/client-list",
+            headers={"Authorization": "Bearer " + token, "Origin": "https://presentation.test"},
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _BridgeNoRedirect())
+        try:
+            response = opener.open(request, timeout=5)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            assert response.code == 502
+            response.read(8192)
+        assert hits == [], "redirect or environment proxy received an unauthorized request"
+    finally:
+        for server in reversed(servers[:len(threads)]):
+            server.shutdown()
+        for server in servers:
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=3)
+            assert not thread.is_alive(), "owned redirect/proxy fixture thread survived cleanup"

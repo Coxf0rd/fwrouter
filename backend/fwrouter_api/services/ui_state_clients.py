@@ -32,8 +32,8 @@ from fwrouter_api.services.ui_state_common import (
 from fwrouter_api.services.ui_state_settings import get_ui_display_settings
 
 
-def list_ui_clients() -> list[dict[str, Any]]:
-    display_settings = get_ui_display_settings()
+def list_ui_clients(*, display_settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    display_settings = display_settings if display_settings is not None else get_ui_display_settings()
     total_map, month_map, month_breakdown_map = _traffic_maps()
     subscription_map = _subscription_client_map()
     effective_state_by_subject = _effective_state_by_subject_for_ui()

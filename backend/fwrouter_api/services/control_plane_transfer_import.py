@@ -322,6 +322,24 @@ def _import_control_plane_snapshot_validated(
 def _import_in_transaction(snapshot: dict[str, Any], *, normalize_runtime_state: bool,
                            validation: dict[str, Any], connection: Any) -> dict[str, Any]:
     state = _state_from_snapshot(snapshot)
+    settings_rows = [dict(row) for row in (state.get("settings") or []) if isinstance(row, dict)]
+    from fwrouter_api.services.ui_client_list_settings import (
+        ClientListSettingsError,
+        rebase_imported_display_settings,
+        validate_imported_display_settings,
+    )
+    try:
+        # Validate selected display state before prepare_rules_files can publish
+        # any imported file. Imported incarnation/revision is never authority.
+        settings_rows, imported_display_value_json = validate_imported_display_settings(settings_rows)
+    except ClientListSettingsError as exc:
+        return {
+            "ok": False,
+            "validation": validation,
+            "imported": False,
+            "error_code": exc.code,
+            "error_message": "Imported client-list display settings are invalid.",
+        }
     imported_server_ids = {
         str(row.get("server_id") or "").strip()
         for row in (state.get("servers") or []) if isinstance(row, dict)
@@ -380,7 +398,6 @@ def _import_in_transaction(snapshot: dict[str, Any], *, normalize_runtime_state:
         for row in subject_server_overrides
         if isinstance(row, dict) and str(row.get("subject_id") or "").strip()
     ]
-    settings_rows = [dict(row) for row in (state.get("settings") or []) if isinstance(row, dict)]
     from fwrouter_api.services.vpn_auto_selection_state import (
         SELECTION_PROVENANCE_KEY, SELECTION_REVISION_KEY,
         advance_selection_revision, read_selection_revision, selection_pool_signature,
@@ -471,6 +488,10 @@ def _import_in_transaction(snapshot: dict[str, Any], *, normalize_runtime_state:
             for row in settings_rows
         ],
     )
+    # Rebase the presentation field in the same existing import transaction.
+    # Operation receipt replay returns before this point, so replay cannot
+    # invalidate the incarnation a second time.
+    rebase_imported_display_settings(connection, imported_display_value_json)
     _insert_rows(
         connection,
         """

@@ -161,6 +161,35 @@
   ],
   "path_rules": [
     {
+      "glob": "backend/fwrouter_api/services/config_cli.py",
+      "domains": [
+        "ui",
+        "api-contract"
+      ]
+    },
+    {
+      "glob": "backend/fwrouter_api/services/presentation_client_list_admission.py",
+      "domains": [
+        "ui",
+        "api-contract"
+      ]
+    },
+    {
+      "glob": "backend/fwrouter_api/services/ui_client_list_settings.py",
+      "domains": [
+        "ui",
+        "database"
+      ]
+    },
+    {
+      "glob": "docs/CLIENT_LIST_CONFIGURATION.md",
+      "domains": [
+        "ui",
+        "api-contract",
+        "database"
+      ]
+    },
+    {
       "glob": "installer/tests/restore_process_fixture.py",
       "domains": [
         "database",
@@ -6365,9 +6394,116 @@
       "slow": false,
       "timeout_seconds": 60,
       "execution_group": "installer-startup"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "ui",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "owned fetch/DOM harness; capability canaries, conditional writes and explicit conflict handling",
+      "fixture_owner": "test module local mocks/fixtures",
+      "id": "client-list-setting.test",
+      "isolation": "isolated VM mocks; no project live state",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "ui/tests/client-list-setting.test.js",
+      "primary_level": "L2",
+      "risk_notes": "unit contracts only; real browser/API path is separately hosted",
+      "runtime_dependencies": [
+        "Node.js 22 built-in node:test"
+      ],
+      "slow": false,
+      "timeout_seconds": 30,
+      "execution_group": "ui-provider-contracts"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "database",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "owned disposable SQLite; conditional field owner, shared writers, transfer and cache races",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_ui_client_list_settings",
+      "isolation": "temporary test state and fake adapters per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_ui_client_list_settings.py",
+      "primary_level": "L3",
+      "risk_notes": "file-level default; node overrides may refine mixed tests",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "local-integration"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "api-contract",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "protected owned verifier files and isolated ASGI requests; no host credentials",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_presentation_client_list_admission",
+      "isolation": "temporary test state and fake adapters per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_presentation_client_list_admission.py",
+      "primary_level": "L2",
+      "risk_notes": "file-level default; node overrides may refine mixed tests",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "api-persistence-contracts"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "api-contract",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "owned protected credential files and deterministic HTTP-client contracts; real HTTP subprocess path is separately hosted",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_config_cli",
+      "isolation": "temporary test state and fake adapters per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_config_cli.py",
+      "primary_level": "L2",
+      "risk_notes": "API-first client security/error contracts; no direct DB or host service",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 30,
+      "execution_group": "api-persistence-contracts"
     }
   ],
-  "version": "2026.10.27.2",
+  "version": "2026.10.27.3",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
