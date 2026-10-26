@@ -161,6 +161,13 @@
   ],
   "path_rules": [
     {
+      "glob": "backend/fwrouter_api/services/database_*.py",
+      "domains": [
+        "database",
+        "maintenance"
+      ]
+    },
+    {
       "glob": "backend/fwrouter_api/services/native_proof.py",
       "domains": [
         "core",
@@ -1309,6 +1316,34 @@
       "slow": false,
       "timeout_seconds": 30,
       "execution_group": "api-persistence-contracts"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "database",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "owned disposable SQLite WAL databases and synthetic data; explicit filesystem/SQLite fault injections",
+      "fixture_owner": "backend/tests/test_database_backup.py",
+      "id": "test_database_backup",
+      "isolation": "private temporary roots and child processes only; no production files/services or network",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_database_backup.py",
+      "primary_level": "L3",
+      "risk_notes": "real online backup/read-snapshot/data verification; injected OS failures are distinct from hardware qualification",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)",
+        "SQLite online backup API"
+      ],
+      "slow": false,
+      "timeout_seconds": 30,
+      "execution_group": "local-integration"
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
