@@ -1,10 +1,16 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const test = require("node:test");
+const nodeTest = require("node:test");
 const { createHash } = require("node:crypto");
 const etagFor = label => `"cli1-${createHash("sha256").update(label).digest("hex")}"`;
 const { create, legacyDisplayPayload, RESOURCE_PATH } = require("../static/js/fwrouter-client-list-setting.js");
+
+// One stable file wrapper and exact child IDs satisfy the existing strict TAP
+// evidence contract; every test below still executes serially and is accounted.
+nodeTest("ui/tests/client-list-setting.test.js", async parent => {
+const cases = [];
+const test = (name, run) => { cases.push([name, run]); };
 
 function response(status, value, etag) {
   return {
@@ -419,4 +425,7 @@ test("conditional 304 confirms only the same valid entity tag", async () => {
   await controller.observe();
   assert.equal(controller.state().loaded, false);
   assert.equal(controller.state().message, "settings.client_list.invalid_response");
+});
+
+for (const [name, run] of cases) await parent.test(name, run);
 });

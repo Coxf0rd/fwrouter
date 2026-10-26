@@ -39,9 +39,14 @@ def _count_xray(results: list[ReconcileResult], state: str | None = None) -> int
     )
 
 
-def _print_reconcile_check() -> int:
-    from fwrouter_api.services.reconcile import build_reconcile_response
+def build_reconcile_response():
+    """Keep the existing CLI seam without eager domain imports for config."""
+    from fwrouter_api.services.reconcile import build_reconcile_response as build
 
+    return build()
+
+
+def _print_reconcile_check() -> int:
     response = build_reconcile_response()
     results = response.entities
     summary = response.summary
