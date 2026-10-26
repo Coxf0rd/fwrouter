@@ -83,6 +83,7 @@ try:
     from fwrouter_api.services import servers, xray_bindings, xray_handoff
     from fwrouter_api.services import mihomo_config, mihomo_config_status, mihomo_reconcile_fingerprint
     from fwrouter_api.services import native_proof
+    from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file
     adapter = MihomoHttpAdapter(base_url=f"http://127.0.0.1:{port}", config_path=config_path, timeout_seconds=1)
     parsed = MihomoHttpAdapter._parse_vpn_udp_policy_config(config)
     routing = {"server_mode": "auto", "active_auto_server_id": "synthetic-server-id"}
@@ -91,12 +92,14 @@ try:
     xray_bindings.collect_xray_runtime_bindings = lambda: []
     xray_handoff.build_xray_handoff_assignments = lambda _bindings: []
     servers.get_routing_global_state = lambda **_kwargs: routing
-    mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint = lambda _routing: {"hash": "a" * 64}
-    mihomo_reconcile_fingerprint.mihomo_input_unchanged = lambda _fingerprint: True
-    mihomo_reconcile_fingerprint.mihomo_udp_policy_receipt_matches = lambda: True
-    mihomo_reconcile_fingerprint._load_state = lambda: {
-        "active_config_hash": "b" * 64, "fingerprint_hash": "a" * 64,
-    }
+    # Keep the real canonical fingerprint and receipt writer/reader. Replace
+    # only their input collectors with stable, fixture-owned values so the
+    # receipt binds this disposable engine/config without opening application DB.
+    mihomo_reconcile_fingerprint._table_fingerprint = lambda: {"fixture_tables": []}
+    mihomo_reconcile_fingerprint._input_files_fingerprint = lambda: {"fixture_files": []}
+    mihomo_reconcile_fingerprint._state_path = lambda: root / "reconcile-state.json"
+    mihomo_reconcile_fingerprint._resolved_candidate_config_path = lambda: root / "config.next.yaml"
+    mihomo_reconcile_fingerprint.active_config_hash = lambda: hash_mihomo_yaml_file(config_path)
     mihomo_config_status._resolve_active_auto_runtime_target = lambda _server_id, *, expected_targets: (
         "server-fixture" if "server-fixture" in expected_targets else None
     )
@@ -106,6 +109,7 @@ try:
                 "image_reference_sha256": hashlib.sha256(b"mihomo-fixture").hexdigest(),
                 "version_sha256": hashlib.sha256(version.encode()).hexdigest(),
                 "incarnation_sha256": hashlib.sha256(f"{process.pid}:{process.args}".encode()).hexdigest()}
+    mihomo_reconcile_fingerprint._current_runtime_incarnation = lambda: runtime_identity()["incarnation_sha256"]
     # Add a synthetic, never-connected endpoint so the runtime selector readback
     # can be bound to the durable logical selection without external traffic.
     parsed["proxies"] = [{"name": "server-fixture", "type": "socks5", "server": "127.0.0.1", "port": 9}]
@@ -147,6 +151,20 @@ try:
     with urllib.request.urlopen(request, timeout=1) as response:
         if response.status not in {200, 204}:
             raise RuntimeError("fixture global selector did not accept its intended member")
+    input_fingerprint = mihomo_reconcile_fingerprint.current_mihomo_input_fingerprint(routing)
+    native_udp_receipt = MihomoHttpAdapter._vpn_udp_policy_readback(
+        config, adapter._proxies(timeout_seconds=2.0),
+        adapter._get_json("/rules", timeout_seconds=2.0).get("rules"),
+        _parsed_config=parsed,
+    )
+    if mihomo_reconcile_fingerprint.write_mihomo_reconcile_fingerprint_state(
+        fingerprint=input_fingerprint,
+        result={"reconcile_reason": "native_proof_disposable_fixture"},
+        native_proof=native_udp_receipt,
+        expected_active_hash=hash_mihomo_yaml_file(config_path),
+        expected_runtime_incarnation=runtime_identity()["incarnation_sha256"],
+    ) is not True:
+        raise RuntimeError("fixture Mihomo receipt writer rejected the disposable native proof")
     proof = native_proof._mihomo_readback(db, adapter=adapter, runtime_identity_reader=runtime_identity)
     # Exercise a real native selector drift through Mihomo's controller API.
     request = urllib.request.Request(
