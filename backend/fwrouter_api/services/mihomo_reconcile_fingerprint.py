@@ -290,6 +290,62 @@ def current_mihomo_input_fingerprint(routing: dict[str, Any] | None = None) -> d
     }
 
 
+def mihomo_input_fingerprint_profiles(
+    routing: dict[str, Any] | None,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Derive only routing profiles used by existing receipt producers.
+
+    Tables, source files and generated-input hashes are captured once. The
+    proof-only generation owner captures ten durable routing fields, and the
+    ordinary fixed-generation owner captures its established eight-field
+    projection. Ordinary reconciliation uses its full routing argument or
+    ``None``. No arbitrary subset is accepted.
+    """
+    base = current_mihomo_input_fingerprint(routing)
+    payload = base.get("payload")
+    if not isinstance(payload, dict):
+        return []
+    current_routing = payload.get("routing")
+    profiles: list[tuple[str, Any]] = [("ordinary_full", current_routing)]
+    if isinstance(routing, dict):
+        generation_fields = (
+            "server_mode", "desired_fixed_server_id", "applied_fixed_server_id",
+            "fixed_server_until", "active_auto_server_id", "desired_mode",
+            "applied_mode", "selective_default", "apply_state", "updated_at",
+        )
+        fixed_fields = (
+            "desired_mode", "applied_mode", "selective_default", "server_mode",
+            "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until", "apply_state",
+        )
+        if all(key in routing for key in generation_fields):
+            profiles.append(("proof_only_generation", {key: routing[key] for key in generation_fields}))
+        if all(key in routing for key in fixed_fields):
+            profiles.append(("fixed_generation", {key: routing[key] for key in fixed_fields}))
+    profiles.append(("ordinary_none", None))
+
+    result: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for name, profile_routing in profiles:
+        if isinstance(profile_routing, dict):
+            profile_routing = dict(profile_routing)
+            # Preserve the established current-input rule: selection identity
+            # is fenced separately and is not Mihomo generated structure.
+            profile_routing.pop("active_auto_server_id", None)
+        profile_payload = dict(payload)
+        profile_payload["routing"] = profile_routing
+        fingerprint = {
+            "version": base.get("version"),
+            "hash": _json_hash(profile_payload),
+            "payload": profile_payload,
+        }
+        payload_identity = json.dumps(profile_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if payload_identity in seen:
+            continue
+        seen.add(payload_identity)
+        result.append((name, fingerprint))
+    return result
+
+
 def fingerprint_category_hashes(fingerprint: dict[str, Any] | None) -> dict[str, str]:
     """Return safe hashes for fingerprint subcategories, never their raw values."""
     payload = fingerprint.get("payload") if isinstance(fingerprint, dict) else None
@@ -327,6 +383,68 @@ def mihomo_input_unchanged(fingerprint: dict[str, Any]) -> bool:
     return _receipt_runtime_matches(state)
 
 
+def matching_mihomo_input_fingerprint(
+    fingerprints: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Return the matched fingerprint and the exact stable owner receipt.
+
+    Some established owners fingerprint a full API routing projection, while
+    generation owners fingerprint their narrower durable snapshot (or no
+    explicit routing argument). The receipt stores the complete fingerprint
+    hash, so accept only an exact match to a caller-supplied, finite set of
+    supported profiles. Unknown and ambiguous inputs remain unproven.
+    """
+    state = _load_state()
+    if not isinstance(state, dict) or state.get("version") != FINGERPRINT_VERSION:
+        return None
+    receipt_hash = state.get("fingerprint_hash")
+    matches: dict[str, dict[str, Any]] = {}
+    for fingerprint in fingerprints:
+        payload = fingerprint.get("payload") if isinstance(fingerprint, dict) else None
+        if (
+            not isinstance(fingerprint, dict)
+            or fingerprint.get("version") != FINGERPRINT_VERSION
+            or not isinstance(payload, dict)
+            or fingerprint.get("hash") != _json_hash(payload)
+            or fingerprint.get("hash") != receipt_hash
+        ):
+            continue
+        payload_identity = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        matches[payload_identity] = fingerprint
+    if len(matches) != 1:
+        return None
+    if not mihomo_input_receipt_snapshot_matches(state):
+        return None
+    return next(iter(matches.values())), state
+
+
+def mihomo_input_receipt_snapshot_matches(receipt: dict[str, Any]) -> bool:
+    """Check that one exact receipt, config hash, and runtime remain current."""
+    if not isinstance(receipt, dict) or receipt.get("version") != FINGERPRINT_VERSION:
+        return False
+    state_before = _load_state()
+    active_before = active_config_hash()
+    runtime_before = _current_runtime_incarnation()
+    if (
+        state_before != receipt
+        or not active_before
+        or active_before != receipt.get("active_config_hash")
+        or not runtime_before
+        or runtime_before != receipt.get("runtime_incarnation")
+        or not _receipt_runtime_matches(receipt)
+    ):
+        return False
+    state_after = _load_state()
+    active_after = active_config_hash()
+    runtime_after = _current_runtime_incarnation()
+    return bool(
+        state_after == state_before == receipt
+        and active_after == active_before == receipt.get("active_config_hash")
+        and runtime_after == runtime_before == receipt.get("runtime_incarnation")
+        and _receipt_runtime_matches(state_after)
+    )
+
+
 def _current_runtime_incarnation() -> str | None:
     try:
         from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
@@ -346,9 +464,9 @@ def _receipt_runtime_matches(state: dict[str, Any]) -> bool:
     )
 
 
-def mihomo_udp_policy_receipt_matches() -> bool:
+def mihomo_udp_policy_receipt_matches(receipt_state: dict[str, Any] | None = None) -> bool:
     """Confirm the active config hash and runtime are the reconciled instance."""
-    state = _load_state()
+    state = receipt_state if isinstance(receipt_state, dict) else _load_state()
     active_hash = active_config_hash()
     return bool(
         isinstance(state, dict)

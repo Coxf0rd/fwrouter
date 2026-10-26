@@ -16,6 +16,7 @@
 - Generation proof digest and revision must exactly match the verified inventory. The generation owner may persist an additional native-proof tuple only after successful capture; legacy markers without that tuple remain readable but produce `INCOMPLETE` until a normal qualified owner promotion captures one.
 - Returns only structured status and redacted identities. Raw configurations, credentials, UUIDs, selector names, job IDs, and durable source fingerprints are never included.
 - `PASS` requires supported scope, exact source identity and runtime image pins, stable fences, healthy database integrity, no active jobs, a verified subscription generation and matching owner receipt, and successful native readbacks. Runtime unavailability or missing owner evidence is `INCOMPLETE`; contradictory readback is `FAIL`; changed fences are `STALE`. Public results expose only redacted hashes/counts, a proof schema version, executed-check names, and stable reason codes; unknown exception text is not returned.
+- Mihomo owner receipt matching supports ordinary full/`None`, proof-only ten-field, and fixed-generation eight-field routing profiles. It computes shared tables/files/source once, requires one exact complete fingerprint match, binds the proof-only profile to the direct owner plus read-only database routing/selection snapshot, carries the matched receipt through UDP/native reads, then closes its state/config/runtime fence before returning.
 
 ## Operational boundary
 

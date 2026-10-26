@@ -476,6 +476,10 @@ def _prepare_mihomo_readback_dependencies(monkeypatch: pytest.MonkeyPatch, confi
             return {"rules": []}
 
     adapter = Adapter()
+    adapter.receipt_state = {
+        "version": 3, "fingerprint_hash": "fixture", "active_config_hash": "fixture",
+        "runtime_incarnation": "runtime-fixture", "udp_policy_version": 1,
+    }
     parsed = MihomoHttpAdapter._parse_vpn_udp_policy_config(
         mihomo_config_yaml.read_mihomo_yaml_text(config_path)
     )
@@ -484,10 +488,15 @@ def _prepare_mihomo_readback_dependencies(monkeypatch: pytest.MonkeyPatch, confi
     monkeypatch.setattr(xray_handoff, "build_xray_handoff_assignments", lambda _bindings: [])
     monkeypatch.setattr(mihomo_config, "build_mihomo_config", lambda *_args, **_kwargs: parsed)
     monkeypatch.setattr(mihomo_config_status, "_configs_equal", lambda _left, _right: True)
-    monkeypatch.setattr(fingerprint, "current_mihomo_input_fingerprint", lambda _routing: {"hash": "fixture"})
-    monkeypatch.setattr(fingerprint, "mihomo_input_unchanged", lambda _value: True)
-    monkeypatch.setattr(fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
-    monkeypatch.setattr(fingerprint, "_load_state", lambda: {"active_config_hash": "fixture", "fingerprint_hash": "fixture"})
+    monkeypatch.setattr(fingerprint, "mihomo_input_fingerprint_profiles",
+                        lambda _routing: [("ordinary_full", {"hash": "fixture", "payload": {"routing": None}})])
+    monkeypatch.setattr(fingerprint, "matching_mihomo_input_fingerprint",
+                        lambda _values: ({"hash": "fixture"}, adapter.receipt_state))
+    monkeypatch.setattr(fingerprint, "mihomo_udp_policy_receipt_matches",
+                        lambda state=None: state == adapter.receipt_state)
+    monkeypatch.setattr(fingerprint, "mihomo_input_receipt_snapshot_matches",
+                        lambda state: state == adapter.receipt_state)
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: dict(adapter.receipt_state))
     monkeypatch.setattr(MihomoHttpAdapter, "_vpn_udp_policy_readback", staticmethod(
         lambda *_args, **_kwargs: {
             "native_top_level_rules_match": True,
@@ -498,6 +507,280 @@ def _prepare_mihomo_readback_dependencies(monkeypatch: pytest.MonkeyPatch, confi
     monkeypatch.setattr(native_proof, "_mihomo_selection_target_matches", lambda *_args: True)
     return adapter, {"image_digest": MIHOMO_IMAGE_PIN, "image_reference_sha256": "a" * 64,
                      "version_sha256": "b" * 64, "incarnation_sha256": "c" * 64}
+
+
+def test_mihomo_receipt_profiles_match_existing_full_none_and_owner_projections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint
+    from fwrouter_api.services import vpn_auto_selection_state, xray_subscription_service
+
+    def current(_routing):
+        payload = {"version": 3, "routing": None, "tables": {"routes": ["durable"]},
+                   "files": {"rules": "a" * 64}, "source": {"module": "b" * 64}}
+        if isinstance(_routing, dict):
+            payload["routing"] = {key: value for key, value in _routing.items()
+                                   if key != "active_auto_server_id"}
+        return {"version": 3, "hash": fingerprint._json_hash(payload), "payload": payload}
+
+    monkeypatch.setattr(fingerprint, "current_mihomo_input_fingerprint", current)
+    routing = {
+        "server_mode": "auto", "desired_fixed_server_id": None, "applied_fixed_server_id": None,
+        "fixed_server_until": None, "active_auto_server_id": "logical-1", "desired_mode": "vpn",
+        "applied_mode": "vpn", "selective_default": "direct", "apply_state": "clean",
+        "updated_at": "2026-10-26T00:00:00Z", "error_code": None, "error_message": None,
+    }
+
+    # Bind the profile definitions to the actual owner projection functions.
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        "CREATE TABLE routing_global_state (id INTEGER, server_mode TEXT, desired_fixed_server_id TEXT, "
+        "applied_fixed_server_id TEXT, fixed_server_until TEXT, active_auto_server_id TEXT, "
+        "desired_mode TEXT, applied_mode TEXT, selective_default TEXT, apply_state TEXT, updated_at TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO routing_global_state VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        tuple(routing[key] for key in (
+            "server_mode", "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until",
+            "active_auto_server_id", "desired_mode", "applied_mode", "selective_default", "apply_state", "updated_at",
+        )),
+    )
+
+    class SettingsConnection:
+        def execute(self, sql, *args):
+            if "FROM settings" in sql:
+                return SimpleNamespace(fetchone=lambda: None)
+            return connection.execute(sql, *args)
+
+    @contextmanager
+    def readonly_session():
+        yield SettingsConnection()
+
+    monkeypatch.setattr(xray_subscription_service, "db_session", readonly_session)
+    monkeypatch.setattr(vpn_auto_selection_state, "read_selection_fence",
+                        lambda _connection: {"revision": 7, "decision_id": "decision-7"})
+    captured = xray_subscription_service._capture_generation_auto_selection()
+    assert captured["routing"] == {key: routing[key] for key in (
+        "server_mode", "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until",
+        "active_auto_server_id", "desired_mode", "applied_mode", "selective_default", "apply_state", "updated_at",
+    )}
+    fixed = xray_subscription_service._fixed_xray_routing_projection(routing)
+    assert fixed == {key: routing[key] for key in (
+        "desired_mode", "applied_mode", "selective_default", "server_mode",
+        "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until", "apply_state",
+    )}
+
+    profiles = fingerprint.mihomo_input_fingerprint_profiles(routing)
+    by_name = dict(profiles)
+    assert set(by_name) == {"ordinary_full", "proof_only_generation", "fixed_generation", "ordinary_none"}
+    assert by_name["ordinary_full"]["payload"]["routing"] == {
+        key: value for key, value in routing.items() if key != "active_auto_server_id"
+    }
+    assert "error_code" not in by_name["proof_only_generation"]["payload"]["routing"]
+    assert "active_auto_server_id" not in by_name["proof_only_generation"]["payload"]["routing"]
+    assert set(by_name["proof_only_generation"]["payload"]["routing"]) == {
+        "server_mode", "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until",
+        "desired_mode", "applied_mode", "selective_default", "apply_state", "updated_at",
+    }
+    assert by_name["proof_only_generation"]["payload"]["routing"] == {
+        key: value for key, value in captured["routing"].items()
+        if key not in {"active_auto_server_id"}
+    }
+    assert by_name["fixed_generation"]["payload"]["routing"] == fixed
+    assert by_name["ordinary_none"]["payload"]["routing"] is None
+
+    receipt = {"version": 3, "fingerprint_hash": by_name["proof_only_generation"]["hash"],
+               "active_config_hash": "c" * 64}
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: receipt.copy())
+    monkeypatch.setattr(fingerprint, "active_config_hash", lambda: "c" * 64)
+    monkeypatch.setattr(fingerprint, "_receipt_runtime_matches", lambda _state: True)
+    monkeypatch.setattr(fingerprint, "mihomo_input_receipt_snapshot_matches", lambda state: state == receipt)
+    matched = fingerprint.matching_mihomo_input_fingerprint([item for _, item in profiles])
+    assert matched == (by_name["proof_only_generation"], receipt)
+
+
+def test_mihomo_receipt_profiles_reject_real_drift_unknown_state_and_ambiguity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint
+
+    def current(_routing):
+        payload = {"version": 3, "routing": None, "tables": {"intent": "old"},
+                   "files": {}, "source": {}}
+        if isinstance(_routing, dict):
+            payload["routing"] = {key: value for key, value in _routing.items()
+                                   if key != "active_auto_server_id"}
+        return {"version": 3, "hash": fingerprint._json_hash(payload), "payload": payload}
+
+    monkeypatch.setattr(fingerprint, "current_mihomo_input_fingerprint", current)
+    original = {
+        "server_mode": "auto", "desired_fixed_server_id": None, "applied_fixed_server_id": None,
+        "fixed_server_until": None, "active_auto_server_id": "auto-1", "desired_mode": "vpn",
+        "applied_mode": "vpn", "selective_default": "direct", "apply_state": "clean",
+        "updated_at": "2026-10-26T00:00:00Z", "error_code": None,
+    }
+    before = fingerprint.mihomo_input_fingerprint_profiles(original)
+    drifted = fingerprint.mihomo_input_fingerprint_profiles(original | {"desired_mode": "direct"})
+    real_snapshot_match = fingerprint.mihomo_input_receipt_snapshot_matches
+    receipt = {"version": 3, "fingerprint_hash": dict(before)["proof_only_generation"]["hash"],
+               "active_config_hash": "d" * 64}
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: receipt.copy())
+    monkeypatch.setattr(fingerprint, "active_config_hash", lambda: "d" * 64)
+    monkeypatch.setattr(fingerprint, "_receipt_runtime_matches", lambda _state: True)
+    monkeypatch.setattr(fingerprint, "mihomo_input_receipt_snapshot_matches", lambda state: state == receipt)
+    assert fingerprint.matching_mihomo_input_fingerprint([item for _, item in drifted]) is None
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: None)
+    assert fingerprint.matching_mihomo_input_fingerprint([item for _, item in before]) is None
+
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: receipt.copy())
+    receipt["version"] = 2
+    assert fingerprint.matching_mihomo_input_fingerprint([item for _, item in before]) is None
+    receipt["version"] = 3
+    matching = dict(before)["proof_only_generation"]
+    ambiguous = matching | {"payload": matching["payload"] | {"different": True}}
+    real_json_hash = fingerprint._json_hash
+    monkeypatch.setattr(fingerprint, "_json_hash", lambda _value: matching["hash"])
+    assert fingerprint.matching_mihomo_input_fingerprint([matching, ambiguous]) is None
+
+    receipt["version"] = 3
+    states = iter((receipt.copy(), receipt.copy(), receipt | {"fingerprint_hash": "e" * 64}))
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: next(states))
+    monkeypatch.setattr(fingerprint, "_json_hash", real_json_hash)
+    monkeypatch.setattr(fingerprint, "_current_runtime_incarnation", lambda: "runtime")
+    monkeypatch.setattr(fingerprint, "mihomo_input_receipt_snapshot_matches",
+                        real_snapshot_match)
+    assert fingerprint.matching_mihomo_input_fingerprint([matching]) is None
+
+
+@pytest.mark.parametrize("profile_name", ["ordinary_full", "proof_only_generation", "fixed_generation", "ordinary_none"])
+def test_existing_receipt_writer_output_is_consumable_for_each_supported_owner_profile(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, profile_name: str,
+) -> None:
+    from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint
+
+    route = {
+        "server_mode": "fixed", "desired_fixed_server_id": "fixed-1", "applied_fixed_server_id": "fixed-1",
+        "fixed_server_until": "2026-10-27T00:00:00Z", "active_auto_server_id": "auto-1",
+        "desired_mode": "vpn", "applied_mode": "vpn", "selective_default": "direct",
+        "apply_state": "clean", "updated_at": "2026-10-26T00:00:00Z", "error_message": None,
+    }
+    payload = {"version": 3, "routing": None, "tables": {"intent": "bound"},
+               "files": {"input": "a" * 64}, "source": {"service": "b" * 64}}
+
+    def current(routing):
+        value = dict(payload)
+        if isinstance(routing, dict):
+            value["routing"] = {key: item for key, item in routing.items() if key != "active_auto_server_id"}
+        return {"version": 3, "hash": fingerprint._json_hash(value), "payload": value}
+
+    monkeypatch.setattr(fingerprint, "current_mihomo_input_fingerprint", current)
+    profiles = dict(fingerprint.mihomo_input_fingerprint_profiles(route))
+    stored: dict[str, object] = {}
+    monkeypatch.setattr(fingerprint, "active_config_hash", lambda: "c" * 64)
+    monkeypatch.setattr(fingerprint, "_current_runtime_incarnation", lambda: "runtime-incarnation")
+    monkeypatch.setattr(fingerprint, "_resolved_candidate_config_path", lambda: tmp_path / "candidate.yaml")
+    monkeypatch.setattr(fingerprint, "_file_hash", lambda _path: "d" * 64)
+    monkeypatch.setattr(fingerprint, "atomic_write_json", lambda _path, value: stored.update(value))
+    monkeypatch.setattr("fwrouter_api.services.live_probe_cache.clear_live_probe_cache", lambda: None)
+    monkeypatch.setattr(fingerprint, "_receipt_runtime_matches", lambda state: state.get("runtime_incarnation") == "runtime-incarnation")
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: dict(stored) if stored else None)
+
+    assert fingerprint.write_mihomo_reconcile_fingerprint_state(
+        fingerprint=profiles[profile_name],
+        result={"reconcile_reason": "proof_only_legacy_admission" if profile_name == "proof_only_generation" else "normal"},
+        native_proof={"native_top_level_rules_match": True, "selector_membership_matches": True,
+                      "guarded_rules_match": True},
+        expected_active_hash="c" * 64,
+        expected_runtime_incarnation="runtime-incarnation",
+    )
+    matched = fingerprint.matching_mihomo_input_fingerprint(list(profiles.values()))
+    assert matched == (profiles[profile_name], stored)
+    assert stored["fingerprint_hash"] == profiles[profile_name]["hash"]
+
+
+@pytest.mark.parametrize("replace_at", ["after_match", "during_native_reads"])
+def test_mihomo_readback_rejects_receipt_replacement_after_match(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, replace_at: str,
+) -> None:
+    from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
+    from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint
+
+    config = tmp_path / "config.yaml"
+    config.write_text("mode: rule\n", encoding="utf-8")
+    adapter, runtime = _prepare_mihomo_readback_dependencies(monkeypatch, config)
+    state_a = dict(adapter.receipt_state)
+    state_b = state_a | {"fingerprint_hash": "b" * 64, "updated_at": "replacement"}
+
+    def udp_receipt_matches(state=None):
+        if replace_at == "after_match":
+            adapter.receipt_state = state_b
+            return True
+        return state == adapter.receipt_state
+
+    monkeypatch.setattr(fingerprint, "mihomo_udp_policy_receipt_matches", udp_receipt_matches)
+    if replace_at == "during_native_reads":
+        original_get_json = adapter._get_json
+
+        def replace_during_native_read(*args, **kwargs):
+            adapter.receipt_state = state_b
+            return original_get_json(*args, **kwargs)
+
+        adapter._get_json = replace_during_native_read
+    monkeypatch.setattr(MihomoHttpAdapter, "_vpn_udp_policy_readback", staticmethod(
+        lambda *_args, **_kwargs: {
+            "native_top_level_rules_match": True,
+            "selector_membership_matches": True,
+            "guarded_rules_match": True,
+        }
+    ))
+
+    with pytest.raises(RuntimeError, match="MIHOMO_READBACK_FENCE_CHANGED"):
+        native_proof._mihomo_readback({}, adapter=adapter, runtime_identity_reader=lambda: runtime)
+    assert state_a["fingerprint_hash"] == "fixture"
+    assert adapter.receipt_state == state_b
+
+
+def test_mihomo_receipt_snapshot_fence_accepts_stable_and_rejects_changed_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fwrouter_api.services import mihomo_reconcile_fingerprint as fingerprint
+
+    state = {"version": 3, "fingerprint_hash": "a" * 64, "active_config_hash": "b" * 64,
+             "runtime_incarnation": "runtime", "udp_policy_version": 1}
+    monkeypatch.setattr(fingerprint, "active_config_hash", lambda: "b" * 64)
+    monkeypatch.setattr(fingerprint, "_current_runtime_incarnation", lambda: "runtime")
+    monkeypatch.setattr(fingerprint, "_receipt_runtime_matches", lambda _state: True)
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: state.copy())
+    assert fingerprint.mihomo_input_receipt_snapshot_matches(state)
+
+    reads = iter((state.copy(), state | {"fingerprint_hash": "c" * 64}))
+    monkeypatch.setattr(fingerprint, "_load_state", lambda: next(reads))
+    assert not fingerprint.mihomo_input_receipt_snapshot_matches(state)
+
+
+def test_mihomo_generation_owner_snapshot_requires_revision_and_decision_identity() -> None:
+    routing = {
+        "server_mode": "auto", "desired_fixed_server_id": None, "applied_fixed_server_id": None,
+        "fixed_server_until": None, "active_auto_server_id": "auto-1", "desired_mode": "vpn",
+        "applied_mode": "vpn", "selective_default": "direct", "apply_state": "clean",
+        "updated_at": "2026-10-26T00:00:00Z",
+    }
+    db = {
+        "selection": {"revision": 9, "decision_id": "decision-a"},
+        "routing": {key: routing[key] for key in (
+            "desired_mode", "applied_mode", "selective_default", "server_mode",
+            "desired_fixed_server_id", "applied_fixed_server_id", "active_auto_server_id", "apply_state",
+        )},
+    }
+    owner = {"routing": dict(routing), "selection_revision": 9, "selection_decision_id": "decision-a"}
+    assert native_proof._mihomo_generation_owner_snapshot_matches(owner, db, routing)
+    assert not native_proof._mihomo_generation_owner_snapshot_matches(
+        owner | {"selection_decision_id": "decision-b"}, db, routing,
+    )
+    assert not native_proof._mihomo_generation_owner_snapshot_matches(
+        owner | {"selection_revision": 10}, db, routing,
+    )
 
 
 def test_mihomo_readback_accepts_20mb_config_and_binds_parsed_bytes_to_hash(
