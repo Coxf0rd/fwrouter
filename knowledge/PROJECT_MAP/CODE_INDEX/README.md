@@ -235,3 +235,8 @@ Native proof logical selection: `backend/fwrouter_api/services/native_proof.py`
 resolves selected logical VPN groups through existing durable runtime mappings;
 `backend/tests/test_native_proof.py` covers supported generated groups and
 missing/altered/ambiguous evidence. See `knowledge/NATIVE_PROOF.md`.
+
+
+### Stage 5 — bounded WAL-safe database-admin backup
+
+`backend/fwrouter_api/services/database_admin.py:backup_database_file` owns the existing snapshot API; its SQLite helper performs read-snapshot online copying, content/integrity/FK validation and private no-replace publication. This does not change selection/rebuild admission or create a backup/recovery subsystem. See [contract](../../../docs/DATABASE_BACKUP.md) and the registered disposable SQLite regression suite `backend/tests/test_database_backup.py`. Deployment, real restore and host/L7 qualification remain separate.

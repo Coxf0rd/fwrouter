@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +17,7 @@ from fwrouter_api.services.system_subjects import ensure_builtin_system_subjects
 from fwrouter_api.services.subject_inventory import sync_subject_inventory
 from fwrouter_api.adapters.xray_common import xray_writer_guard
 from fwrouter_api.services.vpn_auto_selection_state import advance_selection_revision, selection_pool_signature
+from fwrouter_api.services.database_backup import create_sqlite_backup
 
 
 def get_database_schema_state() -> dict[str, Any]:
@@ -36,15 +36,14 @@ def _utc_stamp() -> str:
 
 
 def _backup_dir() -> Path:
-    path = get_settings().paths.state_dir / "backups"
-    path.mkdir(parents=True, exist_ok=True)
-    path.chmod(0o700)
-    return path
+    return get_settings().paths.state_dir / "backups"
 
 
 def backup_database_file() -> dict[str, Any]:
     db_path = get_db_path()
-    if not db_path.exists():
+    try:
+        db_path.lstat()
+    except FileNotFoundError:
         return {
             "ok": True,
             "created": False,
@@ -52,13 +51,15 @@ def backup_database_file() -> dict[str, Any]:
             "db_path": str(db_path),
         }
 
-    backup_path = _backup_dir() / f"{db_path.name}.{_utc_stamp()}.bak"
-    shutil.copy2(db_path, backup_path)
-    backup_path.chmod(0o600)
+    receipt = create_sqlite_backup(
+        db_path,
+        _backup_dir(),
+        prefix=f"{db_path.name}.{_utc_stamp()}.",
+    )
     return {
         "ok": True,
         "created": True,
-        "backup_path": str(backup_path),
+        **receipt,
         "db_path": str(db_path),
     }
 

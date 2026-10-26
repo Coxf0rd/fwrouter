@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Generated code-index entry for `/opt/fwrouter-api/fwrouter_api_services_database_admin.py`.
+Existing database-admin owner for schema inspection, eligible snapshot rebuild and runtime cleanup. `backup_database_file()` delegates the WAL-safe, validated private snapshot primitive; see [backup contract](../../../docs/DATABASE_BACKUP.md). Backup success is not destructive-operation admission.
 
 ## Review Notes
 
