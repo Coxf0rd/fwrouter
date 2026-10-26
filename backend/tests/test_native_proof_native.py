@@ -26,7 +26,7 @@ def test_native_proof_collectors_against_pinned_engines(tmp_path: Path) -> None:
         pytest.fail("qualified Mihomo binary digest does not match v1.19.31 pin")
 
     script = r'''
-import hashlib, json, os, pathlib, socket, subprocess, sys, tempfile, time, urllib.request
+import hashlib, http.server, json, os, pathlib, socket, subprocess, sys, tempfile, threading, time, urllib.request
 
 binary = pathlib.Path(sys.argv[1])
 root = pathlib.Path(sys.argv[2])
@@ -36,6 +36,16 @@ if "v1.19.31" not in version:
 with socket.socket() as sock:
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
+class HealthHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(204)
+        self.end_headers()
+    def log_message(self, *_args):
+        pass
+health_server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), HealthHandler)
+health_thread = threading.Thread(target=health_server.serve_forever, daemon=True)
+health_thread.start()
+health_url = f"http://127.0.0.1:{health_server.server_address[1]}/generate_204"
 config = "\n".join([
     "mode: rule", "log-level: silent", "allow-lan: false", "bind-address: 127.0.0.1",
     f"external-controller: 127.0.0.1:{port}", "proxies: []", "proxy-groups:",
@@ -81,7 +91,7 @@ try:
         raise RuntimeError("fixture FWRouter state path escaped disposable root")
     from fwrouter_api.adapters.mihomo import MihomoHttpAdapter
     from fwrouter_api.services import servers, xray_bindings, xray_handoff
-    from fwrouter_api.services import mihomo_config, mihomo_config_status, mihomo_reconcile_fingerprint
+    from fwrouter_api.services import mihomo_config, mihomo_config_proxies, mihomo_config_status, mihomo_reconcile_fingerprint
     from fwrouter_api.services import native_proof
     from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file
     adapter = MihomoHttpAdapter(base_url=f"http://127.0.0.1:{port}", config_path=config_path, timeout_seconds=1)
@@ -101,7 +111,7 @@ try:
     mihomo_reconcile_fingerprint._resolved_candidate_config_path = lambda: root / "config.next.yaml"
     mihomo_reconcile_fingerprint.active_config_hash = lambda: hash_mihomo_yaml_file(config_path)
     mihomo_config_status._resolve_active_auto_runtime_target = lambda _server_id, *, expected_targets: (
-        "server-fixture" if "server-fixture" in expected_targets else None
+        "logical-fixture" if "logical-fixture" in expected_targets else None
     )
     def runtime_identity():
         digest = hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -110,15 +120,24 @@ try:
                 "version_sha256": hashlib.sha256(version.encode()).hexdigest(),
                 "incarnation_sha256": hashlib.sha256(f"{process.pid}:{process.args}".encode()).hexdigest()}
     mihomo_reconcile_fingerprint._current_runtime_incarnation = lambda: runtime_identity()["incarnation_sha256"]
-    # Add a synthetic, never-connected endpoint so the runtime selector readback
-    # can be bound to the durable logical selection without external traffic.
-    parsed["proxies"] = [{"name": "server-fixture", "type": "socks5", "server": "127.0.0.1", "port": 9}]
-    parsed["proxy-groups"][0]["proxies"] = ["server-fixture", "REJECT"]
-    parsed["proxy-groups"][1]["proxies"] = ["REJECT", "vpn-auto"]
+    # Add a fixture-only HTTP endpoint backed by the local 204 health responder.
+    # The real pinned fallback group can select it without external traffic.
+    parsed["proxies"] = [{"name": "server-fixture", "type": "http", "server": "127.0.0.1",
+                           "port": health_server.server_address[1]}]
+    logical_group = {"name": "logical-fixture", "type": "fallback", "proxies": ["server-fixture"],
+                     "url": health_url, "interval": 300}
+    parsed["proxy-groups"].insert(0, logical_group)
+    parsed_groups = {group["name"]: group for group in parsed["proxy-groups"]}
+    parsed_groups["vpn-auto"]["proxies"] = ["logical-fixture", "REJECT"]
+    parsed_groups["vpn-global"]["proxies"] = ["REJECT", "vpn-auto"]
+    mihomo_config_proxies._logical_profile_groups = lambda **_kwargs: [logical_group]
     config = "\n".join([line for line in config.splitlines() if not line.startswith("proxies:") and not line.startswith("proxy-groups:") and not line.startswith("  - name: vpn-auto") and not line.startswith("    type: select") and not line.startswith("    proxies: [REJECT]") and not line.startswith("  - name: vpn-global") and not line.startswith("    proxies: [REJECT, vpn-auto]")])
     config += "\n" + "\n".join([
-        "proxies:", "  - name: server-fixture", "    type: socks5", "    server: 127.0.0.1", "    port: 9",
-        "proxy-groups:", "  - name: vpn-auto", "    type: select", "    proxies: [server-fixture, REJECT]",
+        "proxies:", "  - name: server-fixture", "    type: http", "    server: 127.0.0.1",
+        f"    port: {health_server.server_address[1]}",
+        "proxy-groups:", "  - name: logical-fixture", "    type: fallback", "    proxies: [server-fixture]",
+        f"    url: {health_url}", "    interval: 300",
+        "  - name: vpn-auto", "    type: select", "    proxies: [logical-fixture, REJECT]",
         "  - name: vpn-global", "    type: select", "    proxies: [REJECT, vpn-auto]", "",
     ])
     config_path.write_text(config, encoding="utf-8")
@@ -138,12 +157,20 @@ try:
                 proxies = json.load(response).get("proxies")
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/rules", timeout=0.4) as response:
                 rules = json.load(response).get("rules")
-            if isinstance(proxies, dict) and "server-fixture" in proxies:
+            logical_group_state = proxies.get("logical-fixture") if isinstance(proxies, dict) else None
+            if (
+                isinstance(logical_group_state, dict)
+                and str(logical_group_state.get("type") or "").lower() == "fallback"
+                and logical_group_state.get("now") == "server-fixture"
+            ):
                 break
         except Exception:
             time.sleep(0.1)
     else:
         raise RuntimeError("fixture selector member unavailable")
+    logical_readback = proxies.get("logical-fixture")
+    if not isinstance(logical_readback, dict):
+        raise RuntimeError("fixture logical fallback group unavailable")
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/proxies/vpn-global", data=b'{"name":"vpn-auto"}',
         headers={"Content-Type": "application/json"}, method="PUT",
@@ -182,7 +209,7 @@ try:
     # Restore only the disposable engine to its expected state before testing
     # the readback parser's reaction to a synthetic altered /rules response.
     request = urllib.request.Request(
-        f"http://127.0.0.1:{port}/proxies/vpn-auto", data=b'{"name":"server-fixture"}',
+        f"http://127.0.0.1:{port}/proxies/vpn-auto", data=b'{"name":"logical-fixture"}',
         headers={"Content-Type": "application/json"}, method="PUT",
     )
     with urllib.request.urlopen(request, timeout=1) as response:
@@ -204,6 +231,9 @@ try:
     print(json.dumps({"version_sha256": hashlib.sha256(version.encode()).hexdigest(),
                       "native_rule_count": proof["native_rule_count"],
                       "selector_count": proof["selector_count"], "proof": proof,
+                      "logical_group": {"type": logical_readback.get("type"),
+                                        "all": logical_readback.get("all"),
+                                        "now": logical_readback.get("now")},
                       "bad_rules_reason": bad_rules_reason, "bad_rules_source": "synthetic_readback_response",
                       "bad_selector_reason": bad_selector_reason, "bad_selector_source": "native_controller_api"}, sort_keys=True))
 finally:
@@ -213,6 +243,9 @@ finally:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=3)
+    health_server.shutdown()
+    health_server.server_close()
+    health_thread.join(timeout=2)
 '''
     completed = subprocess.run(
         [sys.executable, "-c", script, str(binary), str(tmp_path), str(Path(__file__).resolve().parents[1])],
@@ -230,6 +263,9 @@ finally:
     assert result["proof"]["selector_membership_matches"] is True
     assert result["proof"]["guarded_rules_match"] is True
     assert result["proof"]["selection_target_matches_durable_state"] is True
+    assert str(result["logical_group"]["type"]).lower() == "fallback"
+    assert result["logical_group"]["all"] == ["server-fixture"]
+    assert result["logical_group"]["now"] == "server-fixture"
     assert result["bad_rules_reason"] == "MIHOMO_NATIVE_POLICY_MISMATCH"
     assert result["bad_selector_reason"] == "MIHOMO_SELECTION_TARGET_MISMATCH"
     assert result["bad_selector_source"] == "native_controller_api"

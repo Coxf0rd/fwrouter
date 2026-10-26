@@ -750,34 +750,73 @@ def _mihomo_selection_target_matches(
     # fallback group whose members are concrete generated proxies. Accept the
     # group's runtime name only when both durable config and native readback
     # prove that exact, non-empty membership.
-    from fwrouter_api.services.mihomo_config_proxies import _logical_profile_groups
-
-    generated_groups = {
-        str(group.get("name") or "").strip(): group
-        for group in _logical_profile_groups()
+    configured_group_rows = [
+        (str(group.get("name") or "").strip(), group)
+        for group in (expected_config.get("proxy-groups") or [])
         if isinstance(group, dict) and str(group.get("name") or "").strip()
+    ]
+    configured_group_name_counts: dict[str, int] = {}
+    for name, _group in configured_group_rows:
+        configured_group_name_counts[name] = configured_group_name_counts.get(name, 0) + 1
+    ambiguous_target_names = {
+        name for name, count in configured_group_name_counts.items() if count > 1
     }
-    expected_logical_groups: dict[str, tuple[str, ...]] = {}
-    for group in expected_config.get("proxy-groups") or []:
-        if not isinstance(group, dict):
-            continue
-        name = str(group.get("name") or "").strip()
+    configured_group_names = set(configured_group_name_counts)
+    ambiguous_target_names.update(configured_group_names & expected_members)
+
+    group_candidate_rows: list[tuple[str, dict[str, Any], tuple[str, ...]]] = []
+    for name, group in configured_group_rows:
         members = group.get("proxies")
         if (
-            not name or name in expected_members
-            or generated_groups.get(name) != group
-            or str(group.get("type") or "").strip().lower() != "fallback"
+            str(group.get("type") or "").strip().lower() != "fallback"
             or not isinstance(members, list) or not members
             or any(not isinstance(member, str) or not member.strip() for member in members)
             or len(set(members)) != len(members)
             or any(member not in expected_members for member in members)
         ):
             continue
-        expected_logical_groups[name] = tuple(members)
-    expected_targets = expected_members | set(expected_logical_groups)
+        group_candidate_rows.append((name, group, tuple(members)))
+    candidate_name_counts: dict[str, int] = {}
+    for name, _group, _members in group_candidate_rows:
+        candidate_name_counts[name] = candidate_name_counts.get(name, 0) + 1
+    group_candidates = {
+        name: (group, members)
+        for name, group, members in group_candidate_rows
+        if candidate_name_counts[name] == 1
+    }
+    expected_logical_groups: dict[str, tuple[str, ...]] = {}
+    if group_candidates:
+        from fwrouter_api.services.mihomo_config_proxies import _logical_profile_groups
+
+        generated_group_rows = [
+            (str(group.get("name") or "").strip(), group)
+            for group in _logical_profile_groups()
+            if isinstance(group, dict) and str(group.get("name") or "").strip()
+        ]
+        generated_name_counts: dict[str, int] = {}
+        for name, _group in generated_group_rows:
+            generated_name_counts[name] = generated_name_counts.get(name, 0) + 1
+        ambiguous_target_names.update(
+            name for name, count in generated_name_counts.items() if count > 1
+        )
+        ambiguous_target_names.update(set(generated_name_counts) & expected_members)
+        generated_groups = {
+            name: group
+            for name, group in generated_group_rows
+            if generated_name_counts[name] == 1
+        }
+        expected_logical_groups = {
+            name: members
+            for name, (group, members) in group_candidates.items()
+            if name not in ambiguous_target_names and generated_groups.get(name) == group
+        }
+    expected_concrete_targets = expected_members - ambiguous_target_names
+    expected_targets = expected_concrete_targets | set(expected_logical_groups)
 
     def native_target_matches(target: str) -> bool:
-        if target in expected_members:
+        if target in ambiguous_target_names:
+            return False
+        if target in expected_concrete_targets:
             return True
         expected_group_members = expected_logical_groups.get(target)
         if expected_group_members is None:

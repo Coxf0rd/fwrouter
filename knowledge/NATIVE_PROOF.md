@@ -107,3 +107,9 @@ generated configuration and native group membership. A matching display name
 alone is insufficient. Unknown, ambiguous, missing or altered group/member
 evidence must remain a failed proof; this does not authorize changing the native
 selection or creating a replacement owner receipt.
+
+A fallback group may legitimately change its active concrete member within the
+exact permitted membership. This proof attests the durable logical group target
+and allowed native membership, not a permanently fixed external endpoint or
+remote egress reachability. Ambiguous runtime names must not be resolved by
+dictionary overwrite or by a selected-ID-only lookup.
