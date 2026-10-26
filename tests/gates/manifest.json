@@ -161,6 +161,14 @@
   ],
   "path_rules": [
     {
+      "glob": "docs/DATABASE_BACKUP.md",
+      "domains": [
+        "database",
+        "maintenance",
+        "documentation"
+      ]
+    },
+    {
       "glob": "backend/fwrouter_api/services/database_*.py",
       "domains": [
         "database",
