@@ -96,3 +96,14 @@ established optional-receipt behavior. Generic startup recovery does not invoke
 this explicit reproof operation.
 
 Named-counter parsing is a prerequisite to both Core receipt capture and verification. Receipt capture remains owned by the existing successful apply/generation lifecycle; supporting counter declarations does not itself create or backfill any receipt. Existing receipts without a matching semantic digest are not grandfathered. A later source installation or genuine existing-owner operation needs its own exact-source qualification and operation authority. Do not trigger apply, refresh or admission solely because this document or a public CI run is green.
+
+
+## Logical VPN selection targets
+
+A selected durable logical VPN may be materialized as a generated fallback
+`proxy-group`, rather than a concrete entry in `proxies`. Native selection
+verification must resolve the existing durable logical identity and verify its
+generated configuration and native group membership. A matching display name
+alone is insufficient. Unknown, ambiguous, missing or altered group/member
+evidence must remain a failed proof; this does not authorize changing the native
+selection or creating a replacement owner receipt.

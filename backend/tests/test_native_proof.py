@@ -1047,6 +1047,82 @@ def test_mihomo_native_selector_must_match_persistent_auto_and_fixed_targets(
     )
 
 
+def test_mihomo_native_selector_accepts_only_proven_logical_profile_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fwrouter_api.services import custom_servers, mihomo_config_proxies, mihomo_config_status
+
+    group_name = "Logical Profile [logical-id]"
+    fixed_group_name = "Fixed Logical Profile [logical-id]"
+    rows = [
+        {"server_id": "logical-auto", "raw": {"name": "display", "_fwrouter_runtime_name": group_name}},
+        {"server_id": "logical-fixed", "raw": {"name": "fixed display", "_fwrouter_runtime_name": fixed_group_name}},
+    ]
+
+    def runtime_rows(*, explicit_server_ids=None, **_kwargs):
+        if explicit_server_ids:
+            return [row for row in rows if row["server_id"] in explicit_server_ids]
+        return rows
+
+    monkeypatch.setattr(custom_servers, "resolve_mihomo_runtime_proxy_rows", runtime_rows)
+    monkeypatch.setattr(mihomo_config_status, "resolve_mihomo_runtime_proxy_rows", runtime_rows)
+    config = {
+        "proxies": [{"name": "member-a"}, {"name": "member-b"}],
+        "proxy-groups": [
+            {"name": group_name, "type": "fallback", "proxies": ["member-a", "member-b"]},
+            {"name": fixed_group_name, "type": "fallback", "proxies": ["member-a", "member-b"]},
+        ],
+    }
+    native_group = {"type": "fallback", "all": ["member-a", "member-b"], "now": "member-a"}
+    generated_groups = [
+        {"name": name, "type": "fallback", "proxies": ["member-a", "member-b"]}
+        for name in (group_name, fixed_group_name)
+    ]
+    monkeypatch.setattr(mihomo_config_proxies, "_logical_profile_groups", lambda **_kwargs: generated_groups)
+
+    assert native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config,
+        {"vpn-auto": {"now": group_name}, "vpn-global": {"now": "vpn-auto"}, group_name: native_group},
+    )
+    assert native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "fixed", "applied_fixed_server_id": "logical-fixed"}},
+        config,
+        {"vpn-global": {"now": fixed_group_name}, fixed_group_name: native_group},
+    )
+    # Missing runtime group, incomplete membership, or an untrusted group shape
+    # must not turn a durable logical ID into a native PASS.
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config, {"vpn-auto": {"now": group_name}, "vpn-global": {"now": "vpn-auto"}},
+    )
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config, {"vpn-auto": {"now": group_name}, group_name: {"type": "fallback", "all": ["member-a"], "now": "member-a"}},
+    )
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config,
+        {"vpn-auto": {"now": group_name}, group_name: {**native_group, "now": "REJECT"}},
+    )
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        {**config, "proxy-groups": [{"name": group_name, "type": "fallback", "proxies": ["member-a", "missing"]}]},
+        {"vpn-auto": {"now": group_name}, group_name: native_group},
+    )
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        {**config, "proxy-groups": [{"name": group_name, "type": "select", "proxies": ["member-a", "member-b"]}]},
+        {"vpn-auto": {"now": group_name}, group_name: {"type": "select", "all": ["member-a", "member-b"], "now": "member-a"}},
+    )
+    rows.append({"server_id": "ambiguous-alias", "raw": {"name": group_name, "_fwrouter_runtime_name": group_name}})
+    assert not native_proof._mihomo_selection_target_matches(
+        {"routing": {"server_mode": "auto"}, "selection": {"active_server_id": "logical-auto"}},
+        config,
+        {"vpn-auto": {"now": group_name}, group_name: native_group},
+    )
+
+
 def test_unknown_exception_text_is_never_returned_as_public_reason() -> None:
     assert native_proof._safe_failure_reason(RuntimeError("TOKEN_SECRET_123")) == "native_readback_unavailable"
     assert native_proof._safe_failure_reason(ValueError("CORE_NATIVE_RULES_MISMATCH")) == "CORE_NATIVE_RULES_MISMATCH"

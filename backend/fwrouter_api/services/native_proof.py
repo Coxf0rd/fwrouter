@@ -746,6 +746,54 @@ def _mihomo_selection_target_matches(
         for item in (expected_config.get("proxies") or [])
         if isinstance(item, dict) and str(item.get("name") or "").strip()
     }
+    # Logical profiles are represented in generated Mihomo config by a
+    # fallback group whose members are concrete generated proxies. Accept the
+    # group's runtime name only when both durable config and native readback
+    # prove that exact, non-empty membership.
+    from fwrouter_api.services.mihomo_config_proxies import _logical_profile_groups
+
+    generated_groups = {
+        str(group.get("name") or "").strip(): group
+        for group in _logical_profile_groups()
+        if isinstance(group, dict) and str(group.get("name") or "").strip()
+    }
+    expected_logical_groups: dict[str, tuple[str, ...]] = {}
+    for group in expected_config.get("proxy-groups") or []:
+        if not isinstance(group, dict):
+            continue
+        name = str(group.get("name") or "").strip()
+        members = group.get("proxies")
+        if (
+            not name or name in expected_members
+            or generated_groups.get(name) != group
+            or str(group.get("type") or "").strip().lower() != "fallback"
+            or not isinstance(members, list) or not members
+            or any(not isinstance(member, str) or not member.strip() for member in members)
+            or len(set(members)) != len(members)
+            or any(member not in expected_members for member in members)
+        ):
+            continue
+        expected_logical_groups[name] = tuple(members)
+    expected_targets = expected_members | set(expected_logical_groups)
+
+    def native_target_matches(target: str) -> bool:
+        if target in expected_members:
+            return True
+        expected_group_members = expected_logical_groups.get(target)
+        if expected_group_members is None:
+            return False
+        native_group = proxies.get(target)
+        if not isinstance(native_group, dict) or str(native_group.get("type") or "").strip().lower() != "fallback":
+            return False
+        native_members = native_group.get("all")
+        native_now = native_group.get("now")
+        return (
+            isinstance(native_members, list)
+            and all(isinstance(member, str) and member.strip() for member in native_members)
+            and tuple(native_members) == expected_group_members
+            and isinstance(native_now, str)
+            and native_now in expected_group_members
+        )
     mode = str(routing.get("server_mode") or "auto").strip().lower()
     if mode == "auto":
         if str((proxies.get("vpn-global") or {}).get("now") or "").strip() != "vpn-auto":
@@ -758,14 +806,22 @@ def _mihomo_selection_target_matches(
             return str((proxies.get("vpn-auto") or {}).get("now") or "").strip() == "REJECT"
         from fwrouter_api.services.mihomo_config_status import _resolve_active_auto_runtime_target
 
-        expected_target = _resolve_active_auto_runtime_target(selected_server_id, expected_targets=expected_members)
-        return expected_target is not None and str((proxies.get("vpn-auto") or {}).get("now") or "").strip() == expected_target
+        expected_target = _resolve_active_auto_runtime_target(selected_server_id, expected_targets=expected_targets)
+        return (
+            expected_target is not None
+            and str((proxies.get("vpn-auto") or {}).get("now") or "").strip() == expected_target
+            and native_target_matches(expected_target)
+        )
     if mode == "fixed":
         from fwrouter_api.services.mihomo_config_status import _resolve_active_fixed_runtime_target
 
         fixed_id = str(routing.get("applied_fixed_server_id") or "").strip()
-        expected_target = _resolve_active_fixed_runtime_target(fixed_id, expected_targets=expected_members) if fixed_id else None
-        return expected_target is not None and str((proxies.get("vpn-global") or {}).get("now") or "").strip() == expected_target
+        expected_target = _resolve_active_fixed_runtime_target(fixed_id, expected_targets=expected_targets) if fixed_id else None
+        return (
+            expected_target is not None
+            and str((proxies.get("vpn-global") or {}).get("now") or "").strip() == expected_target
+            and native_target_matches(expected_target)
+        )
     return False
 
 

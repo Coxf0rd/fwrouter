@@ -229,3 +229,9 @@ Manual diagnostics are documented by `opt_fwrouter_api_fwrouter_api_services_man
 PR35 native-proof prerequisite correction: `native_proof.canonical_nft_table` includes owned named counter declarations and preserves stable semantics while ignoring volatile values; existing packet legacy-startup qualification checks the exact stateless reader and Core owner receipt. This creates no receipts, deployment authority or parallel owner. See [native proof contract](../../NATIVE_PROOF.md).
 
 Native proof counter compatibility: `native_proof.canonical_nft_table` retains owned named counter declarations in its semantic digest; the existing packet startup qualification checks exact stateless readback against the Core owner receipt. No receipt backfill or new state owner is introduced. See [native proof contract](../../NATIVE_PROOF.md).
+
+
+Native proof logical selection: `backend/fwrouter_api/services/native_proof.py`
+resolves selected logical VPN groups through existing durable runtime mappings;
+`backend/tests/test_native_proof.py` covers supported generated groups and
+missing/altered/ambiguous evidence. See `knowledge/NATIVE_PROOF.md`.
