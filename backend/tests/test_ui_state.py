@@ -44,7 +44,6 @@ from fwrouter_api.services.ui_state import (
     save_ui_display_settings,
 )
 from fwrouter_api.services import ui_state_summary
-from fwrouter_api.services import ui_state_settings
 from fwrouter_api.services import presentation_client_list_admission
 from fwrouter_api.services.ui_client_list_settings import read_client_list_settings
 from fwrouter_api.routes.subjects import SetSubjectModeRequest, set_subject_mode_endpoint

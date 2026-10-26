@@ -112,6 +112,7 @@ def test_import_operation_replay_preserves_incarnation_but_new_operation_rebases
 
     with maintenance_import_test_client(monkeypatch, tmp_path) as client:
         first = _post(client, snapshot, "a" * 32).json()["data"]["import"]
+        assert first["ok"] is True and first["replayed"] is False
         first_state = read_client_list_settings()
         assert first_state["show_inactive"] is True
         assert first_state["incarnation"] != "e" * 32
