@@ -4417,6 +4417,226 @@ class AcceptanceContractTests(unittest.TestCase):
             ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
             self.assertFalse(qualified_xray_docker._validate_junit(path)["contract_valid"])
 
+    def test_qualified_xray_failure_projection_is_exact_redacted_and_bounded(self):
+        test_name = "test_loaded_client_readback_against_isolated_xray_26_2_6"
+        with tempfile.TemporaryDirectory(prefix="fwrouter-qualified-xray-failure-") as temp:
+            path = Path(temp) / "report.xml"
+            root = ET.Element("testsuite", {"tests": "1", "failures": "1"})
+            case = ET.SubElement(root, "testcase", {
+                "classname": "tests.test_xray_native_readback", "name": test_name,
+            })
+            failure = ET.SubElement(case, "failure", {"message": "token=do-not-publish"})
+            failure.text = ("Traceback UUID 11111111-1111-4111-8111-111111111111 "
+                            "fixture@example.test " + "x" * 9000)
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            projected = qualified_xray_docker._junit_failure_projection(path)
+            self.assertEqual(qualified_xray_docker.NODE_ID, projected["node_id"])
+            self.assertEqual("failure", projected["failure_type"])
+            self.assertNotIn("do-not-publish", projected["message"])
+            self.assertNotIn("11111111-1111-4111-8111-111111111111", projected["traceback"])
+            self.assertNotIn("fixture@example.test", projected["traceback"])
+            self.assertLessEqual(len(projected["traceback"].encode()),
+                                 qualified_xray_docker.MAX_FAILURE_TEXT_BYTES)
+            self.assertIn("[truncated]", projected["traceback"])
+
+            # Treat message and traceback as one redaction field so an opener
+            # in one XML attribute cannot leave key material from the other.
+            failure.set("message", "-----BEGIN PRIVATE KEY-----")
+            failure.text = "JUNIT_CROSS_FIELD_SECRET_SHOULD_NOT_LEAK_0123456789"
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            projected = qualified_xray_docker._junit_failure_projection(path)
+            self.assertEqual("[REDACTED PEM diagnostic]", projected["message"])
+            self.assertEqual("[REDACTED PEM diagnostic]", projected["traceback"])
+            self.assertNotIn("JUNIT_CROSS_FIELD_SECRET_SHOULD_NOT_LEAK_0123456789",
+                             json.dumps(projected))
+
+            failure.set("message", "ordinary failure")
+            failure.text = "JUNIT_END_ONLY_SECRET_SHOULD_NOT_LEAK_0123456789\n-----END PRIVATE KEY-----"
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            projected = qualified_xray_docker._junit_failure_projection(path)
+            self.assertEqual("[REDACTED PEM diagnostic]", projected["traceback"])
+            self.assertNotIn("JUNIT_END_ONLY_SECRET_SHOULD_NOT_LEAK_0123456789",
+                             json.dumps(projected))
+
+            case.set("classname", "foreign.test_xray_native_readback")
+            ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+            self.assertIsNone(qualified_xray_docker._junit_failure_projection(path))
+
+    def test_qualified_xray_log_tail_and_cleanup_error_are_redacted_and_bounded(self):
+        with tempfile.TemporaryDirectory(prefix="fwrouter-qualified-xray-log-") as temp:
+            path = Path(temp) / "pytest.log"
+            path.write_bytes(b"prefix " + b"x" * 10000 + b" api_key=do-not-publish Bearer abc.def.ghi")
+            projected = qualified_xray_docker._read_failure_log(path)
+            tail = projected["tail"]
+            self.assertNotIn("do-not-publish", tail)
+            self.assertNotIn("abc.def.ghi", tail)
+            self.assertLessEqual(len(tail.encode()), qualified_xray_docker.MAX_FAILURE_LOG_BYTES)
+            self.assertTrue(projected["earlier_bytes_omitted"])
+
+            for value in (
+                b"-----BEGIN PRIVATE KEY-----\nLOG_OPEN_SECRET_SHOULD_NOT_LEAK_0123456789",
+                b"LOG_END_SECRET_SHOULD_NOT_LEAK_0123456789\n-----END PRIVATE KEY-----",
+            ):
+                path.write_bytes(value)
+                protected = qualified_xray_docker._read_failure_log(path)
+                self.assertEqual("[REDACTED PEM diagnostic]", protected["tail"])
+                self.assertNotIn(b"LOG_", protected["tail"].encode())
+
+            # The BEGIN marker falls outside the retained tail while sensitive
+            # material and END remain inside it. Redact the complete capped
+            # source before selecting the tail so PEM context is preserved.
+            pem_payload = b"UNIQUE_PRIVATE_MATERIAL_SHOULD_NOT_LEAK" + b"K" * 9000
+            path.write_bytes(b"-----BEGIN PRIVATE KEY-----\n" + pem_payload
+                            + b"\n-----END PRIVATE KEY-----\nordinary tail")
+            pem_projection = qualified_xray_docker._read_failure_log(path)
+            self.assertNotIn("UNIQUE_PRIVATE_MATERIAL_SHOULD_NOT_LEAK", pem_projection["tail"])
+            self.assertNotIn("-----END PRIVATE KEY-----", pem_projection["tail"])
+
+            path.write_bytes(b"x" * (qualified_xray_docker.MAX_LOG_BYTES + 1))
+            self.assertEqual({"omitted": "log_at_or_above_safe_redaction_cap"},
+                             qualified_xray_docker._read_failure_log(path))
+
+        command = [sys.executable, "-c",
+                   "import sys; sys.stdout.write('o'*100000); "
+                   "sys.stderr.write('-----BEGIN PRIVATE KEY-----\\n'+'S'*100000); sys.exit(17)"]
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            qualified_xray_docker._cleanup_command(command, env={"PATH": os.environ["PATH"]}, timeout=5)
+        self.assertLessEqual(len(caught.exception.output), 4096)
+        self.assertIsNone(caught.exception.stderr)
+        self.assertTrue(caught.exception.diagnostic_stderr_omitted)
+        receipt = {}
+        qualified_xray_docker._record_cleanup_failure(receipt, "remove_owned_image", caught.exception)
+        evidence = receipt["diagnostics"]["cleanup_failure"]
+        self.assertEqual(17, evidence["exit_code"])
+        self.assertNotIn("stderr", evidence)
+        self.assertIn("stderr_omitted", evidence)
+
+        with mock.patch.object(qualified_xray_docker._NATIVE_RUNNER, "_bounded_child",
+                               return_value=subprocess.CompletedProcess(
+                                   ["docker", "image", "rm"], 17, b"", b"Bearer abc.def.ghi user@example.test")):
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                qualified_xray_docker._cleanup_command(
+                    ["docker", "image", "rm"], env={"PATH": "/usr/bin"}, timeout=30)
+        receipt = {}
+        qualified_xray_docker._record_cleanup_failure(receipt, "remove_owned_image", caught.exception)
+        evidence = receipt["diagnostics"]["cleanup_failure"]
+        self.assertEqual("remove_owned_image", evidence["operation"])
+        self.assertEqual(17, evidence["exit_code"])
+        self.assertNotIn("abc.def.ghi", evidence["stderr"])
+        self.assertNotIn("user@example.test", evidence["stderr"])
+        self.assertLessEqual(len(evidence["stderr"].encode()),
+                             qualified_xray_docker.MAX_CLEANUP_STDERR_BYTES)
+
+        for value in (
+            b"-----BEGIN PRIVATE KEY-----\nCLEANUP_OPEN_SECRET_SHOULD_NOT_LEAK_0123456789",
+            b"CLEANUP_END_SECRET_SHOULD_NOT_LEAK_0123456789\n-----END PRIVATE KEY-----",
+        ):
+            incomplete = subprocess.CalledProcessError(17, ["docker", "rm"], stderr=value)
+            receipt = {}
+            qualified_xray_docker._record_cleanup_failure(receipt, "remove_owned_container", incomplete)
+            safe_stderr = receipt["diagnostics"]["cleanup_failure"]["stderr"]
+            self.assertEqual("[REDACTED PEM diagnostic]", safe_stderr)
+            self.assertNotIn("CLEANUP_", safe_stderr)
+
+        success_receipt = {"status": "passed", "cleanup": "owned_resources_removed",
+                           "diagnostics": {"container_state": {"found": False}}}
+        qualified_xray_docker._retain_failure_diagnostics_only(success_receipt)
+        self.assertNotIn("diagnostics", success_receipt)
+        failure_receipt = {"status": "failed", "cleanup": "owned_resources_removed",
+                           "diagnostics": {"pytest": {"exit_code": 1}}}
+        qualified_xray_docker._retain_failure_diagnostics_only(failure_receipt)
+        self.assertIn("diagnostics", failure_receipt)
+
+    def test_qualified_xray_state_projection_requires_exact_ownership_and_allowlists_fields(self):
+        owned = {
+            "Name": "/native-xray-readback-test-a1b2c3d4e5f6",
+            "Config": {"Labels": {
+                launcher.OWNER_LABEL: launcher.OWNER_VALUE,
+                launcher.RUN_LABEL: "a" * 32,
+            }, "Env": ["TOKEN=must-not-project"]},
+            "Mounts": [{"Source": "/private/config.json"}],
+            "State": {"Status": "exited", "Running": False, "OOMKilled": True,
+                      "ExitCode": 137},
+            "RestartCount": 2,
+            "HostConfig": {"NanoCpus": 500000000, "Memory": 134217728, "PidsLimit": 64,
+                           "Privileged": True},
+        }
+        self.assertTrue(qualified_xray_docker._container_is_owned(
+            owned, name="native-xray-readback-test-a1b2c3d4e5f6", nonce="a" * 32))
+        state = qualified_xray_docker._owned_container_state(owned)
+        self.assertEqual({"status": "exited", "running": False, "oom_killed": True,
+                          "exit_code": 137, "restart_count": 2,
+                          "limits": {"nano_cpus": 500000000, "memory_bytes": 134217728,
+                                     "pids_limit": 64}}, state)
+        self.assertFalse(qualified_xray_docker._container_is_owned(
+            owned, name="foreign-container", nonce="a" * 32))
+        self.assertFalse(qualified_xray_docker._container_is_owned(
+            owned, name="native-xray-readback-test-a1b2c3d4e5f6", nonce="b" * 32))
+
+    def test_qualified_xray_cleanup_requires_owned_image_and_successful_empty_inventories(self):
+        nonce = "a" * 32
+        image_id = "sha256:" + "b" * 64
+        owned_image = {"Id": image_id, "Config": {"Labels": {
+            launcher.OWNER_LABEL: launcher.OWNER_VALUE, launcher.RUN_LABEL: nonce,
+        }}}
+        self.assertTrue(qualified_xray_docker._image_is_owned(
+            owned_image, image_id=image_id, nonce=nonce))
+        for modified in (
+            {**owned_image, "Id": "sha256:" + "c" * 64},
+            {"Id": image_id, "Config": {"Labels": {
+                launcher.OWNER_LABEL: "foreign", launcher.RUN_LABEL: nonce,
+            }}},
+            {"Id": image_id, "Config": {"Labels": {
+                launcher.OWNER_LABEL: launcher.OWNER_VALUE, launcher.RUN_LABEL: "d" * 32,
+            }}},
+        ):
+            with self.subTest(image=modified):
+                self.assertFalse(qualified_xray_docker._image_is_owned(
+                    modified, image_id=image_id, nonce=nonce))
+
+        inventories = (
+            ("owned image", 10, ["docker", "image", "ls", "--all", "--quiet", "--no-trunc",
+             "--filter", f"label={launcher.OWNER_LABEL}={launcher.OWNER_VALUE}",
+             "--filter", f"label={launcher.RUN_LABEL}={nonce}"]),
+            ("owned container", 20, ["docker", "ps", "--all", "--quiet", "--no-trunc",
+             "--filter", f"label={launcher.OWNER_LABEL}={launcher.OWNER_VALUE}",
+             "--filter", f"label={launcher.RUN_LABEL}={nonce}"]),
+        )
+        env = {"PATH": "/usr/bin"}
+        for resource_name, timeout, argv in inventories:
+            with self.subTest(resource=resource_name):
+                with mock.patch.object(qualified_xray_docker, "_cleanup_command",
+                                       return_value=subprocess.CompletedProcess(argv, 0, b"", b"")) as command:
+                    qualified_xray_docker._verify_empty_inventory(
+                        argv, env=env, timeout=timeout, resource_name=resource_name)
+                command.assert_called_once_with(argv, env=env, timeout=timeout)
+
+                for output in (b"\n", b"sha256:" + b"e" * 64, b"malformed inventory"):
+                    with self.subTest(output=output), mock.patch.object(
+                            qualified_xray_docker, "_cleanup_command",
+                            return_value=subprocess.CompletedProcess(argv, 0, output, b"")):
+                        with self.assertRaises(qualified_xray_docker.launcher.NotRun):
+                            qualified_xray_docker._verify_empty_inventory(
+                                argv, env=env, timeout=timeout, resource_name=resource_name)
+                with mock.patch.object(qualified_xray_docker, "_cleanup_command",
+                                       return_value=subprocess.CompletedProcess(argv, 0, None, b"")):
+                    with self.assertRaises(qualified_xray_docker.launcher.NotRun):
+                        qualified_xray_docker._verify_empty_inventory(
+                            argv, env=env, timeout=timeout, resource_name=resource_name)
+
+                # Daemon and permission errors, plus timeout, must propagate as
+                # cleanup failures rather than being interpreted as absence.
+                for failure in (
+                    subprocess.CalledProcessError(1, argv, stderr=b"Cannot connect to daemon"),
+                    subprocess.CalledProcessError(1, argv, stderr=b"permission denied"),
+                    subprocess.TimeoutExpired(argv, timeout),
+                ):
+                    with self.subTest(failure=type(failure).__name__), mock.patch.object(
+                            qualified_xray_docker, "_cleanup_command", side_effect=failure):
+                        with self.assertRaises(type(failure)):
+                            qualified_xray_docker._verify_empty_inventory(
+                                argv, env=env, timeout=timeout, resource_name=resource_name)
+
 
     def test_native_inbound_users_response_accepts_omitted_empty_field_only(self):
         def reply(payload, *, ok=True):

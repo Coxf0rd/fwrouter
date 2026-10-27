@@ -30,3 +30,28 @@ No post-run deletion is used. GitHub's short retention expires cross-job artifac
 Future tasks that create disposable resources should follow: **temporary resource ownership → verification → cleanup → cleanup receipt**. This lifecycle change adds no privileged cleanup service and does not alter the mandatory check or branch protection.
 
 CI V3 extends the producer inventory with deterministic routine shard provenance and separate QCP/Xray owners. The final bundle must retain the original sealed shard evidence and validate the complete disjoint partition before replaying strict qualification; a merged summary alone is insufficient. See [CI_V3.md](CI_V3.md) for coverage and execution-count semantics.
+
+## Bounded Docker-Xray failure diagnostics
+
+The qualified Docker-Xray receipt retains a failure-only diagnostic projection:
+exact-node JUnit failure/error text, a pytest log tail, the failing harness phase,
+and the cleanup operation/error class. Container state and configured resource
+limits are projected only after the existing owner-label, run-nonce and exact-name
+checks. No container environment, mount paths, config, or Docker log stream is
+published. Successful receipts omit these diagnostic fields. Cleanup must obtain successful,
+bounded inventories proving that no run-owned images or containers remain. A
+failed Docker query is unconfirmed cleanup, never proof of resource absence.
+
+The existing native diagnostic redactor processes the complete pytest log before
+retaining at most 8 KiB; logs at or above the 4 MiB safe input cap are omitted.
+JUnit traceback/message and cleanup stderr have separate 4 KiB/1 KiB/2 KiB caps.
+Cleanup command output uses bounded pipe drains; potentially clipped or timed-out
+stderr is omitted rather than redacted without its original context. The receipt
+uses the existing one-day handoff and three-day redacted failure projection.
+Raw JUnit/log files remain runner-local. This does not expand the final-bundle
+allowlist, increase retention, or change qualification and cleanup requirements.
+
+Diagnostics explain failure; they never satisfy native proof or replace a missing
+successful receipt. A prior runner's missing traceback or unconfirmed cleanup
+cannot be reconstructed from a later successful run. Preserve original artifacts
+before expiry and distinguish historical unknown causes from reproduced defects.
