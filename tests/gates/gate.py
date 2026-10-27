@@ -50,7 +50,7 @@ ROUTINE_SHARD_DOMAINS = {
     "ui-tooling": {"ui", "test-infrastructure"},
     "api-persistence-contracts": {"api-contract", "database"},
     "ui-provider-contracts": {"provider", "ui"},
-    "local-integration": {"core", "database", "mihomo", "protocol", "provider", "routing",
+    "local-integration": {"api-contract", "core", "database", "mihomo", "protocol", "provider", "routing",
                           "runtime", "subscription", "watchdog", "xray", "application-acceptance"},
     "installer-startup": {"installer"},
 }
