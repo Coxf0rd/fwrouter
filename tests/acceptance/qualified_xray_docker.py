@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -27,6 +28,160 @@ RUN_LABEL = launcher.RUN_LABEL
 PROFILE_PATH_REL = Path("fwrouter-xray-native-profile/qualified-xray-profile.json")
 MAX_SECONDS = 120
 MAX_LOG_BYTES = 4 * 1024 * 1024
+MAX_FAILURE_LOG_BYTES = 8 * 1024
+MAX_FAILURE_TEXT_BYTES = 4 * 1024
+MAX_CLEANUP_STDERR_BYTES = 2 * 1024
+
+
+def _native_runner():
+    path = ROOT / "tests/application_acceptance/native_runner.py"
+    spec = importlib.util.spec_from_file_location("fwrouter_qualified_xray_native_runner", path)
+    if spec is None or spec.loader is None:
+        raise launcher.NotRun("trusted native diagnostic redactor is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_NATIVE_RUNNER = _native_runner()
+_PEM_MARKER = re.compile(rb"-----\s*(?:BEGIN|END)\b", re.IGNORECASE)
+_PEM_REDACTED = "[REDACTED PEM diagnostic]"
+
+
+def _contains_pem_marker(value: bytes | str) -> bool:
+    raw = value if isinstance(value, bytes) else str(value).encode("utf-8", "replace")
+    return _PEM_MARKER.search(raw) is not None
+
+
+def _redact_diagnostic(value: bytes | str, *, limit: int) -> str:
+    if _contains_pem_marker(value):
+        return _PEM_REDACTED[:max(0, limit)]
+    return _NATIVE_RUNNER._redact_diagnostic(value, limit=limit)
+
+
+def _read_failure_log(path: Path) -> dict[str, Any] | None:
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        size = path.stat().st_size
+        if size >= MAX_LOG_BYTES:
+            return {"omitted": "log_at_or_above_safe_redaction_cap"}
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_LOG_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) != size or len(raw) >= MAX_LOG_BYTES:
+        return {"omitted": "log_size_changed_or_exceeded_safe_redaction_cap"}
+    return {
+        "tail": _redact_diagnostic(raw, limit=MAX_FAILURE_LOG_BYTES),
+        "earlier_bytes_omitted": size > MAX_FAILURE_LOG_BYTES,
+    }
+
+
+def _junit_failure_projection(path: Path) -> dict[str, Any] | None:
+    if not path.is_file() or path.is_symlink() or path.stat().st_size > launcher.MAX_RECEIPT_BYTES:
+        return None
+    try:
+        cases = ET.parse(path).getroot().findall(".//testcase")
+    except (ET.ParseError, OSError):
+        return None
+    if len(cases) != 1:
+        return None
+    case = cases[0]
+    classname = case.get("classname", "")
+    if classname == "tests.test_xray_native_readback":
+        classname = "test_xray_native_readback"
+    nodeid = f"backend/tests/{classname}.py::{case.get('name', '')}"
+    if nodeid != NODE_ID:
+        return None
+    failure = case.find("failure")
+    error = case.find("error")
+    skipped = case.find("skipped")
+    detail = failure if failure is not None else error
+    status = "failed" if detail is not None else "skipped" if skipped is not None else "passed"
+    projection: dict[str, Any] = {"node_id": NODE_ID, "status": status}
+    if detail is not None:
+        projection["failure_type"] = "failure" if failure is not None else "error"
+        message = detail.get("message", "")
+        traceback = detail.text or ""
+        if _contains_pem_marker(f"{message}\n{traceback}"):
+            projection["message"] = _PEM_REDACTED[:1024]
+            projection["traceback"] = _PEM_REDACTED[:MAX_FAILURE_TEXT_BYTES]
+        else:
+            projection["message"] = _redact_diagnostic(message, limit=1024)
+            projection["traceback"] = _redact_diagnostic(traceback, limit=MAX_FAILURE_TEXT_BYTES)
+    return projection
+
+
+def _owned_container_state(info: dict[str, Any]) -> dict[str, Any]:
+    state = info.get("State") if isinstance(info.get("State"), dict) else {}
+    host = info.get("HostConfig") if isinstance(info.get("HostConfig"), dict) else {}
+    status = state.get("Status")
+    result: dict[str, Any] = {
+        "status": status if status in {"created", "running", "paused", "restarting", "removing", "exited", "dead"}
+        else "unknown",
+        "limits": {
+            "nano_cpus": host.get("NanoCpus") if type(host.get("NanoCpus")) is int else None,
+            "memory_bytes": host.get("Memory") if type(host.get("Memory")) is int else None,
+            "pids_limit": host.get("PidsLimit") if type(host.get("PidsLimit")) is int else None,
+        },
+    }
+    for key in ("Running", "OOMKilled"):
+        if type(state.get(key)) is bool:
+            result["oom_killed" if key == "OOMKilled" else "running"] = state[key]
+    if type(state.get("ExitCode")) is int and -255 <= state["ExitCode"] <= 255:
+        result["exit_code"] = state["ExitCode"]
+    if type(info.get("RestartCount")) is int and 0 <= info["RestartCount"] <= 1_000_000:
+        result["restart_count"] = info["RestartCount"]
+    return result
+
+
+def _container_is_owned(info: dict[str, Any], *, name: str, nonce: str) -> bool:
+    labels = info.get("Config", {}).get("Labels", {})
+    return (isinstance(labels, dict) and labels.get(OWNER_LABEL) == launcher.OWNER_VALUE
+            and labels.get(RUN_LABEL) == nonce and info.get("Name", "").lstrip("/") == name)
+
+
+def _record_cleanup_failure(receipt: dict[str, Any], operation: str, exc: Exception) -> None:
+    details: dict[str, Any] = {"operation": operation, "error_class": type(exc).__name__}
+    if isinstance(exc, subprocess.CalledProcessError):
+        details["exit_code"] = exc.returncode
+        if getattr(exc, "diagnostic_stderr_omitted", False):
+            details["stderr_omitted"] = "bounded capture may have ended inside sensitive content"
+        elif exc.stderr:
+            details["stderr"] = _redact_diagnostic(exc.stderr, limit=MAX_CLEANUP_STDERR_BYTES)
+    elif isinstance(exc, subprocess.TimeoutExpired):
+        details["timeout_seconds"] = exc.timeout
+        if getattr(exc, "diagnostic_stderr_omitted", False):
+            details["stderr_omitted"] = "bounded capture may have ended inside sensitive content"
+        elif exc.stderr:
+            details["stderr"] = _redact_diagnostic(exc.stderr, limit=MAX_CLEANUP_STDERR_BYTES)
+    elif isinstance(exc, launcher.NotRun):
+        details["reason"] = _redact_diagnostic(str(exc), limit=MAX_CLEANUP_STDERR_BYTES)
+    receipt.setdefault("diagnostics", {})["cleanup_failure"] = details
+
+
+def _retain_failure_diagnostics_only(receipt: dict[str, Any]) -> None:
+    if receipt.get("status") == "passed" and receipt.get("cleanup") == "owned_resources_removed":
+        receipt.pop("diagnostics", None)
+
+
+def _cleanup_command(argv: list[str], *, env: dict[str, str], timeout: int) -> subprocess.CompletedProcess[bytes]:
+    started = time.monotonic()
+    result = _NATIVE_RUNNER._bounded_child(
+        argv, cwd=ROOT, env=env, timeout=timeout, stdout_limit=4096,
+    )
+    stderr_truncated = len(result.stderr) >= _NATIVE_RUNNER.DIAGNOSTIC_STREAM_LIMIT
+    stderr = None if stderr_truncated or result.returncode == 124 else result.stderr
+    if result.returncode:
+        if result.returncode == 124 and time.monotonic() - started >= timeout:
+            exc = subprocess.TimeoutExpired(argv, timeout, output=result.stdout, stderr=stderr)
+        else:
+            exc = subprocess.CalledProcessError(result.returncode, argv, output=result.stdout, stderr=stderr)
+        if stderr_truncated or result.returncode == 124:
+            exc.diagnostic_stderr_omitted = True
+        raise exc
+    return result
 
 
 def _digest_sources() -> str:
@@ -87,12 +242,15 @@ def _validate_junit(path: Path) -> dict[str, Any]:
 
 
 def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
+    active_phase = "host_qualification"
     reasons = launcher.qualify_host(env, facts)
     if reasons:
         raise launcher.NotRun("host qualification failed: " + "; ".join(reasons))
+    active_phase = "plan_validation"
     plan_digest = env.get("FWROUTER_ACCEPTANCE_PLAN_DIGEST", "")
     launcher.validate_plan_digest(plan_digest)
     runner_temp = Path(env["RUNNER_TEMP"]).resolve(strict=True)
+    active_phase = "binary_validation"
     xray_input = launcher.validate_binary(env.get("FWROUTER_ACCEPTANCE_XRAY_BINARY", ""),
         env.get("FWROUTER_ACCEPTANCE_XRAY_SHA256", ""), runner_temp)
     if (xray_input["sha256"] != "3f650abf1fc4a4fbf5abe7fc9990a2658020907cd984214e9c075b4b00989fea"
@@ -154,12 +312,15 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
     docker_env["DOCKER_BUILDKIT"] = "1"
     image_id: str | None = None
     container_clean = False
+    owned_container_info: dict[str, Any] | None = None
     try:
+        active_phase = "docker_server_version"
         version = _docker([docker, "version", "--format", "{{.Server.Os}}|{{.Server.Arch}}"], env=docker_env)
         observed_platform = version.stdout.decode("utf-8", "replace").strip().split("|")
         if (len(observed_platform) != 2 or observed_platform[0] != "linux"
                 or observed_platform[1] not in {"amd64", "x86_64"}):
             raise launcher.NotRun("qualified Xray Docker daemon is not a local Linux amd64 server")
+        active_phase = "image_build"
         subprocess.run([docker, "build", "--pull=false", "--no-cache", "--network=none",
                         "--build-arg", f"ACCEPTANCE_RUN_ID={nonce}", "--build-arg",
                         f"SOURCE_REVISION={revision}", "--tag", image_tag, str(build_context)],
@@ -204,6 +365,7 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
         command = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-q", "--tb=short",
                    f"--basetemp={temp / 'pytest-tmp'}", f"--junitxml={junit_inside}",
                    "tests/test_xray_native_readback.py::test_loaded_client_readback_against_isolated_xray_26_2_6"]
+        active_phase = "pytest"
         started = time.monotonic()
         with log_path.open("wb") as output:
             process = subprocess.Popen(command, cwd=ROOT / "backend", env=test_env,
@@ -220,6 +382,12 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
         receipt["log_bytes"] = log_path.stat().st_size if log_path.exists() else 0
         if junit_inside.is_file():
             shutil.copyfile(junit_inside, junit_path)
+        if code != 0:
+            receipt.setdefault("diagnostics", {})["pytest"] = {
+                "exit_code": code,
+                "junit_failure": _junit_failure_projection(junit_path),
+                "log_tail": _read_failure_log(log_path),
+            }
         receipt["tests"] = _validate_junit(junit_path) if junit_path.exists() else None
         if receipt["log_bytes"] > MAX_LOG_BYTES:
             raise launcher.NotRun("qualified Xray test log exceeded its output cap")
@@ -227,43 +395,68 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
                   and receipt["tests"].get("contract_valid") is True)
         receipt["status"] = "passed" if passed else "failed"
         if not passed:
+            receipt.setdefault("diagnostics", {}).setdefault("pytest", {
+                "exit_code": code,
+                "junit_failure": _junit_failure_projection(junit_path),
+                "log_tail": _read_failure_log(log_path),
+            })
+        if not passed:
             raise launcher.NotRun("exact qualified Xray test did not pass without skip")
     except (launcher.NotRun, OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
         receipt["status"] = "failed" if image_id else "NOTRUN"
-        receipt["reason"] = str(exc)[:4096]
+        safe_reason = _redact_diagnostic(str(exc), limit=MAX_FAILURE_TEXT_BYTES)
+        receipt["reason"] = safe_reason
+        receipt.setdefault("diagnostics", {})["failure"] = {
+            "phase": active_phase, "error_class": type(exc).__name__, "reason": safe_reason,
+        }
     finally:
+        cleanup_operation = "list_owned_containers"
         if image_id:
             try:
                 containers = _docker([docker, "ps", "--all", "--quiet", "--no-trunc",
                     "--filter", f"label={OWNER_LABEL}={launcher.OWNER_VALUE}",
                     "--filter", f"label={RUN_LABEL}={nonce}"], env=docker_env).stdout.decode().split()
+                if not containers:
+                    receipt.setdefault("diagnostics", {})["container_state"] = {"found": False}
                 for container_id in containers:
+                    cleanup_operation = "inspect_owned_container"
                     info_rows = _json_result(_docker([docker, "inspect", container_id], env=docker_env))
                     if not isinstance(info_rows, list) or len(info_rows) != 1:
                         raise launcher.NotRun("qualified Xray cleanup container inspect failed")
                     info = info_rows[0]
-                    labels = info.get("Config", {}).get("Labels", {})
-                    if (labels.get(OWNER_LABEL) != launcher.OWNER_VALUE or labels.get(RUN_LABEL) != nonce
-                            or info.get("Name", "").lstrip("/") != name):
+                    if not _container_is_owned(info, name=name, nonce=nonce):
                         raise launcher.NotRun("qualified Xray cleanup refused a foreign test container")
-                    subprocess.run([docker, "rm", "--force", container_id], cwd=ROOT, env=docker_env,
-                                   check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    owned_container_info = info
+                    if receipt.get("status") != "passed":
+                        receipt.setdefault("diagnostics", {})["container_state"] = {
+                            "found": True, **_owned_container_state(info),
+                        }
+                    cleanup_operation = "remove_owned_container"
+                    _cleanup_command([docker, "rm", "--force", container_id], env=docker_env, timeout=30)
+                cleanup_operation = "inspect_owned_image"
                 image_rows = _json_result(_docker([docker, "image", "inspect", image_id], env=docker_env))
                 if (not isinstance(image_rows, list) or len(image_rows) != 1
                         or image_rows[0].get("Config", {}).get("Labels", {}).get(RUN_LABEL) != nonce):
                     raise launcher.NotRun("qualified Xray cleanup refused an unowned image")
-                subprocess.run([docker, "image", "rm", image_id], cwd=ROOT, env=docker_env,
-                               check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                cleanup_operation = "remove_owned_image"
+                _cleanup_command([docker, "image", "rm", image_id], env=docker_env, timeout=30)
+                cleanup_operation = "verify_owned_image_absent"
                 absent = subprocess.run([docker, "image", "inspect", image_id], cwd=ROOT, env=docker_env,
                                         capture_output=True, timeout=10, check=False)
                 if absent.returncode == 0:
                     raise launcher.NotRun("qualified Xray image cleanup was not confirmed")
                 container_clean = True
-            except (launcher.NotRun, OSError, subprocess.SubprocessError):
+            except (launcher.NotRun, OSError, subprocess.SubprocessError) as exc:
+                _record_cleanup_failure(receipt, cleanup_operation, exc)
+                if owned_container_info is not None:
+                    receipt.setdefault("diagnostics", {})["container_state"] = {
+                        "found": True, **_owned_container_state(owned_container_info),
+                    }
                 container_clean = False
         receipt["cleanup"] = "owned_resources_removed" if container_clean else "cleanup_unconfirmed"
         if receipt["status"] == "passed" and not container_clean:
             receipt["status"] = "failed"
+        _retain_failure_diagnostics_only(receipt)
         report_path.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         profile_path.chmod(0o600)
         shutil.rmtree(profile_dir, ignore_errors=True)
