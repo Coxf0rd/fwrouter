@@ -168,6 +168,13 @@
       ]
     },
     {
+      "glob": "docs/API_CLIENT_REGISTRY.md",
+      "domains": [
+        "api-contract",
+        "maintenance"
+      ]
+    },
+    {
       "glob": "backend/fwrouter_api/services/config_cli.py",
       "domains": [
         "ui",
