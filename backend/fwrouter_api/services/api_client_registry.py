@@ -12,6 +12,7 @@ import base64
 import fcntl
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -94,6 +95,33 @@ def valid_origin(value: object) -> bool:
                 or parsed.query or parsed.fragment or (parsed.port is not None and not 1 <= parsed.port <= 65535)):
             return False
         host = parsed.hostname
+        # urlsplit accepts host strings that are unsuitable for durable policy.
+        # Validate exact canonical syntax without lookup or normalization.
+        if "%" in host:
+            return False
+        if ":" in host:
+            try:
+                if ipaddress.IPv6Address(host).compressed != host:
+                    return False
+            except ValueError:
+                return False
+        else:
+            try:
+                if ipaddress.IPv4Address(host).compressed != host:
+                    return False
+            except ValueError:
+                # URL parsers can interpret a numeric final label as a legacy
+                # IPv4 form (for example 127.1 or 0x7f.0.0.1). Such input is
+                # not an unambiguous DNS origin and must be supplied as strict
+                # canonical dotted IPv4 instead.
+                final_label = host.rsplit(".", 1)[-1]
+                if re.fullmatch(r"[0-9]+|0x[0-9a-f]+", final_label):
+                    return False
+                if (len(host) > 253 or not host.isascii()
+                        or any(not label or len(label) > 63
+                               or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+                               for label in host.split("."))):
+                    return False
         rendered = f"[{host}]" if ":" in host else host
         if parsed.port not in {None, 443}:
             rendered += f":{parsed.port}"
@@ -372,7 +400,7 @@ def _pending_state(path: Path | None = None) -> dict[str, Any] | None:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_object)
         if (not isinstance(value, dict) or set(value) != PENDING_KEYS
                 or type(value.get("schema_version")) is not int or value["schema_version"] != 1
-                or value.get("target") not in {"registry", "selector"}
+                or value.get("target") not in {"registry", "registry_origin", "selector"}
                 or (value.get("previous_sha256") is not None and
                     (not isinstance(value["previous_sha256"], str) or not TOKEN_RE.fullmatch(value["previous_sha256"])))
                 or not isinstance(value.get("prepared_sha256"), str)
@@ -385,10 +413,13 @@ def _pending_state(path: Path | None = None) -> dict[str, Any] | None:
                 or hashlib.sha256(prepared).hexdigest() != value["prepared_sha256"]
                 or len(prepared) > MAX_REGISTRY_BYTES):
             raise ValueError("invalid pending payload")
-        if value["target"] == "registry":
+        if value["target"] in {"registry", "registry_origin"}:
             policy = _decode_policy(prepared)
             if policy["policy_revision"] != value["policy_revision"]:
                 raise ValueError("revision mismatch")
+            if value["target"] == "registry_origin" and (
+                    value["previous_sha256"] is None or value["policy_revision"] < 2):
+                raise ValueError("origin update cannot initialize registry")
         else:
             selector = json.loads(prepared.decode("utf-8"), object_pairs_hook=_strict_object)
             if selector != {"schema_version": 2, "provider": "client_registry_v1"}:
@@ -553,17 +584,43 @@ def _clear_pending(path: Path) -> None:
 
 
 def _target_path(target: str) -> Path:
-    if target == "registry":
+    if target in {"registry", "registry_origin"}:
         return REGISTRY_PATH
     if target == "selector":
         return SELECTOR_PATH
     raise RegistryError("API_CLIENT_POLICY_RECOVERY_REQUIRED")
 
 
+def _require_unselected_origin_state() -> None:
+    """Origin authority may only change before any selector or cutover fence."""
+    if _fence_state() is not None:
+        raise RegistryError("API_CLIENT_ORIGIN_CHANGE_FORBIDDEN")
+    if _read_fixed(SELECTOR_PATH, 4096, required=False) is not None:
+        raise RegistryError("API_CLIENT_ORIGIN_CHANGE_FORBIDDEN")
+
+
+def _validate_origin_transition(previous: bytes, prepared: bytes) -> None:
+    old_policy = _decode_policy(previous)
+    new_policy = _decode_policy(prepared)
+    old_comparable = dict(old_policy)
+    new_comparable = dict(new_policy)
+    old_comparable.pop("canonical_origin")
+    old_comparable.pop("policy_revision")
+    new_comparable.pop("canonical_origin")
+    new_comparable.pop("policy_revision")
+    if (old_policy["policy_revision"] >= 2**63 - 1
+            or new_policy["policy_revision"] != old_policy["policy_revision"] + 1
+            or new_policy["canonical_origin"] == old_policy["canonical_origin"]
+            or old_comparable != new_comparable):
+        raise RegistryError("API_CLIENT_ORIGIN_CHANGE_INVALID")
+
+
 def publish_target(target: str, prepared: bytes, policy_revision: int) -> None:
     path, pending_path = _target_path(target), PENDING_PATH
     _ensure_no_pending(pending_path)
-    if target == "registry":
+    if target == "registry_origin":
+        _require_unselected_origin_state()
+    if target in {"registry", "registry_origin"}:
         policy = _decode_policy(prepared)
         if policy["policy_revision"] != policy_revision:
             raise RegistryError("API_CLIENT_REGISTRY_INVALID")
@@ -571,7 +628,9 @@ def publish_target(target: str, prepared: bytes, policy_revision: int) -> None:
             "schema_version": 2, "provider": "client_registry_v1"}:
         raise RegistryError("API_CLIENT_CUTOVER_STATE_INVALID")
     previous = _read_fixed(path, MAX_REGISTRY_BYTES, required=False)
-    if target == "registry":
+    if target in {"registry", "registry_origin"}:
+        if target == "registry_origin" and previous is None:
+            raise RegistryError("API_CLIENT_ORIGIN_CHANGE_INVALID")
         if previous is None:
             if policy_revision != 1:
                 raise RegistryError("API_CLIENT_POLICY_REVISION_CONFLICT")
@@ -579,6 +638,8 @@ def publish_target(target: str, prepared: bytes, policy_revision: int) -> None:
             old_policy = _decode_policy(previous)
             if policy_revision != old_policy["policy_revision"] + 1:
                 raise RegistryError("API_CLIENT_POLICY_REVISION_CONFLICT")
+            if target == "registry_origin":
+                _validate_origin_transition(previous, prepared)
     intent = {"schema_version": 1, "target": target,
               "previous_sha256": hashlib.sha256(previous).hexdigest() if previous is not None else None,
               "prepared_sha256": hashlib.sha256(prepared).hexdigest(),
@@ -606,6 +667,12 @@ def recover_pending(expected_revision: int) -> None:
     if intent is None or intent["policy_revision"] != expected_revision:
         raise RegistryError("API_CLIENT_POLICY_REVISION_CONFLICT")
     target = _target_path(intent["target"])
+    if intent["target"] == "registry_origin":
+        # This purpose remains fenced to the original no-selector state even
+        # after the prepared registry bytes have become visible.
+        _require_unselected_origin_state()
+        if _decode_policy(intent["_prepared"])["policy_revision"] != expected_revision:
+            raise RegistryError("API_CLIENT_POLICY_RECOVERY_REQUIRED")
     if intent["target"] == "selector":
         if _fence_state() is None:
             raise RegistryError("API_CLIENT_CUTOVER_STATE_INVALID")
@@ -621,7 +688,10 @@ def recover_pending(expected_revision: int) -> None:
     if current_digest not in {intent["previous_sha256"], intent["prepared_sha256"]}:
         raise RegistryError("API_CLIENT_POLICY_RECOVERY_REQUIRED")
     prepared = intent["_prepared"]
-    if intent["target"] == "registry" and current_digest == intent["previous_sha256"]:
+    if intent["target"] == "registry_origin" and current_digest == intent["previous_sha256"]:
+        assert current is not None
+        _validate_origin_transition(current, prepared)
+    if intent["target"] in {"registry", "registry_origin"} and current_digest == intent["previous_sha256"]:
         old_revision = 0 if current is None else _decode_policy(current)["policy_revision"]
         if expected_revision != old_revision + 1:
             raise RegistryError("API_CLIENT_POLICY_RECOVERY_REQUIRED")

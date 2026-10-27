@@ -256,16 +256,21 @@ missing/altered/ambiguous evidence. See `knowledge/NATIVE_PROOF.md`.
 - `ui/static/js/fwrouter-client-list-setting.js`: memory-only explicit unlock/edit/conflict controller.
 - [Source contract](../../../docs/CLIENT_LIST_CONFIGURATION.md): qualification and activation boundaries.
 
-### Stage 5 — host-owned API client registry (source qualification pending)
+### Stage 5 — host-owned API client registry (registry-origin source package)
 
 - `backend/fwrouter_api/services/api_client_registry.py`: protected registry,
-  policy leases, credential identity and durable cutover/fence contract.
+  policy leases, credential identity, strict canonical origin syntax, explicit
+  pre-selector origin CAS and durable cutover/fence contract.
 - `backend/fwrouter_api/services/api_client_registry_admin.py`: bounded root
-  credential provisioning and policy update operations; no online enrollment.
+  credential provisioning, pre-selector bootstrap and origin update operations;
+  no online enrollment or API fallback for a missing selector.
 - `backend/fwrouter_api/services/presentation_client_list_admission.py`: scoped
   registry-backed presentation admission, preserving legacy pre-cutover mode and
   independent maintenance authority.
 - [Source and activation contract](../../../docs/API_CLIENT_REGISTRY.md).
+
+The absent-selector mode is restricted to root administration. HTTP admission
+remains fail-closed until the fence-first selector cutover completes.
 
 This first package does not persist client identity in event storage or change
 log views/retention. Production activation remains separately blocked.

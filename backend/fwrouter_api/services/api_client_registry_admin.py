@@ -23,6 +23,9 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init")
     init.add_argument("--canonical-origin", required=True)
+    set_origin = commands.add_parser("set-origin")
+    set_origin.add_argument("--expected-revision", type=int, required=True)
+    set_origin.add_argument("--canonical-origin", required=True)
     create = commands.add_parser("create")
     create.add_argument("--expected-revision", type=int, required=True)
     create.add_argument("--kind", choices=sorted(registry.KINDS), required=True)
@@ -120,6 +123,26 @@ def _read_selector() -> dict[str, Any]:
     return registry.validate_legacy_selector(value)
 
 
+def _admin_policy() -> tuple[str, dict[str, Any]]:
+    """Read policy for root administration, including pre-selector bootstrap.
+
+    API admission deliberately continues to call selector_mode(), which has no
+    absent-selector fallback.
+    """
+    registry._ensure_no_pending()
+    fence = registry._fence_state()
+    raw = registry._read_fixed(registry.SELECTOR_PATH, 4096, required=False)
+    if raw is None:
+        if fence is not None:
+            raise registry.RegistryError("API_CLIENT_CUTOVER_REQUIRED")
+        return "unselected", registry.load_policy()
+    mode, selected = registry.selector_mode()
+    policy = registry.load_policy()
+    if mode == "legacy" and selected["canonical_origin"] != policy["canonical_origin"]:
+        raise registry.RegistryError("API_CLIENT_ORIGIN_MISMATCH")
+    return mode, policy
+
+
 def _read_fence() -> bool:
     return registry._fence_state() is not None
 
@@ -186,10 +209,18 @@ def _credential(policy: dict[str, Any], client_id: str) -> dict[str, Any]:
 
 def _cutover(policy: dict[str, Any], expected: int) -> None:
     _check_revision(policy, expected)
-    selector = _read_selector()
+    # Reject any existing recovery intent before publishing the permanent
+    # fence. A pending credential/origin update must be recovered first.
+    registry._ensure_no_pending()
+    raw_selector = registry._read_fixed(registry.SELECTOR_PATH, 4096, required=False)
+    selector = None if raw_selector is None else _read_selector()
     registry_mode = selector == {"schema_version": 2, "provider": "client_registry_v1"}
-    if not registry_mode and selector["canonical_origin"] != policy["canonical_origin"]:
+    if selector is not None and not registry_mode and selector["canonical_origin"] != policy["canonical_origin"]:
         raise registry.RegistryError("API_CLIENT_ORIGIN_MISMATCH")
+    fence = registry._fence_state()
+    if registry_mode:
+        if fence is None:
+            raise registry.RegistryError("API_CLIENT_CUTOVER_STATE_INVALID")
     active = [c for c in policy["clients"] if c["status"] == "active"]
     for kind in ("web_ui", "cli"):
         if not any(c["kind"] == kind and any(k["status"] == "active"
@@ -198,9 +229,6 @@ def _cutover(policy: dict[str, Any], expected: int) -> None:
     # Fence durability precedes selector publication. If selector publication
     # later fails, admission stops on the fence and this exact prepared policy
     # can be resumed with another `cutover` invocation.
-    fence = registry._fence_state()
-    if registry_mode and fence is None:
-        raise registry.RegistryError("API_CLIENT_CUTOVER_STATE_INVALID")
     prepared = registry._read_fixed(registry.REGISTRY_PATH, registry.MAX_REGISTRY_BYTES)
     assert prepared is not None
     prepared_digest = hashlib.sha256(prepared).hexdigest()
@@ -225,6 +253,20 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "init":
         fd = registry._lock(True)
         try:
+            registry._ensure_no_pending()
+            if registry._fence_state() is not None:
+                raise registry.RegistryError("API_CLIENT_CUTOVER_REQUIRED")
+            raw_selector = registry._read_fixed(registry.SELECTOR_PATH, 4096, required=False)
+            if raw_selector is not None:
+                try:
+                    selector = json.loads(raw_selector.decode("utf-8"), object_pairs_hook=registry._strict_object)
+                except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                    raise registry.RegistryError("API_CLIENT_CUTOVER_STATE_INVALID") from exc
+                if selector == {"schema_version": 2, "provider": "client_registry_v1"}:
+                    raise registry.RegistryError("API_CLIENT_CUTOVER_REQUIRED")
+                legacy = registry.validate_legacy_selector(selector)
+                if legacy["canonical_origin"] != args.canonical_origin:
+                    raise registry.RegistryError("API_CLIENT_ORIGIN_MISMATCH")
             if registry._read_fixed(registry.REGISTRY_PATH, registry.MAX_REGISTRY_BYTES, required=False) is not None:
                 raise registry.RegistryError("API_CLIENT_REGISTRY_ALREADY_INITIALIZED")
             policy = _new_policy(args.canonical_origin)
@@ -234,22 +276,39 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             registry._unlock(fd)
     if args.command == "list":
         with registry.policy_lease():
-            registry.selector_mode()
-            return registry.public_policy(registry.load_policy())
+            mode, policy = _admin_policy()
+            result = registry.public_policy(policy)
+            if mode == "unselected":
+                result.update({"mode": "unselected", "admission_ready": False})
+            return result
     if args.command == "validate":
         with registry.policy_lease():
-            policy = registry.load_policy()
-            registry.selector_mode()
-            return {"valid": True, "policy_revision": policy["policy_revision"]}
+            mode, policy = _admin_policy()
+            result = {"valid": True, "policy_revision": policy["policy_revision"]}
+            if mode == "unselected":
+                result.update({"mode": "unselected", "admission_ready": False})
+            return result
     fd = registry._lock(True)
     try:
         if args.command == "cutover":
             policy = registry.load_policy()
             _cutover(policy, args.expected_revision)
             return {"mode": "registry", "policy_revision": policy["policy_revision"]}
-        policy = registry.load_policy()
-        registry.selector_mode()
+        mode, policy = _admin_policy()
         _check_revision(policy, args.expected_revision)
+        if args.command == "set-origin":
+            if mode != "unselected" or registry._fence_state() is not None:
+                raise registry.RegistryError("API_CLIENT_ORIGIN_CHANGE_FORBIDDEN")
+            if not registry.valid_origin(args.canonical_origin):
+                raise registry.RegistryError("API_CLIENT_ORIGIN_INVALID")
+            if args.canonical_origin == policy["canonical_origin"]:
+                return {"policy_revision": policy["policy_revision"], "changed": False}
+            policy["canonical_origin"] = args.canonical_origin
+            policy["policy_revision"] += 1
+            registry.validate_policy(policy)
+            registry.publish_target("registry_origin", registry._json_bytes(policy),
+                                    policy["policy_revision"])
+            return {"policy_revision": policy["policy_revision"], "changed": True}
         if args.command == "create":
             created = _create(policy, args)
             return {**created, "policy_revision": policy["policy_revision"]}

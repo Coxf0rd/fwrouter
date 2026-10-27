@@ -17,12 +17,113 @@ spec = importlib.util.spec_from_file_location('_restore_process_bootstrap', ROOT
 bootstrap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bootstrap)
 owned, state = bootstrap.configure_test_process()
+case = sys.argv[1]
+
+if case.startswith('registry_origin_'):
+    from fwrouter_api.services import api_client_registry as registry
+    from fwrouter_api.services import api_client_registry_admin as admin
+    from types import SimpleNamespace
+    host = owned / 'registry-host'
+    host.mkdir(mode=0o700, exist_ok=True)
+    host.chmod(0o700)
+    for name in ('REGISTRY_PATH', 'SELECTOR_PATH', 'FENCE_PATH', 'PENDING_PATH', 'LOCK_PATH'):
+        setattr(registry, name, host / {
+            'REGISTRY_PATH': 'api-clients.json',
+            'SELECTOR_PATH': 'presentation-client-list-verifier.json',
+            'FENCE_PATH': 'api-clients.required',
+            'PENDING_PATH': 'api-clients.pending',
+            'LOCK_PATH': 'api-clients.lock',
+        }[name])
+    registry._trusted_uid = os.getuid
+
+    def setup():
+        admin._run(SimpleNamespace(command='init', canonical_origin='https://router.example.test'))
+        for revision, kind in enumerate(('web_ui', 'cli'), start=1):
+            admin._run(SimpleNamespace(command='create', expected_revision=revision,
+                kind=kind, tag=kind, scope=['ui.client-list.write'],
+                secret_file=str(host / f'{kind}.token')))
+
+    if case in {'registry_origin_crash_pending', 'registry_origin_crash_rename',
+                'registry_origin_crash_readback', 'registry_origin_crash_cleanup'}:
+        admin._run(SimpleNamespace(command='init', canonical_origin='https://router.example.test'))
+        original_readback = registry._durable_readback
+        original_replace = registry.os.replace
+        original_cleanup = registry._clear_pending
+
+        if case.endswith('_pending'):
+            def readback(path, expected):
+                original_readback(path, expected)
+                if path == registry.PENDING_PATH:
+                    os.kill(os.getpid(), signal.SIGKILL)
+            registry._durable_readback = readback
+        elif case.endswith('_rename'):
+            def replace(source, target, **kwargs):
+                original_replace(source, target, **kwargs)
+                if str(target).endswith('/api-clients.json'):
+                    os.kill(os.getpid(), signal.SIGKILL)
+            registry.os.replace = replace
+        elif case.endswith('_readback'):
+            def readback(path, expected):
+                original_readback(path, expected)
+                if path == registry.REGISTRY_PATH:
+                    os.kill(os.getpid(), signal.SIGKILL)
+            registry._durable_readback = readback
+        else:
+            def cleanup(path):
+                original_cleanup(path)
+                os.kill(os.getpid(), signal.SIGKILL)
+            registry._clear_pending = cleanup
+        admin._run(SimpleNamespace(command='set-origin', expected_revision=1,
+                                   canonical_origin='https://new.example.test'))
+        raise AssertionError('origin crash hook was not reached')
+
+    if case in {'registry_origin_crash_fence', 'registry_origin_crash_selector'}:
+        setup()
+        original_publish = registry._atomic_publish
+        original_replace = registry.os.replace
+        if case.endswith('_fence'):
+            def publish(path, data, **kwargs):
+                result = original_publish(path, data, **kwargs)
+                if path == registry.FENCE_PATH:
+                    os.kill(os.getpid(), signal.SIGKILL)
+                return result
+            registry._atomic_publish = publish
+        else:
+            def replace(source, target, **kwargs):
+                original_replace(source, target, **kwargs)
+                if str(target).endswith('presentation-client-list-verifier.json'):
+                    os.kill(os.getpid(), signal.SIGKILL)
+            registry.os.replace = replace
+        admin._run(SimpleNamespace(command='cutover', expected_revision=3))
+        raise AssertionError('cutover crash hook was not reached')
+
+    if case == 'registry_origin_recover':
+        pending = registry._pending_state()
+        if pending is not None:
+            admin._run(SimpleNamespace(command='recover',
+                                       expected_revision=pending['policy_revision']))
+        policy = registry.load_policy()
+        assert policy['policy_revision'] == 2
+        assert policy['canonical_origin'] == 'https://new.example.test'
+        print(json.dumps({'status': 'passed', 'origin_recovered': True}))
+        raise SystemExit(0)
+    if case == 'registry_origin_recover_cutover':
+        pending = registry._pending_state()
+        if pending is not None:
+            admin._run(SimpleNamespace(command='recover',
+                                       expected_revision=pending['policy_revision']))
+        if registry._read_fixed(registry.SELECTOR_PATH, 4096, required=False) is None:
+            admin._run(SimpleNamespace(command='cutover', expected_revision=3))
+        assert registry.selector_mode()[0] == 'registry'
+        print(json.dumps({'status': 'passed', 'cutover_recovered': True}))
+        raise SystemExit(0)
+    raise RuntimeError('unknown registry-origin process scenario')
+
 from fwrouter_api.core.config import Settings, get_settings
 Settings.model_config['env_file'] = None
 get_settings.cache_clear()
 from fwrouter_api.services import maintenance_lifecycle_admission as admission
 admission._trusted_uid = os.getuid
-case = sys.argv[1]
 
 if case == 'lease_hold':
     # Only unit observations are synthetic; descriptors and kernel locks are real.
