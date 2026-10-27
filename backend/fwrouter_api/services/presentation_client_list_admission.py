@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import contextvars
+from dataclasses import dataclass
 import hashlib
 import hmac
 import json
@@ -20,12 +21,12 @@ from urllib.parse import urlsplit
 
 from fastapi import Request
 
+from fwrouter_api.services import api_client_registry as client_registry
+
 
 VERIFIER_PATH = Path("/etc/fwrouter/presentation-client-list-verifier.json")
 MAX_VERIFIER_BYTES = 4096
 MAX_AUTHORIZATION_BYTES = 96
-_TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
-_VERIFIER_KEYS = {"schema_version", "principal", "scopes", "token_sha256", "canonical_origin"}
 _SCOPE = "ui.client-list.write"
 LOCAL_AUTHORITY = "127.0.0.1:5000"
 
@@ -38,9 +39,10 @@ class PresentationAdmissionError(PermissionError):
 
 
 class _Grant:
-    def __init__(self) -> None:
+    def __init__(self, identity: "PresentationIdentity | None" = None) -> None:
         self.active = Event()
         self.active.set()
+        self.identity = identity
 
     def revoke(self) -> None:
         self.active.clear()
@@ -49,6 +51,26 @@ class _Grant:
 _GRANT: contextvars.ContextVar[_Grant | None] = contextvars.ContextVar(
     "fwrouter_presentation_client_list_grant", default=None,
 )
+
+
+@dataclass(frozen=True)
+class PresentationIdentity:
+    assurance: str
+    principal: str
+    client_id: str | None = None
+    credential_id: str | None = None
+    kind: str | None = None
+    display_tag: str | None = None
+    policy_revision: int | None = None
+
+
+def _fixed_sibling(name: str) -> Path:
+    # Existing test fixtures intentionally replace only VERIFIER_PATH. Keep the
+    # related policy objects beside that injected fixed path; production still
+    # uses the code-owned /etc/fwrouter names with no environment override.
+    if VERIFIER_PATH != Path("/etc/fwrouter/presentation-client-list-verifier.json"):
+        return VERIFIER_PATH.parent / name
+    return Path("/etc/fwrouter") / name
 
 
 def _trusted_uid() -> int:
@@ -138,42 +160,10 @@ def _verifier() -> dict[str, Any]:
         document = json.loads(_secure_verifier_bytes().decode("utf-8"), object_pairs_hook=_strict_object)
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         raise PresentationAdmissionError("PRESENTATION_AUTH_CONFIG_UNAVAILABLE", 503) from exc
-    if (not isinstance(document, dict) or set(document) != _VERIFIER_KEYS
-            or type(document.get("schema_version")) is not int
-            or document.get("schema_version") != 1
-            or document.get("principal") != "presentation-operator"
-            or not isinstance(document.get("scopes"), list)
-            or not 1 <= len(document["scopes"]) <= 16
-            or any(not isinstance(scope, str) or not re.fullmatch(r"[a-z][a-z0-9.-]{0,63}", scope)
-                   for scope in document["scopes"])
-            or len(set(document["scopes"])) != len(document["scopes"])
-            or not isinstance(document.get("token_sha256"), str)
-            or not _TOKEN_RE.fullmatch(document["token_sha256"])
-            or not _valid_canonical_origin(document.get("canonical_origin"))):
-        raise PresentationAdmissionError("PRESENTATION_AUTH_CONFIG_UNAVAILABLE", 503)
-    return document
-
-
-def _valid_canonical_origin(value: object) -> bool:
-    if not isinstance(value, str) or len(value) > 255:
-        return False
     try:
-        parsed = urlsplit(value)
-        if not (
-            parsed.scheme == "https" and parsed.hostname and parsed.hostname == parsed.hostname.lower()
-            and parsed.username is None and parsed.password is None and parsed.path == ""
-            and parsed.query == "" and parsed.fragment == ""
-            and (parsed.port is None or 1 <= parsed.port <= 65535)
-        ):
-            return False
-        host = parsed.hostname
-        rendered_host = f"[{host}]" if ":" in host else host
-        port = parsed.port
-        if port not in {None, 443}:
-            rendered_host += f":{port}"
-        return value == f"https://{rendered_host}"
-    except ValueError:
-        return False
+        return client_registry.validate_legacy_selector(document)
+    except client_registry.RegistryError:
+        raise PresentationAdmissionError("PRESENTATION_AUTH_CONFIG_UNAVAILABLE", 503)
 
 
 def _request_token(request: Request) -> str:
@@ -191,26 +181,65 @@ def _request_token(request: Request) -> str:
     return match.group(1)
 
 
-def _verify_request(request: Request) -> None:
+def _verify_request(request: Request) -> PresentationIdentity:
     headers = [(key.lower(), value) for key, value in request.scope.get("headers", [])]
     origins = [value for key, value in headers if key == b"origin"]
     if len(origins) > 1:
         raise PresentationAdmissionError("PRESENTATION_ORIGIN_INVALID", 403)
     token = _request_token(request)
-    policy = _verifier()
-    if not hmac.compare_digest(hashlib.sha256(token.encode("ascii")).hexdigest(), policy["token_sha256"]):
-        raise PresentationAdmissionError("PRESENTATION_CREDENTIAL_INVALID", 401)
-    if _SCOPE not in policy["scopes"]:
-        raise PresentationAdmissionError("PRESENTATION_SCOPE_FORBIDDEN", 403)
+    try:
+        mode, policy = client_registry.selector_mode(
+            selector_path=VERIFIER_PATH,
+            fence_path=_fixed_sibling("api-clients.required"),
+            registry_path=_fixed_sibling("api-clients.json"),
+            pending_path=_fixed_sibling("api-clients.pending"),
+        )
+    except client_registry.RegistryError as exc:
+        status = 503 if exc.code in {
+            "API_CLIENT_REGISTRY_UNAVAILABLE", "API_CLIENT_REGISTRY_INVALID",
+            "API_CLIENT_CUTOVER_STATE_INVALID", "API_CLIENT_POLICY_BUSY",
+            "API_CLIENT_POLICY_LOCK_UNAVAILABLE",
+        } else 503
+        raise PresentationAdmissionError("PRESENTATION_AUTH_CONFIG_UNAVAILABLE", status) from exc
+    if mode == "legacy":
+        try:
+            policy = _verifier()
+        except PresentationAdmissionError:
+            raise
+        if not hmac.compare_digest(hashlib.sha256(token.encode("ascii")).hexdigest(), policy["token_sha256"]):
+            raise PresentationAdmissionError("PRESENTATION_CREDENTIAL_INVALID", 401)
+        if _SCOPE not in policy["scopes"]:
+            raise PresentationAdmissionError("PRESENTATION_SCOPE_FORBIDDEN", 403)
+        identity = PresentationIdentity(assurance="legacy_capability", principal="presentation-operator")
+    else:
+        try:
+            identity_data = client_registry.authenticate(token)
+        except client_registry.RegistryError as exc:
+            if exc.code == "API_CLIENT_CREDENTIAL_INVALID":
+                raise PresentationAdmissionError("PRESENTATION_CREDENTIAL_INVALID", 401) from exc
+            raise PresentationAdmissionError("PRESENTATION_AUTH_CONFIG_UNAVAILABLE", 503) from exc
+        if _SCOPE not in identity_data["scopes"]:
+            raise PresentationAdmissionError("PRESENTATION_SCOPE_FORBIDDEN", 403)
+        identity = PresentationIdentity(
+            assurance="credential_bound", principal="api-client",
+            client_id=identity_data["client_id"], credential_id=identity_data["credential_id"],
+            kind=identity_data["kind"], display_tag=identity_data["display_tag"],
+            policy_revision=identity_data["policy_revision"],
+        )
+    if mode == "registry" and identity.kind == "web_ui" and not origins:
+        raise PresentationAdmissionError("PRESENTATION_ORIGIN_REQUIRED", 403)
+    if mode == "registry" and identity.kind in {"cli", "integration"} and origins:
+        raise PresentationAdmissionError("PRESENTATION_ORIGIN_INVALID", 403)
     if origins:
         try:
             origin = origins[0].decode("ascii")
         except UnicodeDecodeError as exc:
             raise PresentationAdmissionError("PRESENTATION_ORIGIN_INVALID", 403) from exc
-        if origin != policy["canonical_origin"]:
+        canonical_origin = policy["canonical_origin"]
+        if origin != canonical_origin:
             raise PresentationAdmissionError("PRESENTATION_ORIGIN_INVALID", 403)
         hosts = [value for key, value in headers if key == b"host"]
-        expected_host = urlsplit(policy["canonical_origin"]).netloc.encode("ascii")
+        expected_host = urlsplit(canonical_origin).netloc.encode("ascii")
         if len(hosts) != 1 or hosts[0] != expected_host:
             raise PresentationAdmissionError("PRESENTATION_ORIGIN_INVALID", 403)
     else:
@@ -221,22 +250,42 @@ def _verify_request(request: Request) -> None:
         if (len(hosts) != 1 or hosts[0] != LOCAL_AUTHORITY.encode("ascii")
                 or not isinstance(peer, (tuple, list)) or not peer or peer[0] != "127.0.0.1"):
             raise PresentationAdmissionError("PRESENTATION_ORIGIN_REQUIRED", 403)
+    return identity
 
 
 @contextmanager
 def verified_presentation_write(request: Request) -> Iterator[None]:
     """Establish and revoke a request-scoped, single-purpose grant."""
-    _verify_request(request)
-    grant = _Grant()
-    marker = _GRANT.set(grant)
-    try:
-        yield
-    finally:
-        grant.revoke()
-        _GRANT.reset(marker)
+    lock_path = _fixed_sibling("api-clients.lock")
+    with client_registry.trusted_uid_context(_trusted_uid()):
+        try:
+            lease_fd = client_registry._lock(False, path=lock_path)
+        except (OSError, client_registry.RegistryError) as exc:
+            raise PresentationAdmissionError("PRESENTATION_AUTH_CONFIG_UNAVAILABLE", 503) from exc
+        try:
+            identity = _verify_request(request)
+            grant = _Grant(identity)
+            marker = _GRANT.set(grant)
+            try:
+                yield
+            finally:
+                grant.revoke()
+                _GRANT.reset(marker)
+        finally:
+            client_registry._unlock(lease_fd)
 
 
 def require_presentation_write_grant() -> None:
     grant = _GRANT.get()
     if grant is None or not grant.active.is_set():
         raise PresentationAdmissionError("PRESENTATION_WRITE_ADMISSION_REQUIRED", 403)
+
+
+def presentation_identity() -> PresentationIdentity:
+    """Return immutable verified identity only while its request grant is live."""
+    grant = _GRANT.get()
+    if grant is None or not grant.active.is_set():
+        raise PresentationAdmissionError("PRESENTATION_WRITE_ADMISSION_REQUIRED", 403)
+    if grant.identity is None:
+        raise PresentationAdmissionError("PRESENTATION_WRITE_ADMISSION_REQUIRED", 403)
+    return grant.identity

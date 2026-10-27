@@ -618,3 +618,15 @@ canonical origin, script integrity and credential custody remain UNKNOWN;
 browser/CLI production activation remains BLOCKED until separately qualified.
 See [client-list configuration contract](../docs/CLIENT_LIST_CONFIGURATION.md).
 No routing, adapter, host service or private deployment code is changed.
+
+## Stage 5 — client registry package (2026-10-27, qualification pending)
+
+Implement the approved credential-bound identity prerequisite using protected
+host policy and existing presentation admission, separate from maintenance.
+Bounded root provisioning, distinct UI/CLI/integration credentials, scoped
+identity, policy CAS/leases and durable no-fallback cutover are the source scope.
+Client audit integration/log rendering/retention and Stage8 delegation remain
+separate. Production activation, custody/proxy/origin qualification and deployed
+client migration are NOT performed or authorized by this package. Local canonical
+roadmap contains newer audit/design context; this append preserves prior source
+history and is not a claim that its full local contents were published.

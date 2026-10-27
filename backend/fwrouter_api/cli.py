@@ -624,6 +624,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments is None:
         import sys
         arguments = sys.argv[1:]
+    if arguments and arguments[0] == "api-clients":
+        # Host policy provisioning is independent of database/runtime lifecycle.
+        # The bounded admin entrypoint enforces its own root/path/lease checks.
+        from fwrouter_api.services.api_client_registry_admin import admin_main
+        return admin_main(arguments[1:])
     if arguments and arguments[0] == "config":
         # The configuration client is a plain HTTP client. Dispatch before
         # importing lifecycle, diagnostic, or domain mutation services.
@@ -636,6 +641,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fwrouter")
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("config", help="Read or conditionally update presentation configuration through the API.")
+    subparsers.add_parser("api-clients", help="Manage protected host-owned API client credentials.")
     reconcile_parser = subparsers.add_parser("reconcile")
     reconcile_subparsers = reconcile_parser.add_subparsers(dest="reconcile_command")
     reconcile_subparsers.add_parser("check")

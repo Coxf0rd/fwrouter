@@ -161,6 +161,20 @@
   ],
   "path_rules": [
     {
+      "glob": "backend/fwrouter_api/services/api_client_registry*.py",
+      "domains": [
+        "api-contract",
+        "maintenance"
+      ]
+    },
+    {
+      "glob": "docs/API_CLIENT_REGISTRY.md",
+      "domains": [
+        "api-contract",
+        "maintenance"
+      ]
+    },
+    {
       "glob": "backend/fwrouter_api/services/config_cli.py",
       "domains": [
         "ui",
@@ -6501,9 +6515,36 @@
       "slow": false,
       "timeout_seconds": 30,
       "execution_group": "api-persistence-contracts"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "api-contract",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "owned disposable host-policy paths, synthetic credentials, isolated API/CLI and SQLite; no deployed verifier or services",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_api_client_registry",
+      "isolation": "temporary test state and fake adapters per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_api_client_registry.py",
+      "primary_level": "L3",
+      "risk_notes": "credential admission, host-policy publication/cutover and concurrency; process/IO failure tests are isolated, no live recovery",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "local-integration"
     }
   ],
-  "version": "2026.10.27.3",
+  "version": "2026.10.27.4",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
