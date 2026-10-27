@@ -661,3 +661,8 @@ See [contract](LOGGING_ACCESS_AND_RETENTION.md), [audit](audits/stage5_logging_a
 and [read-only CI timing recommendation](audits/stage5_logging_access_retention_2026-10-27/CI_PERFORMANCE_AUDIT.md).
 Canonical roadmap remains `/решения/roadmap/fwrouter/ROADMAP.md`; preserve its newer
 local decisions rather than overwriting them with this source checkpoint.
+
+
+### Stage5 secure event reading — source package (2026-10-28)
+
+Base mainbe5395541b1417bb76316179e9c43673d5254dfa has qualified actual-main CI40559068515, main smoke and offline evidence verification. The next bounded package is [secure event reading](SECURE_EVENT_READING.md): independently issued events.read, registry-only admission, safe bounded projection, unchanged legacy-reader redaction. Source/QA/exactHEADCI must be separately recorded; no production activation, retention or workflow changes follow. The canonical local roadmap remains `/решения/roadmap/fwrouter/ROADMAP.md`; this repository checkpoint is not its full mirror.

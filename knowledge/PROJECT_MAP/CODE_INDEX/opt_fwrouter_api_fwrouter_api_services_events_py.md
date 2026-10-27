@@ -65,3 +65,10 @@ inside the intent transaction. Existing event context and job storage carry a
 snapshot without authority. Existing HTTP readers expose safe projections and
 withhold new sensitive identity metadata, including nested/full records. No event
 retention, domain generation owner, native apply or recovery protocol changes.
+
+## Stage5 separate secure reader
+
+The explicit `/events/secure/recent` route uses independently provisioned
+`events.read`, registry-only admission and an allowlist projection. Existing full,
+summary and by-ID readers keep reserved-identity redaction. The event writer and
+retention owners are unchanged; see [the secure reader](backend_fwrouter_api_services_secure_events_py.md).

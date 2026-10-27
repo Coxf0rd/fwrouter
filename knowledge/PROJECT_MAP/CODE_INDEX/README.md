@@ -277,3 +277,5 @@ and the existing events entry. This adds context/projection contracts, not an
 authentication or logging subsystem.
 
 - [Shared JSONL I/O lease and publication](backend_fwrouter_api_services_jsonl_io_py.md) — existing log owners, not a new store.
+
+- [Registry-scoped secure event reader](backend_fwrouter_api_services_secure_events_py.md) — bounded audit/security projection; no legacy-reader upgrade.

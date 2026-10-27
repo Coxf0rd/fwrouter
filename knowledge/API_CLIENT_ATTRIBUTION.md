@@ -71,3 +71,12 @@ qualification does not establish deployment, production identity or L7 parity.
 See [the access/retention contract](LOGGING_ACCESS_AND_RETENTION.md) and
 [the Stage5 audit](audits/stage5_logging_access_retention_2026-10-27/REPORT.md).
 Extended identity remains host-admin-only; no new remote read grant is implied.
+
+## Subsequent Stage5 secure-reading package
+
+The earlier host-admin-only restriction above describes the pre-read-capability
+checkpoint. The separately authorized [secure event reading contract](SECURE_EVENT_READING.md)
+adds only an explicit registry `events.read` boundary and safe bounded projection.
+It does not expose reserved identity in any of these legacy projections, grant
+read authority to existing credentials, change retention, or qualify deployment.
+Production activation and external reachability remain separate gates.
