@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.schemas import ApiResponse
+from fwrouter_api.services.api_client_attribution import redact_http_attribution
 from fwrouter_api.services.action_contract import build_conflict_response
 from fwrouter_api.services.jobs import (
     JobLockConflictError,
@@ -21,6 +22,11 @@ from fwrouter_api.services.subscription_refresh_job import (
 
 
 router = APIRouter()
+
+
+def _safe_response(**values: Any) -> ApiResponse:
+    response = ApiResponse(**values)
+    return ApiResponse.model_validate(redact_http_attribution(response.model_dump(mode="json")))
 
 SAFE_API_JOB_TYPES = {
     "noop",
@@ -67,13 +73,13 @@ def list_recent_jobs(
     status: str | None = None,
 ) -> ApiResponse:
     jobs = list_jobs(limit=limit, job_type=job_type, status=status)
-    return ApiResponse(ok=True, data={"jobs": jobs})
+    return _safe_response(ok=True, data={"jobs": jobs})
 
 
 @router.post("/jobs", response_model=ApiResponse)
 def create_job_endpoint(request: CreateJobRequest) -> ApiResponse:
     if request.job_type not in SAFE_API_JOB_TYPES:
-        return ApiResponse(
+        return _safe_response(
             ok=False,
             data={},
             error={
@@ -86,7 +92,7 @@ def create_job_endpoint(request: CreateJobRequest) -> ApiResponse:
         request.job_type == "jobs_retention_cleanup"
         and (request.input_data or {}).get("dry_run") is False
     ):
-        return ApiResponse(
+        return _safe_response(
             ok=False,
             data={},
             error={
@@ -99,7 +105,7 @@ def create_job_endpoint(request: CreateJobRequest) -> ApiResponse:
         request.job_type == "server_ping_sweep"
         and (request.input_data or {}).get("update_state") is True
     ):
-        return ApiResponse(
+        return _safe_response(
             ok=False,
             data={},
             error={
@@ -127,7 +133,7 @@ def create_job_endpoint(request: CreateJobRequest) -> ApiResponse:
     if request.run_now:
         job = manager.start_job_and_wait(job["job_id"]) or job
 
-    return ApiResponse(
+    return _safe_response(
         ok=True,
         data={
             "job": job,
@@ -142,7 +148,7 @@ def get_job_detail(job_id: str) -> ApiResponse:
     job = get_job(job_id)
 
     if job is None:
-        return ApiResponse(
+        return _safe_response(
             ok=False,
             data={},
             error={
@@ -151,7 +157,7 @@ def get_job_detail(job_id: str) -> ApiResponse:
             },
         )
 
-    return ApiResponse(
+    return _safe_response(
         ok=True,
         data={
             "job": job,
@@ -167,7 +173,7 @@ def run_job_endpoint(job_id: str) -> ApiResponse:
     job = manager.get_job(job_id)
 
     if job is None:
-        return ApiResponse(
+        return _safe_response(
             ok=False,
             data={},
             error={
@@ -177,7 +183,7 @@ def run_job_endpoint(job_id: str) -> ApiResponse:
         )
 
     if job["job_type"] not in SAFE_API_JOB_TYPES:
-        return ApiResponse(
+        return _safe_response(
             ok=False,
             data={"job": job},
             error={
@@ -192,7 +198,7 @@ def run_job_endpoint(job_id: str) -> ApiResponse:
     if job["job_type"] == "jobs_retention_cleanup":
         input_data = job.get("input") or {}
         if input_data.get("dry_run") is False:
-            return ApiResponse(
+            return _safe_response(
                 ok=False,
                 data={"job": job},
                 error={
@@ -204,7 +210,7 @@ def run_job_endpoint(job_id: str) -> ApiResponse:
     if job["job_type"] == "server_ping_sweep":
         input_data = job.get("input") or {}
         if input_data.get("update_state") is True:
-            return ApiResponse(
+            return _safe_response(
                 ok=False,
                 data={"job": job},
                 error={
@@ -215,7 +221,7 @@ def run_job_endpoint(job_id: str) -> ApiResponse:
 
     result = manager.start_job_and_wait(job_id)
 
-    return ApiResponse(
+    return _safe_response(
         ok=True,
         data={
             "job": result,

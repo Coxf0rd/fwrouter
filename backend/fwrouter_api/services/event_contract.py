@@ -296,10 +296,23 @@ def normalize_event_details(
     event_category: str,
     event_code: str,
     event_type: str,
+    api_identity_snapshot: dict[str, Any] | None = None,
+    server_api_request_id: str | None = None,
 ) -> dict[str, Any]:
     sanitized = sanitize_value(details or {})
     if not isinstance(sanitized, dict):
         sanitized = {}
+    # Identity is trusted only when the event writer passes the snapshot
+    # produced by request/job context after stripping caller details.
+    sanitized.pop("api_identity", None)
+    sanitized.pop("api_request_id", None)
+    if isinstance(server_api_request_id, str) and 0 < len(server_api_request_id) <= 64:
+        sanitized["api_request_id"] = server_api_request_id
+    if isinstance(api_identity_snapshot, dict):
+        encoded_identity = json.dumps(api_identity_snapshot, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        identity_request_id = api_identity_snapshot.get("api_request_id")
+        if len(encoded_identity) <= 4096 and isinstance(identity_request_id, str) and len(identity_request_id) <= 64:
+            sanitized["api_identity"] = api_identity_snapshot
     context = event_context_from_details(details)
     bounded_arguments = {
         "event_id": str(event_id)[:256],
@@ -332,6 +345,15 @@ def normalize_event_details(
             value = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)[:MAX_PRESERVED_FIELD_CHARS]
             clipped_fields.append(key)
         preserved[key] = value
+    # Verified attribution is a small server-built snapshot, not diagnostic
+    # payload. Keep it structurally intact when a large event is truncated.
+    if isinstance(sanitized.get("api_request_id"), str) and len(sanitized["api_request_id"]) <= 64:
+        preserved["api_request_id"] = sanitized["api_request_id"]
+    api_request_id = sanitized.get("api_identity", {}).get("api_request_id") if isinstance(
+        sanitized.get("api_identity"), dict
+    ) else None
+    if isinstance(api_request_id, str) and len(api_request_id) <= 64:
+        preserved["api_identity"] = sanitized["api_identity"]
     list_counts = {
         str(key)[:128]: len(value)
         for key, value in list(sanitized.items())[:MAX_PAYLOAD_INVENTORY_KEYS]
@@ -364,6 +386,7 @@ def normalize_event_details(
                 "error_reason", "error_message", "phase", "outcome", "stage",
                 "request_id", "job_id", "apply_id", "workflow_id", "causation_id",
                 "correlation_id", "recovery_attempt_id", "logical_server_id", "member_id",
+                "api_identity", "api_request_id",
             )
             if key in preserved
         }

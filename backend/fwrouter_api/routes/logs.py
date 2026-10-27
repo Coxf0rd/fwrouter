@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query
 
 from fwrouter_api.schemas import ApiResponse
 from fwrouter_api.services.logs import list_operational_logs, list_technical_logs
+from fwrouter_api.services.api_client_attribution import redact_http_attribution
 from fwrouter_api.services.ui_state import _summarize_log_event
 from fwrouter_api.services.ui_state_logs import summarize_ui_log_events
 
@@ -92,7 +93,7 @@ def list_operational_logs_endpoint(
         )[:limit]
     return ApiResponse(
         ok=True,
-        data={"events": summarized},
+        data=redact_http_attribution({"events": summarized}),
     )
 
 
@@ -118,5 +119,5 @@ def list_technical_logs_endpoint(
         )[:limit]
     return ApiResponse(
         ok=True,
-        data={"events": summarized},
+        data=redact_http_attribution({"events": summarized}),
     )

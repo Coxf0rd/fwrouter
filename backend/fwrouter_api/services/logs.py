@@ -18,6 +18,7 @@ from fwrouter_api.services.event_contract import (
     normalize_event_details,
     sanitize_value,
 )
+from fwrouter_api.services.api_client_attribution import apply_attribution
 
 _LOG_DEDUPE_LOCK = Lock()
 _LOG_DEDUPE_STATE: dict[tuple[str, str, str], datetime] = {}
@@ -183,7 +184,7 @@ def write_operational_log(
         context["causation_id"] = str(causation_id)
     safe_component = str(component or (details or {}).get("component") or "fwrouter-api")
     category = str(event_category or (details or {}).get("event_category") or classify_event(event_type, details=details))
-    canonical = dict(details or {})
+    canonical = apply_attribution(details or {})
     if not str(event_code or canonical.get("event_code") or "").strip():
         canonical["event_code_compatibility"] = "legacy_event_type"
     canonical.update({key: value for key, value in context.items() if value is not None})
@@ -200,6 +201,8 @@ def write_operational_log(
         event_category=category,
         event_code=str(event_code or (details or {}).get("event_code") or event_type),
         event_type=event_type,
+        api_identity_snapshot=canonical.get("api_identity") if isinstance(canonical.get("api_identity"), dict) else None,
+        server_api_request_id=canonical.get("api_request_id") if isinstance(canonical.get("api_request_id"), str) else None,
     )
     safe_message = bounded_event_message(message, fallback=event_type)
     if not _should_emit_deduped_log(
@@ -293,7 +296,7 @@ def write_operational_log_in_connection(
     """Insert a canonical event in a caller-owned transaction without nesting DB sessions."""
     event_id = str(uuid4())
     timestamp = _utc_timestamp()
-    details = dict(details or {})
+    details = apply_attribution(details or {})
     if not str(details.get("event_code") or "").strip():
         details["event_code_compatibility"] = "legacy_event_type"
     canonical = normalize_event_details(
@@ -305,6 +308,8 @@ def write_operational_log_in_connection(
         event_category=event_category,
         event_code=str(details.get("event_code") or event_type),
         event_type=event_type,
+        api_identity_snapshot=details.get("api_identity") if isinstance(details.get("api_identity"), dict) else None,
+        server_api_request_id=details.get("api_request_id") if isinstance(details.get("api_request_id"), str) else None,
     )
     safe_message = bounded_event_message(message, fallback=event_type)
     connection.execute(
@@ -355,7 +360,7 @@ def write_technical_log(
         context["workflow_id"] = str(workflow_id)
     if causation_id:
         context["causation_id"] = str(causation_id)
-    canonical = dict(details or {})
+    canonical = apply_attribution(details or {})
     if not str(event_code or canonical.get("event_code") or "").strip():
         canonical["event_code_compatibility"] = "legacy_event_type"
     canonical.update({key: value for key, value in context.items() if value is not None})
@@ -372,6 +377,8 @@ def write_technical_log(
         event_category=event_category,
         event_code=str(event_code or (details or {}).get("event_code") or event_type),
         event_type=event_type,
+        api_identity_snapshot=canonical.get("api_identity") if isinstance(canonical.get("api_identity"), dict) else None,
+        server_api_request_id=canonical.get("api_request_id") if isinstance(canonical.get("api_request_id"), str) else None,
     )
     safe_message = bounded_event_message(message, fallback=event_type)
     if not _should_emit_deduped_log(

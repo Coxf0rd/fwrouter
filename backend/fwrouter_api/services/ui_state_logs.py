@@ -149,6 +149,14 @@ UI_OPERATIONAL_EVENT_MESSAGES = {
         "ru": "Не удалось обновить внешний источник",
         "en": "Failed to refresh external source",
     },
+    "client_list_mutation_denied": {
+        "ru": "Изменение видимости клиентов отклонено",
+        "en": "Client visibility change was denied",
+    },
+    "client_list_mutation_conflict": {
+        "ru": "Изменение видимости клиентов не сохранено из-за конфликта",
+        "en": "Client visibility change was not saved because of a conflict",
+    },
 }
 
 UI_TECHNICAL_EVENT_MESSAGES = {
