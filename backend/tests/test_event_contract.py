@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 import pytest
 
@@ -18,6 +17,7 @@ from fwrouter_api.services.event_contract import (
     scrub_jsonl_files,
 )
 from fwrouter_api.services import event_contract
+from fwrouter_api.services import logs_retention
 from fwrouter_api.services.logs import (
     list_technical_logs,
     write_operational_log,
@@ -205,7 +205,7 @@ def test_scrub_scans_unchanged_jsonl_without_creating_temporary_output(
         raise AssertionError("unchanged JSONL must not fsync temporary output")
 
     monkeypatch.setattr(event_contract, "sanitize_value", record_full_scan)
-    monkeypatch.setattr(event_contract.tempfile, "NamedTemporaryFile", unexpected_temp)
+    monkeypatch.setattr(event_contract, "replace_jsonl", unexpected_temp)
     monkeypatch.setattr(event_contract.os, "fsync", unexpected_fsync)
 
     result = scrub_jsonl_files([path])
@@ -242,9 +242,10 @@ def test_scrub_changed_jsonl_keeps_mode_malformed_lines_and_atomic_failure_contr
     assert list(tmp_path.glob("*.scrub.tmp")) == []
     monkeypatch.setattr(event_contract.os, "fsync", actual_fsync)
 
-    def failed_replace(source, destination):
-        assert Path(source).parent == path.parent
-        assert Path(destination) == path
+    def failed_replace(source, destination, **kwargs):
+        assert source.startswith(f".{path.name}.rewrite-")
+        assert destination == path.name
+        assert kwargs["src_dir_fd"] == kwargs["dst_dir_fd"]
         raise OSError("synthetic replace failure")
 
     monkeypatch.setattr(event_contract.os, "replace", failed_replace)
@@ -263,8 +264,33 @@ def test_scrub_changed_jsonl_keeps_mode_malformed_lines_and_atomic_failure_contr
     assert json.loads(records[1]) == "not-json token=[REDACTED]"
     assert records[2] == " \t"
     assert records[3] == ""
-    assert (path.stat().st_mode & 0o777) == 0o640
+    # A replacement is a fresh private file; legacy broader modes are tightened.
+    assert (path.stat().st_mode & 0o777) == 0o600
     assert list(tmp_path.glob("*.scrub.tmp")) == []
+
+
+def test_scrub_replacement_decodes_invalid_utf8_and_retention_remains_strict(tmp_path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"event_id":"bad-utf8","details":{"password":"CANARY-SECRET\xff"}}\n')
+
+    result = scrub_jsonl_files([path])
+    scrubbed = path.read_bytes()
+    assert result == {"files_rewritten": 1, "records_scanned": 1}
+    assert scrubbed.decode("utf-8")
+    assert b"CANARY-SECRET" not in scrubbed
+    assert json.loads(scrubbed.decode("utf-8")) == {
+        "event_id": "bad-utf8", "details": {"password": "[REDACTED]"}
+    }
+    assert scrub_jsonl_files([path]) == {"files_rewritten": 0, "records_scanned": 1}
+
+    retention_path = tmp_path / "retention.jsonl"
+    original = b'{"event_type":"runtime_failed","timestamp":"2020-01-01T00:00:00Z"}\xff\n'
+    retention_path.write_bytes(original)
+    with pytest.raises(UnicodeDecodeError):
+        logs_retention._cleanup_jsonl_file(
+            retention_path, timestamp_field="timestamp", retention_days=1, dry_run=False,
+        )
+    assert retention_path.read_bytes() == original
 
 
 @pytest.mark.parametrize("mutation", ["append", "replace"])
@@ -296,7 +322,7 @@ def test_scrub_does_not_overwrite_jsonl_changed_between_scan_and_rewrite(
         return actual_sanitize(value, key=key)
 
     monkeypatch.setattr(event_contract, "sanitize_value", mutate_during_rewrite)
-    with pytest.raises(OSError, match="changed during scrub"):
+    with pytest.raises(OSError, match="changed"):
         scrub_jsonl_files([path])
 
     if mutation == "append":
@@ -317,7 +343,7 @@ def test_scrub_rejects_mutation_between_scan_and_atomic_rewrite(
         encoding="utf-8",
     )
     replacement_bytes = b'{"event_id":"replacement","details":{"token":"new-secret"}}\n'
-    actual_temp = event_contract.tempfile.NamedTemporaryFile
+    actual_replace_jsonl = event_contract.replace_jsonl
     scanned = False
     actual_sanitize = event_contract.sanitize_value
 
@@ -335,11 +361,11 @@ def test_scrub_rejects_mutation_between_scan_and_atomic_rewrite(
                 replacement = tmp_path / "replacement.jsonl"
                 replacement.write_bytes(replacement_bytes)
                 event_contract.os.replace(replacement, path)
-        return actual_temp(*args, **kwargs)
+        return actual_replace_jsonl(*args, **kwargs)
 
     monkeypatch.setattr(event_contract, "sanitize_value", mark_scanned)
-    monkeypatch.setattr(event_contract.tempfile, "NamedTemporaryFile", mutate_before_rewrite)
-    with pytest.raises(OSError, match="changed during scrub"):
+    monkeypatch.setattr(event_contract, "replace_jsonl", mutate_before_rewrite)
+    with pytest.raises(OSError, match="changed"):
         scrub_jsonl_files([path])
 
     if mutation == "append":
@@ -374,7 +400,7 @@ def test_scrub_rechecks_source_state_after_temp_fsync_before_replace(
         actual_fsync(fd)
 
     monkeypatch.setattr(event_contract.os, "fsync", mutate_at_fsync)
-    with pytest.raises(OSError, match="changed during scrub"):
+    with pytest.raises(OSError, match="changed"):
         scrub_jsonl_files([path])
 
     if mutation == "append":

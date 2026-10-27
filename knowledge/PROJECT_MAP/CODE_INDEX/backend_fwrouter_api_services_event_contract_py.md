@@ -15,3 +15,10 @@ Shared event envelope, correlation context, recursive credential sanitization, a
 - Keep compatibility wrappers in `services/logs.py` and `services/events.py` as the persistence boundary.
 - Job workers must snapshot/restore context explicitly; ContextVar does not cross `Thread` creation.
 - Never place event context in `jobs.input_json`.
+
+## Stage 5 retention qualification
+
+Generic cleanup now separates protected audit/security HOLD from ordinary expiry.
+JSONL retention/startup scrub coordinates with appenders through the shared
+`jsonl_io.py` file lease. See [access/retention contract](../../LOGGING_ACCESS_AND_RETENTION.md);
+source qualification does not establish production access or retention capacity.

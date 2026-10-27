@@ -11,7 +11,7 @@ from fwrouter_api.db.connection import get_db_path
 from fwrouter_api.services.apply_versions_retention import cleanup_apply_versions_retention
 from fwrouter_api.services.jobs import compact_oversized_job_results
 from fwrouter_api.services.jobs_retention import cleanup_jobs_retention
-from fwrouter_api.services.logs_retention import cleanup_log_retention
+from fwrouter_api.services.logs_retention import _retention_hold, cleanup_log_retention
 from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.servers import expire_global_fixed_server
 from fwrouter_api.services.state_retention import cleanup_state_retention
@@ -31,6 +31,48 @@ def _utc_now() -> datetime:
 
 def _sqlite_cutoff(days: int) -> str:
     return (_utc_now() - timedelta(days=days)).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _cleanup_expired_operational_logs(connection, *, cutoff: str, dry_run: bool) -> dict[str, Any]:
+    # Keep classification and exact-row deletion in one writer transaction so
+    # another cleanup cannot change which rows were protected after the scan.
+    # Existing caller transactions retain ownership of their transaction.
+    if not dry_run and not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    rows = connection.execute(
+        """SELECT rowid AS retention_rowid, event_id, event_type, details_json, created_at
+           FROM operational_logs WHERE created_at < ? ORDER BY created_at""",
+        (cutoff,),
+    )
+    candidates: list[dict[str, Any]] = []
+    rowids: list[int] = []
+    held_count = 0
+    for row in rows:
+        try:
+            details = json.loads(row["details_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            details = None
+        if not isinstance(details, dict) or _retention_hold({
+            "event_type": row["event_type"], "details": details,
+        }):
+            held_count += 1
+            continue
+        candidates.append({
+            "event_id": row["event_id"], "event_type": row["event_type"],
+            "created_at": row["created_at"],
+        })
+        rowids.append(int(row["retention_rowid"]))
+
+    deleted_count = 0
+    if not dry_run:
+        for offset in range(0, len(rowids), 500):
+            batch = rowids[offset:offset + 500]
+            placeholders = ",".join("?" for _ in batch)
+            deleted_count += connection.execute(
+                f"DELETE FROM operational_logs WHERE rowid IN ({placeholders}) AND created_at < ?",
+                (*batch, cutoff),
+            ).rowcount
+    return {"candidates": candidates, "held_count": held_count, "deleted_count": deleted_count}
 
 
 def _collect_database_storage_stats() -> dict[str, Any]:
@@ -333,18 +375,11 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
         member_probes = probe_members(budget=2)
 
     with db_session() as connection:
-        operational_logs = [
-            dict(row)
-            for row in connection.execute(
-                """
-                SELECT event_id, event_type, created_at
-                FROM operational_logs
-                WHERE created_at < ?
-                ORDER BY created_at
-                """,
-                (operational_logs_cutoff,),
-            ).fetchall()
-        ]
+        operational_log_retention = _cleanup_expired_operational_logs(
+            connection, cutoff=operational_logs_cutoff, dry_run=dry_run,
+        )
+        operational_logs = operational_log_retention["candidates"]
+        held_operational_logs_count = operational_log_retention["held_count"]
         stale_subjects = [
             dict(row)
             for row in connection.execute(
@@ -380,14 +415,7 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
         deleted_server_preferences_count = 0
 
         if not dry_run:
-            if operational_logs:
-                deleted_operational_logs_count = connection.execute(
-                    """
-                    DELETE FROM operational_logs
-                    WHERE created_at < ?
-                    """,
-                    (operational_logs_cutoff,),
-                ).rowcount
+            deleted_operational_logs_count = operational_log_retention["deleted_count"]
             if stale_subjects:
                 deleted_subjects_count = connection.execute(
                     """
@@ -461,6 +489,7 @@ def run_control_plane_maintenance(*, dry_run: bool = True) -> dict[str, Any]:
             "candidates_count": len(operational_logs),
             "candidates": operational_logs,
             "deleted_count": deleted_operational_logs_count,
+            "held_count": held_operational_logs_count,
         },
         "subjects": {
             "retention_days": SUBJECT_RETENTION_DAYS,

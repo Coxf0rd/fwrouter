@@ -648,3 +648,16 @@ Production activation and rich HTTP identity reads remain BLOCKED until separate
 qualified proxy/TLS/origin, credential custody, worker compatibility and log-access
 authorization. No deployment, production changes or later package is authorized.
 This source checkpoint does not claim to publish all newer local canonical evidence.
+
+
+### Stage5 logging access and retention — bounded source package (2026-10-27)
+
+Base main `7bf1a79ac8fe28b71def9f06e75a1c7e1c1cd1d2`, actual-main run40519112883
+passed16mandatoryjobs and independent offline bundle verification. Source package
+protects audit/security from blanket operational expiry and coordinates JSONL
+append/rewrite ownership. Extended identity stays host-admin-only; source/CI
+qualification and production access/retention capacity remain separate.
+See [contract](LOGGING_ACCESS_AND_RETENTION.md), [audit](audits/stage5_logging_access_retention_2026-10-27/REPORT.md),
+and [read-only CI timing recommendation](audits/stage5_logging_access_retention_2026-10-27/CI_PERFORMANCE_AUDIT.md).
+Canonical roadmap remains `/решения/roadmap/fwrouter/ROADMAP.md`; preserve its newer
+local decisions rather than overwriting them with this source checkpoint.

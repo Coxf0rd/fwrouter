@@ -19,6 +19,7 @@ from fwrouter_api.services.event_contract import (
     sanitize_value,
 )
 from fwrouter_api.services.api_client_attribution import apply_attribution
+from fwrouter_api.services.jsonl_io import append_jsonl
 
 _LOG_DEDUPE_LOCK = Lock()
 _LOG_DEDUPE_STATE: dict[tuple[str, str, str], datetime] = {}
@@ -94,10 +95,7 @@ def _should_emit_deduped_log(
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-        handle.write("\n")
+    append_jsonl(path, json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def list_operational_logs(
