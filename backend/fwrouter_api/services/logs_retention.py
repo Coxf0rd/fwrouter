@@ -9,6 +9,7 @@ import stat
 from typing import Any
 
 from fwrouter_api.core.config import get_settings
+from fwrouter_api.services.artifacts import atomic_write_text as atomic_write_text
 from fwrouter_api.services.events import known_event_category_for_retention
 from fwrouter_api.services.jsonl_io import (
     JsonlLeaseError,
