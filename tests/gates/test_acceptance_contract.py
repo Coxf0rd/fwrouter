@@ -2324,13 +2324,20 @@ class AcceptanceContractTests(unittest.TestCase):
         provider = launcher.expected_acceptance_nodeids("provider-cohort")
         packet = launcher.expected_acceptance_nodeids("packet-diagnostic")
         functional = aggregate_hosted.functional_nodeids()
-        self.assertEqual((27, 12, 4), (len(ordinary), len(provider), len(packet)))
+        self.assertEqual((30, 12, 4), (len(ordinary), len(provider), len(packet)))
+        presentation = {
+            "tests/application_acceptance/test_database_application.py::test_presentation_http_cli_cas_restart_and_native_unchanged",
+            "tests/application_acceptance/test_browser_locale.py::test_real_chromium_client_list_unlock_conditional_edit_and_conflict",
+            "tests/application_acceptance/test_browser_locale.py::test_presentation_bridge_rejects_redirect_and_environment_proxy",
+        }
+        self.assertTrue(presentation <= ordinary)
+        self.assertFalse(presentation & (provider | packet))
         self.assertFalse(ordinary & provider)
         self.assertFalse(packet & (ordinary | provider))
         self.assertEqual(functional, ordinary | provider)
         with self.assertRaisesRegex(launcher.NotRun, "functional.*ambiguous"):
             launcher.expected_acceptance_nodeids("functional")
-        self.assertEqual(43, len(ordinary | provider | packet))
+        self.assertEqual(46, len(ordinary | provider | packet))
         with self.assertRaises(launcher.NotRun):
             launcher.validate_suite_node_receipt(
                 [{"nodeid": nodeid, "status": "passed",

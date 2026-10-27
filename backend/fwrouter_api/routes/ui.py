@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+import json
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from fwrouter_api.schemas import ApiResponse
@@ -25,6 +27,16 @@ from fwrouter_api.services.ui_state import (
     get_ui_settings_workspace,
     list_ui_clients,
     save_ui_display_settings,
+)
+from fwrouter_api.services.ui_state_settings import get_ui_display_snapshot
+from fwrouter_api.services.presentation_client_list_admission import (
+    PresentationAdmissionError,
+    verified_presentation_write,
+)
+from fwrouter_api.services.ui_client_list_settings import (
+    ClientListSettingsError,
+    patch_show_inactive,
+    read_client_list_settings,
 )
 
 
@@ -67,6 +79,105 @@ class ExternalConnectionSettingsRequest(BaseModel):
     collector_config: dict[str, Any] | None = None
     collector: dict[str, Any] | None = None
     description: str | None = None
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _client_list_data(resource: dict[str, Any]) -> dict[str, Any]:
+    data = {
+        "show_inactive": resource["show_inactive"],
+        "etag": resource["etag"],
+        "compatibility_status": resource["compatibility_status"],
+        "provenance": resource["provenance"],
+        "incarnation": resource["incarnation"],
+        "revision": resource["revision"],
+    }
+    for key in ("persistence_status", "audit_delivery_status"):
+        if key in resource:
+            data[key] = resource[key]
+    return data
+
+
+def _client_list_error(exc: ClientListSettingsError | PresentationAdmissionError) -> JSONResponse:
+    body = ApiResponse(
+        ok=False,
+        error={"code": exc.code, "message": "Client-list settings request was not accepted."},
+    )
+    headers = {"Retry-After": "1"} if getattr(exc, "retryable", False) else None
+    return JSONResponse(status_code=exc.status_code, content=body.model_dump(mode="json"), headers=headers)
+
+
+async def _read_bounded_json_object(request: Request, *, maximum: int = 4096) -> dict[str, Any]:
+    content_types = [value for key, value in request.scope.get("headers", []) if key.lower() == b"content-type"]
+    if len(content_types) != 1 or content_types[0].split(b";", 1)[0].strip().lower() != b"application/json":
+        raise ClientListSettingsError("CLIENT_LIST_JSON_REQUIRED", 415)
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > maximum:
+            raise ClientListSettingsError("CLIENT_LIST_BODY_TOO_LARGE", 413)
+        chunks.append(chunk)
+    try:
+        value = json.loads(b"".join(chunks).decode("utf-8"), object_pairs_hook=_strict_json_object)
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ClientListSettingsError("CLIENT_LIST_JSON_INVALID", 400) from exc
+    if not isinstance(value, dict):
+        raise ClientListSettingsError("CLIENT_LIST_OBJECT_REQUIRED", 422)
+    return value
+
+
+def _single_header(request: Request, name: bytes) -> str | None:
+    values = [value for key, value in request.scope.get("headers", []) if key.lower() == name]
+    if len(values) != 1:
+        return None
+    try:
+        return values[0].decode("ascii")
+    except UnicodeDecodeError:
+        return None
+
+
+@router.get("/ui/settings/client-list", response_model=ApiResponse)
+def get_client_list_settings_endpoint(request: Request) -> Response:
+    try:
+        resource = read_client_list_settings()
+    except ClientListSettingsError as exc:
+        return _client_list_error(exc)
+    etag = resource["etag"]
+    if _single_header(request, b"if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return JSONResponse(
+        content=ApiResponse(ok=True, data={"client_list": _client_list_data(resource)}).model_dump(mode="json"),
+        headers={"ETag": etag},
+    )
+
+
+@router.patch("/ui/settings/client-list", response_model=ApiResponse)
+async def patch_client_list_settings_endpoint(request: Request) -> Response:
+    try:
+        with verified_presentation_write(request):
+            payload = await _read_bounded_json_object(request)
+            if set(payload) != {"show_inactive"} or type(payload.get("show_inactive")) is not bool:
+                raise ClientListSettingsError("CLIENT_LIST_BOOLEAN_REQUIRED", 422)
+            if_match = _single_header(request, b"if-match")
+            if if_match is None:
+                raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_REQUIRED", 428)
+            if not re.fullmatch(r'"cli1-[0-9a-f]{64}"', if_match):
+                raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_INVALID", 400)
+            resource = patch_show_inactive(payload["show_inactive"], if_match)
+    except (ClientListSettingsError, PresentationAdmissionError) as exc:
+        return _client_list_error(exc)
+    return JSONResponse(
+        content=ApiResponse(ok=True, data={"client_list": _client_list_data(resource)}).model_dump(mode="json"),
+        headers={"ETag": resource["etag"]},
+    )
 
 
 def _external_connection_error(exc: ExternalConnectionValidationError) -> ApiResponse:
@@ -143,21 +254,36 @@ def get_ui_external_ip_endpoint() -> ApiResponse:
 
 @router.get("/ui/clients", response_model=ApiResponse)
 def get_ui_clients_endpoint() -> ApiResponse:
-    display_settings = get_ui_display_settings()
-    clients = list_ui_clients()
-    return ApiResponse(
-        ok=True,
-        data={
-            "display_settings": display_settings,
-            "clients": clients,
-            "panel_clients": filter_ui_clients(clients, display_settings=display_settings),
-        },
+    for attempt in range(2):
+        snapshot = get_ui_display_snapshot()
+        display_settings = snapshot["display_settings"]
+        clients = list_ui_clients(display_settings=display_settings)
+        current = read_client_list_settings()
+        if current["etag"] == snapshot["etag"]:
+            return ApiResponse(
+                ok=True,
+                data={
+                    "display_settings": display_settings,
+                    "clients": clients,
+                    "panel_clients": filter_ui_clients(clients, display_settings=display_settings),
+                },
+            )
+    return JSONResponse(
+        status_code=503,
+        content=ApiResponse(ok=False, error={
+            "code": "CONFIG_READ_MODEL_STALE",
+            "message": "Client-list settings changed while this view was being built.",
+        }).model_dump(mode="json"),
+        headers={"Retry-After": "1"},
     )
 
 
 @router.get("/ui/settings/workspace", response_model=ApiResponse)
 def get_ui_settings_workspace_endpoint() -> ApiResponse:
-    return ApiResponse(ok=True, data={"workspace": get_ui_settings_workspace()})
+    try:
+        return ApiResponse(ok=True, data={"workspace": get_ui_settings_workspace()})
+    except ClientListSettingsError as exc:
+        return _client_list_error(exc)
 
 
 @router.get("/ui/settings/inventory", response_model=ApiResponse)
@@ -168,17 +294,25 @@ def get_ui_settings_inventory_endpoint(
     include_inactive: bool = Query(default=False),
     live_observations: bool = Query(default=True),
 ) -> ApiResponse:
-    return ApiResponse(
-        ok=True,
-        data={
-            "items": list_ui_settings_inventory(
-                role=role,
-                query=query,
-                limit=limit,
-                include_inactive=include_inactive,
-                live_observations=live_observations,
-            ),
-        },
+    for _attempt in range(2):
+        snapshot = get_ui_display_snapshot()
+        items = list_ui_settings_inventory(
+            role=role,
+            query=query,
+            limit=limit,
+            include_inactive=include_inactive,
+            live_observations=live_observations,
+            display_settings=snapshot["display_settings"],
+        )
+        if read_client_list_settings()["etag"] == snapshot["etag"]:
+            return ApiResponse(ok=True, data={"items": items})
+    return JSONResponse(
+        status_code=503,
+        content=ApiResponse(ok=False, error={
+            "code": "CONFIG_READ_MODEL_STALE",
+            "message": "Client-list settings changed while this view was being built.",
+        }).model_dump(mode="json"),
+        headers={"Retry-After": "1"},
     )
 
 
@@ -278,9 +412,36 @@ def get_ui_display_settings_endpoint() -> ApiResponse:
 
 
 @router.put("/ui/settings/display", response_model=ApiResponse)
-def save_ui_display_settings_endpoint(request: UiDisplaySettingsRequest) -> ApiResponse:
-    payload = request.model_dump(exclude_none=True)
-    return ApiResponse(
-        ok=True,
-        data={"display_settings": save_ui_display_settings(payload)},
+async def save_ui_display_settings_endpoint(request: Request) -> Response:
+    try:
+        raw_payload = await _read_bounded_json_object(request, maximum=1024 * 1024)
+        if "show_inactive" in raw_payload:
+            if type(raw_payload["show_inactive"]) is not bool:
+                raise ClientListSettingsError("CLIENT_LIST_BOOLEAN_REQUIRED", 422)
+            with verified_presentation_write(request):
+                if_match = _single_header(request, b"if-match")
+                if if_match is None:
+                    raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_REQUIRED", 428)
+                if not re.fullmatch(r'"cli1-[0-9a-f]{64}"', if_match):
+                    raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_INVALID", 400)
+                payload = UiDisplaySettingsRequest.model_validate(raw_payload).model_dump(exclude_none=True)
+                result = save_ui_display_settings(payload, client_list_expected_etag=if_match)
+        else:
+            payload = UiDisplaySettingsRequest.model_validate(raw_payload).model_dump(exclude_none=True)
+            result = save_ui_display_settings(payload)
+    except (ClientListSettingsError, PresentationAdmissionError) as exc:
+        return _client_list_error(exc)
+    except Exception as exc:
+        from pydantic import ValidationError
+        if isinstance(exc, ValidationError):
+            return JSONResponse(
+                status_code=422,
+                content=ApiResponse(ok=False, error={
+                    "code": "UI_DISPLAY_SETTINGS_INVALID",
+                    "message": "Display settings were not accepted.",
+                }).model_dump(mode="json"),
+            )
+        raise
+    return JSONResponse(
+        content=ApiResponse(ok=True, data={"display_settings": result}).model_dump(mode="json")
     )

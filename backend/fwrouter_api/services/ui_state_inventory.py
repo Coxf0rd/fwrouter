@@ -69,11 +69,12 @@ def list_ui_settings_inventory(
     limit: int = 200,
     include_inactive: bool = False,
     live_observations: bool = True,
+    display_settings: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     normalized_role = _normalize_inventory_role(role)
     selected_kinds = set(KINDS_BY_INVENTORY_ROLE.get(normalized_role, set()))
     normalized_query = str(query or "").strip().lower()
-    display_settings = get_ui_display_settings()
+    display_settings = display_settings if display_settings is not None else get_ui_display_settings()
     health_by_subject = _subject_health_by_subject_for_ui(blocking=live_observations)
     health_cache_pending = not live_observations and not health_by_subject
     total_map, month_map, month_breakdown_map = _traffic_maps()

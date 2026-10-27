@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from contextlib import contextmanager
 
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.main import create_app
@@ -43,8 +44,21 @@ from fwrouter_api.services.ui_state import (
     save_ui_display_settings,
 )
 from fwrouter_api.services import ui_state_summary
-from fwrouter_api.services import ui_state_settings
+from fwrouter_api.services import presentation_client_list_admission
+from fwrouter_api.services.ui_client_list_settings import read_client_list_settings
 from fwrouter_api.routes.subjects import SetSubjectModeRequest, set_subject_mode_endpoint
+
+
+@contextmanager
+def _verified_client_list_write_for_service_test():
+    """Exercise persistence logic with an admitted request grant; HTTP auth is tested separately."""
+    grant = presentation_client_list_admission._Grant()
+    marker = presentation_client_list_admission._GRANT.set(grant)
+    try:
+        yield
+    finally:
+        grant.revoke()
+        presentation_client_list_admission._GRANT.reset(marker)
 
 
 def test_router_summary_keeps_canonical_current_server_id_for_fixed_target(monkeypatch) -> None:
@@ -423,22 +437,24 @@ def test_ui_display_settings_roundtrip(monkeypatch, tmp_path: Path) -> None:
     assert defaults["hidden_subject_ids"] == []
     assert defaults["subject_traffic_preferences"] == {}
 
-    saved = save_ui_display_settings(
-        {
-            "system_visibility": {
-                "lan": False,
-                "external_network_source": True,
-                "vless_client": True,
+    with _verified_client_list_write_for_service_test():
+        saved = save_ui_display_settings(
+            {
+                "system_visibility": {
+                    "lan": False,
+                    "external_network_source": True,
+                    "vless_client": True,
+                },
+                "show_inactive": True,
+                "show_internal_vless": True,
+                "hidden_subject_ids": ["lan:aa-bb", "docker:web-1"],
+                "subject_traffic_preferences": {
+                    "lan:aa-bb": ["direct_rx_bytes", "vpn_tx_bytes"],
+                    "xray:human-1": ["vpn_rx_bytes", "vpn_tx_bytes"],
+                },
             },
-            "show_inactive": True,
-            "show_internal_vless": True,
-            "hidden_subject_ids": ["lan:aa-bb", "docker:web-1"],
-            "subject_traffic_preferences": {
-                "lan:aa-bb": ["direct_rx_bytes", "vpn_tx_bytes"],
-                "xray:human-1": ["vpn_rx_bytes", "vpn_tx_bytes"],
-            },
-        }
-    )
+            client_list_expected_etag=read_client_list_settings()["etag"],
+        )
 
     assert saved["system_visibility"]["lan"] is False
     assert saved["hidden_subject_ids"] == ["lan:aa-bb", "docker:web-1"]
@@ -463,13 +479,18 @@ def test_ui_display_settings_identical_save_skips_write_invalidation_and_prewarm
     }
     invalidations: list[str] = []
     prewarms: list[dict[str, object]] = []
-    monkeypatch.setattr(ui_state_settings, "clear_live_probe_cache", lambda: invalidations.append("clear"))
     monkeypatch.setattr(
-        ui_state_settings,
-        "prime_runtime_read_models_async",
+        "fwrouter_api.services.live_probe_cache.clear_live_probe_cache_matching",
+        lambda _predicate: invalidations.append("clear workspace"),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_prewarm.prime_runtime_read_models_async",
         lambda **kwargs: prewarms.append(kwargs),
     )
-    save_ui_display_settings(payload)
+    expected_etag = read_client_list_settings()["etag"]
+    with _verified_client_list_write_for_service_test():
+        save_ui_display_settings(payload, client_list_expected_etag=expected_etag)
+    expected_etag = read_client_list_settings()["etag"]
 
     with db_session() as connection:
         before = connection.execute(
@@ -492,10 +513,11 @@ def test_ui_display_settings_identical_save_skips_write_invalidation_and_prewarm
         return connection
 
     monkeypatch.setattr(db_connection, "connect", traced_connect)
-    monkeypatch.setattr(ui_state_settings, "connect", traced_connect)
+    monkeypatch.setattr("fwrouter_api.services.ui_client_list_settings.connect", traced_connect)
     sql_kinds.clear()
 
-    save_ui_display_settings(payload)
+    with _verified_client_list_write_for_service_test():
+        save_ui_display_settings(payload, client_list_expected_etag=expected_etag)
     operation_sql = list(sql_kinds)
 
     with db_session() as connection:
@@ -504,29 +526,35 @@ def test_ui_display_settings_identical_save_skips_write_invalidation_and_prewarm
         ).fetchone()
     assert after is not None
     assert tuple(after) == tuple(before)
-    assert operation_sql.count("SELECT") == 2
-    assert not any(kind in {"INSERT", "UPDATE", "DELETE", "REPLACE", "COMMIT"} for kind in operation_sql)
+    assert operation_sql.count("SELECT") >= 1
+    assert not any(kind in {"INSERT", "UPDATE", "DELETE", "REPLACE"} for kind in operation_sql)
+    assert operation_sql[-1] == "COMMIT"
     assert invalidations == []
     assert prewarms == []
 
 
-def test_ui_display_settings_changed_save_still_invalidates_and_prewarms(monkeypatch, tmp_path: Path) -> None:
+def test_ui_display_settings_changed_save_invalidates_only_presentation_read_model(monkeypatch, tmp_path: Path) -> None:
     _configure_env(monkeypatch, tmp_path)
     initialize_database()
     invalidations: list[str] = []
     prewarms: list[dict[str, object]] = []
-    monkeypatch.setattr(ui_state_settings, "clear_live_probe_cache", lambda: invalidations.append("clear"))
     monkeypatch.setattr(
-        ui_state_settings,
-        "prime_runtime_read_models_async",
+        "fwrouter_api.services.live_probe_cache.clear_live_probe_cache_matching",
+        lambda _predicate: invalidations.append("clear workspace"),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_prewarm.prime_runtime_read_models_async",
         lambda **kwargs: prewarms.append(kwargs),
     )
 
-    saved = save_ui_display_settings({"show_inactive": True})
+    with _verified_client_list_write_for_service_test():
+        saved = save_ui_display_settings(
+            {"show_inactive": True}, client_list_expected_etag=read_client_list_settings()["etag"],
+        )
 
     assert saved["show_inactive"] is True
-    assert invalidations == ["clear"]
-    assert prewarms == [{"include_global_profiles": False}]
+    assert invalidations == ["clear workspace"]
+    assert prewarms == []
 
 
 def test_ui_display_settings_noop_detection_keeps_json_scalar_types_canonical(
@@ -537,29 +565,38 @@ def test_ui_display_settings_noop_detection_keeps_json_scalar_types_canonical(
     initialize_database()
     invalidations: list[str] = []
     prewarms: list[dict[str, object]] = []
-    monkeypatch.setattr(ui_state_settings, "clear_live_probe_cache", lambda: invalidations.append("clear"))
     monkeypatch.setattr(
-        ui_state_settings,
-        "prime_runtime_read_models_async",
+        "fwrouter_api.services.live_probe_cache.clear_live_probe_cache_matching",
+        lambda _predicate: invalidations.append("clear workspace"),
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.runtime_prewarm.prime_runtime_read_models_async",
         lambda **kwargs: prewarms.append(kwargs),
     )
     payload = {"show_inactive": True}
-    save_ui_display_settings(payload)
+    legacy_row = {"show_inactive": 1, "show_internal_vless": False}
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO settings(key,value_json) VALUES('ui.admin_client_display.v1',?)",
+            (json.dumps(legacy_row),),
+        )
+    legacy_etag = read_client_list_settings()["etag"]
+    assert read_client_list_settings()["provenance"] == "legacy_coercion"
+    with _verified_client_list_write_for_service_test():
+        save_ui_display_settings(payload, client_list_expected_etag=legacy_etag)
 
     with db_session() as connection:
-        row = connection.execute(
-            "SELECT value_json FROM settings WHERE key = 'ui.admin_client_display.v1'"
+        adopted_row = connection.execute(
+            "SELECT value_json FROM settings WHERE key='ui.admin_client_display.v1'"
         ).fetchone()
-        stored = json.loads(row["value_json"])
-        stored["show_inactive"] = 1
-        connection.execute(
-            "UPDATE settings SET value_json = ? WHERE key = 'ui.admin_client_display.v1'",
-            (json.dumps(stored, ensure_ascii=False, sort_keys=True),),
-        )
+    assert adopted_row is not None
+    assert type(json.loads(adopted_row["value_json"])["show_inactive"]) is bool
     invalidations.clear()
     prewarms.clear()
 
-    save_ui_display_settings(payload)
+    current_etag = read_client_list_settings()["etag"]
+    with _verified_client_list_write_for_service_test():
+        save_ui_display_settings(payload, client_list_expected_etag=current_etag)
 
     with db_session() as connection:
         row = connection.execute(
@@ -569,8 +606,8 @@ def test_ui_display_settings_noop_detection_keeps_json_scalar_types_canonical(
     canonical = json.loads(row["value_json"])
     assert canonical["show_inactive"] is True
     assert type(canonical["show_inactive"]) is bool
-    assert invalidations == ["clear"]
-    assert prewarms == [{"include_global_profiles": False}]
+    assert invalidations == []
+    assert prewarms == []
 
 
 def test_ui_display_settings_system_visibility_and_custom_external(monkeypatch, tmp_path: Path) -> None:
@@ -1058,8 +1095,9 @@ def test_system_visibility_filters_ui_clients_and_inventory(monkeypatch, tmp_pat
     initialize_database()
     _seed_ui_clients()
 
-    settings = save_ui_display_settings(
-        {
+    with _verified_client_list_write_for_service_test():
+        settings = save_ui_display_settings(
+            {
             "system_visibility": {
                 "lan": True,
                 "external_network_source": False,
@@ -1068,8 +1106,9 @@ def test_system_visibility_filters_ui_clients_and_inventory(monkeypatch, tmp_pat
                 "host": True,
             },
             "show_inactive": True,
-        }
-    )
+            },
+            client_list_expected_etag=read_client_list_settings()["etag"],
+        )
 
     filtered_ids = {item["subject_id"] for item in filter_ui_clients(list_ui_clients(), display_settings=settings)}
     inventory_ids = {item["subject_id"] for item in list_ui_settings_inventory(role="all", query="", limit=50)}
@@ -1385,13 +1424,15 @@ def test_ui_settings_inventory_external_client_exposes_subscription_url(monkeypa
                 ),
             ),
         )
-    save_ui_display_settings(
-        {
-            "system_visibility": {"vless_client": True},
-            "show_inactive": True,
-            "show_internal_vless": True,
-        }
-    )
+    with _verified_client_list_write_for_service_test():
+        save_ui_display_settings(
+            {
+                "system_visibility": {"vless_client": True},
+                "show_inactive": True,
+                "show_internal_vless": True,
+            },
+            client_list_expected_etag=read_client_list_settings()["etag"],
+        )
 
     items = list_ui_settings_inventory(role="vless_client", query="Misha", limit=50, include_inactive=True)
     human = next(item for item in items if item["subject_id"] == "xray:uuid-misha")

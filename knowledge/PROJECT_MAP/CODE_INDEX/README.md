@@ -247,3 +247,11 @@ missing/altered/ambiguous evidence. See `knowledge/NATIVE_PROOF.md`.
 - [Import file preparation](backend_fwrouter_api_services_control_plane_import_files_py.md): prepared files become selected through existing SQLite rules-state references.
 - [Lifecycle-held exclusion](backend_fwrouter_api_services_maintenance_lifecycle_admission_py.md): supported-process leases, durable interrupted-operation gate and scoped offline authority.
 - [Publication/retry/exclusion contract](../../../docs/CONTROL_PLANE_RESTORE_CONTRACT.md): current source extension, separate from historical admission-only CI results.
+
+### Stage 5 client-list presentation field
+
+- `backend/fwrouter_api/services/ui_client_list_settings.py`: existing-row field owner, strict decode/CAS and transfer incarnation handling.
+- `backend/fwrouter_api/services/presentation_client_list_admission.py`: narrow protected verifier and request-scoped presentation grant; independent from maintenance admission.
+- `backend/fwrouter_api/services/config_cli.py`: API-first fixed-endpoint conditional client; no database fallback.
+- `ui/static/js/fwrouter-client-list-setting.js`: memory-only explicit unlock/edit/conflict controller.
+- [Source contract](../../../docs/CLIENT_LIST_CONFIGURATION.md): qualification and activation boundaries.

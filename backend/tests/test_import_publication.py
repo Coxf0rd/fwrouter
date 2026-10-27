@@ -11,6 +11,11 @@ from fwrouter_api.services import control_plane_transfer_import as owner
 from fwrouter_api.services.control_plane_transfer_export import export_control_plane_snapshot
 from fwrouter_api.services.rules import get_manual_rules_texts, save_manual_draft
 from fwrouter_api.services.rules_state_store import get_rules_state, _upsert_rules_state_record
+from fwrouter_api.services.ui_client_list_settings import (
+    CONTRACT_KEY,
+    SETTINGS_KEY,
+    read_client_list_settings,
+)
 
 pytestmark = pytest.mark.usefixtures("isolated_host_observations")
 
@@ -89,6 +94,65 @@ def test_retry_receipt_survives_restart_and_later_import(monkeypatch, tmp_path):
         assert conflict['data']['import']['error_code'] == 'IMPORT_OPERATION_ID_CONFLICT'
     exported = export_control_plane_snapshot(write_file=False)['snapshot']
     assert not any(r['key'].startswith(files.RECEIPT_PREFIX) for r in exported['state']['settings'])
+
+
+def test_import_operation_replay_preserves_incarnation_but_new_operation_rebases(monkeypatch, tmp_path):
+    snapshot, _ = _fixture(monkeypatch, tmp_path)
+    settings = snapshot["state"]["settings"]
+    settings[:] = [row for row in settings if row.get("key") != SETTINGS_KEY]
+    settings.append({
+        "key": SETTINGS_KEY,
+        "value": {
+            "show_inactive": True,
+            "show_internal_vless": True,
+            CONTRACT_KEY: {"version": 1, "incarnation": "e" * 32, "revision": 99},
+        },
+        "updated_at": None,
+    })
+
+    with maintenance_import_test_client(monkeypatch, tmp_path) as client:
+        first = _post(client, snapshot, "a" * 32).json()["data"]["import"]
+        assert first["ok"] is True and first["replayed"] is False
+        first_state = read_client_list_settings()
+        assert first_state["show_inactive"] is True
+        assert first_state["incarnation"] != "e" * 32
+        assert first_state["revision"] == 1
+
+        replay = _post(client, snapshot, "a" * 32).json()["data"]["import"]
+        replay_state = read_client_list_settings()
+        assert replay["replayed"] is True
+        assert replay_state["incarnation"] == first_state["incarnation"]
+        assert replay_state["etag"] == first_state["etag"]
+
+        newer_operation = _post(client, snapshot, "b" * 32).json()["data"]["import"]
+        newer_state = read_client_list_settings()
+        assert newer_operation["replayed"] is False
+        assert newer_state["incarnation"] != first_state["incarnation"]
+        assert newer_state["revision"] == 1
+        assert newer_state["etag"] != first_state["etag"]
+
+
+def test_invalid_client_list_import_value_fails_before_file_preparation(monkeypatch, tmp_path):
+    snapshot, old_manual = _fixture(monkeypatch, tmp_path)
+    snapshot["state"]["settings"] = [
+        row for row in snapshot["state"]["settings"] if row.get("key") != SETTINGS_KEY
+    ] + [{"key": SETTINGS_KEY, "value": None, "updated_at": None}]
+    before_rules = get_rules_state()
+    before_client_list = read_client_list_settings()
+
+    monkeypatch.setattr(
+        owner, "_write_rules_files_from_snapshot",
+        lambda _snapshot: pytest.fail("invalid client-list settings must reject before file preparation"),
+    )
+    with maintenance_import_test_client(monkeypatch, tmp_path) as client:
+        response = _post(client, snapshot, "c" * 32)
+    assert response.status_code == 200
+    result = response.json()["data"]["import"]
+    assert result["ok"] is False
+    assert result["error_code"] == "CLIENT_LIST_IMPORT_SETTINGS_INVALID"
+    assert get_rules_state() == before_rules
+    assert get_manual_rules_texts()["draft_text"] == old_manual["draft_text"]
+    assert read_client_list_settings()["etag"] == before_client_list["etag"]
 
 
 def test_stale_path_writer_cannot_rebind_imported_set(monkeypatch, tmp_path):

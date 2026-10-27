@@ -77,14 +77,14 @@ def _export_settings_rows() -> list[dict[str, Any]]:
         ORDER BY key
         """
     )
-    return [
-        {
-            "key": row["key"],
-            "value": _json_loads_or_none(row["value_json"]),
-            "updated_at": row["updated_at"],
-        }
-        for row in rows
-    ]
+    exported: list[dict[str, Any]] = []
+    for row in rows:
+        value = _json_loads_or_none(row["value_json"])
+        if row["key"] == "ui.admin_client_display.v1" and isinstance(value, dict):
+            value = dict(value)
+            value.pop("_show_inactive_contract", None)
+        exported.append({"key": row["key"], "value": value, "updated_at": row["updated_at"]})
+    return exported
 
 
 def _export_rules_bundle() -> dict[str, Any]:

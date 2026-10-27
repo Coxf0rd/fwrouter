@@ -11,14 +11,10 @@ from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
 from uuid import uuid4
+from typing import TYPE_CHECKING
 
-from fwrouter_api.services import diagnostics
-from fwrouter_api.services.reconcile import ReconcileResult, build_reconcile_response
-from fwrouter_api.services.maintenance_lifecycle_admission import (
-    DEFAULT_STATE_ROOT,
-    runtime_shared_lease,
-)
-
+if TYPE_CHECKING:
+    from fwrouter_api.services.reconcile import ReconcileResult
 
 def _count(results: list[ReconcileResult], entity_type: str, state: str | None = None) -> int:
     return sum(
@@ -41,6 +37,13 @@ def _count_xray(results: list[ReconcileResult], state: str | None = None) -> int
         for result in results
         if _is_xray_result(result) and (state is None or result.reconcile_state == state)
     )
+
+
+def build_reconcile_response():
+    """Keep the existing CLI seam without eager domain imports for config."""
+    from fwrouter_api.services.reconcile import build_reconcile_response as build
+
+    return build()
 
 
 def _print_reconcile_check() -> int:
@@ -76,6 +79,8 @@ def _print_reconcile_check() -> int:
 
 
 def _print_diagnose(*, json_output: bool = False) -> int:
+    from fwrouter_api.services import diagnostics
+
     report = diagnostics.build_diagnostic_report()
     if json_output:
         print(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
@@ -615,8 +620,22 @@ def _run_database_upgrade(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(argv) if argv is not None else None
+    if arguments is None:
+        import sys
+        arguments = sys.argv[1:]
+    if arguments and arguments[0] == "config":
+        # The configuration client is a plain HTTP client. Dispatch before
+        # importing lifecycle, diagnostic, or domain mutation services.
+        from fwrouter_api.services.config_cli import main as config_main
+        return config_main(arguments[1:])
+    from fwrouter_api.services.maintenance_lifecycle_admission import (
+        DEFAULT_STATE_ROOT,
+        runtime_shared_lease,
+    )
     parser = argparse.ArgumentParser(prog="fwrouter")
     subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("config", help="Read or conditionally update presentation configuration through the API.")
     reconcile_parser = subparsers.add_parser("reconcile")
     reconcile_subparsers = reconcile_parser.add_subparsers(dest="reconcile_command")
     reconcile_subparsers.add_parser("check")
@@ -656,7 +675,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--confirm-offline", action="store_true",
         help="confirm the API and background workers are stopped before applying the migration",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     with runtime_shared_lease(DEFAULT_STATE_ROOT):
         if args.command == "reconcile" and args.reconcile_command == "check":
             return _print_reconcile_check()

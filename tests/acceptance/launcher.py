@@ -2494,11 +2494,11 @@ def expected_acceptance_nodeids(suite: str) -> set[str]:
         functional = {row["nodeid"] for row in rows if row["suite"] == "functional"}
         packet = {row["nodeid"] for row in rows if row["suite"] == "packet"}
         provider = set(_PROVIDER_COHORT_NODEIDS)
-        if (len(functional) != 39 or len(packet) != 4 or len(provider) != 12
+        if (len(functional) != 42 or len(packet) != 4 or len(provider) != 12
                 or not provider <= functional or functional & packet):
-            raise NotRun("functional profile partitions differ from the reviewed 39+4 inventory")
+            raise NotRun("functional profile partitions differ from the reviewed 42+4 inventory")
         selected = functional - provider
-        if len(selected) != 27 or selected & provider or selected | provider != functional:
+        if len(selected) != 30 or selected & provider or selected | provider != functional:
             raise NotRun("ordinary/provider profile partitions are not disjoint and exhaustive")
     if not selected:
         raise NotRun("acceptance suite has no registered scenarios")

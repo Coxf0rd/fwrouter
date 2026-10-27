@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/css/base.css?v=20260929b" />
   <link rel="stylesheet" href="/static/css/user-view.css?v=20261001a" />
   <link rel="stylesheet" href="/static/css/admin-view.css?v=20261002h" />
-  <link rel="stylesheet" href="/static/css/settings-view.css?v=20261001e" />
+  <link rel="stylesheet" href="/static/css/settings-view.css?v=20261027a" />
   <link rel="stylesheet" href="/static/css/responsive.css?v=20261001e" />
 </head>
 
@@ -665,6 +665,38 @@
               </div>
 
               <div class="settings-extra-grid">
+                <section id="settingsClientListSetting" class="panel admin-panel settings-client-list-setting" aria-labelledby="settingsClientListTitle" data-authorization="locked">
+                  <div class="panel__head">
+                    <div>
+                      <div id="settingsClientListTitle" class="label" data-i18n="settings.client_list.title">Inactive clients</div>
+                      <div class="muted" data-i18n="settings.client_list.help">Show inactive client entries in the inventory.</div>
+                    </div>
+                  </div>
+                  <div class="settings-client-list-setting__body">
+                    <label class="field settings-client-list-setting__credential">
+                      <span data-i18n="settings.client_list.capability">Operator capability</span>
+                      <input id="settingsClientListCapability" class="input input--mono" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" data-i18n-placeholder="settings.client_list.capability_placeholder" placeholder="Enter capability" />
+                    </label>
+                    <div class="settings-client-list-setting__actions">
+                      <button id="settingsClientListUnlock" class="btn btn--secondary" type="button" data-i18n="settings.client_list.unlock">Unlock editing</button>
+                      <button id="settingsClientListLock" class="btn" type="button" data-i18n="settings.client_list.lock" hidden>Lock</button>
+                    </div>
+                    <div class="settings-client-list-setting__editor">
+                      <label class="settings-client-list-setting__toggle">
+                        <input id="settingsClientListShowInactive" type="checkbox" disabled />
+                        <span data-i18n="settings.client_list.show_inactive">Show inactive clients</span>
+                      </label>
+                      <span id="settingsClientListCurrent" class="muted" aria-live="polite" data-i18n="settings.client_list.current_unknown">Current server value is unavailable</span>
+                      <div class="settings-client-list-setting__actions">
+                        <button id="settingsClientListRefresh" class="btn" type="button" data-i18n="settings.client_list.refresh">Refresh</button>
+                        <button id="settingsClientListSave" class="btn btn--primary" type="button" disabled data-i18n="settings.client_list.save">Save</button>
+                        <button id="settingsClientListUseServer" class="btn" type="button" hidden data-i18n="settings.client_list.use_server">Use server value</button>
+                        <span id="settingsClientListStatus" class="pill settings-action-state" role="status" aria-live="polite" data-i18n="settings.client_list.loading">Loading setting…</span>
+                      </div>
+                      <div class="muted settings-client-list-setting__note" data-i18n="settings.client_list.memory_only">The capability stays in memory and is checked when you save.</div>
+                    </div>
+                  </div>
+                </section>
                 <section class="panel admin-panel settings-clients-card">
                   <div class="panel__head">
                     <div>
@@ -741,7 +773,8 @@
   <script src="/static/js/user.js?v=20261001g"></script>
   <script src="/static/js/admin.js?v=20261002b"></script>
   <script src="/static/js/fwrouter-settings-lazy-read.js?v=20260929a"></script>
-  <script src="/static/js/settings.js?v=20261002g"></script>
+  <script src="/static/js/fwrouter-client-list-setting.js?v=20261027a"></script>
+  <script src="/static/js/settings.js?v=20261027a"></script>
   <script src="/static/js/ui.js?v=20260823a"></script>
   <script src="/static/js/liquid-glass.js?v=20260613e"></script>
 </body>

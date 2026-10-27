@@ -3,11 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.live_probe_cache import clear_live_probe_cache
+from fwrouter_api.services.live_probe_cache import clear_live_probe_cache_matching
 from fwrouter_api.services.ui_display_settings_common import (
     UI_DISPLAY_SETTINGS_KEY,
     UI_SYSTEM_VISIBILITY_DEFAULTS,
-    _json_dumps,
     _json_loads,
     _slugify_system_id,
 )
@@ -32,19 +31,21 @@ def _load_display_settings_raw() -> dict[str, Any]:
 def _save_display_settings_raw(value: dict[str, Any], *, clear_cache: bool = True) -> None:
     stored = dict(value)
     stored.pop("custom_external_systems", None)
-    with db_session() as connection:
-        connection.execute(
-            """
-            INSERT INTO settings (key, value_json, updated_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) DO UPDATE SET
-                value_json = excluded.value_json,
-                updated_at = excluded.updated_at
-            """,
-            (UI_DISPLAY_SETTINGS_KEY, _json_dumps(stored)),
+    from fwrouter_api.services.ui_client_list_settings import (
+        ClientListSettingsError,
+        save_display_settings_delta,
+    )
+    if "show_inactive" in stored or "_show_inactive_contract" in stored:
+        raise ClientListSettingsError("PRESENTATION_WRITE_ADMISSION_REQUIRED", 403)
+    result = save_display_settings_delta(
+        stored,
+        update_fields=set(stored),
+    )
+    if clear_cache and result["changed"]:
+        clear_live_probe_cache_matching(
+            lambda key: key == "ui_state.settings_workspace"
+            or key.startswith("ui_state.settings_workspace.")
         )
-    if clear_cache:
-        clear_live_probe_cache()
 
 
 def _normalized_display_settings_for_response(saved: dict[str, Any]) -> dict[str, Any]:

@@ -30,9 +30,9 @@ def _sync_common_hooks() -> None:
     _common.list_subjects_with_effective_state = list_subjects_with_effective_state
 
 
-def list_ui_clients() -> list[dict[str, Any]]:
+def list_ui_clients(*, display_settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     _sync_common_hooks()
-    return _clients.list_ui_clients()
+    return _clients.list_ui_clients(display_settings=display_settings)
 
 
 def filter_ui_clients(
@@ -69,6 +69,7 @@ def list_ui_settings_inventory(
     limit: int = 200,
     include_inactive: bool = False,
     live_observations: bool = True,
+    display_settings: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     _sync_common_hooks()
     return _inventory.list_ui_settings_inventory(
@@ -77,6 +78,7 @@ def list_ui_settings_inventory(
         limit=limit,
         include_inactive=include_inactive,
         live_observations=live_observations,
+        display_settings=display_settings,
     )
 
 
