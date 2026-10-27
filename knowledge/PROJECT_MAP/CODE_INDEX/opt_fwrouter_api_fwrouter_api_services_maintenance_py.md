@@ -23,3 +23,10 @@ without deleting historical traffic/state.
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+
+## Stage 5 retention qualification
+
+Generic cleanup now separates protected audit/security HOLD from ordinary expiry.
+JSONL retention/startup scrub coordinates with appenders through the shared
+`jsonl_io.py` file lease. See [access/retention contract](../../LOGGING_ACCESS_AND_RETENTION.md);
+source qualification does not establish production access or retention capacity.

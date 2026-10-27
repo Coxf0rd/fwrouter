@@ -275,3 +275,5 @@ Stage 5 API client attribution: see
 [`api_client_attribution.py`](backend_fwrouter_api_services_api_client_attribution_py.md)
 and the existing events entry. This adds context/projection contracts, not an
 authentication or logging subsystem.
+
+- [Shared JSONL I/O lease and publication](backend_fwrouter_api_services_jsonl_io_py.md) — existing log owners, not a new store.

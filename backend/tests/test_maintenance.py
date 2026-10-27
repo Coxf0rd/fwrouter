@@ -3,16 +3,19 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sqlite3
 import sys
+from threading import Event, Thread
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from fwrouter_api.core.config import get_settings
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session, get_db_path, initialize_database
+from fwrouter_api.services import maintenance as maintenance_service
 from fwrouter_api.services.jobs import create_job, mark_job_running, mark_job_success
-from fwrouter_api.services.maintenance import run_control_plane_maintenance
+from fwrouter_api.services.maintenance import _cleanup_expired_operational_logs, run_control_plane_maintenance
 import fwrouter_api_maintenance
 
 
@@ -20,6 +23,111 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("FWROUTER_JOB_RESULT_MAX_BYTES", "4096")
     get_settings.cache_clear()
+
+
+def test_operational_log_retention_holds_audit_security_unknown_and_malformed_rows(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    retained = {
+        "audit": '{"event_code":"client.alias_changed","event_category":"audit"}',
+        "denial": '{"event_code":"client_list.mutation_denied","event_category":"operational"}',
+        "conflict": '{"event_code":"client_list.mutation_conflict","event_category":"operational"}',
+        "bad_category": '{"event_code":"legacy.code","event_category":"unknown"}',
+        "malformed": "{truncated",
+        "legacy_operation": "{}",
+        "ordinary_operation": '{"event_code":"apply_failed","event_category":"operational"}',
+    }
+    types = {
+        "audit": "user_action", "denial": "mutation_denied", "conflict": "mutation_conflict",
+        "bad_category": "runtime_failed", "malformed": "runtime_failed",
+        "legacy_operation": "apply_failed", "ordinary_operation": "apply_failed",
+    }
+    with db_session() as connection:
+        for key, details in retained.items():
+            connection.execute(
+                "INSERT INTO operational_logs(event_id,event_type,message,details_json,created_at) VALUES(?,?,?,?,?)",
+                (key, types[key], "fixture", details, "2020-01-01 00:00:00"),
+            )
+        dry = _cleanup_expired_operational_logs(connection, cutoff="2026-10-01 00:00:00", dry_run=True)
+        assert dry["held_count"] == 5, dry
+        assert dry["deleted_count"] == 0
+        assert {row["event_id"] for row in dry["candidates"]} == {"legacy_operation", "ordinary_operation"}
+        result = _cleanup_expired_operational_logs(connection, cutoff="2026-10-01 00:00:00", dry_run=False)
+        assert result["held_count"] == 5
+        assert result["deleted_count"] == 2
+        remaining = {
+            row["event_id"] for row in connection.execute("SELECT event_id FROM operational_logs")
+        }
+    assert remaining == {"audit", "denial", "conflict", "bad_category", "malformed"}
+
+
+def test_operational_log_retention_begins_writer_transaction_before_classification(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as setup:
+        setup.execute(
+            "INSERT INTO operational_logs(event_id,event_type,message,details_json,created_at) "
+            "VALUES('op-lock','apply_failed','fixture','{}','2020-01-01 00:00:00')"
+        )
+
+    connection = sqlite3.connect(get_db_path(), timeout=0, check_same_thread=False)
+    connection.row_factory = sqlite3.Row
+    competitor = sqlite3.connect(get_db_path(), timeout=0)
+    entered = Event()
+    release = Event()
+    actual_hold = maintenance_service._retention_hold
+
+    def pause_classification(payload):
+        entered.set()
+        assert release.wait(timeout=2)
+        return actual_hold(payload)
+
+    monkeypatch.setattr(maintenance_service, "_retention_hold", pause_classification)
+    result_holder: list[dict] = []
+    worker = Thread(target=lambda: result_holder.append(_cleanup_expired_operational_logs(
+        connection, cutoff="2026-10-01 00:00:00", dry_run=False,
+    )))
+    worker.start()
+    assert entered.wait(timeout=2)
+    assert connection.in_transaction
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        competitor.execute(
+            "INSERT INTO operational_logs(event_id,event_type,message,details_json,created_at) "
+            "VALUES('concurrent','apply_failed','fixture','{}','2020-01-01 00:00:00')"
+        )
+    release.set()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert result_holder[0]["deleted_count"] == 1
+    assert connection.in_transaction  # helper preserves caller transaction ownership
+    connection.commit()
+    assert connection.execute(
+        "SELECT count(*) FROM operational_logs WHERE event_id='op-lock'"
+    ).fetchone()[0] == 0
+
+    connection.execute(
+        "INSERT INTO operational_logs(event_id,event_type,message,details_json,created_at) "
+        "VALUES('op-rollback','apply_failed','fixture','{}','2020-01-01 00:00:00')"
+    )
+    connection.commit()
+
+    def failed_classification(_payload):
+        raise RuntimeError("synthetic classification failure")
+
+    monkeypatch.setattr(maintenance_service, "_retention_hold", failed_classification)
+    with pytest.raises(RuntimeError, match="synthetic classification failure"):
+        _cleanup_expired_operational_logs(connection, cutoff="2026-10-01 00:00:00", dry_run=False)
+    assert connection.in_transaction
+    connection.rollback()
+    assert connection.execute(
+        "SELECT count(*) FROM operational_logs WHERE event_id='op-rollback'"
+    ).fetchone()[0] == 1
+    competitor.close()
+    connection.close()
 
 
 def test_control_plane_maintenance_compacts_jobs_and_cleans_apply_versions(

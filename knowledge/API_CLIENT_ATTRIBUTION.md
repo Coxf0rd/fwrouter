@@ -65,3 +65,9 @@ integrity, credential custody, all-worker compatibility and safe log-access
 qualification. Retention changes, log UI redesign, host-admin policy lifecycle
 attribution and adoption by other domain mutations are separate work. Source/CI
 qualification does not establish deployment, production identity or L7 parity.
+
+## Logging access and retention qualification
+
+See [the access/retention contract](LOGGING_ACCESS_AND_RETENTION.md) and
+[the Stage5 audit](audits/stage5_logging_access_retention_2026-10-27/REPORT.md).
+Extended identity remains host-admin-only; no new remote read grant is implied.

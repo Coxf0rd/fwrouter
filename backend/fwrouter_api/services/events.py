@@ -20,6 +20,7 @@ from fwrouter_api.services.event_contract import (
     normalize_event_details,
     sanitize_value,
 )
+from fwrouter_api.services.jsonl_io import append_jsonl
 
 
 EventCategory = Literal["audit", "operational", "diagnostic"]
@@ -372,10 +373,7 @@ def _validate_event_code_category(event_code: str, category: EventCategory) -> s
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-        handle.write("\n")
+    append_jsonl(path, json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def create_event_context(
@@ -450,6 +448,45 @@ def classify_event(
     if normalized.startswith("apply_") or normalized.startswith("runtime_"):
         return "operational"
     return "operational"
+
+
+def known_event_category_for_retention(
+    event_type: str,
+    *,
+    details: dict[str, Any] | None = None,
+    event_code: str | None = None,
+) -> EventCategory | None:
+    """Classify only categories grounded in the existing event contract.
+
+    Normal event reads retain their legacy fallback behavior. Retention instead
+    holds unknown or malformed records because they cannot safely be assumed to
+    be ordinary operational diagnostics.
+    """
+    supplied = details if isinstance(details, dict) else {}
+    code = str(event_code or supplied.get("event_code") or "").strip()
+    if code in CORE_EVENT_CODE_CATALOG:
+        return CORE_EVENT_CODE_CATALOG[code]
+    if "event_category" in supplied:
+        category = str(supplied.get("event_category") or "").strip().lower()
+        if category in {"audit", "operational", "diagnostic"}:
+            return classify_event(event_type, details=supplied, event_code=code)
+        return None
+
+    normalized = str(event_type or "").strip().lower()
+    recognized_pattern = (
+        normalized.startswith("mutation_") or normalized.startswith("core_bypass_")
+        or "config_change" in normalized or normalized.endswith("_updated")
+        or "probe" in normalized or "debug" in normalized
+        or ("materializ" in normalized and "failed" not in normalized)
+        or "drift" in normalized or "failover" in normalized or "switched" in normalized
+        or "failed" in normalized or "failure" in normalized or "error" in normalized
+        or normalized.startswith("apply_") or normalized.startswith("runtime_")
+    )
+    if (normalized in AUDIT_EVENT_TYPES or normalized in OPERATIONAL_EVENT_TYPES
+            or normalized in DIAGNOSTIC_EVENT_TYPES or normalized in DIAGNOSTIC_LEGACY_EVENT_TYPES
+            or recognized_pattern):
+        return classify_event(event_type, details=supplied, event_code=code)
+    return None
 
 
 def _context_from_details(

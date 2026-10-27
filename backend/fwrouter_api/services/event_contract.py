@@ -5,12 +5,13 @@ import json
 import os
 import re
 import stat
-import tempfile
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from fwrouter_api.services.jsonl_io import jsonl_lease, open_jsonl_read, replace_jsonl
 
 
 EVENT_SCHEMA_VERSION = 2
@@ -214,12 +215,14 @@ def scrub_jsonl_files(paths: list[Path]) -> dict[str, int]:
         elif path.is_file() and path.suffix == ".jsonl":
             candidates.append(path)
     for path in candidates:
-        temporary_path: str | None = None
-        try:
-            with path.open("r", encoding="utf-8", errors="replace") as source:
+        with jsonl_lease(path) as lease:
+            try:
+                source = open_jsonl_read(lease, errors="replace")
+            except FileNotFoundError:
+                continue
+            with source:
                 initial_snapshot = os.fstat(source.fileno())
                 signature = _scrub_snapshot(initial_snapshot)
-                mode = stat.S_IMODE(initial_snapshot.st_mode)
                 changed = False
                 scanned_digest = hashlib.sha256()
                 for line in source:
@@ -229,52 +232,35 @@ def scrub_jsonl_files(paths: list[Path]) -> dict[str, int]:
                     records += int(parsed)
 
                 after_scan = os.fstat(source.fileno())
-                current_path = path.stat()
-                if (
-                    _scrub_snapshot(after_scan) != signature
-                    or _scrub_snapshot(current_path) != signature
-                ):
+                current_path = os.stat(lease.basename, dir_fd=lease.directory_fd, follow_symlinks=False)
+                if (_scrub_snapshot(after_scan) != signature
+                        or _scrub_snapshot(current_path) != signature):
                     raise OSError(f"JSONL changed during scrub: {path}")
                 if not changed:
                     continue
 
                 source.seek(0)
-                if (
-                    _scrub_snapshot(os.fstat(source.fileno())) != signature
-                    or _scrub_snapshot(path.stat()) != signature
-                ):
+                if (_scrub_snapshot(os.fstat(source.fileno())) != signature
+                        or _scrub_snapshot(os.stat(
+                            lease.basename, dir_fd=lease.directory_fd, follow_symlinks=False
+                        )) != signature):
                     raise OSError(f"JSONL changed during scrub: {path}")
                 rewritten_digest = hashlib.sha256()
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", dir=path.parent,
-                    prefix=f".{path.name}.", suffix=".scrub.tmp", delete=False,
-                ) as target:
-                    temporary_path = target.name
+
+                def scrubbed_lines():
                     for line in source:
                         rewritten_digest.update(line.encode("utf-8"))
                         output, _line_changed, _parsed = _scrub_jsonl_line(line)
-                        target.write(output)
-                    after_rewrite = os.fstat(source.fileno())
-                    current_path = path.stat()
-                    if (
-                        rewritten_digest.digest() != scanned_digest.digest()
-                        or _scrub_snapshot(after_rewrite) != signature
-                        or _scrub_snapshot(current_path) != signature
-                    ):
+                        yield output
+                    current = os.fstat(source.fileno())
+                    named = os.stat(lease.basename, dir_fd=lease.directory_fd, follow_symlinks=False)
+                    if (rewritten_digest.digest() != scanned_digest.digest()
+                            or _scrub_snapshot(current) != signature
+                            or _scrub_snapshot(named) != signature):
                         raise OSError(f"JSONL changed during scrub: {path}")
-                    target.flush()
-                    os.fsync(target.fileno())
 
-            os.chmod(temporary_path, mode)
-            current_path = path.stat()
-            if _scrub_snapshot(current_path) != signature:
-                raise OSError(f"JSONL changed during scrub: {path}")
-            os.replace(temporary_path, path)
-            temporary_path = None
-            rewritten += 1
-        finally:
-            if temporary_path and os.path.exists(temporary_path):
-                os.unlink(temporary_path)
+                replace_jsonl(lease, scrubbed_lines(), expected=initial_snapshot)
+                rewritten += 1
     return {"files_rewritten": rewritten, "records_scanned": records}
 
 

@@ -161,6 +161,32 @@
   ],
   "path_rules": [
     {
+      "glob": "backend/fwrouter_api/services/jsonl_io.py",
+      "domains": [
+        "events",
+        "maintenance",
+        "database"
+      ]
+    },
+    {
+      "glob": "knowledge/LOGGING_ACCESS_AND_RETENTION.md",
+      "domains": [
+        "events",
+        "maintenance",
+        "api-contract",
+        "jobs",
+        "ui"
+      ]
+    },
+    {
+      "glob": "knowledge/audits/stage5_logging_access_retention_2026-10-27/*",
+      "domains": [
+        "documentation",
+        "events",
+        "maintenance"
+      ]
+    },
+    {
       "glob": "backend/fwrouter_api/services/api_client_attribution.py",
       "domains": [
         "api-contract",
@@ -6589,7 +6615,7 @@
       "execution_group": "local-integration"
     }
   ],
-  "version": "2026.10.27.5",
+  "version": "2026.10.27.6",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
