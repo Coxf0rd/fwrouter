@@ -265,12 +265,24 @@ def verified_presentation_write(request: Request) -> Iterator[None]:
         try:
             identity = _verify_request(request)
             grant = _Grant(identity)
+            from fwrouter_api.services.api_client_attribution import (
+                build_attribution_snapshot, current_api_request_id,
+                reset_attribution_snapshot, set_attribution_snapshot,
+            )
+            from fwrouter_api.services.event_contract import current_event_context
+            event_context = current_event_context()
+            attribution_token = set_attribution_snapshot(build_attribution_snapshot(
+                identity,
+                api_request_id=current_api_request_id(),
+                caller_request_id=event_context.get("request_id"),
+            ))
             marker = _GRANT.set(grant)
             try:
                 yield
             finally:
                 grant.revoke()
                 _GRANT.reset(marker)
+                reset_attribution_snapshot(attribution_token)
         finally:
             client_registry._unlock(lease_fd)
 

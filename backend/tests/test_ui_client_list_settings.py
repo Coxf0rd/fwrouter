@@ -114,7 +114,7 @@ def test_conditional_client_list_patch_is_strict_and_advances_field_revision(mon
         assert current["incarnation"]
         assert saved.headers["etag"] == current["etag"]
         assert current["persistence_status"] == "persisted"
-        assert current["audit_delivery_status"] in {"delivered", "unconfirmed"}
+        assert current["audit_delivery_status"] == "delivered"
         stale_same_value = client.patch(
             "/api/v2/ui/settings/client-list", json={"show_inactive": True},
             headers={"Authorization": f"Bearer {token}", "Origin": "https://router.example.test",
@@ -386,12 +386,12 @@ def test_malformed_metadata_and_revision_overflow_fail_closed(monkeypatch, tmp_p
                 patch_show_inactive(False, current["etag"])
 
 
-def test_failed_audit_after_commit_reports_persisted_unconfirmed(monkeypatch, tmp_path):
+def test_failed_audit_rolls_back_setting_and_reports_failure(monkeypatch, tmp_path):
     token, client = _api(monkeypatch, tmp_path)
     with client:
         before = client.get("/api/v2/ui/settings/client-list").headers["etag"]
         monkeypatch.setattr(
-            "fwrouter_api.services.logs.write_operational_log",
+            "fwrouter_api.services.events.write_audit_event",
             lambda **_kwargs: (_ for _ in ()).throw(OSError("test audit failure")),
         )
         response = client.patch(
@@ -399,11 +399,9 @@ def test_failed_audit_after_commit_reports_persisted_unconfirmed(monkeypatch, tm
             headers={"Authorization": f"Bearer {token}", "Origin": "https://router.example.test",
                      "If-Match": before},
         )
-        assert response.status_code == 200
-        item = response.json()["data"]["client_list"]
-        assert item["persistence_status"] == "persisted"
-        assert item["audit_delivery_status"] == "unconfirmed"
-        assert read_client_list_settings()["show_inactive"] is True
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "CLIENT_LIST_AUDIT_WRITE_FAILED"
+        assert read_client_list_settings()["show_inactive"] is False
 
 
 def test_sqlite_full_synchronous_is_set_before_immediate_write_and_noop_does_not_revise(monkeypatch, tmp_path):

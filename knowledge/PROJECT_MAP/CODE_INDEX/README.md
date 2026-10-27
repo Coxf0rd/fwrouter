@@ -269,3 +269,9 @@ missing/altered/ambiguous evidence. See `knowledge/NATIVE_PROOF.md`.
 
 This first package does not persist client identity in event storage or change
 log views/retention. Production activation remains separately blocked.
+
+
+Stage 5 API client attribution: see
+[`api_client_attribution.py`](backend_fwrouter_api_services_api_client_attribution_py.md)
+and the existing events entry. This adds context/projection contracts, not an
+authentication or logging subsystem.

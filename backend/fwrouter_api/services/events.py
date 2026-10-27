@@ -38,6 +38,9 @@ CORE_EVENT_CODE_CATALOG: dict[str, EventCategory] = {
     "client.deleted": "audit",
     "client.mode_changed": "audit",
     "server.preferences_changed": "audit",
+    "client_list.show_inactive_changed": "audit",
+    "client_list.mutation_denied": "operational",
+    "client_list.mutation_conflict": "operational",
     "server.vpn_auto_membership_changed": "audit",
     "server.assignment_changed": "audit",
     "module.desired_state_changed": "audit",
@@ -475,7 +478,8 @@ def _details_with_event_model(
     category: EventCategory,
     context: EventContext,
 ) -> dict[str, Any]:
-    payload = sanitize_value(details or {})
+    from fwrouter_api.services.api_client_attribution import apply_attribution
+    payload = sanitize_value(apply_attribution(details or {}))
     if not isinstance(payload, dict):
         payload = {}
     payload["event_category"] = category
@@ -594,6 +598,8 @@ def write_audit_event(
         severity="info", component=component,
         event_category="audit", event_code=_validate_event_code_category(event_code, "audit"),
         event_type=legacy_event_type or action,
+        api_identity_snapshot=enriched.get("api_identity") if isinstance(enriched.get("api_identity"), dict) else None,
+        server_api_request_id=enriched.get("api_request_id") if isinstance(enriched.get("api_request_id"), str) else None,
     )
     row = _insert_operational_row(
         event_id=event_id,
@@ -645,6 +651,8 @@ def write_operational_event(
         enriched, event_id=event_id, timestamp=timestamp, severity=severity,
         component=component, event_category=category,
         event_code=stable_code, event_type=event_type,
+        api_identity_snapshot=enriched.get("api_identity") if isinstance(enriched.get("api_identity"), dict) else None,
+        server_api_request_id=enriched.get("api_request_id") if isinstance(enriched.get("api_request_id"), str) else None,
     )
     if reconcile_state:
         enriched["reconcile_state"] = reconcile_state
@@ -680,6 +688,8 @@ def write_diagnostic_event(
         enriched, event_id=event_id, timestamp=timestamp, severity=severity,
         component=component, event_category="diagnostic",
         event_code=stable_code, event_type=event_type,
+        api_identity_snapshot=enriched.get("api_identity") if isinstance(enriched.get("api_identity"), dict) else None,
+        server_api_request_id=enriched.get("api_request_id") if isinstance(enriched.get("api_request_id"), str) else None,
     )
     event = DiagnosticEvent(
         event_id=event_id,

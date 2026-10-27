@@ -157,3 +157,16 @@ health evidence remains fresh; effective latency stays null without readback.
 - Settings is configuration-only. `/servers` and logical-member reads project local provider state through the existing Admin renderer: `Provider vpn`, locations, members, standard Auto/priority/latency/Health. Rendering, tabs, locale, normal selector/ping/Health reads do not poll the provider.
 
 Multiple bindings/accounts use per-source credentials and resource selections. Schema 23 environment bootstrap is migration-only for existing matching bindings. This correction is not deployed or live-verified.
+
+
+### Verified API client attribution — Stage 5
+
+The bounded [attribution contract](API_CLIENT_ATTRIBUTION.md) distinguishes
+server-verified registry identity from caller claims and preserves existing domain
+owners. `X-FWRouter-Request-ID` identifies the server request; compatible
+`X-Request-ID` remains untrusted correlation. Client-list persistence and its
+required audit share the owner transaction. Identity metadata in stored evidence
+is excluded from existing public event/log/diagnostic/job projections; no sensitive
+read scope or public identity viewer is introduced. Other legacy management routes
+are not retrospectively authenticated. Production activation remains separately
+blocked; source qualification does not authorize deployment.

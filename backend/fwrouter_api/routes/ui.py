@@ -29,12 +29,14 @@ from fwrouter_api.services.ui_state import (
     save_ui_display_settings,
 )
 from fwrouter_api.services.ui_state_settings import get_ui_display_snapshot
+from fwrouter_api.services.api_client_attribution import redact_http_attribution
 from fwrouter_api.services.presentation_client_list_admission import (
     PresentationAdmissionError,
     verified_presentation_write,
 )
 from fwrouter_api.services.ui_client_list_settings import (
     ClientListSettingsError,
+    _record_client_list_denial,
     patch_show_inactive,
     read_client_list_settings,
 )
@@ -163,16 +165,27 @@ def get_client_list_settings_endpoint(request: Request) -> Response:
 async def patch_client_list_settings_endpoint(request: Request) -> Response:
     try:
         with verified_presentation_write(request):
-            payload = await _read_bounded_json_object(request)
-            if set(payload) != {"show_inactive"} or type(payload.get("show_inactive")) is not bool:
-                raise ClientListSettingsError("CLIENT_LIST_BOOLEAN_REQUIRED", 422)
-            if_match = _single_header(request, b"if-match")
-            if if_match is None:
-                raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_REQUIRED", 428)
-            if not re.fullmatch(r'"cli1-[0-9a-f]{64}"', if_match):
-                raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_INVALID", 400)
-            resource = patch_show_inactive(payload["show_inactive"], if_match)
+            try:
+                payload = await _read_bounded_json_object(request)
+                if set(payload) != {"show_inactive"} or type(payload.get("show_inactive")) is not bool:
+                    raise ClientListSettingsError("CLIENT_LIST_BOOLEAN_REQUIRED", 422)
+                if_match = _single_header(request, b"if-match")
+                if if_match is None:
+                    raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_REQUIRED", 428)
+                if not re.fullmatch(r'"cli1-[0-9a-f]{64}"', if_match):
+                    raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_INVALID", 400)
+                resource = patch_show_inactive(payload["show_inactive"], if_match)
+            except ClientListSettingsError as exc:
+                if not exc.denial_recorded:
+                    _record_client_list_denial(
+                        exc.code, conflict=exc.status_code in {409, 412, 428}, error=exc,
+                    )
+                raise
     except (ClientListSettingsError, PresentationAdmissionError) as exc:
+        if not getattr(exc, "denial_recorded", False):
+            _record_client_list_denial(
+                exc.code, conflict=getattr(exc, "status_code", 0) in {409, 412, 428}, error=exc,
+            )
         return _client_list_error(exc)
     return JSONResponse(
         content=ApiResponse(ok=True, data={"client_list": _client_list_data(resource)}).model_dump(mode="json"),
@@ -228,7 +241,7 @@ def _fetch_external_ip(*, proxy_url: str | None = None) -> tuple[str, str | None
 
 @router.get("/ui/router-summary", response_model=ApiResponse)
 def get_ui_router_summary_endpoint() -> ApiResponse:
-    return ApiResponse(ok=True, data={"router": get_ui_router_summary()})
+    return ApiResponse(ok=True, data=redact_http_attribution({"router": get_ui_router_summary()}))
 
 
 @router.get("/ui/external-ip", response_model=ApiResponse)
@@ -281,7 +294,7 @@ def get_ui_clients_endpoint() -> ApiResponse:
 @router.get("/ui/settings/workspace", response_model=ApiResponse)
 def get_ui_settings_workspace_endpoint() -> ApiResponse:
     try:
-        return ApiResponse(ok=True, data={"workspace": get_ui_settings_workspace()})
+        return ApiResponse(ok=True, data=redact_http_attribution({"workspace": get_ui_settings_workspace()}))
     except ClientListSettingsError as exc:
         return _client_list_error(exc)
 
@@ -413,23 +426,52 @@ def get_ui_display_settings_endpoint() -> ApiResponse:
 
 @router.put("/ui/settings/display", response_model=ApiResponse)
 async def save_ui_display_settings_endpoint(request: Request) -> Response:
+    raw_payload: dict[str, Any] = {}
     try:
-        raw_payload = await _read_bounded_json_object(request, maximum=1024 * 1024)
+        try:
+            raw_payload = await _read_bounded_json_object(request, maximum=1024 * 1024)
+        except ClientListSettingsError as exc:
+            # A malformed legacy display PUT may still be an attempted
+            # protected-field mutation. Authenticate supplied credentials
+            # before recording it so a valid actor is retained.
+            if request.headers.get("authorization"):
+                try:
+                    with verified_presentation_write(request):
+                        _record_client_list_denial(exc.code, error=exc)
+                except PresentationAdmissionError as admission_exc:
+                    _record_client_list_denial(admission_exc.code, error=admission_exc)
+                    raise
+            else:
+                _record_client_list_denial(exc.code, error=exc)
+            raise
         if "show_inactive" in raw_payload:
-            if type(raw_payload["show_inactive"]) is not bool:
-                raise ClientListSettingsError("CLIENT_LIST_BOOLEAN_REQUIRED", 422)
             with verified_presentation_write(request):
-                if_match = _single_header(request, b"if-match")
-                if if_match is None:
-                    raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_REQUIRED", 428)
-                if not re.fullmatch(r'"cli1-[0-9a-f]{64}"', if_match):
-                    raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_INVALID", 400)
-                payload = UiDisplaySettingsRequest.model_validate(raw_payload).model_dump(exclude_none=True)
-                result = save_ui_display_settings(payload, client_list_expected_etag=if_match)
+                try:
+                    if type(raw_payload["show_inactive"]) is not bool:
+                        raise ClientListSettingsError("CLIENT_LIST_BOOLEAN_REQUIRED", 422)
+                    if_match = _single_header(request, b"if-match")
+                    if if_match is None:
+                        raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_REQUIRED", 428)
+                    if not re.fullmatch(r'"cli1-[0-9a-f]{64}"', if_match):
+                        raise ClientListSettingsError("CLIENT_LIST_PRECONDITION_INVALID", 400)
+                    payload = UiDisplaySettingsRequest.model_validate(raw_payload).model_dump(exclude_none=True)
+                    result = save_ui_display_settings(payload, client_list_expected_etag=if_match)
+                except ClientListSettingsError as exc:
+                    if not exc.denial_recorded:
+                        _record_client_list_denial(
+                            exc.code, conflict=exc.status_code in {409, 412, 428}, error=exc,
+                        )
+                    raise
         else:
             payload = UiDisplaySettingsRequest.model_validate(raw_payload).model_dump(exclude_none=True)
             result = save_ui_display_settings(payload)
     except (ClientListSettingsError, PresentationAdmissionError) as exc:
+        if not getattr(exc, "denial_recorded", False) and (
+            "show_inactive" in raw_payload or isinstance(exc, PresentationAdmissionError)
+        ):
+            _record_client_list_denial(
+                exc.code, conflict=getattr(exc, "status_code", 0) in {409, 412, 428}, error=exc,
+            )
         return _client_list_error(exc)
     except Exception as exc:
         from pydantic import ValidationError

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Query
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.services.events import get_event_by_id, list_recent_events, safe_actor_identifier, safe_human_label, summarize_events
+from fwrouter_api.services.api_client_attribution import redact_http_attribution
 
 
 router = APIRouter()
@@ -314,11 +315,11 @@ def list_recent_events_endpoint(
             projected["details"] = projected_details
             return projected
 
-        return {
+        return redact_http_attribution({
             category: [project_event(event) for event in events[category]]
             for category in ("audit", "operational", "diagnostic")
-        }
-    return {**events, "summary": summarize_events(events).model_dump(mode="json")}
+        })
+    return redact_http_attribution({**events, "summary": summarize_events(events).model_dump(mode="json")})
 
 
 def _membership_ids(value: object) -> list[str]:
@@ -331,4 +332,4 @@ def _membership_ids(value: object) -> list[str]:
 @router.get("/events/{event_id}")
 def get_event_endpoint(event_id: str) -> dict[str, object]:
     event = get_event_by_id(event_id)
-    return {"event_id": event_id, "found": event is not None, "event": event}
+    return redact_http_attribution({"event_id": event_id, "found": event is not None, "event": event})

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query
 
 from fwrouter_api.services import diagnostics
 from fwrouter_api.services.event_contract import sanitize_value
+from fwrouter_api.services.api_client_attribution import redact_http_attribution
 
 
 router = APIRouter()
@@ -33,9 +34,9 @@ def get_diagnose_endpoint(
                 )
                 if key in section
             }
-        return sanitize_value({
+        return redact_http_attribution(sanitize_value({
             "status": report["status"],
             "generated_at": report["generated_at"],
             "sections": sections,
-        })
-    return sanitize_value(report)
+        }))
+    return redact_http_attribution(sanitize_value(report))

@@ -55,3 +55,13 @@ events are classified as diagnostic for the new operational journal.
 ## Rules/routing event catalog (2026-09-27)
 
 The Core catalog includes stable audit codes for manual-rule draft/activation and global routing intent changes. UI translations resolve by `event_code` in both supported locales.
+
+## Stage 5 verified API attribution
+
+See [API client attribution](../../API_CLIENT_ATTRIBUTION.md). Verified request
+identity comes from the scoped presentation registry admission, not caller
+attribution. The presentation owner uses `write_audit_event(connection=...)`
+inside the intent transaction. Existing event context and job storage carry a
+snapshot without authority. Existing HTTP readers expose safe projections and
+withhold new sensitive identity metadata, including nested/full records. No event
+retention, domain generation owner, native apply or recovery protocol changes.

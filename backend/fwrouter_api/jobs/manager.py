@@ -14,6 +14,10 @@ from fwrouter_api.services.event_contract import (
     reset_event_context,
     set_event_context,
 )
+from fwrouter_api.services.api_client_attribution import (
+    attribution_from_snapshot,
+    current_attribution_snapshot,
+)
 from fwrouter_api.services.jobs import (
     cleanup_stale_running_jobs,
     create_job,
@@ -58,13 +62,17 @@ class JobManager:
     ) -> dict[str, Any]:
         """Create a queued job in SQLite."""
 
+        event_context = current_event_context()
+        attribution = current_attribution_snapshot()
+        if attribution is not None:
+            event_context["_api_identity"] = attribution
         return create_job(
             job_type,
             lock_key=lock_key,
             requested_by=requested_by,
             input_data=input_data,
             artifact_dir=artifact_dir,
-            event_context=current_event_context(),
+            event_context=event_context,
         )
 
     def get_job(self, job_id: str) -> dict[str, Any] | None:
@@ -215,14 +223,6 @@ class JobManager:
             return job
 
         handler = self._get_handler(job["job_type"])
-
-        if handler is None:
-            return mark_job_failed(
-                job_id,
-                error_code="JOB_HANDLER_NOT_REGISTERED",
-                error_message=f"No handler registered for job type: {job['job_type']}",
-            )
-
         inherited_context = job.get("event_context") if isinstance(job.get("event_context"), dict) else {}
         job_context = dict(inherited_context)
         job_context.update(
@@ -232,37 +232,43 @@ class JobManager:
         )
         context_token = set_event_context(**job_context)
         try:
-            result = handler(job) or {}
-        except Exception as exc:
-            write_technical_log(
-                component="jobs-manager",
-                level="warning",
-                event_type="job_handler_exception",
-                message="Job handler raised an exception.",
-                details={
-                    "job_id": job_id,
-                    "job_type": job["job_type"],
-                    "lock_key": job.get("lock_key"),
-                    "error": str(exc),
-                },
-            )
-            return mark_job_failed(
-                job_id,
-                error_code="JOB_HANDLER_FAILED",
-                error_message=str(exc),
-            )
+            with attribution_from_snapshot(inherited_context.get("_api_identity")):
+                if handler is None:
+                    return mark_job_failed(
+                        job_id,
+                        error_code="JOB_HANDLER_NOT_REGISTERED",
+                        error_message=f"No handler registered for job type: {job['job_type']}",
+                    )
+                try:
+                    result = handler(job) or {}
+                except Exception as exc:
+                    write_technical_log(
+                        component="jobs-manager",
+                        level="warning",
+                        event_type="job_handler_exception",
+                        message="Job handler raised an exception.",
+                        details={
+                            "job_id": job_id,
+                            "job_type": job["job_type"],
+                            "lock_key": job.get("lock_key"),
+                            "error": str(exc),
+                        },
+                    )
+                    return mark_job_failed(
+                        job_id,
+                        error_code="JOB_HANDLER_FAILED",
+                        error_message=str(exc),
+                    )
+                if result.get("job_status") == "failed":
+                    return mark_job_failed(
+                        job_id,
+                        error_code=str(result.get("error_code") or "JOB_HANDLER_FAILED"),
+                        error_message=str(result.get("error_message") or "Job handler reported failure."),
+                        result=result,
+                    )
+                return mark_job_success(job_id, result=result)
         finally:
             reset_event_context(context_token)
-
-        if result.get("job_status") == "failed":
-            return mark_job_failed(
-                job_id,
-                error_code=str(result.get("error_code") or "JOB_HANDLER_FAILED"),
-                error_message=str(result.get("error_message") or "Job handler reported failure."),
-                result=result,
-            )
-
-        return mark_job_success(job_id, result=result)
 
 
 DEFAULT_JOB_MANAGER = JobManager()

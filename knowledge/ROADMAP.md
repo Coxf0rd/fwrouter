@@ -630,3 +630,21 @@ separate. Production activation, custody/proxy/origin qualification and deployed
 client migration are NOT performed or authorized by this package. Local canonical
 roadmap contains newer audit/design context; this append preserves prior source
 history and is not a claim that its full local contents were published.
+
+
+## Stage 5 — audit attribution integration (2026-10-27, qualification pending)
+
+PR54 is owner-merged at main `cb36797238e3198ca90363413c93bd2c3ea7e996`;
+actual-main mandatory CI and trusted-checkout offline evidence verification PASS.
+This next bounded source package adopts verified registry identity in the existing
+presentation-owner audit and request/job correlation, while excluding identity
+from existing unprivileged event/log/diagnostic/job projections. See
+[attribution contract](API_CLIENT_ATTRIBUTION.md). Existing unadopted management
+operations remain explicitly unverified. No new log store, access-log subsystem,
+registry scope, retention or native/recovery owner is introduced.
+
+Implementation, independent review and exact-HEAD PR CI remain separate gates.
+Production activation and rich HTTP identity reads remain BLOCKED until separately
+qualified proxy/TLS/origin, credential custody, worker compatibility and log-access
+authorization. No deployment, production changes or later package is authorized.
+This source checkpoint does not claim to publish all newer local canonical evidence.

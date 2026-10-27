@@ -26,6 +26,7 @@ class ClientListSettingsError(RuntimeError):
         self.code = code
         self.status_code = status_code
         self.retryable = retryable
+        self.denial_recorded = False
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -155,7 +156,12 @@ def _commit_display_delta(
     if changed:
         _write_row(connection, row)
     raw_written = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return {**_decode(raw_written), "changed": changed, "protected_changed": protected_changed}
+    return {
+        **_decode(raw_written),
+        "changed": changed,
+        "protected_changed": protected_changed,
+        "previous_value": current["show_inactive"],
+    }
 
 
 def _require_grant() -> None:
@@ -166,6 +172,46 @@ def _require_grant() -> None:
         require_presentation_write_grant()
     except PresentationAdmissionError as exc:
         raise ClientListSettingsError(exc.code, exc.status_code) from exc
+
+
+def _record_client_list_denial(
+    code: str,
+    *,
+    conflict: bool = False,
+    error: Exception | None = None,
+) -> None:
+    """Emit a bounded, fixed-code aggregate for rejected write attempts."""
+    if error is not None:
+        error.denial_recorded = True
+    try:
+        from fwrouter_api.services.api_client_attribution import (
+            current_attribution_snapshot, prepare_denial_event,
+        )
+        from fwrouter_api.services.logs import write_operational_log
+        snapshot = current_attribution_snapshot()
+        aggregation = prepare_denial_event(code, snapshot=snapshot)
+        if aggregation is None:
+            return
+        event_type = "client_list_mutation_conflict" if conflict else "client_list_mutation_denied"
+        event_code = "client_list.mutation_conflict" if conflict else "client_list.mutation_denied"
+        write_operational_log(
+            event_type=event_type,
+            message="Client-list visibility mutation was not committed.",
+            level="warning",
+            event_category="operational",
+            event_code=event_code,
+            operation="show_inactive_mutation",
+            outcome="conflict" if conflict else "denied",
+            details={
+                "field": "show_inactive",
+                "error_code": code[:96],
+                "route": "/api/v2/ui/settings/client-list",
+                **aggregation,
+            },
+        )
+    except Exception:
+        # Denial telemetry is best effort; it must not replace the real 4xx.
+        return
 
 
 def _run_write(delta: dict[str, Any], *, protected_value: bool | None = None,
@@ -183,14 +229,49 @@ def _run_write(delta: dict[str, Any], *, protected_value: bool | None = None,
             _require_grant()
         result = _commit_display_delta(connection, delta, protected_value=protected_value,
                                        expected_etag=expected_etag)
+        if result["protected_changed"]:
+            from fwrouter_api.services.api_client_attribution import current_attribution_snapshot
+            from fwrouter_api.services.events import write_audit_event
+            attribution = current_attribution_snapshot() or {}
+            assurance = attribution.get("assurance")
+            try:
+                write_audit_event(
+                    actor="api-client" if assurance == "credential_bound" else "presentation-operator",
+                    actor_attribution=(
+                        "credential_bound_client" if assurance == "credential_bound"
+                        else "legacy_capability_unverified"
+                    ),
+                    source="presentation_api",
+                    action="client_list.show_inactive",
+                    event_code="client_list.show_inactive_changed",
+                    legacy_event_type="ui_client_list_visibility_updated",
+                    result="success",
+                    previous_value=result["previous_value"],
+                    new_value=result["show_inactive"],
+                    details={
+                        "field": "show_inactive",
+                        "incarnation": result["incarnation"],
+                        "revision": result["revision"],
+                        "outcome": "intent_committed",
+                    },
+                    connection=connection,
+                )
+            except Exception as exc:
+                raise ClientListSettingsError("CLIENT_LIST_AUDIT_WRITE_FAILED", 503) from exc
         connection.commit()
     except sqlite3.OperationalError as exc:
         connection.rollback()
         if "locked" in str(exc).lower() or "busy" in str(exc).lower():
             raise ClientListSettingsError("CLIENT_LIST_WRITER_BUSY", 503, retryable=True) from exc
         raise
-    except Exception:
+    except Exception as exc:
         connection.rollback()
+        if isinstance(exc, ClientListSettingsError):
+            _record_client_list_denial(
+                exc.code,
+                conflict=exc.status_code in {409, 412, 428},
+                error=exc,
+            )
         raise
     finally:
         connection.close()
@@ -201,22 +282,9 @@ def _run_write(delta: dict[str, Any], *, protected_value: bool | None = None,
             or key.startswith("ui_state.settings_workspace.")
         )
     result["persistence_status"] = "persisted" if result["changed"] else "unchanged"
-    result["audit_delivery_status"] = "not_attempted"
-    if result["protected_changed"]:
-        try:
-            from fwrouter_api.services.logs import write_operational_log
-            write_operational_log(
-                event_type="ui_client_list_visibility_updated",
-                message="Client-list visibility preference updated.",
-                details={
-                    "field": "show_inactive",
-                    "incarnation": result["incarnation"],
-                    "revision": result["revision"],
-                },
-            )
-            result["audit_delivery_status"] = "delivered"
-        except Exception:
-            result["audit_delivery_status"] = "unconfirmed"
+    # The setting and typed audit row committed in the same SQLite transaction.
+    # Preserve the existing response vocabulary consumed by the API-first CLI.
+    result["audit_delivery_status"] = "delivered" if result["protected_changed"] else "not_attempted"
     return result
 
 

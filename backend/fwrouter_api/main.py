@@ -159,14 +159,23 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def event_request_context(request, call_next):
+        # Preserve the established caller correlation ID contract while adding
+        # an independent server-owned ID for verified attribution.
         request_id = safe_request_id(request.headers.get("X-Request-ID")) or str(uuid4())
+        api_request_id = str(uuid4())
+        from fwrouter_api.services.api_client_attribution import (
+            reset_api_request_id, set_api_request_id,
+        )
         context_token = set_event_context(request_id=request_id, correlation_id=request_id)
+        api_request_token = set_api_request_id(api_request_id)
         try:
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
+            response.headers["X-FWRouter-Request-ID"] = api_request_id
             return response
         finally:
             reset_event_context(context_token)
+            reset_api_request_id(api_request_token)
 
     app.include_router(system_router, prefix=API_PREFIX)
     app.include_router(system_subjects_router, prefix=API_PREFIX)
