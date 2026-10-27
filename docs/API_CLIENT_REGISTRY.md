@@ -174,3 +174,18 @@ output is a different new private file. `cutover` is an explicitly authorized
 operation only after custody, worker compatibility and client migration have
 been qualified. There is no `rollback-to-legacy` command. This package does not
 add online creation/renaming/revocation or show these identities in event logs.
+
+## Subsequent opt-in secure event read scope
+
+The Stage5 secure-reader package adds the explicit `events.read` scope to the
+same bounded root-controlled registry. Existing credentials are not promoted;
+creation still requires an explicit scope list and protected secret destination.
+It grants only the [bounded secure event projection](../knowledge/SECURE_EVENT_READING.md).
+It grants no presentation mutation, maintenance or other API authority. Existing
+presentation/maintenance capabilities do not grant event read access.
+
+Use only after completed registry cutover and separately qualified all-worker,
+transport, proxy/TLS/origin, custody and access prerequisites. Older workers may
+reject a policy containing this new scope. Do not roll back host policy or revive
+shared credentials to bypass that failure. No source test activates the deployed
+registry, opens a listener/proxy, or issues production credentials.

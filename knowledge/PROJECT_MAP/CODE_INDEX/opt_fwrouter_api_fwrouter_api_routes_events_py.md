@@ -34,3 +34,10 @@ repair or change runtime.
 - Journal initial loading remains `view=summary`. Full event evidence is loaded only on advanced disclosure and never replaces the safe ordinary projection.
 - Safe event-time object labels take precedence. `entity_label_source` marks `event_snapshot`, `current`, or `missing`; legacy current-name lookups are not historical snapshots. Missing old labels/values are not reconstructed. Selection/assignment transitions use safe `server_label` snapshots; identity references remain technical.
 - For legacy `vpn_auto_server_switched` rows that have no envelope actor, summary may promote `details.requested_by` through `safe_actor_identifier`; the raw field stays out of details. Existing safe previous/new server labels, reason, result, and source remain in the bounded summary allowlist.
+
+## Stage5 separate secure reader
+
+The explicit `/events/secure/recent` route uses independently provisioned
+`events.read`, registry-only admission and an allowlist projection. Existing full,
+summary and by-ID readers keep reserved-identity redaction. The event writer and
+retention owners are unchanged; see [the secure reader](backend_fwrouter_api_services_secure_events_py.md).
