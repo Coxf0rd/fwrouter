@@ -4573,6 +4573,70 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertFalse(qualified_xray_docker._container_is_owned(
             owned, name="native-xray-readback-test-a1b2c3d4e5f6", nonce="b" * 32))
 
+    def test_qualified_xray_cleanup_requires_owned_image_and_successful_empty_inventories(self):
+        nonce = "a" * 32
+        image_id = "sha256:" + "b" * 64
+        owned_image = {"Id": image_id, "Config": {"Labels": {
+            launcher.OWNER_LABEL: launcher.OWNER_VALUE, launcher.RUN_LABEL: nonce,
+        }}}
+        self.assertTrue(qualified_xray_docker._image_is_owned(
+            owned_image, image_id=image_id, nonce=nonce))
+        for modified in (
+            {**owned_image, "Id": "sha256:" + "c" * 64},
+            {"Id": image_id, "Config": {"Labels": {
+                launcher.OWNER_LABEL: "foreign", launcher.RUN_LABEL: nonce,
+            }}},
+            {"Id": image_id, "Config": {"Labels": {
+                launcher.OWNER_LABEL: launcher.OWNER_VALUE, launcher.RUN_LABEL: "d" * 32,
+            }}},
+        ):
+            with self.subTest(image=modified):
+                self.assertFalse(qualified_xray_docker._image_is_owned(
+                    modified, image_id=image_id, nonce=nonce))
+
+        inventories = (
+            ("owned image", 10, ["docker", "image", "ls", "--all", "--quiet", "--no-trunc",
+             "--filter", f"label={launcher.OWNER_LABEL}={launcher.OWNER_VALUE}",
+             "--filter", f"label={launcher.RUN_LABEL}={nonce}"]),
+            ("owned container", 20, ["docker", "ps", "--all", "--quiet", "--no-trunc",
+             "--filter", f"label={launcher.OWNER_LABEL}={launcher.OWNER_VALUE}",
+             "--filter", f"label={launcher.RUN_LABEL}={nonce}"]),
+        )
+        env = {"PATH": "/usr/bin"}
+        for resource_name, timeout, argv in inventories:
+            with self.subTest(resource=resource_name):
+                with mock.patch.object(qualified_xray_docker, "_cleanup_command",
+                                       return_value=subprocess.CompletedProcess(argv, 0, b"", b"")) as command:
+                    qualified_xray_docker._verify_empty_inventory(
+                        argv, env=env, timeout=timeout, resource_name=resource_name)
+                command.assert_called_once_with(argv, env=env, timeout=timeout)
+
+                for output in (b"\n", b"sha256:" + b"e" * 64, b"malformed inventory"):
+                    with self.subTest(output=output), mock.patch.object(
+                            qualified_xray_docker, "_cleanup_command",
+                            return_value=subprocess.CompletedProcess(argv, 0, output, b"")):
+                        with self.assertRaises(qualified_xray_docker.launcher.NotRun):
+                            qualified_xray_docker._verify_empty_inventory(
+                                argv, env=env, timeout=timeout, resource_name=resource_name)
+                with mock.patch.object(qualified_xray_docker, "_cleanup_command",
+                                       return_value=subprocess.CompletedProcess(argv, 0, None, b"")):
+                    with self.assertRaises(qualified_xray_docker.launcher.NotRun):
+                        qualified_xray_docker._verify_empty_inventory(
+                            argv, env=env, timeout=timeout, resource_name=resource_name)
+
+                # Daemon and permission errors, plus timeout, must propagate as
+                # cleanup failures rather than being interpreted as absence.
+                for failure in (
+                    subprocess.CalledProcessError(1, argv, stderr=b"Cannot connect to daemon"),
+                    subprocess.CalledProcessError(1, argv, stderr=b"permission denied"),
+                    subprocess.TimeoutExpired(argv, timeout),
+                ):
+                    with self.subTest(failure=type(failure).__name__), mock.patch.object(
+                            qualified_xray_docker, "_cleanup_command", side_effect=failure):
+                        with self.assertRaises(type(failure)):
+                            qualified_xray_docker._verify_empty_inventory(
+                                argv, env=env, timeout=timeout, resource_name=resource_name)
+
 
     def test_native_inbound_users_response_accepts_omitted_empty_field_only(self):
         def reply(payload, *, ok=True):

@@ -142,6 +142,13 @@ def _container_is_owned(info: dict[str, Any], *, name: str, nonce: str) -> bool:
             and labels.get(RUN_LABEL) == nonce and info.get("Name", "").lstrip("/") == name)
 
 
+def _image_is_owned(info: dict[str, Any], *, image_id: str, nonce: str) -> bool:
+    config = info.get("Config") if isinstance(info, dict) else None
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    return (isinstance(labels, dict) and info.get("Id") == image_id
+            and labels.get(OWNER_LABEL) == launcher.OWNER_VALUE and labels.get(RUN_LABEL) == nonce)
+
+
 def _record_cleanup_failure(receipt: dict[str, Any], operation: str, exc: Exception) -> None:
     details: dict[str, Any] = {"operation": operation, "error_class": type(exc).__name__}
     if isinstance(exc, subprocess.CalledProcessError):
@@ -182,6 +189,13 @@ def _cleanup_command(argv: list[str], *, env: dict[str, str], timeout: int) -> s
             exc.diagnostic_stderr_omitted = True
         raise exc
     return result
+
+
+def _verify_empty_inventory(argv: list[str], *, env: dict[str, str], timeout: int,
+                            resource_name: str) -> None:
+    result = _cleanup_command(argv, env=env, timeout=timeout)
+    if not isinstance(result.stdout, bytes) or result.stdout != b"":
+        raise launcher.NotRun(f"qualified Xray {resource_name} cleanup inventory was not exactly empty")
 
 
 def _digest_sources() -> str:
@@ -436,15 +450,20 @@ def run(env: dict[str, str], facts: dict[str, Any]) -> dict[str, Any]:
                 cleanup_operation = "inspect_owned_image"
                 image_rows = _json_result(_docker([docker, "image", "inspect", image_id], env=docker_env))
                 if (not isinstance(image_rows, list) or len(image_rows) != 1
-                        or image_rows[0].get("Config", {}).get("Labels", {}).get(RUN_LABEL) != nonce):
+                        or not _image_is_owned(image_rows[0], image_id=image_id, nonce=nonce)):
                     raise launcher.NotRun("qualified Xray cleanup refused an unowned image")
                 cleanup_operation = "remove_owned_image"
                 _cleanup_command([docker, "image", "rm", image_id], env=docker_env, timeout=30)
                 cleanup_operation = "verify_owned_image_absent"
-                absent = subprocess.run([docker, "image", "inspect", image_id], cwd=ROOT, env=docker_env,
-                                        capture_output=True, timeout=10, check=False)
-                if absent.returncode == 0:
-                    raise launcher.NotRun("qualified Xray image cleanup was not confirmed")
+                _verify_empty_inventory([docker, "image", "ls", "--all", "--quiet", "--no-trunc",
+                    "--filter", f"label={OWNER_LABEL}={launcher.OWNER_VALUE}",
+                    "--filter", f"label={RUN_LABEL}={nonce}"], env=docker_env, timeout=10,
+                    resource_name="owned image")
+                cleanup_operation = "verify_owned_containers_absent"
+                _verify_empty_inventory([docker, "ps", "--all", "--quiet", "--no-trunc",
+                    "--filter", f"label={OWNER_LABEL}={launcher.OWNER_VALUE}",
+                    "--filter", f"label={RUN_LABEL}={nonce}"], env=docker_env, timeout=20,
+                    resource_name="owned container")
                 container_clean = True
             except (launcher.NotRun, OSError, subprocess.SubprocessError) as exc:
                 _record_cleanup_failure(receipt, cleanup_operation, exc)

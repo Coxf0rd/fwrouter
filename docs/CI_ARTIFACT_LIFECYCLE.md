@@ -38,7 +38,9 @@ exact-node JUnit failure/error text, a pytest log tail, the failing harness phas
 and the cleanup operation/error class. Container state and configured resource
 limits are projected only after the existing owner-label, run-nonce and exact-name
 checks. No container environment, mount paths, config, or Docker log stream is
-published. Successful receipts omit these diagnostic fields.
+published. Successful receipts omit these diagnostic fields. Cleanup must obtain successful,
+bounded inventories proving that no run-owned images or containers remain. A
+failed Docker query is unconfirmed cleanup, never proof of resource absence.
 
 The existing native diagnostic redactor processes the complete pytest log before
 retaining at most 8 KiB; logs at or above the 4 MiB safe input cap are omitted.
