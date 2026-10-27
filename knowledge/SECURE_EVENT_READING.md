@@ -15,7 +15,9 @@ and [client attribution](API_CLIENT_ATTRIBUTION.md) for earlier bounded contract
 
 ## Access contract
 
-The new read surface is `GET /api/v2/events/secure/recent`. It requires an explicit
+The read surface is `/api/v2/events/secure/recent`: GET for local CLI/integration
+requests and read-only POST for browsers. Both methods use the same bounded query
+and handler and require an explicit
 `events.read` registry scope, independently provisioned by the host administrator
 through the existing `fwrouter api-clients create --scope events.read` workflow.
 Existing credentials gain no scope automatically. Presentation mutation and
@@ -84,7 +86,8 @@ projections keep their existing behavior and reserved-identity redaction. They
 cannot use flags, headers or supplied read credentials to upgrade their projection.
 This does not retrofit global authorization or prove arbitrary legacy free-text
 logs contain no secrets. No Web UI visual change or new CLI subcommand is included;
-UI/CLI/integration callers can use the same explicit protected HTTP contract.
+UI/CLI/integration callers use the same explicit protected projection. Browser
+clients use read-only POST, not an assumption that browser GET includes Origin.
 
 ## Activation and remaining gates
 
@@ -160,3 +163,14 @@ fallback to internal client_id/credential_id aliases or to formatted display_tag
 Missing/malformed fields produce only unverified identity, with no client IDs,
 tags or server request ID. Labels are derived from kind and historical raw tag.
 This matches the existing writer; it does not upgrade older ambiguous payloads.
+
+## Browser method compatibility
+
+The [Fetch Standard Origin algorithm](https://fetch.spec.whatwg.org/#origin-header)
+does not normally add Origin to a same-origin GET/HEAD, while browser POST carries
+Origin. Keeping strict canonical Origin/Host admission therefore requires a
+browser-compatible read-only POST, rather than weakening admission or relying on
+JavaScript to forge a forbidden header. POST uses the same query parameters,
+returns the same safe DTO and creates no event/domain write. It grants no mutation
+authority and accepts no credential in a body/cookie/query. This source contract
+does not qualify a deployed browser, proxy, TLS or credential custody.

@@ -133,6 +133,27 @@ def test_secure_event_read_requires_registry_scope_and_redacts_projection(monkey
     ):
         request_headers = _headers(token, origin="https://router.example.test") if kind == "web_ui" else _headers(token)
         assert client.get("/api/v2/events/secure/recent", headers=request_headers).status_code == 200
+    with db_session() as connection:
+        before_browser_posts = connection.execute("SELECT COUNT(*) FROM operational_logs").fetchone()[0]
+    browser_headers = _headers(tokens["events.read:web_ui"], origin="https://router.example.test")
+    browser_read = client.post("/api/v2/events/secure/recent", headers=browser_headers)
+    assert browser_read.status_code == 200
+    assert browser_read.headers["cache-control"] == "no-store, private"
+    assert client.post(
+        "/api/v2/events/secure/recent",
+        headers={**_headers(tokens["events.read:web_ui"]), "Origin": "https://attacker.test",
+                 "Host": "router.example.test"},
+    ).status_code == 403
+    assert client.post(
+        "/api/v2/events/secure/recent", headers=_headers(tokens["events.read:web_ui"]),
+    ).status_code == 403
+    assert client.post(
+        "/api/v2/events/secure/recent",
+        headers=_headers(tokens["ui.client-list.write:web_ui"], origin="https://router.example.test"),
+    ).status_code == 403
+    with db_session() as connection:
+        after_browser_posts = connection.execute("SELECT COUNT(*) FROM operational_logs").fetchone()[0]
+    assert before_browser_posts == after_browser_posts
     assert client.get("/api/v2/events/secure/recent", headers={
         **_headers(tokens["events.read:integration"]), "Origin": "https://attacker.test",
         "X-Forwarded-For": "127.0.0.1",
@@ -306,6 +327,11 @@ def test_secure_event_route_rejects_legacy_selector_and_bad_filters(monkeypatch,
     denied = client.get("/api/v2/events/secure/recent", headers=_headers(tokens["events.read:integration"]))
     assert denied.status_code == 503
     assert denied.json() == {"error_code": "EVENTS_AUTH_CONFIG_UNAVAILABLE"}
+    post_denied = client.post(
+        "/api/v2/events/secure/recent", headers=_headers(tokens["events.read:integration"]),
+    )
+    assert post_denied.status_code == 503
+    assert post_denied.json() == {"error_code": "EVENTS_AUTH_CONFIG_UNAVAILABLE"}
     assert "events.read" in registry.SUPPORTED_SCOPES
     assert host.exists()
 

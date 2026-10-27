@@ -15,8 +15,9 @@ router = APIRouter()
 
 
 @router.get("/events/secure/recent")
+@router.post("/events/secure/recent")
 def secure_recent_events_endpoint(request: Request) -> JSONResponse:
-    """Registry-scoped bounded projection of audit and security event metadata."""
+    """Read-only registry-scoped projection; POST supports browser Origin semantics."""
     from fwrouter_api.services.secure_event_read_admission import (
         SecureEventAdmissionError, secure_event_read_admission,
     )
