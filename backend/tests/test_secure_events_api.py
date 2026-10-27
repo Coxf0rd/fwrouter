@@ -26,7 +26,7 @@ def _admin(capsys, args: list[str]) -> dict:
     return json.loads(captured.out)
 
 
-def _clients(monkeypatch, tmp_path, capsys):
+def _clients(monkeypatch, tmp_path, capsys, *, bootstrap=False):
     host = tmp_path / "etc" / "fwrouter"
     host.mkdir(mode=0o700, parents=True)
     selector = host / "presentation-client-list-verifier.json"
@@ -36,15 +36,19 @@ def _clients(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(registry, "PENDING_PATH", host / "api-clients.pending")
     monkeypatch.setattr(registry, "LOCK_PATH", host / "api-clients.lock")
     monkeypatch.setattr(registry, "_trusted_uid", os.getuid)
-    legacy_token = secrets.token_hex(32)
-    selector.write_text(json.dumps({
-        "schema_version": 1, "principal": "presentation-operator",
-        "scopes": ["ui.client-list.write"],
-        "token_sha256": hashlib.sha256(legacy_token.encode("ascii")).hexdigest(),
-        "canonical_origin": "https://router.example.test",
-    }), encoding="utf-8")
-    selector.chmod(0o600)
+    if not bootstrap:
+        legacy_token = secrets.token_hex(32)
+        selector.write_text(json.dumps({
+            "schema_version": 1, "principal": "presentation-operator",
+            "scopes": ["ui.client-list.write"],
+            "token_sha256": hashlib.sha256(legacy_token.encode("ascii")).hexdigest(),
+            "canonical_origin": "https://router.example.test",
+        }), encoding="utf-8")
+        selector.chmod(0o600)
     _admin(capsys, ["init", "--canonical-origin", "https://router.example.test"])
+    if bootstrap:
+        _admin(capsys, ["set-origin", "--expected-revision", "1", "--canonical-origin",
+                        "https://new-router.example.test:8443"])
     secret_tokens = {}
     specifications = (
         ("web_ui", "presentation-admin", ("ui.client-list.write",)),
@@ -53,7 +57,7 @@ def _clients(monkeypatch, tmp_path, capsys):
         ("cli", "cli-event-reader", ("events.read",)),
         ("integration", "event-reader", ("events.read", "ui.client-list.write")),
     )
-    for revision, (kind, tag, scopes) in enumerate(specifications, start=1):
+    for revision, (kind, tag, scopes) in enumerate(specifications, start=2 if bootstrap else 1):
         secret_path = host / f"{tag}.token"
         command = [
             "create", "--expected-revision", str(revision), "--kind", kind,
@@ -70,15 +74,15 @@ def _clients(monkeypatch, tmp_path, capsys):
     from fwrouter_api.services import presentation_client_list_admission as presentation_admission
     monkeypatch.setattr(presentation_admission, "VERIFIER_PATH", selector)
     monkeypatch.setattr(presentation_admission, "_trusted_uid", os.getuid)
-    _admin(capsys, ["cutover", "--expected-revision", "6"])
+    _admin(capsys, ["cutover", "--expected-revision", "7" if bootstrap else "6"])
     return host, selector, secret_tokens
 
 
-def _headers(token: str, *, origin: str | None = None) -> dict[str, str]:
+def _headers(token: str, *, origin: str | None = None, authority: str = "router.example.test") -> dict[str, str]:
     headers = {"Authorization": f"Bearer {token}", "Host": "127.0.0.1:5000"}
     if origin is not None:
         headers["Origin"] = origin
-        headers["Host"] = "router.example.test"
+        headers["Host"] = authority
     return headers
 
 
@@ -154,6 +158,8 @@ def test_secure_event_read_requires_registry_scope_and_redacts_projection(monkey
     with db_session() as connection:
         after_browser_posts = connection.execute("SELECT COUNT(*) FROM operational_logs").fetchone()[0]
     assert before_browser_posts == after_browser_posts
+
+
     assert client.get("/api/v2/events/secure/recent", headers={
         **_headers(tokens["events.read:integration"]), "Origin": "https://attacker.test",
         "X-Forwarded-For": "127.0.0.1",
@@ -215,6 +221,26 @@ def test_secure_event_read_requires_registry_scope_and_redacts_projection(monkey
         "DO_NOT_RETURN", "Bearer ", "token:SECRET", "password:SECRET", "c" * 64,
         "verifier:CONTROL", "control", "caller_claims",
     ))
+
+
+def test_secure_event_reader_uses_bootstrapped_origin_and_rejects_old_origin_scope_and_revocation(
+        monkeypatch, tmp_path, capsys):
+    _, _, tokens = _clients(monkeypatch, tmp_path, capsys, bootstrap=True)
+    client = _client()
+    new_headers = _headers(tokens["events.read:web_ui"],
+                           origin="https://new-router.example.test:8443",
+                           authority="new-router.example.test:8443")
+    assert client.get("/api/v2/events/secure/recent", headers=new_headers).status_code == 200
+    old_origin = _headers(tokens["events.read:web_ui"], origin="https://router.example.test")
+    assert client.get("/api/v2/events/secure/recent", headers=old_origin).status_code == 403
+    wrong_scope = _headers(tokens["ui.client-list.write:web_ui"],
+                           origin="https://new-router.example.test:8443",
+                           authority="new-router.example.test:8443")
+    assert client.get("/api/v2/events/secure/recent", headers=wrong_scope).status_code == 403
+    record = tokens["record:events.read:web_ui"]
+    _admin(capsys, ["revoke-credential", record["client_id"], record["credential_id"],
+                    "--expected-revision", "7"])
+    assert client.get("/api/v2/events/secure/recent", headers=new_headers).status_code == 401
 
 
 def test_secure_event_read_projects_real_owner_writes_for_all_client_kinds(monkeypatch, tmp_path, capsys):

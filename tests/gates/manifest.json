@@ -224,6 +224,13 @@
       ]
     },
     {
+      "glob": "knowledge/PROJECT_MAP/CODE_INDEX/backend_fwrouter_api_services_api_client_registry_py.md",
+      "domains": [
+        "api-contract",
+        "maintenance"
+      ]
+    },
+    {
       "glob": "docs/API_CLIENT_REGISTRY.md",
       "domains": [
         "api-contract",
@@ -262,9 +269,18 @@
     {
       "glob": "installer/tests/restore_process_fixture.py",
       "domains": [
+        "api-contract",
         "database",
         "maintenance",
         "installer"
+      ]
+    },
+    {
+      "glob": "installer/tests/test_api_client_registry_origin_process.py",
+      "domains": [
+        "api-contract",
+        "installer",
+        "maintenance"
       ]
     },
     {
@@ -1427,6 +1443,33 @@
       "slow": false,
       "timeout_seconds": 30,
       "execution_group": "core-state"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "installer",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "owned disposable host-policy paths and synthetic credentials in installer-coordinator child processes; no services, network or production paths",
+      "fixture_owner": "installer/tests/restore_process_fixture.py",
+      "id": "test_api_client_registry_origin_process",
+      "isolation": "coordinator-owned temporary state; bootstrap runs before application imports",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "installer/tests/test_api_client_registry_origin_process.py",
+      "primary_level": "L3",
+      "risk_notes": "real SIGKILL of owned test children at pending, registry rename/readback/cleanup and fence/selector boundaries; exercises process restart forward recovery, not storage power loss",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "installer-startup"
     },
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
@@ -6663,7 +6706,7 @@
       "execution_group": "services-events"
     }
   ],
-  "version": "2026.10.28.1",
+  "version": "2026.10.28.2",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

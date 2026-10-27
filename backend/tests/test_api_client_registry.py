@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 from threading import Event, Thread
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi import FastAPI, Request
@@ -112,6 +113,25 @@ def test_admin_cli_cutover_and_real_http_identity_use_distinct_credentials(monke
         "X-Client-Id": created["cli"]["client_id"],
     })
     assert forged.json()["kind"] == "web_ui"
+
+
+def test_repeat_cutover_after_registry_update_preserves_existing_fence(monkeypatch, tmp_path, capsys):
+    _host, created = _cut_over(monkeypatch, tmp_path, capsys)
+    fence = registry.FENCE_PATH.read_bytes()
+    assert _admin(monkeypatch, ["rename", created["web_ui"]["client_id"],
+        "--expected-revision", "3", "--tag", "renamed-web"], capsys) == {
+            "policy_revision": 4}
+    current_policy = registry.REGISTRY_PATH.read_bytes()
+
+    def reject_publication(*_args, **_kwargs):
+        raise AssertionError("repeat cutover must not rewrite active registry state")
+
+    monkeypatch.setattr(registry, "_atomic_publish", reject_publication)
+    assert _admin(monkeypatch, ["cutover", "--expected-revision", "4"], capsys) == {
+        "mode": "registry", "policy_revision": 4}
+    assert registry.REGISTRY_PATH.read_bytes() == current_policy
+    assert registry.FENCE_PATH.read_bytes() == fence
+    assert registry.SELECTOR_PATH.read_bytes() == b'{"provider":"client_registry_v1","schema_version":2}\n'
 
 
 def test_api_first_config_cli_uses_registered_cli_credential_at_real_owner_route(monkeypatch, tmp_path, capsys):
@@ -589,6 +609,188 @@ def test_secure_loader_rejects_hardlink_symlink_duplicate_digest_and_bidi_tag(mo
     path.chmod(0o600)
     with pytest.raises(registry.RegistryError):
         registry.load_policy()
+
+
+@pytest.mark.parametrize("origin", [
+    "https://bad_host.example", "https://bad..example", "https://-bad.example",
+    "https://bad-.example", "https://example.test/%2f", "https://example.test:443",
+    "https://user@example.test", "https://[2001:0db8::1]", "https://[::1%25eth0]",
+    "https://127.1", "https://2130706433", "https://0177.0.0.1", "https://0x7f.0.0.1",
+    "https://router.123", "https://router.0x7f",
+])
+def test_origin_requires_exact_canonical_host_syntax(origin):
+    assert registry.valid_origin(origin) is False
+
+
+@pytest.mark.parametrize("origin", [
+    "https://router.example.test", "https://router.example.test:8443",
+    "https://192.0.2.1", "https://[2001:db8::1]",
+])
+def test_origin_accepts_canonical_dns_ip_and_nondefault_ports(origin):
+    assert registry.valid_origin(origin) is True
+
+
+def test_absent_selector_bootstrap_set_origin_cas_and_client_preservation(monkeypatch, tmp_path, capsys):
+    host, selector, _, fence = _paths(monkeypatch, tmp_path)
+    assert not selector.exists() and not fence.exists()
+    _admin(monkeypatch, ["init", "--canonical-origin", "https://router.example.test"], capsys)
+    listed = _admin(monkeypatch, ["list"], capsys)
+    assert listed["policy_revision"] == 1
+    assert listed["mode"] == "unselected" and listed["admission_ready"] is False
+    validated = _admin(monkeypatch, ["validate"], capsys)
+    assert validated["valid"] is True
+    assert validated["mode"] == "unselected" and validated["admission_ready"] is False
+    token_path = host / "integration.token"
+    created = _admin(monkeypatch, ["create", "--expected-revision", "1", "--kind", "integration",
+        "--tag", "home", "--scope", "events.read", "--secret-file", str(token_path)], capsys)
+    api = TestClient(_app(), client=("127.0.0.1", 45678), headers={"Host": admission.LOCAL_AUTHORITY})
+    denied_before_selector = api.post("/presentation", headers={
+        "Authorization": f"Bearer {token_path.read_text(encoding='ascii').strip()}"})
+    assert denied_before_selector.status_code == 503
+    before = registry.load_policy()
+    changed = _admin(monkeypatch, ["set-origin", "--expected-revision", "2",
+        "--canonical-origin", "https://new-router.example.test:8443"], capsys)
+    after = registry.load_policy()
+    assert changed == {"changed": True, "policy_revision": 3}
+    assert after["canonical_origin"] == "https://new-router.example.test:8443"
+    assert after["clients"] == before["clients"]
+    assert created["policy_revision"] == 2
+    assert _admin(monkeypatch, ["set-origin", "--expected-revision", "3",
+        "--canonical-origin", after["canonical_origin"]], capsys) == {
+            "changed": False, "policy_revision": 3}
+    assert registry.load_policy()["policy_revision"] == 3
+    assert main_status(monkeypatch, ["set-origin", "--expected-revision", "2",
+        "--canonical-origin", "https://stale.example.test"], capsys) == 2
+    assert "API_CLIENT_POLICY_REVISION_CONFLICT" in capsys.readouterr().err
+    assert not selector.exists() and not fence.exists()
+    with pytest.raises(registry.RegistryError, match="API_CLIENT_CUTOVER_STATE_INVALID"):
+        registry.selector_mode()
+
+
+def test_concurrent_origin_changes_commit_one_revision(monkeypatch, tmp_path):
+    _paths(monkeypatch, tmp_path)
+    registry.publish_policy({"schema_version": 1, "policy_revision": 1,
+        "canonical_origin": "https://router.example.test", "clients": []})
+
+    def change(origin):
+        from types import SimpleNamespace
+        from fwrouter_api.services.api_client_registry_admin import _run
+        try:
+            return ("ok", _run(SimpleNamespace(command="set-origin", expected_revision=1,
+                                                canonical_origin=origin)))
+        except registry.RegistryError as exc:
+            return ("error", exc.code)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(change, ("https://one.example.test", "https://two.example.test")))
+    assert sum(result[0] == "ok" for result in results) == 1
+    assert sum(result == ("error", "API_CLIENT_POLICY_REVISION_CONFLICT") for result in results) == 1
+    assert registry.load_policy()["policy_revision"] == 2
+
+
+def test_init_and_origin_change_refuse_selector_fence_pending_and_corrupt_states(monkeypatch, tmp_path, capsys):
+    host, selector, _, fence = _paths(monkeypatch, tmp_path)
+    _admin(monkeypatch, ["init", "--canonical-origin", "https://router.example.test"], capsys)
+    registry.PENDING_PATH.write_text("{}", encoding="ascii")
+    registry.PENDING_PATH.chmod(0o600)
+    assert main_status(monkeypatch, ["set-origin", "--expected-revision", "1",
+        "--canonical-origin", "https://pending.example.test"], capsys) == 2
+    assert "API_CLIENT_POLICY_RECOVERY_REQUIRED" in capsys.readouterr().err
+    registry.PENDING_PATH.unlink()
+    _legacy(selector, secrets.token_hex(32))
+    assert main_status(monkeypatch, ["set-origin", "--expected-revision", "1",
+        "--canonical-origin", "https://new.example.test"], capsys) == 2
+    assert "API_CLIENT_ORIGIN_CHANGE_FORBIDDEN" in capsys.readouterr().err
+    assert main_status(monkeypatch, ["init", "--canonical-origin", "https://new.example.test"], capsys) == 2
+    capsys.readouterr()
+    selector.unlink()
+    fence.write_text(json.dumps({"schema_version": 1, "registry_required": True,
+        "prepared_sha256": "a" * 64}), encoding="ascii")
+    fence.chmod(0o600)
+    assert main_status(monkeypatch, ["init", "--canonical-origin", "https://router.example.test"], capsys) == 2
+    assert "API_CLIENT_CUTOVER_REQUIRED" in capsys.readouterr().err
+    assert registry.load_policy()["policy_revision"] == 1
+    registry.REGISTRY_PATH.unlink()
+    with pytest.raises(registry.RegistryError, match="API_CLIENT_CUTOVER_STATE_INVALID"):
+        registry.selector_mode()
+    assert main_status(monkeypatch, ["init", "--canonical-origin", "https://router.example.test"], capsys) == 2
+    assert "API_CLIENT_CUTOVER_REQUIRED" in capsys.readouterr().err
+    assert not registry.REGISTRY_PATH.exists()
+
+
+def test_init_refuses_active_registry_selector_without_registry(monkeypatch, tmp_path, capsys):
+    _, selector, _, _ = _paths(monkeypatch, tmp_path)
+    registry._atomic_publish(selector, b'{"provider":"client_registry_v1","schema_version":2}\n')
+    assert main_status(monkeypatch, ["init", "--canonical-origin", "https://router.example.test"], capsys) == 2
+    assert "API_CLIENT_CUTOVER_REQUIRED" in capsys.readouterr().err
+    assert not registry.REGISTRY_PATH.exists()
+
+
+def test_origin_pending_recovery_cannot_publish_behind_new_fence_or_selector(monkeypatch, tmp_path):
+    _, selector, _, fence = _paths(monkeypatch, tmp_path)
+    policy = {"schema_version": 1, "policy_revision": 1,
+        "canonical_origin": "https://router.example.test", "clients": []}
+    registry.publish_policy(policy)
+    changed = {**policy, "policy_revision": 2, "canonical_origin": "https://new.example.test"}
+    def fail_pending_cleanup(_path):
+        raise registry.RegistryError("API_CLIENT_POLICY_PUBLICATION_INCOMPLETE")
+
+    monkeypatch.setattr(registry, "_clear_pending", fail_pending_cleanup)
+    with pytest.raises(registry.RegistryError, match="API_CLIENT_POLICY_PUBLICATION_INCOMPLETE"):
+        registry.publish_target("registry_origin", registry._json_bytes(changed), 2)
+    current = registry.load_policy()
+    assert current["policy_revision"] == 2
+    assert current["canonical_origin"] == "https://new.example.test"
+    fence.write_text(json.dumps({"schema_version": 1, "registry_required": True,
+        "prepared_sha256": hashlib.sha256(registry.REGISTRY_PATH.read_bytes()).hexdigest()}), encoding="ascii")
+    fence.chmod(0o600)
+    registry._atomic_publish(selector, b'{"provider":"client_registry_v1","schema_version":2}\n')
+    with pytest.raises(registry.RegistryError, match="API_CLIENT_ORIGIN_CHANGE_FORBIDDEN"):
+        registry.recover_pending(2)
+    assert registry._pending_state() is not None
+
+
+def test_origin_pending_purpose_cannot_initialize_registry_or_recover_after_registry_loss(
+        monkeypatch, tmp_path):
+    _paths(monkeypatch, tmp_path)
+    prepared = {"schema_version": 1, "policy_revision": 1,
+        "canonical_origin": "https://router.example.test", "clients": []}
+    prepared_bytes = registry._json_bytes(prepared)
+    impossible_initializer = {"schema_version": 1, "target": "registry_origin",
+        "previous_sha256": None, "prepared_sha256": hashlib.sha256(prepared_bytes).hexdigest(),
+        "prepared_b64": base64.b64encode(prepared_bytes).decode("ascii"), "policy_revision": 1}
+    registry._atomic_publish(registry.PENDING_PATH, registry._json_bytes(impossible_initializer))
+    with pytest.raises(registry.RegistryError, match="API_CLIENT_POLICY_RECOVERY_REQUIRED"):
+        registry.recover_pending(1)
+    registry.PENDING_PATH.unlink()
+
+    old = {**prepared, "policy_revision": 1}
+    new = {**old, "policy_revision": 2, "canonical_origin": "https://new.example.test"}
+    registry.publish_policy(old)
+    intent = {"schema_version": 1, "target": "registry_origin",
+        "previous_sha256": hashlib.sha256(registry._json_bytes(old)).hexdigest(),
+        "prepared_sha256": hashlib.sha256(registry._json_bytes(new)).hexdigest(),
+        "prepared_b64": base64.b64encode(registry._json_bytes(new)).decode("ascii"),
+        "policy_revision": 2}
+    registry._atomic_publish(registry.PENDING_PATH, registry._json_bytes(intent))
+    registry.REGISTRY_PATH.unlink()
+    with pytest.raises(registry.RegistryError, match="API_CLIENT_POLICY_RECOVERY_REQUIRED"):
+        registry.recover_pending(2)
+
+
+def test_cutover_rejects_pending_before_creating_fence(monkeypatch, tmp_path, capsys):
+    host, _selector, _, fence = _paths(monkeypatch, tmp_path)
+    _admin(monkeypatch, ["init", "--canonical-origin", "https://router.example.test"], capsys)
+    for revision, kind in enumerate(("web_ui", "cli"), start=1):
+        _admin(monkeypatch, ["create", "--expected-revision", str(revision), "--kind", kind,
+            "--tag", kind, "--scope", "ui.client-list.write", "--secret-file",
+            str(host / f"{kind}.token")], capsys)
+    pending = {"schema_version": 1, "target": "registry", "previous_sha256": None,
+        "prepared_sha256": "a" * 64, "prepared_b64": "e30=", "policy_revision": 3}
+    registry._atomic_publish(registry.PENDING_PATH, registry._json_bytes(pending))
+    assert main_status(monkeypatch, ["cutover", "--expected-revision", "3"], capsys) == 2
+    assert "API_CLIENT_POLICY_RECOVERY_REQUIRED" in capsys.readouterr().err
+    assert not fence.exists()
 
 
 def test_registry_rejects_duplicate_ids_digests_and_json_members(monkeypatch, tmp_path):

@@ -26,7 +26,7 @@ are 128 clients, at most two active credentials per client, at most 128 total
 credential records per client (including revoked tombstones), and 128 KiB total.
 Exhaustion fails closed; this package has no tombstone compaction.
 
-Only `ui.client-list.write` is adopted in this package. Tags, requested_by,
+The supported scopes are `ui.client-list.write` and `events.read`. Tags, requested_by,
 User-Agent, Origin and caller headers cannot establish identity or grant scopes.
 An internal immutable admission identity describes the credential registration,
 not an authenticated human or proof of a particular executable. Sharing a
@@ -36,15 +36,44 @@ cannot be solved with client-supplied headers.
 ## Issuance, delivery and recovery
 
 Use the bounded local root administrative entrypoint, not direct SQLite edits or
-online enrollment. Operations cover initialize/validate, create/list, rename,
-rotate, client/credential revocation and controlled presentation cutover.
-Mutations use an expected policy revision and exclusive policy lease. A stale
-revision or busy lease fails rather than silently replacing another update.
+online enrollment. Operations cover initialization, pre-cutover origin
+preparation, validate, create/list, rename, rotate, client/credential
+revocation and controlled presentation cutover. Mutations use an expected
+policy revision and exclusive policy lease. A stale revision or busy lease
+fails rather than silently replacing another update.
 
-This package migrates an existing qualified schema1 presentation verifier.
-`init` only prepares an empty registry; issuance and cutover require the existing
-valid selector and matching canonical origin. Fresh-install auth provisioning is
-not implemented here; never fabricate a shared verifier to bypass that gate.
+`init` prepares an empty registry before cutover. It accepts either an absent
+selector or a valid legacy schema1 selector with the same canonical origin;
+it refuses a pending publication, permanent fence, registry selector or any
+existing registry. With no selector, root `list`, `validate`, and credential
+provisioning can prepare policy under the existing lease. This is administrator
+access only: API admission continues to reject a missing selector. Fresh
+provisioning remains closed to HTTP until cutover.
+Bootstrap `list` and `validate` output marks this state as
+`mode: unselected` and `admission_ready: false`. `validate` confirms the stored
+policy structure and trusted file state; it does not claim that HTTP
+authentication is enabled. Existing selected legacy/registry output shapes
+remain unchanged.
+When a legacy selector and registry disagree on canonical origin, `init`,
+listing and credential provisioning fail closed; origin correction requires a
+separately qualified compatibility transition. The CLI does not rewrite the
+legacy selector to make the registry fit.
+
+`set-origin` is available only while both selector and permanent fence are
+absent and no publication is pending. It requires the current expected policy
+revision. A changed origin advances the revision exactly once and preserves all
+client and credential records; an identical origin is a no-op. A stale retry
+conflicts and must be resolved by reading current root-admin policy and
+comparing it with the approved target. Origin input must already be canonical
+HTTPS: lowercase DNS labels or canonical IP literal, no path/query/userinfo,
+default port 443 omitted, and no implicit normalization or DNS lookup.
+Canonical IPv6 literals and explicit non-default ports are supported.
+
+Once a legacy selector, registry selector or fence exists, origin changes are
+refused. The CLI never removes/recreates the fence, downgrades a selector, or
+resets a policy revision. A fence without a registry selector, or a registry
+selector without its fence, remains fail-closed. Restoring/deleting all trusted
+host policy files through a compromised root is outside this trust boundary.
 
 Web UI and API-first CLI require distinct issued credentials before cutover.
 Integrations have separate registrations and minimal explicit scopes. New secret
@@ -87,10 +116,12 @@ failures/INCOMPLETE; they are not proof that the old policy is still active.
 
 Before cutover, the existing fixed presentation verifier schema1 remains the
 only shared legacy authority and is not claimed to identify UI versus CLI.
-Migration first prepares/fsyncs a complete registry with independently issued
-credentials and the existing canonical origin. It then durably publishes the
-permanent `api-clients.required` fence BEFORE replacing the existing presentation
-verifier with a strict schema2 registry selector. Readers must reject:
+Cutover can migrate that verifier, or activate a prepared registry from an
+absent-selector bootstrap. It requires independently issued UI and CLI
+credentials. It durably publishes the permanent `api-clients.required` fence
+BEFORE publishing the strict schema2 registry selector. Any pending intent is
+rejected before a fence write; an interrupted fence-first cutover resumes only
+when the current policy bytes match the fence's prepared digest. Readers reject:
 
 - A fence together with a legacy, missing or invalid selector.
 - A registry selector without a valid permanent fence.
@@ -148,6 +179,8 @@ an instruction to activate this package on production. `REV`, `CLIENT_ID`,
 
 ```text
 fwrouter api-clients init --canonical-origin https://router.example.test
+fwrouter api-clients set-origin --expected-revision REV \
+  --canonical-origin https://router.example.test:8443
 fwrouter api-clients list
 fwrouter api-clients validate
 fwrouter api-clients create --expected-revision REV --kind web_ui --tag web \
@@ -175,11 +208,11 @@ operation only after custody, worker compatibility and client migration have
 been qualified. There is no `rollback-to-legacy` command. This package does not
 add online creation/renaming/revocation or show these identities in event logs.
 
-## Subsequent opt-in secure event read scope
+## Secure event read scope
 
-The Stage5 secure-reader package adds the explicit `events.read` scope to the
-same bounded root-controlled registry. Existing credentials are not promoted;
-creation still requires an explicit scope list and protected secret destination.
+`events.read` is an explicit scope in the same bounded root-controlled registry.
+Existing credentials are not promoted; creation still requires an explicit
+scope list and protected secret destination.
 It grants only the [bounded secure event projection](../knowledge/SECURE_EVENT_READING.md).
 It grants no presentation mutation, maintenance or other API authority. Existing
 presentation/maintenance capabilities do not grant event read access.
