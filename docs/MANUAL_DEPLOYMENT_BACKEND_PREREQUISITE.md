@@ -102,7 +102,9 @@ Repeated prerequisite review is read-only. If installed source, readiness and ap
 
 ## Qualification required before use
 
-A separate disposable Linux host with real managed Docker/systemd/cgroup ownership must demonstrate old-source stop → CAS transfer → exact backend installer/bootstrap → schema27 preservation → API startup → genuine native proof → controlled resume → final proof. Use synthetic accounts/clients/credentials and test-owned runtime inputs. Host provisioning, private execution closure, full UI wrapper E2E and destructive interruption scenarios are separate mandatory private gates; ordinary GitHub CI and pure advisory planners do not close them.
+Source qualification must cover the existing stop, source-CAS transfer, installer/startup barrier, lease, schema27 preservation, backup and recovery contracts in isolated tests and exact-source CI. Real installed Docker/systemd/native behavior, dependency and worker compatibility, genuine proof, controlled resume and external-client acceptance remain separate host/live gates.
+
+For the current Stage5 source-closure scope, the owner has accepted moving those non-destructive installed-host checks to a separately authorized controlled production rollout and live acceptance; creating a disposable host is not a source prerequisite. This decision does not label unperformed staging E2E as PASS or authorize deployment, native apply, registry cutover or the private UI wrapper. When destructive interruption/reboot/corruption testing lacks a qualified isolated environment, record NOT RUN and its residual risk; do not perform it on production to satisfy a checkbox. A future owner-approved operation must first establish independent administrative access, a genuine protected WAL-safe backup, exact OLD/NEW source and trusted inputs, bounded startup effects, STOP conditions and safe forward completion.
 
 
 ## Evidence establishment after preparation
@@ -118,6 +120,7 @@ and concurrent installation. They do not make the backend overlay atomic or
 supply a missing Debian/systemd/native qualification. Host reboot and unattended
 persistent-timer reactivation are not proved by process-level crash fixtures;
 `systemctl stop` does not itself disable enabled timers across a reboot. Keep
-those scenarios outside a qualified claim until the disposable-host acceptance
-has proved their hold/recovery behavior. Do not use a manual catch-up or native
+those scenarios outside a qualified claim until actual evidence establishes
+their hold/recovery behavior; without qualified isolated staging, destructive
+scenarios remain NOT RUN under the owner-approved source/live separation. Do not use a manual catch-up or native
 apply to manufacture acceptance. No production procedure is authorized here.

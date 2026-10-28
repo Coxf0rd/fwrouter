@@ -2132,6 +2132,151 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("branches-ignore: [main]", trigger)
         self.assertNotIn("stage/test-architecture-ci-stabilization", trigger)
 
+    def test_push_fast_lane_empty_diff_is_an_explicit_lint_only_noop(self) -> None:
+        import yaml
+
+        workflow = yaml.safe_load((gate.ROOT / ".github/workflows/push-fast.yml").read_text())
+        steps = workflow["jobs"]["fast"]["steps"]
+        step = next(item for item in steps if item.get("name") == "Plan and run routine affected L0-L1 only")
+        script = step["run"]
+        self.assertLess(script.index("gate.py lint-changed --base"), script.index("git diff --name-only -z"))
+        self.assertLess(script.index("git diff --name-only -z"), script.index("gate.py plan"))
+        self.assertIn("Test execution NOT RUN: source tree unchanged; no test/deploy qualification.", script)
+
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+
+        def execute_case(change: str | None, *, before: str | None = None,
+                         fail_diff: bool = False, lint_exit: str = "0", run_exit: str = "0"):
+            temp_context = tempfile.TemporaryDirectory(prefix="fwrouter-push-fast-shell-")
+            self.addCleanup(temp_context.cleanup)
+            root = Path(temp_context.name)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run([real_git, "init", "--quiet"], cwd=repo, check=True)
+            subprocess.run([real_git, "config", "user.name", "Gate Contract"], cwd=repo, check=True)
+            subprocess.run([real_git, "config", "user.email", "gate-contract@example.invalid"], cwd=repo, check=True)
+            source = repo / "source.py"
+            source.write_text("value = 1\n", encoding="utf-8")
+            subprocess.run([real_git, "add", "source.py"], cwd=repo, check=True)
+            subprocess.run([real_git, "commit", "--quiet", "-m", "base"], cwd=repo, check=True)
+            base = subprocess.run([real_git, "rev-parse", "HEAD"], cwd=repo, check=True,
+                                  capture_output=True, text=True).stdout.strip()
+            event_before = before or base
+            if change == "content":
+                source.write_text("value = 2\n", encoding="utf-8")
+                subprocess.run([real_git, "add", "source.py"], cwd=repo, check=True)
+            elif change == "mode":
+                source.chmod(0o755)
+                subprocess.run([real_git, "add", "source.py"], cwd=repo, check=True)
+            elif change == "deletion":
+                source.unlink()
+                subprocess.run([real_git, "add", "-u"], cwd=repo, check=True)
+            if change is not None:
+                subprocess.run([real_git, "commit", "--quiet", "-m", change], cwd=repo, check=True)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            python_stub = bin_dir / "python"
+            python_stub.write_text(textwrap.dedent("""\
+                #!/usr/bin/env bash
+                set -eu
+                printf '%s\\n' "$*" >> "$STUB_CALLS"
+                if [[ "$1" == tests/gates/gate.py && "$2" == lint-changed ]]; then
+                  exit "$STUB_LINT_EXIT"
+                fi
+                if [[ "$1" == tests/gates/gate.py && "$2" == plan ]]; then
+                  while (($#)); do
+                    if [[ "$1" == --output ]]; then shift; printf '{}\\n' > "$1"; break; fi
+                    shift
+                  done
+                  exit 0
+                fi
+                if [[ "$1" == tests/gates/gate.py && "$2" == run ]]; then
+                  while (($#)); do
+                    if [[ "$1" == --output ]]; then shift; printf '{}\\n' > "$1"; break; fi
+                    shift
+                  done
+                  echo STUB_TEST_RUN
+                  exit "$STUB_RUN_EXIT"
+                fi
+                exit 91
+            """), encoding="utf-8")
+            python_stub.chmod(0o755)
+            env = dict(os.environ)
+            env.update({
+                "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+                "EVENT_BEFORE": event_before,
+                "RUNNER_TEMP": str(root / "runner-temp"),
+                "GITHUB_STEP_SUMMARY": str(root / "summary.md"),
+                "STUB_CALLS": str(root / "calls.log"),
+                "STUB_LINT_EXIT": lint_exit,
+                "STUB_RUN_EXIT": run_exit,
+            })
+            Path(env["RUNNER_TEMP"]).mkdir()
+            if fail_diff:
+                git_stub = bin_dir / "git"
+                git_stub.write_text(textwrap.dedent(f"""\
+                    #!/usr/bin/env bash
+                    if [[ "$1" == diff ]]; then exit 77; fi
+                    exec {shlex.quote(real_git)} "$@"
+                """), encoding="utf-8")
+                git_stub.chmod(0o755)
+            completed = subprocess.run(["bash", "-c", script], cwd=repo, env=env,
+                                       capture_output=True, text=True)
+            calls = Path(env["STUB_CALLS"]).read_text(encoding="utf-8").splitlines() \
+                if Path(env["STUB_CALLS"]).exists() else []
+            summary = Path(env["GITHUB_STEP_SUMMARY"]).read_text(encoding="utf-8") \
+                if Path(env["GITHUB_STEP_SUMMARY"]).exists() else ""
+            artifacts = {path.name for path in Path(env["RUNNER_TEMP"]).iterdir()}
+            return completed, calls, summary, artifacts
+
+        completed, calls, summary, artifacts = execute_case(None)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(1, len(calls))
+        self.assertIn("lint-changed", calls[0])
+        self.assertIn("NOT RUN", summary)
+        self.assertIn("no test/deploy qualification", summary)
+        self.assertNotIn("fwrouter-fast-plan.json", artifacts)
+        self.assertNotIn("fwrouter-fast-report.json", artifacts)
+        self.assertNotIn("gate.py plan", "\n".join(calls))
+        self.assertNotIn("gate.py run", "\n".join(calls))
+
+        for kind in ("content", "mode", "deletion"):
+            with self.subTest(change=kind):
+                completed, calls, summary, artifacts = execute_case(kind)
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                self.assertEqual(3, len(calls), calls)
+                self.assertIn("lint-changed", calls[0])
+                self.assertIn("gate.py plan", calls[1])
+                self.assertIn("gate.py run", calls[2])
+                self.assertNotIn("NOT RUN", summary)
+                self.assertIn("fwrouter-fast-plan.json", artifacts)
+                self.assertIn("fwrouter-fast-report.json", artifacts)
+
+        completed, calls, summary, _artifacts = execute_case("content", run_exit="9")
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("gate.py run", "\n".join(calls))
+
+        completed, calls, _summary, _artifacts = execute_case(None, fail_diff=True)
+        self.assertNotEqual(0, completed.returncode)
+        self.assertEqual(1, len(calls))
+        self.assertIn("lint-changed", calls[0])
+
+        completed, calls, _summary, _artifacts = execute_case(None, lint_exit="7")
+        self.assertNotEqual(0, completed.returncode)
+        self.assertEqual(1, len(calls))
+
+        invalid = "f" * 40
+        completed, calls, _summary, _artifacts = execute_case(None, before=invalid)
+        self.assertNotEqual(0, completed.returncode)
+        self.assertEqual([], calls)
+
+        zero_sha = "0" * 40
+        completed, calls, _summary, _artifacts = execute_case(None, before=zero_sha)
+        self.assertNotEqual(0, completed.returncode)
+        self.assertEqual([], calls)
+
     def test_acceptance_tail_diagnostic_repetitions_are_bounded_sequential_and_isolated(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")
         job = workflow.split("  unit-fixtures:", 1)[1].split("  bootstrap-and-fast:", 1)[0]

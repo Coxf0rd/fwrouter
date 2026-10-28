@@ -127,3 +127,63 @@ must verify that snapshot or record an explicitly weaker legacy observation
 before deleting a terminal job. This does not retain raw results, assert native
 success, change the temporary audit/security HOLD, or choose a retention horizon.
 Qualification and production activation remain separate gates.
+
+## Aggregate-only offline capacity inspection
+
+`python -m fwrouter_api.retention_capacity` inspects only explicitly supplied,
+protected snapshot files. It does not load runtime Settings, discover the live
+database/log paths, initialize schema, acquire application leases, or write
+inspection artifacts. Inputs must be regular, single-link files owned by the
+current host administrator with mode `0600`, under an administrator-owned
+private directory. Symlinks and unsafe parent paths are rejected. A SQLite
+input is an offline, checkpointed snapshot opened read-only and immutable; a
+nonempty `-wal` sidecar is rejected. Copying a live database file by itself is
+not a consistent backup. Obtain a separately authorized WAL-safe snapshot before
+inspection. `operational_logs` is required as a real SQLite table with its
+canonical columns; `jobs` is optional and counted only when it is a real table
+with the expected columns. Operational JSONL mirror and technical/diagnostic
+JSONL inputs are optional and remain separate sources from canonical SQLite;
+their counts must not be added to SQLite counts because the operational file
+can mirror database records.
+
+Output is limited to fixed class buckets with row/byte counts and age, oldest
+and newest timestamps, the snapshot file size, SQLite page allocation
+(`database_allocated_bytes` = page count × page size) and available bytes on the
+filesystem containing that snapshot. Page allocation does not report filesystem
+blocks used, and filesystem values describe the supplied snapshot location; none
+of these measures production database/WAL capacity. It never returns paths, event types/codes,
+identifiers, tags, messages, details, exception text or file contents. Existing
+`known_event_category_for_retention` and `_retention_hold` remain the source of
+classification. Top-level event category metadata is evaluated with the same
+existing HOLD policy as nested metadata; malformed/non-object details and BLOB
+details are held in the malformed bucket. Fixed subgroup aggregates report only
+the existing protected security denial/conflict codes and
+`job.terminal_outcome`, with bytes and age, without exposing event labels. Held
+counts overlap class buckets. A source with `status=partial`,
+`complete=false`, and a fixed partial reason is never a whole-file total; the
+combined CLI response has `ok=false`, `status=partial`, and exits `2`.
+
+Bounds are 1 GiB snapshot size, 64 MiB accepted scanned bytes, 100,000 accepted
+rows, 64 KiB per record and a cooperative five-second scan budget. Reads are
+bounded by bytes/rows and the SQLite progress handler; slow filesystem I/O is
+not a hard real-time deadline. A caller may request a projection only by
+supplying a finite assumed net-growth rate, incremental growth budget, reserve
+and horizon together. The result reports remaining incremental growth
+allowance; it does not subtract current disk usage, and is not a measured
+production rate or a service-level prediction. It excludes WAL, index, backup
+and other storage overhead. Zero assumed growth is allowed.
+Paired aggregate count deltas, if computed separately by an operator, are net
+inventory change and do not measure gross arrivals when retention is deleting
+records concurrently. Production observation, deployment, retention-horizon
+selection and cleanup remain separate authorized gates.
+The inspector does not apply or revise retention policy: existing three-day
+operational `operational_logs`/JSONL and fourteen-day technical JSONL windows,
+plus terminal/audit/security HOLD behavior, remain owned by their current
+writers and cleanup paths. CLI argument failures use fixed JSON errors without
+echoing supplied paths or values.
+
+The existing SQLite operational-log cleanup also parses each candidate
+timestamp and compares UTC instants before deleting. Invalid or empty timestamps
+remain held, and offset-bearing timestamps that only look old in a lexical
+comparison are preserved. The cutoff is validated before the cleanup starts a
+writer transaction.
