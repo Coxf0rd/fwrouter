@@ -11,7 +11,7 @@ from fwrouter_api.db.connection import get_db_path
 from fwrouter_api.services.apply_versions_retention import cleanup_apply_versions_retention
 from fwrouter_api.services.jobs import compact_oversized_job_results
 from fwrouter_api.services.jobs_retention import cleanup_jobs_retention
-from fwrouter_api.services.logs_retention import _retention_hold, cleanup_log_retention
+from fwrouter_api.services.logs_retention import _parse_timestamp, _retention_hold, cleanup_log_retention
 from fwrouter_api.services.logs import write_operational_log
 from fwrouter_api.services.servers import expire_global_fixed_server
 from fwrouter_api.services.state_retention import cleanup_state_retention
@@ -33,7 +33,17 @@ def _sqlite_cutoff(days: int) -> str:
     return (_utc_now() - timedelta(days=days)).replace(microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _parse_operational_retention_timestamp(value: str) -> datetime | None:
+    try:
+        return _parse_timestamp(value)
+    except (OverflowError, ValueError):
+        return None
+
+
 def _cleanup_expired_operational_logs(connection, *, cutoff: str, dry_run: bool) -> dict[str, Any]:
+    parsed_cutoff = _parse_operational_retention_timestamp(cutoff) if isinstance(cutoff, str) else None
+    if parsed_cutoff is None:
+        raise ValueError("OPERATIONAL_LOG_RETENTION_CUTOFF_INVALID")
     # Keep classification and exact-row deletion in one writer transaction so
     # another cleanup cannot change which rows were protected after the scan.
     # Existing caller transactions retain ownership of their transaction.
@@ -48,6 +58,13 @@ def _cleanup_expired_operational_logs(connection, *, cutoff: str, dry_run: bool)
     rowids: list[int] = []
     held_count = 0
     for row in rows:
+        created_at = row["created_at"]
+        parsed_created_at = (
+            _parse_operational_retention_timestamp(created_at) if isinstance(created_at, str) else None
+        )
+        if parsed_created_at is None or parsed_created_at >= parsed_cutoff:
+            held_count += 1
+            continue
         try:
             details = json.loads(row["details_json"] or "{}")
         except (TypeError, json.JSONDecodeError):

@@ -63,6 +63,101 @@ def test_operational_log_retention_holds_audit_security_unknown_and_malformed_ro
     assert remaining == {"audit", "denial", "conflict", "bad_category", "malformed"}
 
 
+def test_operational_log_retention_holds_invalid_empty_and_offset_fresh_timestamps(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    rows = [
+        ("invalid_time", "0000-invalid-timestamp"),
+        ("empty_time", ""),
+        # Lexically before the cutoff, but 13:00 UTC on the cutoff date.
+        ("offset_fresh", "2026-09-30T23:00:00-14:00"),
+        ("expired", "2020-01-01 00:00:00"),
+    ]
+    with db_session() as connection:
+        for event_id, created_at in rows:
+            connection.execute(
+                "INSERT INTO operational_logs(event_id,event_type,message,details_json,created_at) "
+                "VALUES(?, 'apply_failed', 'fixture', '{}', ?)", (event_id, created_at),
+            )
+        dry = _cleanup_expired_operational_logs(
+            connection, cutoff="2026-10-01 00:00:00", dry_run=True,
+        )
+        assert {item["event_id"] for item in dry["candidates"]} == {"expired"}
+        assert dry["held_count"] == 3
+        result = _cleanup_expired_operational_logs(
+            connection, cutoff="2026-10-01 00:00:00", dry_run=False,
+        )
+        assert result["deleted_count"] == 1
+        remaining = {row["event_id"] for row in connection.execute(
+            "SELECT event_id FROM operational_logs WHERE event_id IN (?, ?, ?, ?)",
+            tuple(event_id for event_id, _created_at in rows),
+        )}
+    assert remaining == {"invalid_time", "empty_time", "offset_fresh"}
+
+
+def test_operational_log_retention_rejects_invalid_cutoff_before_writer_transaction(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    connection = sqlite3.connect(get_db_path())
+    try:
+        connection.execute(
+            "INSERT INTO operational_logs(event_id,event_type,message,details_json,created_at) "
+            "VALUES('cutoff_guard','apply_failed','fixture','{}','2020-01-01 00:00:00')"
+        )
+        connection.commit()
+        with pytest.raises(ValueError, match="OPERATIONAL_LOG_RETENTION_CUTOFF_INVALID"):
+            _cleanup_expired_operational_logs(
+                connection, cutoff="not-a-cutoff", dry_run=False,
+            )
+        assert not connection.in_transaction
+        assert connection.execute(
+            "SELECT count(*) FROM operational_logs WHERE event_id='cutoff_guard'"
+        ).fetchone()[0] == 1
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("value", ["0001-01-01T00:00:00+23:00", "9999-12-31T23:59:59-23:00"])
+def test_operational_log_retention_holds_timezone_boundary_overflow(
+    monkeypatch, tmp_path: Path, value: str,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            "INSERT INTO operational_logs(event_id,event_type,message,details_json,created_at) "
+            "VALUES('boundary-time','apply_failed','fixture','{}',?)", (value,),
+        )
+        result = _cleanup_expired_operational_logs(
+            connection, cutoff="2026-10-01 00:00:00", dry_run=False,
+        )
+        assert result["deleted_count"] == 0
+        if value.startswith("0001-"):
+            assert result["held_count"] == 1
+        assert connection.execute(
+            "SELECT count(*) FROM operational_logs WHERE event_id='boundary-time'"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("cutoff", ["0001-01-01T00:00:00+23:00", "9999-12-31T23:59:59-23:00"])
+def test_operational_log_retention_rejects_timezone_boundary_cutoff_before_transaction(
+    monkeypatch, tmp_path: Path, cutoff: str,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    connection = sqlite3.connect(get_db_path())
+    try:
+        with pytest.raises(ValueError, match="OPERATIONAL_LOG_RETENTION_CUTOFF_INVALID"):
+            _cleanup_expired_operational_logs(connection, cutoff=cutoff, dry_run=False)
+        assert not connection.in_transaction
+    finally:
+        connection.close()
+
+
 def test_operational_log_retention_begins_writer_transaction_before_classification(
     monkeypatch, tmp_path: Path,
 ) -> None:
