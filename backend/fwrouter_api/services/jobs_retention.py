@@ -272,7 +272,6 @@ def cleanup_jobs_retention(*, dry_run: bool = True) -> dict[str, Any]:
     deleted_artifact_dirs: list[str] = []
     deleted_artifact_bytes = 0
     errors: list[dict[str, str]] = []
-    database_batch_rolled_back = False
 
     if not dry_run and (candidates or orphan_candidates):
         connection = connect()
@@ -365,11 +364,10 @@ def cleanup_jobs_retention(*, dry_run: bool = True) -> dict[str, Any]:
                 else:
                     raise RuntimeError("retention candidate changed during delete; batch rolled back")
             connection.commit()
-        except Exception as exc:
+        except Exception:
             connection.rollback()
             deleted_jobs.clear()
-            database_batch_rolled_back = True
-            errors.append({"error": f"retention_transaction_failed:{type(exc).__name__}; no jobs deleted"})
+            raise
         finally:
             connection.close()
 
@@ -393,22 +391,21 @@ def cleanup_jobs_retention(*, dry_run: bool = True) -> dict[str, Any]:
                     }
                 )
 
-        if not database_batch_rolled_back:
-            for orphan in orphan_candidates:
-                artifact_path = Path(orphan["path"])
-                try:
-                    if artifact_path.exists() and artifact_path.is_dir():
-                        artifact_size = _path_size(artifact_path)
-                        shutil.rmtree(artifact_path)
-                        deleted_artifact_bytes += artifact_size
-                        deleted_artifact_dirs.append(str(artifact_path))
-                except OSError as exc:
-                    errors.append(
-                        {
-                            "path": str(artifact_path),
-                            "error": str(exc),
-                        }
-                    )
+        for orphan in orphan_candidates:
+            artifact_path = Path(orphan["path"])
+            try:
+                if artifact_path.exists() and artifact_path.is_dir():
+                    artifact_size = _path_size(artifact_path)
+                    shutil.rmtree(artifact_path)
+                    deleted_artifact_bytes += artifact_size
+                    deleted_artifact_dirs.append(str(artifact_path))
+            except OSError as exc:
+                errors.append(
+                    {
+                        "path": str(artifact_path),
+                        "error": str(exc),
+                    }
+                )
 
     return {
         "dry_run": dry_run,

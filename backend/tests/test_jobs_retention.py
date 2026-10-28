@@ -4,7 +4,9 @@ from _test_support import configure_test_state_dir as _configure_env
 import json
 import os
 from pathlib import Path
+import sqlite3
 import time
+import pytest
 
 from fwrouter_api.db.connection import db_session, initialize_database
 from fwrouter_api.core.config import get_settings
@@ -12,6 +14,7 @@ from fwrouter_api.services.jobs import create_job, mark_job_running, mark_job_su
 from fwrouter_api.services.jobs_retention import cleanup_jobs_retention
 from fwrouter_api.services.rules import get_rules_state
 from fwrouter_api.jobs.manager import JobManager
+from fwrouter_api.jobs.handlers import jobs_retention_cleanup_handler
 from fwrouter_api.services.event_contract import current_event_context, reset_event_context, set_event_context
 
 
@@ -176,7 +179,8 @@ def test_retention_snapshot_failure_rolls_back_delete_and_retry_is_idempotent(
         raise RuntimeError("event storage unavailable")
 
     monkeypatch.setattr(jobs_service, "write_audit_event", fail_writer)
-    failed = cleanup_jobs_retention(dry_run=False)
+    with pytest.raises(RuntimeError, match="event storage unavailable"):
+        cleanup_jobs_retention(dry_run=False)
     with db_session() as connection:
         retained = connection.execute(
             "SELECT job_id FROM jobs WHERE job_id = ?", (job["job_id"],),
@@ -185,7 +189,6 @@ def test_retention_snapshot_failure_rolls_back_delete_and_retry_is_idempotent(
             "SELECT COUNT(*) FROM operational_logs WHERE event_type = ?",
             ("job.terminal_outcome",),
         ).fetchone()[0]
-    assert failed["deleted_jobs_count"] == 0
     assert retained is not None and events == 0
 
     monkeypatch.setattr(jobs_service, "write_audit_event", original_writer)
@@ -227,10 +230,8 @@ def test_retention_database_rollback_preserves_orphans_until_retry(
     old_time = time.time() - 2 * 86400
     os.utime(orphan_dir, (old_time, old_time))
 
-    failed = cleanup_jobs_retention(dry_run=False)
-    assert failed["deleted_jobs_count"] == 0
-    assert any(error.get("error", "").startswith("retention_transaction_failed:")
-               for error in failed["errors"])
+    with pytest.raises(sqlite3.IntegrityError, match="test retention snapshot failure"):
+        cleanup_jobs_retention(dry_run=False)
     assert orphan_file.read_text(encoding="utf-8") == "preserve until database retry"
     with db_session() as connection:
         assert connection.execute(
@@ -242,6 +243,62 @@ def test_retention_database_rollback_preserves_orphans_until_retry(
     assert retried["deleted_jobs_count"] == 1
     assert str(orphan_dir) in retried["deleted_artifact_dirs"]
     assert not orphan_dir.exists()
+
+
+def test_retention_snapshot_sqlite_failure_fails_enclosing_manager_job(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    target = create_job("legacy")
+    mark_job_running(target["job_id"])
+    mark_job_success(target["job_id"], result={"ok": True})
+    with db_session() as connection:
+        connection.execute(
+            "DELETE FROM operational_logs WHERE event_type = ?", ("job.terminal_outcome",),
+        )
+        _age_job(connection, target["job_id"])
+
+    orphan_dir = get_settings().paths.jobs_dir / "orphan-manager-snapshot-failure"
+    orphan_dir.mkdir(parents=True)
+    orphan_file = orphan_dir / "keep.txt"
+    orphan_file.write_text("preserve failed cleanup", encoding="utf-8")
+    old_time = time.time() - 2 * 86400
+    os.utime(orphan_dir, (old_time, old_time))
+
+    with db_session() as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_legacy_snapshot BEFORE INSERT ON operational_logs
+               WHEN NEW.event_type = 'job.terminal_outcome'
+                AND NEW.details_json LIKE '%legacy_terminal_observed%'
+               BEGIN SELECT RAISE(ABORT, 'test legacy snapshot insert failure'); END"""
+        )
+    try:
+        manager = JobManager()
+        manager.register_handler("jobs_retention_cleanup", jobs_retention_cleanup_handler)
+        cleanup_job = manager.create(
+            "jobs_retention_cleanup", input_data={"dry_run": False}, requested_by="pytest",
+        )
+        result = manager.run_job(cleanup_job["job_id"])
+        assert result is not None and result["status"] == "failed"
+        assert "test legacy snapshot insert failure" in result["error_message"]
+        assert orphan_file.read_text(encoding="utf-8") == "preserve failed cleanup"
+        with db_session() as connection:
+            assert connection.execute(
+                "SELECT 1 FROM jobs WHERE job_id = ?", (target["job_id"],),
+            ).fetchone() is not None
+            cleanup_events = connection.execute(
+                "SELECT details_json FROM operational_logs WHERE event_type = 'job.terminal_outcome'",
+            ).fetchall()
+            cleanup_payloads = [json.loads(row["details_json"]) for row in cleanup_events]
+            own_event = next(
+                payload for payload in cleanup_payloads
+                if payload.get("entity_id") == cleanup_job["job_id"]
+            )
+            assert own_event["execution_status"] == "failed"
+    finally:
+        with db_session() as connection:
+            connection.execute("DROP TRIGGER IF EXISTS reject_legacy_snapshot")
 
 
 def test_cleanup_jobs_retention_preserves_apply_versions_fk_integrity(
