@@ -7705,6 +7705,153 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertNotIn(secret_uuid, observed.find("failure").text)
             self.assertNotIn(secret_email, observed.find("failure").text)
 
+    def _browser_junit_fixture(self):
+        nodeid = ("tests/application_acceptance/test_browser_locale.py::"
+                  "test_real_chromium_navigation_locale_and_settings_write")
+        root = ET.Element("testsuite")
+        selected = None
+        for expected in sorted(launcher.expected_acceptance_nodeids("functional-ordinary")):
+            path, _, name = expected.partition("::")
+            case = ET.SubElement(root, "testcase", {"classname": path[:-3].replace("/", "."), "name": name})
+            if expected == nodeid:
+                selected = case
+        self.assertIsNotNone(selected)
+        ET.SubElement(selected, "failure", {"message": "synthetic browser launch SIGSEGV"})
+        value = {"schema": 1, "scenario": "navigation", "launch_outcome": "failed", "samples": [
+            {"phase": phase, "resources": {"memory_current_bytes": 123, "pids_current": 4,
+             "memory_events": {"oom_kill": 0}, "tmp": {"used_bytes": 100, "capacity_bytes": 1000}}}
+            for phase in ("before_launch", "after_launch", "posttest")
+        ]}
+        properties = ET.SubElement(selected, "properties")
+        prop = ET.SubElement(properties, "property", {
+            "name": "browser_resource_diagnostic_navigation", "value": json.dumps(value),
+        })
+        return root, nodeid, selected, prop, value
+
+    def test_browser_resource_junit_survives_receipt_and_failed_diagnostic_projection(self):
+        import evidence_bundle
+        root, nodeid, _case, _prop, _value = self._browser_junit_fixture()
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            junit = directory / "suite.xml"
+            ET.ElementTree(root).write(junit, encoding="utf-8")
+            tests = launcher.validate_junit(junit, "functional-ordinary")
+            self.assertEqual(1, tests["failures"])
+            self.assertEqual("failed", tests["node_status"][nodeid])
+            diagnostic = tests["browser_resource_diagnostics"][nodeid]
+            self.assertEqual("failed", diagnostic["launch_outcome"])
+            self.assertEqual(123, diagnostic["samples"][0]["resources"]["memory_current_bytes"])
+            self.assertIsNone(diagnostic["samples"][0]["resources"]["pids_max"])
+            source = directory / "hosted-acceptance-report.json"
+            source.write_text(json.dumps({"status": "failed", "tests": tests}), encoding="utf-8")
+            target = directory / "diagnostic.json"
+            evidence_bundle.copy_diagnostic_projection(source, target, 512 * 1024)
+            projected = json.loads(target.read_text())
+            self.assertEqual(diagnostic, projected["tests"]["browser_resource_diagnostics"][nodeid])
+            self.assertEqual("failed", projected["status"])
+
+    def test_browser_resource_junit_drops_raw_payload_and_invalid_numeric_values(self):
+        _root, nodeid, case, prop, value = self._browser_junit_fixture()
+        sentinel = "PRIVATE_SENTINEL_NOT_FOR_ARTIFACTS"
+        value["raw_environment"] = sentinel
+        for sample in value["samples"]:
+            sample["raw_log"] = sentinel
+            sample["resources"].update({"private_url": sentinel, "pids_current": True,
+                                        "memory_max_bytes": 2**80, "memory_current_bytes": sentinel})
+            sample["resources"]["memory_events"]["oom_kill"] = -1
+        prop.set("value", json.dumps(value))
+        diagnostic = launcher._browser_resource_diagnostic(case, nodeid)
+        self.assertIsNotNone(diagnostic)
+        self.assertNotIn(sentinel, json.dumps(diagnostic))
+        resources = diagnostic["samples"][0]["resources"]
+        for name in ("pids_current", "memory_max_bytes", "memory_current_bytes"):
+            self.assertIsNone(resources[name])
+        self.assertIsNone(resources["memory_events"]["oom_kill"])
+
+    def test_browser_resource_junit_malformed_duplicate_or_unbound_properties_are_ignored(self):
+        for mode in ("malformed", "oversized", "duplicate", "scenario", "phases", "schema", "outcome"):
+            with self.subTest(mode=mode):
+                _root, nodeid, case, prop, value = self._browser_junit_fixture()
+                if mode == "malformed":
+                    prop.set("value", "{")
+                elif mode == "oversized":
+                    prop.set("value", " " * 4097)
+                elif mode == "duplicate":
+                    case.find("properties").append(copy.deepcopy(prop))
+                else:
+                    if mode == "scenario":
+                        value["scenario"] = "provider_error"
+                    elif mode == "phases":
+                        value["samples"].reverse()
+                    elif mode == "schema":
+                        value["schema"] = True
+                    else:
+                        value["launch_outcome"] = "SECRET_SENTINEL"
+                    prop.set("value", json.dumps(value))
+                self.assertIsNone(launcher._browser_resource_diagnostic(case, nodeid))
+        _root, _nodeid, case, _prop, _value = self._browser_junit_fixture()
+        self.assertIsNone(launcher._browser_resource_diagnostic(case, "tests/other.py::test_other"))
+
+    def test_browser_resource_junit_missing_diagnostics_never_reclassify_failure(self):
+        root, nodeid, case, prop, _value = self._browser_junit_fixture()
+        prop.set("value", "{")
+        with tempfile.TemporaryDirectory() as temp:
+            junit = Path(temp) / "suite.xml"
+            ET.ElementTree(root).write(junit, encoding="utf-8")
+            tests = launcher.validate_junit(junit, "functional-ordinary")
+            self.assertEqual(1, tests["failures"])
+            self.assertEqual("failed", tests["node_status"][nodeid])
+            self.assertNotIn("browser_resource_diagnostics", tests)
+            case.remove(case.find("failure"))
+            ET.SubElement(case, "skipped")
+            ET.ElementTree(root).write(junit, encoding="utf-8")
+            tests = launcher.validate_junit(junit, "functional-ordinary")
+            self.assertEqual(1, tests["skipped"])
+            self.assertEqual("skipped", tests["node_status"][nodeid])
+
+    def test_browser_resource_actual_pytest_xunit2_exports_failed_launch_finalizer(self):
+        source = (launcher.ROOT / "tests/application_acceptance/test_browser_locale.py").read_text()
+        names = {"_safe_browser_resource_snapshot", "_launch_chromium_with_diagnostics"}
+        nodes = [node for node in ast.parse(source).body
+                 if isinstance(node, ast.FunctionDef) and node.name in names]
+        self.assertEqual(names, {node.name for node in nodes})
+        fixture = (
+            "import json\n"
+            "_browser_resource_snapshot = lambda: {}\n"
+            "_BROWSER_DIAGNOSTIC_SCENARIOS = {'navigation': 'browser_resource_diagnostic_navigation'}\n"
+            + "\n".join(ast.get_source_segment(source, node) for node in nodes)
+            + "\nclass Chromium:\n"
+            "    def launch(self, **kwargs):\n"
+            "        raise RuntimeError('synthetic launch failure')\n"
+            "def test_real_chromium_navigation_locale_and_settings_write(request, record_property):\n"
+            "    _launch_chromium_with_diagnostics(Chromium(), scenario='navigation',\n"
+            "        executable_path='/not-executed', args=[], request=request,\n"
+            "        record_property=record_property, snapshot_fn=lambda: {'pids_current': 7})\n"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            module = directory / "tests/application_acceptance/test_browser_locale.py"
+            module.parent.mkdir(parents=True)
+            module.write_text(fixture)
+            junit = directory / "receipt.xml"
+            result = subprocess.run(
+                [sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-o", "junit_family=xunit2",
+                 f"--rootdir={directory}", f"--junitxml={junit}", str(module), "-q"],
+                cwd=directory, env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                                    "PYTHONDONTWRITEBYTECODE": "1"},
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(1, result.returncode, result.stdout[-2000:] + result.stderr[-1000:])
+            case = ET.parse(junit).getroot().find(".//testcase")
+            self.assertIsNotNone(case.find("failure"))
+            diagnostic = launcher._browser_resource_diagnostic(
+                case, "tests/application_acceptance/test_browser_locale.py::"
+                      "test_real_chromium_navigation_locale_and_settings_write",
+            )
+            self.assertIsNotNone(diagnostic)
+            self.assertEqual("failed", diagnostic["launch_outcome"])
+            self.assertEqual([7, 7, 7], [row["resources"]["pids_current"] for row in diagnostic["samples"]])
+
     def test_junit_skipped_node_is_not_a_pass(self):
         with tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-skip-") as temp:
             nodeid = sorted(launcher.expected_acceptance_nodeids("recovery"))[0]

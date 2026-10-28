@@ -74,3 +74,22 @@ The current source bound requires 5 GiB free before a cold pull, 1 GiB after pul
 and for a warm build, 512 MiB after build and after tests, and 256 MiB after
 owned cleanup. The dependency image inspect is capped at 4 GiB.
 Receipts must not record private paths, signed URLs, or credentials.
+
+## Browser launch failures
+
+A browser process can fail before any UI request. Preserve its original failure;
+never retry the launch or turn missing diagnostics into a passing test. The
+existing browser fixture records three bounded cgroup/tmp/shm resource samples
+(before launch, after launch, post-test) in JUnit properties. The launcher projects
+only known browser cases/scenarios and fixed nonnegative integer-or-null fields
+into `tests.browser_resource_diagnostics` in the existing hosted receipt. This
+also survives the existing failed-run diagnostic artifact. No raw JUnit,
+environment, process list, browser profile or extra payload is published by this
+projection. Unknown, duplicate, malformed or oversized properties are omitted;
+test status and strict aggregate eligibility remain independent of diagnostics.
+
+`record_property` produces a pytest xunit2 compatibility warning, but its
+per-test properties are still emitted; an actual isolated pytest subprocess
+regression checks finalizer export after a failed launch. Numeric samples can
+help diagnose resource pressure; they cannot by themselves establish the cause
+of a Chromium SIGSEGV or qualify production behavior.

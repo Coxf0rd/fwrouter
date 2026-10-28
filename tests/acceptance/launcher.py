@@ -2536,6 +2536,66 @@ def validate_application_receipt_scope(receipt: Any, profile: Any) -> None:
         raise NotRun("application receipt scope does not match the selected profile")
 
 
+_BROWSER_RESOURCE_CASES = {
+    "test_real_chromium_navigation_locale_and_settings_write": "navigation",
+    "test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate": "provider_exclusive",
+    "test_real_chromium_provider_controls_report_real_api_failure_without_success": "provider_error",
+    "test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback": "xray_client_editor",
+}
+
+
+def _browser_resource_diagnostic(case: ET.Element, nodeid: str) -> dict[str, Any] | None:
+    """Retain only the existing bounded numeric browser samples, never raw JUnit."""
+    module, _, name = nodeid.partition("::")
+    scenario = _BROWSER_RESOURCE_CASES.get(name)
+    if module != "tests/application_acceptance/test_browser_locale.py" or scenario is None:
+        return None
+    properties = [row for row in case.findall("properties/property")
+                  if row.get("name") == f"browser_resource_diagnostic_{scenario}"]
+    if len(properties) != 1:
+        return None
+    encoded = properties[0].get("value", "")
+    if len(encoded.encode("utf-8")) > 4096:
+        return None
+    try:
+        value = json.loads(encoded)
+    except (ValueError, RecursionError):
+        return None
+    if (not isinstance(value, dict) or type(value.get("schema")) is not int
+            or value["schema"] != 1 or value.get("scenario") != scenario
+            or value.get("launch_outcome") not in ("not_started", "failed", "succeeded")):
+        return None
+    samples = value.get("samples")
+    phases = ("before_launch", "after_launch", "posttest")
+    if not isinstance(samples, list) or len(samples) != len(phases):
+        return None
+
+    def number(item: Any) -> int | None:
+        return item if type(item) is int and 0 <= item <= 2**63 - 1 else None
+
+    projected = []
+    for row, phase in zip(samples, phases):
+        if not isinstance(row, dict) or row.get("phase") != phase:
+            return None
+        resources = row.get("resources")
+        if not isinstance(resources, dict):
+            return None
+        safe = {key: number(resources.get(key)) for key in (
+            "memory_current_bytes", "memory_peak_bytes", "memory_max_bytes", "pids_current", "pids_max",
+        )}
+        for group, keys in (
+            ("memory_events", ("low", "high", "max", "oom", "oom_kill", "oom_group_kill")),
+            ("pids_events", ("max",)),
+            ("tmp", ("used_bytes", "capacity_bytes")),
+            ("dev_shm", ("used_bytes", "capacity_bytes")),
+        ):
+            source = resources.get(group)
+            safe[group] = {key: number(source.get(key)) if isinstance(source, dict) else None for key in keys}
+        projected.append({"phase": phase, "resources": safe})
+    return {"schema": 1, "scenario": scenario, "launch_outcome": value["launch_outcome"],
+            "samples": projected}
+
+
 def validate_junit(path: Path, suite: str) -> dict[str, Any]:
     if not path.is_file() or path.is_symlink() or path.stat().st_size > MAX_RECEIPT_BYTES:
         raise NotRun("acceptance JUnit receipt is missing or exceeds its bound")
@@ -2551,6 +2611,7 @@ def validate_junit(path: Path, suite: str) -> dict[str, Any]:
         raise NotRun("acceptance run reported no test cases")
     nodeids: list[str] = []
     statuses: dict[str, str] = {}
+    browser_resources: dict[str, Any] = {}
     for case in cases:
         module = case.get("classname", "").strip()
         name = case.get("name", "").strip()
@@ -2561,11 +2622,17 @@ def validate_junit(path: Path, suite: str) -> dict[str, Any]:
         node = case.find("failure") is not None or case.find("error") is not None
         was_skipped = case.find("skipped") is not None
         statuses[nodeid] = "failed" if node else "skipped" if was_skipped else "passed"
+        diagnostic = _browser_resource_diagnostic(case, nodeid)
+        if diagnostic is not None:
+            browser_resources[nodeid] = diagnostic
     expected = expected_acceptance_nodeids(suite)
     if len(nodeids) != len(set(nodeids)) or set(nodeids) != expected:
         raise NotRun("JUnit acceptance node IDs do not match the selected suite contract")
-    return {"tests": len(cases), "failures": failures, "errors": errors,
-            "skipped": skipped, "nodeids": sorted(nodeids), "node_status": statuses}
+    result = {"tests": len(cases), "failures": failures, "errors": errors,
+              "skipped": skipped, "nodeids": sorted(nodeids), "node_status": statuses}
+    if browser_resources:
+        result["browser_resource_diagnostics"] = browser_resources
+    return result
 
 
 def runtime_preflight_code() -> str:
