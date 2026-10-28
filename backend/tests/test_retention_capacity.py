@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 
 import pytest
 
@@ -142,6 +143,7 @@ def test_fifo_open_is_nonblocking_before_file_type_check(tmp_path: Path, monkeyp
     parent = _private_dir(tmp_path / "snapshots")
     fifo = parent / "input.jsonl"
     os.mkfifo(fifo, 0o600)
+    fifo_info = fifo.lstat()
     real_open = os.open
     checked = False
 
@@ -153,9 +155,19 @@ def test_fifo_open_is_nonblocking_before_file_type_check(tmp_path: Path, monkeyp
         return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(capacity.os, "open", guarded_open)
-    with pytest.raises(capacity.InspectionError, match="INPUT_FILE_NOT_PRIVATE_REGULAR"):
-        capacity.inspect_jsonl_snapshot(str(fifo), source_kind="technical_jsonl_diagnostic")
-    assert checked
+    try:
+        with pytest.raises(capacity.InspectionError, match="INPUT_FILE_NOT_PRIVATE_REGULAR"):
+            capacity.inspect_jsonl_snapshot(str(fifo), source_kind="technical_jsonl_diagnostic")
+        assert checked
+    finally:
+        try:
+            current = fifo.lstat()
+        except FileNotFoundError:
+            current = None
+        if (current is not None and stat.S_ISFIFO(current.st_mode)
+                and (current.st_dev, current.st_ino) == (fifo_info.st_dev, fifo_info.st_ino)):
+            fifo.unlink()
+    assert not fifo.exists()
 
 
 def test_sqlite_requires_canonical_table_but_jobs_are_optional(tmp_path: Path) -> None:
