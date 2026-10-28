@@ -208,6 +208,7 @@ Manual diagnostics are documented by `opt_fwrouter_api_fwrouter_api_services_man
 
 - [Atomic installer UI publication](installer_ui_publication_py.md): prepared immutable UI trees, atomic active pointer and retained previous release.
 - [Installer component lock](installer_component_install_lock_py.md): shared serialization for backend/UI installer operations and direct UI publication.
+- [Selective host publication](installer_host_publication_py.md): fixed two-file CAS publication of the boot preflight helper and API unit under the exclusive installer lock.
 - [Safe backend recovery artifact](installer_safe_recovery_py.md): tracked backend artifact verification and isolated staging through the exact installer dependency closure.
 
 

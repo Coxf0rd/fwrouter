@@ -13,6 +13,8 @@ DEPLOY_MODE=0
 COMPONENT_LOCK_FD=""
 MAINTENANCE_LOCK_MODE=""
 DEPENDENCIES_PREPARED=0
+HOST_PLAN=""
+SELECTIVE_HOST=0
 
 usage() {
   cat >&2 <<'EOF'
@@ -20,10 +22,12 @@ Usage:
   installer/install.sh --all [--target /]
   installer/install.sh --component backend [--component ui ...] [--target /]
   installer/install.sh --deploy --component backend [--component ui ...]
+  installer/install.sh --deploy --component host --host-plan PLAN.json [--target /]
 
 Components: backend, ui, mihomo, xray, host, docs, homeassistant, all
 Options:
   --deploy                         copy selected components to an already prepared host without apt/venv/unit/sysctl setup
+  --host-plan PLAN.json            publish only the allowlisted API unit and boot helper via CAS
 Environment:
   FWROUTER_INSTALL_HOST_DEPS=0  skip apt dependency install
   FWROUTER_SETUP_PYTHON_ENV=0   skip backend venv setup
@@ -49,6 +53,13 @@ while [ "$#" -gt 0 ]; do
     --deploy)
       DEPLOY_MODE=1
       shift
+      ;;
+    --host-plan)
+      [ "$#" -ge 2 ] || usage
+      [ -n "$2" ] || usage
+      [ -z "$HOST_PLAN" ] || usage
+      HOST_PLAN="$2"
+      shift 2
       ;;
     --_component-lock-fd)
       [ "$#" -ge 2 ] || usage
@@ -80,6 +91,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$COMPONENTS" ] || usage
+
+if [ -n "$HOST_PLAN" ]; then
+  [ "$DEPLOY_MODE" = "1" ] || usage
+  [ "$COMPONENTS" = " host" ] || usage
+  SELECTIVE_HOST=1
+fi
 
 if [ "$DEPLOY_MODE" = "1" ]; then
   INSTALL_HOST_DEPS=0
@@ -194,8 +211,8 @@ want_component() {
   return 1
 }
 
-if [ "$DEPENDENCIES_PREPARED" = "1" ] && { [ -z "$COMPONENT_LOCK_FD" ] || { ! want_component backend && ! want_component ui; }; }; then
-  echo "install.sh: internal lock-runner options require a backend/UI component lock" >&2
+if [ "$DEPENDENCIES_PREPARED" = "1" ] && { [ -z "$COMPONENT_LOCK_FD" ] || { ! want_component backend && ! want_component ui && [ "$SELECTIVE_HOST" != "1" ]; }; }; then
+  echo "install.sh: internal lock-runner options require a backend/UI/selective-host component lock" >&2
   exit 1
 fi
 
@@ -315,11 +332,13 @@ if [ "$DEPENDENCIES_PREPARED" = "0" ] && [ "$TARGET_ROOT" = "/" ] && [ "$INSTALL
   fi
 fi
 
-# Backend and UI source operations share one lock. The lock starts after host
-# dependency setup (which can provide Python on a clean host) and remains held
-# through bootstrap and the UI compatibility check/pointer exchange.
-if want_component backend || want_component ui; then
+# Backend/UI source operations and selective host publication use the common
+# component lock. Selective host deploy also holds the exclusive maintenance
+# lease and exits before any generic installer post-actions.
+if want_component backend || want_component ui || [ "$SELECTIVE_HOST" = "1" ]; then
   if want_component backend; then
+    REQUIRED_MAINTENANCE_LOCK_MODE="exclusive"
+  elif [ "$SELECTIVE_HOST" = "1" ]; then
     REQUIRED_MAINTENANCE_LOCK_MODE="exclusive"
   else
     REQUIRED_MAINTENANCE_LOCK_MODE="shared"
@@ -331,6 +350,7 @@ if want_component backend || want_component ui; then
     done
     [ "$DEPLOY_MODE" = "0" ] || set -- "$@" --deploy
     [ "$TARGET_ROOT" = "/" ] || set -- "$@" --target "$TARGET_ROOT"
+    [ "$SELECTIVE_HOST" = "0" ] || set -- "$@" --host-plan "$HOST_PLAN"
     set -- "$@" --_dependencies-prepared
     exec python3 "$REPO_ROOT/installer/component_install_lock.py" \
       --run-parent "$(target_path opt)" -- "$REPO_ROOT/installer/install.sh" "$@"
@@ -346,6 +366,16 @@ if want_component backend || want_component ui; then
   python3 "$REPO_ROOT/installer/component_install_lock.py" \
     --verify-parent "$(target_path opt)" --fd "$COMPONENT_LOCK_FD" \
     --mode "$REQUIRED_MAINTENANCE_LOCK_MODE"
+fi
+
+if [ "$SELECTIVE_HOST" = "1" ]; then
+  python3 "$REPO_ROOT/installer/host_publication.py" \
+    --source-root "$REPO_ROOT" \
+    --target-root "$TARGET_ROOT" \
+    --plan "$HOST_PLAN" \
+    --component-lock-fd "$COMPONENT_LOCK_FD"
+  echo "Installed FWRouter selective host files into $TARGET_ROOT"
+  exit 0
 fi
 
 want_component backend && install_backend
