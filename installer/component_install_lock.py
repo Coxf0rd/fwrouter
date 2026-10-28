@@ -357,7 +357,7 @@ def _run(parent: Path, command: list[str]) -> int:
 
 
 def _maintenance_mode(command: list[str]) -> str:
-    """Backend source replacement is exclusive; UI-only publication is shared."""
+    """Backend and selective host publication are exclusive; UI is shared."""
     if not any(Path(value).name == "install.sh" for value in command):
         raise ComponentInstallLockError("host maintenance lease supports only install.sh")
     components = {
@@ -365,6 +365,10 @@ def _maintenance_mode(command: list[str]) -> str:
         for index, value in enumerate(command[:-1])
         if value == "--component"
     }
+    if "--host-plan" in command:
+        if "--all" in command or components != {"host"}:
+            raise ComponentInstallLockError("selective host publication requires host-only install")
+        return "exclusive"
     return "exclusive" if "--all" in command or {"all", "backend"} & components else "shared"
 
 

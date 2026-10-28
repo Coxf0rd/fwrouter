@@ -157,7 +157,13 @@ class AtomicUiPublicationTests(unittest.TestCase):
         install = str(ROOT / "installer" / "install.sh")
         self.assertEqual(component_install_lock._maintenance_mode([install, "--component", "backend"]), "exclusive")
         self.assertEqual(component_install_lock._maintenance_mode([install, "--component", "all"]), "exclusive")
+        self.assertEqual(component_install_lock._maintenance_mode(
+            [install, "--deploy", "--component", "host", "--host-plan", "/tmp/plan.json"]), "exclusive")
         self.assertEqual(component_install_lock._maintenance_mode([install, "--component", "ui"]), "shared")
+        with self.assertRaises(component_install_lock.ComponentInstallLockError):
+            component_install_lock._maintenance_mode(
+                [install, "--deploy", "--component", "host", "--component", "backend",
+                 "--host-plan", "/tmp/plan.json"])
 
     def test_maintenance_lease_verification_requires_owned_requested_flock_mode(self) -> None:
         lease = self.root / "maintenance.lock"
