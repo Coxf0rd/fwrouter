@@ -112,25 +112,61 @@ copy_tree() {
   require_path "$src" "source directory"
   mkdir -p "$dst"
   (
-    cd "$src"
-    tar \
-      --exclude='.env' \
-      --exclude='.env.*' \
-      --exclude='.venv' \
-      --exclude='.pytest_cache' \
-      --exclude='__pycache__' \
-      --exclude='*.pyc' \
-      --exclude='*.pyo' \
-      --exclude='*.db' \
-      --exclude='*.sqlite' \
-      --exclude='*.sqlite3' \
-      --exclude='*.bak' \
-      --exclude='*.bak-*' \
-      --exclude='.git' \
-      -cf - .
-  ) | (
-    cd "$dst"
-    tar -xf -
+    copy_tmp=$(mktemp -d "${TMPDIR:-/tmp}/fwrouter-copy.XXXXXX") || exit 1
+    copy_fifo="$copy_tmp/archive.fifo"
+    if ! mkfifo "$copy_fifo"; then
+      rmdir "$copy_tmp"
+      exit 1
+    fi
+    copy_producer_pid=""
+    copy_cleanup() {
+      if [ -n "$copy_producer_pid" ]; then
+        kill "$copy_producer_pid" 2>/dev/null || true
+        wait "$copy_producer_pid" 2>/dev/null || true
+      fi
+      rm -f "$copy_fifo"
+      rmdir "$copy_tmp" 2>/dev/null || true
+    }
+    trap 'copy_cleanup' 0
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    (
+      cd "$src" || exit 1
+      exec tar \
+        --exclude='.env' \
+        --exclude='.env.*' \
+        --exclude='.venv' \
+        --exclude='.pytest_cache' \
+        --exclude='__pycache__' \
+        --exclude='*.pyc' \
+        --exclude='*.pyo' \
+        --exclude='*.db' \
+        --exclude='*.sqlite' \
+        --exclude='*.sqlite3' \
+        --exclude='*.bak' \
+        --exclude='*.bak-*' \
+        --exclude='.git' \
+        -cf - .
+    ) > "$copy_fifo" &
+    copy_producer_pid=$!
+
+    if (cd "$dst" && tar -xf -) < "$copy_fifo"; then
+      copy_receiver_status=0
+    else
+      copy_receiver_status=$?
+    fi
+    if wait "$copy_producer_pid"; then
+      copy_sender_status=0
+    else
+      copy_sender_status=$?
+    fi
+    copy_producer_pid=""
+    if [ "$copy_receiver_status" -ne 0 ] || [ "$copy_sender_status" -ne 0 ]; then
+      echo "install.sh: component tree copy failed (sender=$copy_sender_status receiver=$copy_receiver_status)" >&2
+      exit 1
+    fi
   )
 }
 
@@ -283,7 +319,11 @@ fi
 # dependency setup (which can provide Python on a clean host) and remains held
 # through bootstrap and the UI compatibility check/pointer exchange.
 if want_component backend || want_component ui; then
-  REQUIRED_MAINTENANCE_LOCK_MODE="shared"
+  if want_component backend; then
+    REQUIRED_MAINTENANCE_LOCK_MODE="exclusive"
+  else
+    REQUIRED_MAINTENANCE_LOCK_MODE="shared"
+  fi
   if [ -z "$COMPONENT_LOCK_FD" ]; then
     set --
     for component in $COMPONENTS; do

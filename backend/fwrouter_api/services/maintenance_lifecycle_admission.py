@@ -196,13 +196,30 @@ def _read_checkpoint(state_root: Path) -> dict[str, object] | None:
 
 
 def startup_allowed(state_root: Path = DEFAULT_STATE_ROOT) -> bool:
-    """Return false for an interrupted or unverified offline rebuild phase."""
+    """Return false for unverified maintenance or a mismatched rollout tree."""
     checkpoint = _read_checkpoint(state_root)
     if checkpoint is None:
         return True
     operation = checkpoint.get("maintenance_operation")
     if operation is None:
-        return True
+        # An ordinary source rollout publishes its target backend digest before
+        # the installer overlays files.  Bind startup to the executing package
+        # tree so boot/restart cannot run a mixed old/new backend after a crash.
+        if (checkpoint.get("status") not in {"pending", "complete"}
+                or type(checkpoint.get("schema")) is not int
+                or checkpoint.get("schema") not in {1, 2, 3}):
+            return False
+        expected = checkpoint.get("backend_manifest_sha256")
+        if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+            return False
+        try:
+            from fwrouter_api.services import native_proof
+
+            actual = native_proof.backend_manifest_sha256(native_proof._backend_root())
+        except Exception:
+            # Missing modules and malformed/partial backend trees fail closed.
+            return False
+        return actual == expected
     if (not isinstance(operation, dict) or operation.get("kind") != "database_rebuild"
             or checkpoint.get("status") not in {"pending", "complete"}):
         return False
@@ -276,7 +293,7 @@ def acquire_shared_lease_fd(state_root: Path = DEFAULT_STATE_ROOT) -> int:
     try:
         fcntl.flock(fd, fcntl.LOCK_SH)
         if not startup_allowed(state_root):
-            raise MaintenanceAdmissionError("an offline rebuild is pending operator forward completion")
+            raise MaintenanceAdmissionError("startup is blocked by pending maintenance or backend manifest mismatch")
         return fd
     except BaseException:
         os.close(fd)
@@ -297,7 +314,7 @@ def verify_shared_lease_fd(fd: int, state_root: Path = DEFAULT_STATE_ROOT) -> No
         except BlockingIOError as exc:
             raise MaintenanceAdmissionError("inherited maintenance lease is not owned by this process") from exc
         if not startup_allowed(state_root):
-            raise MaintenanceAdmissionError("an offline rebuild is pending operator forward completion")
+            raise MaintenanceAdmissionError("startup is blocked by pending maintenance or backend manifest mismatch")
     finally:
         os.close(expected)
 

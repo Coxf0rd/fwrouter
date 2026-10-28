@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import shutil
 import signal
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import uuid
 import unittest
 from unittest import mock
 
@@ -18,9 +20,17 @@ def stat_mode(path: Path) -> int:
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "installer" / "ui_publication.py"
+LOCK_HELPER = ROOT / "installer" / "component_install_lock.py"
 
 sys.path.insert(0, str(HELPER.parent))
 import ui_publication
+
+lock_spec = __import__("importlib.util", fromlist=["spec_from_file_location"]).spec_from_file_location(
+    "component_install_lock_test", LOCK_HELPER,
+)
+assert lock_spec is not None and lock_spec.loader is not None
+component_install_lock = __import__("importlib.util", fromlist=["module_from_spec"]).module_from_spec(lock_spec)
+lock_spec.loader.exec_module(component_install_lock)
 
 
 class AtomicUiPublicationTests(unittest.TestCase):
@@ -68,6 +78,376 @@ class AtomicUiPublicationTests(unittest.TestCase):
         active.mkdir()
         (active / "index.html").write_text("old complete ui\n")
         return source, target, active
+
+    def _copy_failure_installer_fixture(self) -> tuple[Path, Path, Path, Path]:
+        source = self.root / "copy-failure-source"
+        installer = source / "installer"
+        installer.mkdir(parents=True)
+        for name in ("install.sh", "component_install_lock.py", "obsolete-backend-paths.txt"):
+            shutil.copy2(ROOT / "installer" / name, installer / name)
+        backend = source / "backend"
+        (backend / "scripts").mkdir(parents=True)
+        (backend / "app.py").write_text("synthetic backend\n", encoding="utf-8")
+        marker = self.root / "bootstrap-ran"
+        bootstrap = backend / "scripts" / "bootstrap-state.sh"
+        bootstrap.write_text(f"#!/bin/sh\nprintf ran > '{marker}'\n", encoding="utf-8")
+        bootstrap.chmod(0o755)
+        (installer / "obsolete-backend-paths.txt").write_text("", encoding="utf-8")
+        target = self.root / "copy-failure-target"
+        fake_bin = self.root / "fake-bin"
+        fake_bin.mkdir()
+        return source, target, marker, fake_bin
+
+    def _run_copy_failure_installer(self, mode: str) -> tuple[subprocess.CompletedProcess, Path]:
+        source, target, marker, fake_bin = self._copy_failure_installer_fixture()
+        real_tar = shutil.which("tar")
+        self.assertIsNotNone(real_tar)
+        wrapper = fake_bin / "tar"
+        wrapper.write_text(textwrap.dedent(f"""\
+            #!/bin/sh
+            case "$*" in
+              *"-xf -"*)
+                if [ "$FWROUTER_TEST_TAR_MODE" = receiver ]; then exit 23; fi
+                exec '{real_tar}' "$@"
+                ;;
+              *)
+                if [ "$FWROUTER_TEST_TAR_MODE" = truncated-sigkill ]; then printf 'truncated archive'; kill -KILL "$$"; fi
+                '{real_tar}' "$@"
+                status=$?
+                if [ "$FWROUTER_TEST_TAR_MODE" = sender-valid-then-fail ] && [ "$status" -eq 0 ]; then exit 17; fi
+                exit "$status"
+                ;;
+            esac
+        """), encoding="utf-8")
+        wrapper.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{fake_bin}:{env['PATH']}"
+        env["FWROUTER_TEST_TAR_MODE"] = mode
+        private_tmp = self.root / "private-tmp"
+        private_tmp.mkdir()
+        env["TMPDIR"] = str(private_tmp)
+        result = subprocess.run(
+            [str(source / "installer/install.sh"), "--deploy", "--component", "backend",
+             "--target", str(target)],
+            cwd=source, env=env, text=True, capture_output=True, timeout=30,
+        )
+        return result, marker
+
+    def test_backend_copy_rejects_valid_archive_from_failed_sender_before_bootstrap(self) -> None:
+        result, marker = self._run_copy_failure_installer("sender-valid-then-fail")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("sender=17", result.stderr)
+        self.assertFalse(marker.exists(), "bootstrap must not run after producer failure")
+
+    def test_backend_copy_rejects_receiver_failure_before_bootstrap(self) -> None:
+        result, marker = self._run_copy_failure_installer("receiver")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("receiver=23", result.stderr)
+        self.assertFalse(marker.exists(), "bootstrap must not run after receiver failure")
+
+    def test_backend_copy_rejects_sigkilled_truncated_producer_and_cleans_private_fifo(self) -> None:
+        result, marker = self._run_copy_failure_installer("truncated-sigkill")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("sender=137", result.stderr)
+        self.assertFalse(marker.exists(), "bootstrap must not run after a truncated archive")
+        private_tmp = self.root / "private-tmp"
+        self.assertEqual(list(private_tmp.iterdir()), [], "copy FIFO workspace must be cleaned up")
+
+    def test_backend_or_all_installer_selects_exclusive_maintenance_lease(self) -> None:
+        install = str(ROOT / "installer" / "install.sh")
+        self.assertEqual(component_install_lock._maintenance_mode([install, "--component", "backend"]), "exclusive")
+        self.assertEqual(component_install_lock._maintenance_mode([install, "--component", "all"]), "exclusive")
+        self.assertEqual(component_install_lock._maintenance_mode([install, "--component", "ui"]), "shared")
+
+    def test_maintenance_lease_verification_requires_owned_requested_flock_mode(self) -> None:
+        lease = self.root / "maintenance.lock"
+        fd = os.open(lease, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            component_install_lock._verify_maintenance_lock_owner(fd, "shared")
+            with self.assertRaises(component_install_lock.ComponentInstallLockError):
+                component_install_lock._verify_maintenance_lock_owner(fd, "exclusive")
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            component_install_lock._verify_maintenance_lock_owner(fd, "exclusive")
+            component_install_lock._verify_maintenance_lock_owner(fd, "shared")
+        finally:
+            os.close(fd)
+
+    def test_parent_exec_inherited_fd_verification_and_unlocked_same_inode_rejection(self) -> None:
+        import fcntl
+
+        state_dir = self.root / "state" / "controlled-rollout"
+        state_dir.mkdir(parents=True, mode=0o700)
+        state_dir.chmod(0o700)
+        lease = state_dir / ".maintenance.lock"
+        lease.touch(mode=0o600)
+        checkpoint = state_dir / "pending.json"
+        module_path = str(LOCK_HELPER)
+
+        def child_verify(fd: int, mode: str) -> subprocess.CompletedProcess:
+            script = textwrap.dedent("""\
+                import importlib.util, os, sys
+                from pathlib import Path
+                module_path, lease_path, checkpoint_path, source_fd, requested_mode = sys.argv[1:]
+                spec = importlib.util.spec_from_file_location('child_component_lock', module_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                module.MAINTENANCE_LOCK_PATH = Path(lease_path)
+                module.MAINTENANCE_CHECKPOINT_PATH = Path(checkpoint_path)
+                module.TRUSTED_HOST_UID = os.geteuid()
+                module._uses_host_maintenance_lease = lambda _parent: True
+                module._require_backend_units_quiescent = lambda: None
+                os.dup2(int(source_fd), module.MAINTENANCE_LEASE_FD, inheritable=True)
+                module._verify_maintenance_lease(Path('/opt'), requested_mode)
+            """)
+            return subprocess.run(
+                [sys.executable, "-c", script, module_path, str(lease), str(checkpoint), str(fd), mode],
+                pass_fds=(fd,), text=True, capture_output=True, timeout=10,
+            )
+
+        owner_fd = os.open(lease, os.O_RDWR)
+        borrowed_fd = None
+        try:
+            fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            accepted = child_verify(owner_fd, "shared")
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+            borrowed_fd = os.open(lease, os.O_RDWR)
+            rejected = child_verify(borrowed_fd, "shared")
+            self.assertNotEqual(rejected.returncode, 0, "unlocked independent FD must not borrow parent lock")
+            self.assertIn("requested lock mode", rejected.stderr)
+        finally:
+            if borrowed_fd is not None:
+                os.close(borrowed_fd)
+            os.close(owner_fd)
+
+        shared_fd = os.open(lease, os.O_RDWR)
+        try:
+            fcntl.flock(shared_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            rejected = child_verify(shared_fd, "exclusive")
+            self.assertNotEqual(rejected.returncode, 0, "shared lock must never satisfy exclusive request")
+            self.assertIn("requested lock mode", rejected.stderr)
+        finally:
+            os.close(shared_fd)
+
+    def test_ui_publication_shared_check_accepts_parent_held_all_exclusive_lease(self) -> None:
+        import fcntl
+
+        state_dir = self.root / "all-state" / "controlled-rollout"
+        state_dir.mkdir(parents=True, mode=0o700)
+        state_dir.chmod(0o700)
+        lease = state_dir / ".maintenance.lock"
+        lease.touch(mode=0o600)
+        component_lock = state_dir / ".fwrouter-component-install.lock"
+        component_lock.touch(mode=0o600)
+        checkpoint = state_dir / "pending.json"
+        maintenance_fd = os.open(lease, os.O_RDWR)
+        component_fd = os.open(component_lock, os.O_RDWR)
+        try:
+            fcntl.flock(maintenance_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(component_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            script = textwrap.dedent("""\
+                import importlib.util, os, sys
+                from pathlib import Path
+                module_path, lease_path, checkpoint_path, component_path, maintenance_src, component_src = sys.argv[1:]
+                spec = importlib.util.spec_from_file_location('child_component_lock', module_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                module.MAINTENANCE_LOCK_PATH = Path(lease_path)
+                module.MAINTENANCE_CHECKPOINT_PATH = Path(checkpoint_path)
+                module.TRUSTED_HOST_UID = os.geteuid()
+                module._uses_host_maintenance_lease = lambda _parent: True
+                module._require_backend_units_quiescent = lambda: None
+                module._validate_parent = lambda _parent, create: Path(component_path)
+                os.dup2(int(maintenance_src), module.MAINTENANCE_LEASE_FD, inheritable=True)
+                os.dup2(int(component_src), module.LOCK_FD, inheritable=True)
+                module.verify_inherited_lock(Path('/opt'), module.LOCK_FD, maintenance_mode='shared')
+            """)
+            result = subprocess.run(
+                [sys.executable, "-c", script, str(LOCK_HELPER), str(lease), str(checkpoint),
+                 str(component_lock), str(maintenance_fd), str(component_fd)],
+                pass_fds=(maintenance_fd, component_fd), text=True, capture_output=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+        finally:
+            os.close(component_fd)
+            os.close(maintenance_fd)
+
+    def test_inherited_maintenance_fd_must_match_inode_and_mode_and_exclusive_requires_quiescence(self) -> None:
+        import fcntl
+
+        lease_dir = self.root / "state" / "controlled-rollout"
+        lease_dir.mkdir(parents=True, mode=0o700)
+        lease_dir.chmod(0o700)
+        lease_path = lease_dir / ".maintenance.lock"
+        foreign_path = self.root / "foreign.lock"
+        foreign_path.touch(mode=0o600)
+        saved_fd = None
+        try:
+            try:
+                saved_fd = os.dup(component_install_lock.MAINTENANCE_LEASE_FD)
+            except OSError:
+                saved_fd = None
+            patches = (
+                mock.patch.object(component_install_lock, "_uses_host_maintenance_lease", return_value=True),
+                mock.patch.object(component_install_lock, "MAINTENANCE_LOCK_PATH", lease_path),
+                mock.patch.object(component_install_lock, "MAINTENANCE_CHECKPOINT_PATH", lease_dir / "pending.json"),
+                mock.patch.object(component_install_lock, "_trusted_uid", return_value=os.geteuid()),
+                mock.patch.object(component_install_lock, "_require_backend_units_quiescent"),
+            )
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                shared_fd = component_install_lock._acquire_maintenance_lease(Path("/opt"), "shared")
+                self.assertIsNotNone(shared_fd)
+                os.dup2(shared_fd, component_install_lock.MAINTENANCE_LEASE_FD, inheritable=True)
+                component_install_lock._verify_maintenance_lease(Path("/opt"), "shared")
+                with self.assertRaises(component_install_lock.ComponentInstallLockError):
+                    component_install_lock._verify_maintenance_lease(Path("/opt"), "exclusive")
+
+                foreign_fd = os.open(foreign_path, os.O_RDWR)
+                try:
+                    fcntl.flock(foreign_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    os.dup2(foreign_fd, component_install_lock.MAINTENANCE_LEASE_FD, inheritable=True)
+                    with self.assertRaises(component_install_lock.ComponentInstallLockError):
+                        component_install_lock._verify_maintenance_lease(Path("/opt"), "shared")
+                finally:
+                    os.close(foreign_fd)
+                    os.close(shared_fd)
+
+            target_marker = self.root / "must-not-write"
+            with mock.patch.object(component_install_lock, "_uses_host_maintenance_lease", return_value=True), \
+                    mock.patch.object(component_install_lock, "MAINTENANCE_LOCK_PATH", lease_path), \
+                    mock.patch.object(component_install_lock, "MAINTENANCE_CHECKPOINT_PATH", lease_dir / "pending.json"), \
+                    mock.patch.object(component_install_lock, "_trusted_uid", return_value=os.geteuid()), \
+                    mock.patch.object(component_install_lock, "_require_backend_units_quiescent",
+                                      side_effect=component_install_lock.ComponentInstallLockError("unit active")):
+                with self.assertRaisesRegex(component_install_lock.ComponentInstallLockError, "unit active"):
+                    component_install_lock._acquire_maintenance_lease(Path("/opt"), "exclusive")
+                self.assertFalse(target_marker.exists())
+        finally:
+            if saved_fd is None:
+                try:
+                    os.close(component_install_lock.MAINTENANCE_LEASE_FD)
+                except OSError:
+                    pass
+            else:
+                os.dup2(saved_fd, component_install_lock.MAINTENANCE_LEASE_FD)
+                os.close(saved_fd)
+
+    def test_owned_exclusive_installer_child_blocks_api_and_sigkill_release_rechecks_partial_backend(self) -> None:
+        backend_import_root = ROOT / "backend"
+        native_spec = __import__("importlib.util", fromlist=["spec_from_file_location"]).spec_from_file_location(
+            "native_proof_rollout_test", backend_import_root / "fwrouter_api/services/native_proof.py",
+        )
+        lifecycle_spec = __import__("importlib.util", fromlist=["spec_from_file_location"]).spec_from_file_location(
+            "controlled_backend_lifecycle_rollout_test", ROOT / "installer/controlled_backend_lifecycle.py",
+        )
+        self.assertIsNotNone(native_spec)
+        self.assertIsNotNone(lifecycle_spec)
+        native_proof = __import__("importlib.util", fromlist=["module_from_spec"]).module_from_spec(native_spec)
+        lifecycle = __import__("importlib.util", fromlist=["module_from_spec"]).module_from_spec(lifecycle_spec)
+        native_spec.loader.exec_module(native_proof)
+        lifecycle_spec.loader.exec_module(lifecycle)
+
+        installed = self.root / "installed-backend"
+        installed.mkdir(mode=0o700)
+        (installed / "module.py").write_text("VERSION = 'old'\n", encoding="utf-8")
+        desired = self.root / "desired-backend"
+        desired.mkdir(mode=0o700)
+        (desired / "module.py").write_text("VERSION = 'new'\n", encoding="utf-8")
+        (desired / "new-module.py").write_text("NEW = True\n", encoding="utf-8")
+        digest = native_proof.backend_manifest_sha256(desired)
+        state_root = self.root / "state"
+        rollout = state_root / "state" / "controlled-rollout"
+        rollout.mkdir(parents=True, mode=0o700)
+        active_units = {unit: False for unit in
+                        (*lifecycle.RESTORE_ORDER, *lifecycle.TRANSIENT_JOBS, lifecycle.API_UNIT)}
+        checkpoint = {
+            "schema": 3,
+            "operation_id": str(uuid.uuid4()),
+            "status": "pending",
+            "created_at": "2026-10-28T00:00:00Z",
+            "backend_manifest": native_proof.backend_manifest(desired),
+            "backend_manifest_sha256": digest,
+            "initial_backend_manifest_sha256": digest,
+            "source_transitions": [],
+            "maintenance_operation": None,
+            "active_units": active_units,
+            "pending_units": [],
+        }
+        checkpoint_path = rollout / "pending.json"
+        checkpoint_path.write_text(json.dumps(checkpoint, sort_keys=True, separators=(",", ":")) + "\n",
+                                   encoding="utf-8")
+        checkpoint_path.chmod(0o600)
+        self.assertEqual(lifecycle._read_checkpoint(checkpoint_path), checkpoint)
+        lease_path = rollout / ".maintenance.lock"
+        lease_path.touch(mode=0o600)
+        ready = self.root / "installer-child-ready"
+        installer_script = """
+import importlib.util, os, sys, time
+from pathlib import Path
+module_path, lease_path, checkpoint_path, ready_path = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('synthetic_component_install_lock', module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.MAINTENANCE_LOCK_PATH = lease_path
+module.MAINTENANCE_CHECKPOINT_PATH = checkpoint_path
+module.TRUSTED_HOST_UID = os.geteuid()
+module._uses_host_maintenance_lease = lambda _parent: True
+module._require_backend_units_quiescent = lambda: None
+module._acquire_maintenance_lease(Path('/opt'), 'exclusive')
+ready_path.write_text('locked')
+time.sleep(60)
+"""
+        installer = subprocess.Popen(
+            [sys.executable, "-c", installer_script, str(LOCK_HELPER), str(lease_path),
+             str(checkpoint_path), str(ready)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, close_fds=True,
+        )
+        api_script = """
+import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from fwrouter_api.services import maintenance_lifecycle_admission as admission
+from fwrouter_api.services import native_proof
+admission.TRUSTED_HOST_UID = os.geteuid()
+native_proof._backend_root = lambda: Path(sys.argv[3])
+try:
+    fd = admission.acquire_shared_lease_fd(Path(sys.argv[2]))
+except Exception as exc:
+    print('REJECTED:' + str(exc))
+else:
+    print('ADMITTED')
+    os.close(fd)
+"""
+        api = None
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not ready.exists():
+                if installer.poll() is not None:
+                    _out, err = installer.communicate(timeout=2)
+                    self.fail(f"exclusive installer child exited early: {err}")
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "installer did not acquire EX flock")
+            api = subprocess.Popen(
+                [sys.executable, "-c", api_script, str(backend_import_root), str(state_root), str(installed)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, close_fds=True,
+            )
+            time.sleep(0.15)
+            self.assertIsNone(api.poll(), "API startup must block behind installer EX flock")
+            installer.kill()
+            installer.wait(timeout=5)
+            api_out, api_err = api.communicate(timeout=10)
+            self.assertIn("REJECTED:", api_out, api_out + api_err)
+            self.assertIn("backend manifest mismatch", api_out)
+            self.assertNotIn("ADMITTED", api_out)
+        finally:
+            if installer.poll() is None:
+                installer.kill()
+                installer.wait(timeout=5)
+            if api is not None and api.poll() is None:
+                api.kill()
+                api.wait(timeout=5)
 
     def _run_real_installer_until(self, predicate, signum: int) -> tuple[subprocess.Popen, bytes, bytes]:
         source, target, _active = self._actual_installer_fixture()

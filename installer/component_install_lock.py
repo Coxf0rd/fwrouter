@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,12 @@ MAINTENANCE_LOCK_PATH = MAINTENANCE_STATE_ROOT / "state" / "controlled-rollout" 
 MAINTENANCE_CHECKPOINT_PATH = MAINTENANCE_STATE_ROOT / "state" / "controlled-rollout" / "pending.json"
 UNSAFE_WRITE = stat.S_IWGRP | stat.S_IWOTH
 _OWNED_MAINTENANCE_FDS: dict[int, int] = {}
+TRUSTED_HOST_UID = 0
+
+
+def _trusted_uid() -> int:
+    """Owner required for host lease files (test-patchable)."""
+    return TRUSTED_HOST_UID
 
 
 def _uses_host_maintenance_lease(parent: Path) -> bool:
@@ -53,7 +60,7 @@ def _read_maintenance_checkpoint() -> dict[str, object] | None:
         info = os.fstat(fd)
         named = MAINTENANCE_CHECKPOINT_PATH.lstat()
         if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(named.st_mode)
-                or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                or info.st_uid != _trusted_uid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
                 or info.st_size <= 0 or info.st_size > 2 * 1024 * 1024
                 or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)):
             raise ComponentInstallLockError("maintenance checkpoint file is unsafe")
@@ -108,6 +115,7 @@ def _read_maintenance_checkpoint() -> dict[str, object] | None:
 def _ensure_maintenance_directory() -> None:
     """Create only the fixed root-owned lease directory chain when absent."""
     current = Path("/")
+    trusted_uid = _trusted_uid()
     for part in MAINTENANCE_LOCK_PATH.parent.parts[1:]:
         current = current / part
         try:
@@ -118,7 +126,7 @@ def _ensure_maintenance_directory() -> None:
                 os.chmod(current, 0o700, follow_symlinks=False)
             info = current.lstat()
         if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
-                or info.st_uid != 0
+                or info.st_uid not in {0, trusted_uid}
                 or (current == MAINTENANCE_LOCK_PATH.parent
                     and stat.S_IMODE(info.st_mode) != 0o700)
                 or (info.st_mode & UNSAFE_WRITE
@@ -148,11 +156,11 @@ def _open_maintenance_lease(*, create: bool = False) -> int:
     except OSError as exc:
         os.close(fd)
         raise ComponentInstallLockError("maintenance lease path changed") from exc
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != _trusted_uid() or stat.S_IMODE(info.st_mode) != 0o600
             or info.st_nlink != 1 or stat.S_ISLNK(named.st_mode)
             or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)
             or not stat.S_ISDIR(parent.st_mode) or stat.S_ISLNK(parent.st_mode)
-            or parent.st_uid != 0 or stat.S_IMODE(parent.st_mode) != 0o700):
+            or parent.st_uid != _trusted_uid() or stat.S_IMODE(parent.st_mode) != 0o700):
         os.close(fd)
         raise ComponentInstallLockError("maintenance lease has unsafe owner or path")
     return fd
@@ -161,11 +169,14 @@ def _open_maintenance_lease(*, create: bool = False) -> int:
 def _acquire_maintenance_lease(parent: Path, mode: str) -> int | None:
     if not _uses_host_maintenance_lease(parent):
         return None
-    if mode != "shared":
+    if mode not in {"shared", "exclusive"}:
         raise ComponentInstallLockError("maintenance lease mode is invalid")
     try:
         fd = _open_maintenance_lease(create=True)
-        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        lock_mode = fcntl.LOCK_EX if mode == "exclusive" else fcntl.LOCK_SH
+        fcntl.flock(fd, lock_mode | fcntl.LOCK_NB)
+        if mode == "exclusive":
+            _require_backend_units_quiescent()
         return fd
     except (OSError, ComponentInstallLockError) as exc:
         if "fd" in locals():
@@ -184,18 +195,14 @@ def _verify_maintenance_lease(parent: Path, mode: str | None) -> None:
             descriptor = os.fstat(MAINTENANCE_LEASE_FD)
             named = os.fstat(expected)
             if ((descriptor.st_dev, descriptor.st_ino) != (named.st_dev, named.st_ino)
-                    or descriptor.st_uid != 0 or stat.S_IMODE(descriptor.st_mode) != 0o600
+                    or descriptor.st_uid != _trusted_uid() or stat.S_IMODE(descriptor.st_mode) != 0o600
                     or descriptor.st_nlink != 1):
                 raise ComponentInstallLockError("inherited maintenance lease descriptor is invalid")
-            if mode != "shared":
-                raise ComponentInstallLockError("installer maintenance lease mode is required")
-            probe_mode = fcntl.LOCK_EX
-            try:
-                fcntl.flock(expected, probe_mode | fcntl.LOCK_NB)
-            except BlockingIOError:
-                pass
-            else:
-                raise ComponentInstallLockError("installer maintenance lease mode is not held")
+            if mode not in {"shared", "exclusive"}:
+                raise ComponentInstallLockError("installer maintenance lease mode is invalid")
+            _verify_maintenance_lock_owner(MAINTENANCE_LEASE_FD, mode)
+            if mode == "exclusive":
+                _require_backend_units_quiescent()
             checkpoint = _read_maintenance_checkpoint()
             operation = checkpoint.get("maintenance_operation") if checkpoint else None
             if (isinstance(operation, dict) and operation.get("kind") == "database_rebuild"
@@ -350,10 +357,54 @@ def _run(parent: Path, command: list[str]) -> int:
 
 
 def _maintenance_mode(command: list[str]) -> str:
-    """Installers participate as shared users; only lifecycle rebuild owns EX."""
+    """Backend source replacement is exclusive; UI-only publication is shared."""
     if not any(Path(value).name == "install.sh" for value in command):
         raise ComponentInstallLockError("host maintenance lease supports only install.sh")
-    return "shared"
+    components = {
+        command[index + 1]
+        for index, value in enumerate(command[:-1])
+        if value == "--component"
+    }
+    return "exclusive" if "--all" in command or {"all", "backend"} & components else "shared"
+
+
+def _verify_maintenance_lock_owner(fd: int, mode: str) -> None:
+    """Require the FD itself to reference a flock of sufficient strength."""
+    if mode not in {"shared", "exclusive"}:
+        raise ComponentInstallLockError("maintenance lease mode is invalid")
+    info = os.fstat(fd)
+    device = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}"
+    try:
+        rows = Path(f"/proc/self/fdinfo/{fd}").read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ComponentInstallLockError("cannot verify inherited maintenance lease descriptor") from exc
+    fdinfo_inode = next((row.split()[1] for row in rows
+                         if len(row.split()) == 2 and row.split()[0] == "ino:"), None)
+    if fdinfo_inode != str(info.st_ino):
+        raise ComponentInstallLockError("inherited maintenance lease descriptor identity changed")
+    for row in rows:
+        fields = row.split()
+        if (len(fields) == 9 and fields[0] == "lock:" and fields[2] == "FLOCK"
+                and fields[3] == "ADVISORY" and fields[4] in {"READ", "WRITE"}
+                and fields[6] == f"{device}:{info.st_ino}"
+                and fields[7:] == ["0", "EOF"]):
+            if fields[4] == "WRITE" or mode == "shared":
+                return
+    raise ComponentInstallLockError("inherited maintenance lease descriptor lacks the requested lock mode")
+
+
+def _require_backend_units_quiescent() -> None:
+    """Reuse the lifecycle owner's allowlisted unit inventory under the EX lease."""
+    path = Path(__file__).resolve().parents[1] / "backend" / "fwrouter_api" / "services" / "maintenance_lifecycle_admission.py"
+    spec = importlib.util.spec_from_file_location("_fwrouter_installer_lifecycle_admission", path)
+    if spec is None or spec.loader is None:
+        raise ComponentInstallLockError("cannot load FWRouter lifecycle unit inventory")
+    admission = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(admission)
+        admission._require_units_stopped()
+    except Exception as exc:
+        raise ComponentInstallLockError("FWRouter backend writer units are not quiescent") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
