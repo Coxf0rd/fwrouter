@@ -8,6 +8,11 @@ from typing import Any
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import connect, get_db_path
+from fwrouter_api.services.jobs import (
+    _terminal_snapshot_event_id,
+    _terminal_snapshot_matches,
+    _write_terminal_snapshot,
+)
 
 
 DEFAULT_RETENTION_DAYS_BY_STATUS = {
@@ -275,6 +280,60 @@ def cleanup_jobs_retention(*, dry_run: bool = True) -> dict[str, Any]:
 
             for candidate in candidates:
                 job_id = candidate["job_id"]
+                current = connection.execute(
+                    "SELECT * FROM jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
+                if current is None:
+                    continue
+                current_artifact_dir = current["artifact_dir"] or str(_default_job_artifact_dir(str(job_id)))
+                if (
+                    current["status"] != candidate["status"]
+                    or current["job_type"] != candidate["job_type"]
+                    or current["created_at"] != candidate["created_at"]
+                    or current["finished_at"] != candidate["finished_at"]
+                    or current_artifact_dir != candidate["artifact_dir"]
+                ):
+                    errors.append({"job_id": str(job_id), "error": "retention_candidate_changed; row held"})
+                    continue
+                if current["status"] in PROTECTED_STATUSES:
+                    errors.append({"job_id": str(job_id), "error": "active_job_retention_denied; row held"})
+                    continue
+                if current["status"] not in DEFAULT_RETENTION_DAYS_BY_STATUS:
+                    errors.append({"job_id": str(job_id), "error": "unknown_job_status; row held"})
+                    continue
+
+                try:
+                    snapshot_event_id = _terminal_snapshot_event_id(str(job_id))
+                except (ValueError, TypeError, AttributeError):
+                    errors.append({"job_id": str(job_id), "error": "invalid_job_id; row held"})
+                    continue
+                finished_at = str(current["finished_at"] or "")
+                try:
+                    canonical_finished_at = datetime.strptime(finished_at, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    canonical_finished_at = None
+                if (
+                    canonical_finished_at is None
+                    or canonical_finished_at.strftime("%Y-%m-%d %H:%M:%S") != finished_at
+                ):
+                    errors.append({"job_id": str(job_id), "error": "invalid_finished_at; row held"})
+                    continue
+                existing_snapshot = connection.execute(
+                    "SELECT event_id, event_type, details_json FROM operational_logs WHERE event_id = ?",
+                    (snapshot_event_id,),
+                ).fetchone()
+                if existing_snapshot is not None:
+                    if not _terminal_snapshot_matches(current, existing_snapshot):
+                        raise RuntimeError("terminal snapshot mismatch; retention batch rolled back")
+                else:
+                    _write_terminal_snapshot(
+                        connection,
+                        current,
+                        classification="legacy_terminal_observed",
+                        snapshot_assurance="retention_observation",
+                        include_attribution=False,
+                    )
+
                 connection.execute(
                     """
                     UPDATE rules_state
@@ -296,13 +355,26 @@ def cleanup_jobs_retention(*, dry_run: bool = True) -> dict[str, Any]:
                     """,
                     (job_id, job_id, job_id, job_id),
                 )
-                connection.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
-                deleted_jobs.append(job_id)
+                deleted = connection.execute(
+                    "DELETE FROM jobs WHERE job_id = ? AND status = ? AND created_at = ? AND finished_at = ?",
+                    (job_id, current["status"], current["created_at"], current["finished_at"]),
+                )
+                if deleted.rowcount == 1:
+                    deleted_jobs.append(job_id)
+                else:
+                    raise RuntimeError("retention candidate changed during delete; batch rolled back")
             connection.commit()
+        except Exception:
+            connection.rollback()
+            deleted_jobs.clear()
+            raise
         finally:
             connection.close()
 
+        deleted_job_ids = set(deleted_jobs)
         for candidate in candidates:
+            if candidate["job_id"] not in deleted_job_ids:
+                continue
             artifact_dir = candidate.get("artifact_dir") or str(_default_job_artifact_dir(candidate["job_id"]))
             artifact_path = Path(artifact_dir)
             try:

@@ -12,6 +12,7 @@ from fwrouter_api.services.ui_text import (
 
 
 UI_OPERATIONAL_EVENT_MESSAGES = {
+    "job.terminal_outcome": {"ru": "Задание завершено", "en": "Job finished"},
     "mutation_set_global_mode_success": {"ru": "Режим роутера применен", "en": "Router mode applied"},
     "mutation_set_global_mode_failed": {"ru": "Не удалось применить режим роутера", "en": "Failed to apply router mode"},
     "mutation_set_selective_default_success": {

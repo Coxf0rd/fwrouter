@@ -117,3 +117,13 @@ adds only an explicit registry `events.read` boundary and safe bounded projectio
 It does not expose reserved identity in any of these legacy projections, grant
 read authority to existing credentials, change retention, or qualify deployment.
 Production activation and external reachability remain separate gates.
+
+## Subsequent terminal outcome package
+
+The earlier terminal-job expiry gap is addressed by the bounded
+[durable terminal outcome contract](JOB_TERMINAL_OUTCOMES.md). New guarded terminal
+transitions and safe snapshots share the existing SQLite transaction. Retention
+must verify that snapshot or record an explicitly weaker legacy observation
+before deleting a terminal job. This does not retain raw results, assert native
+success, change the temporary audit/security HOLD, or choose a retention horizon.
+Qualification and production activation remain separate gates.

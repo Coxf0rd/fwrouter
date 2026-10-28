@@ -793,45 +793,29 @@ def test_bootstrap_fixed_selector_restore_reports_actual_change(
 
 
 def test_bootstrap_immediately_cleans_stale_running_jobs(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services.jobs import create_job, mark_job_running
+
     _configure_env(monkeypatch, tmp_path)
     _stub_bootstrap_recovery(monkeypatch)
     initialize_database()
 
+    job = create_job("apply_mutation", lock_key="apply", requested_by="pytest")
+    mark_job_running(job["job_id"])
     with db_session() as connection:
         connection.execute(
-            """
-            INSERT INTO jobs (
-                job_id,
-                job_type,
-                status,
-                lock_key,
-                requested_by,
-                created_at,
-                started_at,
-                updated_at
-            )
-            VALUES (
-                'stale-running-job',
-                'apply_mutation',
-                'running',
-                'apply',
-                'pytest',
-                CURRENT_TIMESTAMP,
-                CURRENT_TIMESTAMP,
-                CURRENT_TIMESTAMP
-            )
-            """
+            "UPDATE jobs SET updated_at = datetime('now', '-1 minute') WHERE job_id = ?",
+            (job["job_id"],),
         )
 
     result = bootstrap_backend()
 
     cleaned = result["stale_jobs_cleaned"]
     assert len(cleaned) == 1
-    assert cleaned[0]["job_id"] == "stale-running-job"
+    assert cleaned[0]["job_id"] == job["job_id"]
 
     with db_session() as connection:
         row = connection.execute(
-            "SELECT status, error_code FROM jobs WHERE job_id = 'stale-running-job'"
+            "SELECT status, error_code FROM jobs WHERE job_id = ?", (job["job_id"],),
         ).fetchone()
 
     assert row["status"] == "failed"

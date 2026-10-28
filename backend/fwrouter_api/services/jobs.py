@@ -2,15 +2,22 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import json
+import re
 import sqlite3
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import get_db_path
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.base import JobStatus, utc_now
-from fwrouter_api.services.event_contract import sanitize_value
+from fwrouter_api.services.event_contract import isolated_event_context, sanitize_value
+from fwrouter_api.services.api_client_attribution import (
+    attribution_from_snapshot,
+    reset_api_request_id,
+    set_api_request_id,
+)
+from fwrouter_api.services.events import create_event_context, write_audit_event
 
 
 def _json_dumps(value: dict[str, Any] | None) -> str | None:
@@ -155,6 +162,118 @@ def _parse_job_timestamp(value: str | None) -> datetime | None:
         return None
 
 ACTIVE_JOB_STATUSES = (JobStatus.QUEUED.value, JobStatus.RUNNING.value)
+
+
+def _terminal_snapshot_event_id(job_id: str) -> str:
+    return str(uuid5(UUID(job_id), "fwrouter.job.terminal_outcome.v1"))
+
+
+def _terminal_snapshot_matches(row: Any, event_row: Any) -> bool:
+    """Check a deterministic snapshot before retention relies on it."""
+    try:
+        details = json.loads(event_row["details_json"])
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(details, dict):
+        return False
+    context = details.get("event_context")
+    status = str(row["status"])
+    assurance = details.get("snapshot_assurance")
+    classification = details.get("execution_classification")
+    if assurance == "terminal_commit" and isinstance(classification, str):
+        classification_matches = (
+            (status == JobStatus.SUCCESS.value and classification == "handler_completed")
+            or (status == JobStatus.FAILED.value
+                and classification in {"handler_failed", "stale_queue_timeout", "stale_running_timeout"})
+            or (status == JobStatus.CANCELLED.value and classification == "handler_cancelled")
+        )
+    elif assurance == "retention_observation":
+        classification_matches = (
+            status in {JobStatus.SUCCESS.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value}
+            and classification == "legacy_terminal_observed"
+        )
+    else:
+        classification_matches = False
+    return bool(
+        event_row["event_type"] == "job.terminal_outcome"
+        and details.get("event_code") == "job.terminal_outcome"
+        and details.get("action") == "job.terminal_outcome"
+        and details.get("entity_type") == "job"
+        and details.get("entity_id") == row["job_id"]
+        and isinstance(context, dict)
+        and context.get("job_id") == row["job_id"]
+        and details.get("result") == status
+        and details.get("outcome") == status
+        and details.get("execution_status") == status
+        and details.get("finished_at_utc") == row["finished_at"]
+        and isinstance(assurance, str)
+        and classification_matches
+    )
+
+
+def _write_terminal_snapshot(
+    connection: Any,
+    row: Any,
+    *,
+    classification: str,
+    snapshot_assurance: str = "terminal_commit",
+    include_attribution: bool = True,
+) -> None:
+    """Persist the safe, immutable terminal outcome beside the guarded transition."""
+    job_id = str(row["job_id"])
+    if str(UUID(job_id)) != job_id:
+        raise ValueError("terminal job snapshot requires a canonical UUID")
+    if classification not in {
+        "handler_completed", "handler_failed", "handler_cancelled",
+        "stale_queue_timeout", "stale_running_timeout",
+        "legacy_terminal_observed",
+    }:
+        raise ValueError("unsupported terminal job classification")
+    if snapshot_assurance not in {"terminal_commit", "retention_observation"}:
+        raise ValueError("unsupported terminal job snapshot assurance")
+    if (snapshot_assurance == "terminal_commit") == (classification == "legacy_terminal_observed"):
+        raise ValueError("terminal classification and snapshot assurance disagree")
+    context_data = _json_loads(row["event_context_json"]) or {}
+    correlation_fields = (
+        "request_id", "apply_id", "workflow_id", "causation_id", "correlation_id",
+        "server_id", "connection_id", "recovery_attempt_id",
+    )
+    context_values = {
+        key: value[:128]
+        for key in correlation_fields
+        if isinstance((value := context_data.get(key)), str)
+        and 0 < len(value) <= 128
+        and re.fullmatch(r"[A-Za-z0-9._:-]+", value)
+    }
+    status = str(row["status"])
+    identity = context_data.get("_api_identity") if include_attribution else None
+    request_marker = set_api_request_id("")
+    try:
+        with isolated_event_context(**context_values), attribution_from_snapshot(identity):
+            context = create_event_context(job_id=job_id)
+            write_audit_event(
+                actor="system",
+                source="job_manager",
+                action="job.terminal_outcome",
+                event_code="job.terminal_outcome",
+                entity_type="job",
+                entity_id=job_id,
+                result=status,
+                context=context,
+                details={
+                    "outcome": status,
+                    "entity_type": "job",
+                    "entity_id": job_id,
+                    "execution_status": status,
+                    "execution_classification": classification,
+                    "finished_at_utc": str(row["finished_at"]),
+                    "snapshot_assurance": snapshot_assurance,
+                },
+                connection=connection,
+                event_id=_terminal_snapshot_event_id(job_id),
+            )
+    finally:
+        reset_api_request_id(request_marker)
 
 
 class JobLockConflictError(RuntimeError):
@@ -395,6 +514,7 @@ def cleanup_stale_running_jobs(
 
     cutoff = (utc_now() - timedelta(seconds=timeout_seconds)).strftime("%Y-%m-%d %H:%M:%S")
     stale_rows: list[Any] = []
+    transitioned_rows: list[Any] = []
 
     with db_session() as connection:
         stale_rows = connection.execute(
@@ -408,47 +528,43 @@ def cleanup_stale_running_jobs(
             (JobStatus.QUEUED.value, JobStatus.RUNNING.value, cutoff),
         ).fetchall()
 
-        if stale_rows:
+        for stale_row in stale_rows:
+            was_queued = stale_row["status"] == JobStatus.QUEUED.value
             finished_at = utc_now().strftime("%Y-%m-%d %H:%M:%S")
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE jobs
-                SET
-                    status = ?,
-                    error_code = CASE
-                        WHEN status = ? THEN ?
-                        ELSE ?
-                    END,
-                    error_message = CASE
-                        WHEN status = ? THEN ?
-                        ELSE ?
-                    END,
-                    finished_at = ?,
-                    updated_at = ?
-                WHERE status IN (?, ?)
-                  AND updated_at <= ?
+                SET status = ?, error_code = ?, error_message = ?, finished_at = ?, updated_at = ?
+                WHERE job_id = ? AND status = ? AND updated_at <= ?
                 """,
                 (
                     JobStatus.FAILED.value,
-                    JobStatus.QUEUED.value,
-                    "JOB_STALE_QUEUE_TIMEOUT",
-                    "JOB_STALE_TIMEOUT",
-                    JobStatus.QUEUED.value,
-                    "Job marked failed because it remained queued past the stale timeout window.",
-                    "Job marked failed because it exceeded timeout / stale running lease.",
+                    "JOB_STALE_QUEUE_TIMEOUT" if was_queued else "JOB_STALE_TIMEOUT",
+                    "Job marked failed because it remained queued past the stale timeout window."
+                    if was_queued else "Job marked failed because it exceeded timeout / stale running lease.",
                     finished_at,
                     finished_at,
-                    JobStatus.QUEUED.value,
-                    JobStatus.RUNNING.value,
+                    stale_row["job_id"],
+                    stale_row["status"],
                     cutoff,
                 ),
             )
+            if cursor.rowcount != 1:
+                continue
+            terminal_row = connection.execute(
+                "SELECT * FROM jobs WHERE job_id = ?", (stale_row["job_id"],)
+            ).fetchone()
+            _write_terminal_snapshot(
+                connection,
+                terminal_row,
+                classification="stale_queue_timeout" if was_queued else "stale_running_timeout",
+            )
+            transitioned_rows.append(terminal_row)
 
     stale_jobs: list[dict[str, Any]] = []
-    for row in stale_rows:
+    for row in transitioned_rows:
         stale_job = _row_to_job(row)
-        stale_job["status"] = JobStatus.FAILED.value
-        if stale_job.get("status") == JobStatus.QUEUED.value or row["status"] == JobStatus.QUEUED.value:
+        if row["error_code"] == "JOB_STALE_QUEUE_TIMEOUT":
             stale_job["error_code"] = "JOB_STALE_QUEUE_TIMEOUT"
             stale_job["error_message"] = (
                 "Job marked failed because it remained queued past the stale timeout window."
@@ -458,8 +574,6 @@ def cleanup_stale_running_jobs(
             stale_job["error_message"] = (
                 "Job marked failed because it exceeded timeout / stale running lease."
             )
-        if stale_job.get("finished_at") is None:
-            stale_job["finished_at"] = utc_now().strftime("%Y-%m-%d %H:%M:%S")
         stale_jobs.append(stale_job)
     return stale_jobs
 
@@ -568,7 +682,7 @@ def mark_job_success(
     now = utc_now().strftime("%Y-%m-%d %H:%M:%S")
 
     with db_session() as connection:
-        connection.execute(
+        cursor = connection.execute(
             """
             UPDATE jobs
             SET
@@ -595,6 +709,8 @@ def mark_job_success(
             "SELECT * FROM jobs WHERE job_id = ?",
             (job_id,),
         ).fetchone()
+        if cursor.rowcount == 1 and row is not None:
+            _write_terminal_snapshot(connection, row, classification="handler_completed")
 
     return _row_to_job(row) if row else None
 
@@ -611,7 +727,7 @@ def mark_job_failed(
     now = utc_now().strftime("%Y-%m-%d %H:%M:%S")
 
     with db_session() as connection:
-        connection.execute(
+        cursor = connection.execute(
             """
             UPDATE jobs
             SET
@@ -640,7 +756,40 @@ def mark_job_failed(
             "SELECT * FROM jobs WHERE job_id = ?",
             (job_id,),
         ).fetchone()
+        if cursor.rowcount == 1 and row is not None:
+            classification = (
+                "stale_queue_timeout" if error_code == "JOB_STALE_QUEUE_TIMEOUT"
+                else "stale_running_timeout" if error_code == "JOB_STALE_TIMEOUT"
+                else "handler_failed"
+            )
+            _write_terminal_snapshot(connection, row, classification=classification)
 
+    return _row_to_job(row) if row else None
+
+
+def mark_job_cancelled(
+    job_id: str,
+    *,
+    result: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Persist an explicit handler cancellation as a terminal outcome."""
+    now = utc_now().strftime("%Y-%m-%d %H:%M:%S")
+    with db_session() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?, result_json = ?, error_code = NULL, error_message = NULL,
+                finished_at = ?, updated_at = ?
+            WHERE job_id = ? AND status = ?
+            """,
+            (JobStatus.CANCELLED.value, _encode_job_result(result), now, now,
+             job_id, JobStatus.RUNNING.value),
+        )
+        row = connection.execute(
+            "SELECT * FROM jobs WHERE job_id = ?", (job_id,),
+        ).fetchone()
+        if cursor.rowcount == 1 and row is not None:
+            _write_terminal_snapshot(connection, row, classification="handler_cancelled")
     return _row_to_job(row) if row else None
 
 

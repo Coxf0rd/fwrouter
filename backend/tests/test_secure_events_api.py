@@ -102,6 +102,110 @@ def _insert(*, event_type: str, details: dict, message: str = "private diagnosti
     return event_id
 
 
+def test_secure_job_terminal_event_projects_only_validated_snapshot(monkeypatch, tmp_path, capsys):
+    _, _, tokens = _clients(monkeypatch, tmp_path, capsys)
+    client = _client()
+    job_id = str(uuid.uuid4())
+    event_id = _insert(event_type="job.terminal_outcome", details={
+        "event_category": "audit", "event_code": "job.terminal_outcome",
+        "event_context": {"job_id": job_id, "request_id": str(uuid.uuid4())},
+        "action": "job.terminal_outcome", "entity_type": "job", "entity_id": job_id,
+        "result": "failed", "execution_status": "failed",
+        "execution_classification": "stale_running_timeout",
+        "snapshot_assurance": "terminal_commit", "outcome": "failed",
+        "finished_at_utc": "2026-10-28 10:00:00",
+        "error_message": "DO_NOT_RETURN", "input": {"password": "DO_NOT_RETURN"},
+    })
+    response = client.get(
+        "/api/v2/events/secure/recent?event_code=job.terminal_outcome",
+        headers=_headers(tokens["events.read:integration"]),
+    )
+
+    assert response.status_code == 200
+    item = next(row for row in response.json()["events"] if row["event_id"] == event_id)
+    assert item["job_id"] == job_id
+    assert item["execution_status"] == "failed"
+    assert item["execution_classification"] == "stale_running_timeout"
+    assert item["snapshot_assurance"] == "terminal_commit"
+    assert item["outcome"] == "failed"
+    assert item["finished_at_utc"] == "2026-10-28 10:00:00"
+    assert "error_message" not in item and "input" not in item
+
+    cancelled_id = str(uuid.uuid4())
+    cancelled_event_id = _insert(event_type="job.terminal_outcome", details={
+        "event_category": "audit", "event_code": "job.terminal_outcome",
+        "event_context": {"job_id": cancelled_id},
+        "action": "job.terminal_outcome", "entity_type": "job", "entity_id": cancelled_id,
+        "result": "cancelled", "outcome": "cancelled", "execution_status": "cancelled",
+        "execution_classification": "handler_cancelled", "snapshot_assurance": "terminal_commit",
+        "finished_at_utc": "2026-10-28 10:00:00",
+    })
+    cancelled_response = client.get(
+        "/api/v2/events/secure/recent?event_code=job.terminal_outcome",
+        headers=_headers(tokens["events.read:integration"]),
+    )
+    cancelled_item = next(row for row in cancelled_response.json()["events"]
+                          if row["event_id"] == cancelled_event_id)
+    assert cancelled_item["outcome"] == "cancelled"
+    assert cancelled_item["execution_status"] == "cancelled"
+
+
+def test_secure_terminal_projection_hides_contradictory_or_tampered_outcomes(
+    monkeypatch, tmp_path, capsys,
+):
+    _, _, tokens = _clients(monkeypatch, tmp_path, capsys)
+    client = _client()
+    corrupt_ids = []
+    for field, value in (
+        ("outcome", "success"),
+        ("result", "success"),
+        ("execution_status", "success"),
+        ("execution_classification", "handler_completed"),
+        ("snapshot_assurance", "retention_observation"),
+    ):
+        job_id = str(uuid.uuid4())
+        details = {
+            "event_category": "audit", "event_code": "job.terminal_outcome",
+            "event_context": {"job_id": job_id},
+            "action": "job.terminal_outcome", "entity_type": "job", "entity_id": job_id,
+            "result": "failed", "outcome": "failed", "execution_status": "failed",
+            "execution_classification": "stale_running_timeout",
+            "snapshot_assurance": "terminal_commit", "finished_at_utc": "2026-10-28 10:00:00",
+            "error_message": "DO_NOT_RETURN", "input": {"password": "DO_NOT_RETURN"},
+        }
+        details[field] = value
+        corrupt_ids.append(_insert(event_type="job.terminal_outcome", details=details))
+
+    response = client.get(
+        "/api/v2/events/secure/recent?event_code=job.terminal_outcome",
+        headers=_headers(tokens["events.read:integration"]),
+    )
+    assert response.status_code == 200
+    items = {row["event_id"]: row for row in response.json()["events"]}
+    for event_id in corrupt_ids:
+        item = items[event_id]
+        assert item["outcome"] == "unknown"
+        assert "job_id" not in item and "execution_status" not in item
+        assert "execution_classification" not in item and "snapshot_assurance" not in item
+        assert "finished_at_utc" not in item
+        assert "error_message" not in item and "input" not in item
+
+
+def test_secure_reader_does_not_upgrade_legacy_job_correlation(monkeypatch, tmp_path, capsys):
+    _, _, tokens = _clients(monkeypatch, tmp_path, capsys)
+    client = _client()
+    event_id = _insert(event_type="user_action", details={
+        "event_category": "audit", "event_code": "user_action",
+        "job_id": str(uuid.uuid4()), "request_id": "legacy-request",
+    })
+    response = client.get(
+        "/api/v2/events/secure/recent?event_code=user_action",
+        headers=_headers(tokens["events.read:integration"]),
+    )
+    item = next(row for row in response.json()["events"] if row["event_id"] == event_id)
+    assert "job_id" not in item and "request_id" not in item
+
+
 def test_secure_event_read_requires_registry_scope_and_redacts_projection(monkeypatch, tmp_path, capsys):
     _, _, tokens = _clients(monkeypatch, tmp_path, capsys)
     client = _client()

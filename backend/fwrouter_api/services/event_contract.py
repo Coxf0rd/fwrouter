@@ -5,10 +5,11 @@ import json
 import os
 import re
 import stat
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fwrouter_api.services.jsonl_io import jsonl_lease, open_jsonl_read, replace_jsonl
@@ -63,6 +64,17 @@ def set_event_context(**values: Any) -> Token[dict[str, Any]]:
 
 def reset_event_context(token: Token[dict[str, Any]]) -> None:
     _CURRENT_CONTEXT.reset(token)
+
+
+@contextmanager
+def isolated_event_context(**values: Any) -> Iterator[dict[str, Any]]:
+    """Temporarily replace ambient correlation with one explicit event context."""
+    token = _CURRENT_CONTEXT.set({})
+    try:
+        set_event_context(**values)
+        yield current_event_context()
+    finally:
+        reset_event_context(token)
 
 
 def event_context_from_details(details: dict[str, Any] | None = None) -> dict[str, Any]:
