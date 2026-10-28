@@ -33,10 +33,16 @@ Require `status=stopped`; save its actual `operation_id`. The existing lifecycle
 
 Before transferring source ownership, stage and load the reviewed API unit while
 all rollout-owned writers are stopped. Backend-only deployment does not install
-systemd units. Use the existing host component only when its complete manifest
-has been approved and the **only changed host bytes are the API unit**; stop if
-any other host delta is present. This is a separate, explicit part of the future
-owner-approved operation, not permission to update host components generally.
+systemd units. Use the existing host component only after reviewing its complete
+source manifest and confirming that the exact host delta is limited to the
+explicitly approved `fwrouter-boot-preflight.sh` and API unit changes; stop on
+any additional host delta. Keep the lifecycle-owned API, Gateway, and events
+services held and the four timers inactive while publishing this pair. Xray
+and Mihomo engines remain running;
+do not restart runtime units during publication. Then verify the installed
+helper and loaded API unit before backend transfer. This is a bounded
+source-specific host step, not permission to update host components generally.
+It does not authorize production publication or API activation by itself.
 
 ```sh
 "$NEW_EXPORT/installer/install.sh" --deploy --component host
@@ -101,6 +107,26 @@ After any authorized timer catch-up has settled, repeat fresh native proof/readb
 Repeated prerequisite review is read-only. If installed source, readiness and approved identities already match, do not reinstall or rerun owner operations: repeat fresh proof and remaining UI-only preflight. Interrupted stop/transfer/resume is idempotent only within the existing operation-ID/source CAS contract, not by blindly retrying the entire procedure. Old/incomplete receipts never become successful receipts. Backup restore and source rollback always remain separate reviewed recovery decisions; no automatic rollback is introduced.
 
 ## Qualification required before use
+
+The normal API launcher runs the host boot preflight before it execs Uvicorn.
+That preflight reads only the four existing FWRouter-owned IPv4 routing values
+(`ip_forward=1`, `all.rp_filter=0`, `default.rp_filter=0`, and
+`all.src_valid_mark=1`) and fails closed on a missing reader/key or a mismatched
+value, before its bootstrap and routing-table-file effects. It does not write
+kernel values or run `sysctl --system`, so unrelated host sysctl configuration
+is not replayed on each API start. The Mihomo and Xray units call the same
+preflight.
+
+Boot-time persistence remains the responsibility of the host's
+`systemd-sysctl.service` and the installed sysctl fragment. Runtime preflight
+does not require or create that fragment: correct effective values may pass
+without it, while their persistence across reboot remains **NOT VERIFIED**.
+Likewise, checking `all.rp_filter` and `default.rp_filter` does not prove that
+every existing interface is permissive; Linux applies the maximum of the
+global and interface values. These are the pre-existing managed values, not a
+new per-interface admission rule. See the [kernel IPv4 sysctl
+reference](https://origin.kernel.org/doc/html/v6.1/networking/ip-sysctl.html)
+and [systemd-sysctl service documentation](https://www.freedesktop.org/software/systemd/man/latest/systemd-sysctl.service.html).
 
 Source qualification must cover the existing stop, source-CAS transfer, installer/startup barrier, lease, schema27 preservation, backup and recovery contracts in isolated tests and exact-source CI. Real installed Docker/systemd/native behavior, dependency and worker compatibility, genuine proof, controlled resume and external-client acceptance remain separate host/live gates.
 
