@@ -174,3 +174,19 @@ JavaScript to forge a forbidden header. POST uses the same query parameters,
 returns the same safe DTO and creates no event/domain write. It grants no mutation
 authority and accepts no credential in a body/cookie/query. This source contract
 does not qualify a deployed browser, proxy, TLS or credential custody.
+
+## Server-owned terminal job snapshot
+
+`job.terminal_outcome` adds only a validated canonical server job UUID and the
+allowlisted `execution_status`, `execution_classification`, `finished_at_utc` and
+`snapshot_assurance` fields. Its result/outcome/status, finite classification and
+assurance must agree; malformed or contradictory tuples remain `unknown` and do
+not expose a typed snapshot. The reader never loads a deleted job or its raw
+payload. It still omits caller-claimed correlation, credential IDs, policy
+revision and arbitrary event details.
+
+`terminal_commit` means job state and safe event committed together;
+`retention_observation` means a pre-package terminal row was observed before
+retention, without retroactively verified identity or original-commit proof.
+Neither is domain/native verification. The protected credential-bound identity
+projection is unchanged. See [terminal outcomes](JOB_TERMINAL_OUTCOMES.md).

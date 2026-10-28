@@ -23,6 +23,7 @@ from fwrouter_api.services.jobs import (
     create_job,
     get_job,
     list_jobs,
+    mark_job_cancelled,
     mark_job_failed,
     mark_job_running,
     mark_job_success,
@@ -266,6 +267,8 @@ class JobManager:
                         error_message=str(result.get("error_message") or "Job handler reported failure."),
                         result=result,
                     )
+                if result.get("job_status") == "cancelled":
+                    return mark_job_cancelled(job_id, result=result)
                 return mark_job_success(job_id, result=result)
         finally:
             reset_event_context(context_token)

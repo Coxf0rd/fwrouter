@@ -25,7 +25,7 @@ _SECURITY_CODES = {
     "client_list.mutation_denied", "client_list.mutation_conflict",
 }
 _CODE_RE = re.compile(r"^[a-z][a-z0-9]*(?:[._][a-z0-9]+){1,4}$")
-_OUTCOMES = {"success", "failed", "skipped", "intent_committed", "denied", "conflict"}
+_OUTCOMES = {"success", "failed", "cancelled", "skipped", "intent_committed", "denied", "conflict"}
 
 
 class SecureEventReadError(ValueError):
@@ -185,9 +185,10 @@ def _project(row: sqlite3.Row, filters: dict[str, str | None]) -> dict[str, Any]
         "identity": {"assurance": "unverified"},
     }
     if details:
-        outcome = details.get("outcome", details.get("result"))
-        if isinstance(outcome, str) and outcome in _OUTCOMES:
-            result["outcome"] = outcome
+        if event_code != "job.terminal_outcome":
+            outcome = details.get("outcome", details.get("result"))
+            if isinstance(outcome, str) and outcome in _OUTCOMES:
+                result["outcome"] = outcome
         identity = details.get("api_identity")
         if isinstance(identity, dict):
             client_id = identity.get("api_client_id")
@@ -209,6 +210,60 @@ def _project(row: sqlite3.Row, filters: dict[str, str | None]) -> dict[str, Any]
                     "kind": kind, "tag_snapshot": tag, "display": display,
                 }
                 result["api_request_id"] = api_request_id
+        if event_code == "job.terminal_outcome":
+            event_context = details.get("event_context")
+            job_id = details.get("entity_id")
+            execution_status = details.get("execution_status")
+            classification = details.get("execution_classification")
+            finished_at = _canonical_timestamp(details.get("finished_at_utc"))
+            allowed_classifications = {
+                "handler_completed", "handler_failed", "handler_cancelled",
+                "stale_queue_timeout", "stale_running_timeout", "legacy_terminal_observed",
+            }
+            assurance = details.get("snapshot_assurance")
+            if (assurance == "terminal_commit" and isinstance(classification, str)
+                    and isinstance(execution_status, str)):
+                classification_matches = (
+                    (execution_status == "success" and classification == "handler_completed")
+                    or (execution_status == "failed" and classification in {
+                        "handler_failed", "stale_queue_timeout", "stale_running_timeout",
+                    })
+                    or (execution_status == "cancelled" and classification == "handler_cancelled")
+                )
+            elif (assurance == "retention_observation" and isinstance(classification, str)
+                    and isinstance(execution_status, str)):
+                classification_matches = (
+                    assurance == "retention_observation"
+                    and execution_status in {"success", "failed", "cancelled"}
+                    and classification == "legacy_terminal_observed"
+                )
+            else:
+                classification_matches = False
+            if (
+                details.get("action") == "job.terminal_outcome"
+                and details.get("entity_type") == "job"
+                and _canonical_uuid(job_id)
+                and isinstance(event_context, dict)
+                and event_context.get("job_id") == job_id
+                and isinstance(execution_status, str)
+                and execution_status in {"success", "failed", "cancelled"}
+                and isinstance(classification, str)
+                and classification in allowed_classifications
+                and isinstance(assurance, str)
+                and assurance in {"terminal_commit", "retention_observation"}
+                and finished_at is not None
+                and details.get("result") == execution_status
+                and details.get("outcome") == execution_status
+                and classification_matches
+            ):
+                result.update({
+                    "outcome": execution_status,
+                    "job_id": job_id,
+                    "execution_status": execution_status,
+                    "execution_classification": classification,
+                    "snapshot_assurance": assurance,
+                    "finished_at_utc": finished_at,
+                })
     return result
 
 

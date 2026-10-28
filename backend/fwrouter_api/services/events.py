@@ -27,6 +27,7 @@ EventCategory = Literal["audit", "operational", "diagnostic"]
 EventSeverity = Literal["debug", "info", "warning", "error"]
 
 CORE_EVENT_CODE_CATALOG: dict[str, EventCategory] = {
+    "job.terminal_outcome": "audit",
     "provider_operation_verified": "operational",
     "provider_operation_unconfirmed": "operational",
     "provider_emergency_direct": "operational",
@@ -594,13 +595,14 @@ def write_audit_event(
     context: EventContext | None = None,
     details: dict[str, Any] | None = None,
     connection: Any | None = None,
+    event_id: str | None = None,
 ) -> AuditEvent:
     snapshot_entity_id = entity_id or (context.entity_id if context else None)
     entity_id = _safe_audit_entity_id(entity_type, entity_id or (context.entity_id if context else None))
     context = context or create_event_context(entity_id=entity_id)
     if entity_id and context.entity_id != entity_id:
         context = context.model_copy(update={"entity_id": entity_id})
-    event_id = str(uuid4())
+    event_id = str(event_id or uuid4())
     timestamp = _utc_timestamp()
     component = str((details or {}).get("component") or "fwrouter-api")
     enriched = _details_with_event_model(details, category="audit", context=context)

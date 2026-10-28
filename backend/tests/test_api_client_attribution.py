@@ -366,6 +366,16 @@ def test_registry_credentials_bind_identity_and_http_projections_redact(monkeypa
     with ThreadPoolExecutor(max_workers=1) as pool:
         completed = pool.submit(manager.run_job, job["job_id"]).result(timeout=5)
         assert completed and completed["status"] == "success"
+        with db_session() as connection:
+            terminal = connection.execute(
+                "SELECT details_json FROM operational_logs WHERE event_type = ? ORDER BY rowid DESC LIMIT 1",
+                ("job.terminal_outcome",),
+            ).fetchone()
+        terminal_payload = json.loads(terminal["details_json"])
+        assert terminal_payload["job_id"] == job["job_id"]
+        assert terminal_payload["api_identity"]["api_client_id"] == "client-1"
+        assert terminal_payload["api_identity"]["api_request_id"] == snapshot["api_request_id"]
+        assert terminal_payload["execution_status"] == "success"
         assert pool.submit(current_attribution_snapshot).result() is None
         untrusted_job = manager.create("plain", requested_by="test")
         manager.register_handler(

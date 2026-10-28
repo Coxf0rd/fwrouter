@@ -4,8 +4,10 @@ from fwrouter_api.db.connection import initialize_database
 
 
 import json
+import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fwrouter_api.db.connection import db_session
@@ -16,12 +18,14 @@ from fwrouter_api.services.apply_orchestrator import (
 )
 from fwrouter_api.services.jobs import (
     compact_oversized_job_results,
+    create_job,
     get_active_lock_lease,
     get_job,
     JobLockConflictError,
     list_jobs,
     mark_job_running,
     mark_job_success,
+    mark_job_failed,
 )
 from fwrouter_api.services.logs import list_technical_logs
 from fwrouter_api.services.event_contract import current_event_context
@@ -162,11 +166,19 @@ def test_manager_create_runs_one_stale_cleanup_and_releases_stale_queued_lock(
 
     second = manager.create("noop", requested_by="pytest", lock_key="apply")
     previous = get_job(first["job_id"])
+    with db_session() as connection:
+        snapshot = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type = ?",
+            ("job.terminal_outcome",),
+        ).fetchone()
 
     assert second["status"] == "queued"
     assert previous is not None
     assert previous["status"] == "failed"
     assert previous["error_code"] == "JOB_STALE_QUEUE_TIMEOUT"
+    payload = json.loads(snapshot["details_json"])
+    assert payload["execution_status"] == "failed"
+    assert payload["execution_classification"] == "stale_queue_timeout"
 
 
 def test_run_job_works_from_background_thread_without_main_thread_timeout_dependency(
@@ -420,3 +432,214 @@ def test_compact_oversized_job_results_rewrites_existing_rows(monkeypatch, tmp_p
     assert updated is not None
     assert updated["result"]["__truncated__"] is True
     assert updated["result"]["summary"]["stage"] == "legacy"
+
+
+def test_terminal_job_snapshot_is_single_safe_and_retained_after_repeat_calls(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    job = manager.create("noop", requested_by="pytest", input_data={"secret": "never-store"})
+    mark_job_running(job["job_id"])
+    finished = mark_job_success(
+        job["job_id"],
+        result={"secret": "result-secret", "path": "/private/path", "ok": True},
+    )
+    repeated = mark_job_failed(
+        job["job_id"], error_code="ARBITRARY_SECRET_CODE", error_message="secret text",
+    )
+
+    with db_session() as connection:
+        rows = connection.execute(
+            "SELECT event_type, message, details_json FROM operational_logs WHERE event_type = ?",
+            ("job.terminal_outcome",),
+        ).fetchall()
+
+    assert finished is not None and finished["status"] == "success"
+    assert repeated is not None and repeated["status"] == "success"
+    assert len(rows) == 1
+    payload = json.loads(rows[0]["details_json"])
+    assert payload["execution_status"] == "success"
+    assert payload["execution_classification"] == "handler_completed"
+    assert payload["job_id"] == job["job_id"]
+    assert "secret" not in rows[0]["message"] + rows[0]["details_json"]
+    assert "/private/path" not in rows[0]["details_json"]
+    assert "ARBITRARY_SECRET_CODE" not in rows[0]["details_json"]
+
+
+def test_handler_reported_cancellation_is_terminal_not_success(monkeypatch, tmp_path: Path) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    manager.register_handler("cancelled", lambda _job: {"job_status": "cancelled"})
+    job = manager.create("cancelled", requested_by="pytest")
+
+    finished = manager.run_job(job["job_id"])
+    with db_session() as connection:
+        event = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type = ?",
+            ("job.terminal_outcome",),
+        ).fetchone()
+    payload = json.loads(event["details_json"])
+
+    assert finished is not None and finished["status"] == "cancelled"
+    assert payload["outcome"] == "cancelled"
+    assert payload["execution_status"] == "cancelled"
+    assert payload["execution_classification"] == "handler_cancelled"
+    assert payload["snapshot_assurance"] == "terminal_commit"
+
+
+def test_terminal_snapshot_failure_rolls_back_job_transition(monkeypatch, tmp_path: Path) -> None:
+    import pytest
+    import fwrouter_api.services.jobs as jobs_service
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    job = create_job("noop")
+    mark_job_running(job["job_id"])
+
+    def fail_snapshot(**_kwargs):
+        raise RuntimeError("audit storage unavailable")
+
+    monkeypatch.setattr(jobs_service, "write_audit_event", fail_snapshot)
+    with pytest.raises(RuntimeError, match="audit storage unavailable"):
+        mark_job_success(job["job_id"], result={"ok": True})
+
+    current = get_job(job["job_id"])
+    assert current is not None and current["status"] == "running"
+
+
+def test_sqlite_terminal_event_insert_abort_rolls_back_and_retry_succeeds(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    import pytest
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    job = create_job("terminal_insert_abort_probe")
+    mark_job_running(job["job_id"])
+    with db_session() as connection:
+        connection.execute(
+            """CREATE TRIGGER reject_terminal_snapshot BEFORE INSERT ON operational_logs
+               WHEN NEW.event_type = 'job.terminal_outcome'
+               BEGIN SELECT RAISE(ABORT, 'test terminal event insert failure'); END"""
+        )
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="test terminal event insert failure"):
+            mark_job_success(job["job_id"], result={"ok": True})
+        with db_session() as connection:
+            assert connection.execute(
+                "SELECT status FROM jobs WHERE job_id = ?", (job["job_id"],)
+            ).fetchone()[0] == "running"
+            assert connection.execute(
+                "SELECT COUNT(*) FROM operational_logs WHERE event_type = 'job.terminal_outcome'"
+            ).fetchone()[0] == 0
+            connection.execute("DROP TRIGGER reject_terminal_snapshot")
+        assert mark_job_success(job["job_id"], result={"ok": True})["status"] == "success"
+        with db_session() as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM operational_logs WHERE event_type = 'job.terminal_outcome'"
+            ).fetchone()[0] == 1
+    finally:
+        with db_session() as connection:
+            connection.execute("DROP TRIGGER IF EXISTS reject_terminal_snapshot")
+
+
+def test_concurrent_terminal_calls_and_stale_cleanup_emit_only_winning_snapshot(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    job = create_job("noop")
+    mark_job_running(job["job_id"])
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE jobs SET updated_at = datetime('now', '-5 minutes') WHERE job_id = ?",
+            (job["job_id"],),
+        )
+    barrier = threading.Barrier(3)
+
+    def complete():
+        barrier.wait()
+        return mark_job_success(job["job_id"], result={"ok": True})
+
+    def timeout():
+        barrier.wait()
+        from fwrouter_api.services.jobs import cleanup_stale_running_jobs
+        return cleanup_stale_running_jobs(stale_after_seconds=1)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        success_future = pool.submit(complete)
+        stale_future = pool.submit(timeout)
+        barrier.wait()
+        success_future.result(timeout=5)
+        stale_future.result(timeout=5)
+
+    final = get_job(job["job_id"])
+    with db_session() as connection:
+        snapshots = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type = ?",
+            ("job.terminal_outcome",),
+        ).fetchall()
+    assert final is not None and final["status"] in {"success", "failed"}
+    assert len(snapshots) == 1
+    assert json.loads(snapshots[0]["details_json"])["execution_status"] == final["status"]
+
+
+def test_stale_job_snapshot_uses_original_job_correlation(monkeypatch, tmp_path: Path) -> None:
+    from fwrouter_api.services.event_contract import reset_event_context, set_event_context
+    from fwrouter_api.services.api_client_attribution import (
+        attribution_from_snapshot, reset_api_request_id, set_api_request_id,
+    )
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    manager = JobManager()
+    marker = set_event_context(request_id="origin-request", workflow_id="origin-workflow")
+    try:
+        with attribution_from_snapshot({
+            "assurance": "credential_bound", "verified": True,
+            "client_id": "a" * 32, "credential_id": "b" * 32,
+            "kind": "cli", "tag_snapshot": "origin-client", "policy_revision": 1,
+            "api_request_id": "origin-api-request",
+        }):
+            job = manager.create("noop", requested_by="pytest")
+    finally:
+        reset_event_context(marker)
+    mark_job_running(job["job_id"])
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE jobs SET updated_at = datetime('now', '-5 minutes') WHERE job_id = ?",
+            (job["job_id"],),
+        )
+
+    ambient_context = set_event_context(
+        request_id="ambient-request", apply_id="ambient-apply", workflow_id="ambient-workflow",
+    )
+    ambient_api_request = set_api_request_id("ambient-api-request")
+    try:
+        with attribution_from_snapshot({
+            "assurance": "credential_bound", "verified": True,
+            "client_id": "c" * 32, "credential_id": "d" * 32,
+            "kind": "cli", "tag_snapshot": "ambient-client", "policy_revision": 2,
+            "api_request_id": "ambient-identity-request",
+        }):
+            stale = manager.cleanup_stale_jobs()
+    finally:
+        reset_api_request_id(ambient_api_request)
+        reset_event_context(ambient_context)
+    with db_session() as connection:
+        row = connection.execute(
+            "SELECT details_json FROM operational_logs WHERE event_type = ?",
+            ("job.terminal_outcome",),
+        ).fetchone()
+    payload = json.loads(row["details_json"])
+
+    assert stale[0]["status"] == "failed"
+    assert payload["execution_classification"] == "stale_running_timeout"
+    assert payload["event_context"]["request_id"] == "origin-request"
+    assert payload["event_context"]["workflow_id"] == "origin-workflow"
+    assert "apply_id" not in payload["event_context"]
+    assert payload["api_identity"]["api_client_id"] == "a" * 32
+    assert payload["api_identity"]["api_request_id"] == "origin-api-request"

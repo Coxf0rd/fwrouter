@@ -19,6 +19,111 @@ spec.loader.exec_module(bootstrap)
 owned, state = bootstrap.configure_test_process()
 case = sys.argv[1]
 
+if case.startswith('terminal_crash_') or case.startswith('terminal_verify_'):
+    from contextlib import contextmanager
+    from datetime import timedelta
+    from fwrouter_api.core.config import Settings, get_settings
+    Settings.model_config['env_file'] = None
+    get_settings.cache_clear()
+    from fwrouter_api.db.connection import db_session, initialize_database
+    from fwrouter_api.services import jobs
+
+    initialize_database()
+    metadata = owned / 'terminal-job.json'
+    if case.startswith('terminal_crash_'):
+        stage = case.removeprefix('terminal_crash_')
+        artifact_dir = get_settings().paths.jobs_dir / 'terminal-process-probe'
+        artifact_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        job = jobs.create_job(
+            'terminal_process_probe', artifact_dir=str(artifact_dir),
+            event_context={'request_id': 'persisted-process-request'},
+        )
+        job_id = job['job_id']
+        jobs.mark_job_running(job_id)
+        metadata.write_text(json.dumps({'job_id': job_id, 'artifact_dir': str(artifact_dir)}))
+        if stage == 'before':
+            original_write = jobs.write_audit_event
+
+            def kill_after_event_insert(*args, **kwargs):
+                original_write(*args, **kwargs)
+                os.kill(os.getpid(), signal.SIGKILL)
+
+            jobs.write_audit_event = kill_after_event_insert
+        elif stage == 'after':
+            original_session = jobs.db_session
+
+            @contextmanager
+            def kill_after_terminal_commit():
+                with original_session() as connection:
+                    yield connection
+                os.kill(os.getpid(), signal.SIGKILL)
+
+            jobs.db_session = kill_after_terminal_commit
+        else:
+            raise RuntimeError('unknown terminal crash stage')
+        jobs.mark_job_success(job_id, result={'ok': True})
+        raise AssertionError('terminal job crash hook was not reached')
+
+    stage = case.removeprefix('terminal_verify_')
+    prior = json.loads(metadata.read_text())
+    job_id = prior['job_id']
+    artifact_dir = Path(prior['artifact_dir'])
+    event_id = jobs._terminal_snapshot_event_id(job_id)
+    with db_session() as connection:
+        job_row = connection.execute('SELECT * FROM jobs WHERE job_id = ?', (job_id,)).fetchone()
+        event_row = connection.execute('SELECT * FROM operational_logs WHERE event_id = ?', (event_id,)).fetchone()
+    if stage == 'before':
+        assert job_row['status'] == 'running'
+        assert event_row is None
+        recovered = jobs.cleanup_stale_running_jobs(stale_after_seconds=0)
+        assert len(recovered) == 1 and recovered[0]['status'] == 'failed'
+        jobs.mark_job_success(job_id, result={'retry_must_not_win': True})
+        expected_status = 'failed'
+        retention_age_days = 15
+    elif stage == 'after':
+        assert job_row['status'] == 'success'
+        assert event_row is not None
+        jobs.cleanup_stale_running_jobs(stale_after_seconds=0)
+        jobs.mark_job_failed(job_id, error_code='retry_must_not_win', error_message='retry must not win')
+        expected_status = 'success'
+        retention_age_days = 2
+    else:
+        raise RuntimeError('unknown terminal verification stage')
+
+    with db_session() as connection:
+        job_row = connection.execute('SELECT * FROM jobs WHERE job_id = ?', (job_id,)).fetchone()
+        event_row = connection.execute('SELECT * FROM operational_logs WHERE event_id = ?', (event_id,)).fetchone()
+        assert job_row['status'] == expected_status
+        assert event_row is not None
+        details = json.loads(event_row['details_json'])
+        assert details['execution_status'] == expected_status
+        assert details['snapshot_assurance'] == 'terminal_commit'
+        assert details['outcome'] == expected_status
+        assert details['event_context']['job_id'] == job_id
+        assert details['event_context']['request_id'] == 'persisted-process-request'
+        immutable_details = event_row['details_json']
+
+    from fwrouter_api.services import jobs_retention
+    cleanup_jobs_retention = jobs_retention.cleanup_jobs_retention
+    observed_now = jobs_retention._utc_now()
+    jobs_retention._utc_now = lambda: observed_now + timedelta(days=retention_age_days + 1)
+    result = cleanup_jobs_retention(dry_run=False)
+    assert job_id in result['deleted_jobs'] and not result['errors']
+    assert not artifact_dir.exists()
+    result = cleanup_jobs_retention(dry_run=False)
+    assert result['deleted_jobs_count'] == 0
+    with db_session() as connection:
+        assert connection.execute('SELECT 1 FROM jobs WHERE job_id = ?', (job_id,)).fetchone() is None
+        retained = connection.execute(
+            'SELECT event_id, details_json FROM operational_logs WHERE event_id = ?', (event_id,)
+        ).fetchone()
+        assert retained is not None
+        assert retained['event_id'] == event_id
+        assert retained['details_json'] == immutable_details
+    print(json.dumps({'status': 'passed', 'crash_boundary': 'before_commit' if stage == 'before' else 'after_commit',
+                      'retained_snapshots': 1}))
+    raise SystemExit(0)
+
 if case.startswith('registry_origin_'):
     from fwrouter_api.services import api_client_registry as registry
     from fwrouter_api.services import api_client_registry_admin as admin

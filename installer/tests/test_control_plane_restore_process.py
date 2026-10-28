@@ -40,6 +40,21 @@ def test_real_sigkill_import_and_fresh_process_retry(tmp_path, committed):
     assert (suite/'input.json').exists()
 
 
+@pytest.mark.parametrize('stage', ['before', 'after'])
+def test_real_sigkill_job_terminal_event_commit_and_retention(tmp_path, stage):
+    suite, env = _environment(tmp_path)
+    killed = subprocess.run([sys.executable, str(FIXTURE), 'terminal_crash_' + stage], env=env,
+                            cwd=ROOT, capture_output=True, text=True, timeout=15)
+    assert killed.returncode == -signal.SIGKILL, killed.stderr[-4096:]
+    checked = subprocess.run([sys.executable, str(FIXTURE), 'terminal_verify_' + stage], env=env,
+                             cwd=ROOT, capture_output=True, text=True, timeout=15)
+    assert checked.returncode == 0, checked.stderr[-4096:]
+    result = json.loads(checked.stdout)
+    assert result['status'] == 'passed'
+    assert result['crash_boundary'] == ('before_commit' if stage == 'before' else 'after_commit')
+    assert result['retained_snapshots'] == 1
+
+
 def test_inherited_lifecycle_and_exclusive_fd_survive_controller_close(tmp_path):
     suite, env = _environment(tmp_path)
     host = suite/'host'
