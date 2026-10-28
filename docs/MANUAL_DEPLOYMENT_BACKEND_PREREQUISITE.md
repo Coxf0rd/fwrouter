@@ -31,6 +31,28 @@ python3 "$OLD_EXPORT/installer/controlled_backend_lifecycle.py" stop
 
 Require `status=stopped`; save its actual `operation_id`. The existing lifecycle helper stops only its allowlisted previously active API dependents/timers and API, refuses active one-shot jobs, and creates its own checkpoint. Do not stop native engines unnecessarily. Recheck that every rollout-owned unit and transient job is stopped; independent admin access must remain available.
 
+Before transferring source ownership, stage and load the reviewed API unit while
+all rollout-owned writers are stopped. Backend-only deployment does not install
+systemd units. Use the existing host component only when its complete manifest
+has been approved and the **only changed host bytes are the API unit**; stop if
+any other host delta is present. This is a separate, explicit part of the future
+owner-approved operation, not permission to update host components generally.
+
+```sh
+"$NEW_EXPORT/installer/install.sh" --deploy --component host
+systemctl daemon-reload
+```
+
+`--deploy` neither enables units nor reloads systemd itself. This host step still
+runs the installed bootstrap-state script (directory/permission preparation);
+review those effects as well. Verify the on-disk API unit hash, loaded
+`ExecCondition`/`ExecStart`, and absence of overriding drop-ins before proceeding.
+The loaded unit must use `fwrouter_api_maintenance startup-check` and `run-api`.
+For the qualified old source without those commands, a restart at this point
+must fail closed; it must not fall back to direct uvicorn. No API start is needed
+for this staging step, and no timer is enabled. A failed unit publication or
+reload is STOP before transfer, with the coherent OLD backend retained.
+
 ```sh
 python3 "$NEW_EXPORT/installer/controlled_backend_lifecycle.py" transfer \
   --expected-operation-id "$OPERATION_ID" \
@@ -39,9 +61,11 @@ python3 "$NEW_EXPORT/installer/controlled_backend_lifecycle.py" transfer \
 "$NEW_EXPORT/installer/install.sh" --deploy --component backend
 ```
 
-Transfer must succeed against the existing owner checkpoint and old installed tree before overlay begins. It supports only its documented exact CAS replay; do not edit checkpoint/source markers. The installer owns the shared backend/UI component lock, source copy, obsolete-source retirement and bootstrap. Backend copy is not an atomic source publication: keep API/workers stopped until the complete export is independently verified. The installer also performs bootstrap filesystem side effects; it is not a byte-only copy. Do not add `--all`, host/native components, undocumented skips or manual source copying.
+Transfer must succeed against the existing owner checkpoint and old installed tree before overlay begins. It supports only its documented exact CAS replay; do not edit checkpoint/source markers. The installer owns the common backend/UI component lock, source copy, obsolete-source retirement and bootstrap. Backend installation additionally holds the existing maintenance lease exclusively and requires the existing writer/unit allowlist to be quiescent; UI-only publication keeps its shared maintenance lease. The API holds its shared lease through startup and process lifetime, excluding backend overlay. Both sides of the source tar stream must succeed; an extraction success alone is not installer success. Backend copy is not an atomic source publication: keep API/workers stopped until the complete export is independently verified. The installer also performs bootstrap filesystem side effects; it is not a byte-only copy. Do not add `--all`, host/native components, undocumented skips or manual source copying.
 
-If the installer fails/interruption occurs, retain compatible held state and diagnostics. A partially copied tree is not runnable. Do not blindly rerun `stop` against changed source, start the partial backend, roll back schema or restore a database. Re-enter only the existing reviewed source-transfer/installer recovery contract after inspecting actual checkpoint and installed manifest.
+For a pending ordinary rollout, startup admission compares the executing installed backend manifest with the checkpoint target digest. It repeats this check under the shared lease before boot preflight. After transfer, OLD or partial source fails admission; a complete matching NEW tree may start for the existing readiness-before-resume sequence. This is a coherent-source guard, not an installer-completion, schema, native-proof or authorization receipt. It cannot prove that bootstrap finished if interruption occurred after all source bytes were copied. Keep that failure at STOP until the explicit post-install checks succeed.
+
+If the installer fails/interruption occurs, retain compatible held state and diagnostics. A partially copied tree is not runnable. Do not blindly rerun `stop` against changed source, start the partial backend, roll back schema or restore a database. Re-enter only the existing reviewed source-transfer/installer recovery contract after inspecting actual checkpoint and installed manifest. A partial installed tree is intentionally not an admissible `transfer` replay: retain the already committed transition, revalidate its operation/source identities, and complete only the exact reviewed NEW installer under quiescence. Do not invent another operation, edit the checkpoint or overlay OLD onto NEW.
 
 ## 3. Installed export, schema and readiness
 
@@ -86,3 +110,14 @@ A separate disposable Linux host with real managed Docker/systemd/cgroup ownersh
 Preparation may finish with healthy API/Gateway but native readiness still INCOMPLETE. Preserve that result and the actual performed-check list; it is not successful UI readiness. In particular, `native_generation_receipt_missing_or_invalid` is a missing owner capability, not permission for the observer to synthesize a tuple. A later Core reader can independently fail on unsupported nft objects; fixing its parser in source is neither a live patch nor a receipt migration.
 
 Before any separately approved owner operation, require the reviewed parser implementation, exact installed source pin, current native image pins, no conflicting writer/recovery and an explicit plan for existing state. Preserve old receipts as history and reject mismatched semantic hashes. No same-value routing request, arbitrary refresh or hidden legacy admission is part of this procedure. Timers held by an incomplete lifecycle remain subject to a separate restoration/catch-up decision.
+
+## Qualification limits of the source-coherence barrier
+
+The pending-manifest and exclusive-lease guards address partial source startup
+and concurrent installation. They do not make the backend overlay atomic or
+supply a missing Debian/systemd/native qualification. Host reboot and unattended
+persistent-timer reactivation are not proved by process-level crash fixtures;
+`systemctl stop` does not itself disable enabled timers across a reboot. Keep
+those scenarios outside a qualified claim until the disposable-host acceptance
+has proved their hold/recovery behavior. Do not use a manual catch-up or native
+apply to manufacture acceptance. No production procedure is authorized here.

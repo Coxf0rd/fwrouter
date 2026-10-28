@@ -14,6 +14,7 @@ import pytest
 
 from fwrouter_api.services import maintenance_lifecycle_admission as admission
 from fwrouter_api.services import database_admin
+from fwrouter_api.services import native_proof
 
 
 def _installer_lifecycle_module():
@@ -67,6 +68,110 @@ def _pin_synthetic_test_backup(state_root: Path, operation_id: str) -> None:
     path.write_bytes(b"test-only lifecycle pin; not a SQLite backup")
     path.chmod(0o600)
     admission.record_offline_rebuild_backup_pin(filename, hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+def _ordinary_rollout_checkpoint(state_root: Path, backend_root: Path, schema: int) -> Path:
+    entries = native_proof.backend_manifest(backend_root)
+    digest = native_proof.backend_manifest_sha256(backend_root)
+    operation_id = str(uuid.uuid4())
+    active_units = {unit: False for unit in
+                    (*lifecycle.RESTORE_ORDER, *lifecycle.TRANSIENT_JOBS, lifecycle.API_UNIT)}
+    checkpoint = {
+        "schema": schema,
+        "operation_id": operation_id,
+        "status": "pending",
+        "created_at": "2026-10-28T00:00:00Z",
+        "backend_manifest": entries,
+        "backend_manifest_sha256": digest,
+        "active_units": active_units,
+        "pending_units": [],
+    }
+    if schema >= 2:
+        checkpoint["initial_backend_manifest_sha256"] = digest
+        checkpoint["source_transitions"] = []
+    if schema >= 3:
+        checkpoint["maintenance_operation"] = None
+    path = state_root / "state" / "controlled-rollout" / "pending.json"
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(json.dumps(checkpoint, sort_keys=True, separators=(",", ":")) + "\n",
+                    encoding="utf-8")
+    path.chmod(0o600)
+    assert lifecycle._read_checkpoint(path) == checkpoint
+    return path
+
+
+def test_pending_ordinary_rollout_startup_is_bound_to_installed_manifest_for_all_checkpoint_schemas(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "ordinary-rollout-state"
+    state_root.mkdir(mode=0o700)
+    target = tmp_path / "installed-backend"
+    target.mkdir(mode=0o700)
+    (target / "module.py").write_text("VERSION = 'old'\n", encoding="utf-8")
+    new_tree = tmp_path / "new-backend"
+    new_tree.mkdir(mode=0o700)
+    (new_tree / "module.py").write_text("VERSION = 'new'\n", encoding="utf-8")
+    (new_tree / "added.py").write_text("ADDED = True\n", encoding="utf-8")
+    monkeypatch.setattr(native_proof, "_backend_root", lambda: target)
+
+    for schema in (1, 2, 3):
+        for path in target.rglob("*"):
+            if path.is_file():
+                path.unlink()
+        (target / "module.py").write_text("VERSION = 'old'\n", encoding="utf-8")
+        checkpoint = _ordinary_rollout_checkpoint(state_root, new_tree, schema)
+        assert admission.startup_allowed(state_root) is False
+        with pytest.raises(admission.MaintenanceAdmissionError, match="backend manifest mismatch"):
+            admission.acquire_shared_lease_fd(state_root)
+
+        # Finish the source overlay in the private fixture. The same pending
+        # checkpoint now admits the documented API-before-resume step.
+        for path in new_tree.rglob("*"):
+            if path.is_file():
+                relative = path.relative_to(new_tree)
+                destination = target / relative
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                destination.write_bytes(path.read_bytes())
+        assert admission.startup_allowed(state_root) is True
+        shared_fd = admission.acquire_shared_lease_fd(state_root)
+        os.close(shared_fd)
+        # Keep schema variants independent while retaining a validated pending file.
+        checkpoint.unlink()
+
+
+def test_pending_ordinary_rollout_rejects_invalid_digest_and_partial_or_missing_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "ordinary-rollout-state"
+    state_root.mkdir(mode=0o700)
+    target = tmp_path / "installed-backend"
+    target.mkdir(mode=0o700)
+    (target / "module.py").write_text("VERSION = 'new'\n", encoding="utf-8")
+    (target / "incomplete.py").write_text("PARTIAL = True\n", encoding="utf-8")
+    monkeypatch.setattr(native_proof, "_backend_root", lambda: target)
+    checkpoint = _ordinary_rollout_checkpoint(state_root, target, 3)
+    value = json.loads(checkpoint.read_text(encoding="utf-8"))
+    value["backend_manifest_sha256"] = "z" * 64
+    checkpoint.write_text(json.dumps(value), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    assert admission.startup_allowed(state_root) is False
+
+    value["backend_manifest_sha256"] = "0" * 64
+    checkpoint.write_text(json.dumps(value), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    assert admission.startup_allowed(state_root) is False
+
+    value["backend_manifest_sha256"] = native_proof.backend_manifest_sha256(target)
+    value["schema"] = True
+    checkpoint.write_text(json.dumps(value), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    assert admission.startup_allowed(state_root) is False
+
+    value["schema"] = 3
+    checkpoint.write_text(json.dumps(value), encoding="utf-8")
+    checkpoint.chmod(0o600)
+    target.rename(tmp_path / "partial-backend")
+    assert admission.startup_allowed(state_root) is False
 
 
 def test_offline_lease_binds_both_lifecycle_and_exclusive_lock_and_revokes_context(
