@@ -4,7 +4,6 @@ set -eu
 STATE_ROOT="${FWROUTER_STATE_ROOT:-/var/lib/fwrouter-v2}"
 LOG_ROOT="${FWROUTER_LOG_ROOT:-/var/log/fwrouter}"
 RUN_ROOT="${FWROUTER_RUN_ROOT:-/run/fwrouter-v2}"
-SYSCTL_FILE="/etc/sysctl.d/99-fwrouter-routing.conf"
 RT_TABLES_DIR="/etc/iproute2/rt_tables.d"
 RT_TABLES_FILE="$RT_TABLES_DIR/fwrouter.conf"
 
@@ -15,6 +14,44 @@ if [ "$REQUIRE_TUN" = "1" ] && [ ! -c /dev/net/tun ]; then
     exit 1
 fi
 
+check_sysctl_value() {
+    key="$1"
+    expected="$2"
+
+    if ! command -v sysctl >/dev/null 2>&1; then
+        echo "fwrouter preflight: sysctl tool unavailable key=$key expected=$expected actual=unreadable" >&2
+        exit 1
+    fi
+
+    if ! actual=$(sysctl -n "$key" 2>/dev/null); then
+        echo "fwrouter preflight: sysctl read failed key=$key expected=$expected actual=unreadable" >&2
+        exit 1
+    fi
+
+    if [ "$actual" != "$expected" ]; then
+        case "$actual" in
+            0|1)
+                actual_detail="$actual"
+                ;;
+            '')
+                actual_detail=empty
+                ;;
+            *)
+                actual_detail=invalid
+                ;;
+        esac
+        echo "fwrouter preflight: sysctl mismatch key=$key expected=$expected actual=$actual_detail" >&2
+        exit 1
+    fi
+}
+
+# These are the existing FWRouter-owned host settings required by the routing
+# contract. Read them individually; never replay unrelated host sysctl files.
+check_sysctl_value net.ipv4.ip_forward 1
+check_sysctl_value net.ipv4.conf.all.rp_filter 0
+check_sysctl_value net.ipv4.conf.default.rp_filter 0
+check_sysctl_value net.ipv4.conf.all.src_valid_mark 1
+
 mkdir -p "$STATE_ROOT" "$LOG_ROOT" "$RUN_ROOT"
 /opt/fwrouter-api/scripts/bootstrap-state.sh "$STATE_ROOT" "$LOG_ROOT" "$RUN_ROOT" >/dev/null
 
@@ -22,10 +59,6 @@ mkdir -p "$RT_TABLES_DIR"
 cat >"$RT_TABLES_FILE" <<'EOF'
 100 fwrouter_vpn
 EOF
-
-if [ -f "$SYSCTL_FILE" ] && command -v sysctl >/dev/null 2>&1; then
-    sysctl --system >/dev/null
-fi
 
 if ! command -v nft >/dev/null 2>&1; then
     echo "fwrouter preflight: nft command is not available" >&2

@@ -862,6 +862,14 @@
     },
     {
       "domains": [
+        "installer",
+        "routing",
+        "runtime"
+      ],
+      "glob": "host/libexec/fwrouter/fwrouter-boot-preflight.sh"
+    },
+    {
+      "domains": [
         "mihomo"
       ],
       "glob": "runtimes/mihomo/**",
@@ -6070,6 +6078,33 @@
       "domain": "installer",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
+      "fixture_identity": "exact helper source with counted relocation into a private root, fake sysctl/ip/nft/bootstrap executables, and temporary state; no host paths or network",
+      "fixture_owner": "installer/tests/test_boot_preflight.py",
+      "id": "test_boot_preflight",
+      "isolation": "coordinator-owned temporary filesystem and fixed helper subprocess; no live proc/sysctl, systemd, services, installer target, or network",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "installer/tests/test_boot_preflight.py",
+      "primary_level": "L3",
+      "risk_notes": "Checks read-only sysctl admission, no-side-effect rejection, repeat-start behavior, and preservation of TUN/ip/nft/bootstrap/table-file contracts using only synthetic executables; no host kernel or boot qualification",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "installer-startup"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "installer",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
       "fixture_identity": "trusted synthetic receipts are component fixtures, not native qualification",
       "fixture_owner": "isolated synthetic Git checkouts and private installer target roots",
       "id": "test_safe_recovery",
@@ -6751,7 +6786,7 @@
       "execution_group": "services-events"
     }
   ],
-  "version": "2026.10.28.2",
+  "version": "2026.10.28.3",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

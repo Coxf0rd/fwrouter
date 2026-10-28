@@ -641,3 +641,25 @@ def test_run_api_preflight_receives_held_shared_lease_fd(monkeypatch) -> None:
     ]
     with pytest.raises(OSError):
         os.fstat(observed["fd"])
+
+
+def test_run_api_preflight_rejection_closes_lease_without_exec(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    def reject_preflight(command, *, check, pass_fds):
+        assert command == ["/usr/local/libexec/fwrouter/fwrouter-boot-preflight.sh"]
+        assert check is False
+        assert len(pass_fds) == 1
+        observed["fd"] = pass_fds[0]
+        return SimpleNamespace(returncode=23)
+
+    def unexpected_exec(path, argv):
+        pytest.fail("run-api must not exec uvicorn after host preflight rejection")
+
+    monkeypatch.setattr(fwrouter_api_maintenance.subprocess, "run", reject_preflight)
+    monkeypatch.setattr(fwrouter_api_maintenance.os, "execv", unexpected_exec)
+    monkeypatch.setattr(sys, "argv", ["fwrouter_api_maintenance", "run-api"])
+
+    assert fwrouter_api_maintenance.main() == 23
+    with pytest.raises(OSError):
+        os.fstat(observed["fd"])
