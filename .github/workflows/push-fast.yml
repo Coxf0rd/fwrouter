@@ -48,6 +48,14 @@ jobs:
             exit 2
           fi
           python tests/gates/gate.py lint-changed --base "$EVENT_BEFORE"
+          CHANGED_PATHS="$RUNNER_TEMP/fwrouter-fast-changed-paths.bin"
+          git diff --name-only -z "$EVENT_BEFORE" HEAD -- > "$CHANGED_PATHS"
+          if [ ! -s "$CHANGED_PATHS" ]; then
+            MESSAGE='Test execution NOT RUN: source tree unchanged; no test/deploy qualification.'
+            printf '%s\n' "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"
+            echo "$MESSAGE"
+            exit 0
+          fi
           PLAN="$RUNNER_TEMP/fwrouter-fast-plan.json"
           REPORT="$RUNNER_TEMP/fwrouter-fast-report.json"
           python tests/gates/gate.py plan --base "$EVENT_BEFORE" --quick-push --output "$PLAN"
