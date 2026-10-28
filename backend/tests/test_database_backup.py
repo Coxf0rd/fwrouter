@@ -464,14 +464,21 @@ def test_no_replace_collision_preserves_existing_backup(
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE sample(value TEXT)")
         connection.execute("INSERT INTO sample VALUES ('original')")
+    fixed_stamp = "20261028T120000Z"
+    monkeypatch.setattr(database_admin, "_utc_stamp", lambda: fixed_stamp)
     tokens = iter(("same-final", "first-temp", "same-final", "second-temp"))
     monkeypatch.setattr(database_backup.secrets, "token_hex", lambda _length: next(tokens))
     first = backup_database_file()
     first_path = Path(first["backup_path"])
     original_bytes = first_path.read_bytes()
+    original_identity = first_path.stat().st_dev, first_path.stat().st_ino
+    expected_path = db_path.parent / "backups" / f"{db_path.name}.{fixed_stamp}.same-final.bak"
+    assert first_path == expected_path
     with pytest.raises(FileExistsError):
         backup_database_file()
     assert first_path.read_bytes() == original_bytes
+    first_after = first_path.stat()
+    assert (first_after.st_dev, first_after.st_ino) == original_identity
     assert list((db_path.parent / "backups").glob(".backup-tmp-*")) == []
 
 
