@@ -84,7 +84,7 @@ def refresh_rollout_native_evidence(
     retry repeats native proof and the existing verified-only CAS. No stale
     receipt can become success by replaying an HTTP response or operation ID.
     """
-    if os.geteuid() != 0:
+    if os.geteuid() != admission._trusted_uid():
         return {"ok": False, "status": "blocked", "reason": "root_required"}
     try:
         operation_id = str(UUID(expected_operation_id))

@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import atexit
 import importlib.util
 import json
 import os as os
 from pathlib import Path
-import shutil
 import subprocess
-import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 import uuid
@@ -168,7 +165,7 @@ def _run_mihomo_lifecycle(tmp_path: Path, command: str, runtime: FakeMihomoRunti
                            operation_id: str, current_digest: str, compose_hash: str,
                            compose_digest: str, *, source_content: str,
                            jit_owner_quiescence: bool = False,
-                           api_healthy: bool = True) -> dict[str, object]:
+                           api_healthy: bool = True, cache_reader=None) -> dict[str, object]:
     source, target = _paths(tmp_path, source_content)
     args = [command, "--state-dir", str(tmp_path / "rollout-state"),
             "--expected-operation-id", operation_id,
@@ -191,9 +188,8 @@ def _run_mihomo_lifecycle(tmp_path: Path, command: str, runtime: FakeMihomoRunti
     compose_path.write_text("services:\n  mihomo:\n    image: pinned\n", encoding="utf-8")
     compose_path.chmod(0o600)
     if runtime.cache_root is None:
-        runtime.cache_root = Path(tempfile.mkdtemp(prefix="fwrouter-jit-cache-test-", dir="/root"))
-        runtime.cache_root.chmod(0o700)
-        atexit.register(shutil.rmtree, runtime.cache_root, ignore_errors=True)
+        runtime.cache_root = tmp_path / "native-cache-fixture"
+        runtime.cache_root.mkdir(mode=0o700, exist_ok=True)
     cache_path = runtime.cache_root / "var/lib/fwrouter-v2/mihomo/cache.db"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if not cache_path.exists():
@@ -217,6 +213,9 @@ def _run_mihomo_lifecycle(tmp_path: Path, command: str, runtime: FakeMihomoRunti
             patch.object(lifecycle, "TARGET_BACKEND", target), \
             patch.object(lifecycle, "MIHOMO_COMPOSE_FILE", compose_path), \
             patch.object(lifecycle, "MIHOMO_CACHE_DB", cache_path), \
+            patch.object(lifecycle, "_mihomo_cache_state", side_effect=cache_reader or (lambda: {
+                "sha256": hashlib.sha256(cache_path.read_bytes()).hexdigest(),
+                "size": cache_path.stat().st_size})), \
             patch.object(lifecycle, "MIHOMO_UNIT_FILE", unit_path), \
             patch.object(lifecycle, "_trusted_fixed_file_digest", side_effect=fixed_digest), \
             patch.object(lifecycle, "_validate_state_dir", side_effect=private_test_state), \
@@ -244,9 +243,8 @@ def _run_runtime_transfer(tmp_path: Path, runtime: FakeMihomoRuntime, operation_
     compose_path.chmod(0o600)
     if runtime.cache_path is None:
         if runtime.cache_root is None:
-            runtime.cache_root = Path(tempfile.mkdtemp(prefix="fwrouter-jit-cache-test-", dir="/root"))
-            runtime.cache_root.chmod(0o700)
-            atexit.register(shutil.rmtree, runtime.cache_root, ignore_errors=True)
+            runtime.cache_root = tmp_path / "native-cache-fixture"
+            runtime.cache_root.mkdir(mode=0o700, exist_ok=True)
         runtime.cache_path = runtime.cache_root / "var/lib/fwrouter-v2/mihomo/cache.db"
         runtime.cache_path.parent.mkdir(parents=True, exist_ok=True)
         runtime.cache_path.write_bytes(b"synthetic cache before\n")
@@ -261,6 +259,9 @@ def _run_runtime_transfer(tmp_path: Path, runtime: FakeMihomoRuntime, operation_
             patch.object(lifecycle, "TARGET_BACKEND", target), \
             patch.object(lifecycle, "MIHOMO_COMPOSE_FILE", compose_path), \
             patch.object(lifecycle, "MIHOMO_CACHE_DB", runtime.cache_path), \
+            patch.object(lifecycle, "_mihomo_cache_state", side_effect=lambda: {
+                "sha256": hashlib.sha256(runtime.cache_path.read_bytes()).hexdigest(),
+                "size": runtime.cache_path.stat().st_size}), \
             patch.object(lifecycle, "MIHOMO_UNIT_FILE", unit_path), \
             patch.object(lifecycle, "_trusted_fixed_file_digest", side_effect=fixed_digest), \
             patch.object(lifecycle, "_validate_state_dir", side_effect=private_test_state), \
@@ -485,7 +486,10 @@ def test_quiescence_stops_on_unattributed_cache_change_before_docker_stop(tmp_pa
     operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(
         tmp_path, runtime, old)
     compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
-    original = lifecycle._mihomo_cache_state
+    import hashlib
+    def original():
+        data = runtime.cache_path.read_bytes()
+        return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
     observations = 0
 
     def changed_cache() -> dict[str, object]:
@@ -497,11 +501,10 @@ def test_quiescence_stops_on_unattributed_cache_change_before_docker_stop(tmp_pa
         runtime.cache_path.write_bytes(b"unowned writer mutation")
         return original()
 
-    with patch.object(lifecycle, "_mihomo_cache_state", side_effect=changed_cache):
-        with pytest.raises(lifecycle.LifecycleError, match="changed after the owned stop intent"):
-            _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id,
+    with pytest.raises(lifecycle.LifecycleError, match="changed after the owned stop intent"):
+        _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id,
                                   old_digest, compose_hash, compose_digest,
-                                  source_content=old)
+                              source_content=old, cache_reader=changed_cache)
     checkpoint = json.loads(Path(checkpoint_path).read_text())
     assert checkpoint["runtime_quiescence"]["phase"] == "stop_pending"
     assert runtime.container_running is True
@@ -1219,3 +1222,79 @@ def test_stop_never_interrupts_a_job_racing_with_timer_shutdown(tmp_path: Path) 
     result = _run(tmp_path, "stop", systemd)
     assert result["status"] == "stopped"
     assert "fwrouter-api.service" not in systemd.active
+
+
+@pytest.fixture
+def real_cache_reader(tmp_path, monkeypatch):
+    """Real reader over disposable files; model only the host ancestor chain.
+
+    The CI process is unprivileged, so `/`, `/tmp`, and runner-home metadata
+    cannot model the root-controlled fixed production path. Fixture ancestors
+    and file metadata, FD reads and inode comparisons remain real.
+    """
+    import os
+    import stat
+    path = tmp_path / 'owned-cache' / 'cache.db'
+    path.parent.mkdir(mode=0o700)
+    path.write_bytes(b'bounded synthetic cache')
+    path.chmod(0o600)
+    original = Path.lstat
+    outside = set(tmp_path.parents)
+
+    def modeled_host_ancestor(item):
+        info = original(item)
+        if item in outside:
+            values = list(info)
+            values[0] = stat.S_IFDIR | 0o755
+            values[4] = os.geteuid()
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(Path, 'lstat', modeled_host_ancestor)
+    monkeypatch.setattr(lifecycle, 'MIHOMO_CACHE_DB', path)
+    return path
+
+
+def test_real_cache_reader_hashes_stable_disposable_file(real_cache_reader):
+    import hashlib
+    data = real_cache_reader.read_bytes()
+    assert lifecycle._mihomo_cache_state() == {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}
+
+
+@pytest.mark.parametrize('mutation', ['symlink', 'writable', 'hardlink', 'too_large', 'unsafe_parent'])
+def test_real_cache_reader_rejects_unsafe_file_state(real_cache_reader, mutation):
+    if mutation == 'symlink':
+        target = real_cache_reader.with_name('original')
+        real_cache_reader.rename(target)
+        real_cache_reader.symlink_to(target)
+    elif mutation == 'writable':
+        real_cache_reader.chmod(0o666)
+    elif mutation == 'hardlink':
+        real_cache_reader.with_name('second-link').hardlink_to(real_cache_reader)
+    elif mutation == 'too_large':
+        with real_cache_reader.open('r+b') as stream:
+            stream.truncate(64 * 1024 * 1024 + 1)
+    else:
+        real_cache_reader.parent.chmod(0o777)
+    with pytest.raises(lifecycle.LifecycleError):
+        lifecycle._mihomo_cache_state()
+
+
+def test_real_cache_reader_rejects_path_replacement_during_read(real_cache_reader, monkeypatch):
+    original = lifecycle.os.read
+    replaced = False
+
+    def replace_during_read(fd, size):
+        nonlocal replaced
+        chunk = original(fd, size)
+        if chunk and not replaced:
+            replaced = True
+            replacement = real_cache_reader.with_name('replacement')
+            replacement.write_bytes(chunk)
+            replacement.chmod(0o600)
+            replacement.replace(real_cache_reader)
+        return chunk
+
+    monkeypatch.setattr(lifecycle.os, 'read', replace_during_read)
+    with pytest.raises(lifecycle.LifecycleError, match='changed while hashing'):
+        lifecycle._mihomo_cache_state()
