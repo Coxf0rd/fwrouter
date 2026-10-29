@@ -91,6 +91,8 @@ def _ordinary_rollout_checkpoint(state_root: Path, backend_root: Path, schema: i
         checkpoint["source_transitions"] = []
     if schema >= 3:
         checkpoint["maintenance_operation"] = None
+    if schema >= 4:
+        checkpoint["runtime_quiescence"] = None
     path = state_root / "state" / "controlled-rollout" / "pending.json"
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     path.write_text(json.dumps(checkpoint, sort_keys=True, separators=(",", ":")) + "\n",
@@ -114,12 +116,17 @@ def test_pending_ordinary_rollout_startup_is_bound_to_installed_manifest_for_all
     (new_tree / "added.py").write_text("ADDED = True\n", encoding="utf-8")
     monkeypatch.setattr(native_proof, "_backend_root", lambda: target)
 
-    for schema in (1, 2, 3):
+    for schema in (1, 2, 3, 4):
         for path in target.rglob("*"):
             if path.is_file():
                 path.unlink()
         (target / "module.py").write_text("VERSION = 'old'\n", encoding="utf-8")
         checkpoint = _ordinary_rollout_checkpoint(state_root, new_tree, schema)
+        if schema == 4:
+            value = json.loads(checkpoint.read_text(encoding="utf-8"))
+            value["runtime_quiescence"] = None
+            checkpoint.write_text(json.dumps(value), encoding="utf-8")
+            checkpoint.chmod(0o600)
         assert admission.startup_allowed(state_root) is False
         with pytest.raises(admission.MaintenanceAdmissionError, match="backend manifest mismatch"):
             admission.acquire_shared_lease_fd(state_root)
@@ -137,6 +144,60 @@ def test_pending_ordinary_rollout_startup_is_bound_to_installed_manifest_for_all
         os.close(shared_fd)
         # Keep schema variants independent while retaining a validated pending file.
         checkpoint.unlink()
+
+
+def test_schema4_startup_requires_operation_bound_completed_mihomo_quiescence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "schema4-runtime-admission"
+    state_root.mkdir(mode=0o700)
+    target = tmp_path / "installed-backend"
+    target.mkdir(mode=0o700)
+    (target / "module.py").write_text("VERSION = 'new'\n", encoding="utf-8")
+    monkeypatch.setattr(native_proof, "_backend_root", lambda: target)
+    checkpoint_path = _ordinary_rollout_checkpoint(state_root, target, 4)
+    value = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    operation_id = value["operation_id"]
+    runtime = {
+        "kind": "mihomo_existing_container/v1", "phase": "quiesced",
+        "operation_id": operation_id, "source_manifest_sha256": "a" * 64,
+        "unit_active_state": "active", "unit_sub_state": "exited",
+        "unit_enabled_state": "enabled", "container_id": "b" * 64,
+        "image_id": "sha256:" + "c" * 64,
+        "config_image": "metacubex/mihomo:v1.19.31",
+        "compose_config_hash": "d" * 64, "compose_file_sha256": "e" * 64,
+        "cache_before": {"sha256": "f" * 64, "size": 10},
+        "cache_after": {"sha256": "0" * 64, "size": 11},
+    }
+    value["runtime_quiescence"] = runtime
+    checkpoint_path.write_text(json.dumps(value), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+    assert admission.startup_allowed(state_root) is True
+
+    for phase in ("stop_pending", "release_pending"):
+        value["runtime_quiescence"] = {**runtime, "phase": phase}
+        checkpoint_path.write_text(json.dumps(value), encoding="utf-8")
+        checkpoint_path.chmod(0o600)
+        assert admission.startup_allowed(state_root) is False
+
+    invalid_runtime = [
+        {k: v for k, v in runtime.items() if k != "compose_file_sha256"},
+        {**runtime, "operation_id": str(uuid.uuid4())},
+        {**runtime, "config_image": "unapproved/image:latest"},
+        {**runtime, "container_id": "not-a-container"},
+        {**runtime, "compose_config_hash": "not-a-digest"},
+    ]
+    for invalid in invalid_runtime:
+        value["runtime_quiescence"] = invalid
+        checkpoint_path.write_text(json.dumps(value), encoding="utf-8")
+        checkpoint_path.chmod(0o600)
+        assert admission.startup_allowed(state_root) is False
+
+    value["runtime_quiescence"] = runtime
+    value.pop("runtime_quiescence")
+    checkpoint_path.write_text(json.dumps(value), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+    assert admission.startup_allowed(state_root) is False
 
 
 def test_pending_ordinary_rollout_rejects_invalid_digest_and_partial_or_missing_backend(
@@ -198,6 +259,46 @@ def test_offline_lease_binds_both_lifecycle_and_exclusive_lock_and_revokes_conte
         assert copied is not None
         assert copied.run(admission.offline_rebuild_is_held) is False
     finally:
+        os.close(maintenance_fd)
+        os.close(lifecycle_fd)
+
+
+def test_exclusive_lease_fd_verifier_borrows_valid_descriptor_without_closing_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    state_root, _operation_id, lifecycle_fd, maintenance_fd, _checkpoint_path = _fixture(
+        monkeypatch, tmp_path,
+    )
+    try:
+        fcntl.flock(maintenance_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        admission._verify_exclusive_lease_fd(maintenance_fd, state_root)
+        assert os.fstat(maintenance_fd).st_ino
+        # The borrowed open-file description remains locked after verification.
+        fcntl.flock(maintenance_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(maintenance_fd)
+        os.close(lifecycle_fd)
+
+
+def test_exclusive_lease_fd_verifier_rejects_wrong_file_and_shared_holder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    state_root, _operation_id, lifecycle_fd, maintenance_fd, _checkpoint_path = _fixture(
+        monkeypatch, tmp_path,
+    )
+    shared_fd = os.open(
+        state_root / "state" / "controlled-rollout" / ".maintenance.lock",
+        os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        fcntl.flock(maintenance_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        fcntl.flock(shared_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        with pytest.raises(admission.MaintenanceAdmissionError, match="not held"):
+            admission._verify_exclusive_lease_fd(maintenance_fd, state_root)
+        with pytest.raises(admission.MaintenanceAdmissionError, match="descriptor is invalid"):
+            admission._verify_exclusive_lease_fd(lifecycle_fd, state_root)
+    finally:
+        os.close(shared_fd)
         os.close(maintenance_fd)
         os.close(lifecycle_fd)
 

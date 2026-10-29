@@ -150,3 +150,98 @@ those scenarios outside a qualified claim until actual evidence establishes
 their hold/recovery behavior; without qualified isolated staging, destructive
 scenarios remain NOT RUN under the owner-approved source/live separation. Do not use a manual catch-up or native
 apply to manufacture acceptance. No production procedure is authorized here.
+
+## Opt-in JIT recovery quiescence (schema 4)
+
+The ordinary lifecycle remains unchanged. A separately approved JIT deployment
+may additionally quiesce the existing Mihomo container because its writable
+cache is part of the protected recovery artifacts. A maintenance lease alone
+does not fence that container. This opt-in mode does not update an image,
+recreate a container, change selectors or apply network configuration.
+
+First use the exact installed OLD helper's ordinary `stop`. Only then may the
+reviewed NEW helper adopt that same checkpoint:
+
+```sh
+python3 "$NEW_EXPORT/installer/controlled_backend_lifecycle.py" quiesce-mihomo \
+  --expected-operation-id "$OPERATION_ID" \
+  --expected-current-manifest-sha256 "$OLD_MANIFEST" \
+  --expected-container-id "$MIHOMO_CONTAINER_ID" \
+  --expected-image-id "$APPROVED_MIHOMO_IMAGE_ID" \
+  --expected-compose-config-hash "$MIHOMO_COMPOSE_CONFIG_HASH" \
+  --expected-compose-file-sha256 "$MIHOMO_COMPOSE_FILE_SHA256"
+```
+
+The owner preserves the original operation and source identity while upgrading
+its checkpoint to schema 4. It records the existing unit, Compose file/hash,
+container and image configuration identities before stopping only that exact
+container. The oneshot unit remains unchanged. Initial unsupported state,
+conflicting writers or substituted runtime identities are STOP. This is a
+cooperative local-owner contract; it does not constrain an independent root
+administrator. Xray is not stopped by this mode.
+
+The private orchestrator must prove all protected writers quiescent, hold the
+existing lifecycle/component locks and exclusive maintenance lease, and create
+and qualify its operation-bound WAL-safe recovery artifacts before source
+mutation. Snapshot creation, approval, HMAC binding and retry receipts remain
+private owning contracts. This helper neither creates nor approves a backup.
+A cache or other protected change before source mutation invalidates freshness;
+there is no implicit baseline refresh.
+
+Perform the normal source CAS and backend installation while this runtime is
+quiesced. Verify the complete installed NEW manifest, bootstrap completion and
+protected state. Do not start the API yet. Release the exact same container via
+the explicit JIT owner variant:
+
+```sh
+python3 "$NEW_EXPORT/installer/controlled_backend_lifecycle.py" release-mihomo \
+  --expected-operation-id "$OPERATION_ID" \
+  --expected-current-manifest-sha256 "$NEW_MANIFEST" \
+  --expected-container-id "$MIHOMO_CONTAINER_ID" \
+  --expected-image-id "$APPROVED_MIHOMO_IMAGE_ID" \
+  --expected-compose-config-hash "$MIHOMO_COMPOSE_CONFIG_HASH" \
+  --expected-compose-file-sha256 "$MIHOMO_COMPOSE_FILE_SHA256" \
+  --jit-owner-quiescence
+```
+
+Initial JIT release requires all ordinary rollout writer units still stopped,
+exact installed NEW bytes and the same source transition. Durable
+`release_pending` supports retry before or after the exact container start;
+identity mismatches fail closed. Legacy release keeps its API-health gate.
+After native release the pre-mutation snapshot is historical forward-completion
+evidence, not automatically a fresh live-state snapshot. Do not replay source
+transfer or installation after this boundary to manufacture recovery readiness.
+
+The parent retains its exclusive maintenance lease and lifecycle/component
+ownership throughout evidence refresh, keeping API startup excluded. The installed CLI
+provides a narrow evidence-only adapter to the existing generation owner:
+
+```sh
+fwrouter xray generation proof-only-refresh \
+  --expected-operation-id "$OPERATION_ID" \
+  --expected-backend-manifest-sha256 "$NEW_MANIFEST" \
+  --expected-generation-digest "$GENERATION_DIGEST" \
+  --expected-generation-revision "$GENERATION_REVISION" \
+  --expected-checkpoint-sha256 "$RELEASED_CHECKPOINT_RAW_SHA256" \
+  --lifecycle-lock-fd "$INHERITED_LIFECYCLE_FD" \
+  --maintenance-lease-fd "$INHERITED_EXCLUSIVE_LEASE_FD"
+```
+
+Both FDs must refer to the existing lifecycle lock and exclusive maintenance
+lease, inherited from the controlling operation. The command validates them
+instead of acquiring a nested shared lease. This command requires a released schema-4 checkpoint, exactly one
+OLD-to-NEW transition and an already verified, unchanged inventory generation.
+It performs fresh native readback under the existing Xray writer guard. Only
+that owner's fixed Mihomo reconcile evidence and the verified generation's
+`native_proof` may be refreshed; generation revisions, credentials, routing,
+inventory and configuration are not applied or repaired. Missing native proof
+or owner/CAS fences is STOP. A failed publication is not success and does not
+trigger rollback. The result records hashes of the exact evidence transition.
+
+Only after evidence refresh completes may the parent downgrade its maintenance
+lease to shared. Require complete fresh `native-proof` before API activation, then API health,
+another fresh proof and separately qualified UI publication/controlled resume.
+Ordinary API startup remains subject to the installed-manifest and maintenance
+admission checks. Persistent timer catch-up still requires an explicit decision.
+These isolated contracts do not establish Debian/systemd/Docker or external
+client live acceptance and do not authorize production use by themselves.

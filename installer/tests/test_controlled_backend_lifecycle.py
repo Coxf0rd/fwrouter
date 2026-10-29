@@ -47,6 +47,57 @@ class FakeSystemd:
         raise AssertionError(f"unexpected systemctl action: {action}")
 
 
+class FakeMihomoRuntime(FakeSystemd):
+    def __init__(self, active: set[str]) -> None:
+        super().__init__(active)
+        self.container_running = True
+        self.container_id = "a" * 64
+        self.image_id = "sha256:" + "b" * 64
+        self.config_hash = "c" * 64
+        self.enabled = "enabled"
+        self.drop_ins = ""
+        self.cache_path: Path | None = None
+        self.cache_after_stop: bytes | None = None
+        self.cache_root: Path | None = None
+
+    def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(tuple(argv))
+        if argv[0] == "/usr/bin/docker":
+            if argv[1:3] == ["inspect", "--format"]:
+                result = (f"{self.container_id}|{self.image_id}|{lifecycle.MIHOMO_CONFIG_IMAGE}|"
+                          f"{str(self.container_running).lower()}|unless-stopped|host|mihomo|"
+                          f"{self.config_hash}|true\n")
+                return subprocess.CompletedProcess(argv, 0, result, "")
+            if argv[1:3] == ["stop", "--time"]:
+                assert argv == ["/usr/bin/docker", "stop", "--time", "30", self.container_id]
+                self.container_running = False
+                if self.cache_after_stop is not None:
+                    assert self.cache_path is not None
+                    self.cache_path.write_bytes(self.cache_after_stop)
+                return subprocess.CompletedProcess(argv, 0, self.container_id[:12] + "\n", "")
+            if argv[1] == "start":
+                assert argv == ["/usr/bin/docker", "start", self.container_id]
+                self.container_running = True
+                return subprocess.CompletedProcess(argv, 0, self.container_id[:12] + "\n", "")
+            raise AssertionError(f"unexpected docker command: {argv}")
+        if argv[0] != "/usr/bin/systemctl":
+            raise AssertionError(f"unexpected executable: {argv[0]}")
+        if argv[1] == "show":
+            prop = argv[2].removeprefix("--property=")
+            values = {
+                "LoadState": "loaded", "FragmentPath": "/etc/systemd/system/fwrouter-mihomo.service",
+                "DropInPaths": self.drop_ins, "Type": "oneshot", "RemainAfterExit": "yes",
+                "ActiveState": "active" if lifecycle.MIHOMO_UNIT in self.active else "inactive",
+                "SubState": "exited" if lifecycle.MIHOMO_UNIT in self.active else "dead",
+            }
+            return subprocess.CompletedProcess(argv, 0, values[prop] + "\n", "")
+        if argv[1] == "is-enabled":
+            value = self.enabled
+            return subprocess.CompletedProcess(argv, 0 if value != "disabled" else 1,
+                                               value + "\n", "")
+        return super().run(argv, **kwargs)
+
+
 def _paths(tmp_path: Path, source_content: str = "SOURCE_SENTINEL = 'expected'\n") -> tuple[Path, Path]:
     source = tmp_path / "source-backend"
     target = tmp_path / "target-backend"
@@ -105,6 +156,114 @@ def _run_transfer(tmp_path: Path, systemd: FakeSystemd, operation_id: str,
     with patch.object(lifecycle.subprocess, "run", side_effect=systemd.run), \
             patch.object(lifecycle, "SOURCE_BACKEND", source), \
             patch.object(lifecycle, "TARGET_BACKEND", target), \
+            patch.object(lifecycle, "_validate_state_dir", side_effect=private_test_state), \
+            patch.object(lifecycle.os, "geteuid", return_value=0):
+        return lifecycle.run_command(args)
+
+
+def _run_mihomo_lifecycle(tmp_path: Path, command: str, runtime: FakeMihomoRuntime,
+                           operation_id: str, current_digest: str, compose_hash: str,
+                           compose_digest: str, *, source_content: str,
+                           jit_owner_quiescence: bool = False,
+                           api_healthy: bool = True, cache_reader=None) -> dict[str, object]:
+    source, target = _paths(tmp_path, source_content)
+    args = [command, "--state-dir", str(tmp_path / "rollout-state"),
+            "--expected-operation-id", operation_id,
+            "--expected-current-manifest-sha256", current_digest,
+            "--expected-container-id", runtime.container_id,
+            "--expected-image-id", runtime.image_id,
+            "--expected-compose-config-hash", compose_hash,
+            "--expected-compose-file-sha256", compose_digest]
+    if jit_owner_quiescence:
+        args.append("--jit-owner-quiescence")
+
+    def private_test_state(path: Path) -> Path:
+        if path.is_symlink():
+            raise lifecycle.LifecycleError("state directory path contains a symlink")
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.chmod(0o700)
+        return path
+
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text("services:\n  mihomo:\n    image: pinned\n", encoding="utf-8")
+    compose_path.chmod(0o600)
+    if runtime.cache_root is None:
+        runtime.cache_root = tmp_path / "native-cache-fixture"
+        runtime.cache_root.mkdir(mode=0o700, exist_ok=True)
+    cache_path = runtime.cache_root / "var/lib/fwrouter-v2/mihomo/cache.db"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if not cache_path.exists():
+        cache_path.write_bytes(b"synthetic cache before\n")
+        cache_path.chmod(0o600)
+    runtime.cache_path = cache_path
+    unit_path = TOOL.parents[1] / "host/systemd/fwrouter-mihomo.service"
+    import hashlib
+    unit_digest = hashlib.sha256(unit_path.read_bytes()).hexdigest()
+    assert unit_digest == lifecycle.MIHOMO_UNIT_SHA256
+    def fixed_digest(path: Path, **_kwargs: object) -> str:
+        if Path(path) == unit_path:
+            return unit_digest
+        if Path(path) == compose_path:
+            return hashlib.sha256(compose_path.read_bytes()).hexdigest()
+        raise AssertionError(f"unexpected fixed runtime file: {path}")
+
+    with patch.object(lifecycle.subprocess, "run", side_effect=runtime.run), \
+            patch.object(lifecycle, "_api_health", return_value=api_healthy), \
+            patch.object(lifecycle, "SOURCE_BACKEND", source), \
+            patch.object(lifecycle, "TARGET_BACKEND", target), \
+            patch.object(lifecycle, "MIHOMO_COMPOSE_FILE", compose_path), \
+            patch.object(lifecycle, "MIHOMO_CACHE_DB", cache_path), \
+            patch.object(lifecycle, "_mihomo_cache_state", side_effect=cache_reader or (lambda: {
+                "sha256": hashlib.sha256(cache_path.read_bytes()).hexdigest(),
+                "size": cache_path.stat().st_size})), \
+            patch.object(lifecycle, "MIHOMO_UNIT_FILE", unit_path), \
+            patch.object(lifecycle, "_trusted_fixed_file_digest", side_effect=fixed_digest), \
+            patch.object(lifecycle, "_validate_state_dir", side_effect=private_test_state), \
+            patch.object(lifecycle.os, "geteuid", return_value=0):
+        return lifecycle.run_command(args)
+
+
+def _run_runtime_transfer(tmp_path: Path, runtime: FakeMihomoRuntime, operation_id: str,
+                          old_digest: str, new_digest: str, *, source_content: str) -> dict[str, object]:
+    source, target = _paths(tmp_path, source_content)
+    args = ["transfer", "--state-dir", str(tmp_path / "rollout-state"),
+            "--expected-operation-id", operation_id,
+            "--expected-current-manifest-sha256", old_digest,
+            "--expected-new-manifest-sha256", new_digest]
+
+    def private_test_state(path: Path) -> Path:
+        if path.is_symlink():
+            raise lifecycle.LifecycleError("state directory path contains a symlink")
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.chmod(0o700)
+        return path
+
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text("services:\n  mihomo:\n    image: pinned\n", encoding="utf-8")
+    compose_path.chmod(0o600)
+    if runtime.cache_path is None:
+        if runtime.cache_root is None:
+            runtime.cache_root = tmp_path / "native-cache-fixture"
+            runtime.cache_root.mkdir(mode=0o700, exist_ok=True)
+        runtime.cache_path = runtime.cache_root / "var/lib/fwrouter-v2/mihomo/cache.db"
+        runtime.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime.cache_path.write_bytes(b"synthetic cache before\n")
+        runtime.cache_path.chmod(0o600)
+    unit_path = TOOL.parents[1] / "host/systemd/fwrouter-mihomo.service"
+    import hashlib
+    unit_digest = hashlib.sha256(unit_path.read_bytes()).hexdigest()
+    def fixed_digest(path: Path, **_kwargs: object) -> str:
+        return unit_digest if Path(path) == unit_path else hashlib.sha256(compose_path.read_bytes()).hexdigest()
+    with patch.object(lifecycle.subprocess, "run", side_effect=runtime.run), \
+            patch.object(lifecycle, "SOURCE_BACKEND", source), \
+            patch.object(lifecycle, "TARGET_BACKEND", target), \
+            patch.object(lifecycle, "MIHOMO_COMPOSE_FILE", compose_path), \
+            patch.object(lifecycle, "MIHOMO_CACHE_DB", runtime.cache_path), \
+            patch.object(lifecycle, "_mihomo_cache_state", side_effect=lambda: {
+                "sha256": hashlib.sha256(runtime.cache_path.read_bytes()).hexdigest(),
+                "size": runtime.cache_path.stat().st_size}), \
+            patch.object(lifecycle, "MIHOMO_UNIT_FILE", unit_path), \
+            patch.object(lifecycle, "_trusted_fixed_file_digest", side_effect=fixed_digest), \
             patch.object(lifecycle, "_validate_state_dir", side_effect=private_test_state), \
             patch.object(lifecycle.os, "geteuid", return_value=0):
         return lifecycle.run_command(args)
@@ -237,6 +396,443 @@ def test_transfer_rejects_stale_cas_active_units_and_installed_drift(tmp_path: P
     assert checkpoint_path.read_bytes() == before
 
 
+def _prepare_old_schema2_checkpoint(tmp_path: Path, runtime: FakeMihomoRuntime,
+                                    source_content: str) -> tuple[str, str, str]:
+    source, target = _paths(tmp_path, source_content)
+    _install_fixture(source, target)
+    stopped = _run(tmp_path, "stop", runtime, source_content=source_content)
+    checkpoint_path = tmp_path / "rollout-state" / "pending.json"
+    checkpoint = json.loads(checkpoint_path.read_text())
+    checkpoint["schema"] = 2  # exact OLD helper schema: no maintenance/runtime extension
+    checkpoint.pop("maintenance_operation")
+    checkpoint.pop("runtime_quiescence")
+    checkpoint_path.write_text(json.dumps(checkpoint, sort_keys=True) + "\n")
+    return str(stopped["operation_id"]), lifecycle._manifest_digest(lifecycle._backend_manifest(source)), \
+        str(checkpoint_path)
+
+
+def _mihomo_test_inputs(tmp_path: Path) -> tuple[str, str]:
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services:\n  mihomo:\n    image: pinned\n", encoding="utf-8")
+    compose.chmod(0o600)
+    import hashlib
+    return "c" * 64, hashlib.sha256(compose.read_bytes()).hexdigest()
+
+
+def test_old_lifecycle_checkpoint_adopts_exact_operation_and_quiesces_container(tmp_path: Path) -> None:
+    mihomo_unit = lifecycle.MIHOMO_UNIT
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", mihomo_unit})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(
+        tmp_path, runtime, "SOURCE_SENTINEL = 'old'\n")
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+
+    result = _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id,
+                                   old_digest, compose_hash, compose_digest,
+                                   source_content="SOURCE_SENTINEL = 'old'\n")
+    checkpoint = json.loads(Path(checkpoint_path).read_text())
+    q = checkpoint["runtime_quiescence"]
+    assert result["status"] == "quiesced"
+    assert checkpoint["schema"] == lifecycle.SCHEMA
+    assert checkpoint["operation_id"] == operation_id
+    assert q["operation_id"] == operation_id
+    assert q["source_manifest_sha256"] == old_digest
+    assert q["phase"] == "quiesced"
+    assert not runtime.container_running
+    assert ("/usr/bin/docker", "stop", "--time", "30", runtime.container_id) in runtime.calls
+    assert not any(call[:2] == ("/usr/bin/systemctl", "mask") for call in runtime.calls)
+    assert not any(call[:2] == ("/usr/bin/systemctl", "unmask") for call in runtime.calls)
+    assert not any(call[0] == "/usr/bin/docker" and call[1] == "compose"
+                   for call in runtime.calls)
+    assert ("/usr/bin/systemctl", "start", lifecycle.MIHOMO_UNIT) not in runtime.calls
+
+
+def test_quiescence_records_only_fixed_cache_transition_from_exact_container_stop(
+    tmp_path: Path,
+) -> None:
+    old = "SOURCE_SENTINEL = 'old'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(
+        tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    runtime.cache_after_stop = b"synthetic cache after exact Docker stop\n"
+
+    _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                          compose_hash, compose_digest, source_content=old)
+
+    checkpoint = json.loads(Path(checkpoint_path).read_text())
+    q = checkpoint["runtime_quiescence"]
+    assert q["cache_before"] == {"sha256": lifecycle._sha256(b"synthetic cache before\n"),
+                                 "size": len(b"synthetic cache before\n")}
+    assert q["cache_after"] == {
+        "sha256": lifecycle._sha256(runtime.cache_after_stop),
+        "size": len(runtime.cache_after_stop),
+    }
+    assert q["cache_before"] != q["cache_after"]
+
+    # Idempotent readback accepts the captured cache only while that exact
+    # fixed file remains byte-for-byte at its recorded post-stop identity.
+    _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                          compose_hash, compose_digest, source_content=old)
+    assert json.loads(Path(checkpoint_path).read_text()) == checkpoint
+    runtime.cache_path.write_bytes(b"unowned later cache mutation")
+    with pytest.raises(lifecycle.LifecycleError, match="quiescence changed"):
+        _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                              compose_hash, compose_digest, source_content=old)
+
+
+def test_quiescence_stops_on_unattributed_cache_change_before_docker_stop(tmp_path: Path) -> None:
+    old = "SOURCE_SENTINEL = 'old'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(
+        tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    import hashlib
+    def original():
+        data = runtime.cache_path.read_bytes()
+        return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+    observations = 0
+
+    def changed_cache() -> dict[str, object]:
+        nonlocal observations
+        observations += 1
+        if observations == 1:
+            return original()
+        assert runtime.cache_path is not None
+        runtime.cache_path.write_bytes(b"unowned writer mutation")
+        return original()
+
+    with pytest.raises(lifecycle.LifecycleError, match="changed after the owned stop intent"):
+        _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id,
+                                  old_digest, compose_hash, compose_digest,
+                              source_content=old, cache_reader=changed_cache)
+    checkpoint = json.loads(Path(checkpoint_path).read_text())
+    assert checkpoint["runtime_quiescence"]["phase"] == "stop_pending"
+    assert runtime.container_running is True
+    assert not any(call[0] == "/usr/bin/docker" and call[1] == "stop"
+                   for call in runtime.calls)
+
+
+def test_quiescence_retry_stops_when_cache_changes_in_crash_gap(tmp_path: Path) -> None:
+    old = "SOURCE_SENTINEL = 'old'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(
+        tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    runtime.cache_after_stop = b"X" * len(b"synthetic cache before\n")
+    original_atomic_write = lifecycle._atomic_write
+
+    def interrupt_after_stop(path: Path, value: dict[str, object]) -> None:
+        if value.get("runtime_quiescence", {}).get("phase") == "quiesced":
+            raise OSError("injected crash after Docker stop before transition receipt")
+        original_atomic_write(path, value)
+
+    with patch.object(lifecycle, "_atomic_write", side_effect=interrupt_after_stop):
+        with pytest.raises(OSError, match="before transition receipt"):
+            _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id,
+                                  old_digest, compose_hash, compose_digest,
+                                  source_content=old)
+    pending = json.loads(Path(checkpoint_path).read_text())
+    assert pending["runtime_quiescence"]["phase"] == "stop_pending"
+    assert runtime.container_running is False
+    with pytest.raises(lifecycle.LifecycleError, match="changed after the owned stop intent"):
+        _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id,
+                              old_digest, compose_hash, compose_digest,
+                              source_content=old)
+    assert json.loads(Path(checkpoint_path).read_text()) == pending
+
+
+def test_quiescence_full_transfer_release_and_resume_reuses_one_operation(tmp_path: Path) -> None:
+    old = "SOURCE_SENTINEL = 'old'\n"
+    new = "SOURCE_SENTINEL = 'new'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT,
+                                 "fwrouter-xray-sub-gateway.service"})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(
+        tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                          compose_hash, compose_digest, source_content=old)
+    new_digest = _digest_for_source_content(new)
+    transferred = _run_runtime_transfer(tmp_path, runtime, operation_id, old_digest,
+                                        new_digest, source_content=new)
+    assert transferred["status"] == "transferred"
+    _install_fixture(*_paths(tmp_path, new))
+    assert json.loads(Path(checkpoint_path).read_text())["runtime_quiescence"]["phase"] == "quiesced"
+
+    released = _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id,
+                                     new_digest, compose_hash, compose_digest,
+                                     source_content=new)
+    assert released["status"] == "released"
+    assert runtime.container_running
+    assert json.loads(Path(checkpoint_path).read_text())["runtime_quiescence"]["phase"] == "released"
+
+    runtime.active.add("fwrouter-api.service")
+    resumed = _run(tmp_path, "resume", runtime, source_content=new)
+    assert resumed["operation_id"] == operation_id
+    assert resumed["status"] == "complete"  # no persistent timers were active in this fixture
+    assert runtime.container_id == "a" * 64
+    assert not any(call[0] == "/usr/bin/docker" and call[1] == "compose"
+                   for call in runtime.calls)
+
+
+def test_transfer_rejects_same_size_cache_change_before_source_cas(tmp_path: Path) -> None:
+    old, new = "SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'new'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                          compose_hash, compose_digest, source_content=old)
+    before = Path(checkpoint_path).read_bytes()
+    assert runtime.cache_path is not None
+    cache_bytes = runtime.cache_path.read_bytes()
+    runtime.cache_path.write_bytes(b"X" * len(cache_bytes))
+    with pytest.raises(lifecycle.LifecycleError, match="fixed Mihomo cache"):
+        _run_runtime_transfer(tmp_path, runtime, operation_id, old_digest,
+                              _digest_for_source_content(new), source_content=new)
+    assert Path(checkpoint_path).read_bytes() == before
+    assert not json.loads(Path(checkpoint_path).read_text())["source_transitions"]
+
+
+def test_jit_release_releases_exact_container_before_api_start(tmp_path: Path) -> None:
+    old, new = "SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'new'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                          compose_hash, compose_digest, source_content=old)
+    new_digest = _digest_for_source_content(new)
+    _run_runtime_transfer(tmp_path, runtime, operation_id, old_digest, new_digest, source_content=new)
+    _install_fixture(*_paths(tmp_path, new))
+    released = _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id,
+                                     new_digest, compose_hash, compose_digest,
+                                     source_content=new, jit_owner_quiescence=True,
+                                     api_healthy=False)
+    assert released["status"] == "released"
+    assert runtime.container_running
+    assert "fwrouter-api.service" not in runtime.active
+    assert json.loads(Path(checkpoint_path).read_text())["runtime_quiescence"]["phase"] == "released"
+
+
+def test_jit_release_refuses_active_api_before_container_start(tmp_path: Path) -> None:
+    old, new = "SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'new'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                          compose_hash, compose_digest, source_content=old)
+    new_digest = _digest_for_source_content(new)
+    _run_runtime_transfer(tmp_path, runtime, operation_id, old_digest, new_digest, source_content=new)
+    _install_fixture(*_paths(tmp_path, new))
+    runtime.active.add("fwrouter-api.service")
+    before = Path(checkpoint_path).read_bytes()
+    with pytest.raises(lifecycle.LifecycleError, match="must be stopped"):
+        _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id,
+                              new_digest, compose_hash, compose_digest, source_content=new,
+                              jit_owner_quiescence=True)
+    assert Path(checkpoint_path).read_bytes() == before
+    assert not runtime.container_running
+
+
+def test_jit_release_rejects_same_size_cache_change_before_release_pending(tmp_path: Path) -> None:
+    old, new = "SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'new'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                          compose_hash, compose_digest, source_content=old)
+    new_digest = _digest_for_source_content(new)
+    _run_runtime_transfer(tmp_path, runtime, operation_id, old_digest, new_digest, source_content=new)
+    _install_fixture(*_paths(tmp_path, new))
+    assert runtime.cache_path is not None
+    cache_bytes = runtime.cache_path.read_bytes()
+    runtime.cache_path.write_bytes(b"Y" * len(cache_bytes))
+    before = Path(checkpoint_path).read_bytes()
+    with pytest.raises(lifecycle.LifecycleError, match="fixed Mihomo cache"):
+        _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id,
+                              new_digest, compose_hash, compose_digest, source_content=new,
+                              jit_owner_quiescence=True, api_healthy=False)
+    assert Path(checkpoint_path).read_bytes() == before
+    assert json.loads(Path(checkpoint_path).read_text())["runtime_quiescence"]["phase"] == "quiesced"
+    assert not runtime.container_running
+
+
+def test_quiescence_rejects_identity_and_unsupported_unit_drift(tmp_path: Path) -> None:
+    old = "SOURCE_SENTINEL = 'old'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    before = Path(checkpoint_path).read_bytes()
+    with pytest.raises(lifecycle.LifecycleError, match="exact pending OLD lifecycle checkpoint"):
+        _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, str(uuid.uuid4()), old_digest,
+                              compose_hash, compose_digest, source_content=old)
+    assert Path(checkpoint_path).read_bytes() == before
+
+    runtime.drop_ins = "/etc/systemd/system/fwrouter-mihomo.service.d/override.conf"
+    with pytest.raises(lifecycle.LifecycleError, match="unit contract"):
+        _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                              compose_hash, compose_digest, source_content=old)
+    assert Path(checkpoint_path).read_bytes() == before
+
+
+def test_quiescence_retry_after_stop_and_release_retry_after_container_start(tmp_path: Path) -> None:
+    old, new = "SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'new'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    q = _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                              compose_hash, compose_digest, source_content=old)
+    assert q["status"] == "quiesced"
+    q_replay = _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                                     compose_hash, compose_digest, source_content=old)
+    assert q_replay["status"] == "quiesced"
+
+    new_digest = _digest_for_source_content(new)
+    _run_runtime_transfer(tmp_path, runtime, operation_id, old_digest, new_digest, source_content=new)
+    _install_fixture(*_paths(tmp_path, new))
+    original_atomic_write = lifecycle._atomic_write
+    def interrupt_after_start(path: Path, value: dict[str, object]) -> None:
+        if value.get("runtime_quiescence", {}).get("phase") == "released":
+            raise OSError("injected crash after container start")
+        original_atomic_write(path, value)
+    with patch.object(lifecycle, "_atomic_write", side_effect=interrupt_after_start):
+        with pytest.raises(OSError, match="injected crash"):
+            _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id, new_digest,
+                                  compose_hash, compose_digest, source_content=new,
+                                  jit_owner_quiescence=True, api_healthy=False)
+    assert runtime.container_running
+    retried = _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id, new_digest,
+                                    compose_hash, compose_digest, source_content=new,
+                                    jit_owner_quiescence=True, api_healthy=False)
+    assert retried["status"] == "released"
+    assert json.loads(Path(checkpoint_path).read_text())["runtime_quiescence"]["phase"] == "released"
+
+
+def test_jit_release_retry_after_release_pending_before_container_start(tmp_path: Path) -> None:
+    old, new = "SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'new'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                          compose_hash, compose_digest, source_content=old)
+    new_digest = _digest_for_source_content(new)
+    _run_runtime_transfer(tmp_path, runtime, operation_id, old_digest, new_digest, source_content=new)
+    _install_fixture(*_paths(tmp_path, new))
+    original = lifecycle._docker_action
+
+    def interrupt_before_start(action: str, container_id: str) -> None:
+        if action == "start":
+            raise OSError("injected crash before pinned container start")
+        original(action, container_id)
+
+    with patch.object(lifecycle, "_docker_action", side_effect=interrupt_before_start):
+        with pytest.raises(OSError, match="before pinned container start"):
+            _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id,
+                                  new_digest, compose_hash, compose_digest,
+                                  source_content=new, jit_owner_quiescence=True,
+                                  api_healthy=False)
+    assert not runtime.container_running
+    assert json.loads(Path(checkpoint_path).read_text())["runtime_quiescence"]["phase"] == "release_pending"
+    retried = _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id,
+                                    new_digest, compose_hash, compose_digest,
+                                    source_content=new, jit_owner_quiescence=True,
+                                    api_healthy=False)
+    assert retried["status"] == "released"
+    assert runtime.container_running
+    assert json.loads(Path(checkpoint_path).read_text())["runtime_quiescence"]["phase"] == "released"
+
+
+def test_release_pending_retry_rejects_cache_change_before_container_start(tmp_path: Path) -> None:
+    old, new = "SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'new'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id, old_digest,
+                          compose_hash, compose_digest, source_content=old)
+    new_digest = _digest_for_source_content(new)
+    _run_runtime_transfer(tmp_path, runtime, operation_id, old_digest, new_digest, source_content=new)
+    _install_fixture(*_paths(tmp_path, new))
+    original = lifecycle._docker_action
+
+    def fail_before_start(action: str, container_id: str) -> None:
+        if action == "start":
+            raise OSError("injected start failure")
+        original(action, container_id)
+
+    with patch.object(lifecycle, "_docker_action", side_effect=fail_before_start):
+        with pytest.raises(OSError, match="start failure"):
+            _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id,
+                                  new_digest, compose_hash, compose_digest, source_content=new,
+                                  jit_owner_quiescence=True, api_healthy=False)
+    assert not runtime.container_running
+    assert json.loads(Path(checkpoint_path).read_text())["runtime_quiescence"]["phase"] == "release_pending"
+    assert runtime.cache_path is not None
+    cache_bytes = runtime.cache_path.read_bytes()
+    runtime.cache_path.write_bytes(b"Z" * len(cache_bytes))
+    starts_before = sum(call[0] == "/usr/bin/docker" and call[1] == "start"
+                        for call in runtime.calls)
+    before = Path(checkpoint_path).read_bytes()
+    with pytest.raises(lifecycle.LifecycleError, match="pending release retry"):
+        _run_mihomo_lifecycle(tmp_path, "release-mihomo", runtime, operation_id,
+                              new_digest, compose_hash, compose_digest, source_content=new,
+                              jit_owner_quiescence=True, api_healthy=False)
+    assert Path(checkpoint_path).read_bytes() == before
+    assert not runtime.container_running
+    assert sum(call[0] == "/usr/bin/docker" and call[1] == "start"
+               for call in runtime.calls) == starts_before
+
+
+def test_quiescence_retry_after_stop_pending_checkpoint_reuses_same_container_operation(
+    tmp_path: Path,
+) -> None:
+    old = "SOURCE_SENTINEL = 'old'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(
+        tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    original = lifecycle._docker_action
+
+    def interrupted(action: str, container_id: str) -> None:
+        assert action == "stop" and container_id == runtime.container_id
+        raise OSError("simulated interruption after stop_pending publication")
+
+    with patch.object(lifecycle, "_docker_action", side_effect=interrupted):
+        with pytest.raises(OSError, match="simulated interruption"):
+            _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id,
+                                  old_digest, compose_hash, compose_digest, source_content=old)
+    pending = json.loads(Path(checkpoint_path).read_text())
+    assert pending["operation_id"] == operation_id
+    assert pending["runtime_quiescence"]["phase"] == "stop_pending"
+    assert runtime.container_running
+
+    with patch.object(lifecycle, "_docker_action", side_effect=original):
+        result = _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id,
+                                       old_digest, compose_hash, compose_digest, source_content=old)
+    assert result["operation_id"] == operation_id
+    assert result["status"] == "quiesced"
+    checkpoint = json.loads(Path(checkpoint_path).read_text())
+    assert checkpoint["runtime_quiescence"]["phase"] == "quiesced"
+    assert runtime.container_running is False
+    assert sum(call[0] == "/usr/bin/docker" and call[1] == "stop" for call in runtime.calls) == 1
+
+
+def test_source_transfer_rejects_stop_pending_runtime_quiescence(tmp_path: Path) -> None:
+    old, new = "SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'new'\n"
+    runtime = FakeMihomoRuntime({"fwrouter-api.service", lifecycle.MIHOMO_UNIT})
+    operation_id, old_digest, checkpoint_path = _prepare_old_schema2_checkpoint(
+        tmp_path, runtime, old)
+    compose_hash, compose_digest = _mihomo_test_inputs(tmp_path)
+    original = lifecycle._docker_action
+    with patch.object(lifecycle, "_docker_action", side_effect=OSError("interrupted")):
+        with pytest.raises(OSError, match="interrupted"):
+            _run_mihomo_lifecycle(tmp_path, "quiesce-mihomo", runtime, operation_id,
+                                  old_digest, compose_hash, compose_digest, source_content=old)
+    checkpoint_before = Path(checkpoint_path).read_bytes()
+    with pytest.raises(lifecycle.LifecycleError, match="quiescent identity"):
+        _run_runtime_transfer(tmp_path, runtime, operation_id, old_digest,
+                              _digest_for_source_content(new), source_content=new)
+    assert Path(checkpoint_path).read_bytes() == checkpoint_before
+    assert runtime.container_running is True
+    assert original is lifecycle._docker_action
+
 def test_transfer_supports_explicit_chained_source_revisions(tmp_path: Path) -> None:
     systemd = FakeSystemd({"fwrouter-api.service"})
     versions = ["SOURCE_SENTINEL = 'old'\n", "SOURCE_SENTINEL = 'next'\n",
@@ -273,13 +869,14 @@ def test_transfer_upgrades_schema_one_checkpoint_and_preserves_operation(tmp_pat
     stopped = _run(tmp_path, "stop", systemd, source_content=old_content)
     checkpoint_path = tmp_path / "rollout-state" / "pending.json"
     legacy = json.loads(checkpoint_path.read_text())
-    legacy["schema"] = lifecycle.LEGACY_SCHEMA
+    legacy["schema"] = lifecycle.OLDEST_SCHEMA
     legacy.pop("initial_backend_manifest_sha256")
     legacy.pop("source_transitions")
     legacy.pop("maintenance_operation")
+    legacy.pop("runtime_quiescence")
     checkpoint_path.write_text(json.dumps(legacy), encoding="utf-8")
 
-    assert lifecycle._read_checkpoint(checkpoint_path)["schema"] == lifecycle.LEGACY_SCHEMA
+    assert lifecycle._read_checkpoint(checkpoint_path)["schema"] == lifecycle.OLDEST_SCHEMA
     old_digest = _digest_for_source_content(old_content)
     new_digest = _digest_for_source_content(new_content)
     result = _run_transfer(tmp_path, systemd, str(stopped["operation_id"]),
@@ -625,3 +1222,79 @@ def test_stop_never_interrupts_a_job_racing_with_timer_shutdown(tmp_path: Path) 
     result = _run(tmp_path, "stop", systemd)
     assert result["status"] == "stopped"
     assert "fwrouter-api.service" not in systemd.active
+
+
+@pytest.fixture
+def real_cache_reader(tmp_path, monkeypatch):
+    """Real reader over disposable files; model only the host ancestor chain.
+
+    The CI process is unprivileged, so `/`, `/tmp`, and runner-home metadata
+    cannot model the root-controlled fixed production path. Fixture ancestors
+    and file metadata, FD reads and inode comparisons remain real.
+    """
+    import os
+    import stat
+    path = tmp_path / 'owned-cache' / 'cache.db'
+    path.parent.mkdir(mode=0o700)
+    path.write_bytes(b'bounded synthetic cache')
+    path.chmod(0o600)
+    original = Path.lstat
+    outside = set(tmp_path.parents)
+
+    def modeled_host_ancestor(item):
+        info = original(item)
+        if item in outside:
+            values = list(info)
+            values[0] = stat.S_IFDIR | 0o755
+            values[4] = os.geteuid()
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(Path, 'lstat', modeled_host_ancestor)
+    monkeypatch.setattr(lifecycle, 'MIHOMO_CACHE_DB', path)
+    return path
+
+
+def test_real_cache_reader_hashes_stable_disposable_file(real_cache_reader):
+    import hashlib
+    data = real_cache_reader.read_bytes()
+    assert lifecycle._mihomo_cache_state() == {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)}
+
+
+@pytest.mark.parametrize('mutation', ['symlink', 'writable', 'hardlink', 'too_large', 'unsafe_parent'])
+def test_real_cache_reader_rejects_unsafe_file_state(real_cache_reader, mutation):
+    if mutation == 'symlink':
+        target = real_cache_reader.with_name('original')
+        real_cache_reader.rename(target)
+        real_cache_reader.symlink_to(target)
+    elif mutation == 'writable':
+        real_cache_reader.chmod(0o666)
+    elif mutation == 'hardlink':
+        real_cache_reader.with_name('second-link').hardlink_to(real_cache_reader)
+    elif mutation == 'too_large':
+        with real_cache_reader.open('r+b') as stream:
+            stream.truncate(64 * 1024 * 1024 + 1)
+    else:
+        real_cache_reader.parent.chmod(0o777)
+    with pytest.raises(lifecycle.LifecycleError):
+        lifecycle._mihomo_cache_state()
+
+
+def test_real_cache_reader_rejects_path_replacement_during_read(real_cache_reader, monkeypatch):
+    original = lifecycle.os.read
+    replaced = False
+
+    def replace_during_read(fd, size):
+        nonlocal replaced
+        chunk = original(fd, size)
+        if chunk and not replaced:
+            replaced = True
+            replacement = real_cache_reader.with_name('replacement')
+            replacement.write_bytes(chunk)
+            replacement.chmod(0o600)
+            replacement.replace(real_cache_reader)
+        return chunk
+
+    monkeypatch.setattr(lifecycle.os, 'read', replace_during_read)
+    with pytest.raises(lifecycle.LifecycleError, match='changed while hashing'):
+        lifecycle._mihomo_cache_state()

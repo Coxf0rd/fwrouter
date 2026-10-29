@@ -672,6 +672,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--require-native-proof", action="store_true",
         help="require a complete persisted Native Generation proof when re-proving a verified generation",
     )
+    rollout_proof_parser = generation_subparsers.add_parser("proof-only-refresh")
+    rollout_proof_parser.add_argument("--expected-operation-id", required=True)
+    rollout_proof_parser.add_argument("--expected-backend-manifest-sha256", required=True)
+    rollout_proof_parser.add_argument("--expected-generation-digest", required=True)
+    rollout_proof_parser.add_argument("--expected-generation-revision", type=int, required=True)
+    rollout_proof_parser.add_argument("--expected-checkpoint-sha256", required=True)
+    rollout_proof_parser.add_argument("--lifecycle-lock-fd", type=int, required=True)
+    rollout_proof_parser.add_argument("--maintenance-lease-fd", type=int, required=True)
     database_parser = subparsers.add_parser("database")
     database_subparsers = database_parser.add_subparsers(dest="database_command")
     upgrade_parser = database_subparsers.add_parser("upgrade")
@@ -682,6 +690,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="confirm the API and background workers are stopped before applying the migration",
     )
     args = parser.parse_args(arguments)
+    # This single owner command validates an inherited exclusive lease itself;
+    # acquiring a nested shared lease would deadlock and release its barrier.
+    if args.command == "xray" and args.xray_command == "generation" and args.generation_command == "proof-only-refresh":
+        from fwrouter_api.services.rollout_native_evidence import refresh_rollout_native_evidence
+        result = refresh_rollout_native_evidence(
+            expected_operation_id=args.expected_operation_id,
+            expected_backend_manifest_sha256=args.expected_backend_manifest_sha256,
+            expected_generation_digest=args.expected_generation_digest,
+            expected_generation_revision=args.expected_generation_revision,
+            expected_checkpoint_sha256=args.expected_checkpoint_sha256,
+            lifecycle_lock_fd=args.lifecycle_lock_fd,
+            maintenance_lease_fd=args.maintenance_lease_fd,
+        )
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result.get("ok") is True else 1
     with runtime_shared_lease(DEFAULT_STATE_ROOT):
         if args.command == "reconcile" and args.reconcile_command == "check":
             return _print_reconcile_check()

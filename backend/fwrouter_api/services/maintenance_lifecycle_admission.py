@@ -205,10 +205,23 @@ def startup_allowed(state_root: Path = DEFAULT_STATE_ROOT) -> bool:
         # An ordinary source rollout publishes its target backend digest before
         # the installer overlays files.  Bind startup to the executing package
         # tree so boot/restart cannot run a mixed old/new backend after a crash.
+        schema = checkpoint.get("schema")
         if (checkpoint.get("status") not in {"pending", "complete"}
-                or type(checkpoint.get("schema")) is not int
-                or checkpoint.get("schema") not in {1, 2, 3}):
+                or type(schema) is not int
+                or schema not in {1, 2, 3, 4}):
             return False
+        if schema == 4:
+            # Schema 4 carries an explicit fixed-container Mihomo quiescence
+            # record. During backend installation the API may start only after
+            # that same lifecycle operation has durably confirmed quiescence
+            # (or after its explicit release). Do not accept missing, partial,
+            # pending-stop, or pending-release records as ordinary startup.
+            runtime = checkpoint.get("runtime_quiescence")
+            if "runtime_quiescence" not in checkpoint:
+                return False
+            if runtime is not None and not _startup_runtime_quiescence_valid(
+                    runtime, checkpoint.get("operation_id")):
+                return False
         expected = checkpoint.get("backend_manifest_sha256")
         if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
             return False
@@ -234,6 +247,51 @@ def startup_allowed(state_root: Path = DEFAULT_STATE_ROOT) -> bool:
     if operation.get("status") != "verified" or backup is None:
         return False
     return _valid_backup_pin(backup, operation_id)
+
+
+def _startup_runtime_quiescence_valid(value: object, operation_id: object) -> bool:
+    """Validate the schema-4 lifecycle admission subset without side effects."""
+    fields = {
+        "kind", "phase", "operation_id", "source_manifest_sha256",
+        "unit_active_state", "unit_sub_state", "unit_enabled_state",
+        "container_id", "image_id", "config_image", "compose_config_hash",
+        "compose_file_sha256", "cache_before", "cache_after",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        return False
+    try:
+        normalized_operation = str(uuid.UUID(str(operation_id)))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    if (value.get("kind") != "mihomo_existing_container/v1"
+            or value.get("operation_id") != normalized_operation
+            or value.get("phase") not in {"quiesced", "released"}
+            or value.get("unit_active_state") not in {"active", "inactive"}
+            or value.get("unit_sub_state") not in {"exited", "dead"}
+            or value.get("unit_enabled_state") not in {"enabled", "disabled"}
+            or (value.get("unit_active_state"), value.get("unit_sub_state")) not in {
+                ("active", "exited"), ("inactive", "dead")}):
+        return False
+    for name in ("source_manifest_sha256", "compose_config_hash", "compose_file_sha256"):
+        digest = value.get(name)
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)):
+            return False
+    for name in ("cache_before", "cache_after"):
+        cache = value.get(name)
+        if (not isinstance(cache, dict) or set(cache) != {"sha256", "size"}
+                or not isinstance(cache.get("sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", cache["sha256"]) is None
+                or type(cache.get("size")) is not int or cache["size"] < 0):
+            return False
+    image = value.get("image_id")
+    container = value.get("container_id")
+    return (isinstance(image, str) and image.startswith("sha256:")
+            and len(image) == 71
+            and all(char in "0123456789abcdef" for char in image[7:])
+            and isinstance(container, str) and len(container) == 64
+            and all(char in "0123456789abcdef" for char in container.lower())
+            and value.get("config_image") == "metacubex/mihomo:v1.19.31")
 
 
 def _offline_operation(state_root: Path) -> str:
@@ -319,6 +377,33 @@ def verify_shared_lease_fd(fd: int, state_root: Path = DEFAULT_STATE_ROOT) -> No
         os.close(expected)
 
 
+def _verify_exclusive_lease_fd(fd: int, state_root: Path = DEFAULT_STATE_ROOT) -> None:
+    """Verify the caller still owns the existing root-owned EX lease descriptor.
+
+    The descriptor is borrowed: this function neither closes it nor changes its
+    lock mode. It is intended for narrowly scoped lifecycle-owner operations
+    that must prove exclusive admission without creating another lock authority.
+    """
+    if os.geteuid() != _trusted_uid():
+        raise MaintenanceAdmissionError("exclusive maintenance admission requires root")
+    expected = _open_lease(state_root, create=False)
+    try:
+        actual_info = os.fstat(fd)
+        expected_info = os.fstat(expected)
+        named = _lifecycle_paths(state_root)[2].lstat()
+        if ((actual_info.st_dev, actual_info.st_ino) != (expected_info.st_dev, expected_info.st_ino)
+                or (named.st_dev, named.st_ino) != (expected_info.st_dev, expected_info.st_ino)
+                or not stat.S_ISREG(actual_info.st_mode) or actual_info.st_uid != _trusted_uid()
+                or stat.S_IMODE(actual_info.st_mode) != 0o600 or actual_info.st_nlink != 1):
+            raise MaintenanceAdmissionError("inherited exclusive maintenance lease descriptor is invalid")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise MaintenanceAdmissionError("inherited exclusive maintenance lease is not held") from exc
+    finally:
+        os.close(expected)
+
+
 @contextmanager
 def runtime_shared_lease(state_root: Path = DEFAULT_STATE_ROOT) -> Iterator[None]:
     """Hold a shared lease across the API process lifetime."""
@@ -337,18 +422,15 @@ def _exclusive_rebuild_lease(
         raise MaintenanceAdmissionError("offline rebuild admission requires root")
     operation_id = _offline_operation(state_root)
     _verify_lifecycle_lock_fd(lifecycle_fd, state_root)
-    expected = _open_lease(state_root, create=False)
     try:
-        actual_info = os.fstat(fd)
-        expected_info = os.fstat(expected)
-        if ((actual_info.st_dev, actual_info.st_ino) != (expected_info.st_dev, expected_info.st_ino)
-                or not stat.S_ISREG(actual_info.st_mode) or actual_info.st_uid != _trusted_uid()
-                or stat.S_IMODE(actual_info.st_mode) != 0o600 or actual_info.st_nlink != 1):
-            raise MaintenanceAdmissionError("offline lease descriptor is invalid")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise MaintenanceAdmissionError("another supported FWRouter process holds the maintenance lease") from exc
+            _verify_exclusive_lease_fd(fd, state_root)
+        except MaintenanceAdmissionError as exc:
+            if "is not held" in str(exc):
+                raise MaintenanceAdmissionError(
+                    "another supported FWRouter process holds the maintenance lease",
+                ) from exc
+            raise
         _require_units_stopped()
         # Check marker again after acquiring EX: a racing shared entrant either
         # completed before us or will observe the still-pending marker afterward.
@@ -362,7 +444,6 @@ def _exclusive_rebuild_lease(
             grant.revoke()
             _OFFLINE_GRANT.reset(token)
     finally:
-        os.close(expected)
         if owned:
             os.close(fd)
 
