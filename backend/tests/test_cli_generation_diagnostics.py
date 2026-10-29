@@ -4,6 +4,8 @@ import json
 import sys
 import types
 
+import pytest
+
 from fwrouter_api import cli
 
 
@@ -125,6 +127,9 @@ def _core_owner_fixture(
     )
     monkeypatch.setattr(maintenance_lifecycle_admission, "_trusted_uid", lambda: os.geteuid())
     monkeypatch.setattr(maintenance_lifecycle_admission, "DEFAULT_STATE_ROOT", state_root)
+    # The CLI gate remains literal effective UID 0 in production; tests model
+    # that authorization separately from temp-file ownership under the runner.
+    monkeypatch.setattr(cli, "_is_root_process", lambda: True)
     monkeypatch.setattr(native_proof, "_backend_root", lambda: tool_root)
     monkeypatch.setattr(native_proof, "_INSTALLED_BACKEND_ROOT", installed_root)
     return tool_digest, installed_digest
@@ -266,3 +271,23 @@ def test_core_ip_receipt_reattest_cli_rejects_unpinned_executing_tool(monkeypatc
         "status": "BLOCKED", "reason": "CORE_OWNER_TOOL_MANIFEST_MISMATCH",
     }
     assert called is False
+
+
+def test_core_ip_receipt_reattest_cli_rejects_nonroot_before_lifecycle_access(
+    monkeypatch, capsys,
+) -> None:
+    from fwrouter_api.services import native_proof
+
+    # Simulate a non-root caller on every CI runner without changing the actual
+    # owner policy, which remains TRUSTED_HOST_UID == 0.
+    monkeypatch.setattr(cli, "_is_root_process", lambda: False)
+    monkeypatch.setattr(native_proof, "reattest_core_ip_receipt",
+                        lambda **_kwargs: pytest.fail("non-root caller reached Core operation"))
+    assert cli.main([
+        "core", "ip-receipt-reattest", "--plan",
+        "--expected-tool-manifest-sha256", "a" * 64,
+        "--expected-installed-backend-manifest-sha256", "b" * 64,
+    ]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "BLOCKED", "reason": "CORE_IP_RECEIPT_REATTEST_ROOT_REQUIRED",
+    }

@@ -239,6 +239,11 @@ def _run_core_ip_receipt_reattest(args: argparse.Namespace) -> int:
     return 0 if result.get("status") in {"READY", "NOOP", "PASS"} else 1
 
 
+def _is_root_process() -> bool:
+    """Keep the owner CLI's effective-UID check explicit and testable."""
+    return os.geteuid() == 0
+
+
 def _run_legacy_inventory_admission(args: argparse.Namespace) -> int:
     try:
         from fwrouter_api.services.xray_subscription_service import (
@@ -647,7 +652,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # importing lifecycle, diagnostic, or domain mutation services.
         from fwrouter_api.services.config_cli import main as config_main
         return config_main(arguments[1:])
-    if (arguments[:2] == ["core", "ip-receipt-reattest"] and os.geteuid() != 0):
+    if arguments[:2] == ["core", "ip-receipt-reattest"] and not _is_root_process():
         print(json.dumps({"status": "BLOCKED", "reason": "CORE_IP_RECEIPT_REATTEST_ROOT_REQUIRED"}))
         return 1
     from fwrouter_api.services.maintenance_lifecycle_admission import (

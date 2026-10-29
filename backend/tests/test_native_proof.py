@@ -573,14 +573,15 @@ def test_core_ip_receipt_reattest_facts_bind_source_installed_tree_and_checkpoin
     (installed_root / "api.py").write_text("installed-old", encoding="utf-8")
     installed_sha = native_proof.backend_manifest_sha256(installed_root)
     monkeypatch.setattr(native_proof, "_INSTALLED_BACKEND_ROOT", installed_root)
-    original_geteuid = os.geteuid
     monkeypatch.setattr(native_proof.os, "geteuid", lambda: 1000)
     with pytest.raises(ValueError, match="CORE_IP_RECEIPT_REATTEST_ROOT_REQUIRED"):
         native_proof._core_ip_receipt_reattest_facts(
             expected_tool_manifest_sha256=tool_sha,
             expected_installed_backend_manifest_sha256=installed_sha,
         )
-    monkeypatch.setattr(native_proof.os, "geteuid", original_geteuid)
+    # Continue the positive branch under the explicit test-only root identity;
+    # production still checks the actual effective UID against literal root.
+    monkeypatch.setattr(native_proof.os, "geteuid", lambda: 0)
     checkpoint_path = tmp_path / "generation-checkpoint.json"
     checkpoint_path.write_text("proof-only-checkpoint", encoding="utf-8")
     checkpoint_sha = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
