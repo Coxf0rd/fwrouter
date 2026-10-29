@@ -434,7 +434,8 @@ def _validate_core_owner_complete_checkpoint(
         "backend_manifest_sha256", "active_units", "pending_units",
         "initial_backend_manifest_sha256", "source_transitions",
     }
-    if (set(checkpoint) != expected_keys or checkpoint.get("schema") != 2
+    if (set(checkpoint) != expected_keys or type(checkpoint.get("schema")) is not int
+            or checkpoint.get("schema") != 2
             or checkpoint.get("status") != "complete"):
         raise MaintenanceAdmissionError("CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED")
     try:

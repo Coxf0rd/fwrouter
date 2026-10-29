@@ -68,7 +68,9 @@ def test_generation_supersession_cli_bounds_failure_codes(monkeypatch, capsys) -
     assert output["compensation_reason"] is None
 
 
-def _install_core_owner_checkpoint(state_root, installed_root, *, status="complete", checkpoint_root=None):
+def _install_core_owner_checkpoint(
+    state_root, installed_root, *, status="complete", checkpoint_root=None, schema=2,
+):
     import hashlib
     import uuid
 
@@ -87,7 +89,7 @@ def _install_core_owner_checkpoint(state_root, installed_root, *, status="comple
         "fwrouter-api.service",
     )}
     checkpoint = {
-        "schema": 2, "operation_id": str(uuid.uuid4()), "status": status,
+        "schema": schema, "operation_id": str(uuid.uuid4()), "status": status,
         "created_at": "2026-10-29T00:00:00Z", "backend_manifest": manifest,
         "backend_manifest_sha256": digest, "active_units": active_units,
         "pending_units": [], "initial_backend_manifest_sha256": digest,
@@ -102,7 +104,9 @@ def _install_core_owner_checkpoint(state_root, installed_root, *, status="comple
     path.chmod(0o600)
 
 
-def _core_owner_fixture(monkeypatch, tmp_path, *, status="complete", checkpoint_matches=True):
+def _core_owner_fixture(
+    monkeypatch, tmp_path, *, status="complete", checkpoint_matches=True, schema=2,
+):
     import os
 
     from fwrouter_api.services import maintenance_lifecycle_admission, native_proof
@@ -117,7 +121,7 @@ def _core_owner_fixture(monkeypatch, tmp_path, *, status="complete", checkpoint_
     installed_digest = native_proof.backend_manifest_sha256(installed_root)
     tool_digest = native_proof.backend_manifest_sha256(tool_root)
     _install_core_owner_checkpoint(
-        state_root, installed_root, status=status, checkpoint_root=checkpoint_root,
+        state_root, installed_root, status=status, checkpoint_root=checkpoint_root, schema=schema,
     )
     monkeypatch.setattr(maintenance_lifecycle_admission, "_trusted_uid", lambda: os.geteuid())
     monkeypatch.setattr(maintenance_lifecycle_admission, "DEFAULT_STATE_ROOT", state_root)
@@ -172,6 +176,29 @@ def test_core_ip_receipt_reattest_cli_rejects_pending_checkpoint(monkeypatch, ca
     from fwrouter_api.services import native_proof
 
     tool_digest, installed_digest = _core_owner_fixture(monkeypatch, tmp_path, status="pending")
+    called = False
+
+    def fake_reattest(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(native_proof, "reattest_core_ip_receipt", fake_reattest)
+    assert cli.main([
+        "core", "ip-receipt-reattest", "--plan",
+        "--expected-tool-manifest-sha256", tool_digest,
+        "--expected-installed-backend-manifest-sha256", installed_digest,
+    ]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "BLOCKED", "reason": "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED",
+    }
+    assert called is False
+
+
+def test_core_ip_receipt_reattest_cli_rejects_noninteger_schema_value(monkeypatch, capsys, tmp_path) -> None:
+    from fwrouter_api.services import native_proof
+
+    tool_digest, installed_digest = _core_owner_fixture(monkeypatch, tmp_path, schema=2.0)
     called = False
 
     def fake_reattest(**_kwargs):
