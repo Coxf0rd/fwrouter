@@ -317,6 +317,24 @@
       ]
     },
     {
+      "glob": "backend/fwrouter_api/services/rollout_native_evidence.py",
+      "domains": [
+        "database",
+        "maintenance",
+        "subscription",
+        "runtime"
+      ]
+    },
+    {
+      "glob": "backend/tests/test_rollout_native_evidence.py",
+      "domains": [
+        "database",
+        "maintenance",
+        "subscription",
+        "runtime"
+      ]
+    },
+    {
       "glob": "backend/tests/test_offline_maintenance_admission.py",
       "domains": [
         "database",
@@ -6573,6 +6591,34 @@
     {
       "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
       "destructive": false,
+      "domain": "database",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "Disposable SQLite and real file locks; synthetic physical runtime observations",
+      "fixture_owner": "backend/tests/test_rollout_native_evidence.py",
+      "id": "test_rollout_native_evidence",
+      "isolation": "coordinator-owned temporary state; no real systemd, services, network or credentials",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_rollout_native_evidence.py",
+      "primary_level": "L3",
+      "risk_notes": "Exact operation/source/EX admission, verified generation evidence, malformed checkpoint and safe error contracts; no live runtime qualification",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)",
+        "FastAPI TestClient"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "local-integration"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
       "domain": "installer",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
@@ -6814,7 +6860,7 @@
       "execution_group": "services-events"
     }
   ],
-  "version": "2026.10.28.3",
+  "version": "2026.10.29.1",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
