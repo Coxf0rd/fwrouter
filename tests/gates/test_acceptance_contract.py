@@ -8713,6 +8713,151 @@ class RuntimeScaleFailureDiagnosticsContract(unittest.TestCase):
         self.assertNotIn("private exception detail", json.dumps(observation))
         self.assertEqual({"worker_returncode": -9}, observation["after"])
 
+    def test_hosted_report_startup_failure_projection_is_closed_bounded_and_redacted(self):
+        metrics = {
+            "schema": "fwrouter-runtime-scale-metrics/v1", "status": "failed", "startup_ready": False,
+            "startup_worker_pid": 90210,
+            "bootstrap_observation": {"client_token": "synthetic-secret", "private_config": "must-not-leak"},
+            "startup_readiness_failure": {
+                "failure": "readiness_deadline_exceeded",
+                "startup_qualification": "qualified_startup_recovery",
+                "readiness_deadline_seconds": 60, "readiness_elapsed_seconds": 60.001,
+                "worker_exit_at_deadline": None,
+                "resources_at_failure": {
+                    "scope": "owned_api_worker", "process_cpu_seconds": 47.95,
+                    "rss_kib": 592456, "hwm_kib": 716832, "threads": 1,
+                    "private_token": "must-not-leak",
+                },
+                "diagnostic_status": "sent", "bootstrap_observation": {"credential": "hidden"},
+                "termination": {"status": "reaped", "private_key": "hidden"},
+                "phase_diagnostics_at_deadline": {
+                    "status": "parsed", "tail_bytes": 16384,
+                    "events": [{"phase": "recover_startup_xray_subscription_profiles",
+                                "event": "exit", "call": 1, "wall_seconds": 38.25,
+                                "cpu_seconds": 37.9, "raw_log": "must-not-leak"}],
+                    "arbitrary": "must-not-leak",
+                },
+                "phase_diagnostics_after_stop": {"status": "unavailable", "events": []},
+            },
+            "arbitrary_top_level": "must-not-leak",
+        }
+        projected = launcher.project_startup_failure_diagnostic(
+            json.dumps(metrics, separators=(",", ":")).encode(),
+        )
+        self.assertIsInstance(projected, dict)
+        self.assertEqual("captured", projected["status"])
+        self.assertFalse(projected["qualification_evidence"])
+        self.assertEqual(60, projected["readiness_deadline_seconds"])
+        self.assertEqual(47.95, projected["resources"]["process_cpu_seconds"])
+        self.assertEqual(592456, projected["resources"]["rss_kib"])
+        self.assertEqual(716832, projected["resources"]["hwm_kib"])
+        self.assertEqual("recover_startup_xray_subscription_profiles",
+                         projected["phases"]["at_deadline"]["events"][0]["phase"])
+        encoded = json.dumps(projected, sort_keys=True)
+        for value in ("synthetic-secret", "private_config", "private_token", "private_key", "credential", "raw_log",
+                      "must-not-leak", "90210", "bootstrap_observation", "arbitrary_top_level"):
+            self.assertNotIn(value, encoded)
+        self.assertLessEqual(len(encoded.encode()), launcher.STARTUP_DIAGNOSTIC_OUTPUT_LIMIT)
+        self.assertEqual({"schema", "status", "qualification_evidence", "failure", "qualification",
+                          "readiness_deadline_seconds", "readiness_elapsed_seconds", "resources",
+                          "traceback_signal", "termination", "phases"}, set(projected))
+
+    def test_hosted_report_startup_projection_fails_closed_for_malformed_oversize_and_success(self):
+        malformed = launcher.project_startup_failure_diagnostic(b"{broken")
+        self.assertEqual(("unavailable", "invalid_json"), (malformed["status"], malformed["reason"]))
+        overlong_integer = launcher.project_startup_failure_diagnostic(
+            b'{"value":' + b"9" * 5000 + b"}",
+        )
+        self.assertEqual(("unavailable", "invalid_json"),
+                         (overlong_integer["status"], overlong_integer["reason"]))
+        oversized = launcher.project_startup_failure_diagnostic(
+            b" " * (launcher.STARTUP_DIAGNOSTIC_INPUT_LIMIT + 1),
+        )
+        self.assertEqual(("unavailable", "input_size_exceeded"),
+                         (oversized["status"], oversized["reason"]))
+        success = launcher.project_startup_failure_diagnostic(json.dumps({
+            "schema": "fwrouter-runtime-scale-metrics/v1", "status": "passed", "startup_ready": True,
+            "startup_readiness_failure": {"bootstrap_observation": "not exported"},
+        }).encode())
+        self.assertIsNone(success)
+        invalid_phase = {
+            "schema": "fwrouter-runtime-scale-metrics/v1", "status": "failed", "startup_ready": False,
+            "startup_readiness_failure": {
+                "failure": "readiness_deadline_exceeded", "startup_qualification": "qualified_startup_tasks",
+                "readiness_deadline_seconds": 60, "readiness_elapsed_seconds": 60,
+                "phase_diagnostics_at_deadline": {
+                    "status": "parsed", "events": [{"phase": "untrusted.path", "event": "enter"}],
+                },
+            },
+        }
+        rejected = launcher.project_startup_failure_diagnostic(json.dumps(invalid_phase).encode())
+        self.assertEqual(("unavailable", "unsupported_phase_event"),
+                         (rejected["status"], rejected["reason"]))
+        self.assertFalse(rejected["qualification_evidence"])
+        huge_timing = {
+            "schema": "fwrouter-runtime-scale-metrics/v1", "status": "failed", "startup_ready": False,
+            "startup_readiness_failure": {
+                "failure": "readiness_deadline_exceeded", "startup_qualification": "qualified_startup_tasks",
+                "readiness_deadline_seconds": 60, "readiness_elapsed_seconds": 10**400,
+            },
+        }
+        huge_timing_result = launcher.project_startup_failure_diagnostic(json.dumps(huge_timing).encode())
+        self.assertEqual(("unavailable", "invalid_readiness_timing"), (
+            huge_timing_result["status"], huge_timing_result["reason"],
+        ))
+        inconsistent = launcher.project_startup_failure_diagnostic(json.dumps({
+            "schema": "fwrouter-runtime-scale-metrics/v1", "status": "passed", "startup_ready": False,
+        }).encode())
+        self.assertEqual(("unavailable", "inconsistent_failure_status"),
+                         (inconsistent["status"], inconsistent["reason"]))
+
+    def test_startup_diagnostic_reader_rejects_symlink_and_marks_missing_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            absent = launcher.read_startup_failure_diagnostic(root / "missing.json")
+            self.assertEqual(("unavailable", "receipt_missing"), (absent["status"], absent["reason"]))
+            target = root / "target.json"
+            target.write_text("{}", encoding="utf-8")
+            link = root / "metrics.json"
+            link.symlink_to(target)
+            linked = launcher.read_startup_failure_diagnostic(link)
+            self.assertEqual(("unavailable", "receipt_unreadable"),
+                             (linked["status"], linked["reason"]))
+            oversized = root / "oversized.json"
+            oversized.write_bytes(b"x" * (launcher.STARTUP_DIAGNOSTIC_INPUT_LIMIT + 1))
+            too_large = launcher.read_startup_failure_diagnostic(oversized)
+            self.assertEqual(("unavailable", "input_size_exceeded"),
+                             (too_large["status"], too_large["reason"]))
+            fifo = root / "metrics.fifo"
+            os.mkfifo(fifo)
+            script = (
+                "import importlib.util; "
+                f"spec=importlib.util.spec_from_file_location('launcher', {str(LAUNCHER_PATH)!r}); "
+                "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+                f"result=module.read_startup_failure_diagnostic(__import__('pathlib').Path({str(fifo)!r})); "
+                "assert result['reason']=='receipt_not_regular'"
+            )
+            completed = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=3, check=False)
+            self.assertEqual(0, completed.returncode, completed.stderr.decode("utf-8", "replace"))
+
+    def test_startup_diagnostic_is_attached_only_for_failed_fixed_node_and_never_changes_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            metrics_path = Path(temporary) / "runtime-scale-metrics.json"
+            failed_receipt = {"status": "failed", "tests": {"node_status": {
+                launcher._STARTUP_DIAGNOSTIC_NODEID: "failed",
+            }}}
+            launcher.attach_startup_failure_diagnostic(failed_receipt, metrics_path)
+            self.assertEqual("failed", failed_receipt["status"])
+            self.assertEqual(("unavailable", "receipt_missing"), (
+                failed_receipt["startup_failure_diagnostic"]["status"],
+                failed_receipt["startup_failure_diagnostic"]["reason"],
+            ))
+            passing_receipt = {"status": "passed", "tests": {"node_status": {
+                launcher._STARTUP_DIAGNOSTIC_NODEID: "passed",
+            }}}
+            launcher.attach_startup_failure_diagnostic(passing_receipt, metrics_path)
+            self.assertNotIn("startup_failure_diagnostic", passing_receipt)
+
 
 class StartupResourceObservationContract(unittest.TestCase):
     def setUp(self):

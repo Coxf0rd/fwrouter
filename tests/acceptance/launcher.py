@@ -167,6 +167,35 @@ GENERAL_NETWORK = {
 }
 PACKET_ROLE_DIAGNOSTIC_ROOT = "/tmp/fwrouter-packet-diagnostics"
 PACKET_ROLE_DIAGNOSTIC_LIMIT = 4096
+STARTUP_DIAGNOSTIC_INPUT_LIMIT = 512 * 1024
+STARTUP_DIAGNOSTIC_OUTPUT_LIMIT = 16 * 1024
+_STARTUP_DIAGNOSTIC_FAILURES = {
+    "invalid_readiness_timing", "readiness_deadline_exceeded", "startup_recovery_failed",
+    "startup_recovery_not_completed", "worker_exited_before_readiness",
+}
+_STARTUP_DIAGNOSTIC_QUALIFICATIONS = {
+    "qualified_startup_recovery", "qualified_startup_tasks",
+}
+_STARTUP_DIAGNOSTIC_PHASES = {
+    "_prospective_profile_bindings", "_stage_profile_native_candidates",
+    "_apply_staged_mihomo_candidate", "_write_xray_generation_checkpoint",
+    "_restore_xray_generation_checkpoint", "_finalize_xray_profile_publication",
+    "_publish_mihomo_udp_receipt_with_owner", "subject_policy.default_enforcement",
+    "mihomo_config.write_candidate", "mihomo_config.validate_candidate",
+    "subscription_pipeline.validate_candidate", "recover_startup_live_routing_from_persisted_mode",
+    "recover_startup_mihomo_selector", "recover_startup_intended_routing",
+    "recover_startup_scoped_subject_routing", "recover_startup_xray_subscription_profiles",
+    "_run_startup_dnsmasq_reconcile_step", "startup.read_dataplane_payload",
+    "startup.wait_vpn_dataplane_ready", "startup.apply_global_mode_immediately",
+    "startup.promote_mihomo_candidate_config", "startup.dataplane.read_effective_rules_artifact",
+    "startup.dataplane.build_nft_rule_sets", "startup.dataplane_status.build_applied_runtime_enforcement",
+    "startup.apply.build_global_preflight", "startup.apply.build_applied_runtime_enforcement",
+    "startup.mihomo.config_runtime_details", "startup.mihomo.config_text",
+}
+_STARTUP_DIAGNOSTIC_NODEID = (
+    "tests/application_acceptance/test_runtime_scale.py::"
+    "test_large_mihomo_health_readback_stays_bounded_under_concurrent_api_load"
+)
 PYTHON_BASE_METADATA_ENV = {
     "PYTHON_VERSION", "PYTHON_SHA256", "PYTHON_PIP_VERSION", "PYTHON_SETUPTOOLS_VERSION",
     "PYTHON_GET_PIP_URL", "PYTHON_GET_PIP_SHA256", "GPG_KEY",
@@ -3147,6 +3176,160 @@ def _write_receipt(path: Path, receipt: dict[str, Any]) -> None:
         raise NotRun("acceptance receipt validation failed")
 
 
+def _startup_diagnostic_marker(status: str, reason: str) -> dict[str, Any]:
+    return {"schema": "fwrouter-startup-failure-diagnostic/v1", "status": status,
+            "reason": reason, "qualification_evidence": False}
+
+
+def _diagnostic_number(value: Any, *, maximum: float) -> int | float | None:
+    if type(value) not in {int, float}:
+        return None
+    if type(value) is int:
+        return value if 0 <= value <= maximum else None
+    try:
+        if not math.isfinite(value) or value < 0 or value > maximum:
+            return None
+        return round(value, 4)
+    except (OverflowError, ValueError):
+        return None
+
+
+def project_startup_failure_diagnostic(raw: bytes) -> dict[str, Any] | None:
+    """Project only fixed scalar startup evidence; never retain logs or bootstrap payloads."""
+    if len(raw) > STARTUP_DIAGNOSTIC_INPUT_LIMIT:
+        return _startup_diagnostic_marker("unavailable", "input_size_exceeded")
+    try:
+        metrics = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError):
+        return _startup_diagnostic_marker("unavailable", "invalid_json")
+    if not isinstance(metrics, dict) or metrics.get("schema") != "fwrouter-runtime-scale-metrics/v1":
+        return _startup_diagnostic_marker("unavailable", "invalid_schema")
+    if metrics.get("startup_ready") is True:
+        return None
+    if metrics.get("startup_ready") is not False:
+        return None
+    if metrics.get("status") != "failed":
+        return _startup_diagnostic_marker("unavailable", "inconsistent_failure_status")
+    failure = metrics.get("startup_readiness_failure")
+    if not isinstance(failure, dict):
+        return _startup_diagnostic_marker("unavailable", "failure_record_missing")
+    failure_code = failure.get("failure")
+    qualification = failure.get("startup_qualification")
+    if (not isinstance(failure_code, str) or failure_code not in _STARTUP_DIAGNOSTIC_FAILURES
+            or not isinstance(qualification, str) or qualification not in _STARTUP_DIAGNOSTIC_QUALIFICATIONS):
+        return _startup_diagnostic_marker("unavailable", "unsupported_failure_shape")
+    deadline = _diagnostic_number(failure.get("readiness_deadline_seconds"), maximum=120)
+    elapsed = _diagnostic_number(failure.get("readiness_elapsed_seconds"), maximum=120)
+    if deadline is None or elapsed is None:
+        return _startup_diagnostic_marker("unavailable", "invalid_readiness_timing")
+    result: dict[str, Any] = {
+        "schema": "fwrouter-startup-failure-diagnostic/v1", "status": "captured",
+        "qualification_evidence": False, "failure": failure_code, "qualification": qualification,
+        "readiness_deadline_seconds": deadline, "readiness_elapsed_seconds": elapsed,
+    }
+    exit_code = failure.get("worker_exit_at_deadline")
+    if type(exit_code) is int and -255 <= exit_code <= 255:
+        result["worker_exit_code"] = exit_code
+    resources = failure.get("resources_at_failure")
+    if isinstance(resources, dict) and resources.get("scope") == "owned_api_worker":
+        safe_resources: dict[str, Any] = {"scope": "owned_api_worker"}
+        for key, maximum in (("process_cpu_seconds", 3600), ("rss_kib", 2**31 - 1),
+                             ("hwm_kib", 2**31 - 1), ("threads", 65536)):
+            value = _diagnostic_number(resources.get(key), maximum=maximum)
+            if value is not None:
+                safe_resources[key] = value
+        result["resources"] = safe_resources
+    signal_status = failure.get("diagnostic_status")
+    if isinstance(signal_status, str) and signal_status in {"sent", "worker_exited_before_signal"}:
+        result["traceback_signal"] = signal_status
+    termination = failure.get("termination")
+    termination_status = termination.get("status") if isinstance(termination, dict) else None
+    if isinstance(termination_status, str) and termination_status in {
+        "reaped", "pending_fixture_cleanup", "already_exited",
+    }:
+        result["termination"] = termination_status
+
+    phase_views: dict[str, Any] = {}
+    for key, label in (("phase_diagnostics_at_deadline", "at_deadline"),
+                       ("phase_diagnostics_after_stop", "after_stop")):
+        phases = failure.get(key)
+        if not isinstance(phases, dict):
+            continue
+        phase_status = phases.get("status")
+        if not isinstance(phase_status, str) or phase_status not in {"parsed", "unavailable"}:
+            return _startup_diagnostic_marker("unavailable", "invalid_phase_status")
+        phase_result: dict[str, Any] = {"status": phase_status}
+        tail_bytes = phases.get("tail_bytes")
+        if type(tail_bytes) is int and 0 <= tail_bytes <= 16 * 1024:
+            phase_result["tail_bytes"] = tail_bytes
+        events = phases.get("events", [])
+        if not isinstance(events, list) or len(events) > 128:
+            return _startup_diagnostic_marker("unavailable", "invalid_phase_events")
+        projected_events = []
+        for event in events[-32:]:
+            if not isinstance(event, dict):
+                return _startup_diagnostic_marker("unavailable", "invalid_phase_event")
+            phase = event.get("phase")
+            event_kind = event.get("event")
+            if (not isinstance(phase, str) or phase not in _STARTUP_DIAGNOSTIC_PHASES
+                    or not isinstance(event_kind, str) or event_kind not in {"enter", "exit"}):
+                return _startup_diagnostic_marker("unavailable", "unsupported_phase_event")
+            projected_event: dict[str, Any] = {"phase": phase, "event": event_kind}
+            call = event.get("call")
+            if type(call) is int and 0 <= call <= 10_000:
+                projected_event["call"] = call
+            if event_kind == "exit":
+                for field in ("wall_seconds", "cpu_seconds"):
+                    value = _diagnostic_number(event.get(field), maximum=600)
+                    if value is not None:
+                        projected_event[field] = value
+            projected_events.append(projected_event)
+        phase_result["events"] = projected_events
+        phase_views[label] = phase_result
+    if phase_views:
+        result["phases"] = phase_views
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > STARTUP_DIAGNOSTIC_OUTPUT_LIMIT:
+        return _startup_diagnostic_marker("unavailable", "projection_size_exceeded")
+    return result
+
+
+def read_startup_failure_diagnostic(path: Path) -> dict[str, Any] | None:
+    """Read a single bounded regular receipt without following symlinks."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return _startup_diagnostic_marker("unavailable", "receipt_missing")
+    except OSError:
+        return _startup_diagnostic_marker("unavailable", "receipt_unreadable")
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            return _startup_diagnostic_marker("unavailable", "receipt_not_regular")
+        if info.st_size > STARTUP_DIAGNOSTIC_INPUT_LIMIT:
+            return _startup_diagnostic_marker("unavailable", "input_size_exceeded")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(STARTUP_DIAGNOSTIC_INPUT_LIMIT + 1)
+        if len(raw) > STARTUP_DIAGNOSTIC_INPUT_LIMIT:
+            return _startup_diagnostic_marker("unavailable", "input_size_exceeded")
+        return project_startup_failure_diagnostic(raw)
+    finally:
+        os.close(descriptor)
+
+
+def attach_startup_failure_diagnostic(receipt: dict[str, Any], metrics_path: Path) -> None:
+    """Attach diagnostic-only startup detail only when the fixed scale node failed."""
+    tests = receipt.get("tests")
+    node_status = tests.get("node_status") if isinstance(tests, dict) else None
+    if not isinstance(node_status, dict) or node_status.get(_STARTUP_DIAGNOSTIC_NODEID) != "failed":
+        return
+    projection = read_startup_failure_diagnostic(metrics_path)
+    receipt["startup_failure_diagnostic"] = projection or _startup_diagnostic_marker(
+        "unavailable", "startup_metrics_not_applicable",
+    )
+
+
 def mark_cleanup_unconfirmed(receipt: dict[str, Any], reason: str) -> None:
     receipt["cleanup"] = "cleanup_unconfirmed"
     if receipt.get("status") in {"passed", "partial"}:
@@ -4167,6 +4350,7 @@ def run_hosted_acceptance(env: dict[str, str], facts: dict[str, Any], *, suite: 
             ):
                 result = _docker_copy_capture(docker, container_id, source, artifact_dir / filename, env=docker_env)
                 exports[filename] = result
+            attach_startup_failure_diagnostic(receipt, artifact_dir / "runtime-scale-metrics.json")
             (artifact_dir / "diagnostic-export.json").write_text(
                 json.dumps(exports, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         # Every cleanup target is resolved by exact ID and ownership labels.
