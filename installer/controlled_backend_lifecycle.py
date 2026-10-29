@@ -21,9 +21,10 @@ from typing import Any
 import uuid
 
 
-SCHEMA = 3
-PREVIOUS_SCHEMA = 2
-LEGACY_SCHEMA = 1
+SCHEMA = 4
+PREVIOUS_SCHEMA = 3
+LEGACY_SCHEMA = 2
+OLDEST_SCHEMA = 1
 MAX_SOURCE_TRANSITIONS = 16
 DEFAULT_STATE_DIR = Path("/var/lib/fwrouter-v2/state/controlled-rollout")
 SOURCE_BACKEND = Path(__file__).resolve().parents[1] / "backend"
@@ -32,6 +33,7 @@ API_UNIT = "fwrouter-api.service"
 API_EXECUTABLE = "/opt/fwrouter-api/.venv/bin/python"
 API_MAINTENANCE_ARGV = "fwrouter_api_maintenance run-api"
 GATEWAY_UNIT = "fwrouter-xray-sub-gateway.service"
+MIHOMO_UNIT = "fwrouter-mihomo.service"
 GATEWAY_ADDRESS = ("172.18.0.1", 5055)
 HEALTH_TIMEOUT_SECONDS = 8
 HEALTH_MAX_BYTES = 64 * 1024
@@ -39,6 +41,20 @@ GATEWAY_TIMEOUT_SECONDS = 10
 MAX_MANIFEST_FILES = 10000
 MAX_MANIFEST_BYTES = 512 * 1024 * 1024
 MAX_CHECKPOINT_BYTES = 2 * 1024 * 1024
+MIHOMO_CONTAINER = "fwrouter-mihomo"
+MIHOMO_COMPOSE_FILE = Path("/opt/fwrouter-mihomo/docker-compose.yml")
+MIHOMO_CACHE_DB = Path("/var/lib/fwrouter-v2/mihomo/cache.db")
+MIHOMO_CONFIG_IMAGE = "metacubex/mihomo:v1.19.31"
+MIHOMO_UNIT_FILE = Path("/etc/systemd/system/fwrouter-mihomo.service")
+MIHOMO_UNIT_SHA256 = "9467c8b563cdfba9be8b30f6974e8f2ec6c157ebbe4c8f2abab17b7881fed8a2"
+DOCKER_INSPECT_FORMAT = (
+    '{{.Id}}|{{.Image}}|{{.Config.Image}}|{{.State.Running}}|'
+    '{{.HostConfig.RestartPolicy.Name}}|{{.HostConfig.NetworkMode}}|'
+    '{{index .Config.Labels "com.docker.compose.service"}}|'
+    '{{index .Config.Labels "com.docker.compose.config-hash"}}|'
+    '{{range .Mounts}}{{if and (eq .Source "/var/lib/fwrouter-v2/mihomo") '
+    '(eq .Destination "/root/.config/mihomo")}}{{.RW}}{{end}}{{end}}'
+)
 
 LONG_RUNNING_DEPENDENTS = (
     GATEWAY_UNIT,
@@ -57,18 +73,21 @@ TRANSIENT_JOBS = (
     "fwrouter-subscription-refresh.service",
     "fwrouter-traffic-collect.service",
 )
-ALLOWED_UNITS = frozenset((API_UNIT, *LONG_RUNNING_DEPENDENTS, *PERSISTENT_TIMERS, *TRANSIENT_JOBS))
+ALLOWED_UNITS = frozenset((API_UNIT, MIHOMO_UNIT, *LONG_RUNNING_DEPENDENTS, *PERSISTENT_TIMERS, *TRANSIENT_JOBS))
 RESTORE_ORDER = (*LONG_RUNNING_DEPENDENTS, *PERSISTENT_TIMERS)
 STOP_ORDER = (*reversed(PERSISTENT_TIMERS), *reversed(LONG_RUNNING_DEPENDENTS))
 CHECKPOINT_KEYS = {
     "schema", "operation_id", "status", "created_at", "backend_manifest",
     "backend_manifest_sha256", "active_units", "pending_units",
     "initial_backend_manifest_sha256", "source_transitions", "maintenance_operation",
+    "runtime_quiescence",
 }
-PREVIOUS_CHECKPOINT_KEYS = CHECKPOINT_KEYS - {"maintenance_operation"}
+SCHEMA3_CHECKPOINT_KEYS = CHECKPOINT_KEYS - {"runtime_quiescence"}
+PREVIOUS_CHECKPOINT_KEYS = SCHEMA3_CHECKPOINT_KEYS - {"maintenance_operation"}
 LEGACY_CHECKPOINT_KEYS = PREVIOUS_CHECKPOINT_KEYS - {
     "initial_backend_manifest_sha256", "source_transitions",
 }
+OLDEST_CHECKPOINT_KEYS = LEGACY_CHECKPOINT_KEYS - {"maintenance_operation"}
 
 
 class LifecycleError(RuntimeError):
@@ -322,10 +341,11 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
         raise LifecycleError("rollout checkpoint schema or keys are invalid")
     schema = value.get("schema")
     if (type(schema) is not int
-            or (schema == LEGACY_SCHEMA and set(value) != LEGACY_CHECKPOINT_KEYS)
-            or (schema == PREVIOUS_SCHEMA and set(value) != PREVIOUS_CHECKPOINT_KEYS)
+            or (schema == OLDEST_SCHEMA and set(value) != OLDEST_CHECKPOINT_KEYS)
+            or (schema == LEGACY_SCHEMA and set(value) != PREVIOUS_CHECKPOINT_KEYS)
+            or (schema == PREVIOUS_SCHEMA and set(value) != SCHEMA3_CHECKPOINT_KEYS)
             or (schema == SCHEMA and set(value) != CHECKPOINT_KEYS)
-            or schema not in {LEGACY_SCHEMA, PREVIOUS_SCHEMA, SCHEMA}):
+            or schema not in {OLDEST_SCHEMA, LEGACY_SCHEMA, PREVIOUS_SCHEMA, SCHEMA}):
         raise LifecycleError("rollout checkpoint schema or keys are invalid")
     if value.get("status") not in {"pending", "complete"}:
         raise LifecycleError("rollout checkpoint status is invalid")
@@ -336,7 +356,7 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
     manifest = _validate_manifest(value["backend_manifest"])
     if value["backend_manifest_sha256"] != _manifest_digest(manifest):
         raise LifecycleError("checkpoint source identity does not match its backend manifest")
-    if schema in {PREVIOUS_SCHEMA, SCHEMA}:
+    if schema in {LEGACY_SCHEMA, PREVIOUS_SCHEMA, SCHEMA}:
         initial = value["initial_backend_manifest_sha256"]
         transitions = value["source_transitions"]
         if (not isinstance(initial, str) or len(initial) != 64
@@ -366,7 +386,7 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
             previous = to_digest
         if previous != value["backend_manifest_sha256"]:
             raise LifecycleError("rollout source transition history does not bind current source")
-    if schema == SCHEMA:
+    if schema in {PREVIOUS_SCHEMA, SCHEMA}:
         maintenance = value["maintenance_operation"]
         if maintenance is not None:
             _validate_maintenance_operation(maintenance, value["operation_id"])
@@ -379,6 +399,8 @@ def _read_checkpoint(path: Path) -> dict[str, Any]:
             if maintenance.get("status") not in {
                     "pending", "candidate_ready", "source_quiesced", "published", "verified"}:
                 raise LifecycleError("rollout maintenance operation is invalid")
+    if schema == SCHEMA:
+        _validate_runtime_quiescence(value["runtime_quiescence"], value["operation_id"])
     units = value["active_units"]
     pending = value["pending_units"]
     expected_units = {*RESTORE_ORDER, *TRANSIENT_JOBS, API_UNIT}
@@ -413,6 +435,242 @@ def _validate_maintenance_operation(value: object, operation_id: str) -> None:
             or not isinstance(digest, str) or len(digest) != 64
             or any(ch not in "0123456789abcdef" for ch in digest)):
         raise LifecycleError("rollout maintenance backup pin is invalid")
+
+
+def _validate_runtime_quiescence(value: object, operation_id: str) -> None:
+    if value is None:
+        return
+    keys = {"kind", "phase", "operation_id", "source_manifest_sha256", "unit_active_state",
+            "unit_sub_state", "unit_enabled_state", "container_id", "image_id",
+            "config_image", "compose_config_hash", "compose_file_sha256",
+            "cache_before", "cache_after"}
+    if not isinstance(value, dict) or set(value) != keys:
+        raise LifecycleError("Mihomo runtime quiescence checkpoint is invalid")
+    if (value.get("kind") != "mihomo_existing_container/v1"
+            or value.get("operation_id") != operation_id
+            or value.get("phase") not in {"stop_pending", "quiesced", "release_pending", "released"}
+            or value.get("unit_active_state") not in {"active", "inactive"}
+            or value.get("unit_sub_state") not in {"exited", "dead"}
+            or value.get("unit_enabled_state") not in {"enabled", "disabled"}
+            or value.get("config_image") != MIHOMO_CONFIG_IMAGE
+            or (value.get("unit_active_state"), value.get("unit_sub_state")) not in {
+                ("active", "exited"), ("inactive", "dead")}):
+        raise LifecycleError("Mihomo runtime quiescence checkpoint is invalid")
+    for name in ("source_manifest_sha256", "compose_config_hash", "compose_file_sha256"):
+        digest = value.get(name)
+        if (not isinstance(digest, str) or len(digest) != 64
+                or any(char not in "0123456789abcdef" for char in digest)):
+            raise LifecycleError("Mihomo runtime quiescence checkpoint is invalid")
+    image_id = value.get("image_id")
+    if (not isinstance(image_id, str) or not image_id.startswith("sha256:")
+            or not re_full_hex(image_id.removeprefix("sha256:"), 64)):
+        raise LifecycleError("Mihomo runtime quiescence checkpoint is invalid")
+    container_id = value.get("container_id")
+    if (not isinstance(container_id, str) or len(container_id) != 64
+            or any(char not in "0123456789abcdef" for char in container_id.lower())):
+        raise LifecycleError("Mihomo runtime quiescence checkpoint is invalid")
+    for name in ("cache_before", "cache_after"):
+        cache=value.get(name)
+        if cache is None and name=="cache_after" and value.get("phase")=="stop_pending":
+            continue
+        if (not isinstance(cache,dict) or set(cache)!={"sha256","size"}
+                or not isinstance(cache.get("sha256"),str) or not re_full_hex(cache["sha256"],64)
+                or type(cache.get("size")) is not int or cache["size"]<0):
+            raise LifecycleError("Mihomo cache transition checkpoint is invalid")
+    if value.get("phase") in {"quiesced","release_pending","released"} and value.get("cache_after") is None:
+        raise LifecycleError("Mihomo quiescence lacks its post-stop cache identity")
+
+
+def _check_expected_lifecycle_identity(checkpoint: dict[str, Any], operation_id: str,
+                                       manifest_sha256: str) -> None:
+    try:
+        expected_operation = str(uuid.UUID(operation_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise LifecycleError("expected rollout operation id is invalid") from exc
+    if (checkpoint.get("status") != "pending" or checkpoint.get("operation_id") != expected_operation
+            or checkpoint.get("backend_manifest_sha256") != manifest_sha256
+            or checkpoint.get("initial_backend_manifest_sha256") != manifest_sha256
+            or checkpoint.get("source_transitions") != []
+            or checkpoint.get("maintenance_operation") is not None):
+        raise LifecycleError("Mihomo quiescence requires the exact pending OLD lifecycle checkpoint")
+
+
+def _systemctl_state(action: str, unit: str) -> str:
+    if unit not in {MIHOMO_UNIT}:
+        raise LifecycleError("refusing to inspect non-allowlisted runtime unit")
+    env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LANG": "C.UTF-8"}
+    try:
+        result = subprocess.run(["/usr/bin/systemctl", action, unit], check=False,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, timeout=10, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LifecycleError(f"cannot inspect systemd state for {unit}") from exc
+    expected_codes = {0, 1} if action == "is-enabled" else {0}
+    if result.returncode not in expected_codes or len(result.stdout) > 256:
+        raise LifecycleError(f"cannot inspect systemd state for {unit}")
+    return result.stdout.strip()
+
+
+def _mihomo_unit_state() -> tuple[str, str, str]:
+    properties = {}
+    env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LANG": "C.UTF-8"}
+    for prop in ("LoadState", "FragmentPath", "DropInPaths", "Type", "RemainAfterExit",
+                 "ActiveState", "SubState"):
+        try:
+            result = subprocess.run(["/usr/bin/systemctl", "show", f"--property={prop}",
+                                     "--value", MIHOMO_UNIT], check=False,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, timeout=10, env=env)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise LifecycleError("cannot inspect Mihomo unit contract") from exc
+        if result.returncode != 0 or len(result.stdout) > 512:
+            raise LifecycleError("cannot inspect Mihomo unit contract")
+        properties[prop] = result.stdout.strip()
+    if (properties["LoadState"] != "loaded"
+            or properties["FragmentPath"] != "/etc/systemd/system/fwrouter-mihomo.service"
+            or properties["DropInPaths"] not in {"", "-"}
+            or properties["Type"] != "oneshot"
+            or properties["RemainAfterExit"] != "yes"
+            or _trusted_fixed_file_digest(MIHOMO_UNIT_FILE) != MIHOMO_UNIT_SHA256):
+        raise LifecycleError("Mihomo systemd unit contract is not the qualified fixed unit")
+    if properties["ActiveState"] == "active" and properties["SubState"] == "exited":
+        active_state, sub_state = "active", "exited"
+    elif properties["ActiveState"] == "inactive" and properties["SubState"] == "dead":
+        active_state, sub_state = "inactive", "dead"
+    else:
+        raise LifecycleError("Mihomo systemd unit is in an unsupported state")
+    enabled = _systemctl_state("is-enabled", MIHOMO_UNIT)
+    if enabled not in {"enabled", "disabled"}:
+        raise LifecycleError("Mihomo systemd enablement is unsupported")
+    return active_state, sub_state, enabled
+
+
+def _mihomo_container() -> dict[str, str | bool]:
+    env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root",
+           "LANG": "C.UTF-8", "DOCKER_HOST": "unix:///var/run/docker.sock"}
+    try:
+        result = subprocess.run(["/usr/bin/docker", "inspect", "--format",
+                                 DOCKER_INSPECT_FORMAT, MIHOMO_CONTAINER],
+                                check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, timeout=15, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LifecycleError("cannot inspect the fixed Mihomo container") from exc
+    if result.returncode != 0 or len(result.stdout) > 2048 or len(result.stderr) > 4096:
+        raise LifecycleError("cannot inspect the fixed Mihomo container")
+    fields = result.stdout.strip().split("|")
+    if (len(fields) != 9 or len(fields[0]) != 64
+            or any(char not in "0123456789abcdef" for char in fields[0].lower())
+            or len(fields[1]) != 71 or not fields[1].startswith("sha256:")
+            or any(char not in "0123456789abcdef" for char in fields[1][7:])
+            or fields[2] != MIHOMO_CONFIG_IMAGE or fields[3] not in {"true", "false"}
+            or fields[4] != "unless-stopped" or fields[5] != "host"
+            or fields[6] != "mihomo" or len(fields[7]) != 64
+            or any(char not in "0123456789abcdef" for char in fields[7])
+            or fields[8] not in {"true", "false"}):
+        raise LifecycleError("fixed Mihomo container identity is invalid")
+    if fields[8] != "true":
+        raise LifecycleError("Mihomo container lacks its required writable protected mount")
+    return {"container_id": fields[0].lower(), "image_id": fields[1],
+            "config_image": fields[2], "running": fields[3] == "true",
+            "compose_config_hash": fields[7]}
+
+
+def _trusted_fixed_file_digest(path: Path, *, max_bytes: int = 1024 * 1024) -> str:
+    path = Path(path)
+    for parent in reversed(path.parents):
+        try:
+            info = parent.lstat()
+        except OSError as exc:
+            raise LifecycleError("fixed runtime path ancestor is unavailable") from exc
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise LifecycleError("fixed runtime path ancestor is untrusted")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise LifecycleError("fixed runtime file is unavailable") from exc
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0
+                or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or before.st_size > max_bytes):
+            raise LifecycleError("fixed runtime file is untrusted")
+        digest = hashlib.sha256()
+        total = 0
+        while chunk := os.read(fd, 64 * 1024):
+            total += len(chunk)
+            if total > max_bytes:
+                raise LifecycleError("fixed runtime file exceeds its size limit")
+            digest.update(chunk)
+        after = os.fstat(fd)
+        named = path.lstat()
+        identity = lambda item: (item.st_dev, item.st_ino, item.st_size,
+                                  item.st_mtime_ns, item.st_ctime_ns)
+        if (identity(before) != identity(after) or identity(after) != identity(named)
+                or not stat.S_ISREG(named.st_mode) or named.st_uid != 0
+                or named.st_mode & (stat.S_IWGRP | stat.S_IWOTH) or total != after.st_size):
+            raise LifecycleError("fixed runtime file changed while reading")
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def _compose_file_digest() -> str:
+    return _trusted_fixed_file_digest(MIHOMO_COMPOSE_FILE)
+
+
+def _mihomo_cache_state() -> dict[str, Any]:
+    """Hash only the fixed writable cache file, with bounded trusted-path checks."""
+    path = MIHOMO_CACHE_DB
+    for parent in reversed(path.parents):
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise LifecycleError("fixed Mihomo cache ancestor is untrusted")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try: fd=os.open(path,flags)
+    except OSError as exc:
+        raise LifecycleError("fixed Mihomo cache is unavailable") from exc
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+                or before.st_nlink != 1 or before.st_size > 64 * 1024 * 1024
+                or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise LifecycleError("fixed Mihomo cache is untrusted")
+        digest = hashlib.sha256()
+        total = 0
+        while chunk := os.read(fd, 65536):
+            total += len(chunk)
+            if total > 64 * 1024 * 1024:
+                raise LifecycleError("fixed Mihomo cache exceeds its bound")
+            digest.update(chunk)
+        after = os.fstat(fd)
+        named = path.lstat()
+        identity = lambda item: (item.st_dev, item.st_ino, item.st_size,
+                                 item.st_mtime_ns, item.st_ctime_ns)
+        if (identity(before) != identity(after) or identity(after) != identity(named)
+                or total != after.st_size or not stat.S_ISREG(named.st_mode)):
+            raise LifecycleError("fixed Mihomo cache changed while hashing")
+        return {"sha256": digest.hexdigest(), "size": total}
+    finally:
+        os.close(fd)
+
+
+def _docker_action(action: str, container_id: str) -> None:
+    if action not in {"stop", "start"} or len(container_id) != 64:
+        raise LifecycleError("refusing non-allowlisted Mihomo container action")
+    env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root",
+           "LANG": "C.UTF-8", "DOCKER_HOST": "unix:///var/run/docker.sock"}
+    argv = (["/usr/bin/docker", "stop", "--time", "30", container_id]
+            if action == "stop" else ["/usr/bin/docker", "start", container_id])
+    try:
+        result = subprocess.run(argv, check=False, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, timeout=45, env=env)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LifecycleError(f"cannot {action} the pinned Mihomo container") from exc
+    if result.returncode != 0 or len(result.stdout) > 256 or len(result.stderr) > 4096:
+        raise LifecycleError(f"cannot {action} the pinned Mihomo container")
 
 
 def _verify_operation_backup_pin(state_dir: Path, operation_id: str, backup: object) -> None:
@@ -462,27 +720,286 @@ def _sha256_file(path: Path) -> str:
         os.close(fd)
 
 
+def _validate_expected_runtime_args(args: argparse.Namespace) -> None:
+    try:
+        normalized = str(uuid.UUID(args.expected_operation_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise LifecycleError("expected rollout operation id is invalid") from exc
+    args.expected_operation_id = normalized
+    for value in (args.expected_current_manifest_sha256, args.expected_container_id,
+                  args.expected_image_id, args.expected_compose_config_hash,
+                  args.expected_compose_file_sha256):
+        if not isinstance(value, str):
+            raise LifecycleError("Mihomo runtime operation identity is incomplete")
+    if (not re_full_hex(args.expected_current_manifest_sha256, 64)
+            or not re_full_hex(args.expected_container_id, 64)
+            or not re_full_hex(args.expected_image_id.removeprefix("sha256:"), 64)
+            or not args.expected_image_id.startswith("sha256:")
+            or not re_full_hex(args.expected_compose_config_hash, 64)
+            or not re_full_hex(args.expected_compose_file_sha256, 64)):
+        raise LifecycleError("Mihomo runtime operation identity is invalid")
+
+
+def re_full_hex(value: str, length: int) -> bool:
+    return len(value) == length and all(char in "0123456789abcdef" for char in value)
+
+
+def _runtime_checkpoint(checkpoint: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    quiescence = checkpoint.get("runtime_quiescence")
+    if not isinstance(quiescence, dict):
+        raise LifecycleError("Mihomo quiescence has not been recorded for this operation")
+    if (quiescence.get("operation_id") != args.expected_operation_id
+            or quiescence.get("container_id") != args.expected_container_id
+            or quiescence.get("image_id") != args.expected_image_id
+            or quiescence.get("compose_config_hash") != args.expected_compose_config_hash
+            or quiescence.get("compose_file_sha256") != args.expected_compose_file_sha256):
+        raise LifecycleError("Mihomo runtime identity changed from the approved operation")
+    if args.expected_current_manifest_sha256 != checkpoint.get("backend_manifest_sha256"):
+        raise LifecycleError("Mihomo runtime operation source checkpoint changed")
+    initial = quiescence["source_manifest_sha256"]
+    transitions = checkpoint.get("source_transitions", [])
+    if checkpoint["backend_manifest_sha256"] == initial:
+        if transitions:
+            raise LifecycleError("Mihomo source checkpoint has an unexpected transition")
+    elif (len(transitions) != 1
+            or transitions[0].get("operation_id") != args.expected_operation_id
+            or transitions[0].get("from_manifest_sha256") != initial
+            or transitions[0].get("to_manifest_sha256") != checkpoint["backend_manifest_sha256"]):
+        raise LifecycleError("Mihomo source checkpoint is not the owned forward CAS")
+    return quiescence
+
+
+def _quiesce_mihomo(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
+    _validate_expected_runtime_args(args)
+    path = state_dir / "pending.json"
+    checkpoint = _checkpoint_as_current_schema(_read_checkpoint(path))
+    _check_expected_lifecycle_identity(
+        checkpoint, args.expected_operation_id, args.expected_current_manifest_sha256)
+    installed = _backend_manifest(TARGET_BACKEND)
+    if _manifest_digest(installed) != args.expected_current_manifest_sha256:
+        raise LifecycleError("installed OLD backend changed before Mihomo quiescence")
+    # The first call reaches this point with no runtime record; retries may
+    # reach it with stop_pending persisted immediately before docker stop.
+    # Check rollout-owned systemd units here, then validate the recorded
+    # container identity and continue the same bounded stop below. Transfer
+    # keeps the stricter `_require_units_stopped(checkpoint)` check and cannot
+    # proceed until the runtime phase is quiesced.
+    _require_units_stopped()
+    quiescence = checkpoint.get("runtime_quiescence")
+    if quiescence is None:
+        unit_active, unit_sub, unit_enabled = _mihomo_unit_state()
+        container = _mihomo_container()
+        compose_digest = _compose_file_digest()
+        if (container["container_id"] != args.expected_container_id
+                or container["image_id"] != args.expected_image_id
+                or container["compose_config_hash"] != args.expected_compose_config_hash
+                or compose_digest != args.expected_compose_file_sha256
+                or container["running"] != (unit_active == "active")):
+            raise LifecycleError("Mihomo service/container identity is not the approved baseline")
+        quiescence = {
+            "kind": "mihomo_existing_container/v1", "phase": "stop_pending",
+            "operation_id": checkpoint["operation_id"],
+            "source_manifest_sha256": args.expected_current_manifest_sha256,
+            "unit_active_state": unit_active, "unit_sub_state": unit_sub,
+            "unit_enabled_state": unit_enabled, "container_id": container["container_id"],
+            "image_id": container["image_id"], "config_image": container["config_image"],
+            "compose_config_hash": container["compose_config_hash"],
+            "compose_file_sha256": compose_digest,
+            "cache_before": _mihomo_cache_state(), "cache_after": None,
+        }
+        checkpoint["runtime_quiescence"] = quiescence
+        _atomic_write(path, checkpoint)
+    else:
+        _validate_runtime_quiescence(quiescence, checkpoint["operation_id"])
+        if (quiescence["operation_id"] != args.expected_operation_id
+                or quiescence["source_manifest_sha256"] != args.expected_current_manifest_sha256
+                or quiescence["container_id"] != args.expected_container_id
+                or quiescence["image_id"] != args.expected_image_id
+                or quiescence["compose_config_hash"] != args.expected_compose_config_hash
+                or quiescence["compose_file_sha256"] != args.expected_compose_file_sha256):
+            raise LifecycleError("Mihomo quiescence is owned by another runtime identity")
+        if quiescence["phase"] == "quiesced":
+            container = _mihomo_container()
+            unit_state = _mihomo_unit_state()
+            if (container["container_id"] != quiescence["container_id"]
+                    or container["image_id"] != quiescence["image_id"]
+                    or container["compose_config_hash"] != quiescence["compose_config_hash"]
+                    or container["running"]
+                    or unit_state != (quiescence["unit_active_state"],
+                                      quiescence["unit_sub_state"],
+                                      quiescence["unit_enabled_state"])
+                    or _mihomo_cache_state() != quiescence["cache_after"]):
+                raise LifecycleError("Mihomo quiescence changed before idempotent readback")
+            return {"status": "quiesced", "operation_id": checkpoint["operation_id"],
+                    "container_id": quiescence["container_id"],
+                    "image_id": quiescence["image_id"], "phase": quiescence["phase"]}
+        if quiescence["phase"] in {"release_pending", "released"}:
+            raise LifecycleError("Mihomo quiescence is already beyond the stop phase")
+
+    container = _mihomo_container()
+    unit_state = _mihomo_unit_state()
+    if (container["container_id"] != quiescence["container_id"]
+            or container["image_id"] != quiescence["image_id"]
+            or container["compose_config_hash"] != quiescence["compose_config_hash"]
+            or _compose_file_digest() != quiescence["compose_file_sha256"]
+            or unit_state != (quiescence["unit_active_state"],
+                              quiescence["unit_sub_state"],
+                              quiescence["unit_enabled_state"])):
+        raise LifecycleError("Mihomo container or Compose identity changed before stop")
+    cache_now = _mihomo_cache_state()
+    if cache_now != quiescence["cache_before"]:
+        raise LifecycleError("fixed Mihomo cache changed after the owned stop intent")
+    # Do not mask the unit: the installed /etc unit has higher search priority
+    # than /run/systemd/system, so a runtime mask would not reliably fence it.
+    # Stop only the already-identified container by immutable Docker ID. Docker
+    # stop suppresses its unless-stopped restart policy until explicit start.
+    if container["running"]:
+        _docker_action("stop", quiescence["container_id"])
+    stopped = _mihomo_container()
+    cache_after = _mihomo_cache_state()
+    if (stopped["container_id"] != quiescence["container_id"]
+            or stopped["image_id"] != quiescence["image_id"]
+            or stopped["compose_config_hash"] != quiescence["compose_config_hash"]
+            or stopped["running"]
+            or _compose_file_digest() != quiescence["compose_file_sha256"]
+            or _mihomo_unit_state() != (quiescence["unit_active_state"],
+                                        quiescence["unit_sub_state"],
+                                        quiescence["unit_enabled_state"])):
+        raise LifecycleError("Mihomo container did not reach its pinned stopped state")
+    quiescence["cache_after"]=cache_after
+    quiescence["phase"] = "quiesced"
+    _atomic_write(path, checkpoint)
+    return {"status": "quiesced", "operation_id": checkpoint["operation_id"],
+            "container_id": quiescence["container_id"], "image_id": quiescence["image_id"],
+            "phase": quiescence["phase"]}
+
+
+def _release_mihomo(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
+    _validate_expected_runtime_args(args)
+    path = state_dir / "pending.json"
+    checkpoint = _checkpoint_as_current_schema(_read_checkpoint(path))
+    if checkpoint["status"] != "pending":
+        raise LifecycleError("Mihomo release requires a pending owned operation")
+    quiescence = _runtime_checkpoint(checkpoint, args)
+    if quiescence["phase"] == "released":
+        container = _mihomo_container()
+        unit_state = _mihomo_unit_state()
+        expected_running = quiescence["unit_active_state"] == "active"
+        if (container["container_id"] != quiescence["container_id"]
+                or container["image_id"] != quiescence["image_id"]
+                or container["compose_config_hash"] != quiescence["compose_config_hash"]
+                or container["config_image"] != quiescence["config_image"]
+                or container["running"] != expected_running
+                or unit_state != (quiescence["unit_active_state"],
+                                  quiescence["unit_sub_state"],
+                                  quiescence["unit_enabled_state"])
+                or _compose_file_digest() != quiescence["compose_file_sha256"]):
+            raise LifecycleError("released Mihomo runtime no longer matches its checkpoint")
+        return {"status": "released", "operation_id": checkpoint["operation_id"],
+                "container_id": quiescence["container_id"], "image_id": quiescence["image_id"]}
+    if quiescence["phase"] not in {"quiesced", "release_pending"}:
+        raise LifecycleError("Mihomo runtime is not ready for controlled release")
+    if getattr(args, "jit_owner_quiescence", False):
+        # The explicit JIT mode releases the exact pre-existing container only
+        # after NEW source CAS/install while API and every rollout-owned writer
+        # remain stopped. The owner proof refresh and ordinary API health gates
+        # run after release; legacy resume keeps its original health requirement.
+        if quiescence["phase"] not in {"quiesced", "release_pending"}:
+            raise LifecycleError("JIT release requires the owned quiesced phase")
+        _require_units_stopped()
+        if quiescence["phase"] == "quiesced":
+            _require_units_stopped(checkpoint)
+            if _mihomo_cache_state() != quiescence["cache_after"]:
+                raise LifecycleError("fixed Mihomo cache changed before controlled release")
+        else:
+            pending_container = _mihomo_container()
+            if (pending_container["container_id"] != quiescence["container_id"]
+                    or pending_container["image_id"] != quiescence["image_id"]
+                    or pending_container["compose_config_hash"] != quiescence["compose_config_hash"]):
+                raise LifecycleError("Mihomo runtime changed during pending release")
+            if (not pending_container["running"]
+                    and _mihomo_cache_state() != quiescence["cache_after"]):
+                raise LifecycleError("fixed Mihomo cache changed before pending release retry")
+        installed = _backend_manifest(TARGET_BACKEND)
+        if _manifest_digest(installed) != checkpoint["backend_manifest_sha256"]:
+            raise LifecycleError("JIT Mihomo release requires the exact installed NEW backend")
+    elif not _api_health():
+        raise LifecycleError("API health is required before Mihomo runtime release")
+    compose_digest = _compose_file_digest()
+    container = _mihomo_container()
+    unit_state = _mihomo_unit_state()
+    if (compose_digest != quiescence["compose_file_sha256"]
+            or container["container_id"] != quiescence["container_id"]
+            or container["image_id"] != quiescence["image_id"]
+            or container["compose_config_hash"] != quiescence["compose_config_hash"]
+            or (quiescence["phase"] == "quiesced" and container["running"])
+            or unit_state != (quiescence["unit_active_state"],
+                              quiescence["unit_sub_state"],
+                              quiescence["unit_enabled_state"])):
+        raise LifecycleError("Mihomo runtime changed before controlled release")
+    if quiescence["phase"] == "quiesced":
+        quiescence["phase"] = "release_pending"
+        _atomic_write(path, checkpoint)
+    if quiescence["unit_active_state"] == "active":
+        if not container["running"]:
+            _docker_action("start", quiescence["container_id"])
+        started = _mihomo_container()
+    else:
+        started = container
+    if (started["container_id"] != quiescence["container_id"]
+            or started["image_id"] != quiescence["image_id"]
+            or started["config_image"] != quiescence["config_image"]
+            or started["compose_config_hash"] != quiescence["compose_config_hash"]
+            or started["running"] != (quiescence["unit_active_state"] == "active")
+            or _compose_file_digest() != quiescence["compose_file_sha256"]
+            or _mihomo_unit_state() != (quiescence["unit_active_state"],
+                                        quiescence["unit_sub_state"],
+                                        quiescence["unit_enabled_state"])):
+        raise LifecycleError("Mihomo release changed or failed to restore the pinned container")
+    quiescence["phase"] = "released"
+    _atomic_write(path, checkpoint)
+    return {"status": "released", "operation_id": checkpoint["operation_id"],
+            "container_id": quiescence["container_id"], "image_id": quiescence["image_id"]}
+
+
 def _checkpoint_as_current_schema(checkpoint: dict[str, Any]) -> dict[str, Any]:
     """Upgrade an in-memory legacy checkpoint without changing its ownership."""
     if checkpoint["schema"] == SCHEMA:
         return checkpoint
-    if checkpoint["schema"] == PREVIOUS_SCHEMA:
-        return {**checkpoint, "schema": SCHEMA, "maintenance_operation": None}
+    upgraded = dict(checkpoint)
     digest = checkpoint["backend_manifest_sha256"]
-    return {
-        **checkpoint,
-        "schema": SCHEMA,
-        "initial_backend_manifest_sha256": digest,
-        "source_transitions": [],
-        "maintenance_operation": None,
-    }
+    upgraded.setdefault("initial_backend_manifest_sha256", digest)
+    upgraded.setdefault("source_transitions", [])
+    upgraded.setdefault("maintenance_operation", None)
+    upgraded.setdefault("runtime_quiescence", None)
+    upgraded["schema"] = SCHEMA
+    return upgraded
 
 
-def _require_units_stopped() -> None:
+def _require_units_stopped(checkpoint: dict[str, Any] | None = None) -> None:
     units = (*RESTORE_ORDER, *TRANSIENT_JOBS, API_UNIT)
     active = [unit for unit in units if _is_active(unit)]
     if active:
         raise LifecycleError("all rollout-owned API, dependent, timer, and one-shot units must be stopped")
+    if checkpoint is not None:
+        quiescence = checkpoint.get("runtime_quiescence")
+        if quiescence is not None and quiescence.get("phase") in {
+                "stop_pending", "quiesced"}:
+            if (quiescence.get("phase") == "quiesced"
+                    and _mihomo_cache_state() != quiescence.get("cache_after")):
+                raise LifecycleError("fixed Mihomo cache changed after owned quiescence")
+            container = _mihomo_container()
+            if (container["container_id"] != quiescence["container_id"]
+                    or container["image_id"] != quiescence["image_id"]
+                    or container["compose_config_hash"] != quiescence["compose_config_hash"]
+                    or container["running"]
+                    or _compose_file_digest() != quiescence["compose_file_sha256"]
+                    or _mihomo_unit_state() != (quiescence["unit_active_state"],
+                                                quiescence["unit_sub_state"],
+                                                quiescence["unit_enabled_state"])):
+                raise LifecycleError("Mihomo runtime is not held at its owned quiescent identity")
+        elif quiescence is not None and quiescence.get("phase") == "release_pending":
+            raise LifecycleError("Mihomo runtime release is incomplete")
 
 
 def _transfer(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
@@ -513,6 +1030,10 @@ def _transfer(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
     checkpoint = _checkpoint_as_current_schema(checkpoint)
     current_checkpoint_digest = checkpoint["backend_manifest_sha256"]
     transitions = checkpoint["source_transitions"]
+    runtime_quiescence = checkpoint.get("runtime_quiescence")
+    if (runtime_quiescence is not None
+            and runtime_quiescence.get("phase") != "quiesced"):
+        raise LifecycleError("Mihomo must be held at the exact quiescent identity before source transfer")
 
     # Atomic publication can complete immediately before an interruption. Permit
     # only an exact replay of the final CAS, with the installed tree still at
@@ -523,7 +1044,7 @@ def _transfer(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
                 or transitions[-1]["to_manifest_sha256"] != expected_new_digest
                 or transitions[-1]["operation_id"] != expected_operation_id):
             raise LifecycleError("checkpoint is already bound to a different source transition")
-        _require_units_stopped()
+        _require_units_stopped(checkpoint)
         installed = _backend_manifest(TARGET_BACKEND)
         installed_digest = _manifest_digest(installed)
         if installed_digest not in {expected_old_digest, expected_new_digest}:
@@ -535,15 +1056,17 @@ def _transfer(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
         raise LifecycleError("checkpoint source identity changed")
     if len(transitions) >= MAX_SOURCE_TRANSITIONS:
         raise LifecycleError("rollout source transition history reached its bound")
-
-    _require_units_stopped()
+    _require_units_stopped(checkpoint)
     # The old installed tree is the only admissible pre-install state. In
     # particular, a hand-edited/stale/partially overlaid backend cannot transfer.
     _verify_export(checkpoint["backend_manifest"])
     # Recheck after the bounded tree hash: the lifecycle flock serializes this
     # helper, while this second observation catches a unit started by an
     # unrelated systemd/operator action during hashing.
-    _require_units_stopped()
+    _require_units_stopped(checkpoint)
+    if (runtime_quiescence is not None
+            and runtime_quiescence.get("phase") != "quiesced"):
+        raise LifecycleError("Mihomo quiescence changed before source transfer")
 
     checkpoint["backend_manifest"] = current_source
     checkpoint["backend_manifest_sha256"] = current_source_digest
@@ -681,6 +1204,7 @@ def _stop(
             "initial_backend_manifest_sha256": _manifest_digest(backend_manifest),
             "source_transitions": [],
             "maintenance_operation": maintenance_operation,
+            "runtime_quiescence": None,
             "active_units": active,
             "pending_units": [],
         }
@@ -843,6 +1367,10 @@ def _resume(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
     maintenance = checkpoint.get("maintenance_operation")
     if maintenance is not None and maintenance.get("status") != "verified":
         raise LifecycleError("offline rebuild is incomplete; API startup remains blocked")
+    runtime_quiescence = checkpoint.get("runtime_quiescence")
+    if (runtime_quiescence is not None
+            and runtime_quiescence.get("phase") != "released"):
+        raise LifecycleError("Mihomo runtime must be released with its operation identity before resume")
     if not _api_health():
         raise LifecycleError("API health gate failed; dependent units were not restored")
     expected = checkpoint["backend_manifest"]
@@ -877,12 +1405,19 @@ def _resume(args: argparse.Namespace, state_dir: Path) -> dict[str, Any]:
 
 def run_command(argv: list[str] | None = None) -> dict[str, Any]:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("stop", "resume", "transfer", "rebuild-db"))
+    parser.add_argument("command", choices=("stop", "resume", "transfer", "rebuild-db",
+                                             "quiesce-mihomo", "release-mihomo"))
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--expected-operation-id")
     parser.add_argument("--expected-current-manifest-sha256")
     parser.add_argument("--expected-new-manifest-sha256")
     parser.add_argument("--file-path", help="snapshot path for the lifecycle-owned database rebuild")
+    parser.add_argument("--expected-container-id")
+    parser.add_argument("--expected-image-id")
+    parser.add_argument("--expected-compose-config-hash")
+    parser.add_argument("--expected-compose-file-sha256")
+    parser.add_argument("--jit-owner-quiescence", action="store_true",
+                        help="release the exact pinned container while NEW API writers remain stopped")
     parser.add_argument("--allow-timer-catchup", action="store_true",
                         help="explicitly allow reactivation of previously active Persistent=true timers")
     args = parser.parse_args(argv)
@@ -890,18 +1425,28 @@ def run_command(argv: list[str] | None = None) -> dict[str, Any]:
         raise LifecycleError("controlled backend lifecycle must run as root")
     if args.allow_timer_catchup and args.command != "resume":
         raise LifecycleError("--allow-timer-catchup applies only to resume")
+    if args.jit_owner_quiescence and args.command != "release-mihomo":
+        raise LifecycleError("--jit-owner-quiescence applies only to release-mihomo")
     if args.command == "transfer" and not all((args.expected_operation_id,
                                                 args.expected_current_manifest_sha256,
                                                 args.expected_new_manifest_sha256)):
         raise LifecycleError("transfer requires expected operation id and old/new manifest digests")
     if args.command == "rebuild-db" and not args.file_path:
         raise LifecycleError("rebuild-db requires --file-path")
+    if args.command in {"quiesce-mihomo", "release-mihomo"}:
+        if not all((args.expected_operation_id, args.expected_current_manifest_sha256,
+                    args.expected_container_id, args.expected_image_id,
+                    args.expected_compose_config_hash, args.expected_compose_file_sha256)):
+            raise LifecycleError(f"{args.command} requires exact operation and runtime identities")
+    elif any((args.expected_container_id, args.expected_image_id,
+              args.expected_compose_config_hash, args.expected_compose_file_sha256)):
+        raise LifecycleError("Mihomo runtime identities apply only to Mihomo lifecycle commands")
     if (args.command == "rebuild-db"
             and Path(os.path.abspath(args.state_dir)) != Path(os.path.abspath(DEFAULT_STATE_DIR))):
         raise LifecycleError("database rebuild lifecycle state directory is fixed")
     if args.command != "rebuild-db" and args.file_path:
         raise LifecycleError("--file-path applies only to rebuild-db")
-    if args.command != "transfer" and any((args.expected_operation_id,
+    if args.command not in {"transfer", "quiesce-mihomo", "release-mihomo"} and any((args.expected_operation_id,
                                              args.expected_current_manifest_sha256,
                                              args.expected_new_manifest_sha256)):
         raise LifecycleError("expected source transition arguments apply only to transfer")
@@ -910,6 +1455,10 @@ def run_command(argv: list[str] | None = None) -> dict[str, Any]:
     try:
         if args.command == "stop":
             return _stop(state_dir)
+        if args.command == "quiesce-mihomo":
+            return _quiesce_mihomo(args, state_dir)
+        if args.command == "release-mihomo":
+            return _release_mihomo(args, state_dir)
         if args.command == "transfer":
             return _transfer(args, state_dir)
         if args.command == "rebuild-db":

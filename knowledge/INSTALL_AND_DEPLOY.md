@@ -179,6 +179,23 @@ If `docker` and `docker compose` already exist, Docker packages are skipped so D
 
 `conntrack` is optional for apply success. When present, apply can clear old client IPv4 flows after VPN/selective dataplane changes so new TCP connections pass through fresh transparent redirect/TProxy rules.
 
+## Controlled JIT recovery owner
+
+For an existing installation, use the separately approved controlled backend
+procedure in [MANUAL_DEPLOYMENT_BACKEND_PREREQUISITE](../docs/MANUAL_DEPLOYMENT_BACKEND_PREREQUISITE.md).
+The lifecycle's opt-in schema-4 Mihomo quiescence stops and releases only the
+pinned existing container; it does not replace images or apply configuration.
+This is needed when the writable runtime cache belongs to the protected backup.
+The ordinary stop/resume contract and explicit timer catch-up decision remain.
+
+The installed `xray generation proof-only-refresh` CLI is restricted to an
+already verified generation and the exact released operation/checkpoint/source
+transition. `services/rollout_native_evidence.py` delegates native verification
+and evidence publication to the existing Xray generation owner. It is not an
+inventory refresh, native repair, general recovery admission or deployment
+approval. Full physical native proof remains mandatory. Private operation-bound
+backup, policy and orchestrator artifacts stay outside the public repository.
+
 ## Safe Deployment Sequence
 
 1. Edit source in `/srv/fwrouter`.
