@@ -7,7 +7,7 @@ from typing import Any
 
 from fwrouter_api.adapters.xray_common import xray_writer_guard
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.servers import get_server, list_servers
+from fwrouter_api.services.server_inventory import get_server, list_servers
 from fwrouter_api.services.ui_text import _ui_text_title
 
 

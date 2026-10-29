@@ -40,3 +40,8 @@ not choose it automatically.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Do not treat subscription membership as ownership for custom servers.
 - Do not confuse custom `server_id` with Mihomo runtime `server_name`.
+
+Inventory lookups import `get_server` and `list_servers` directly from their
+`server_inventory` owner. The `servers` facade reexports these same functions,
+but imports override codecs that depend on custom-server constants. Importing
+that facade here creates a cycle during cold CLI/native rollout imports.

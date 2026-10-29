@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 import types
@@ -7,6 +8,50 @@ import types
 import pytest
 
 from fwrouter_api import cli
+
+
+def test_cold_rollout_import_chain_preserves_inventory_facade_exports() -> None:
+    import fwrouter_api.services as services_package
+
+    names = (
+        "fwrouter_api.services.rollout_native_evidence",
+        "fwrouter_api.services.xray_subscription_service",
+        "fwrouter_api.services.custom_servers",
+        "fwrouter_api.services.servers",
+        "fwrouter_api.services.server_subject_overrides",
+        "fwrouter_api.services.subject_server_override_codec",
+    )
+    saved_modules = {name: sys.modules.pop(name) for name in names if name in sys.modules}
+    attributes = {name.rsplit(".", 1)[-1] for name in names}
+    saved_attributes = {
+        name: (hasattr(services_package, name), getattr(services_package, name, None))
+        for name in attributes
+    }
+    try:
+        for attribute in saved_attributes:
+            if hasattr(services_package, attribute):
+                delattr(services_package, attribute)
+        importlib.import_module("fwrouter_api.services.rollout_native_evidence")
+        from fwrouter_api.services import custom_servers, server_inventory, servers
+        importlib.import_module("fwrouter_api.services.server_subject_overrides")
+        codec = importlib.import_module("fwrouter_api.services.subject_server_override_codec")
+
+        assert custom_servers.get_server is server_inventory.get_server
+        assert custom_servers.list_servers is server_inventory.list_servers
+        assert servers.get_server is server_inventory.get_server
+        assert servers.list_servers is server_inventory.list_servers
+        assert codec.VPN_AUTO_TARGET_KIND == "vpn_auto"
+    finally:
+        for name in names:
+            sys.modules.pop(name, None)
+        for name, module in saved_modules.items():
+            sys.modules[name] = module
+        for attribute, (present, module) in saved_attributes.items():
+            if not present:
+                if hasattr(services_package, attribute):
+                    delattr(services_package, attribute)
+            else:
+                setattr(services_package, attribute, module)
 
 
 def _run_supersession_cli(
