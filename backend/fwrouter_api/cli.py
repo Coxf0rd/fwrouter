@@ -226,6 +226,24 @@ def _run_native_proof(args: argparse.Namespace) -> int:
     return 0 if proof.get("status") == "PASS" else 1
 
 
+def _run_core_ip_receipt_reattest(args: argparse.Namespace) -> int:
+    from fwrouter_api.services.native_proof import reattest_core_ip_receipt
+
+    result = reattest_core_ip_receipt(
+        expected_tool_manifest_sha256=args.expected_tool_manifest_sha256,
+        expected_installed_backend_manifest_sha256=args.expected_installed_backend_manifest_sha256,
+        apply=bool(args.apply), expected_plan_sha256=args.expected_plan_sha256,
+        confirmation=args.confirm,
+    )
+    print(json.dumps(result, ensure_ascii=True, sort_keys=True))
+    return 0 if result.get("status") in {"READY", "NOOP", "PASS"} else 1
+
+
+def _is_root_process() -> bool:
+    """Keep the owner CLI's effective-UID check explicit and testable."""
+    return os.geteuid() == 0
+
+
 def _run_legacy_inventory_admission(args: argparse.Namespace) -> int:
     try:
         from fwrouter_api.services.xray_subscription_service import (
@@ -634,6 +652,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # importing lifecycle, diagnostic, or domain mutation services.
         from fwrouter_api.services.config_cli import main as config_main
         return config_main(arguments[1:])
+    if arguments[:2] == ["core", "ip-receipt-reattest"] and not _is_root_process():
+        print(json.dumps({"status": "BLOCKED", "reason": "CORE_IP_RECEIPT_REATTEST_ROOT_REQUIRED"}))
+        return 1
     from fwrouter_api.services.maintenance_lifecycle_admission import (
         DEFAULT_STATE_ROOT,
         runtime_shared_lease,
@@ -652,6 +673,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     native_proof_parser.add_argument("--expected-backend-manifest-sha256", required=True)
     native_proof_parser.add_argument("--expected-xray-image-digest", required=True)
     native_proof_parser.add_argument("--expected-mihomo-image-digest", required=True)
+    core_parser = subparsers.add_parser("core", help="Bounded Core-owned evidence operations.")
+    core_subparsers = core_parser.add_subparsers(dest="core_command")
+    core_reattest_parser = core_subparsers.add_parser(
+        "ip-receipt-reattest", help="Plan or explicitly re-attest only the Core IP receipt binding.",
+    )
+    core_reattest_mode = core_reattest_parser.add_mutually_exclusive_group(required=True)
+    core_reattest_mode.add_argument("--plan", action="store_true")
+    core_reattest_mode.add_argument("--apply", action="store_true")
+    core_reattest_parser.add_argument("--expected-tool-manifest-sha256", required=True)
+    core_reattest_parser.add_argument("--expected-installed-backend-manifest-sha256", required=True)
+    core_reattest_parser.add_argument("--expected-plan-sha256")
+    core_reattest_parser.add_argument("--confirm")
     xray_parser = subparsers.add_parser("xray")
     xray_subparsers = xray_parser.add_subparsers(dest="xray_command")
     identity_parser = xray_subparsers.add_parser("identity-migration")
@@ -705,6 +738,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(json.dumps(result, sort_keys=True))
         return 0 if result.get("ok") is True else 1
+    if args.command == "core" and args.core_command == "ip-receipt-reattest":
+        if args.apply != bool(args.expected_plan_sha256 and args.confirm):
+            print(json.dumps({"status": "BLOCKED", "reason": "CORE_IP_RECEIPT_REATTEST_CONFIRMATION_REQUIRED"}))
+            return 2
+        from fwrouter_api.services.maintenance_lifecycle_admission import (
+            MaintenanceAdmissionError,
+            core_owner_shared_lease,
+        )
+        try:
+            with core_owner_shared_lease(
+                expected_tool_manifest_sha256=args.expected_tool_manifest_sha256,
+                expected_installed_backend_manifest_sha256=args.expected_installed_backend_manifest_sha256,
+                state_root=DEFAULT_STATE_ROOT,
+            ):
+                return _run_core_ip_receipt_reattest(args)
+        except MaintenanceAdmissionError as exc:
+            reason = str(exc)
+            if not re.fullmatch(r"CORE_OWNER_[A-Z0-9_]+", reason):
+                reason = "CORE_OWNER_ADMISSION_FAILED"
+            print(json.dumps({"status": "BLOCKED", "reason": reason}, sort_keys=True))
+            return 1
     with runtime_shared_lease(DEFAULT_STATE_ROOT):
         if args.command == "reconcile" and args.reconcile_command == "check":
             return _print_reconcile_check()

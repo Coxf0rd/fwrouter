@@ -8,9 +8,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 import contextvars
 import fcntl
+import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
@@ -409,6 +410,148 @@ def runtime_shared_lease(state_root: Path = DEFAULT_STATE_ROOT) -> Iterator[None
     """Hold a shared lease across the API process lifetime."""
     fd = acquire_shared_lease_fd(state_root)
     try:
+        yield
+    finally:
+        os.close(fd)
+
+
+def _validate_core_owner_complete_checkpoint(
+    checkpoint: dict[str, object] | None,
+    *,
+    expected_installed_backend_manifest_sha256: str,
+) -> None:
+    """Admit the immutable source tool only against a completed schema-2 OLD tree.
+
+    The general startup gate intentionally compares the executing backend with
+    the lifecycle checkpoint. This narrowly scoped owner command executes a
+    separately pinned source tool while repairing the receipt for an installed
+    OLD backend, so it validates both identities independently instead.
+    """
+    if checkpoint is None:
+        raise MaintenanceAdmissionError("CORE_OWNER_LIFECYCLE_CHECKPOINT_REQUIRED")
+    expected_keys = {
+        "schema", "operation_id", "status", "created_at", "backend_manifest",
+        "backend_manifest_sha256", "active_units", "pending_units",
+        "initial_backend_manifest_sha256", "source_transitions",
+    }
+    if (set(checkpoint) != expected_keys or type(checkpoint.get("schema")) is not int
+            or checkpoint.get("schema") != 2
+            or checkpoint.get("status") != "complete"):
+        raise MaintenanceAdmissionError("CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED")
+    try:
+        operation_id = str(uuid.UUID(str(checkpoint.get("operation_id"))))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID") from exc
+    created_at = checkpoint.get("created_at")
+    manifest = checkpoint.get("backend_manifest")
+    digest = checkpoint.get("backend_manifest_sha256")
+    initial = checkpoint.get("initial_backend_manifest_sha256")
+    transitions = checkpoint.get("source_transitions")
+    if (not isinstance(created_at, str) or not created_at
+            or not isinstance(manifest, list) or not manifest
+            or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or not isinstance(initial, str) or not re.fullmatch(r"[0-9a-f]{64}", initial)
+            or not isinstance(transitions, list) or len(transitions) > 16):
+        raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
+    paths: list[str] = []
+    total_size = 0
+    if len(manifest) > 10_000:
+        raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
+    for entry in manifest:
+        name = entry.get("path") if isinstance(entry, dict) else None
+        relative = PurePosixPath(name) if isinstance(name, str) else PurePosixPath(".")
+        if (not isinstance(entry, dict) or set(entry) != {"path", "size", "sha256"}
+                or not isinstance(name, str)
+                or not name or relative.is_absolute() or relative.as_posix() != name
+                or any(part in {"", ".", ".."} for part in relative.parts)
+                or any(part in {".env", ".venv", ".pytest_cache", "__pycache__", ".git"}
+                       or part.startswith(".env.")
+                       or part.endswith((".pyc", ".pyo", ".db", ".sqlite", ".sqlite3", ".bak", ".tar.zst"))
+                       or ".bak-" in part for part in relative.parts)
+                or type(entry.get("size")) is not int or not 0 <= entry["size"] <= 512 * 1024 * 1024
+                or not isinstance(entry.get("sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+            raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
+        total_size += entry["size"]
+        if total_size > 512 * 1024 * 1024:
+            raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
+        paths.append(entry["path"])
+    if paths != sorted(set(paths)):
+        raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
+    manifest_digest = hashlib.sha256(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    ).hexdigest()
+    if manifest_digest != digest:
+        raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
+    previous = initial
+    for transition in transitions:
+        if (not isinstance(transition, dict) or set(transition) != {
+                "operation_id", "from_manifest_sha256", "to_manifest_sha256", "created_at"}):
+            raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
+        try:
+            transition_id = str(uuid.UUID(str(transition.get("operation_id"))))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID") from exc
+        from_digest = transition.get("from_manifest_sha256")
+        to_digest = transition.get("to_manifest_sha256")
+        if (transition_id != operation_id or from_digest != previous
+                or not isinstance(to_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", to_digest)
+                or to_digest == from_digest
+                or not isinstance(transition.get("created_at"), str)
+                or not transition["created_at"]):
+            raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
+        previous = to_digest
+    units = checkpoint.get("active_units")
+    pending = checkpoint.get("pending_units")
+    if (previous != digest or not isinstance(units, dict) or set(units) != set(LOCK_UNITS)
+            or any(not isinstance(name, str) or type(active) is not bool
+                   for name, active in units.items())
+            or not isinstance(pending, list)
+            or any(not isinstance(unit, str) or unit not in LOCK_UNITS for unit in pending)
+            or len(pending) != len(set(pending))):
+        raise MaintenanceAdmissionError("CORE_OWNER_CHECKPOINT_INVALID")
+    if digest != expected_installed_backend_manifest_sha256:
+        raise MaintenanceAdmissionError("CORE_OWNER_INSTALLED_BACKEND_CHECKPOINT_MISMATCH")
+
+
+@contextmanager
+def core_owner_shared_lease(
+    *,
+    expected_tool_manifest_sha256: str,
+    expected_installed_backend_manifest_sha256: str,
+    state_root: Path = DEFAULT_STATE_ROOT,
+) -> Iterator[None]:
+    """Hold the existing shared lease for a Core owner tool pinned separately from OLD.
+
+    Unlike ``runtime_shared_lease``, this admits only a complete ordinary schema-2
+    lifecycle checkpoint matching the fixed installed backend. The executing
+    tool must independently match its supplied exact manifest pin. No checkpoint,
+    selector, fence or installed file is written by this admission.
+    """
+    if os.geteuid() != _trusted_uid():
+        raise MaintenanceAdmissionError("CORE_OWNER_ROOT_REQUIRED")
+    if (not re.fullmatch(r"[0-9a-f]{64}", expected_tool_manifest_sha256)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_installed_backend_manifest_sha256)):
+        raise MaintenanceAdmissionError("CORE_OWNER_MANIFEST_PIN_INVALID")
+    try:
+        from fwrouter_api.services import native_proof
+
+        tool_digest = native_proof.backend_manifest_sha256(native_proof._backend_root())
+        installed_digest = native_proof.backend_manifest_sha256(native_proof._INSTALLED_BACKEND_ROOT)
+    except Exception as exc:
+        raise MaintenanceAdmissionError("CORE_OWNER_MANIFEST_UNAVAILABLE") from exc
+    if tool_digest != expected_tool_manifest_sha256:
+        raise MaintenanceAdmissionError("CORE_OWNER_TOOL_MANIFEST_MISMATCH")
+    if installed_digest != expected_installed_backend_manifest_sha256:
+        raise MaintenanceAdmissionError("CORE_OWNER_INSTALLED_BACKEND_MANIFEST_MISMATCH")
+
+    fd = _open_lease(state_root, create=True)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        _validate_core_owner_complete_checkpoint(
+            _read_checkpoint(state_root),
+            expected_installed_backend_manifest_sha256=expected_installed_backend_manifest_sha256,
+        )
         yield
     finally:
         os.close(fd)

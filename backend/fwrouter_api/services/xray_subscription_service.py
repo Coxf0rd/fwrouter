@@ -3354,7 +3354,9 @@ def admit_legacy_subscription_inventory(
             promoted = _promote_subscription_inventory_generation(admission)
             if not promoted.get("ok"):
                 return {"ok": False, "status": "blocked", "reason": promoted.get("reason") or "inventory_promotion_failed",
-                        "last_good_retained": True}
+                        "last_good_retained": True,
+                        **({"native_proof_reason": promoted["native_proof_reason"]}
+                           if isinstance(promoted.get("native_proof_reason"), str) else {})}
             checkpoint["phase"] = "verified"
             _atomic_write_private_checkpoint(
                 checkpoint_path, json.dumps(checkpoint, sort_keys=True, separators=(",", ":")),

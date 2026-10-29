@@ -272,6 +272,7 @@ def test_core_readback_binds_large_manifest_bytes_and_rejects_cross_fence_replac
 
     applied_bytes = write_manifest("x")
     nft_path.write_text("table inet fwrouter_v2 {}\n", encoding="utf-8")
+    receipt_path = dataplane / native_proof._CORE_NATIVE_PROOF_NAME
     monkeypatch.setattr(dataplane_global, "get_settings", lambda: SimpleNamespace(
         paths=SimpleNamespace(generated_dir=generated)))
     monkeypatch.setattr("fwrouter_api.services.core_intent.read_core_runtime_context", lambda: {"context": 1})
@@ -281,12 +282,15 @@ def test_core_readback_binds_large_manifest_bytes_and_rejects_cross_fence_replac
     ip_facts = {"semantic_sha256": "b" * 64, "checks": {"ipv6": True}}
     monkeypatch.setattr(native_proof, "_core_ip_facts", lambda: ip_facts)
     monkeypatch.setattr(native_proof, "read_live_nft_semantic_sha256", lambda: "a" * 64)
-    monkeypatch.setattr(native_proof, "_read_core_native_receipt", lambda: {
-        "apply_id": "fixture-apply", "core_intent_revision": 5,
+    receipt = {
+        "schema": 1, "apply_id": "fixture-apply", "core_intent_revision": 5,
         "applied_manifest_sha256": __import__("hashlib").sha256(applied_bytes).hexdigest(),
         "candidate_nft_sha256": native_proof._hash_regular_file(nft_path),
         "native_semantics_sha256": "a" * 64, "native_ip_semantics_sha256": "b" * 64,
-    })
+        "normalization": "nft-table-v1-counter-values-and-dns-timeout-elements-only",
+    }
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(native_proof, "core_native_proof_path", lambda: receipt_path)
     db = {"latest_apply": {"apply_id": "fixture-apply", "status": "applied", "core_intent_revision": 5},
           "core_revision": 5, "routing": {**routing, "apply_state": "clean"}, "selection": {"revision": 7}}
 
@@ -295,12 +299,8 @@ def test_core_readback_binds_large_manifest_bytes_and_rejects_cross_fence_replac
     assert result["applied_manifest_sha256"] == __import__("hashlib").sha256(applied_bytes).hexdigest()
 
     applied_bytes = write_manifest("y")
-    monkeypatch.setattr(native_proof, "_read_core_native_receipt", lambda: {
-        "apply_id": "fixture-apply", "core_intent_revision": 5,
-        "applied_manifest_sha256": __import__("hashlib").sha256(applied_bytes).hexdigest(),
-        "candidate_nft_sha256": native_proof._hash_regular_file(nft_path),
-        "native_semantics_sha256": "a" * 64, "native_ip_semantics_sha256": "b" * 64,
-    })
+    receipt["applied_manifest_sha256"] = __import__("hashlib").sha256(applied_bytes).hexdigest()
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     changed = False
 
     def mutate_during_readback() -> str:
@@ -313,6 +313,360 @@ def test_core_readback_binds_large_manifest_bytes_and_rejects_cross_fence_replac
     monkeypatch.setattr(native_proof, "read_live_nft_semantic_sha256", mutate_during_readback)
     with pytest.raises(RuntimeError, match="CORE_RUNTIME_CONTEXT_CHANGED"):
         native_proof._core_readback(db)
+
+
+def test_core_readback_only_allows_explicit_exact_receipt_pin_for_stale_ip_binding(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
+    import hashlib
+
+    generated = tmp_path / "generated"
+    dataplane = generated / "dataplane"
+    dataplane.mkdir(parents=True)
+    manifest_path = dataplane / "applied-manifest.json"
+    nft_path = dataplane / "applied.nft"
+    receipt_path = dataplane / native_proof._CORE_NATIVE_PROOF_NAME
+    routing = {"desired_mode": "direct", "applied_mode": "direct", "selective_default": "direct",
+               "server_mode": "auto", "desired_fixed_server_id": None, "applied_fixed_server_id": None}
+    manifest = {"plan_id": "apply-1", "routing_global_state": routing}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    nft_path.write_text("owned nft", encoding="utf-8")
+    receipt = {
+        "schema": 1, "apply_id": "apply-1", "core_intent_revision": 3,
+        "candidate_nft_sha256": native_proof._hash_regular_file(nft_path),
+        "applied_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "native_semantics_sha256": "a" * 64, "native_ip_semantics_sha256": "b" * 64,
+        "normalization": "nft-table-v1-counter-values-and-dns-timeout-elements-only",
+    }
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    receipt_sha = native_proof._hash_regular_file(receipt_path)
+    monkeypatch.setattr(native_proof, "core_native_proof_path", lambda: receipt_path)
+    monkeypatch.setattr(dataplane_global, "get_settings", lambda: SimpleNamespace(
+        paths=SimpleNamespace(generated_dir=generated)))
+    monkeypatch.setattr("fwrouter_api.services.core_intent.read_core_runtime_context", lambda: {"context": 1})
+    monkeypatch.setattr(dataplane_status, "_read_live_dataplane_payload", lambda: {"required_chains": {"input": True}})
+    monkeypatch.setattr(dataplane_status, "_live_owned_table_ready", lambda _payload: True)
+    monkeypatch.setattr(dataplane_live, "_probe_live_global_mode_uncached", lambda: {"ok": True, "mode": "direct"})
+    monkeypatch.setattr(native_proof, "_routing_manifest_matches", lambda *_args: True)
+    monkeypatch.setattr(native_proof, "_core_ip_facts", lambda: {"semantic_sha256": "c" * 64, "checks": {"required": True}})
+    monkeypatch.setattr(native_proof, "read_live_nft_semantic_sha256", lambda: "a" * 64)
+    db = {"latest_apply": {"apply_id": "apply-1", "status": "applied", "core_intent_revision": 3},
+          "core_revision": 3, "routing": {**routing, "apply_state": "clean"}, "selection": {"revision": 9}}
+
+    with pytest.raises(ValueError, match="CORE_IP_POLICY_MISMATCH"):
+        native_proof._core_readback(db)
+    proof = native_proof._core_readback(db, _expected_stale_receipt_sha256=receipt_sha)
+    assert proof["native_ip_semantics_sha256"] == "c" * 64
+
+    # The narrow exception does not bypass nft owner validation or accept a
+    # different receipt byte sequence.
+    monkeypatch.setattr(native_proof, "read_live_nft_semantic_sha256", lambda: "d" * 64)
+    with pytest.raises(ValueError, match="CORE_NATIVE_RULES_MISMATCH"):
+        native_proof._core_readback(db, _expected_stale_receipt_sha256=receipt_sha)
+
+
+def test_core_ip_receipt_reattest_is_plan_bound_and_changes_only_ip_digest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from contextlib import nullcontext
+    import hashlib
+
+    receipt_path = tmp_path / "applied-native-proof.json"
+    old = {
+        "schema": 1, "apply_id": "apply-1", "core_intent_revision": 3,
+        "candidate_nft_sha256": "a" * 64, "applied_manifest_sha256": "b" * 64,
+        "native_semantics_sha256": "c" * 64, "native_ip_semantics_sha256": "d" * 64,
+        "normalization": "nft-table-v1-counter-values-and-dns-timeout-elements-only",
+    }
+    receipt_path.write_text(json.dumps(old), encoding="utf-8")
+    monkeypatch.setattr(native_proof, "core_native_proof_path", lambda: receipt_path)
+    monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard",
+                        lambda **_kwargs: nullcontext())
+    facts = {
+        "tool_manifest_sha256": "1" * 64, "installed_backend_manifest_sha256": "2" * 64,
+        "checkpoint_sha256": "3" * 64, "operation_id": "4" * 32,
+        "source_fingerprint_sha256": "5" * 64, "generation_digest": "6" * 64,
+        "generation_revision": 61, "selection_revision": 9, "core_intent_revision": 3,
+        "latest_apply_id_sha256": "7" * 64, "database_fence_sha256": "8" * 64,
+        "receipt_sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+        "old_ip_semantics_sha256": "d" * 64, "current_ip_semantics_sha256": "e" * 64,
+        "core_native_semantics_sha256": "c" * 64, "applied_manifest_sha256": "b" * 64,
+        "applied_nft_sha256": "a" * 64,
+    }
+    core = {"native_ip_semantics_sha256": "e" * 64, "native_rule_semantics_sha256": "c" * 64}
+    sequence = iter([
+        (facts, old, core, "3" * 64),
+        ({**facts, "receipt_sha256": hashlib.sha256(
+            (json.dumps({**old, "native_ip_semantics_sha256": "e" * 64}, ensure_ascii=True,
+                        indent=2, sort_keys=True) + "\n").encode()).hexdigest()},
+         {**old, "native_ip_semantics_sha256": "e" * 64}, core, "3" * 64),
+    ])
+    monkeypatch.setattr(native_proof, "_core_ip_receipt_reattest_facts", lambda **_kwargs: next(sequence))
+    planned = native_proof.reattest_core_ip_receipt(
+        expected_tool_manifest_sha256="1" * 64,
+        expected_installed_backend_manifest_sha256="2" * 64,
+    )
+    assert planned["status"] == "READY"
+    assert planned["action"] == "REATTEST"
+    assert planned["receipt_sha256"] == facts["receipt_sha256"]
+    sequence = iter([
+        (facts, old, core, "3" * 64),
+        ({**facts, "receipt_sha256": hashlib.sha256(
+            (json.dumps({**old, "native_ip_semantics_sha256": "e" * 64}, ensure_ascii=True,
+                        indent=2, sort_keys=True) + "\n").encode()).hexdigest()},
+         {**old, "native_ip_semantics_sha256": "e" * 64}, core, "3" * 64),
+    ])
+    result = native_proof.reattest_core_ip_receipt(
+        expected_tool_manifest_sha256="1" * 64,
+        expected_installed_backend_manifest_sha256="2" * 64,
+        apply=True, expected_plan_sha256=planned["plan_sha256"],
+        confirmation=native_proof._CORE_IP_REATTEST_CONFIRMATION,
+    )
+    assert result["status"] == "PASS"
+    updated = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert updated == {**old, "native_ip_semantics_sha256": "e" * 64}
+    assert {key: value for key, value in updated.items() if key != "native_ip_semantics_sha256"} == {
+        key: value for key, value in old.items() if key != "native_ip_semantics_sha256"
+    }
+
+
+def test_core_ip_receipt_reattest_projection_sessions_cannot_write_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import sqlite3
+    from contextlib import nullcontext
+
+    from fwrouter_api.db import connection
+
+    database = tmp_path / "readonly-projection.sqlite3"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE guard_probe (value INTEGER NOT NULL)")
+    monkeypatch.setattr(connection, "get_db_path", lambda: database)
+    monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard",
+                        lambda **_kwargs: nullcontext())
+
+    def attempted_projection_write(**_kwargs):
+        with connection.connect() as db:
+            db.execute("INSERT INTO guard_probe(value) VALUES (1)")
+        raise AssertionError("read-only projection unexpectedly accepted a write")
+
+    monkeypatch.setattr(native_proof, "_core_ip_receipt_reattest_facts", attempted_projection_write)
+    result = native_proof.reattest_core_ip_receipt(
+        expected_tool_manifest_sha256="1" * 64,
+        expected_installed_backend_manifest_sha256="2" * 64,
+    )
+    assert result["status"] == "BLOCKED"
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT COUNT(*) FROM guard_probe").fetchone()[0] == 0
+
+
+def test_core_ip_receipt_reattest_rejects_stale_plan_without_writing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from contextlib import nullcontext
+
+    receipt_path = tmp_path / "proof.json"
+    original = {
+        "schema": 1, "apply_id": "apply-1", "core_intent_revision": 3,
+        "candidate_nft_sha256": "a" * 64, "applied_manifest_sha256": "b" * 64,
+        "native_semantics_sha256": "c" * 64, "native_ip_semantics_sha256": "d" * 64,
+        "normalization": "nft-table-v1-counter-values-and-dns-timeout-elements-only",
+    }
+    receipt_path.write_text(json.dumps(original), encoding="utf-8")
+    monkeypatch.setattr(native_proof, "core_native_proof_path", lambda: receipt_path)
+    monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard",
+                        lambda **_kwargs: nullcontext())
+    facts = {"old_ip_semantics_sha256": "d" * 64, "current_ip_semantics_sha256": "e" * 64}
+    monkeypatch.setattr(native_proof, "_core_ip_receipt_reattest_facts",
+                        lambda **_kwargs: (facts, original, {}, "3" * 64))
+    result = native_proof.reattest_core_ip_receipt(
+        expected_tool_manifest_sha256="1" * 64,
+        expected_installed_backend_manifest_sha256="2" * 64,
+        apply=True, expected_plan_sha256="0" * 64,
+        confirmation=native_proof._CORE_IP_REATTEST_CONFIRMATION,
+    )
+    assert result["status"] == "BLOCKED"
+    assert result["reason"] == "CORE_IP_RECEIPT_REATTEST_PLAN_CHANGED"
+    assert json.loads(receipt_path.read_text(encoding="utf-8")) == original
+
+
+def test_core_ip_receipt_reattest_noop_does_not_rewrite_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from contextlib import nullcontext
+
+    receipt_path = tmp_path / "proof.json"
+    original = {"native_ip_semantics_sha256": "d" * 64, "other": "preserved"}
+    receipt_path.write_text(json.dumps(original), encoding="utf-8")
+    before = receipt_path.read_bytes()
+    monkeypatch.setattr(native_proof, "core_native_proof_path", lambda: receipt_path)
+    monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard",
+                        lambda **_kwargs: nullcontext())
+    facts = {"old_ip_semantics_sha256": "d" * 64, "current_ip_semantics_sha256": "d" * 64}
+    monkeypatch.setattr(native_proof, "_core_ip_receipt_reattest_facts",
+                        lambda **_kwargs: (facts, original, {}, "3" * 64))
+    monkeypatch.setattr("fwrouter_api.services.artifacts.atomic_write_json",
+                        lambda *_args: pytest.fail("no-op must not publish"))
+    plan = native_proof.reattest_core_ip_receipt(
+        expected_tool_manifest_sha256="1" * 64,
+        expected_installed_backend_manifest_sha256="2" * 64,
+    )
+    result = native_proof.reattest_core_ip_receipt(
+        expected_tool_manifest_sha256="1" * 64,
+        expected_installed_backend_manifest_sha256="2" * 64,
+        apply=True, expected_plan_sha256=plan["plan_sha256"],
+        confirmation=native_proof._CORE_IP_REATTEST_CONFIRMATION,
+    )
+    assert plan["action"] == "NOOP"
+    assert result["status"] == "NOOP"
+    assert receipt_path.read_bytes() == before
+
+
+def test_core_ip_receipt_reattest_postwrite_fence_failure_preserves_new_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from contextlib import nullcontext
+    import hashlib
+
+    receipt_path = tmp_path / "proof.json"
+    original = {
+        "schema": 1, "apply_id": "apply-1", "core_intent_revision": 3,
+        "candidate_nft_sha256": "a" * 64, "applied_manifest_sha256": "b" * 64,
+        "native_semantics_sha256": "c" * 64, "native_ip_semantics_sha256": "d" * 64,
+        "normalization": "nft-table-v1-counter-values-and-dns-timeout-elements-only",
+    }
+    receipt_path.write_text(json.dumps(original), encoding="utf-8")
+    monkeypatch.setattr(native_proof, "core_native_proof_path", lambda: receipt_path)
+    monkeypatch.setattr("fwrouter_api.adapters.xray_common.xray_writer_guard",
+                        lambda **_kwargs: nullcontext())
+    new_receipt = {**original, "native_ip_semantics_sha256": "e" * 64}
+    new_sha = hashlib.sha256((json.dumps(new_receipt, ensure_ascii=True, indent=2, sort_keys=True) + "\n").encode()).hexdigest()
+    before_facts = {"old_ip_semantics_sha256": "d" * 64, "current_ip_semantics_sha256": "e" * 64,
+                    "receipt_sha256": "1" * 64, "database_fence_sha256": "2" * 64,
+                    "tool_manifest_sha256": "3" * 64, "installed_backend_manifest_sha256": "4" * 64}
+    after_facts = {**before_facts, "receipt_sha256": new_sha, "database_fence_sha256": "f" * 64}
+    values = iter([(before_facts, original, {"native_ip_semantics_sha256": "e" * 64}, "5" * 64),
+                   (after_facts, new_receipt, {"native_ip_semantics_sha256": "e" * 64}, "5" * 64)])
+    monkeypatch.setattr(native_proof, "_core_ip_receipt_reattest_facts", lambda **_kwargs: next(values))
+    plan = native_proof.reattest_core_ip_receipt(
+        expected_tool_manifest_sha256="3" * 64,
+        expected_installed_backend_manifest_sha256="4" * 64,
+    )
+    values = iter([(before_facts, original, {"native_ip_semantics_sha256": "e" * 64}, "5" * 64),
+                   (after_facts, new_receipt, {"native_ip_semantics_sha256": "e" * 64}, "5" * 64)])
+    result = native_proof.reattest_core_ip_receipt(
+        expected_tool_manifest_sha256="3" * 64,
+        expected_installed_backend_manifest_sha256="4" * 64,
+        apply=True, expected_plan_sha256=plan["plan_sha256"],
+        confirmation=native_proof._CORE_IP_REATTEST_CONFIRMATION,
+    )
+    assert result["status"] == "INCOMPLETE"
+    assert result["reason"] == "CORE_IP_RECEIPT_REATTEST_POSTWRITE_FENCE_FAILED"
+    assert json.loads(receipt_path.read_text(encoding="utf-8")) == new_receipt
+
+
+def test_core_ip_receipt_reattest_facts_bind_source_installed_tree_and_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import hashlib
+
+    tool_sha = native_proof.backend_manifest_sha256(native_proof._backend_root())
+    installed_root = tmp_path / "installed"
+    installed_root.mkdir()
+    (installed_root / "api.py").write_text("installed-old", encoding="utf-8")
+    installed_sha = native_proof.backend_manifest_sha256(installed_root)
+    monkeypatch.setattr(native_proof, "_INSTALLED_BACKEND_ROOT", installed_root)
+    monkeypatch.setattr(native_proof.os, "geteuid", lambda: 1000)
+    with pytest.raises(ValueError, match="CORE_IP_RECEIPT_REATTEST_ROOT_REQUIRED"):
+        native_proof._core_ip_receipt_reattest_facts(
+            expected_tool_manifest_sha256=tool_sha,
+            expected_installed_backend_manifest_sha256=installed_sha,
+        )
+    # Continue the positive branch under the explicit test-only root identity;
+    # production still checks the actual effective UID against literal root.
+    monkeypatch.setattr(native_proof.os, "geteuid", lambda: 0)
+    checkpoint_path = tmp_path / "generation-checkpoint.json"
+    checkpoint_path.write_text("proof-only-checkpoint", encoding="utf-8")
+    checkpoint_sha = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+    source_fingerprint = "5" * 64
+    digest = "6" * 64
+    checkpoint = {
+        "operation_mode": "proof_only_legacy_admission", "operation_id": "4" * 32,
+        "phase": "proof_complete", "require_native_proof": True,
+        "candidate_digest": digest, "candidate_revision": 61,
+        "source_fingerprint": source_fingerprint, "selection_revision": 9,
+        "selection_decision_id": "selection-9",
+    }
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service._xray_generation_checkpoint_path",
+        lambda _adapter: checkpoint_path,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.xray_subscription_service._legacy_admission_checkpoint_payload",
+        lambda _path: checkpoint.copy(),
+    )
+    db = {
+        "schema": {"ok": True}, "integrity": ["ok"], "foreign_key_violations": 0,
+        "active_jobs": 0, "inventory_digest": digest, "source_fingerprint": source_fingerprint,
+        "core_revision": 3, "selection": {"revision": 9, "decision_id": "selection-9"},
+        "generation": {"status": "verified", "candidate_digest": digest,
+                        "verified_digest": digest, "candidate_revision": 61, "verified_revision": 61},
+    }
+    monkeypatch.setattr(native_proof, "_db_snapshot", lambda _path: db.copy())
+    monkeypatch.setattr("fwrouter_api.db.connection.get_db_path", lambda: tmp_path / "unused.db")
+    receipt_path = tmp_path / "core-receipt.json"
+    receipt = {"schema": 1, "apply_id": "apply-1", "core_intent_revision": 3,
+               "candidate_nft_sha256": "a" * 64, "applied_manifest_sha256": "b" * 64,
+               "native_semantics_sha256": "c" * 64, "native_ip_semantics_sha256": "d" * 64,
+               "normalization": "nft-table-v1-counter-values-and-dns-timeout-elements-only"}
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(native_proof, "core_native_proof_path", lambda: receipt_path)
+    core = {"native_ip_semantics_sha256": "e" * 64, "native_rule_semantics_sha256": "c" * 64}
+    monkeypatch.setattr(native_proof, "_core_readback", lambda *_args, **_kwargs: core.copy())
+
+    facts, existing_receipt, _core, observed_checkpoint_sha = native_proof._core_ip_receipt_reattest_facts(
+        expected_tool_manifest_sha256=tool_sha,
+        expected_installed_backend_manifest_sha256=installed_sha,
+    )
+    assert observed_checkpoint_sha == checkpoint_sha
+    assert existing_receipt == receipt
+    assert facts["tool_manifest_sha256"] == tool_sha
+    assert facts["installed_backend_manifest_sha256"] == installed_sha
+    assert facts["operation_id"] == "4" * 32
+    assert facts["old_ip_semantics_sha256"] == "d" * 64
+    assert facts["current_ip_semantics_sha256"] == "e" * 64
+
+    for mutation, expected_error in (
+        ({"active_jobs": 1}, "CORE_IP_RECEIPT_REATTEST_DATABASE_NOT_READY"),
+        ({"source_fingerprint": "f" * 64}, "CORE_IP_RECEIPT_REATTEST_GENERATION_FENCE_CHANGED"),
+        ({"generation": {**db["generation"], "verified_revision": 60}},
+         "CORE_IP_RECEIPT_REATTEST_GENERATION_FENCE_CHANGED"),
+    ):
+        changed = {**db, **mutation}
+        monkeypatch.setattr(native_proof, "_db_snapshot", lambda _path, state=changed: state.copy())
+        with pytest.raises(ValueError, match=expected_error):
+            native_proof._core_ip_receipt_reattest_facts(
+                expected_tool_manifest_sha256=tool_sha,
+                expected_installed_backend_manifest_sha256=installed_sha,
+            )
+    monkeypatch.setattr(native_proof, "_db_snapshot", lambda _path: db.copy())
+    with pytest.raises(ValueError, match="CORE_IP_RECEIPT_REATTEST_INSTALLED_BACKEND_CHANGED"):
+        native_proof._core_ip_receipt_reattest_facts(
+            expected_tool_manifest_sha256=tool_sha,
+            expected_installed_backend_manifest_sha256="0" * 64,
+        )
+
+    for invalid_checkpoint in (
+        {**checkpoint, "phase": "proof_started"},
+        {**checkpoint, "require_native_proof": False},
+        {**checkpoint, "selection_revision": 8},
+    ):
+        monkeypatch.setattr(
+            "fwrouter_api.services.xray_subscription_service._legacy_admission_checkpoint_payload",
+            lambda _path, value=invalid_checkpoint: value,
+        )
+        with pytest.raises(ValueError):
+            native_proof._core_ip_receipt_reattest_facts(
+                expected_tool_manifest_sha256=tool_sha,
+                expected_installed_backend_manifest_sha256=installed_sha,
+            )
 
 
 def test_readonly_database_sets_query_only_and_does_not_change_database(tmp_path: Path) -> None:

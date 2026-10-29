@@ -414,7 +414,7 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
     # prerequisite for the established inventory promotion path. Legacy source
     # or Core state may lack enough durable proof to qualify; retain the existing
     # owner contract but never preserve an obsolete receipt in that case.
-    from fwrouter_api.services.native_proof import capture_native_generation_proof
+    from fwrouter_api.services.native_proof import _SAFE_REASON_CODES, capture_native_generation_proof
 
     native_result = capture_native_generation_proof(
         expected_digest=admission.digest, expected_revision=admission.revision,
@@ -426,7 +426,12 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
     )
     proof_refresh_admission = admission.requires_native_proof_refresh is True
     if proof_refresh_admission and native_proof is None:
-        return {"ok": False, "reason": "native_generation_receipt_incomplete"}
+        reason = native_result.get("reason")
+        safe_reason = reason if isinstance(reason, str) and reason in _SAFE_REASON_CODES else None
+        return {
+            "ok": False, "reason": "native_generation_receipt_incomplete",
+            "native_proof_reason": safe_reason,
+        }
     with db_session() as connection:
         if admission.proof_only_source_fingerprint is not None:
             # Serialize the final proof+marker CAS with any SQLite writer and
