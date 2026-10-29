@@ -1082,13 +1082,14 @@ def test_verified_legacy_reproof_persists_strict_receipt_and_resumes_fail_closed
     # A failed native capture must keep the old verified tuple and the resumable owner.
     monkeypatch.setattr(
         "fwrouter_api.services.native_proof.capture_native_generation_proof",
-        lambda **_kwargs: {"status": "INCOMPLETE", "reason": "synthetic_native_capture_incomplete"},
+        lambda **_kwargs: {"status": "INCOMPLETE", "reason": "CORE_IP_POLICY_MISMATCH"},
     )
     failed = xray_subscription_service.admit_legacy_subscription_inventory(
         expected_digest=digest, operator_confirmation=CONFIRMATION, require_native_proof=True,
     )
     assert failed["ok"] is False
     assert failed["reason"] == "native_generation_receipt_incomplete"
+    assert failed["native_proof_reason"] == "CORE_IP_POLICY_MISMATCH"
     assert checkpoint.is_file()
     legacy_plan = xray_subscription_service.inspect_legacy_subscription_inventory_admission()
     assert legacy_plan["eligible"] is False

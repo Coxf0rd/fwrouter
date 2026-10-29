@@ -66,3 +66,176 @@ def test_generation_supersession_cli_bounds_failure_codes(monkeypatch, capsys) -
 
     assert output["failed_operation"] is None
     assert output["compensation_reason"] is None
+
+
+def _install_core_owner_checkpoint(state_root, installed_root, *, status="complete", checkpoint_root=None):
+    import hashlib
+    import uuid
+
+    from fwrouter_api.services import native_proof
+    from fwrouter_api.services.maintenance_lifecycle_admission import _lifecycle_paths
+
+    checkpoint_root = checkpoint_root or installed_root
+    manifest = native_proof.backend_manifest(checkpoint_root)
+    digest = hashlib.sha256(native_proof._canonical_json(manifest)).hexdigest()
+    active_units = {name: False for name in (
+        "fwrouter-xray-sub-gateway.service", "fwrouter-docker-subject-events.service",
+        "fwrouter-jobs-retention-dry-run.timer", "fwrouter-maintenance.timer",
+        "fwrouter-subscription-refresh.timer", "fwrouter-traffic-collect.timer",
+        "fwrouter-jobs-retention-dry-run.service", "fwrouter-maintenance.service",
+        "fwrouter-subscription-refresh.service", "fwrouter-traffic-collect.service",
+        "fwrouter-api.service",
+    )}
+    checkpoint = {
+        "schema": 2, "operation_id": str(uuid.uuid4()), "status": status,
+        "created_at": "2026-10-29T00:00:00Z", "backend_manifest": manifest,
+        "backend_manifest_sha256": digest, "active_units": active_units,
+        "pending_units": [], "initial_backend_manifest_sha256": digest,
+        "source_transitions": [],
+    }
+    _, path, _ = _lifecycle_paths(state_root)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (state_root / "state").chmod(0o700)
+    path.parent.chmod(0o700)
+    path.write_text(json.dumps(checkpoint, sort_keys=True), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _core_owner_fixture(monkeypatch, tmp_path, *, status="complete", checkpoint_matches=True):
+    import os
+
+    from fwrouter_api.services import maintenance_lifecycle_admission, native_proof
+
+    state_root = tmp_path / "state-root"
+    tool_root = tmp_path / "qualified-tool"
+    installed_root = tmp_path / "installed-old"
+    checkpoint_root = installed_root if checkpoint_matches else tmp_path / "other-old"
+    for root in {tool_root, installed_root, checkpoint_root}:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (root / "payload.py").write_text(f"ROOT = {root.name!r}\n", encoding="utf-8")
+    installed_digest = native_proof.backend_manifest_sha256(installed_root)
+    tool_digest = native_proof.backend_manifest_sha256(tool_root)
+    _install_core_owner_checkpoint(
+        state_root, installed_root, status=status, checkpoint_root=checkpoint_root,
+    )
+    monkeypatch.setattr(maintenance_lifecycle_admission, "_trusted_uid", lambda: os.geteuid())
+    monkeypatch.setattr(maintenance_lifecycle_admission, "DEFAULT_STATE_ROOT", state_root)
+    monkeypatch.setattr(native_proof, "_backend_root", lambda: tool_root)
+    monkeypatch.setattr(native_proof, "_INSTALLED_BACKEND_ROOT", installed_root)
+    return tool_digest, installed_digest
+
+
+def test_core_ip_receipt_reattest_cli_admits_new_tool_against_complete_old_checkpoint(
+    monkeypatch, capsys, tmp_path,
+) -> None:
+    from fwrouter_api.services import maintenance_lifecycle_admission, native_proof
+
+    tool_digest, installed_digest = _core_owner_fixture(monkeypatch, tmp_path)
+    generic_admission_called = False
+
+    def generic_lease(_root):
+        nonlocal generic_admission_called
+        generic_admission_called = True
+        raise AssertionError("Core owner command must not use generic startup manifest admission")
+
+    monkeypatch.setattr(maintenance_lifecycle_admission, "runtime_shared_lease", generic_lease)
+    captured: dict[str, object] = {}
+
+    def fake_reattest(**kwargs):
+        captured.update(kwargs)
+        return {"status": "PASS", "action": "REATTEST", "plan_sha256": "d" * 64,
+                "receipt_sha256": "e" * 64}
+
+    monkeypatch.setattr(native_proof, "reattest_core_ip_receipt", fake_reattest)
+    exit_code = cli.main([
+        "core", "ip-receipt-reattest", "--apply",
+        "--expected-tool-manifest-sha256", tool_digest,
+        "--expected-installed-backend-manifest-sha256", installed_digest,
+        "--expected-plan-sha256", "c" * 64,
+        "--confirm", "CORE_IP_RECEIPT_REATTEST",
+    ])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert captured == {
+        "expected_tool_manifest_sha256": tool_digest,
+        "expected_installed_backend_manifest_sha256": installed_digest,
+        "apply": True, "expected_plan_sha256": "c" * 64,
+        "confirmation": "CORE_IP_RECEIPT_REATTEST",
+    }
+    assert output["status"] == "PASS"
+    assert generic_admission_called is False
+
+
+def test_core_ip_receipt_reattest_cli_rejects_pending_checkpoint(monkeypatch, capsys, tmp_path) -> None:
+    from fwrouter_api.services import native_proof
+
+    tool_digest, installed_digest = _core_owner_fixture(monkeypatch, tmp_path, status="pending")
+    called = False
+
+    def fake_reattest(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(native_proof, "reattest_core_ip_receipt", fake_reattest)
+    assert cli.main([
+        "core", "ip-receipt-reattest", "--plan",
+        "--expected-tool-manifest-sha256", tool_digest,
+        "--expected-installed-backend-manifest-sha256", installed_digest,
+    ]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "BLOCKED", "reason": "CORE_OWNER_COMPLETE_SCHEMA2_CHECKPOINT_REQUIRED",
+    }
+    assert called is False
+
+
+def test_core_ip_receipt_reattest_cli_rejects_checkpoint_for_other_installed_manifest(
+    monkeypatch, capsys, tmp_path,
+) -> None:
+    from fwrouter_api.services import native_proof
+
+    tool_digest, installed_digest = _core_owner_fixture(
+        monkeypatch, tmp_path, checkpoint_matches=False,
+    )
+    called = False
+
+    def fake_reattest(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(native_proof, "reattest_core_ip_receipt", fake_reattest)
+    assert cli.main([
+        "core", "ip-receipt-reattest", "--plan",
+        "--expected-tool-manifest-sha256", tool_digest,
+        "--expected-installed-backend-manifest-sha256", installed_digest,
+    ]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "BLOCKED", "reason": "CORE_OWNER_INSTALLED_BACKEND_CHECKPOINT_MISMATCH",
+    }
+    assert called is False
+
+
+def test_core_ip_receipt_reattest_cli_rejects_unpinned_executing_tool(monkeypatch, capsys, tmp_path) -> None:
+    from fwrouter_api.services import native_proof
+
+    _tool_digest, installed_digest = _core_owner_fixture(monkeypatch, tmp_path)
+    called = False
+
+    def fake_reattest(**_kwargs):
+        nonlocal called
+        called = True
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(native_proof, "reattest_core_ip_receipt", fake_reattest)
+    assert cli.main([
+        "core", "ip-receipt-reattest", "--plan",
+        "--expected-tool-manifest-sha256", "0" * 64,
+        "--expected-installed-backend-manifest-sha256", installed_digest,
+    ]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "BLOCKED", "reason": "CORE_OWNER_TOOL_MANIFEST_MISMATCH",
+    }
+    assert called is False

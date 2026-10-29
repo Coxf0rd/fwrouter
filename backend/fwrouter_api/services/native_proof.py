@@ -22,6 +22,8 @@ _MAX_CORE_APPLIED_MANIFEST_BYTES = 64 * 1024 * 1024
 _EXPECTED_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _ACTIVE_JOB_STATES = ("queued", "running")
 _CORE_NATIVE_PROOF_NAME = "applied-native-proof.json"
+_CORE_IP_REATTEST_CONFIRMATION = "CORE_IP_RECEIPT_REATTEST"
+_INSTALLED_BACKEND_ROOT = Path("/opt/fwrouter-api")
 _IPV6_SYSCTL_CONF_PATH = Path("/proc/sys/net/ipv6/conf")
 _MAX_IP_INTERFACES = 256
 _MAX_IP_READBACK_BYTES = 4 * 1024 * 1024
@@ -33,6 +35,18 @@ _SAFE_REASON_CODES = {
     "BACKEND_MANIFEST_EMPTY", "BACKEND_MANIFEST_TOO_LARGE", "BACKEND_ROOT_UNAVAILABLE",
     "BACKEND_SYMLINK_DIRECTORY", "CORE_APPLIED_MANIFEST_MISMATCH", "CORE_IP_POLICY_MISMATCH",
     "CORE_IP_READBACK_INVALID", "CORE_IP_READBACK_UNAVAILABLE", "CORE_NATIVE_OWNER_RECEIPT_UNAVAILABLE",
+    "CORE_IP_RECEIPT_REATTEST_ROOT_REQUIRED", "CORE_IP_RECEIPT_REATTEST_TOOL_PIN_INVALID",
+    "CORE_IP_RECEIPT_REATTEST_INSTALLED_PIN_INVALID", "CORE_IP_RECEIPT_REATTEST_TOOL_CHANGED",
+    "CORE_IP_RECEIPT_REATTEST_INSTALLED_BACKEND_UNAVAILABLE",
+    "CORE_IP_RECEIPT_REATTEST_INSTALLED_BACKEND_CHANGED",
+    "CORE_IP_RECEIPT_REATTEST_PROOF_CHECKPOINT_REQUIRED",
+    "CORE_IP_RECEIPT_REATTEST_DATABASE_NOT_READY",
+    "CORE_IP_RECEIPT_REATTEST_GENERATION_FENCE_CHANGED",
+    "CORE_IP_RECEIPT_REATTEST_FENCE_CHANGED",
+    "CORE_IP_RECEIPT_REATTEST_CONFIRMATION_REQUIRED",
+    "CORE_IP_RECEIPT_REATTEST_CONFIRMATION_UNEXPECTED",
+    "CORE_IP_RECEIPT_REATTEST_PLAN_CHANGED",
+    "CORE_IP_RECEIPT_REATTEST_POSTWRITE_FENCE_FAILED",
     "CORE_NATIVE_READBACK_UNAVAILABLE", "CORE_NATIVE_RULES_MISMATCH", "CORE_NATIVE_STATE_MISMATCH",
     "CORE_NFT_READBACK_CHAIN_MISSING", "CORE_NFT_READBACK_INCOMPLETE", "CORE_NFT_READBACK_INVALID",
     "CORE_NFT_READBACK_DUPLICATE_COUNTER",
@@ -1141,7 +1155,9 @@ def _core_ip_facts() -> dict[str, Any]:
     }
 
 
-def _core_readback(db: dict[str, Any]) -> dict[str, Any]:
+def _core_readback(
+    db: dict[str, Any], *, _expected_stale_receipt_sha256: str | None = None,
+) -> dict[str, Any]:
     from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
     from fwrouter_api.services.core_intent import read_core_runtime_context
 
@@ -1171,7 +1187,14 @@ def _core_readback(db: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("CORE_APPLIED_MANIFEST_MISMATCH")
     nft_path = dataplane_global.get_settings().paths.generated_dir / "dataplane" / "applied.nft"
     nft_sha = _hash_regular_file(nft_path)
-    receipt = _read_core_native_receipt()
+    receipt_raw = _read_regular_file(core_native_proof_path(), maximum_bytes=64 * 1024)
+    receipt_sha256 = hashlib.sha256(receipt_raw).hexdigest()
+    try:
+        receipt = json.loads(receipt_raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("CORE_NATIVE_OWNER_RECEIPT_UNAVAILABLE") from exc
+    if not isinstance(receipt, dict) or _read_core_native_receipt() != receipt:
+        raise ValueError("CORE_NATIVE_OWNER_RECEIPT_UNAVAILABLE")
     if (receipt is None
             or receipt.get("apply_id") != latest.get("apply_id")
             or receipt.get("core_intent_revision") != db.get("core_revision")
@@ -1182,7 +1205,8 @@ def _core_readback(db: dict[str, Any]) -> dict[str, Any]:
     if semantic_sha_before != receipt.get("native_semantics_sha256"):
         raise ValueError("CORE_NATIVE_RULES_MISMATCH")
     ip_facts_before = _core_ip_facts()
-    if ip_facts_before["semantic_sha256"] != receipt.get("native_ip_semantics_sha256"):
+    if (ip_facts_before["semantic_sha256"] != receipt.get("native_ip_semantics_sha256")
+            and receipt_sha256 != _expected_stale_receipt_sha256):
         raise ValueError("CORE_IP_POLICY_MISMATCH")
     try:
         manifest_after, manifest_sha_after = _read_core_applied_manifest(manifest_path)
@@ -1199,7 +1223,8 @@ def _core_readback(db: dict[str, Any]) -> dict[str, Any]:
             or not isinstance(live_payload_after, dict)
             or live_payload_after.get("required_chains") != live_payload.get("required_chains")
             or live_mode_after.get("mode") != live_mode.get("mode")
-            or ip_facts_after != ip_facts_before):
+            or ip_facts_after != ip_facts_before
+            or _hash_regular_file(core_native_proof_path(), maximum_bytes=64 * 1024) != receipt_sha256):
         raise RuntimeError("CORE_RUNTIME_CONTEXT_CHANGED")
     return {
         "apply_owned_by_latest_revision": True,
@@ -1221,6 +1246,175 @@ def _core_readback(db: dict[str, Any]) -> dict[str, Any]:
         "ip_routes_stable": True,
         "runtime_context_stable": True,
     }
+
+
+def _core_ip_receipt_reattest_facts(
+    *, expected_tool_manifest_sha256: str, expected_installed_backend_manifest_sha256: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
+    """Capture the exact fences for the explicit Core-IP receipt owner command.
+
+    The executing source tree and the fixed installed backend are deliberately
+    distinct inputs. This command never changes the backend selector or claims
+    that the source tool is the installed API.
+    """
+    if os.geteuid() != 0:
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_ROOT_REQUIRED")
+    if not _EXPECTED_SHA256.fullmatch(str(expected_tool_manifest_sha256 or "")):
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_TOOL_PIN_INVALID")
+    if not _EXPECTED_SHA256.fullmatch(str(expected_installed_backend_manifest_sha256 or "")):
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_INSTALLED_PIN_INVALID")
+
+    tool_sha = backend_manifest_sha256(_backend_root())
+    if tool_sha != expected_tool_manifest_sha256:
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_TOOL_CHANGED")
+    installed_root = _INSTALLED_BACKEND_ROOT
+    if installed_root.is_symlink() or not installed_root.is_dir():
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_INSTALLED_BACKEND_UNAVAILABLE")
+    installed_sha = backend_manifest_sha256(installed_root)
+    if installed_sha != expected_installed_backend_manifest_sha256:
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_INSTALLED_BACKEND_CHANGED")
+
+    from fwrouter_api.db.connection import get_db_path
+    from fwrouter_api.adapters.xray import DEFAULT_XRAY_ADAPTER
+    from fwrouter_api.services.xray_subscription_service import (
+        _legacy_admission_checkpoint_payload, _xray_generation_checkpoint_path,
+    )
+
+    checkpoint_path = _xray_generation_checkpoint_path(DEFAULT_XRAY_ADAPTER)
+    checkpoint = _legacy_admission_checkpoint_payload(checkpoint_path)
+    if (not isinstance(checkpoint, dict) or checkpoint.get("phase") != "proof_complete"
+            or checkpoint.get("operation_mode") != "proof_only_legacy_admission"
+            or checkpoint.get("require_native_proof") is not True):
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_PROOF_CHECKPOINT_REQUIRED")
+    checkpoint_sha = _hash_regular_file(checkpoint_path, maximum_bytes=64 * 1024)
+
+    db_before = _db_snapshot(get_db_path())
+    generation = db_before.get("generation") or {}
+    selection = db_before.get("selection") or {}
+    if (db_before.get("schema", {}).get("ok") is not True or db_before.get("integrity") != ["ok"]
+            or db_before.get("foreign_key_violations") != 0 or db_before.get("active_jobs") != 0):
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_DATABASE_NOT_READY")
+    digest = db_before.get("inventory_digest")
+    revision = generation.get("verified_revision")
+    if (generation.get("status") != "verified" or generation.get("candidate_digest") != digest
+            or generation.get("verified_digest") != digest or type(revision) is not int
+            or generation.get("candidate_revision") != revision
+            or checkpoint.get("candidate_digest") != digest
+            or checkpoint.get("candidate_revision") != revision
+            or checkpoint.get("source_fingerprint") != db_before.get("source_fingerprint")
+            or checkpoint.get("selection_revision") != selection.get("revision")
+            or checkpoint.get("selection_decision_id") != selection.get("decision_id")):
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_GENERATION_FENCE_CHANGED")
+
+    receipt_path = core_native_proof_path()
+    receipt_raw = _read_regular_file(receipt_path, maximum_bytes=64 * 1024)
+    receipt_sha = hashlib.sha256(receipt_raw).hexdigest()
+    receipt = _read_core_native_receipt()
+    if receipt is None or hashlib.sha256(_read_regular_file(receipt_path, maximum_bytes=64 * 1024)).hexdigest() != receipt_sha:
+        raise ValueError("CORE_NATIVE_OWNER_RECEIPT_UNAVAILABLE")
+
+    core_before = _core_readback(db_before, _expected_stale_receipt_sha256=receipt_sha)
+    # A repeated full native read proves stability while the caller holds the
+    # existing exclusive Xray/Core-owner guard.
+    core_second = _core_readback(db_before, _expected_stale_receipt_sha256=receipt_sha)
+    db_after = _db_snapshot(get_db_path())
+    checkpoint_after = _legacy_admission_checkpoint_payload(checkpoint_path)
+    checkpoint_sha_after = _hash_regular_file(checkpoint_path, maximum_bytes=64 * 1024)
+    if (db_before != db_after or core_before != core_second
+            or checkpoint_after != checkpoint or checkpoint_sha_after != checkpoint_sha
+            or backend_manifest_sha256(_backend_root()) != expected_tool_manifest_sha256
+            or backend_manifest_sha256(installed_root) != expected_installed_backend_manifest_sha256
+            or hashlib.sha256(_read_regular_file(receipt_path, maximum_bytes=64 * 1024)).hexdigest() != receipt_sha):
+        raise ValueError("CORE_IP_RECEIPT_REATTEST_FENCE_CHANGED")
+
+    current_ip_sha = str(core_before.get("native_ip_semantics_sha256") or "")
+    old_ip_sha = str(receipt.get("native_ip_semantics_sha256") or "")
+    if not _EXPECTED_SHA256.fullmatch(current_ip_sha) or not _EXPECTED_SHA256.fullmatch(old_ip_sha):
+        raise ValueError("CORE_NATIVE_OWNER_RECEIPT_UNAVAILABLE")
+    facts = {
+        "tool_manifest_sha256": expected_tool_manifest_sha256,
+        "installed_backend_manifest_sha256": expected_installed_backend_manifest_sha256,
+        "checkpoint_sha256": checkpoint_sha,
+        "operation_id": checkpoint["operation_id"],
+        "source_fingerprint_sha256": str(checkpoint["source_fingerprint"]),
+        "generation_digest": digest,
+        "generation_revision": revision,
+        "selection_revision": selection.get("revision"),
+        "core_intent_revision": db_before.get("core_revision"),
+        "latest_apply_id_sha256": core_before.get("latest_apply_id_sha256"),
+        "database_fence_sha256": hashlib.sha256(_canonical_json(db_before)).hexdigest(),
+        "receipt_sha256": receipt_sha,
+        "old_ip_semantics_sha256": old_ip_sha,
+        "current_ip_semantics_sha256": current_ip_sha,
+        "core_native_semantics_sha256": core_before.get("native_rule_semantics_sha256"),
+        "applied_manifest_sha256": core_before.get("applied_manifest_sha256"),
+        "applied_nft_sha256": core_before.get("applied_nft_sha256"),
+    }
+    return facts, receipt, core_before, checkpoint_sha
+
+
+def reattest_core_ip_receipt(
+    *, expected_tool_manifest_sha256: str, expected_installed_backend_manifest_sha256: str,
+    apply: bool = False, expected_plan_sha256: str | None = None, confirmation: str | None = None,
+) -> dict[str, Any]:
+    """Plan or perform a one-field, root-only Core IP owner receipt re-attestation.
+
+    This is intentionally separate from normal native proof, whose IP binding
+    remains strict. It writes only the existing Core receipt's IP semantic
+    digest after all other Core, generation, source and checkpoint fences pass.
+    """
+    if apply and (expected_plan_sha256 is None or confirmation != _CORE_IP_REATTEST_CONFIRMATION):
+        return {"status": "BLOCKED", "reason": "CORE_IP_RECEIPT_REATTEST_CONFIRMATION_REQUIRED"}
+    if not apply and (expected_plan_sha256 is not None or confirmation is not None):
+        return {"status": "BLOCKED", "reason": "CORE_IP_RECEIPT_REATTEST_CONFIRMATION_UNEXPECTED"}
+    try:
+        from fwrouter_api.adapters.xray_common import xray_writer_guard
+        from fwrouter_api.db.connection import readonly_db_session_scope
+
+        with xray_writer_guard(timeout_seconds=30.0), readonly_db_session_scope():
+            facts, receipt, core, checkpoint_sha = _core_ip_receipt_reattest_facts(
+                expected_tool_manifest_sha256=expected_tool_manifest_sha256,
+                expected_installed_backend_manifest_sha256=expected_installed_backend_manifest_sha256,
+            )
+            action = "NOOP" if facts["old_ip_semantics_sha256"] == facts["current_ip_semantics_sha256"] else "REATTEST"
+            plan_body = {"operation": "core_ip_receipt_reattest", "action": action, **facts}
+            plan_sha = hashlib.sha256(_canonical_json(plan_body)).hexdigest()
+            if not apply:
+                return {"status": "READY", "action": action, "plan_sha256": plan_sha, **facts}
+            if expected_plan_sha256 != plan_sha:
+                return {"status": "BLOCKED", "reason": "CORE_IP_RECEIPT_REATTEST_PLAN_CHANGED",
+                        "plan_sha256": plan_sha, **facts}
+            if action == "NOOP":
+                return {"status": "NOOP", "plan_sha256": plan_sha, **facts}
+
+            updated_receipt = dict(receipt)
+            updated_receipt["native_ip_semantics_sha256"] = facts["current_ip_semantics_sha256"]
+            from fwrouter_api.services.artifacts import atomic_write_json
+
+            atomic_write_json(core_native_proof_path(), updated_receipt)
+            new_raw = _read_regular_file(core_native_proof_path(), maximum_bytes=64 * 1024)
+            new_sha = hashlib.sha256(new_raw).hexdigest()
+            readback = _read_core_native_receipt()
+            db_after_facts, _receipt_after, core_after, checkpoint_after_sha = _core_ip_receipt_reattest_facts(
+                expected_tool_manifest_sha256=expected_tool_manifest_sha256,
+                expected_installed_backend_manifest_sha256=expected_installed_backend_manifest_sha256,
+            )
+            expected_receipt = dict(updated_receipt)
+            if (readback != expected_receipt or checkpoint_after_sha != checkpoint_sha
+                    or db_after_facts["database_fence_sha256"] != facts["database_fence_sha256"]
+                    or db_after_facts["current_ip_semantics_sha256"] != facts["current_ip_semantics_sha256"]
+                    or core_after != core
+                    or db_after_facts["receipt_sha256"] != new_sha):
+                return {"status": "INCOMPLETE", "reason": "CORE_IP_RECEIPT_REATTEST_POSTWRITE_FENCE_FAILED",
+                        "plan_sha256": plan_sha, "receipt_sha256": new_sha,
+                        "checkpoint_sha256": checkpoint_sha}
+            return {"status": "PASS", "action": action, "plan_sha256": plan_sha,
+                    "receipt_sha256": new_sha, "checkpoint_sha256": checkpoint_sha,
+                    "current_ip_semantics_sha256": facts["current_ip_semantics_sha256"],
+                    "operation_id": facts["operation_id"]}
+    except Exception as exc:
+        reason = _safe_failure_reason(exc)
+        return {"status": "BLOCKED", "reason": reason}
 
 
 def _read_core_native_receipt() -> dict[str, Any] | None:
