@@ -161,6 +161,13 @@
   ],
   "path_rules": [
     {
+      "glob": "host/sbin/fwrouter-deploy",
+      "domains": [
+        "installer",
+        "runtime"
+      ]
+    },
+    {
       "glob": "knowledge/SECURE_EVENT_READING.md",
       "domains": [
         "api-contract",
@@ -5017,6 +5024,35 @@
       ],
       "slow": false,
       "timeout_seconds": 60,
+      "execution_group": "installer-startup"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "installer",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "Disposable Git source, prepared target filesystem and existing installer/lifecycle entrypoints with synthetic systemd responses",
+      "fixture_owner": "installer/tests/test_local_deployment.py",
+      "id": "test_local_deployment",
+      "isolation": "Temporary target, synthetic SQLite and process fixtures; no production paths, external network or live services",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "installer/tests/test_local_deployment.py",
+      "primary_level": "L4",
+      "risk_notes": "Local deploy command installation, source pinning, check/no-op, same-operation source CAS, failed installer/start and forward completion; excludes physical Debian/live VPN acceptance",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest",
+        "POSIX shell",
+        "Git"
+      ],
+      "slow": false,
+      "timeout_seconds": 120,
       "execution_group": "installer-startup"
     },
     {

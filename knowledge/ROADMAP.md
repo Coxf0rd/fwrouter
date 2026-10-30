@@ -1,5 +1,24 @@
 # FWRouter — active roadmap
 
+## Stage 5 closure: preserve simple local deployment (2026-10-30)
+
+The final source package preserves the small, manually selected local deployment
+workflow through the existing installer, lifecycle/source transfer, selected host
+publication and atomic UI publisher. The public command adds `--check`, explicit
+local source selection and completed-checkpoint NOOP without private orchestration,
+automatic backups, schema migration or automatic rollback. It does not fetch or
+deploy a newly merged main automatically.
+
+Live Stage 5 services and all four scheduled timers have been restored; native
+proof is PASS and the installed generation is verified. External VPN client E2E
+remains NOT VERIFIED, so production acceptance is PARTIALLY VERIFIED. The generic
+command in this source package is not yet installed on production; its source
+qualification and owner-only merge are separate from the existing live result.
+The older one-operation installed command requires its historical pending
+checkpoint and cannot perform another update after normal checkpoint completion.
+This source package removes that limitation; publishing it does not claim that
+the running command has already been replaced. Stage 6 is outside this closure.
+
 ## Explicit reproof for verified subscription generations missing native receipt — source implementation (2026-10-26)
 
 The strict native-proof reader can report `INCOMPLETE` for a verified
