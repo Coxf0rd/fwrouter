@@ -583,6 +583,17 @@ def _publish_host_pair(source: Path, paths: Paths, plan: Path) -> None:
             raise DeploymentError("published API unit failed systemd verification")
 
 
+def _xray_unit_active() -> bool:
+    """Observe the Xray runtime unit without routing it through lifecycle ownership."""
+    try:
+        result = subprocess.run(["/usr/bin/systemctl", "is-active", "fwrouter-xray.service"],
+                                check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "active"
+
+
 def _facts(source: Path, paths: Paths, lifecycle, ui) -> tuple[bool, bool, bool, bool]:
     source_manifest = lifecycle._backend_manifest(source / "backend")
     backend_same = False
@@ -618,7 +629,7 @@ def _facts(source: Path, paths: Paths, lifecycle, ui) -> tuple[bool, bool, bool,
             healthy = healthy and lifecycle._is_active(lifecycle.GATEWAY_UNIT)
             healthy = healthy and lifecycle._gateway_listener_ready()
             healthy = healthy and lifecycle._is_active(lifecycle.MIHOMO_UNIT)
-            healthy = healthy and lifecycle._is_active("fwrouter-xray.service")
+            healthy = healthy and _xray_unit_active()
         except Exception:
             healthy = False
     return backend_same, ui_same, host_same, healthy
