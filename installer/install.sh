@@ -24,7 +24,7 @@ Usage:
   installer/install.sh --deploy --component backend [--component ui ...]
   installer/install.sh --deploy --component host --host-plan PLAN.json [--target /]
 
-Components: backend, ui, mihomo, xray, host, docs, homeassistant, all
+Components: backend, ui, mihomo, xray, host, docs, homeassistant, deploy, all
 Options:
   --deploy                         copy selected components to an already prepared host without apt/venv/unit/sysctl setup
   --host-plan PLAN.json            publish only the allowlisted API unit and boot helper via CAS
@@ -297,6 +297,14 @@ install_homeassistant() {
   ensure_executable "$(target_path app/config/homeassistant/scripts/fwrouter_action.py)"
 }
 
+install_deploy_command() {
+  install_file "$REPO_ROOT/installer/local_deploy.py" \
+    "$(target_path usr/local/libexec/fwrouter/local_deploy.py)"
+  install_file "$REPO_ROOT/host/sbin/fwrouter-deploy" \
+    "$(target_path usr/local/sbin/fwrouter-deploy)"
+  ensure_executable "$(target_path usr/local/sbin/fwrouter-deploy)"
+}
+
 install_host() {
   copy_tree "$REPO_ROOT/host/libexec/fwrouter" "$(target_path usr/local/libexec/fwrouter)"
   copy_tree "$REPO_ROOT/host/systemd" "$(target_path etc/systemd/system)"
@@ -385,6 +393,7 @@ want_component xray && install_xray
 want_component host && install_host
 want_component docs && install_docs
 want_explicit_component homeassistant && install_homeassistant
+want_explicit_component deploy && install_deploy_command
 
 if [ -x "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)" ]; then
   sh "$(target_path opt/fwrouter-api/scripts/bootstrap-state.sh)" \

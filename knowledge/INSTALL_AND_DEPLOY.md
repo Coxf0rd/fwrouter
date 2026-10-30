@@ -33,6 +33,37 @@ sudo git clone https://github.com/Coxf0rd/fwrouter.git /srv/fwrouter
 cd /srv/fwrouter
 ```
 
+Prepare the host using the normal installer steps below. To add the small local
+deployment command, install its explicit component from that same checkout:
+
+```bash
+sudo /srv/fwrouter/installer/install.sh --deploy --component deploy
+sudo /usr/local/sbin/fwrouter-deploy --configure-source /srv/fwrouter
+sudo /usr/local/sbin/fwrouter-deploy --check
+```
+
+The command records the selected checkout path and full commit in a root-owned
+local config. The checkout must be root-owned, self-contained (a standard Git
+checkout rather than a linked worktree or alternate object store), clean
+(including ignored files), and have no group/world-writable or linked entries.
+It must already be present on the prepared host. Selection performs no fetch. Review
+the reported commit, then run `sudo /usr/local/sbin/fwrouter-deploy` to apply
+that source. It installs only backend/UI using the existing installer and
+controlled lifecycle, publishes the existing two-file host pair when its
+content or required mode differs, and leaves persistent timers pending by default. Use the
+explicit `--allow-timer-catchup` option only when timer catch-up is intended.
+`--check` performs no writes. This command does not install the OS, provision
+the host, fetch source, or run automatically.
+
+This public command treats a completed lifecycle checkpoint as normal state:
+when backend, UI, host pair, API health, Gateway listener, and active Xray/Mihomo
+units pass, `--check` reports `NOOP`, and a later selected source can start a new
+owner-controlled update. If the selected source already matches but one of
+those runtime checks fails, the command reports the unhealthy state and stops
+without reinstalling. An earlier one-off rollout wrapper may intentionally
+refuse to create another operation after its first checkpoint completes; use
+this public entrypoint for repeatable local source updates.
+
 If the repository is already present, update the source tree before deploying:
 
 ```bash
