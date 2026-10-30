@@ -25,9 +25,11 @@ Developer-facing external connection contracts are documented in [`knowledge/EXT
 
 The core `backend` + `host` install is expected to work without installing or enabling Mihomo, Xray, Docker, or Tailscale.
 
-## Install
+## Install and Update
 
-Create or update the source tree from Git on a Debian/Ubuntu-like host:
+Create the standard source checkout on a Debian/Ubuntu-like host. Keep it
+root-controlled and clean; the local deploy command accepts a self-contained
+standard checkout, not a linked worktree:
 
 ```bash
 sudo apt-get update
@@ -37,36 +39,69 @@ sudo git clone https://github.com/Coxf0rd/fwrouter.git /srv/fwrouter
 cd /srv/fwrouter
 ```
 
-If `/srv/fwrouter` already exists, update it instead:
-
-```bash
-cd /srv/fwrouter
-sudo git pull --ff-only
-```
-
-Install the core control plane without bundled proxy runtimes:
+Prepare the core control plane and UI with the normal installer:
 
 ```bash
 sudo /srv/fwrouter/installer/install.sh --component backend --component host --component ui
 ```
 
-Install all bundled components on a Debian/Ubuntu-like host:
+The core works without bundled proxy runtimes. Install managed runtimes
+separately only when this host is meant to run them:
 
 ```bash
-sudo /srv/fwrouter/installer/install.sh --all
-```
-
-Or install selected components:
-
-```bash
-sudo /srv/fwrouter/installer/install.sh --component backend
-sudo /srv/fwrouter/installer/install.sh --component ui
 sudo /srv/fwrouter/installer/install.sh --component mihomo
 sudo /srv/fwrouter/installer/install.sh --component xray
-sudo /srv/fwrouter/installer/install.sh --component host
 ```
 
-The installer copies source components into their live paths, prepares host dependencies when installing to `/`, bootstraps state directories, and enables FWRouter systemd units/timers for host installs.
+For the repeatable local update workflow, install the deploy component from
+this checkout and select it explicitly:
+
+```bash
+sudo /srv/fwrouter/installer/install.sh --deploy --component deploy
+sudo /usr/local/sbin/fwrouter-deploy --configure-source /srv/fwrouter
+sudo /usr/local/sbin/fwrouter-deploy --check
+```
+
+The checkout must be root-owned, clean (including ignored files), and have no
+group/world-writable entries, links, linked worktree metadata, or alternate
+Git object store. Selection pins its current full commit in root-owned local
+configuration; it does not fetch source. Review the selected commit before
+applying it with `sudo /usr/local/sbin/fwrouter-deploy`. Run `--check` again
+afterward. When installed files and the full runtime health gate pass, it
+reports `NOOP`; if it reports an unhealthy state, stop and resolve that
+condition before trying another deployment path.
+
+For an ordinary update, update the local Git checkout yourself, select the
+reviewed revision, then refresh the installed deploy component if its source
+bytes changed. The installed command checks that its module and wrapper match
+the selected checkout, so refresh them before selecting that checkout:
+
+```bash
+sudo git -C /srv/fwrouter fetch origin
+sudo git -C /srv/fwrouter switch --detach '<reviewed-commit>'
+sudo /srv/fwrouter/installer/install.sh --deploy --component deploy
+sudo /usr/local/sbin/fwrouter-deploy --configure-source /srv/fwrouter
+sudo /usr/local/sbin/fwrouter-deploy --check
+sudo /usr/local/sbin/fwrouter-deploy
+sudo /usr/local/sbin/fwrouter-deploy --check
+```
+
+The deploy command applies backend/UI through the existing installer and
+lifecycle owner, updates the existing host files when their bytes or modes
+change, and preserves host-local data and runtime guards. Persistent timers
+remain pending unless `--allow-timer-catchup` is explicitly requested. A
+conflicting pending operation blocks a new update; keep its checkpoint intact
+and follow the documented lifecycle procedure. This public updater is not a
+require a private orchestrator, automatically create backups or JIT snapshots,
+or perform automatic rollback.
+
+The updater's health gate requires the API, Gateway listener, and active
+Mihomo and Xray units. Installing only the bare core does not satisfy that
+runtime gate; install and enable the managed runtimes when using this updater.
+For first-time setup or installations that do not meet this gate, use the
+normal installer commands described in
+[`installer/README.md`](installer/README.md) and
+[`knowledge/INSTALL_AND_DEPLOY.md`](knowledge/INSTALL_AND_DEPLOY.md).
 
 ## Development And Deployment Flow
 
@@ -76,7 +111,10 @@ Develop in this git repository:
 cd /srv/fwrouter
 ```
 
-Deploy changes into the live server paths with the installer:
+Use `fwrouter-deploy` above for ordinary updates from this local checkout.
+The source installer remains available for initial setup and explicit
+component-focused cases. For example, deploy all components on a prepared
+host with:
 
 ```bash
 sudo /srv/fwrouter/installer/install.sh --all
