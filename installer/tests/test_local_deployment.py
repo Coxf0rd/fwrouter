@@ -33,6 +33,14 @@ def fd_identity(fd: int) -> tuple[int, int, int] | None:
     return info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)
 
 
+def cleanup_test_tmp_path(tmp_path: Path) -> None:
+    """Remove this test's disposable clones and installer targets promptly."""
+    if tmp_path.is_symlink():
+        raise AssertionError("pytest temporary test root must not be a symlink")
+    if tmp_path.exists():
+        shutil.rmtree(tmp_path)
+
+
 def pristine_checkout(tmp_path: Path) -> Path:
     source = tmp_path / "source"
     command(["/usr/bin/git", "clone", "--no-hardlinks", "--quiet", str(ROOT), str(source)])
@@ -52,7 +60,9 @@ def installed_command(tmp_path: Path) -> tuple[Path, Path, Path]:
     return target, module, wrapper
 
 
-def test_component_install_and_real_check_entrypoint_are_local_and_read_only(tmp_path: Path) -> None:
+def test_component_install_and_real_check_entrypoint_are_local_and_read_only(
+        tmp_path: Path, request) -> None:
+    request.addfinalizer(lambda: cleanup_test_tmp_path(tmp_path))
     target, module, wrapper = installed_command(tmp_path)
     source = pristine_checkout(tmp_path)
     sys.path.insert(0, str(module.parent))
@@ -98,8 +108,22 @@ def test_component_install_and_real_check_entrypoint_are_local_and_read_only(tmp
 
 
 @pytest.fixture
-def deployment_fixture(tmp_path: Path):
+def deployment_fixture(tmp_path: Path, request):
     target = tmp_path / "host"
+    release_root = target / "opt/.fwrouter-ui-releases"
+
+    def cleanup_immutable_releases() -> None:
+        # UI publication deliberately makes managed releases immutable. Restore
+        # owner access only in this fixture's disposable installer target so
+        # the non-root gate can remove its owned temporary tree.
+        if not release_root.is_symlink() and release_root.exists():
+            for path in sorted(release_root.rglob("*"), reverse=True):
+                if path.is_dir() and not path.is_symlink():
+                    path.chmod(path.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+            release_root.chmod(release_root.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        cleanup_test_tmp_path(tmp_path)
+
+    request.addfinalizer(cleanup_immutable_releases)
     source = ROOT
     old_source = pristine_checkout(tmp_path)
     (target / "opt").mkdir(parents=True)
