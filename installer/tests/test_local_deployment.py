@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -434,3 +435,93 @@ def test_schema2_checkpoint_transfers_through_real_owner_compatibility(
     assert checkpoint["schema"] == 4
     assert checkpoint["status"] == "complete"
     assert checkpoint["source_transitions"][0]["to_manifest_sha256"] == checkpoint["backend_manifest_sha256"]
+
+
+@pytest.mark.parametrize(
+    ("xray_result", "expected_status"),
+    [
+        (subprocess.CompletedProcess([], 0, "active\n", ""), "NOOP"),
+        (subprocess.CompletedProcess([], 3, "inactive\n", ""), "UNHEALTHY_CURRENT_SOURCE"),
+        (subprocess.CompletedProcess([], 3, "failed\n", ""), "UNHEALTHY_CURRENT_SOURCE"),
+        (subprocess.CompletedProcess([], 0, "unexpected\n", ""), "UNHEALTHY_CURRENT_SOURCE"),
+        (subprocess.CompletedProcess([], 1, "active\n", "error"), "UNHEALTHY_CURRENT_SOURCE"),
+        (OSError("systemctl unavailable"), "UNHEALTHY_CURRENT_SOURCE"),
+        (subprocess.TimeoutExpired(["/usr/bin/systemctl"], 10), "UNHEALTHY_CURRENT_SOURCE"),
+    ],
+    ids=("active", "inactive", "failed", "malformed", "nonzero", "command-error", "timeout"),
+)
+def test_production_check_observes_xray_read_only_and_fails_closed(
+        deployment_fixture, monkeypatch, xray_result, expected_status) -> None:
+    deploy, paths, source, _old_source, _marker, _backend_env, _active, _calls, _owner_driver, _system_driver = deployment_fixture
+    from dataclasses import replace
+
+    paths = replace(paths, test_driver=False)
+    # Match the disposable host pair so this exercises the healthy NOOP decision.
+    ui_target = paths.target("opt/fwrouter-ui")
+    shutil.rmtree(ui_target)
+    shutil.copytree(source / "ui", ui_target)
+    for source_rel, target_rel, mode in deploy.HOST_ROWS:
+        target = paths.target(target_rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / source_rel, target)
+        target.chmod(mode)
+
+    lifecycle, lock, ui = deploy._source_modules(source, paths)
+    lifecycle._api_health = lambda: True
+    lifecycle._gateway_listener_ready = lambda: True
+    invocations: list[list[str]] = []
+
+    def controlled_subprocess(argv, **kwargs):
+        invocations.append(list(argv))
+        assert kwargs.get("timeout") == 10
+        assert kwargs.get("check") is False
+        assert kwargs.get("text") is True
+        assert "--" not in argv
+        if argv == ["/usr/bin/systemctl", "is-active", "fwrouter-xray.service"]:
+            if isinstance(xray_result, BaseException):
+                raise xray_result
+            return subprocess.CompletedProcess(argv, xray_result.returncode,
+                                                xray_result.stdout, xray_result.stderr)
+        if argv in (["/usr/bin/systemctl", "is-active", lifecycle.GATEWAY_UNIT],
+                    ["/usr/bin/systemctl", "is-active", lifecycle.MIHOMO_UNIT]):
+            return subprocess.CompletedProcess(argv, 0, "active\n", "")
+        pytest.fail(f"unexpected systemctl invocation: {argv!r}")
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", controlled_subprocess)
+    monkeypatch.setattr(deploy, "_source_modules", lambda _source, _paths: (lifecycle, lock, ui))
+
+    # Create a valid completed checkpoint: it must not prevent a healthy NOOP.
+    manifest = lifecycle._backend_manifest(source / "backend")
+    paths.state_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    checkpoint = {
+        "schema": lifecycle.SCHEMA,
+        "operation_id": str(uuid.uuid4()),
+        "status": "complete",
+        "created_at": "2026-10-30T00:00:00Z",
+        "backend_manifest": manifest,
+        "backend_manifest_sha256": lifecycle._manifest_digest(manifest),
+        "active_units": {unit: False for unit in {*lifecycle.RESTORE_ORDER,
+                                                    *lifecycle.TRANSIENT_JOBS,
+                                                    lifecycle.API_UNIT}},
+        "pending_units": [],
+        "initial_backend_manifest_sha256": lifecycle._manifest_digest(manifest),
+        "source_transitions": [],
+        "maintenance_operation": None,
+        "runtime_quiescence": None,
+    }
+    checkpoint_path = paths.state_dir / "pending.json"
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    checkpoint_path.chmod(0o600)
+
+    observed = deploy._facts(source, paths, lifecycle, ui)
+    assert observed[:3] == (True, True, True), observed
+    invocations.clear()
+    status = deploy.check(paths, source, "unused-by-check")
+
+    assert status == expected_status
+    assert invocations == [
+        ["/usr/bin/systemctl", "is-active", lifecycle.GATEWAY_UNIT],
+        ["/usr/bin/systemctl", "is-active", lifecycle.MIHOMO_UNIT],
+        ["/usr/bin/systemctl", "is-active", "fwrouter-xray.service"],
+    ]
+    assert all(argv[:2] == ["/usr/bin/systemctl", "is-active"] for argv in invocations)
