@@ -91,9 +91,10 @@ lifecycle owner, updates the existing host files when their bytes or modes
 change, and preserves host-local data and runtime guards. Persistent timers
 remain pending unless `--allow-timer-catchup` is explicitly requested. A
 conflicting pending operation blocks a new update; keep its checkpoint intact
-and follow the documented lifecycle procedure. This public updater is not a
-require a private orchestrator, automatically create backups or JIT snapshots,
-or perform automatic rollback.
+and follow the documented lifecycle procedure. This public updater does not
+require a private orchestrator. It does not
+automatically create backups or JIT snapshots, and it does not perform
+automatic rollback.
 
 The updater's health gate requires the API, Gateway listener, and active
 Mihomo and Xray units. Installing only the bare core does not satisfy that
