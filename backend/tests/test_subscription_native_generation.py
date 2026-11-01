@@ -750,7 +750,7 @@ def test_real_equivalent_refresh_republishes_fresh_optional_proof(monkeypatch) -
     )
     result = subscription_pipeline.apply_prepared_subscription_refresh({"ok": True})
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert len(observed_admissions) == 1
     admission = observed_admissions[0]
     assert admission.digest == advanced["candidate_digest"]
@@ -765,6 +765,128 @@ def test_real_equivalent_refresh_republishes_fresh_optional_proof(monkeypatch) -
             (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
         ).fetchone()["value_json"])
     assert stored_marker["native_proof"] == fresh_proof
+
+
+def _claim_optional_verified_generation() -> tuple[dict, object]:
+    _seed_inventory("synthetic-optional-publication")
+    with db_session() as connection:
+        subscription._write_subscription_inventory_candidate(connection)
+        digest, count = subscription._subscription_inventory_digest(connection)
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            (json.dumps({
+                "schema": 1, "status": "verified", "candidate_digest": digest,
+                "candidate_revision": 1, "verified_digest": digest, "verified_revision": 1,
+                "reason": None, "inventory_count": count,
+            }, sort_keys=True, separators=(",", ":")),
+             subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+    with xray_writer_guard():
+        admission = subscription._claim_subscription_inventory_admission(
+            allow_verified_publication=True,
+        )
+    assert admission is not None
+    assert admission.optional_verified_publication is True
+    assert admission.requires_native_proof_refresh is False
+    return subscription.get_subscription_native_generation_state(), admission
+
+
+def _stored_generation_marker() -> dict:
+    with db_session() as connection:
+        return json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+
+
+def test_optional_verified_promotion_succeeds_without_mihomo_receipt_or_proof_write(monkeypatch) -> None:
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+
+    state, admission = _claim_optional_verified_generation()
+    before = _stored_generation_marker()
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET desired_state='disabled', lifecycle_mode='none' WHERE module_name='xray'",
+        )
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+        lambda *_args: {"hash": "a" * 64},
+    )
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: False)
+    monkeypatch.setattr(
+        "fwrouter_api.services.native_proof.capture_native_generation_proof",
+        lambda **_kwargs: pytest.fail("missing Mihomo receipt must stop before proof capture"),
+    )
+
+    with xray_writer_guard():
+        result = subscription._promote_subscription_inventory_generation(admission)
+
+    assert result == {
+        "ok": True, "digest": state["candidate_digest"], "revision": state["candidate_revision"],
+        "already_promoted": True, "native_proof_written": False,
+    }
+    assert _stored_generation_marker() == before
+
+
+def test_optional_capture_failure_does_not_erase_exact_generation_proof(monkeypatch) -> None:
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+
+    state, admission = _claim_optional_verified_generation()
+    # Model a strict owner attaching evidence after the optional capability was issued.
+    late_proof = {"fixture": "strict-owner-proof", "generation_revision": state["candidate_revision"]}
+    with db_session() as connection:
+        marker = _stored_generation_marker()
+        marker["native_proof"] = late_proof
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            (json.dumps(marker), subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+    before = _stored_generation_marker()
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+        lambda *_args: {"hash": "b" * 64},
+    )
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _value: True)
+    monkeypatch.setattr(
+        "fwrouter_api.services.native_proof.capture_native_generation_proof",
+        lambda **_kwargs: {"status": "INCOMPLETE", "reason": "native_readback_unavailable"},
+    )
+
+    with xray_writer_guard():
+        result = subscription._promote_subscription_inventory_generation(admission)
+
+    assert result["ok"] is True
+    assert result["native_proof_written"] is False
+    assert _stored_generation_marker() == before
+    assert _stored_generation_marker()["native_proof"] == late_proof
+
+
+def test_optional_verified_capability_rejects_changed_generation(monkeypatch) -> None:
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+
+    state, admission = _claim_optional_verified_generation()
+    with db_session() as connection:
+        marker = _stored_generation_marker()
+        marker["candidate_revision"] += 1
+        marker["verified_revision"] += 1
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            (json.dumps(marker), subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+    before = _stored_generation_marker()
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint",
+        lambda *_args: {"hash": "c" * 64},
+    )
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: False)
+
+    with xray_writer_guard():
+        result = subscription._promote_subscription_inventory_generation(admission)
+
+    assert result == {"ok": False, "reason": "inventory_generation_stale", "last_good_retained": True}
+    assert _stored_generation_marker() == before
+    assert state["candidate_revision"] + 1 == before["candidate_revision"]
 
 
 def test_source_removal_invalidates_verified_inventory() -> None:

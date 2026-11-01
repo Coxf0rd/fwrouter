@@ -38,6 +38,7 @@ class _SubscriptionInventoryAdmission:
     revision: int
     issuer: object
     requires_native_proof_refresh: bool = False
+    optional_verified_publication: bool = False
     proof_only_source_fingerprint: str | None = None
     proof_only_core_runtime_fingerprint: str | None = None
     proof_only_selection_revision: int | None = None
@@ -368,6 +369,7 @@ def _claim_subscription_inventory_admission(
             revision=int(state["candidate_revision"]),
             issuer=_SUBSCRIPTION_ADMISSION_ISSUER,
             requires_native_proof_refresh=allow_verified_proof_refresh,
+            optional_verified_publication=allow_verified_publication,
         )
     if state["status"] == "verified" or state["status"] == "empty":
         return None
@@ -402,11 +404,50 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
         and isinstance(admission.proof_only_routing_snapshot, dict)
         else None
     )
+
+    def optional_verified_noop() -> dict[str, Any] | None:
+        """Treat unavailable optional evidence as a no-write result only for this exact verified tuple."""
+        if admission.optional_verified_publication is not True:
+            return None
+        try:
+            with db_session() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                current = _read_subscription_native_generation(connection)
+                if (
+                    current.get("status") == "verified"
+                    and current.get("inventory_digest") == admission.digest
+                    and current.get("candidate_digest") == admission.digest
+                    and current.get("candidate_revision") == admission.revision
+                    and current.get("verified_digest") == admission.digest
+                    and current.get("verified_revision") == admission.revision
+                ):
+                    return {
+                        "ok": True, "digest": admission.digest, "revision": admission.revision,
+                        "already_promoted": True, "native_proof_written": False,
+                    }
+        except Exception:
+            pass
+        return {"ok": False, "reason": "inventory_generation_stale", "last_good_retained": True}
+
     try:
         fingerprint = current_mihomo_input_fingerprint(proof_routing_snapshot)
     except Exception:
+        optional_result = optional_verified_noop()
+        if optional_result is not None:
+            return optional_result
         return {"ok": False, "reason": "native_input_fingerprint_unavailable"}
-    if not mihomo_udp_policy_receipt_matches() or not mihomo_input_unchanged(fingerprint):
+    try:
+        mihomo_receipt_ok = mihomo_udp_policy_receipt_matches()
+        mihomo_inputs_unchanged = mihomo_input_unchanged(fingerprint)
+    except Exception:
+        if admission.optional_verified_publication is not True:
+            raise
+        mihomo_receipt_ok = False
+        mihomo_inputs_unchanged = False
+    if not mihomo_receipt_ok or not mihomo_inputs_unchanged:
+        optional_result = optional_verified_noop()
+        if optional_result is not None:
+            return optional_result
         return {"ok": False, "reason": "native_receipt_unverified"}
     if admission.proof_only_source_fingerprint is not None:
         from fwrouter_api.services.xray_subscription_service import (
@@ -438,13 +479,19 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
             "ok": False, "reason": "native_generation_receipt_incomplete",
             "native_proof_reason": safe_reason,
         }
+    if admission.optional_verified_publication is True and native_proof is None:
+        optional_result = optional_verified_noop()
+        if optional_result is not None:
+            return optional_result
     with db_session() as connection:
-        if admission.proof_only_source_fingerprint is not None:
-            # Serialize the final proof+marker CAS with any SQLite writer and
-            # compare all durable intent/credential/publication inputs in this
-            # same transaction. The filesystem checkpoint remains the durable
-            # operation owner across the SQLite commit boundary.
+        if (admission.proof_only_source_fingerprint is not None
+                or admission.optional_verified_publication is True):
+            # Serialize the exact-generation check and any proof+marker CAS
+            # with SQLite writers.
             connection.execute("BEGIN IMMEDIATE")
+        if admission.proof_only_source_fingerprint is not None:
+            # The filesystem checkpoint remains the durable operation owner
+            # across the SQLite commit boundary.
             from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
             from fwrouter_api.services.xray_subscription_service import (
                 _legacy_admission_core_runtime_fingerprint,
@@ -502,6 +549,23 @@ def _promote_subscription_inventory_generation(admission: Any) -> dict[str, Any]
             native_proof = None
         if proof_refresh_admission and native_proof is None:
             return {"ok": False, "reason": "native_generation_receipt_stale"}
+        if admission.optional_verified_publication is True and native_proof is None:
+            # Another exact-generation proof may have been attached since the
+            # optional capture began. Leave it untouched rather than replacing
+            # or erasing evidence based on an incomplete readback.
+            if (
+                current["status"] == "verified"
+                and current["inventory_digest"] == admission.digest
+                and current["candidate_digest"] == admission.digest
+                and current["candidate_revision"] == admission.revision
+                and current["verified_digest"] == admission.digest
+                and current["verified_revision"] == admission.revision
+            ):
+                return {
+                    "ok": True, "digest": admission.digest, "revision": admission.revision,
+                    "already_promoted": True, "native_proof_written": False,
+                }
+            return {"ok": False, "reason": "inventory_generation_stale", "last_good_retained": True}
         if (
             current["status"] == "verified"
             and current["candidate_digest"] == admission.digest
