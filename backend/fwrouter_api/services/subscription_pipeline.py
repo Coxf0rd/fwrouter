@@ -1000,7 +1000,14 @@ def apply_prepared_subscription_refresh(prepared: dict[str, Any]) -> dict[str, A
     try:
         from fwrouter_api.adapters.xray_common import xray_writer_guard
         with xray_writer_guard(timeout_seconds=5.0):
-            inventory_admission = _claim_subscription_inventory_admission()
+            # Inventory sync advances the marker revision even when a provider
+            # refresh returns the same canonical digest. Allow the normal
+            # promotion owner to re-publish that exact verified revision and
+            # attach fresh native proof when available; unlike explicit
+            # proof-only admission, this remains an optional evidence capture.
+            inventory_admission = _claim_subscription_inventory_admission(
+                allow_verified_publication=True,
+            )
     except SubscriptionInventoryGenerationBlocked as exc:
         blocked = {
             **_public_prepared_result(prepared),
