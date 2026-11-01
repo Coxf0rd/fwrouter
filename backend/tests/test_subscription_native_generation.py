@@ -489,7 +489,10 @@ def test_disabled_xray_keeps_the_subscription_publication_gate_adapter_neutral(m
 
     admission = object()
     promoted: list[object] = []
-    monkeypatch.setattr(subscription_pipeline, "_claim_subscription_inventory_admission", lambda: admission)
+    monkeypatch.setattr(
+        subscription_pipeline, "_claim_subscription_inventory_admission",
+        lambda **_kwargs: admission,
+    )
     monkeypatch.setattr(
         subscription_pipeline,
         "_apply_prepared_subscription_refresh_under_xray_guard",
@@ -612,6 +615,7 @@ def test_inventory_equivalent_refresh_preserves_verified_generation() -> None:
             "status": "verified",
             "verified_digest": marker["candidate_digest"],
             "verified_revision": marker["candidate_revision"],
+            "native_proof": {"generation_revision": marker["candidate_revision"], "fixture": "old"},
             "reason": None,
         })
         connection.execute(
@@ -628,6 +632,139 @@ def test_inventory_equivalent_refresh_preserves_verified_generation() -> None:
     assert state["verified_digest"] == verified_digest
     assert state["candidate_revision"] == marker["candidate_revision"] + 1
     assert state["verified_revision"] == state["candidate_revision"]
+    with db_session() as connection:
+        updated_marker = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+    assert "native_proof" not in updated_marker
+
+
+def test_real_equivalent_refresh_republishes_fresh_optional_proof(monkeypatch) -> None:
+    import hashlib
+
+    from fwrouter_api.services import mihomo_reconcile_fingerprint
+    from fwrouter_api.services import subscription_pipeline
+    from fwrouter_api.services.core_intent import read_core_intent_revision
+    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
+
+    server = SubscriptionServer(
+        server_id="synthetic-reproof-refresh",
+        server_name="Synthetic reproof refresh",
+        provider_name="subscription",
+        raw={"protocol": "vless", "host": "127.0.0.1", "port": 443},
+        protocol="vless",
+        host="127.0.0.1",
+        port=443,
+        raw_identity="synthetic-reproof-refresh-identity",
+        parser_format="fixture",
+        source_format="test",
+        runtime_name="synthetic-reproof-refresh",
+    )
+    source = "http://127.0.0.1:9/synthetic"
+    subscription._upsert_subscription_servers([server], servers_by_url={source: [server]})
+    with db_session() as connection:
+        marker = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+        marker.update({
+            "status": "verified",
+            "verified_digest": marker["candidate_digest"],
+            "verified_revision": marker["candidate_revision"],
+            "native_proof": {"generation_revision": marker["candidate_revision"], "fixture": "old"},
+            "reason": None,
+        })
+        connection.execute(
+            "UPDATE settings SET value_json=? WHERE key=?",
+            (json.dumps(marker), subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY),
+        )
+    old_revision = marker["candidate_revision"]
+
+    # Follow the actual repeated inventory import path: unchanged canonical
+    # contents still advance the revision and invalidate the old revision's proof.
+    subscription._upsert_subscription_servers([server], servers_by_url={source: [server]})
+    advanced = subscription.get_subscription_native_generation_state()
+    assert advanced["status"] == "verified"
+    assert advanced["candidate_revision"] == old_revision + 1
+    with db_session() as connection:
+        advanced_marker = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+    assert "native_proof" not in advanced_marker
+
+    with db_session() as connection:
+        core_revision = read_core_intent_revision(connection)
+        selection_revision = read_selection_fence(connection)["revision"]
+        connection.execute(
+            "INSERT INTO apply_versions (apply_id, manifest_path, status, created_at, core_intent_revision) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(apply_id) DO UPDATE SET status=excluded.status, "
+            "created_at=excluded.created_at, core_intent_revision=excluded.core_intent_revision",
+            ("synthetic-reproof-refresh-apply", "/tmp/manifest.json", "applied", "2099", core_revision),
+        )
+    fresh_proof = {
+        "core": {
+            "core_intent_revision": core_revision,
+            "selection_revision": selection_revision,
+            "latest_apply_id_sha256": hashlib.sha256(
+                b"synthetic-reproof-refresh-apply"
+            ).hexdigest(),
+        },
+        "generation_revision": advanced["candidate_revision"],
+        "fixture": "fresh",
+    }
+    proof_calls: list[tuple[str, int]] = []
+
+    def capture(*, expected_digest: str, expected_revision: int) -> dict:
+        proof_calls.append((expected_digest, expected_revision))
+        assert (expected_digest, expected_revision) == (
+            advanced["candidate_digest"], advanced["candidate_revision"],
+        )
+        return {"status": "PASS", "proof": fresh_proof}
+
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint, "current_mihomo_input_fingerprint", lambda *_args: {},
+    )
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_input_unchanged", lambda _fingerprint: True)
+    monkeypatch.setattr(mihomo_reconcile_fingerprint, "mihomo_udp_policy_receipt_matches", lambda: True)
+    monkeypatch.setattr(
+        "fwrouter_api.services.native_proof.capture_native_generation_proof", capture,
+    )
+
+    observed_admissions = []
+
+    def successful_runtime_refresh(_prepared, *, inventory_admission):
+        observed_admissions.append(inventory_admission)
+        return {
+            "ok": True,
+            "runtime_verified": True,
+            "xray_vpn_auto_reconcile": {"ok": True, "status": "success"},
+            "xray_profile_reconcile": {"ok": True, "status": "success"},
+            "public_profile_promote": None,
+        }
+
+    monkeypatch.setattr(
+        subscription_pipeline, "_apply_prepared_subscription_refresh_under_xray_guard",
+        successful_runtime_refresh,
+    )
+    result = subscription_pipeline.apply_prepared_subscription_refresh({"ok": True})
+
+    assert result["ok"] is True
+    assert len(observed_admissions) == 1
+    admission = observed_admissions[0]
+    assert admission.digest == advanced["candidate_digest"]
+    assert admission.revision == advanced["candidate_revision"]
+    assert admission.requires_native_proof_refresh is False
+    assert proof_calls == [(advanced["candidate_digest"], advanced["candidate_revision"])]
+    stored = subscription.get_subscription_native_generation_state()
+    assert stored["candidate_revision"] == old_revision + 1
+    with db_session() as connection:
+        stored_marker = json.loads(connection.execute(
+            "SELECT value_json FROM settings WHERE key=?",
+            (subscription.SUBSCRIPTION_NATIVE_GENERATION_KEY,),
+        ).fetchone()["value_json"])
+    assert stored_marker["native_proof"] == fresh_proof
 
 
 def test_source_removal_invalidates_verified_inventory() -> None:

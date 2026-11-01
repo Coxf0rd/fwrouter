@@ -335,20 +335,26 @@ def _subscription_inventory_generation_gate(
 
 def _claim_subscription_inventory_admission(
     *, allow_verified_proof_refresh: bool = False,
+    allow_verified_publication: bool = False,
     expected_digest: str | None = None,
     expected_revision: int | None = None,
 ) -> _SubscriptionInventoryAdmission | None:
-    """Issue the normal pending capability, or an exact guarded proof-refresh capability.
+    """Issue a pending capability or an explicitly selected verified capability.
 
-    The verified refresh form is reserved for the explicit proof-only legacy
-    admission owner. Ordinary callers retain the historical ``None`` result
-    for verified/empty generations.
+    The strict verified proof-refresh form is reserved for the explicit
+    proof-only legacy admission owner. The ordinary verified publication form
+    is used after a real inventory refresh advances the revision while the
+    inventory digest remains equal to its previously verified digest. Promotion
+    may attach fresh proof, but does not require full native proof for the
+    established optional-proof publication contract.
     """
+    if allow_verified_proof_refresh and allow_verified_publication:
+        raise ValueError("SUBSCRIPTION_INVENTORY_ADMISSION_MODE_AMBIGUOUS")
     if not xray_writer_guard_is_held():
         raise RuntimeError("SUBSCRIPTION_INVENTORY_ADMISSION_REQUIRES_WRITER_GUARD")
     with db_session() as connection:
         state = _read_subscription_native_generation(connection)
-    if state["status"] == "verified" and allow_verified_proof_refresh:
+    if state["status"] == "verified" and (allow_verified_proof_refresh or allow_verified_publication):
         if (
             state["candidate_digest"] != state["verified_digest"]
             or state["candidate_revision"] != state["verified_revision"]
@@ -361,7 +367,7 @@ def _claim_subscription_inventory_admission(
             digest=str(state["candidate_digest"]),
             revision=int(state["candidate_revision"]),
             issuer=_SUBSCRIPTION_ADMISSION_ISSUER,
-            requires_native_proof_refresh=True,
+            requires_native_proof_refresh=allow_verified_proof_refresh,
         )
     if state["status"] == "verified" or state["status"] == "empty":
         return None
