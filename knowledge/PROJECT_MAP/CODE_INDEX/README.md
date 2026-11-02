@@ -74,6 +74,7 @@
 48b. `opt_fwrouter_api_fwrouter_api_services_state_projection_types_py.md`
 48c. `opt_fwrouter_api_fwrouter_api_services_reconcile_py.md`
 48d. `opt_fwrouter_api_fwrouter_api_services_events_py.md`
+48d.1. [Ordinary event read model](backend_fwrouter_api_services_ordinary_event_read_model_py.md)
 48e. `opt_fwrouter_api_fwrouter_api_services_diagnostics_py.md`
 49. `opt_fwrouter_api_fwrouter_api_services_subject_policy_py.md`
 50. `opt_fwrouter_api_fwrouter_api_services_scoped_egress_py.md`
