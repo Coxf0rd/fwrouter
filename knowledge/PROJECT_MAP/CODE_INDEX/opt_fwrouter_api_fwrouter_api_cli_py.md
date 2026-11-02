@@ -54,3 +54,17 @@ legacy generations without an owner-captured proof tuple. `admit-legacy` is an
 explicit writer operation; strict proof refresh is bound to an exact verified
 digest/revision and its durable checkpoint cannot resume under the weaker
 default mode.
+
+## Stage 6.1 / S61-F07 — safe admission diagnostics
+
+The execution result of `xray generation admit-legacy` can include the optional
+`native_proof_reason` on failure, only when it matches the native-proof owner's
+existing reason-code allowlist. This preserves the already-sanitized detail that
+the inventory owner supplies; unknown, malformed and raw exception values are
+not copied. Existing keys and exit codes remain unchanged (0 for success, 1 for
+blocked/error, 2 for missing confirmation); plan output is unchanged. Consumers
+should tolerate this additive optional failure diagnostic.
+
+This is output projection only: it adds no admission authority, proof refresh,
+generation mutation or recovery operation. Tests use `cli.main()` with controlled
+service results and retain the owner/admission suites.

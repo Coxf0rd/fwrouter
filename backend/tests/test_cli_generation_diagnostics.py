@@ -4,10 +4,21 @@ import importlib
 import json
 import sys
 import types
+from contextlib import nullcontext
 
 import pytest
 
 from fwrouter_api import cli
+
+
+def _install_legacy_admission_cli(monkeypatch, *, admission_result=None, plan_result=None):
+    from fwrouter_api.services import maintenance_lifecycle_admission
+
+    service_module = types.ModuleType("fwrouter_api.services.xray_subscription_service")
+    service_module.admit_legacy_subscription_inventory = lambda **_kwargs: admission_result
+    service_module.inspect_legacy_subscription_inventory_admission = lambda **_kwargs: plan_result
+    monkeypatch.setitem(sys.modules, service_module.__name__, service_module)
+    monkeypatch.setattr(maintenance_lifecycle_admission, "runtime_shared_lease", lambda _root: nullcontext())
 
 
 def test_cold_rollout_import_chain_preserves_inventory_facade_exports() -> None:
@@ -113,6 +124,127 @@ def test_generation_supersession_cli_bounds_failure_codes(monkeypatch, capsys) -
 
     assert output["failed_operation"] is None
     assert output["compensation_reason"] is None
+
+
+def test_legacy_admission_cli_projects_allowlisted_native_proof_reason(monkeypatch, capsys) -> None:
+    _install_legacy_admission_cli(monkeypatch, admission_result={
+        "ok": False, "status": "blocked", "reason": "native_generation_receipt_incomplete",
+        "native_proof_reason": "CORE_IP_POLICY_MISMATCH", "private_extra": "must not escape",
+    })
+
+    exit_code = cli.main([
+        "xray", "generation", "admit-legacy",
+        "--expected-inventory-digest", "a" * 64,
+        "--confirm", "PROOF_ONLY_LEGACY_ADMISSION", "--require-native-proof",
+    ])
+
+    assert exit_code == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": False, "status": "blocked", "reason": "native_generation_receipt_incomplete",
+        "native_proof_reason": "CORE_IP_POLICY_MISMATCH",
+    }
+
+
+@pytest.mark.parametrize("reason", [
+    "not_an_allowlisted_reason",
+    "CORE_IP_POLICY_MISMATCH token=secret-value",
+    "CORE_IP_POLICY_MISMATCH\nraw exception text",
+    {"code": "CORE_IP_POLICY_MISMATCH"},
+    ["CORE_IP_POLICY_MISMATCH"],
+    None,
+])
+def test_legacy_admission_cli_omits_malformed_or_unsafe_native_reason(monkeypatch, capsys, reason) -> None:
+    _install_legacy_admission_cli(monkeypatch, admission_result={
+        "ok": False, "status": "blocked", "reason": "native_generation_receipt_incomplete",
+        "native_proof_reason": reason,
+        "unexpected": "secret-value",
+    })
+
+    exit_code = cli.main([
+        "xray", "generation", "admit-legacy",
+        "--expected-inventory-digest", "a" * 64,
+        "--confirm", "PROOF_ONLY_LEGACY_ADMISSION", "--require-native-proof",
+    ])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    parsed = json.loads(output)
+    assert parsed == {
+        "ok": False, "status": "blocked", "reason": "native_generation_receipt_incomplete",
+    }
+    assert "secret-value" not in output
+
+
+def test_legacy_admission_cli_success_keeps_existing_projection(monkeypatch, capsys) -> None:
+    _install_legacy_admission_cli(monkeypatch, admission_result={
+        "ok": True, "status": "verified", "digest": "a" * 64, "revision": 7,
+        "already_admitted": False, "proof_receipt_written": True,
+        "native_proof_reason": "CORE_IP_POLICY_MISMATCH",
+    })
+
+    exit_code = cli.main([
+        "xray", "generation", "admit-legacy",
+        "--expected-inventory-digest", "a" * 64,
+        "--confirm", "PROOF_ONLY_LEGACY_ADMISSION",
+    ])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True, "status": "verified", "digest": "a" * 64, "revision": 7,
+        "already_admitted": False, "proof_receipt_written": True,
+    }
+
+
+def test_legacy_admission_cli_does_not_expose_owner_exception_text(monkeypatch, capsys) -> None:
+    from fwrouter_api.services import maintenance_lifecycle_admission
+
+    service_module = types.ModuleType("fwrouter_api.services.xray_subscription_service")
+
+    def raise_owner_error(**_kwargs):
+        raise RuntimeError("synthetic token=secret")
+
+    service_module.admit_legacy_subscription_inventory = raise_owner_error
+    service_module.inspect_legacy_subscription_inventory_admission = lambda **_kwargs: None
+    monkeypatch.setitem(sys.modules, service_module.__name__, service_module)
+    monkeypatch.setattr(maintenance_lifecycle_admission, "runtime_shared_lease", lambda _root: nullcontext())
+
+    exit_code = cli.main([
+        "xray", "generation", "admit-legacy",
+        "--expected-inventory-digest", "a" * 64,
+        "--confirm", "PROOF_ONLY_LEGACY_ADMISSION",
+    ])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert json.loads(output) == {
+        "ok": False, "status": "blocked", "error_code": "RuntimeError",
+    }
+    assert "secret" not in output
+
+
+def test_legacy_admission_cli_plan_and_confirmation_contract_unchanged(monkeypatch, capsys) -> None:
+    from fwrouter_api.services import maintenance_lifecycle_admission
+
+    calls = []
+    service_module = types.ModuleType("fwrouter_api.services.xray_subscription_service")
+    service_module.inspect_legacy_subscription_inventory_admission = lambda **kwargs: (
+        calls.append(kwargs) or {"ok": True, "status": "ready", "native_proof_reason": "CORE_IP_POLICY_MISMATCH"}
+    )
+    service_module.admit_legacy_subscription_inventory = lambda **_kwargs: pytest.fail(
+        "missing confirmation must not call the admission owner"
+    )
+    monkeypatch.setitem(sys.modules, service_module.__name__, service_module)
+    monkeypatch.setattr(maintenance_lifecycle_admission, "runtime_shared_lease", lambda _root: nullcontext())
+
+    assert cli.main(["xray", "generation", "admit-legacy", "--plan"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "status": "ready"}
+    assert calls == [{}]
+
+    assert cli.main(["xray", "generation", "admit-legacy"]) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": False, "status": "blocked", "error_code": "ADMISSION_CONFIRMATION_REQUIRED",
+    }
+    assert calls == [{}]
 
 
 def _install_core_owner_checkpoint(
