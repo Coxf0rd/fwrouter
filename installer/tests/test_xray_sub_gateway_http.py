@@ -141,6 +141,29 @@ def _request(server, method: str, path: str, *, headers=None):
         connection.close()
 
 
+def _request_head_wire(server, path: str):
+    """Read HEAD response bytes without HTTPResponse's automatic HEAD body suppression."""
+    sock = socket.create_connection(server.server_address, timeout=1)
+    sock.settimeout(1)
+    try:
+        sock.sendall(
+            (
+                f"HEAD {path} HTTP/1.0\r\n"
+                "Host: public.example.test\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode("ascii")
+        )
+        # No method is supplied, so HTTPResponse reads any bytes sent after headers.
+        response = http.client.HTTPResponse(sock)
+        response.begin()
+        body = response.read(65536)
+        if len(body) == 65536:
+            body += response.read(1)
+        return response.status, body, dict(response.getheaders())
+    finally:
+        sock.close()
+
+
 def test_real_get_forwards_allowlisted_request_and_response_contract(
     upstream_and_gateway, capsys
 ):
@@ -193,11 +216,37 @@ def test_real_get_forwards_allowlisted_request_and_response_contract(
 
 def test_real_head_preserves_headers_without_response_body(upstream_and_gateway):
     proxy, _mode, observed = upstream_and_gateway
-    status, body, headers = _request(proxy, "HEAD", "/s/head-capability")
+    status, body, headers = _request_head_wire(proxy, "/s/head-capability")
     assert status == 200
     assert body == b""
     assert headers["Content-Type"] == "text/plain; charset=utf-8"
     assert observed[0][0:2] == ("GET", "/s/head-capability")
+
+
+def test_raw_head_helper_detects_body_bytes_from_a_misbehaving_server():
+    class BodyOnHeadHandler(BaseHTTPRequestHandler):
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "7")
+            self.end_headers()
+            self.wfile.write(b"leaked!")
+
+        def log_message(self, fmt, *args):
+            pass
+
+    server = _Server(("127.0.0.1", 0), BodyOnHeadHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, body, _headers = _request_head_wire(server, "/negative-control")
+        assert status == 200
+        assert body == b"leaked!"
+    finally:
+        server.shutdown()
+        server.server_close()
+        server.join_request_threads()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
 
 
 def test_missing_forwarded_headers_use_safe_defaults(upstream_and_gateway):
@@ -218,7 +267,7 @@ def test_missing_forwarded_headers_use_safe_defaults(upstream_and_gateway):
 def test_head_upstream_failure_has_502_and_no_body(upstream_and_gateway):
     proxy, mode, _observed = upstream_and_gateway
     mode["response"] = "malformed"
-    status, body, _headers = _request(proxy, "HEAD", "/s/head-failure-capability")
+    status, body, _headers = _request_head_wire(proxy, "/s/head-failure-capability")
     assert status == 502
     assert body == b""
 
