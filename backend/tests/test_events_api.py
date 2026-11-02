@@ -102,7 +102,7 @@ def test_event_category_filter_is_applied_before_limit() -> None:
         severity="info", event_type="routine_status", event_code="routine_status",
         message="newer diagnostic", details={"event_category": "diagnostic"},
     )
-    with events_route.db_session() as connection:
+    with db_connection.db_session() as connection:
         connection.execute("UPDATE operational_logs SET created_at = '2026-09-29 00:00:00' WHERE event_id = ?", (audit.event_id,))
         connection.execute("UPDATE operational_logs SET created_at = '2026-09-29 00:01:00' WHERE event_type = 'routine_status'")
 
@@ -157,6 +157,142 @@ def test_events_summary_only_exposes_safe_entity_aliases(monkeypatch) -> None:
     assert all(row["entity_id"].startswith("subject:") for row in rows)
 
 
+def test_summary_projection_exact_shape_keeps_missing_label_and_redacts_attribution(monkeypatch) -> None:
+    monkeypatch.setattr(events_route, "list_recent_events", lambda **kwargs: {
+        "audit": [{
+            "event_id": "summary-shape-1",
+            "timestamp": "2026-10-01T00:00:00Z",
+            "severity": "info",
+            "event_type": "client.mode_changed",
+            "event_code": "client.mode_changed",
+            "component": "api",
+            "actor": "user:operator",
+            "source": "api",
+            "action": "client.mode_changed",
+            "entity_id": "subject:missing",
+            "details": {
+                "entity_label": "https://example.test/private-token",
+                "changed_fields": ["mode"],
+                "private_payload": "must-not-survive",
+                "actor_attribution": {
+                    "api_identity": {"token": "must-not-survive"},
+                    "source": "fixture",
+                },
+            },
+        }],
+        "operational": [],
+        "diagnostic": [],
+    })
+
+    payload = events_route.list_recent_events_endpoint(view="summary")
+
+    assert payload == {
+        "audit": [{
+            "event_id": "summary-shape-1",
+            "timestamp": "2026-10-01T00:00:00Z",
+            "severity": "info",
+            "event_type": "client.mode_changed",
+            "event_code": "client.mode_changed",
+            "component": "api",
+            "actor": "user:operator",
+            "source": "api",
+            "action": "client.mode_changed",
+            "entity_type": "subject",
+            "entity_id": "subject:missing",
+            "entity_label_source": "missing",
+            "details": {"changed_fields": ["mode"]},
+        }],
+        "operational": [],
+        "diagnostic": [],
+    }
+
+
+def test_recent_events_query_defaults_and_validation_are_transport_owned() -> None:
+    client = TestClient(create_app(enable_startup_tasks=False))
+
+    default_response = client.get("/api/v2/events/recent")
+    invalid_response = client.get("/api/v2/events/recent?type=unknown")
+    invalid_view_response = client.get("/api/v2/events/recent?view=unknown")
+    invalid_limit_response = client.get("/api/v2/events/recent?limit=0")
+    oversized_limit_response = client.get("/api/v2/events/recent?limit=501")
+
+    assert default_response.status_code == 200
+    assert set(default_response.json()) == {"audit", "operational", "diagnostic", "summary"}
+    assert invalid_response.status_code == 422
+    assert invalid_view_response.status_code == 422
+    assert invalid_limit_response.status_code == 422
+    assert oversized_limit_response.status_code == 422
+
+
+def test_summary_label_lookups_keep_their_existing_id_and_pair_bounds(monkeypatch) -> None:
+    connects: list[None] = []
+    selects: list[str] = []
+    original_connect = db_connection.connect
+
+    def traced_connect():
+        connection = original_connect()
+        connects.append(None)
+        connection.set_trace_callback(
+            lambda statement: selects.append(statement)
+            if statement.lstrip().upper().startswith("SELECT ") else None
+        )
+        return connection
+
+    monkeypatch.setattr(db_connection, "connect", traced_connect)
+    server_ids = [f"server-{index:04d}" for index in range(1005)]
+    events = {
+        "audit": [{
+            "event_code": "server.preferences_changed",
+            "entity_type": "server",
+            "entity_id": server_id,
+        } for server_id in server_ids] + [{
+            "event_code": "client.mode_changed",
+            "entity_type": "subject",
+            "entity_id": f"subject-{index:04d}",
+        } for index in range(1005)],
+        "operational": [{
+            "event_type": "logical_member_health_transition",
+            "details": {"logical_server_id": "logical", "member_id": f"member-{index:04d}"},
+        } for index in range(405)],
+        "diagnostic": [],
+    }
+    monkeypatch.setattr(events_route, "list_recent_events", lambda **_: events)
+
+    events_route.list_recent_events_endpoint(view="summary")
+
+    assert len(connects) == 2
+    assert len(selects) == 3
+    assert "FROM servers" in selects[0]
+    assert selects[0].count("'") == 2000
+    assert "server-0000" in selects[0] and "server-0999" in selects[0]
+    assert "server-1000" not in selects[0]
+    assert "FROM subjects" in selects[1]
+    assert selects[1].count("'") == 2002
+    assert "subject-0000" in selects[1] and "subject-0999" in selects[1]
+    assert "subject-1000" not in selects[1]
+    assert "FROM logical_server_members" in selects[2]
+    assert selects[2].count("'") == 1600
+    assert "member-0000" in selects[2] and "member-0399" in selects[2]
+    assert "member-0400" not in selects[2]
+
+
+def test_summary_label_query_failure_propagates_without_fabricated_response(monkeypatch) -> None:
+    import pytest
+
+    monkeypatch.setattr(
+        db_connection, "connect",
+        lambda: (_ for _ in ()).throw(RuntimeError("isolated lookup failure")),
+    )
+    monkeypatch.setattr(events_route, "list_recent_events", lambda **_: {
+        "audit": [{"entity_type": "server", "entity_id": "server-1"}],
+        "operational": [],
+        "diagnostic": [],
+    })
+
+    with pytest.raises(RuntimeError, match="isolated lookup failure"):
+        events_route.list_recent_events_endpoint(view="summary")
+
+
 def test_events_summary_exposes_only_safe_member_status_enums(monkeypatch) -> None:
     monkeypatch.setattr(events_route, "list_recent_events", lambda **_: {
         "audit": [],
@@ -164,6 +300,7 @@ def test_events_summary_exposes_only_safe_member_status_enums(monkeypatch) -> No
             {"event_id": "safe-transition", "event_code": "HEALTH_MEMBER_STATE_CHANGED", "details": {"old_status": "failed", "new_status": "healthy"}},
             {"event_id": "unsafe-transition", "event_code": "HEALTH_MEMBER_STATE_CHANGED", "details": {"old_status": "secret-token-value", "new_status": "healthy"}},
             {"event_id": "unrelated-transition", "event_code": "unrelated.changed", "details": {"old_status": "failed", "new_status": "healthy"}},
+            {"event_id": "malformed-details", "event_code": "HEALTH_MEMBER_STATE_CHANGED", "details": ["not", "an", "object"]},
         ],
         "diagnostic": [],
     })
@@ -173,10 +310,11 @@ def test_events_summary_exposes_only_safe_member_status_enums(monkeypatch) -> No
     assert rows[0]["details"] == {"old_status": "failed", "new_status": "healthy"}
     assert rows[1]["details"] == {"new_status": "healthy"}
     assert rows[2]["details"] == {}
+    assert rows[3]["details"] == {}
 
 
 def test_summary_infers_stable_audit_entity_and_sanitizes_alias_snapshots(monkeypatch) -> None:
-    with events_route.db_session() as connection:
+    with db_connection.db_session() as connection:
         connection.execute(
             "INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('legacy-server-id', 'Edge Europe', 'active')"
         )
@@ -213,7 +351,7 @@ def test_summary_infers_stable_audit_entity_and_sanitizes_alias_snapshots(monkey
 
 
 def test_event_label_snapshot_precedes_current_server_name(monkeypatch) -> None:
-    with events_route.db_session() as connection:
+    with db_connection.db_session() as connection:
         connection.execute(
             "INSERT INTO servers (server_id, server_name, inventory_state) VALUES ('snapshot-source-server', 'Current Name', 'active')"
         )
@@ -233,7 +371,7 @@ def test_event_label_snapshot_precedes_current_server_name(monkeypatch) -> None:
 
 
 def test_summary_exposes_changed_fields_and_safe_membership_objects(monkeypatch) -> None:
-    with events_route.db_session() as connection:
+    with db_connection.db_session() as connection:
         connection.executemany(
             "INSERT INTO servers (server_id, server_name, inventory_state) VALUES (?, ?, 'active')",
             [("journal-added-id", "Edge Europe"), ("journal-removed-id", "Edge West")],
@@ -263,7 +401,7 @@ def test_summary_exposes_changed_fields_and_safe_membership_objects(monkeypatch)
 
 
 def test_membership_event_snapshot_survives_server_rename_and_delete() -> None:
-    with events_route.db_session() as connection:
+    with db_connection.db_session() as connection:
         connection.executemany(
             "INSERT INTO servers (server_id, server_name, inventory_state) VALUES (?, ?, 'active')",
             [("snapshot-added-id", "Snapshot Added"), ("snapshot-removed-id", "Snapshot Removed")],
@@ -274,7 +412,7 @@ def test_membership_event_snapshot_survives_server_rename_and_delete() -> None:
             entity_id="vpn-auto", previous_value={"server_ids": ["snapshot-removed-id"]},
             new_value={"server_ids": ["snapshot-added-id"]}, connection=connection,
         )
-    with events_route.db_session() as connection:
+    with db_connection.db_session() as connection:
         connection.execute("UPDATE servers SET server_name = 'Renamed' WHERE server_id = 'snapshot-added-id'")
         connection.execute("DELETE FROM servers WHERE server_id = 'snapshot-removed-id'")
     client = TestClient(create_app(enable_startup_tasks=False))
@@ -342,7 +480,7 @@ def test_exact_event_lookup_reads_sqlite_event_outside_recent_window() -> None:
         actor="admin", source="api", action="old_change", event_code="config_change",
         entity_type="configuration", entity_id="old-event", details={"evidence": {"nested": "retained"}},
     )
-    with events_route.db_session() as connection:
+    with db_connection.db_session() as connection:
         connection.execute(
             "UPDATE operational_logs SET created_at = '2020-01-01 00:00:00' WHERE event_id = ?",
             (old.event_id,),
@@ -359,7 +497,7 @@ def test_exact_event_lookup_reads_sqlite_event_outside_recent_window() -> None:
     assert exact["event"]["details"]["evidence"] == {"nested": "retained"}
     assert exact["event"]["details"]["record_source"] == "operational_sqlite"
 
-    with events_route.db_session() as connection:
+    with db_connection.db_session() as connection:
         connection.execute(
             """INSERT INTO operational_logs (event_id, level, event_type, message, details_json, created_at)
                VALUES (NULL, 'warning', 'legacy_runtime_failed', 'Old legacy failure', '{}', '2019-01-01 00:00:00')"""

@@ -25,8 +25,11 @@ Publishes the read-only endpoint `GET /api/v2/events/recent`.
 
 ## Runtime/Persistent State
 
-Reads the typed events view through `services.events` only; it does not trigger
-repair or change runtime.
+Reads the typed events view through `services.events`; delegates ordinary summary
+label lookup and domain projection to `services.ordinary_event_read_model`. The
+route retains HTTP validation, response construction and final attribution
+redaction. Existing database session behavior is unchanged; no repair or native
+runtime operation is introduced.
 
 ## Approved Health / Journal implementation contract — 2026-09-29
 
@@ -41,3 +44,16 @@ The explicit `/events/secure/recent` route uses independently provisioned
 `events.read`, registry-only admission and an allowlist projection. Existing full,
 summary and by-ID readers keep reserved-identity redaction. The event writer and
 retention owners are unchanged; see [the secure reader](backend_fwrouter_api_services_secure_events_py.md).
+
+## Stage 6.1 / S61-F06 ownership boundary
+
+`project_recent_event_summary()` owns the ordinary summary read model, including
+the existing SQL batching (at most 1,000 IDs per entity kind and 400 member pairs),
+safe-label lookup and event-time/current/missing fallback. Full-view retrieval and
+exact event lookup remain with the existing event reader. See
+[ordinary event read model](backend_fwrouter_api_services_ordinary_event_read_model_py.md).
+
+The secure reader and its admission/serialization lease remain independent. The
+ordinary read model never imports secure-event fields or HTTP routes. This is a
+behavior-preserving source extraction, not a new authorization or persistence
+policy and not evidence of production deployment.
