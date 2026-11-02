@@ -2,8 +2,51 @@ from __future__ import annotations
 
 from typing import Any
 
-from fwrouter_api.services import apply_orchestrator as orchestrator
 from fwrouter_api.services.subject_taxonomy import subject_follows_global_mode
+
+from fwrouter_api.services.apply_orchestrator_commits import (
+    _clear_subject_user_mode as _clear_subject_user_mode,
+    _commit_subject_admin_mode as _commit_subject_admin_mode,
+    _commit_subject_user_mode as _commit_subject_user_mode,
+    _stage_subject_admin_mode as _stage_subject_admin_mode,
+    _validate_subject_admin_mode as _validate_subject_admin_mode,
+    _validate_subject_user_mode as _validate_subject_user_mode,
+)
+from fwrouter_api.services.apply_orchestrator_constants import (
+    INTENT_CLEAR_SUBJECT_USER_MODE as INTENT_CLEAR_SUBJECT_USER_MODE,
+    INTENT_SET_SUBJECT_ADMIN_MODE as INTENT_SET_SUBJECT_ADMIN_MODE,
+    INTENT_SET_SUBJECT_USER_MODE as INTENT_SET_SUBJECT_USER_MODE,
+)
+from fwrouter_api.services.apply_orchestrator_pipeline import (
+    _run_pipeline_for_state as _run_pipeline_for_state,
+)
+from fwrouter_api.services.apply_orchestrator_results import (
+    _build_failure_result as _build_failure_result,
+    _build_success_result as _build_success_result,
+)
+from fwrouter_api.services.apply_orchestrator_state import (
+    _load_server_override_map as _load_server_override_map,
+    _load_user_override_map as _load_user_override_map,
+    _persist_subject_failure as _persist_subject_failure,
+    _sync_subject_server_override_statuses as _sync_subject_server_override_statuses,
+)
+from fwrouter_api.services.core_bypass import (
+    get_core_bypass_state as get_core_bypass_state,
+)
+from fwrouter_api.services.dataplane_status import (
+    build_runtime_enforcement_state as build_runtime_enforcement_state,
+)
+from fwrouter_api.services.subject_policy import (
+    enrich_subject_with_effective_state as enrich_subject_with_effective_state,
+    get_routing_snapshot as get_routing_snapshot,
+    get_subject_with_effective_state as get_subject_with_effective_state,
+)
+from fwrouter_api.services.subjects import (
+    get_subject as get_subject,
+    list_subjects as list_subjects,
+)
+
+
 
 
 def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -19,7 +62,7 @@ def _execute_set_subject_admin_mode(job: dict[str, Any], payload: dict[str, Any]
         isinstance(subject, dict)
         and str(subject.get("implementation_kind") or "").lower() == "xray"
         and str(subject.get("subject_type") or "").lower() == "explicit_external_client"
-        for subject in (orchestrator.get_subject(item) for item in subject_ids)
+        for subject in (get_subject(item) for item in subject_ids)
     )
     if not explicit_xray_action:
         return _execute_set_subject_admin_mode_impl(job, payload)
@@ -58,8 +101,8 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
         member_ids = resolve_xray_subscription_group_subject_ids(group_subject_id)
         supplied_members = [item for item in subject_ids if item != group_subject_id]
         if profile is None or group_mode not in {"vpn", "disabled"} or (supplied_members and set(supplied_members) != set(member_ids)):
-            return orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+            return _build_failure_result(
+                intent=INTENT_SET_SUBJECT_ADMIN_MODE,
                 job_id=str(job["job_id"]),
                 requested_by=requested_by,
                 stage="validate",
@@ -87,8 +130,8 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
                 )
                 clear_live_probe_cache()
         if not committed.get("ok"):
-            return orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+            return _build_failure_result(
+                intent=INTENT_SET_SUBJECT_ADMIN_MODE,
                 job_id=str(job["job_id"]),
                 requested_by=requested_by,
                 stage="validate",
@@ -98,9 +141,9 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
         assert reconciled is not None
         if not reconciled.get("ok") or reconciled.get("status") != "success" or not (reconciled.get("materialize") or {}).get("ok"):
             for member_id in member_ids:
-                orchestrator._persist_subject_failure(member_id)
-            return orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+                _persist_subject_failure(member_id)
+            return _build_failure_result(
+                intent=INTENT_SET_SUBJECT_ADMIN_MODE,
                 job_id=str(job["job_id"]),
                 requested_by=requested_by,
                 stage=str(reconciled.get("stage") or "apply"),
@@ -125,7 +168,7 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
         return {
             "ok": True,
             "status": "success",
-            "intent": orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+            "intent": INTENT_SET_SUBJECT_ADMIN_MODE,
             "job_id": str(job["job_id"]),
             "requested_by": requested_by,
             "stage": "commit",
@@ -138,7 +181,7 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
             "reconcile": reconciled,
         }
     subjects_by_id = {
-        current_subject_id: orchestrator.get_subject(current_subject_id)
+        current_subject_id: get_subject(current_subject_id)
         for current_subject_id in subject_ids
     }
     missing_subject_ids = [
@@ -147,8 +190,8 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
         if subject is None
     ]
     if not subject_ids or missing_subject_ids:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+        return _build_failure_result(
+            intent=INTENT_SET_SUBJECT_ADMIN_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -164,14 +207,14 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
     validation_failures: list[dict[str, Any]] = []
     for current_subject_id in subject_ids:
         subject = subjects_by_id[current_subject_id]
-        validation = orchestrator._validate_subject_admin_mode(subject, mode)  # type: ignore[arg-type]
+        validation = _validate_subject_admin_mode(subject, mode)  # type: ignore[arg-type]
         if validation is not None:
             validation_failures.append({"subject_id": current_subject_id, **validation})
 
     if validation_failures:
         first_failure = validation_failures[0]
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+        result = _build_failure_result(
+            intent=INTENT_SET_SUBJECT_ADMIN_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -183,11 +226,11 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
             # no intent or runtime operation occurred, so do not overwrite a
             # previously healthy subject's last applied state.
             if str(failure.get("code") or "") != "SUBJECT_MODE_UNSUPPORTED":
-                orchestrator._persist_subject_failure(str(failure["subject_id"]))
+                _persist_subject_failure(str(failure["subject_id"]))
         return result
 
     for current_subject_id in subject_ids:
-        orchestrator._stage_subject_admin_mode(
+        _stage_subject_admin_mode(
             subject_id=current_subject_id,
             mode=mode,
             requested_by=requested_by,
@@ -195,20 +238,20 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
         )
     subject = subjects_by_id[subject_ids[0]]
     subject_type = str((subject or {}).get("subject_type") or "").strip().lower()
-    routing = orchestrator.get_routing_snapshot()
+    routing = get_routing_snapshot()
 
-    user_overrides = orchestrator._load_user_override_map()
+    user_overrides = _load_user_override_map()
     if mode != "global":
         for current_subject_id in subject_ids:
             user_overrides.pop(current_subject_id, None)
-    server_overrides = orchestrator._load_server_override_map()
+    server_overrides = _load_server_override_map()
 
-    runtime_enforcement = orchestrator.build_runtime_enforcement_state()
-    bypass_state = orchestrator.get_core_bypass_state()
+    runtime_enforcement = build_runtime_enforcement_state()
+    bypass_state = get_core_bypass_state()
     target_subject_ids = set(subject_ids)
-    current_subjects = orchestrator.list_subjects(include_deleted=False, limit=1000)
+    current_subjects = list_subjects(include_deleted=False, limit=1000)
     future_subjects = [
-        orchestrator.enrich_subject_with_effective_state(
+        enrich_subject_with_effective_state(
             (
                 {**dict(current_subject), "desired_mode": mode}
                 if str(current_subject["subject_id"]) in target_subject_ids
@@ -223,11 +266,11 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
         for current_subject in current_subjects
     ]
 
-    apply_result = orchestrator._run_pipeline_for_state(
+    apply_result = _run_pipeline_for_state(
         job_id=str(job["job_id"]),
-        reason=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+        reason=INTENT_SET_SUBJECT_ADMIN_MODE,
         input_data={
-            "intent": orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+            "intent": INTENT_SET_SUBJECT_ADMIN_MODE,
             "subject_id": subject_id,
             "subject_ids": subject_ids,
             "mode": mode,
@@ -243,8 +286,8 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
     )
 
     if not apply_result["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+        result = _build_failure_result(
+            intent=INTENT_SET_SUBJECT_ADMIN_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(apply_result.get("stage") or "apply"),
@@ -254,14 +297,14 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
             details={"apply": apply_result, "subject_id": subject_id, "subject_ids": subject_ids},
         )
         for current_subject_id in subject_ids:
-            orchestrator._persist_subject_failure(current_subject_id)
+            _persist_subject_failure(current_subject_id)
         return result
 
     for current_subject_id in subject_ids:
-        orchestrator._commit_subject_admin_mode(subject_id=current_subject_id, mode=mode)
+        _commit_subject_admin_mode(subject_id=current_subject_id, mode=mode)
     effective_subjects = [
-        orchestrator.enrich_subject_with_effective_state(
-            orchestrator.get_subject(current_subject_id) or subjects_by_id[current_subject_id],
+        enrich_subject_with_effective_state(
+            get_subject(current_subject_id) or subjects_by_id[current_subject_id],
             routing=routing,
         )
         for current_subject_id in subject_ids
@@ -277,9 +320,9 @@ def _execute_set_subject_admin_mode_impl(job: dict[str, Any], payload: dict[str,
         if len(subject_ids) == 1 and subject_follows_global_mode(subject_type)
         else future_subjects
     )
-    orchestrator._sync_subject_server_override_statuses(sync_subjects)
-    result = orchestrator._build_success_result(
-        intent=orchestrator.INTENT_SET_SUBJECT_ADMIN_MODE,
+    _sync_subject_server_override_statuses(sync_subjects)
+    result = _build_success_result(
+        intent=INTENT_SET_SUBJECT_ADMIN_MODE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",
@@ -302,10 +345,10 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
     requested_by = str(job.get("requested_by") or "api")
     subject_id = str(payload.get("subject_id") or "").strip()
     mode = str(payload.get("mode") or "").strip().lower()
-    subject = orchestrator.get_subject(subject_id)
+    subject = get_subject(subject_id)
     if subject is None:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_USER_MODE,
+        return _build_failure_result(
+            intent=INTENT_SET_SUBJECT_USER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -313,35 +356,35 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
             message=f"Subject not found: {subject_id}",
         )
 
-    validation = orchestrator._validate_subject_user_mode(subject, mode)
+    validation = _validate_subject_user_mode(subject, mode)
     if validation is not None:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_USER_MODE,
+        result = _build_failure_result(
+            intent=INTENT_SET_SUBJECT_USER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
             code=validation["code"],
             message=validation["message"],
         )
-        orchestrator._persist_subject_failure(subject_id)
+        _persist_subject_failure(subject_id)
         return result
 
     subject_type = str(subject.get("subject_type") or "").strip().lower()
-    routing = orchestrator.get_routing_snapshot()
-    user_overrides = orchestrator._load_user_override_map()
+    routing = get_routing_snapshot()
+    user_overrides = _load_user_override_map()
     user_overrides[subject_id] = {
         "subject_id": subject_id,
         "override_mode": mode,
         "override_until": "pending_commit",
         "created_by": requested_by,
     }
-    server_overrides = orchestrator._load_server_override_map()
+    server_overrides = _load_server_override_map()
 
-    runtime_enforcement = orchestrator.build_runtime_enforcement_state()
-    bypass_state = orchestrator.get_core_bypass_state()
-    current_subjects = orchestrator.list_subjects(include_deleted=False, limit=1000)
+    runtime_enforcement = build_runtime_enforcement_state()
+    bypass_state = get_core_bypass_state()
+    current_subjects = list_subjects(include_deleted=False, limit=1000)
     future_subjects = [
-        orchestrator.enrich_subject_with_effective_state(
+        enrich_subject_with_effective_state(
             dict(current_subject),
             routing=routing,
             user_override=user_overrides.get(str(current_subject["subject_id"])),
@@ -352,11 +395,11 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
         for current_subject in current_subjects
     ]
 
-    apply_result = orchestrator._run_pipeline_for_state(
+    apply_result = _run_pipeline_for_state(
         job_id=str(job["job_id"]),
-        reason=orchestrator.INTENT_SET_SUBJECT_USER_MODE,
+        reason=INTENT_SET_SUBJECT_USER_MODE,
         input_data={
-            "intent": orchestrator.INTENT_SET_SUBJECT_USER_MODE,
+            "intent": INTENT_SET_SUBJECT_USER_MODE,
             "subject_id": subject_id,
             "mode": mode,
             "fast_subject_apply": {
@@ -371,8 +414,8 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
     )
 
     if not apply_result["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_USER_MODE,
+        result = _build_failure_result(
+            intent=INTENT_SET_SUBJECT_USER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(apply_result.get("stage") or "apply"),
@@ -381,18 +424,18 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
             apply_id=apply_result["apply_id"],
             details={"apply": apply_result, "subject_id": subject_id},
         )
-        orchestrator._persist_subject_failure(subject_id)
+        _persist_subject_failure(subject_id)
         return result
 
-    orchestrator._commit_subject_user_mode(subject_id=subject_id, mode=mode, requested_by=requested_by)
-    committed_subject = orchestrator.enrich_subject_with_effective_state(orchestrator.get_subject(subject_id) or subject, routing=routing)
+    _commit_subject_user_mode(subject_id=subject_id, mode=mode, requested_by=requested_by)
+    committed_subject = enrich_subject_with_effective_state(get_subject(subject_id) or subject, routing=routing)
     future_subjects = [
         committed_subject if str(item["subject_id"]) == subject_id else item
         for item in future_subjects
     ]
-    orchestrator._sync_subject_server_override_statuses([committed_subject])
-    return orchestrator._build_success_result(
-        intent=orchestrator.INTENT_SET_SUBJECT_USER_MODE,
+    _sync_subject_server_override_statuses([committed_subject])
+    return _build_success_result(
+        intent=INTENT_SET_SUBJECT_USER_MODE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",
@@ -404,10 +447,10 @@ def _execute_set_subject_user_mode(job: dict[str, Any], payload: dict[str, Any])
 def _execute_clear_subject_user_mode(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     requested_by = str(job.get("requested_by") or "api")
     subject_id = str(payload.get("subject_id") or "").strip()
-    subject = orchestrator.get_subject(subject_id)
+    subject = get_subject(subject_id)
     if subject is None:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_CLEAR_SUBJECT_USER_MODE,
+        return _build_failure_result(
+            intent=INTENT_CLEAR_SUBJECT_USER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -415,23 +458,23 @@ def _execute_clear_subject_user_mode(job: dict[str, Any], payload: dict[str, Any
             message=f"Subject not found: {subject_id}",
         )
 
-    user_overrides = orchestrator._load_user_override_map()
+    user_overrides = _load_user_override_map()
     existing_override = user_overrides.pop(subject_id, None)
     if existing_override is None:
-        return orchestrator._build_success_result(
-            intent=orchestrator.INTENT_CLEAR_SUBJECT_USER_MODE,
+        return _build_success_result(
+            intent=INTENT_CLEAR_SUBJECT_USER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="commit",
             apply_result={"apply_id": None, "ok": True},
-            details={"subject": orchestrator.get_subject_with_effective_state(subject_id)},
+            details={"subject": get_subject_with_effective_state(subject_id)},
             runtime_state_unchanged=True,
         )
 
     subject_type = str(subject.get("subject_type") or "").strip().lower()
     if subject_follows_global_mode(subject_type) and str(subject.get("desired_mode") or "") != "global":
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_CLEAR_SUBJECT_USER_MODE,
+        return _build_failure_result(
+            intent=INTENT_CLEAR_SUBJECT_USER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -439,13 +482,13 @@ def _execute_clear_subject_user_mode(job: dict[str, Any], payload: dict[str, Any
             message="User override can be cleared only while admin mode is global.",
         )
 
-    routing = orchestrator.get_routing_snapshot()
-    server_overrides = orchestrator._load_server_override_map()
-    runtime_enforcement = orchestrator.build_runtime_enforcement_state()
-    bypass_state = orchestrator.get_core_bypass_state()
-    current_subjects = orchestrator.list_subjects(include_deleted=False, limit=1000)
+    routing = get_routing_snapshot()
+    server_overrides = _load_server_override_map()
+    runtime_enforcement = build_runtime_enforcement_state()
+    bypass_state = get_core_bypass_state()
+    current_subjects = list_subjects(include_deleted=False, limit=1000)
     future_subjects = [
-        orchestrator.enrich_subject_with_effective_state(
+        enrich_subject_with_effective_state(
             dict(current_subject),
             routing=routing,
             user_override=user_overrides.get(str(current_subject["subject_id"])),
@@ -456,11 +499,11 @@ def _execute_clear_subject_user_mode(job: dict[str, Any], payload: dict[str, Any
         for current_subject in current_subjects
     ]
 
-    apply_result = orchestrator._run_pipeline_for_state(
+    apply_result = _run_pipeline_for_state(
         job_id=str(job["job_id"]),
-        reason=orchestrator.INTENT_CLEAR_SUBJECT_USER_MODE,
+        reason=INTENT_CLEAR_SUBJECT_USER_MODE,
         input_data={
-            "intent": orchestrator.INTENT_CLEAR_SUBJECT_USER_MODE,
+            "intent": INTENT_CLEAR_SUBJECT_USER_MODE,
             "subject_id": subject_id,
             "fast_subject_apply": {
                 "enabled": subject_follows_global_mode(subject_type),
@@ -474,8 +517,8 @@ def _execute_clear_subject_user_mode(job: dict[str, Any], payload: dict[str, Any
     )
 
     if not apply_result["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_CLEAR_SUBJECT_USER_MODE,
+        result = _build_failure_result(
+            intent=INTENT_CLEAR_SUBJECT_USER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(apply_result.get("stage") or "apply"),
@@ -484,14 +527,14 @@ def _execute_clear_subject_user_mode(job: dict[str, Any], payload: dict[str, Any
             apply_id=apply_result["apply_id"],
             details={"apply": apply_result, "subject_id": subject_id},
         )
-        orchestrator._persist_subject_failure(subject_id)
+        _persist_subject_failure(subject_id)
         return result
 
-    orchestrator._clear_subject_user_mode(subject_id=subject_id)
-    committed_subject = orchestrator.enrich_subject_with_effective_state(orchestrator.get_subject(subject_id) or subject, routing=routing)
-    orchestrator._sync_subject_server_override_statuses([committed_subject])
-    return orchestrator._build_success_result(
-        intent=orchestrator.INTENT_CLEAR_SUBJECT_USER_MODE,
+    _clear_subject_user_mode(subject_id=subject_id)
+    committed_subject = enrich_subject_with_effective_state(get_subject(subject_id) or subject, routing=routing)
+    _sync_subject_server_override_statuses([committed_subject])
+    return _build_success_result(
+        intent=INTENT_CLEAR_SUBJECT_USER_MODE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",

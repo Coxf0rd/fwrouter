@@ -292,3 +292,4 @@ authentication or logging subsystem.
 
 - [Attribute aliases and limitations](backend_fwrouter_api_services_module_attribute_aliases_py.md)
 - [Mihomo one-way configuration/reconciliation boundary](opt_fwrouter_api_fwrouter_api_services_mihomo_config_py.md)
+- [Apply one-way handler and public API boundary](opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_py.md)

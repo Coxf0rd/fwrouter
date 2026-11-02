@@ -25,6 +25,7 @@ _CHILD = textwrap.dedent("""\
     import json
     from pathlib import Path
     import sys
+    import threading
 
     # Production paths, processes and network are denied before app imports.
     spec = importlib.util.spec_from_file_location(
@@ -38,10 +39,18 @@ _CHILD = textwrap.dedent("""\
     Settings.model_config['env_file'] = None
 
     names = json.loads(sys.argv[1])
+    before_threads = {thread.ident for thread in threading.enumerate()}
+    db_path = Settings().paths.db_path
+    assert not db_path.exists()
     for index, name in enumerate(names):
         importlib.import_module('fwrouter_api.services.' + name)
         if index == 0 and name == 'mihomo_reconcile':
             assert 'fwrouter_api.services.mihomo_config' not in sys.modules
+        if index == 0 and name == 'apply_orchestrator_public':
+            assert 'fwrouter_api.services.apply_orchestrator' not in sys.modules
+
+    assert {thread.ident for thread in threading.enumerate()} == before_threads
+    assert not db_path.exists()
 
     if names[0].startswith('mihomo_'):
         from fwrouter_api.services import mihomo_config as facade
@@ -56,6 +65,40 @@ _CHILD = textwrap.dedent("""\
         assert fallback['ok'] is False
         assert fallback['fallback_required'] is True
         assert fallback['reconcile_action'] == 'none'
+    else:
+        from fwrouter_api.services import apply_orchestrator as facade
+        from fwrouter_api.services import apply_orchestrator_public as implementation
+        from fwrouter_api.jobs import manager as manager_owner
+        for name in (
+            'ApplyOrchestrator', 'set_global_mode', 'apply_global_mode_immediately',
+            'submit_apply_mutation', 'run_apply_mutation',
+        ):
+            assert getattr(facade, name) is getattr(implementation, name), name
+        class Manager:
+            def __init__(self):
+                self.started = []
+            def create(self, job_type, **kwargs):
+                assert job_type == facade.JOB_TYPE_APPLY_MUTATION
+                assert kwargs['input_data'] == {'intent': facade.INTENT_SET_GLOBAL_MODE, 'payload': {'mode': 'direct'}}
+                return {'job_id': 'cold-import-contract'}
+            def start_job(self, job_id):
+                self.started.append(job_id)
+                return {'job_id': job_id, 'status': 'queued'}
+        manager = Manager()
+        previous = facade.get_default_job_manager
+        owner_factory = manager_owner.get_default_job_manager
+        try:
+            facade.get_default_job_manager = lambda: manager
+            job = implementation.submit_apply_mutation(
+                intent=facade.INTENT_SET_GLOBAL_MODE, payload={'mode': 'direct'}, run_now=False,
+            )
+            assert job == {'job_id': 'cold-import-contract', 'status': 'queued'}
+            assert manager.started == ['cold-import-contract']
+            assert manager_owner.get_default_job_manager is owner_factory
+        finally:
+            facade.get_default_job_manager = previous
+        assert implementation.get_default_job_manager is previous
+        assert not db_path.exists()
     print(json.dumps({'status': 'passed', 'order': names}))
 """)
 
@@ -63,6 +106,8 @@ _CHILD = textwrap.dedent("""\
 @pytest.mark.parametrize("order", [
     ("mihomo_config", "mihomo_reconcile"),
     ("mihomo_reconcile", "mihomo_config"),
+    ("apply_orchestrator", "apply_orchestrator_public"),
+    ("apply_orchestrator_public", "apply_orchestrator"),
 ])
 def test_fresh_import_orders_and_export_identity(tmp_path, order):
     suite, _reports = _GATE.create_suite_root(tmp_path, "backend-import-contract")

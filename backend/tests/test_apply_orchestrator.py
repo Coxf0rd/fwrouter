@@ -1,8 +1,11 @@
 import hashlib
+import ast
+from pathlib import Path
 
 import pytest
 
 from fwrouter_api.services import apply_orchestrator as orchestrator
+from fwrouter_api.services import apply_orchestrator_dispatch as dispatch
 from fwrouter_api.services import apply_orchestrator_public as public_api
 from fwrouter_api.services import apply_orchestrator_server_handlers as server_handlers
 from fwrouter_api.services import rules, rules_state
@@ -83,6 +86,56 @@ def test_apply_orchestrator_preserves_explicit_facade_exports():
     assert all(hasattr(orchestrator, name) for name in expected_private_runtime_attrs)
     assert orchestrator.ApplyOrchestrator is public_api.ApplyOrchestrator
     assert orchestrator.set_global_mode is public_api.set_global_mode
+
+
+def test_apply_implementation_has_no_reverse_facade_imports():
+    services = Path(__file__).parents[1] / "fwrouter_api" / "services"
+    modules = sorted(services.glob("apply_orchestrator*.py"))
+
+    for path in modules:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert not (
+                    node.module == "fwrouter_api.services"
+                    and any(alias.name == "apply_orchestrator" for alias in node.names)
+                ), path.name
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                assert node.func.id != "_facade_attr", path.name
+                if path.name != "apply_orchestrator.py" and isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                    assert node.func.id != "attribute_alias_view", path.name
+                if path.name != "apply_orchestrator.py":
+                    if isinstance(node, ast.Name):
+                        assert node.id != "orchestrator", path.name
+                    if isinstance(node, ast.ImportFrom):
+                        assert node.module != "fwrouter_api.services.module_attribute_aliases", path.name
+
+
+def test_legacy_facade_patch_reaches_dispatch_and_restores(monkeypatch):
+    original_builder = dispatch._build_failure_result
+    original_logger = dispatch._log_mutation_result
+    logged = []
+
+    def patched_builder(**kwargs):
+        return {
+            **kwargs,
+            "ok": False,
+            "code": "PATCHED_DISPATCH",
+            "message": "patched through the compatibility facade",
+        }
+
+    with monkeypatch.context() as patch:
+        patch.setattr(orchestrator, "_build_failure_result", patched_builder)
+        patch.setattr(orchestrator, "_log_mutation_result", logged.append)
+        result = dispatch.execute_apply_mutation(
+            {"job_id": "job-1", "requested_by": "test", "input": {"intent": "unsupported"}}
+        )
+
+        assert result["mutation"]["code"] == "PATCHED_DISPATCH"
+        assert logged == [result["mutation"]]
+
+    assert dispatch._build_failure_result is original_builder
+    assert dispatch._log_mutation_result is original_logger
 
 
 def test_subject_server_override_reconciles_missing_selector(monkeypatch):

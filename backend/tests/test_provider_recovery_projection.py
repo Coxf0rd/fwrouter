@@ -114,11 +114,37 @@ def test_routing_projection_degrades_if_emergency_direct_is_not_live(monkeypatch
 
 def test_shared_routing_drift_compares_live_direct_to_emergency_override(monkeypatch):
     from fwrouter_api.services import apply_orchestrator, apply_orchestrator_drift, provider_recovery
-    monkeypatch.setattr(provider_recovery, "emergency_override", lambda: {"emergency_direct": True})
-    monkeypatch.setattr(apply_orchestrator, "probe_live_global_mode", lambda: {"ok": True, "mode": "direct"})
-    monkeypatch.setattr(apply_orchestrator, "_live_applied_nft_artifact_consistency", lambda: {"detected": False})
+    monkeypatch.setattr(
+        provider_recovery, "emergency_override", lambda: {"emergency_direct": True}
+    )
+    canonical_artifact_probe = apply_orchestrator_drift._live_applied_nft_artifact_consistency
+    patched_artifact_probe = {"detected": False, "compat_patch_seen": True}
     intent = {"desired_mode": "vpn", "applied_mode": "vpn"}
-    result = apply_orchestrator_drift._current_routing_drift(routing=intent)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            apply_orchestrator,
+            "probe_live_global_mode",
+            lambda: {"ok": True, "mode": "direct"},
+        )
+        patch.setattr(
+            apply_orchestrator,
+            "_live_applied_nft_artifact_consistency",
+            lambda: patched_artifact_probe,
+        )
+
+        assert (
+            apply_orchestrator_drift._live_applied_nft_artifact_consistency
+            is canonical_artifact_probe
+        )
+        result = apply_orchestrator_drift._current_routing_drift(routing=intent)
+
     assert result["detected"] is False
     assert result["expected_mode"] == "direct"
+    assert result["live_artifact_consistency"] is patched_artifact_probe
+    assert (
+        apply_orchestrator_drift._live_applied_nft_artifact_consistency
+        is canonical_artifact_probe
+    )
+    assert apply_orchestrator._live_applied_nft_artifact_consistency is canonical_artifact_probe
     assert intent["desired_mode"] == "vpn"
