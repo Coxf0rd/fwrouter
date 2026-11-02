@@ -109,6 +109,54 @@
       "primary_level": "L1"
     },
     {
+      "execution_profile": null,
+      "node": "test_public_subscription_route_detects_happ",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
+      "execution_profile": null,
+      "node": "test_public_subscription_route_explicit_happ_format_wins",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
+      "execution_profile": null,
+      "node": "test_public_subscription_route_explicit_clash_format_wins",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
+      "execution_profile": null,
+      "node": "test_public_subscription_route_explicit_raw_vless_format_wins",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
+      "execution_profile": null,
+      "node": "test_public_subscription_route_rejects_removed_happ_json_format",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
+      "execution_profile": null,
+      "node": "test_public_subscription_route_rejects_removed_happ_full_json_format",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
+      "execution_profile": null,
+      "node": "test_public_subscription_request_id_header_policy",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
+      "execution_profile": null,
+      "node": "test_public_subscription_middleware_preserves_context_and_propagates_errors",
+      "path": "backend/tests/test_xray.py",
+      "primary_level": "L1"
+    },
+    {
       "path": "backend/tests/test_provider_configuration.py",
       "node": "test_automatic_member_switch_policy_is_local_persistent_and_revision_neutral",
       "primary_level": "L2"
@@ -7066,7 +7114,7 @@
       "execution_group": "installer-startup"
     }
   ],
-  "version": "2026.11.03.1",
+  "version": "2026.11.03.2",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

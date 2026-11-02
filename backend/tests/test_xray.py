@@ -18,6 +18,7 @@ from typing import Any
 from _test_support import database_table_diff, database_table_snapshot as _database_snapshot
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 import fwrouter_api.services.apply as apply_service
@@ -5269,6 +5270,180 @@ def test_public_subscription_route_detects_happ(monkeypatch, tmp_path: Path) -> 
     assert "alpn=" not in decoded
     assert "fp=" not in decoded
     assert "packetEncoding=" not in decoded
+
+
+def test_public_subscription_request_id_header_policy(monkeypatch, tmp_path: Path) -> None:
+    """Suppress only the server request ID on public subscription paths."""
+    from fastapi.responses import RedirectResponse, Response
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    app = create_app(enable_startup_tasks=False)
+
+    async def probe(request: Request):
+        result = request.query_params.get("result")
+        if result == "missing":
+            response = Response("missing", status_code=404)
+        elif result == "redirect":
+            response = RedirectResponse("/s/probe", status_code=307)
+        else:
+            response = Response("ok")
+        # The middleware policy applies to handler-supplied values too, while
+        # leaving unrelated FWRouter headers intact.
+        response.headers["X-FWRouter-Request-ID"] = "handler-owned-id"
+        response.headers["X-FWRouter-Debug"] = "preserved"
+        return response
+
+    paths = ("/s", "/s/probe", "/sibling", "/api/v2/header-probe")
+    for route_path in paths:
+        app.add_api_route(route_path, probe, methods=["GET"])
+    # Give the focused probe routes precedence over the real /s/{token} route;
+    # this exercises the production app middleware without touching its routes.
+    routes = app.router.routes
+    probe_routes = [route for route in routes if getattr(route, "endpoint", None) is probe]
+    routes[:] = [route for route in routes if route not in probe_routes]
+    insert_at = next(
+        (index for index, route in enumerate(routes) if getattr(route, "path", None) == "/s/{token}"),
+        len(routes),
+    )
+    routes[insert_at:insert_at] = probe_routes
+
+    cases = (
+        ("/s", "GET", 200, True),
+        ("/s/probe", "GET", 200, True),
+        ("/s/probe?result=missing", "GET", 404, True),
+        ("/s/probe?result=redirect", "GET", 307, True),
+        ("/s/probe", "HEAD", 405, True),
+        ("/s/unknown-alias", "GET", 404, True),
+        ("/sibling", "GET", 200, False),
+        ("/api/v2/header-probe", "GET", 200, False),
+        ("/api/v2/header-probe?result=missing", "GET", 404, False),
+        ("/api/v2/header-probe", "HEAD", 405, False),
+    )
+    with TestClient(app) as client:
+        for path, method, expected_status, is_public_subscription in cases:
+            response = client.request(method, path, follow_redirects=False)
+            assert response.status_code == expected_status, (path, method, response.text)
+            if expected_status == 200:
+                assert response.text == "ok", path
+            if is_public_subscription:
+                assert "X-FWRouter-Request-ID" not in response.headers, path
+            else:
+                assert response.headers["X-FWRouter-Request-ID"] != "handler-owned-id", path
+            if method == "GET":
+                if expected_status in {200, 307} or path.endswith("result=missing"):
+                    assert response.headers["X-FWRouter-Debug"] == "preserved", path
+            if path.endswith("result=missing"):
+                assert response.text == "missing"
+            if path.endswith("result=redirect"):
+                assert response.headers["location"] == "/s/probe"
+            if method == "HEAD":
+                assert response.content == b""
+            if path == "/s/unknown-alias":
+                assert response.text == "Subscription token is not registered: unknown-alias"
+
+
+def test_public_subscription_middleware_preserves_context_and_propagates_errors(monkeypatch) -> None:
+    from fastapi.responses import Response
+
+    from fwrouter_api import main as main_module
+    from fwrouter_api.services import api_client_attribution
+    from fwrouter_api.services.api_client_attribution import current_api_request_id
+    from fwrouter_api.services.event_contract import current_event_context
+
+    app = create_app(enable_startup_tasks=False)
+    observed: dict[str, object] = {}
+    event_tokens: list[object] = []
+    api_tokens: list[object] = []
+    reset_observations: dict[str, list[tuple[object, object]]] = {"event": [], "api": []}
+
+    original_set_event_context = main_module.set_event_context
+    original_reset_event_context = main_module.reset_event_context
+    original_set_api_request_id = api_client_attribution.set_api_request_id
+    original_reset_api_request_id = api_client_attribution.reset_api_request_id
+
+    def tracked_set_event_context(**values):
+        token = original_set_event_context(**values)
+        event_tokens.append(token)
+        return token
+
+    def tracked_reset_event_context(token):
+        assert event_tokens.pop() is token
+        before = current_event_context()
+        original_reset_event_context(token)
+        reset_observations["event"].append((before, current_event_context()))
+
+    def tracked_set_api_request_id(value):
+        token = original_set_api_request_id(value)
+        api_tokens.append(token)
+        return token
+
+    def tracked_reset_api_request_id(token):
+        assert api_tokens.pop() is token
+        before = current_api_request_id()
+        original_reset_api_request_id(token)
+        reset_observations["api"].append((before, current_api_request_id()))
+
+    monkeypatch.setattr(main_module, "set_event_context", tracked_set_event_context)
+    monkeypatch.setattr(main_module, "reset_event_context", tracked_reset_event_context)
+    monkeypatch.setattr(api_client_attribution, "set_api_request_id", tracked_set_api_request_id)
+    monkeypatch.setattr(api_client_attribution, "reset_api_request_id", tracked_reset_api_request_id)
+
+    async def context_probe(request: Request):
+        observed["event_context"] = current_event_context()
+        observed["api_request_id"] = current_api_request_id()
+        return Response("ok")
+
+    async def error_probe():
+        observed["error_event_context"] = current_event_context()
+        observed["error_api_request_id"] = current_api_request_id()
+        raise RuntimeError("probe exception must propagate")
+
+    app.add_api_route("/s/__context_probe", context_probe, methods=["GET"])
+    app.add_api_route("/s/__error_probe", error_probe, methods=["GET"])
+    routes = app.router.routes
+    probe_routes = [
+        route for route in routes
+        if getattr(route, "endpoint", None) in {context_probe, error_probe}
+    ]
+    routes[:] = [route for route in routes if route not in probe_routes]
+    insert_at = next(
+        (index for index, route in enumerate(routes) if getattr(route, "path", None) == "/s/{token}"),
+        len(routes),
+    )
+    routes[insert_at:insert_at] = probe_routes
+
+    with TestClient(app) as client:
+        response = client.get("/s/__context_probe", headers={"X-Request-ID": "caller-probe-42"})
+        assert response.status_code == 200
+        assert response.headers["X-Request-ID"] == "caller-probe-42"
+        assert "X-FWRouter-Request-ID" not in response.headers
+        with pytest.raises(RuntimeError, match="probe exception must propagate"):
+            client.get("/s/__error_probe")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        error_response = client.get("/s/__error_probe")
+    assert error_response.status_code == 500
+    assert error_response.text == "Internal Server Error"
+    assert "X-FWRouter-Request-ID" not in error_response.headers
+
+    assert observed["event_context"]["request_id"] == "caller-probe-42"
+    assert observed["event_context"]["correlation_id"] == "caller-probe-42"
+    assert isinstance(observed["api_request_id"], str) and observed["api_request_id"]
+    assert observed["error_event_context"]["request_id"]
+    assert isinstance(observed["error_api_request_id"], str) and observed["error_api_request_id"]
+    assert current_event_context() == {}
+    assert current_api_request_id() is None
+    assert event_tokens == []
+    assert api_tokens == []
+    assert len(reset_observations["event"]) == 3
+    assert len(reset_observations["api"]) == 3
+    for before, after in reset_observations["event"]:
+        assert before["request_id"] and before["correlation_id"]
+        assert after == {}
+    for before, after in reset_observations["api"]:
+        assert isinstance(before, str) and before
+        assert after is None
 
 
 def test_public_subscription_route_explicit_happ_format_wins(monkeypatch, tmp_path: Path) -> None:

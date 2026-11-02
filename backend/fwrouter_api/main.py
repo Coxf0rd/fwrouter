@@ -171,7 +171,11 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
         try:
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
-            response.headers["X-FWRouter-Request-ID"] = api_request_id
+            if request.url.path == "/s" or request.url.path.startswith("/s/"):
+                if "X-FWRouter-Request-ID" in response.headers:
+                    del response.headers["X-FWRouter-Request-ID"]
+            else:
+                response.headers["X-FWRouter-Request-ID"] = api_request_id
             return response
         finally:
             reset_event_context(context_token)

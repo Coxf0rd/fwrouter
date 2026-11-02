@@ -135,6 +135,14 @@ PROVIDER_COHORT_NODEIDS = {
 ROUTINE_PROFILE_CARVEOUTS = {
     ("backend/tests/test_xray.py", "test_legacy_subscription_get_is_read_only"),
     ("backend/tests/test_xray.py", "test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged"),
+    ("backend/tests/test_xray.py", "test_public_subscription_route_detects_happ"),
+    ("backend/tests/test_xray.py", "test_public_subscription_route_explicit_happ_format_wins"),
+    ("backend/tests/test_xray.py", "test_public_subscription_route_explicit_clash_format_wins"),
+    ("backend/tests/test_xray.py", "test_public_subscription_route_explicit_raw_vless_format_wins"),
+    ("backend/tests/test_xray.py", "test_public_subscription_route_rejects_removed_happ_json_format"),
+    ("backend/tests/test_xray.py", "test_public_subscription_route_rejects_removed_happ_full_json_format"),
+    ("backend/tests/test_xray.py", "test_public_subscription_request_id_header_policy"),
+    ("backend/tests/test_xray.py", "test_public_subscription_middleware_preserves_context_and_propagates_errors"),
 }
 UNIT_FIXTURE_PATHS = (
     "backend/tests/test_apply_pipeline.py",
@@ -325,7 +333,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             if row["execution_profile"] is not None or base.get("execution_profile") not in EXECUTION_PROFILES:
                 raise GateError(f"routine node overrides may only carve exact nodes out of a profiled file: {row!r}")
     if routine_profile_carveouts != ROUTINE_PROFILE_CARVEOUTS:
-        raise GateError("manifest must preserve the exact two reviewed routine Xray node carve-outs")
+        raise GateError("manifest must preserve the exact reviewed routine Xray node carve-outs")
     rules = manifest.get("path_rules")
     if not isinstance(rules, list) or not rules:
         raise GateError("path_rules must be a nonempty deterministic mapping")

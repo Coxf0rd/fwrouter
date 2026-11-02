@@ -272,3 +272,43 @@ The separate `test-full-suite.yml` workflow is being reworked to execute the com
 Routine shards preserve primary manifest levels/domains and all L5 regression anchors through an exact disjoint coverage union. Receipts distinguish selected, collected, executed and unique IDs, status outcomes, repeats, resources and cleanup. The final workflow summaries are reporting surfaces only; missing/skipped/failed/cancelled jobs, evidence, coverage or safe-recovery proof remain ineligible.
 
 L6 evidence uses one-day cross-job handoffs, three-day bounded failed diagnostics and a seven-day complete strict-replay bundle. Branch qualification is explicitly non-promotional; each bundle has `deploy_eligibility=false`. L7 host/recovery checks are excluded. Release qualification requires both fresh L6 evidence for the exact current main SHA and independent successful actual-main CI for that SHA. The current stacked implementation has **not yet passed a real exact-head GitHub L6 run and bundle replay**; source/local checks do not replace that gate. See [CI L6 workflow contract](../../docs/CI_L6.md). No deployment or production acceptance is implied.
+
+## Stage 6.1: public subscription headers and qualified runner selection
+
+`backend/tests/test_xray.py` is file-level `qualified-child-process` because
+selected tests launch real owned child processes. That does not make every
+HTTP/TestClient case native. The manifest's exact routine node overrides now
+include the six public subscription format/header contracts plus their two
+header/context regressions, alongside the two previously reviewed ordinary
+cases. The gate keeps a matching exact reviewed allowlist; unreviewed overrides
+or clearing a native file's qualification broadly remain errors. No job,
+capability permission or execution/output/time budget is duplicated or relaxed.
+
+Use the existing qualified runners in their GitHub-hosted disposable setup:
+
+- `python tests/acceptance/qualified_child.py --run` executes the pinned Mihomo
+  subprocess/native validations and the Xray writer-lock cross-process test,
+  with the existing exact scenario list, confinement and owned cleanup.
+- `python tests/acceptance/qualified_xray_docker.py --run` executes the real
+  Xray 26.2.6 loaded-client readback contract in the existing pinned Docker
+  profile. The launcher supplies the immutable image ID and validates ownership.
+
+These commands are internal entrypoints of the existing `qcp` and `xray`
+profiles driven by `tests/gates/parallel_ci.py` and
+`.github/workflows/test-gates.yml`; `--run` alone is not qualification. Their
+verified hosted environment, immutable plan, build/runtime inputs and profile
+preflight remain mandatory. Do not run them on production or give an ordinary
+pytest process unrestricted subprocess/Docker access. Setting `CI=true`, an
+image variable or a binary path cannot grant those capabilities.
+
+Plain backend pytest deliberately denies process execution. Use it for ordinary
+fixtures; do not run the native/process cohort there and interpret its
+`PermissionError` as a runtime product defect. Do not turn such failures into
+SKIP to make a mandatory cohort pass. The local Xray readback test may retain its
+existing SKIP when no pinned test image is supplied (or Docker is unavailable);
+mandatory acceptance requires its actual PASS in the qualified Docker profile.
+
+Check exact node evidence, not only the green aggregate: all six public HTTP
+contracts must appear as passed routine executions. The writer-lock/Mihomo
+node IDs and Xray readback must appear as passed in their separate qualified
+receipts. A local skip or absent node is not PASS.
