@@ -4,16 +4,29 @@ import base64
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import stat
 import tempfile
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from fwrouter_api.services import xray_generation_fingerprint as _xray_generation_fingerprint
+from fwrouter_api.services.xray_admission_config_proof import (
+    _legacy_mihomo_candidate_matches,
+    _legacy_xray_candidate_matches_active,
+)
+from fwrouter_api.services.xray_generation_checkpoint import (
+    _AdmissionFenceView,
+    _checkpoint_operation_mode,
+    _checkpoint_selection_for_recovery,
+    _legacy_admission_checkpoint_payload,
+    _xray_generation_checkpoint_path,
+)
+from fwrouter_api.services.xray_generation_fingerprint import (
+    identity_projection_reference_sha256 as _identity_projection_reference_sha256,
+)
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
 from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH as XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT as XRAY_PUBLIC_PORT, XrayClient
 from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guard_is_held, xray_writer_guarded
@@ -142,159 +155,6 @@ def _log_mihomo_input_context_change(*, stage: str, before: Any, after: Any) -> 
         pass
 
 
-def _legacy_xray_candidate_matches_active(active_path: Path, candidate_path: Path) -> bool:
-    """Prove a private Xray candidate is unchanged or only reorders disjoint per-user rules.
-
-    The fallback is deliberately narrower than general Xray semantic equivalence:
-    every byte-level semantic field outside ``routing.rules`` must match, and
-    rule movement is allowed only inside a contiguous block of exact single-user
-    rules. Unknown user selectors and all non-user rules remain fixed anchors.
-    """
-    from collections import Counter
-
-    max_bytes = 8 * 1024 * 1024
-
-    def read_regular(path: Path) -> bytes | None:
-        try:
-            descriptor = os.open(
-                path,
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NONBLOCK", 0),
-            )
-            try:
-                info = os.fstat(descriptor)
-                if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
-                    return None
-                chunks: list[bytes] = []
-                remaining = max_bytes + 1
-                while remaining:
-                    chunk = os.read(descriptor, min(65536, remaining))
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    remaining -= len(chunk)
-                data = b"".join(chunks)
-                if len(data) > max_bytes:
-                    return None
-                return data
-            finally:
-                os.close(descriptor)
-        except (OSError, ValueError):
-            return None
-
-    active_raw = read_regular(Path(active_path))
-    candidate_raw = read_regular(Path(candidate_path))
-    if active_raw is None or candidate_raw is None:
-        return False
-    if active_raw == candidate_raw:
-        return True
-
-    class _InvalidJson(ValueError):
-        pass
-
-    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise _InvalidJson("duplicate_key")
-            result[key] = value
-        return result
-
-    def reject_constant(_value: str) -> None:
-        raise _InvalidJson("nonfinite_number")
-
-    try:
-        active = json.loads(active_raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
-        candidate = json.loads(candidate_raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return False
-    if type(active) is not dict or type(candidate) is not dict:
-        return False
-
-    def canonical(value: Any) -> bytes | None:
-        try:
-            return json.dumps(
-                value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
-            ).encode("utf-8")
-        except (TypeError, ValueError, RecursionError, UnicodeEncodeError):
-            return None
-
-    active_routing = active.get("routing")
-    candidate_routing = candidate.get("routing")
-    if type(active_routing) is not dict or type(candidate_routing) is not dict:
-        return False
-    active_rules = active_routing.get("rules")
-    candidate_rules = candidate_routing.get("rules")
-    if type(active_rules) is not list or type(candidate_rules) is not list or len(active_rules) != len(candidate_rules):
-        return False
-
-    active_without_rules = dict(active)
-    candidate_without_rules = dict(candidate)
-    active_routing_without_rules = dict(active_routing)
-    candidate_routing_without_rules = dict(candidate_routing)
-    active_routing_without_rules["rules"] = []
-    candidate_routing_without_rules["rules"] = []
-    active_without_rules["routing"] = active_routing_without_rules
-    candidate_without_rules["routing"] = candidate_routing_without_rules
-    active_base = canonical(active_without_rules)
-    candidate_base = canonical(candidate_without_rules)
-    if active_base is None or candidate_base is None or active_base != candidate_base:
-        return False
-
-    from fwrouter_api.adapters.xray_common import XRAY_INBOUND_TAG
-
-    def eligible_user(rule: Any) -> str | None:
-        if type(rule) is not dict or set(rule) != {"type", "inboundTag", "user", "outboundTag"}:
-            return None
-        inbound = rule.get("inboundTag")
-        users = rule.get("user")
-        if (type(rule.get("type")) is not str or rule["type"] != "field"
-                or type(inbound) is not list or len(inbound) != 1
-                or type(inbound[0]) is not str or inbound[0] != XRAY_INBOUND_TAG
-                or type(users) is not list or len(users) != 1
-                or type(users[0]) is not str or not users[0]
-                or users[0] != users[0].strip() or not users[0].isprintable()
-                or type(rule.get("outboundTag")) is not str or not rule["outboundTag"]):
-            return None
-        return users[0]
-
-    active_users: list[str | None] = [eligible_user(rule) for rule in active_rules]
-    candidate_users: list[str | None] = [eligible_user(rule) for rule in candidate_rules]
-    # Any unfamiliar rule that scopes by user could overlap a moved rule; refuse
-    # semantic fallback rather than guessing about selectors or Xray precedence.
-    if any(user is None and type(rule) is dict and "user" in rule
-           for user, rule in [*zip(active_users, active_rules), *zip(candidate_users, candidate_rules)]):
-        return False
-    for users in (active_users, candidate_users):
-        exact_users = [user for user in users if user is not None]
-        if len({user.casefold() for user in exact_users}) != len(exact_users):
-            return False
-
-    index = 0
-    while index < len(active_rules):
-        if active_users[index] is None or candidate_users[index] is None:
-            if active_users[index] is not None or candidate_users[index] is not None:
-                return False
-            active_anchor = canonical(active_rules[index])
-            candidate_anchor = canonical(candidate_rules[index])
-            if active_anchor is None or candidate_anchor is None or active_anchor != candidate_anchor:
-                return False
-            index += 1
-            continue
-
-        end = index
-        while end < len(active_rules) and active_users[end] is not None and candidate_users[end] is not None:
-            end += 1
-        active_segment = [canonical(rule) for rule in active_rules[index:end]]
-        candidate_segment = [canonical(rule) for rule in candidate_rules[index:end]]
-        if any(rule is None for rule in active_segment + candidate_segment):
-            return False
-        if Counter(active_segment) != Counter(candidate_segment):
-            return False
-        index = end
-    return True
-
-
 XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE = "xray_subscription_profile_delete"
 XRAY_SUBSCRIPTION_ACCOUNT_DELETE_REF_PREFIX = "subscription-account:"
 
@@ -318,45 +178,6 @@ def _full_xray_client_uri(client: XrayClient, *, display_name: str | None = None
 def _vpn_auto_xray_client_email(server_id: str) -> str:
     digest = hashlib.sha1(server_id.encode("utf-8")).hexdigest()[:12]
     return f"vpn-auto-{digest}@fwrouter.local"
-
-
-def _identity_projection_reference_sha256(connection: sqlite3.Connection) -> str:
-    """Hash Xray subject/snapshot references used to fence intent compensation."""
-    subjects = [
-        [row["subject_id"], row["stable_key"], row["metadata_json"]]
-        for row in connection.execute(
-            "SELECT subject_id, stable_key, metadata_json FROM subjects "
-            "WHERE implementation_kind='xray' ORDER BY subject_id"
-        )
-    ]
-    for _, _, metadata_json in subjects:
-        try:
-            metadata = json.loads(metadata_json or "{}")
-        except (TypeError, ValueError) as exc:
-            raise ValueError("IDENTITY_SUBJECT_PROJECTION_UNREADABLE") from exc
-        if not isinstance(metadata, dict):
-            raise ValueError("IDENTITY_SUBJECT_PROJECTION_UNREADABLE")
-    snapshots = [
-        [row["token"], row["nodes_json"], row["runtime_verified_at"], row["updated_at"]]
-        for row in connection.execute(
-            "SELECT token, nodes_json, runtime_verified_at, updated_at "
-            "FROM subscription_profile_snapshots ORDER BY token"
-        )
-    ]
-    for _, nodes_json, _, _ in snapshots:
-        try:
-            nodes = json.loads(nodes_json or "[]")
-        except (TypeError, ValueError) as exc:
-            raise ValueError("IDENTITY_SNAPSHOT_PROJECTION_UNREADABLE") from exc
-        if not isinstance(nodes, list):
-            raise ValueError("IDENTITY_SNAPSHOT_PROJECTION_UNREADABLE")
-        if any(not isinstance(node, dict) for node in nodes):
-            raise ValueError("IDENTITY_SNAPSHOT_PROJECTION_UNREADABLE")
-    payload = json.dumps(
-        {"subjects": subjects, "snapshots": snapshots},
-        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
 
 
 def _admit_legacy_profile_witness(
@@ -1963,12 +1784,6 @@ def _apply_staged_mihomo_candidate(
     }
 
 
-def _xray_generation_checkpoint_path(adapter: Any) -> Path:
-    from fwrouter_api.adapters.xray_common import _default_xray_config_path
-    configured_path = getattr(adapter, "config_path", None) or _default_xray_config_path()
-    return Path(configured_path).parent / ".generation" / "generation-checkpoint.json"
-
-
 def _generation_checkpoint_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -2147,116 +1962,37 @@ def _atomic_write_private_checkpoint(path: Path, text: str) -> None:
 
 
 def _generation_source_fingerprint(connection: sqlite3.Connection | None = None) -> str:
-    def read_sources(active: sqlite3.Connection) -> list[Any]:
-        return [
-            [dict(row) for row in active.execute("SELECT * FROM subscription_node_identities ORDER BY identity_id")],
-            [dict(row) for row in active.execute("SELECT * FROM subscription_node_aliases ORDER BY server_id")],
-            [dict(row) for row in active.execute("SELECT * FROM subscription_node_credentials ORDER BY scope, identity_id")],
-            [dict(row) for row in active.execute("SELECT * FROM subscription_node_credential_history ORDER BY client_uuid")],
-            [dict(row) for row in active.execute(
-                "SELECT * FROM subscription_node_identity_transitions ORDER BY identity_id, from_revision"
-            )],
-            [dict(row) for row in active.execute("SELECT source_id, server_id, is_active FROM subscription_server_memberships ORDER BY source_id, server_id")],
-            [dict(row) for row in active.execute("SELECT account_id, slug, enabled FROM subscription_accounts ORDER BY account_id").fetchall()],
-            [dict(row) for row in active.execute("SELECT client_id, account_id, token, enabled FROM subscription_clients ORDER BY client_id").fetchall()],
-            [dict(row) for row in active.execute("SELECT server_id, vpn_auto, vpn_auto_priority, manually_deleted_at FROM server_preferences ORDER BY server_id").fetchall()],
-            [dict(row) for row in active.execute("SELECT server_id, inventory_state, raw_json FROM servers ORDER BY server_id").fetchall()],
-            [dict(row) for row in active.execute("""SELECT subject_id, subject_type, subject_role, desired_mode, is_active, is_deleted,
-                json_extract(metadata_json, '$.detail.client_id') AS client_id,
-                json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid,
-                json_extract(metadata_json, '$.detail.email') AS email
-                FROM subjects WHERE implementation_kind = 'xray' ORDER BY subject_id""").fetchall()],
-            [dict(row) for row in active.execute("SELECT subject_id, selected_server_id, selected_target_kind, selected_until FROM subject_server_overrides ORDER BY subject_id").fetchall()],
-            [dict(row) for row in active.execute("SELECT subject_id, override_mode, override_until FROM subject_user_overrides ORDER BY subject_id").fetchall()],
-            [dict(row) for row in active.execute("SELECT desired_mode, selective_default, server_mode FROM routing_global_state ORDER BY id").fetchall()],
-            [dict(row) for row in active.execute("SELECT key, value_json FROM settings WHERE key='vpn_auto_exclusive_source_ref'").fetchall()],
-            [dict(row) for row in active.execute("SELECT source_ref, enabled, logical_server_id, provider_id, resource_id, protocol, binding_revision FROM provider_bindings ORDER BY source_ref").fetchall()],
-            [dict(row) for row in active.execute("SELECT source_ref, provider_member_id, location_id, protocol, provider_status, auto_enabled, priority, advertised FROM provider_members ORDER BY source_ref, provider_member_id, location_id, protocol").fetchall()],
-        ]
-
     if connection is None:
         with db_session() as active:
-            sources = read_sources(active)
-    else:
-        sources = read_sources(connection)
-    return hashlib.sha256(json.dumps(sources, sort_keys=True, default=str).encode()).hexdigest()
+            sources = _xray_generation_fingerprint.generation_source_projection(active)
+        return _xray_generation_fingerprint.source_projection_sha256(sources)
+    return _xray_generation_fingerprint.generation_source_fingerprint(connection)
 
 
 def _legacy_admission_source_fingerprint(connection: sqlite3.Connection | None = None) -> str:
-    """Proof-only extension of the historical generation source fence.
-
-    Keep ordinary generation/checkpoint fingerprints byte-for-byte compatible;
-    the explicit admission path needs extra public/Core projection fences.
-    """
-    def payload(active: sqlite3.Connection) -> list[Any]:
-        return [
-            _generation_source_fingerprint(active),
-            [dict(row) for row in active.execute(
-                "SELECT token, nodes_json, runtime_verified_at, updated_at "
-                "FROM subscription_profile_snapshots ORDER BY token"
-            ).fetchall()],
-            [dict(row) for row in active.execute(
-                "SELECT id, desired_mode, applied_mode, selective_default, server_mode, "
-                "desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
-                "active_auto_server_id, apply_state, error_code "
-                "FROM routing_global_state ORDER BY id"
-            ).fetchall()],
-            [dict(row) for row in active.execute(
-                "SELECT module_name, desired_state, lifecycle_mode FROM modules ORDER BY module_name"
-            ).fetchall()],
-            [dict(row) for row in active.execute(
-                "SELECT key, value_json FROM settings "
-                "WHERE key IN ('routing.auto_selection_provenance', 'vpn_auto_exclusive_source_ref', 'core.bypass', 'core.intent_revision') "
-                "ORDER BY key"
-            ).fetchall()],
-            [dict(row) for row in active.execute(
-                "SELECT apply_id, job_id, status, created_at, promoted_at, core_intent_revision "
-                "FROM apply_versions ORDER BY apply_id"
-            ).fetchall()],
-            [dict(row) for row in active.execute(
-                "SELECT connection_id, system_id, label, connection_type, runtime_type, "
-                "replacement_target, location, address, integration_mode, refresh_mode, enabled, value_json "
-                "FROM external_connections ORDER BY connection_id"
-            ).fetchall()],
-        ]
-
+    """Proof-only extension of the historical generation source fence."""
     if connection is None:
         with db_session() as active:
-            values = payload(active)
-    else:
-        values = payload(connection)
-    return hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()
+            values = _xray_generation_fingerprint.legacy_admission_source_projection(
+                active, generation_fingerprint=_generation_source_fingerprint,
+            )
+        return _xray_generation_fingerprint.source_projection_sha256(values)
+    return _xray_generation_fingerprint.legacy_admission_source_fingerprint(
+        connection, generation_fingerprint=_generation_source_fingerprint,
+    )
 
 
 def _legacy_admission_core_runtime_snapshot(connection: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
     """Capture Core/module apply observations for one fresh proof attempt only."""
-    query = (
-        "SELECT module_name, desired_state, lifecycle_mode, runtime_state, apply_state "
-        "FROM modules WHERE module_name IN ('core', 'vpn', 'xray', 'watchdog', 'selector') "
-        "ORDER BY module_name"
-    )
     if connection is None:
         with db_session() as active:
-            rows = [dict(row) for row in active.execute(query).fetchall()]
-            from fwrouter_api.services.core_intent import read_core_intent_revision
-            try:
-                revision = read_core_intent_revision(active)
-            except ValueError:
-                revision = None
-            return [*rows, {"core_intent_revision": revision}]
-    rows = [dict(row) for row in connection.execute(query).fetchall()]
-    from fwrouter_api.services.core_intent import read_core_intent_revision
-    try:
-        revision = read_core_intent_revision(connection)
-    except ValueError:
-        revision = None
-    return [*rows, {"core_intent_revision": revision}]
+            return _xray_generation_fingerprint.legacy_admission_core_runtime_snapshot(active)
+    return _xray_generation_fingerprint.legacy_admission_core_runtime_snapshot(connection)
 
 
 def _legacy_admission_core_runtime_fingerprint(connection: sqlite3.Connection | None = None) -> str:
-    return hashlib.sha256(json.dumps(
-        _legacy_admission_core_runtime_snapshot(connection), sort_keys=True, default=str,
-    ).encode()).hexdigest()
+    snapshot = _legacy_admission_core_runtime_snapshot(connection)
+    return _xray_generation_fingerprint.legacy_admission_core_runtime_fingerprint(snapshot)
 
 
 def _legacy_admission_core_unavailable_reason(connection: sqlite3.Connection | None = None) -> str | None:
@@ -2472,148 +2208,9 @@ def _legacy_admission_checkpoint_parent_ready(path: Path) -> bool:
         return False
 
 
-def _legacy_mihomo_candidate_matches(active_path: Path, candidate_path: Path) -> bool:
-    """Compare a private admission candidate with active Mihomo without applying it.
-
-    The builder records which previous FWRouter inbounds it removed from its
-    active-config base. These fields describe sanitization provenance rather
-    than runtime policy. Accept their change only when the candidate exactly
-    records a fresh sanitization of the active config; compare every other
-    field strictly.
-    """
-    try:
-        from fwrouter_api.services.mihomo_config_yaml import (
-            MihomoYamlError,
-            parse_mihomo_yaml_mapping,
-            read_mihomo_yaml_bytes,
-        )
-
-        active_raw = read_mihomo_yaml_bytes(active_path)
-        candidate_raw = read_mihomo_yaml_bytes(candidate_path)
-        if active_raw == candidate_raw:
-            # Byte identity still has to satisfy the shared parser contract:
-            # reject aliases, duplicate keys, excessive depth/nodes and
-            # non-JSON YAML before claiming proof equivalence.
-            parse_mihomo_yaml_mapping(active_raw)
-            return True
-        active = parse_mihomo_yaml_mapping(active_raw)
-        del active_raw
-        candidate = parse_mihomo_yaml_mapping(candidate_raw)
-        del candidate_raw
-    except (MihomoYamlError, OSError, ValueError, TypeError, RecursionError):
-        return False
-
-    if not isinstance(active, dict) or not isinstance(candidate, dict):
-        return False
-
-    import copy
-
-    from fwrouter_api.services.mihomo_config_inbounds import _sanitize_fwrouter_managed_inbounds
-    from fwrouter_api.services.mihomo_config_status import _configs_equal
-
-    active_meta = active.get("fwrouter")
-    candidate_meta = candidate.get("fwrouter")
-    if not isinstance(active_meta, dict) or not isinstance(candidate_meta, dict):
-        return False
-
-    # Existing active files may predate these provenance fields. If present,
-    # require bounded string lists; never trust arbitrary YAML types here.
-    provenance_fields = (
-        "sanitized_legacy_inbound_keys", "sanitized_managed_listeners",
-    )
-    for key in provenance_fields:
-        candidate_value = candidate_meta.get(key)
-        if key not in candidate_meta or not isinstance(candidate_value, list) or len(candidate_value) > 4096:
-            return False
-        if any(not isinstance(item, str) or len(item) > 512 for item in candidate_value):
-            return False
-        if key in active_meta:
-            active_value = active_meta[key]
-            if not isinstance(active_value, list) or len(active_value) > 4096:
-                return False
-            if any(not isinstance(item, str) or len(item) > 512 for item in active_value):
-                return False
-
-    # Derive expected provenance from the exact active config. This is not a
-    # blanket fwrouter-section exemption: wrong or invented removal records
-    # still reject, and all policy/runtime fields remain part of the comparison.
-    try:
-        _, sanitization = _sanitize_fwrouter_managed_inbounds(copy.deepcopy(active))
-    except (TypeError, ValueError):
-        return False
-    provenance = {
-        "sanitized_legacy_inbound_keys": sanitization.get("removed_top_level_keys"),
-        "sanitized_managed_listeners": sanitization.get("removed_listener_names"),
-    }
-    # Legacy top-level inbound ports are live listeners in the active config.
-    # Removing them changes runtime state, so their presence cannot be treated
-    # as a provenance-only difference during proof admission.
-    if provenance["sanitized_legacy_inbound_keys"]:
-        return False
-    if any(
-        not isinstance(expected, list)
-        or candidate_meta.get(key) != expected
-        for key, expected in provenance.items()
-    ):
-        return False
-
-    normalized_active = copy.deepcopy(active)
-    normalized_meta = normalized_active.get("fwrouter")
-    if not isinstance(normalized_meta, dict):
-        return False
-    normalized_meta.update(provenance)
-    return _configs_equal(normalized_active, candidate)
-
-
 _PROOF_ONLY_LEGACY_ADMISSION_CONFIRMATION = "PROOF_ONLY_LEGACY_ADMISSION"
 
 
-def _legacy_admission_checkpoint_payload(path: Path) -> dict[str, Any] | None:
-    try:
-        info = path.lstat()
-        parent = path.parent.lstat()
-        if (
-            not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
-            or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_nlink != 1 or info.st_size > 65536
-            or not stat.S_ISDIR(parent.st_mode) or stat.S_ISLNK(parent.st_mode)
-            or parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) & 0o077
-        ):
-            return None
-        raw = path.read_bytes()
-        after = path.lstat()
-        if (after.st_dev, after.st_ino) != (info.st_dev, info.st_ino) or len(raw) > 65536:
-            return None
-        payload = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None
-    allowed = {
-        "schema", "operation_mode", "operation_id", "phase", "require_native_proof", "candidate_digest",
-        "candidate_revision", "source_fingerprint", "selection_revision",
-        "selection_decision_id", "created_at", "proof_summary",
-        "xray_runtime_incarnation", "mihomo_runtime_incarnation",
-        "xray_config_sha256", "mihomo_config_sha256", "mihomo_fingerprint_hash",
-    }
-    if (
-        not isinstance(payload, dict)
-        or set(payload) - allowed
-        or type(payload.get("schema")) is not int
-        or payload.get("schema") != 1
-        or payload.get("operation_mode") != "proof_only_legacy_admission"
-        or payload.get("phase") not in {"proof_started", "proof_complete", "verified"}
-        or ("require_native_proof" in payload and type(payload.get("require_native_proof")) is not bool)
-        or not isinstance(payload.get("operation_id"), str)
-        or not re.fullmatch(r"[0-9a-f]{32}", payload.get("operation_id", ""))
-        or not isinstance(payload.get("candidate_digest"), str)
-        or not re.fullmatch(r"[0-9a-f]{64}", payload.get("candidate_digest", ""))
-        or type(payload.get("candidate_revision")) is not int
-        or payload.get("candidate_revision") < 1
-        or not isinstance(payload.get("source_fingerprint"), str)
-        or not re.fullmatch(r"[0-9a-f]{64}", payload.get("source_fingerprint", ""))
-        or type(payload.get("selection_revision")) is not int
-    ):
-        return None
-    return payload
 
 
 def _legacy_admission_runtime_fence_facts(admission: Any) -> dict[str, bool]:
@@ -3028,26 +2625,6 @@ def _publish_legacy_admission_mihomo_receipt(proof: dict[str, Any], operation_id
             and _legacy_admission_runtime_fences_match(fence_view)
         ),
     )
-
-
-@dataclass(frozen=True)
-class _AdmissionFenceView:
-    """Narrow value object for reusing the native runtime fence verifier."""
-    proof_only_source_fingerprint: str
-    proof_only_core_runtime_fingerprint: str
-    proof_only_selection_revision: int
-    proof_only_selection_decision_id: str | None
-    proof_only_selection_snapshot: dict[str, Any]
-    proof_only_routing_snapshot: dict[str, Any]
-    proof_only_xray_incarnation: str
-    proof_only_mihomo_incarnation: str
-    proof_only_xray_config_sha256: str
-    proof_only_mihomo_config_sha256: str
-    proof_only_mihomo_fingerprint_hash: str
-    proof_only_core_manifest_hash: str
-    proof_only_core_apply_id: str
-    proof_only_core_enforcement_level: str
-    proof_only_core_live_mode: str
 
 
 def admit_legacy_subscription_inventory(
@@ -3513,16 +3090,6 @@ def _checkpoint_inventory_generation_matches(checkpoint_path: Path) -> bool:
     )
 
 
-def _checkpoint_operation_mode(checkpoint: Any) -> str | None:
-    """Return a supported checkpoint mode, rejecting unknown future modes."""
-    if not isinstance(checkpoint, dict):
-        raise ValueError("XRAY_GENERATION_CHECKPOINT_INVALID")
-    mode = checkpoint.get("operation_mode")
-    if mode is None:
-        return None  # Historical apply/recovery checkpoints predate this field.
-    if mode != "proof_only_legacy_admission":
-        raise ValueError("XRAY_GENERATION_CHECKPOINT_MODE_UNSUPPORTED")
-    return str(mode)
 
 
 def _resolve_existing_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> dict[str, Any]:
@@ -4391,22 +3958,6 @@ def _verify_generation_recovery_selection_readback(selection: dict[str, Any] | N
         return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_READBACK_FAILED"}
 
 
-def _checkpoint_selection_for_recovery(
-    checkpoint: dict[str, Any], current_selection: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Use checkpoint-bound intent when current Core has no VPN target selected."""
-    routing = current_selection.get("routing") if isinstance(current_selection.get("routing"), dict) else {}
-    mode = str(routing.get("server_mode") or "auto").strip().lower()
-    target = (
-        routing.get("desired_fixed_server_id") or routing.get("applied_fixed_server_id")
-        if mode == "fixed" else routing.get("active_auto_server_id")
-    )
-    if str(target or "").strip():
-        return current_selection
-    checkpoint_selection = checkpoint.get("auto_selection_after")
-    if not isinstance(checkpoint_selection, dict):
-        checkpoint_selection = checkpoint.get("auto_selection_before")
-    return checkpoint_selection if isinstance(checkpoint_selection, dict) else None
 
 
 def _generation_recovery_attempt_path(checkpoint_path: Path, checkpoint_digest: str) -> Path:
