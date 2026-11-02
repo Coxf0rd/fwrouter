@@ -4845,6 +4845,142 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual({"ok": False, "recovered": False, "error_code": None,
                           "reason": "restore_restart_failed"}, summary["recovery"])
 
+    def test_initial_mihomo_failure_diagnostics_are_closed_and_provider_reader_compatible(self):
+        test_path = Path(__file__).parents[1] / "application_acceptance" / "test_xray_generation.py"
+        parsed = ast.parse(test_path.read_text(encoding="utf-8"))
+        wanted = {
+            "_PROVIDER_WORKER_LOG_PREFIX", "_MIHOMO_RECONCILE_WORKER_LOG_PREFIX",
+            "_PROVIDER_WORKER_LOG_MAX_FILES", "_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES",
+            "_PROVIDER_WORKER_LOG_PREFIXES", "_MIHOMO_RECONCILE_STAGES",
+            "_MIHOMO_RECONCILE_ERROR_CODES", "_MIHOMO_RECONCILE_REASONS",
+            "_MIHOMO_RECONCILE_ACTIONS", "_MIHOMO_RECONCILE_EVENTS",
+            "_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES",
+            "_snapshot_provider_worker_logs", "_provider_worker_records_since",
+            "_safe_mihomo_reconcile_diagnostics_since",
+        }
+        selected = []
+        for node in parsed.body:
+            if isinstance(node, ast.FunctionDef) and node.name in wanted:
+                selected.append(node)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                names = ({target.id for target in node.targets if isinstance(target, ast.Name)}
+                         if isinstance(node, ast.Assign)
+                         else ({node.target.id} if isinstance(node.target, ast.Name) else set()))
+                if names & wanted:
+                    selected.append(node)
+        namespace = {
+            "__builtins__": __builtins__, "os": os, "stat": stat, "re": re,
+            "json": json, "Path": Path,
+        }
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(test_path), "exec"), namespace)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log = root / "uvicorn-123.log"
+            log.write_bytes(b"")
+            snapshot = namespace["_snapshot_provider_worker_logs"](root)
+            provider_prefix = namespace["_PROVIDER_WORKER_LOG_PREFIX"].encode("ascii")
+            mihomo_prefix = namespace["_MIHOMO_RECONCILE_WORKER_LOG_PREFIX"].encode("ascii")
+            provider_record = {"schema": "provider-verification/v1", "event": "refresh_result"}
+            valid = {
+                "schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
+                "event": "failure_result_input",
+                "summary": {
+                    "ok": False, "stage": "inventory_generation_admission",
+                    "error_code": "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+                    "reconcile_action": "none", "reconcile_reason": "inventory_generation_stale",
+                    "validation": {"ok": False, "returncode": 1, "error_code": "MIHOMO_PROXYSET_EMPTY",
+                                   "stderr_tail": "secret stderr"},
+                    "candidate": {"candidate_path": "/secret/path", "rules_count": 12},
+                    "promoted": {"ok": False, "promoted": False},
+                    "container": {"ok": False, "action": "restart", "error_message": "secret"},
+                    "native_udp_policy_proof": {
+                        "ok": False, "native_top_level_rules_match": False,
+                        "selector_membership_matches": False, "guarded_rules_match": True,
+                        "wiring_proven": False,
+                    },
+                    "recovery": {"ok": False, "reason": "restore_restart_failed"},
+                    "last_good_retained": True, "secret": "never include",
+                },
+                "private": "never include",
+            }
+            valid_later = json.loads(json.dumps(valid))
+            valid_later["summary"]["stage"] = "generation_resume_reservation"
+            valid_later["summary"]["reconcile_reason"] = "receipt_fence_mismatch"
+            valid_later["summary"]["error_code"] = "MIHOMO_CANDIDATE_INVALID"
+            untrusted = {
+                "schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
+                "event": "failure_result_input",
+                "summary": {"ok": False, "stage": "private-stage", "error_code": "secret-code",
+                            "reconcile_reason": "token-secret"},
+            }
+            malformed = b"{not-json"
+            log.write_bytes(
+                provider_prefix + json.dumps(provider_record).encode() + b"\n"
+                + mihomo_prefix + json.dumps(valid).encode() + b"\n"
+                + mihomo_prefix + malformed + b"\n"
+            )
+            # The default reader still returns only its established provider records.
+            provider = namespace["_provider_worker_records_since"](root, snapshot)
+            self.assertEqual([provider_record], provider)
+
+            diagnostics = namespace["_safe_mihomo_reconcile_diagnostics_since"](root, snapshot)
+            self.assertEqual(1, len(diagnostics))
+            summary = diagnostics[0]["summary"]
+            self.assertEqual("inventory_generation_admission", summary["stage"])
+            self.assertEqual("SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED", summary["error_code"])
+            self.assertEqual("MIHOMO_PROXYSET_EMPTY", summary["validation"]["error_code"])
+            self.assertEqual(1, summary["validation"]["returncode"])
+            self.assertEqual({"ok": False, "native_top_level_rules_match": False,
+                              "selector_membership_matches": False, "guarded_rules_match": True},
+                             summary["native_udp_policy_proof"])
+            self.assertIs(summary["unknown_enum"], False)
+            self.assertNotIn("candidate", summary)
+            serialized = json.dumps(diagnostics, sort_keys=True)
+            self.assertLessEqual(len(serialized.encode("ascii")), 1024)
+            for secret in ("secret", "private-stage", "secret-code", "token-secret", "/secret/path", "never include"):
+                self.assertNotIn(secret, serialized)
+
+            # The latest recognized failure wins when an earlier generic
+            # record precedes it; later observer/noise records are skipped.
+            with log.open("ab") as stream:
+                stream.write(mihomo_prefix + json.dumps(valid_later).encode() + b"\n")
+                stream.write(mihomo_prefix + json.dumps({
+                    "schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
+                    "event": "runtime_satisfaction_failure", "summary": {"reason": "private"},
+                }).encode() + b"\n")
+                stream.write(mihomo_prefix + json.dumps({
+                    "schema": "other-schema/v1", "event": "failure_result_input",
+                    "summary": {"stage": "private"},
+                }).encode() + b"\n")
+            bounded = namespace["_safe_mihomo_reconcile_diagnostics_since"](root, snapshot)
+            self.assertEqual(1, len(bounded))
+            self.assertEqual("generation_resume_reservation", bounded[0]["summary"]["stage"])
+            self.assertEqual("receipt_fence_mismatch", bounded[0]["summary"]["reconcile_reason"])
+            self.assertEqual("MIHOMO_CANDIDATE_INVALID", bounded[0]["summary"]["error_code"])
+            self.assertLessEqual(len(json.dumps(bounded, sort_keys=True).encode("ascii")), 1024)
+
+            # Even known values are omitted if the serialized diagnostic would
+            # exceed its explicit byte cap.
+            namespace["_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES"] = 32
+            self.assertEqual([], namespace["_safe_mihomo_reconcile_diagnostics_since"](root, snapshot))
+            namespace["_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES"] = 1024
+
+            # Unknown enum strings are nulled and marked, while secret payload
+            # fields remain absent. A new snapshot isolates this record.
+            untrusted_snapshot = namespace["_snapshot_provider_worker_logs"](root)
+            with log.open("ab") as stream:
+                stream.write(mihomo_prefix + json.dumps(untrusted).encode() + b"\n")
+            projected_untrusted = namespace["_safe_mihomo_reconcile_diagnostics_since"](root, untrusted_snapshot)
+            self.assertEqual(1, len(projected_untrusted))
+            unknown_summary = projected_untrusted[0]["summary"]
+            self.assertIs(unknown_summary["unknown_enum"], True)
+            self.assertIsNone(unknown_summary["stage"])
+            self.assertIsNone(unknown_summary["error_code"])
+            self.assertIsNone(unknown_summary["reconcile_reason"])
+            unknown_text = json.dumps(projected_untrusted, sort_keys=True)
+            for secret in ("secret-code", "token-secret", "private-stage", "never include"):
+                self.assertNotIn(secret, unknown_text)
     def test_provider_verification_observer_redacts_phase_and_reraises(self):
         worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
         parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
