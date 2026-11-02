@@ -681,6 +681,112 @@ class GateContractTests(unittest.TestCase):
             paths, mock.ANY, rules="F,E9", label="F,E9",
         )
 
+    def test_global_static_inventory_batches_all_paths_at_the_per_invocation_bound(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".fwrouter-ruff-batch-", dir=gate.ROOT) as temp, \
+             tempfile.TemporaryDirectory(prefix="fwrouter-ruff-owned-") as owned:
+            root = Path(temp)
+            names = []
+            for index in range(gate.MAX_RUFF_PATHS + 1):
+                path = root / f"module_{index:03}.py"
+                path.write_text("value = 1\n", encoding="utf-8")
+                names.append(path.relative_to(gate.ROOT).as_posix())
+            with mock.patch.object(gate, "tracked_maintained_python_paths", return_value=names), \
+                 mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
+                 mock.patch.object(gate, "run_process", side_effect=[
+                     (0, "ruff 0.17.0\n", False), (0, "", False), (0, "", False),
+                 ]) as runner:
+                self.assertEqual([], gate.check_tracked_python_undefined_names(Path(owned)))
+
+        commands = [call.args[0] for call in runner.call_args_list[1:]]
+        batches = [command[command.index("--") + 1:] for command in commands]
+        self.assertEqual([gate.MAX_RUFF_PATHS, 1], [len(batch) for batch in batches])
+        self.assertEqual(names, [name for batch in batches for name in batch])
+        self.assertTrue(all(command[command.index("--select") + 1] == gate.RUFF_GLOBAL_RULES
+                            for command in commands))
+
+    def test_global_static_batch_failure_is_reported_after_later_batch_runs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".fwrouter-ruff-batch-", dir=gate.ROOT) as temp, \
+             tempfile.TemporaryDirectory(prefix="fwrouter-ruff-owned-") as owned:
+            root = Path(temp)
+            names = []
+            for index in range(gate.MAX_RUFF_PATHS + 1):
+                path = root / f"module_{index:03}.py"
+                path.write_text("value = 1\n", encoding="utf-8")
+                names.append(path.relative_to(gate.ROOT).as_posix())
+            with mock.patch.object(gate, "tracked_maintained_python_paths", return_value=names), \
+                 mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
+                 mock.patch.object(gate, "run_process", side_effect=[
+                     (0, "ruff 0.17.0\n", False),
+                     (1, "first batch: F821 missing_one", False),
+                     (1, "second batch: F821 missing_two", False),
+                 ]) as runner:
+                problems = gate.check_tracked_python_undefined_names(Path(owned))
+
+        self.assertEqual(3, runner.call_count)
+        self.assertIn("missing_one", " ".join(problems))
+        self.assertIn("missing_two", " ".join(problems))
+
+    def test_global_static_inventory_validates_all_paths_before_starting_ruff(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".fwrouter-ruff-batch-", dir=gate.ROOT) as temp, \
+             tempfile.TemporaryDirectory(prefix="fwrouter-ruff-owned-") as owned:
+            root = Path(temp)
+            names = []
+            for index in range(gate.MAX_RUFF_PATHS):
+                path = root / f"module_{index:03}.py"
+                path.write_text("value = 1\n", encoding="utf-8")
+                names.append(path.relative_to(gate.ROOT).as_posix())
+            names.append("../outside.py")
+            with mock.patch.object(gate, "tracked_maintained_python_paths", return_value=names), \
+                 mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff") as which, \
+                 mock.patch.object(gate, "run_process") as runner:
+                problems = gate.check_tracked_python_undefined_names(Path(owned))
+
+        self.assertIn("invalid, symlinked, or missing", " ".join(problems))
+        which.assert_not_called()
+        runner.assert_not_called()
+
+    def test_global_static_batches_share_timeout_and_output_budgets(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".fwrouter-ruff-batch-", dir=gate.ROOT) as temp, \
+             tempfile.TemporaryDirectory(prefix="fwrouter-ruff-owned-") as owned:
+            root = Path(temp)
+            names = []
+            for index in range(gate.MAX_RUFF_PATHS + 1):
+                path = root / f"module_{index:03}.py"
+                path.write_text("value = 1\n", encoding="utf-8")
+                names.append(path.relative_to(gate.ROOT).as_posix())
+            with mock.patch.object(gate, "tracked_maintained_python_paths", return_value=names), \
+                 mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
+                 mock.patch.object(gate.time, "monotonic", side_effect=[100, 100, 112]), \
+                 mock.patch.object(gate, "run_process", side_effect=[
+                     (0, "ruff 0.17.0\n", False), (0, "x" * 1000, False), (0, "", False),
+                 ]) as runner:
+                self.assertEqual([], gate.check_tracked_python_undefined_names(Path(owned)))
+
+        invocations = runner.call_args_list[1:]
+        self.assertEqual([30, 18], [invocation.args[1] for invocation in invocations])
+        self.assertEqual([gate.MAX_RUFF_OUTPUT_BYTES, gate.MAX_RUFF_OUTPUT_BYTES - 1000],
+                         [invocation.args[2] for invocation in invocations])
+
+    def test_global_static_aggregate_timeout_stops_later_batches_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix=".fwrouter-ruff-batch-", dir=gate.ROOT) as temp, \
+             tempfile.TemporaryDirectory(prefix="fwrouter-ruff-owned-") as owned:
+            root = Path(temp)
+            names = []
+            for index in range(gate.MAX_RUFF_PATHS + 1):
+                path = root / f"module_{index:03}.py"
+                path.write_text("value = 1\n", encoding="utf-8")
+                names.append(path.relative_to(gate.ROOT).as_posix())
+            with mock.patch.object(gate, "tracked_maintained_python_paths", return_value=names), \
+                 mock.patch.object(gate.shutil, "which", return_value="/locked/bin/ruff"), \
+                 mock.patch.object(gate.time, "monotonic", side_effect=[0, 0, 30]), \
+                 mock.patch.object(gate, "run_process", side_effect=[
+                     (0, "ruff 0.17.0\n", False), (0, "", False),
+                 ]) as runner:
+                problems = gate.check_tracked_python_undefined_names(Path(owned))
+
+        self.assertIn("aggregate 30 second timeout", " ".join(problems))
+        self.assertEqual(2, runner.call_count)
+
     def test_global_static_canaries_reject_unused_names_and_invalid_syntax(self) -> None:
         with tempfile.TemporaryDirectory(
             prefix=".fwrouter-global-static-canary-", dir=gate.ROOT,

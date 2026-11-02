@@ -10,6 +10,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -462,17 +463,16 @@ def tracked_maintained_python_paths(owned: Path, *, root: Path = ROOT) -> list[s
         raise GateError("cannot enumerate tracked Python paths for global undefined-name checks")
     names = [name for name in output.split("\0") if name and name.endswith(".py")]
     maintained_names = sorted({name for name in names if not name.startswith("knowledge/")})
-    validate_python_paths(maintained_names, root=root, require_existing=False)
+    validate_python_paths(maintained_names, root=root, require_existing=False, max_paths=None)
     paths = [name for name in maintained_names if (root / name).is_file()]
-    if len(paths) > MAX_RUFF_PATHS:
-        raise GateError("tracked maintained Python path inventory exceeds its bound")
     return paths
 
 
 def validate_python_paths(
     paths: list[str], *, root: Path = ROOT, require_existing: bool = True,
+    max_paths: int | None = MAX_RUFF_PATHS,
 ) -> None:
-    if len(paths) > MAX_RUFF_PATHS:
+    if max_paths is not None and len(paths) > max_paths:
         raise GateError("Python path inventory exceeds its bound")
     root_resolved = root.resolve()
     for name in paths:
@@ -1692,12 +1692,62 @@ def check_ruff_paths(paths: list[str], owned: Path, *, rules: str, label: str) -
     return []
 
 
+def check_ruff_paths_batched(paths: list[str], owned: Path, *, rules: str, label: str) -> list[str]:
+    """Lint a global inventory in bounded invocations under one aggregate budget."""
+    if not paths:
+        return []
+    try:
+        validate_python_paths(paths, max_paths=None)
+    except GateError as exc:
+        return [str(exc)]
+    ruff, error = ruff_executable(owned)
+    if error:
+        return [error]
+    assert ruff is not None
+
+    started = time.monotonic()
+    deadline = started + 30
+    output_used = 0
+    diagnostics: list[str] = []
+    env = clean_test_environment(owned)
+    for offset in range(0, len(paths), MAX_RUFF_PATHS):
+        remaining_seconds = math.floor(deadline - time.monotonic())
+        if remaining_seconds < 1:
+            return [f"Ruff {label} checks exceeded the aggregate 30 second timeout"]
+        remaining_output = MAX_RUFF_OUTPUT_BYTES - output_used
+        if remaining_output <= 0:
+            return [f"Ruff {label} diagnostics exceeded the {MAX_RUFF_OUTPUT_BYTES} byte aggregate output bound"]
+        batch = paths[offset:offset + MAX_RUFF_PATHS]
+        code, output, truncated = run_process(
+            [ruff, "check", "--config", str(RUFF_CONFIG), "--select", rules,
+             "--target-version", "py311", "--ignore-noqa", "--output-format", "concise",
+             "--no-cache", "--", *batch],
+            remaining_seconds, remaining_output, cwd=ROOT, env=env,
+        )
+        output_used += len(output.encode("utf-8"))
+        if truncated or output_used > MAX_RUFF_OUTPUT_BYTES:
+            return [f"Ruff {label} diagnostics exceeded the {MAX_RUFF_OUTPUT_BYTES} byte aggregate output bound"]
+        if code == 124:
+            return [f"Ruff {label} checks exceeded the aggregate 30 second timeout"]
+        if code not in (0, 1):
+            detail = output.strip()[:2048]
+            return [f"Ruff {label} check failed" + (f": {detail}" if detail else "")]
+        if code == 1:
+            diagnostics.append(output)
+    if diagnostics:
+        detail = "\n".join(diagnostics).strip()[:2048]
+        return [f"Ruff {label} check failed" + (f": {detail}" if detail else "")]
+    return []
+
+
 def check_tracked_python_undefined_names(owned: Path) -> list[str]:
     try:
         paths = tracked_maintained_python_paths(owned)
     except GateError as exc:
         return [str(exc)]
-    return check_ruff_paths(paths, owned, rules=RUFF_GLOBAL_RULES, label=RUFF_GLOBAL_RULES)
+    if len(paths) <= MAX_RUFF_PATHS:
+        return check_ruff_paths(paths, owned, rules=RUFF_GLOBAL_RULES, label=RUFF_GLOBAL_RULES)
+    return check_ruff_paths_batched(paths, owned, rules=RUFF_GLOBAL_RULES, label=RUFF_GLOBAL_RULES)
 
 
 def check_changed_python_rules(changed: list[str], owned: Path) -> list[str]:
