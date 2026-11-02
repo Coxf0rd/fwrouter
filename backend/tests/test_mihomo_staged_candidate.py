@@ -94,6 +94,29 @@ def test_mihomo_compat_exports_and_patch_views_preserve_identity(monkeypatch) ->
     assert mihomo_reconcile._resolved_base_config_path is original
 
 
+def test_legacy_facade_reconcile_exports_remain_facade_local_when_patched(monkeypatch) -> None:
+    from fwrouter_api.services import mihomo_reconcile
+
+    names = (
+        "promote_mihomo_candidate_config",
+        "reconcile_mihomo_runtime",
+        "reconcile_mihomo_selective_default_fast",
+        "validate_and_promote_mihomo_candidate_config",
+    )
+    for name in names:
+        original = getattr(mihomo_reconcile, name)
+        assert getattr(mihomo_config, name) is original
+
+        replacement = object()
+        with monkeypatch.context() as patch:
+            patch.setattr(mihomo_config, name, replacement)
+            assert getattr(mihomo_config, name) is replacement
+            assert getattr(mihomo_reconcile, name) is original
+
+        assert getattr(mihomo_config, name) is original
+        assert getattr(mihomo_reconcile, name) is original
+
+
 def test_legacy_inventory_resolver_patch_is_scoped_to_inventory_consumer(monkeypatch) -> None:
     from fwrouter_api.services import mihomo_config_proxies
 

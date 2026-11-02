@@ -2,7 +2,12 @@
 
 ## Назначение
 
-Фасад генерации и валидации `mihomo` config. Сохраняет старые import/re-export имена для совместимости routes, tests и `mihomo_reconcile.py`, но низкоуровневые path/YAML helpers вынесены в `mihomo_config_paths.py`, base config / managed listeners / sniffer / inbound sanitize вынесены в `mihomo_config_inbounds.py`, rules rendering вынесен в `mihomo_config_rules.py`, proxy/selector groups вынесены в `mihomo_config_proxies.py`, status/runtime read-only checks вынесены в `mihomo_config_status.py`, а structural validation helpers вынесены в `mihomo_config_validation.py`. Runtime promote/reconcile живет в `mihomo_reconcile.py`.
+Public compatibility surface for Mihomo configuration and reconciliation. Build,
+candidate write and validation are owned by `mihomo_config_builder`; promotion,
+reconcile and recovery remain owned by `mihomo_reconcile`. Both use specialized
+path/YAML, inbounds, rules, proxies, status and validation owners. Implementation
+modules do not import this facade. Public reconcile operations remain normal
+reexports: patching the facade does not replace their canonical definitions.
 
 ## Важные функции
 
