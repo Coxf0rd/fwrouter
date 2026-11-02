@@ -4841,6 +4841,60 @@
       "domain": "xray",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
+      "fixture_identity": "Disposable SQLite Xray planning fixtures and immutable projection values",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_xray_generation_planning",
+      "isolation": "temporary test state and injected collaborators per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_xray_generation_planning.py",
+      "primary_level": "L3",
+      "risk_notes": "Read-only planning and immutable input contracts; no credential writes or runtime publication",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "local-integration"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "xray",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "Disposable SQLite Core/Xray state, fake adapters and temporary candidate paths",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_xray_generation_observation",
+      "isolation": "temporary test state and injected collaborators per backend conftest",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_xray_generation_observation.py",
+      "primary_level": "L3",
+      "risk_notes": "Characterizes read-only observations and private candidate validation; no active publication, restart or production proof",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "local-integration"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "xray",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
       "fixture_identity": "Deterministic Xray checkpoint/config vectors and disposable SQLite source-fence projections",
       "fixture_owner": "backend/tests/conftest.py",
       "id": "test_xray_generation_contracts",
@@ -7012,7 +7066,7 @@
       "execution_group": "installer-startup"
     }
   ],
-  "version": "2026.11.02.3",
+  "version": "2026.11.03.1",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

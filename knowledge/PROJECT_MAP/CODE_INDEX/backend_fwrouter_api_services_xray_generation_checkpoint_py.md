@@ -28,3 +28,5 @@ the narrow compatibility boundary instead of gaining a second owner.
 Disposable parser/value tests and generation recovery suites exercise malformed
 and supported modes, file safety, selection fallback and frozen view behavior.
 Cold imports are tested separately from execution and native acceptance.
+
+`build_native_validation_proof` constructs the unchanged Xray/Mihomo receipt-hash projection from supplied staged values. Checkpoint IO and phase ownership remain in the coordinator.

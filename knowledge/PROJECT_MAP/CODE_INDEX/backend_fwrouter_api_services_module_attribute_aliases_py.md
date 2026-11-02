@@ -17,6 +17,8 @@ execute operations or mutate source-owner modules automatically.
 ## Supported consumers
 
 - Apply and Mihomo public compatibility surfaces declare their own alias maps.
+- The Xray coordinator declares historical private collaborator patch points;
+  canonical planning, observation, view and staging functions remain independent.
 - `mihomo_reconcile.config` retains the known historical compatibility lookups.
 - Implementation operation paths do not read public facades or these views.
 

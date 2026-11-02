@@ -126,3 +126,16 @@ def build_artifact_summary(job_id: str) -> dict[str, Any]:
         "generated_root": str(settings.paths.generated_dir),
         "jobs_root": str(settings.paths.jobs_dir),
     }
+
+
+def write_all_fd(descriptor: int, data: bytes) -> None:
+    """Write bytes to an already-owned descriptor without reopening it via fdopen."""
+    remaining = memoryview(data)
+    while remaining:
+        try:
+            written = os.write(descriptor, remaining[:1024 * 1024])
+        except InterruptedError:
+            continue
+        if written <= 0:
+            raise OSError("short write to private checkpoint")
+        remaining = remaining[written:]

@@ -6,16 +6,70 @@ import json
 import os
 import sqlite3
 import stat
-import tempfile
+import tempfile as tempfile
 import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fwrouter_api.services import xray_generation_fingerprint as _xray_generation_fingerprint
+# Canonical implementations; historical coordinator names remain compatibility seams.
+from fwrouter_api.services import xray_profile_planning as _d2_xray_profile_planning
+from fwrouter_api.services.xray_profile_planning import (
+    read_vpn_auto_candidates as _vpn_auto_servers_for_xray_subscription,
+    prepare_profile_bindings as _prospective_profile_bindings,
+)
+from fwrouter_api.services import xray_generation_observation as _d2_xray_generation_observation
+from fwrouter_api.services.xray_generation_observation import (
+    generation_source_fingerprint as _generation_source_fingerprint,
+    legacy_admission_source_fingerprint as _legacy_admission_source_fingerprint,
+    legacy_core_runtime_fingerprint as _legacy_admission_core_runtime_fingerprint,
+    legacy_core_unavailable_reason as _legacy_admission_core_unavailable_reason,
+    legacy_runtime_fences_match as _legacy_admission_runtime_fences_match,
+    fixed_routing_projection as _fixed_xray_routing_projection,
+    fixed_routing_snapshot_matches as _fixed_xray_routing_snapshot_matches,
+    capture_ordinary_fixed_context as _capture_ordinary_fixed_xray_context,
+    fixed_generation_context_matches as _fixed_xray_generation_context_matches,
+    capture_generation_selection as _capture_generation_auto_selection,
+    verify_generation_selection as _verify_generation_selection_readback,
+    ordinary_fixed_checkpoint_context_matches as _ordinary_fixed_checkpoint_context_matches,
+)
+_legacy_admission_core_runtime_snapshot = _d2_xray_generation_observation.legacy_core_runtime_snapshot
+_collect_legacy_admission_core_native_proof = _d2_xray_generation_observation.collect_core_native_proof
+_legacy_admission_runtime_fence_facts = _d2_xray_generation_observation.legacy_runtime_fence_facts
+_ordinary_fixed_xray_context_matches = _d2_xray_generation_observation.ordinary_fixed_context_matches
+from fwrouter_api.services import xray_generation_views as _d2_xray_generation_views
+from fwrouter_api.services.xray_generation_views import (
+    capture_derived_rows as _capture_generation_derived_rows,
+    capture_current_projection as _current_xray_projection_snapshot,
+    current_projection_fingerprint as _current_projection_fingerprint,
+    bindings_artifact_parity as _current_bindings_artifact_parity,
+    verify_public_projection as _verify_current_public_projection,
+    verify_recovery_selection as _verify_generation_recovery_selection_readback,
+)
+_supersession_alias_owns = _d2_xray_generation_views.supersession_alias_owns
+from fwrouter_api.services import xray_generation_staging as _d2_xray_generation_staging
+from fwrouter_api.services.xray_generation_staging import (
+    prepare_native_candidates as _stage_profile_native_candidates,
+    collect_legacy_inventory_proof as _collect_legacy_inventory_native_proof,
+    validate_mihomo_preimage as _validate_rollback_mihomo_preimage,
+)
+_safe_mihomo_input_context_summary = _d2_xray_generation_staging.summarize_input_context
+_log_mihomo_input_context_change = _d2_xray_generation_staging.log_input_context_change
+from fwrouter_api.services.artifacts import write_all_fd as _write_all_fd
+_FIXED_XRAY_ROUTING_FIELDS = _d2_xray_generation_observation.FIXED_ROUTING_FIELDS
+from fwrouter_api.services.xray_profile_planning import compile_generation_inputs as _compile_generation_inputs
+from fwrouter_api.services.xray_generation_views import build_publication_result as _build_publication_result
+from fwrouter_api.services.xray_generation_checkpoint import build_native_validation_proof as _build_checkpoint_native_validation_proof
+from fwrouter_api.services.module_attribute_aliases import (
+    AttributeAliases as _AttributeAliases,
+    install_attribute_aliases as _install_attribute_aliases,
+)
+
+from fwrouter_api.services import xray_generation_fingerprint as xray_generation_fingerprint
+_xray_generation_fingerprint = xray_generation_fingerprint
 from fwrouter_api.services.xray_admission_config_proof import (
-    _legacy_mihomo_candidate_matches,
-    _legacy_xray_candidate_matches_active,
+    _legacy_mihomo_candidate_matches as _legacy_mihomo_candidate_matches,
+    _legacy_xray_candidate_matches_active as _legacy_xray_candidate_matches_active,
 )
 from fwrouter_api.services.xray_generation_checkpoint import (
     _AdmissionFenceView,
@@ -28,17 +82,21 @@ from fwrouter_api.services.xray_generation_fingerprint import (
     identity_projection_reference_sha256 as _identity_projection_reference_sha256,
 )
 from fwrouter_api.services.xray_subscription import configured_xray_public_endpoint
-from fwrouter_api.adapters.xray import XRAY_PUBLIC_PATH as XRAY_PUBLIC_PATH, XRAY_PUBLIC_PORT as XRAY_PUBLIC_PORT, XrayClient
+from fwrouter_api.adapters.xray import (
+    XRAY_PUBLIC_PATH as XRAY_PUBLIC_PATH,
+    XRAY_PUBLIC_PORT as XRAY_PUBLIC_PORT,
+    XrayClient,
+)
 from fwrouter_api.adapters.xray_common import xray_writer_guard, xray_writer_guard_is_held, xray_writer_guarded
 from fwrouter_api.db.connection import db_session
-from fwrouter_api.services.auto_eligibility import auto_eligible_sql
+from fwrouter_api.services.auto_eligibility import auto_eligible_sql as auto_eligible_sql
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.jobs import JobLockConflictError
 from fwrouter_api.services.events import safe_actor_identifier
 from fwrouter_api.services.custom_servers import (
-    VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
-    VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
-    VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
+    VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME as VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
+    VIRTUAL_XRAY_VPN_AUTO_SERVER_ID as VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
+    VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME as VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
 )
 from fwrouter_api.services.subscription_profiles import (
     disable_subscription_identity,
@@ -46,9 +104,12 @@ from fwrouter_api.services.subscription_profiles import (
     list_subscription_profile_tokens,
     promote_runtime_verified_subscription_nodes,
     render_subscription_profile,
-    _stable_digest,
+    _stable_digest as _stable_digest,
 )
-from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.logs import (
+    write_operational_log as write_operational_log,
+    write_technical_log as write_technical_log,
+)
 from fwrouter_api.services.xray_client_state import (
     _client_alias_map,
     _sync_xray_inventory,
@@ -62,18 +123,25 @@ from fwrouter_api.services.xray_common import (
     _xray_adapter,
     _xray_managed_runtime_blocked,
 )
-from fwrouter_api.services.xray_runtime_state import _is_xray_supported_server_config, _module_state
+from fwrouter_api.services.xray_runtime_state import (
+    _is_xray_supported_server_config as _is_xray_supported_server_config,
+    _module_state as _module_state,
+)
 from fwrouter_api.services.xray_subscription import build_xray_vless_uri
-from fwrouter_api.services.subject_inventory import DEFAULT_DESIRED_MODE_BY_TYPE, EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE
+from fwrouter_api.services.subject_inventory import (
+    DEFAULT_DESIRED_MODE_BY_TYPE as DEFAULT_DESIRED_MODE_BY_TYPE,
+    EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE as EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE,
+)
 from fwrouter_api.services.xray_bindings import (
-    _annotate_bindings_with_handoff,
-    _build_binding_for_subject,
-    _applied_handoff_assignments,
+    _annotate_bindings_with_handoff as _annotate_bindings_with_handoff,
+    _build_binding_for_subject as _build_binding_for_subject,
+    _applied_handoff_assignments as _applied_handoff_assignments,
     collect_xray_client_mode_directives,
     collect_xray_runtime_bindings,
 )
-from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments
-import fwrouter_api.services.subject_policy as subject_policy_service
+from fwrouter_api.services.xray_handoff import build_xray_handoff_assignments as build_xray_handoff_assignments
+from fwrouter_api.services import subject_policy as subject_policy
+subject_policy_service = subject_policy
 
 
 def _generation_failure_operation(result: dict[str, Any]) -> str:
@@ -90,69 +158,6 @@ def _generation_failure_operation(result: dict[str, Any]) -> str:
                     and code.isascii() and all(char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for char in code)):
                 return code
     return str(result.get("error_code") or result.get("stage") or "generation_failed")
-
-
-def _safe_mihomo_input_context_summary(context: Any) -> dict[str, Any]:
-    """Summarize staged inputs using hashes only; fingerprint payloads may contain secrets."""
-    if not isinstance(context, tuple) or len(context) < 2:
-        return {"available": False}
-    fingerprint, base_inputs = context[0], context[1]
-    if not isinstance(fingerprint, dict) or not isinstance(base_inputs, (list, tuple)):
-        return {"available": False}
-    from fwrouter_api.services.mihomo_reconcile_fingerprint import fingerprint_category_hashes
-
-    try:
-        category_hashes = fingerprint_category_hashes(fingerprint)
-        fingerprint_hash = fingerprint.get("hash")
-        fingerprint_version = fingerprint.get("version")
-        normalized_base_inputs = sorted(
-            (str(path), str(digest) if digest is not None else None)
-            for path, digest in base_inputs
-        )
-    except (TypeError, ValueError):
-        return {"available": False}
-    base_digest = hashlib.sha256(
-        json.dumps(normalized_base_inputs, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return {
-        "available": bool(isinstance(fingerprint_hash, str) and len(fingerprint_hash) == 64),
-        "fingerprint_version": fingerprint_version,
-        "fingerprint_sha256": fingerprint_hash,
-        "category_sha256": category_hashes,
-        "base_config_input_count": len(normalized_base_inputs),
-        "base_config_inputs_sha256": base_digest,
-    }
-
-
-def _log_mihomo_input_context_change(*, stage: str, before: Any, after: Any) -> None:
-    """Persist only category names, versions, and opaque hashes for fence diagnosis."""
-    try:
-        before_summary = _safe_mihomo_input_context_summary(before)
-        after_summary = _safe_mihomo_input_context_summary(after)
-        before_categories = before_summary.get("category_sha256", {})
-        after_categories = after_summary.get("category_sha256", {})
-        changed_categories = sorted(
-            category for category in set(before_categories) | set(after_categories)
-            if before_categories.get(category) != after_categories.get(category)
-        )
-        if before_summary.get("base_config_inputs_sha256") != after_summary.get("base_config_inputs_sha256"):
-            changed_categories.append("base_config_inputs")
-        write_technical_log(
-            component="xray-subscription",
-            event_type="mihomo_stage_input_context_changed",
-            level="warning",
-            message="Mihomo staged inputs changed during native validation.",
-            details={
-                "stage": stage,
-                "changed_categories": changed_categories,
-                "before": before_summary,
-                "after": after_summary,
-            },
-            event_code="mihomo.stage_input_context_changed",
-        )
-    except Exception:
-        # Diagnostics must not mask the original fail-closed generation result.
-        pass
 
 
 XRAY_SUBSCRIPTION_PROFILE_DELETE_JOB_TYPE = "xray_subscription_profile_delete"
@@ -704,90 +709,6 @@ def _merge_projection_cleanups(*cleanups: dict[str, Any] | None) -> dict[str, An
     return merged
 
 
-def _vpn_auto_servers_for_xray_subscription() -> list[dict[str, Any]]:
-    with db_session() as connection:
-        vpn_auto_rows = connection.execute(
-            f"""
-            SELECT s.server_id, s.server_name, s.raw_json, ps.status AS ping_status, ps.last_ping_ms
-            FROM servers AS s
-            JOIN server_preferences AS p ON p.server_id = s.server_id
-            LEFT JOIN server_ping_state AS ps ON ps.server_id = s.server_id
-            WHERE {auto_eligible_sql(server_alias="s", preferences_alias="p", respect_exclusive=False)}
-              AND s.server_id NOT IN (
-                  SELECT server_id FROM server_custom_https_proxy
-              )
-            ORDER BY
-              CASE WHEN ps.status = 'success' THEN 0 ELSE 1 END,
-              ps.last_ping_ms,
-              s.server_id
-            """
-        ).fetchall()
-        proxy_rows = connection.execute(
-            """
-            SELECT s.server_id, s.server_name, s.raw_json, ps.status AS ping_status, ps.last_ping_ms
-            FROM servers AS s
-            JOIN server_preferences AS p ON p.server_id = s.server_id
-            JOIN server_custom_https_proxy AS c ON c.server_id = s.server_id
-            LEFT JOIN server_ping_state AS ps ON ps.server_id = s.server_id
-            WHERE s.inventory_state = 'active'
-              AND COALESCE(p.manually_deleted_at, '') = ''
-            ORDER BY s.server_name, s.server_id
-            """
-        ).fetchall()
-
-    normal_servers: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for row in vpn_auto_rows:
-        try:
-            raw = json.loads(row["raw_json"] or "{}")
-        except json.JSONDecodeError:
-            continue
-        supported, reason = _is_xray_supported_server_config(raw if isinstance(raw, dict) else None)
-        if not supported:
-            continue
-        normal_servers.append(
-            {
-                "server_id": row["server_id"],
-                "server_name": row["server_name"],
-                "raw": raw,
-                "ping_status": row["ping_status"],
-                "last_ping_ms": row["last_ping_ms"],
-                "support_reason": reason,
-            }
-        )
-        seen_ids.add(str(row["server_id"]))
-
-    proxy_server: dict[str, Any] | None = None
-    for row in proxy_rows:
-        server_id = str(row["server_id"])
-        if server_id in seen_ids:
-            continue
-        proxy_server = {
-            "server_id": server_id,
-            "server_name": VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME,
-            "raw": {"kind": "custom_https_proxy"},
-            "ping_status": row["ping_status"],
-            "last_ping_ms": row["last_ping_ms"],
-            "support_reason": "custom_https_proxy",
-        }
-        seen_ids.add(server_id)
-
-    result: list[dict[str, Any]] = [
-        {
-            "server_id": VIRTUAL_XRAY_VPN_AUTO_SERVER_ID,
-            "server_name": VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME,
-            "raw": {"kind": "xray_vpn_auto"},
-            "ping_status": "virtual",
-            "last_ping_ms": None,
-            "support_reason": "virtual_xray_vpn_auto",
-        }
-    ]
-    if proxy_server is not None:
-        result.append(proxy_server)
-    result.extend(normal_servers)
-    return result
-
-
 def _upsert_xray_subject_server_override(
     *,
     subject_id: str,
@@ -1034,568 +955,6 @@ def _batch_materialize_xray_subject_bindings(
         "updated_aliases": updated_aliases,
         "inserted_overrides": inserted_overrides,
         "updated_overrides": updated_overrides,
-    }
-
-
-def _prospective_profile_bindings(
-    nodes: list[dict[str, Any]],
-    *,
-    token_prefix: str,
-    managed_email_prefixes: list[str] | None = None,
-    preserve_existing_overrides: bool,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Build candidate bindings and modes without creating runtime projections."""
-    prefixes = [str(value).lower() for value in (managed_email_prefixes or [token_prefix]) if value]
-    scoped_email = lambda item: any(str(item.get("client_email") or "").lower().startswith(prefix) for prefix in prefixes)
-    bindings = [
-        item for item in collect_xray_runtime_bindings(exclude_client_email_prefixes=prefixes)
-        if not scoped_email(item)
-    ]
-    modes = [
-        item for item in collect_xray_client_mode_directives(exclude_client_email_prefixes=prefixes)
-        if not scoped_email(item)
-    ]
-    routing = subject_policy_service.get_routing_snapshot()
-    enforcement = subject_policy_service.build_runtime_enforcement_state()
-    bypass = subject_policy_service.get_core_bypass_state()
-
-    for node in nodes:
-        client_uuid = str(node.get("client_uuid") or "").strip()
-        email = str(node.get("client_email") or "").strip()
-        if not client_uuid or not email:
-            continue
-        # This planner already owns routing/enforcement/bypass snapshots.
-        # Resolving a fully enriched subject here repeats native preflight per
-        # client, then discards it below; retain only persisted identity intent.
-        current = _xray_subject_for_client(client_uuid, include_effective_state=False)
-        if isinstance(current, dict):
-            subject_id = str(current.get("subject_id") or f"xray:{client_uuid}")
-            subject = current
-        else:
-            subject_id = f"xray:{client_uuid}"
-            subject = {
-                "subject_id": subject_id,
-                "subject_type": "explicit_external_client",
-                "subject_role": "vless_client",
-                "implementation_kind": "xray",
-                "desired_mode": DEFAULT_DESIRED_MODE_BY_TYPE[EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE],
-                "is_active": 1,
-                "is_deleted": 0,
-                "alias": str(node.get("xray_alias") or ""),
-                "detail": {
-                    "client_id": client_uuid,
-                    "client_uuid": client_uuid,
-                    "email": email,
-                    "enabled": True,
-                },
-            }
-        user_override = subject_policy_service._load_active_user_override(subject_id)
-        server_override = subject_policy_service._load_active_server_override(subject_id)
-        with db_session() as connection:
-            persisted_server_override = connection.execute(
-                "SELECT 1 FROM subject_server_overrides WHERE subject_id = ? LIMIT 1",
-                (subject_id,),
-            ).fetchone() is not None
-            requested_server_exists = connection.execute(
-                "SELECT 1 FROM servers WHERE server_id = ? LIMIT 1",
-                (str(node.get("server_id") or ""),),
-            ).fetchone() is not None
-        if requested_server_exists and (
-            not preserve_existing_overrides
-            or (server_override is None and not persisted_server_override)
-        ):
-            server_override = {
-                "subject_id": subject_id,
-                "selected_server_id": str(node.get("server_id") or ""),
-                "selected_until": "2099-12-31 23:59:59",
-                "apply_state": "pending",
-            }
-        enriched = subject_policy_service.enrich_subject_with_effective_state(
-            subject,
-            routing=routing,
-            user_override=user_override,
-            server_override=server_override,
-            runtime_enforcement=enforcement,
-            bypass_state=bypass,
-        )
-        mode = str((enriched.get("effective_state") or {}).get("effective_mode") or "").lower()
-        if mode in {"direct", "disabled", "selective"}:
-            modes.append({
-                "subject_id": subject_id,
-                "client_id": client_uuid,
-                "client_uuid": client_uuid,
-                "client_email": email,
-                "desired_mode": mode,
-                "effective_mode": "unsupported_selective" if mode == "selective" else mode,
-                "mode_support_state": "unsupported_legacy" if mode == "selective" else "supported",
-            })
-            continue
-        binding = _build_binding_for_subject(enriched)
-        if binding is not None:
-            bindings.append(binding)
-
-    old_assignments = _applied_handoff_assignments()
-    bindings = _annotate_bindings_with_handoff(bindings)
-    assignments = build_xray_handoff_assignments(bindings, preserve_assignments=old_assignments)
-    return bindings, modes, assignments
-
-
-_FIXED_XRAY_ROUTING_FIELDS = (
-    "desired_mode", "applied_mode", "selective_default", "server_mode",
-    "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until", "apply_state",
-)
-
-
-def _fixed_xray_routing_projection(routing: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(routing, dict):
-        return None
-    return {key: routing.get(key) for key in _FIXED_XRAY_ROUTING_FIELDS}
-
-
-def _fixed_xray_routing_snapshot_matches(
-    snapshot: dict[str, Any] | None,
-    workflow_revision: int | None,
-    *, expected_selection_revision: int | None = None,
-    origin_selection_revision: int | None = None,
-) -> bool:
-    """Rebind fixed candidate projection to the live route and owned workflow."""
-    if not isinstance(snapshot, dict) or type(workflow_revision) is not int:
-        return False
-    try:
-        from fwrouter_api.services.server_state import get_routing_global_state
-        from fwrouter_api.services.xray_vpn_auto_pending import _load_row
-        from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
-        from fwrouter_api.services.core_intent import read_core_intent_revision
-
-        routing = get_routing_global_state(expire_ttl=False)
-        if not isinstance(routing, dict):
-            return False
-        if any(routing.get(key) != snapshot.get(key) for key in _FIXED_XRAY_ROUTING_FIELDS):
-            return False
-        if (routing.get("server_mode") != "fixed"
-                or not routing.get("desired_fixed_server_id")
-                or routing.get("applied_fixed_server_id") != routing.get("desired_fixed_server_id")
-                or routing.get("apply_state") != "clean"):
-            return False
-        with db_session() as connection:
-            pending = _load_row(connection)
-            current_selection_revision = read_selection_revision(connection)
-            core_revision = read_core_intent_revision(connection)
-            core_row = connection.execute(
-                "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
-            ).fetchone()
-            fixed_ttl_valid = connection.execute(
-                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
-                "FROM routing_global_state WHERE id=1",
-            ).fetchone()
-        workflow = pending.get("workflow") if isinstance(pending, dict) else None
-        if (type(expected_selection_revision) is not int
-                or current_selection_revision != expected_selection_revision
-                or type(origin_selection_revision) is not int
-                or fixed_ttl_valid is None or not bool(fixed_ttl_valid[0])):
-            return False
-        if (not isinstance(workflow, dict)
-                or workflow.get("selection_revision") != origin_selection_revision):
-            return False
-        if (core_row is None
-                or tuple(str(core_row[key]) for key in ("desired_state", "lifecycle_mode", "apply_state"))
-                    != tuple(workflow.get("core_snapshot") or ())
-                or core_revision != workflow.get("core_revision")):
-            return False
-        core_proof = _collect_legacy_admission_core_native_proof()
-        return bool(
-            isinstance(pending, dict) and pending.get("pending") is True
-            and pending.get("revision") == workflow_revision
-            and isinstance(workflow, dict) and workflow.get("kind") == "global_fixed_server"
-            and workflow.get("phase") == "core_verified"
-            and workflow.get("server_id") == snapshot.get("desired_fixed_server_id")
-            and workflow.get("fixed_until") == snapshot.get("fixed_server_until")
-            and core_proof.get("ok") is True
-            and core_proof.get("apply_id") == workflow.get("core_apply_id")
-            and core_proof.get("manifest_hash") == workflow.get("core_manifest_hash")
-            and core_proof.get("enforcement_level") == workflow.get("core_enforcement_level")
-            and core_proof.get("live_global_mode") == workflow.get("core_live_mode")
-        )
-    except Exception:
-        return False
-
-
-def _capture_ordinary_fixed_xray_context() -> tuple[dict[str, Any] | None, str | None]:
-    """Capture fixed intent for an ordinary Xray generation without claiming a workflow."""
-    try:
-        selection = _capture_generation_auto_selection()
-        routing = selection.get("routing") if isinstance(selection, dict) else None
-        if not isinstance(routing, dict) or routing.get("server_mode") != "fixed":
-            return None, None
-        target = str(routing.get("desired_fixed_server_id") or "").strip()
-        if not target:
-            # Preserve the existing targetless direct compatibility behavior.
-            return None, None
-        if (
-            routing.get("applied_fixed_server_id") != target
-            or routing.get("apply_state") != "clean"
-            or routing.get("desired_mode") != routing.get("applied_mode")
-        ):
-            return None, "fixed_routing_state_unverified"
-        with db_session() as connection:
-            ttl_valid = connection.execute(
-                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
-                "FROM routing_global_state WHERE id=1",
-            ).fetchone()
-            core_unavailable = _legacy_admission_core_unavailable_reason(connection)
-        if ttl_valid is None or not bool(ttl_valid[0]):
-            return None, "fixed_server_ttl_unverified"
-        if core_unavailable is not None:
-            return None, core_unavailable
-        core_runtime_fingerprint = _legacy_admission_core_runtime_fingerprint()
-        core_proof = _collect_legacy_admission_core_native_proof()
-        if core_proof.get("ok") is not True:
-            return None, str(core_proof.get("reason") or "core_native_enforcement_unproven")
-        selection_after_proof = _capture_generation_auto_selection()
-        with db_session() as connection:
-            ttl_after_proof = connection.execute(
-                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
-                "FROM routing_global_state WHERE id=1",
-            ).fetchone()
-            core_after_proof = _legacy_admission_core_unavailable_reason(connection)
-            core_runtime_after_proof = _legacy_admission_core_runtime_fingerprint(connection)
-        if (
-            selection_after_proof != selection
-            or ttl_after_proof is None or not bool(ttl_after_proof[0])
-            or core_after_proof is not None
-            or core_runtime_after_proof != core_runtime_fingerprint
-        ):
-            return None, "fixed_generation_context_changed_during_proof"
-        return {
-            "routing_snapshot": _fixed_xray_routing_projection(routing),
-            "selection_snapshot": selection,
-            "core_runtime_fingerprint": core_runtime_fingerprint,
-            "core_proof": {
-                key: core_proof.get(key) for key in (
-                    "manifest_hash", "apply_id", "enforcement_level", "live_global_mode",
-                )
-            },
-        }, None
-    except Exception:
-        return None, "fixed_generation_context_unavailable"
-
-
-def _ordinary_fixed_xray_context_matches(
-    context: dict[str, Any] | None, *, expected_selection_revision: int | None = None,
-) -> bool:
-    """Reprove durable fixed routing and its existing Core owner before/after each effect."""
-    if not isinstance(context, dict):
-        return False
-    try:
-        snapshot = context.get("routing_snapshot")
-        selection_before = context.get("selection_snapshot")
-        core_expected = context.get("core_proof")
-        if not isinstance(snapshot, dict) or not isinstance(selection_before, dict) or not isinstance(core_expected, dict):
-            return False
-        current_selection = _capture_generation_auto_selection()
-        revision = expected_selection_revision
-        if revision is None:
-            revision = selection_before.get("selection_revision")
-        if (
-            type(revision) is not int
-            or current_selection.get("selection_revision") != revision
-            or current_selection.get("selection_decision_id") != selection_before.get("selection_decision_id")
-            or _fixed_xray_routing_projection(current_selection.get("routing")) != snapshot
-        ):
-            return False
-        source_fingerprint = context.get("source_fingerprint")
-        if (not isinstance(source_fingerprint, str) or len(source_fingerprint) != 64
-                or _generation_source_fingerprint() != source_fingerprint):
-            return False
-        with db_session() as connection:
-            if (
-                _legacy_admission_core_unavailable_reason(connection) is not None
-                or _legacy_admission_core_runtime_fingerprint(connection)
-                != context.get("core_runtime_fingerprint")
-            ):
-                return False
-            ttl_valid = connection.execute(
-                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
-                "FROM routing_global_state WHERE id=1",
-            ).fetchone()
-            if ttl_valid is None or not bool(ttl_valid[0]):
-                return False
-        proof = _collect_legacy_admission_core_native_proof()
-        if proof.get("ok") is not True or not all(
-            proof.get(key) == core_expected.get(key)
-            for key in ("manifest_hash", "apply_id", "enforcement_level", "live_global_mode")
-        ):
-            return False
-        selection_after_proof = _capture_generation_auto_selection()
-        with db_session() as connection:
-            ttl_after_proof = connection.execute(
-                "SELECT fixed_server_until IS NOT NULL AND datetime(fixed_server_until) > CURRENT_TIMESTAMP "
-                "FROM routing_global_state WHERE id=1",
-            ).fetchone()
-            core_after_proof = _legacy_admission_core_unavailable_reason(connection)
-            core_runtime_after_proof = _legacy_admission_core_runtime_fingerprint(connection)
-        return bool(
-            selection_after_proof.get("selection_revision") == revision
-            and selection_after_proof.get("selection_decision_id") == selection_before.get("selection_decision_id")
-            and _fixed_xray_routing_projection(selection_after_proof.get("routing")) == snapshot
-            and ttl_after_proof is not None and bool(ttl_after_proof[0])
-            and core_after_proof is None
-            and core_runtime_after_proof == context.get("core_runtime_fingerprint")
-            and _generation_source_fingerprint() == source_fingerprint
-        )
-    except Exception:
-        return False
-
-
-def _fixed_xray_generation_context_matches(
-    routing_snapshot: dict[str, Any] | None,
-    fixed_workflow_revision: int | None,
-    *,
-    expected_selection_revision: int | None = None,
-    fixed_origin_selection_revision: int | None = None,
-    ordinary_fixed_context: dict[str, Any] | None = None,
-) -> bool:
-    if fixed_workflow_revision is not None:
-        return _fixed_xray_routing_snapshot_matches(
-            routing_snapshot, fixed_workflow_revision,
-            expected_selection_revision=expected_selection_revision,
-            origin_selection_revision=fixed_origin_selection_revision,
-        )
-    if ordinary_fixed_context is not None:
-        return (
-            routing_snapshot == ordinary_fixed_context.get("routing_snapshot")
-            and _ordinary_fixed_xray_context_matches(
-                ordinary_fixed_context, expected_selection_revision=expected_selection_revision,
-            )
-        )
-    return True
-
-
-def _stage_profile_native_candidates(
-    *,
-    adapter: Any,
-    desired_clients: list[dict[str, Any]],
-    managed_email_prefixes: list[str],
-    bindings: list[dict[str, Any]],
-    client_modes: list[dict[str, Any]],
-    assignments: list[dict[str, Any]],
-    routing_snapshot: dict[str, Any] | None = None,
-    fixed_workflow_revision: int | None = None,
-    fixed_origin_selection_revision: int | None = None,
-    ordinary_fixed_context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Native-validate prospective Xray plus transition/final Mihomo configs."""
-    config_path = getattr(adapter, "config_path", None)
-    if config_path is None or not callable(getattr(adapter, "stage_subscription_generation", None)):
-        return {"ok": False, "stage": "stage_api", "error_code": "XRAY_GENERATION_STAGE_UNAVAILABLE"}
-    routing_snapshot = _fixed_xray_routing_projection(routing_snapshot)
-    if (fixed_workflow_revision is not None
-            and not _fixed_xray_routing_snapshot_matches(
-                routing_snapshot, fixed_workflow_revision,
-                expected_selection_revision=fixed_origin_selection_revision,
-                origin_selection_revision=fixed_origin_selection_revision,
-            )):
-        return {"ok": False, "stage": "fixed_routing_snapshot", "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"}
-    ordinary_origin_revision = (
-        ordinary_fixed_context.get("selection_snapshot", {}).get("selection_revision")
-        if isinstance(ordinary_fixed_context, dict) else None
-    )
-    if (ordinary_fixed_context is not None and not _fixed_xray_generation_context_matches(
-            routing_snapshot, None, expected_selection_revision=ordinary_origin_revision,
-            ordinary_fixed_context=ordinary_fixed_context)):
-        return {"ok": False, "stage": "fixed_routing_snapshot", "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"}
-    stage_dir = Path(config_path).parent / ".generation"
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    stage_dir.chmod(0o700)
-    xray_candidate = stage_dir / "xray.candidate.json"
-    old_assignments = _applied_handoff_assignments()
-    transition_by_target = {
-        str(item.get("selected_server_id") or ""): dict(item)
-        for item in old_assignments
-        if str(item.get("selected_server_id") or "")
-    }
-    transition_by_target.update({
-        str(item.get("selected_server_id") or ""): dict(item)
-        for item in assignments
-        if str(item.get("selected_server_id") or "")
-    })
-    transition_assignments = list(transition_by_target.values())
-    xray_result = adapter.stage_subscription_generation(
-        desired_clients=desired_clients,
-        managed_email_prefixes=managed_email_prefixes,
-        bindings=bindings,
-        client_modes=client_modes,
-        handoff_assignments=assignments,
-        candidate_path=xray_candidate,
-    )
-    if not xray_result.ok:
-        return {"ok": False, "stage": "xray_candidate", "result": _strip_raw_payload(xray_result.details), "error_code": xray_result.error_code}
-
-    from fwrouter_api.services.mihomo_config import (
-        validate_mihomo_candidate_config as validate_local_mihomo,
-        write_mihomo_candidate_config,
-    )
-    from fwrouter_api.services.subscription_pipeline import (
-        resolve_mihomo_validator_image_id,
-        validate_mihomo_candidate_config as validate_native_mihomo,
-    )
-
-    native: dict[str, Any] = {"xray": dict(xray_result.details)}
-    staged_mihomo: dict[str, str] = {}
-    validated_native_candidates: dict[tuple[str, str], dict[str, Any]] = {}
-    native_image_id = resolve_mihomo_validator_image_id()
-    native_validator_identity = (
-        f"docker:{native_image_id}:network-none:read-only" if native_image_id else None
-    )
-    def candidate_input_context():
-        from fwrouter_api.services.mihomo_config_inbounds import _candidate_base_config_paths
-        from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint, _file_hash
-        try:
-            paths = _candidate_base_config_paths()
-            if len(paths) > 8:
-                return None  # Avoid hashing unbounded historical fallback files.
-            fingerprint = (
-                current_mihomo_input_fingerprint(routing_snapshot)
-                if routing_snapshot is not None else current_mihomo_input_fingerprint()
-            )
-            if (not isinstance(fingerprint, dict)
-                    or not isinstance(fingerprint.get("hash"), str)
-                    or len(fingerprint["hash"]) != 64):
-                return None
-            return (fingerprint, tuple((str(path), _file_hash(path)) for path in paths), write_mihomo_candidate_config)
-        except (OSError, ValueError, sqlite3.Error):
-            return None  # Unknown context keeps the original full render/validation.
-
-    transition_context = None
-    transition_written = None
-    for name, handoffs in (("transition", transition_assignments), ("final", assignments)):
-        candidate_path = stage_dir / f"mihomo-{name}.candidate.yaml"
-        context_before = candidate_input_context()
-        write_reused = bool(name == "final" and transition_written is not None
-                            and transition_assignments == assignments
-                            and transition_context is not None and context_before == transition_context)
-        if write_reused:
-            from fwrouter_api.services.artifacts import atomic_copy_file
-            transition_path = Path(staged_mihomo["transition"])
-            expected_transition_hash = native["transition"]["candidate_sha256"]
-            if hashlib.sha256(transition_path.read_bytes()).hexdigest() != expected_transition_hash:
-                return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_AFTER_VALIDATION"}
-            atomic_copy_file(transition_path, candidate_path)
-            written = transition_written
-        else:
-            written = write_mihomo_candidate_config(
-                routing=routing_snapshot,
-                candidate_path=candidate_path,
-                xray_handoff_assignments=handoffs,
-                include_internal_config=True,
-            )
-        if name == "transition":
-            context_after = candidate_input_context()
-            transition_context = context_before if context_before is not None and context_before == context_after else None
-            if context_before is not None and context_after != context_before:
-                _log_mihomo_input_context_change(
-                    stage="transition_render",
-                    before=context_before,
-                    after=context_after,
-                )
-            transition_written = written
-        candidate_hash = hashlib.sha256(candidate_path.read_bytes()).hexdigest()
-        if write_reused and candidate_hash != expected_transition_hash:
-            return {"ok": False, "stage": "mihomo_final_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_COPY_MISMATCH"}
-        candidate_config = written.get("_candidate_config") if isinstance(written.get("_candidate_config"), dict) else {}
-        if routing_snapshot is None:
-            local_validation = validate_local_mihomo(
-                candidate_path=candidate_path, candidate_config=candidate_config,
-            )
-        else:
-            local_validation = validate_local_mihomo(
-                routing=routing_snapshot,
-                candidate_path=candidate_path,
-                candidate_config=candidate_config,
-            )
-        native_cache_key = (candidate_hash, native_validator_identity or "")
-        cached_native_validation = (
-            validated_native_candidates.get(native_cache_key)
-            if native_validator_identity is not None
-            else None
-        )
-        native_validation = (
-            dict(cached_native_validation)
-            if cached_native_validation is not None
-            else (
-                validate_native_mihomo(str(candidate_path), image_reference=native_image_id)
-                if native_image_id is not None
-                else validate_native_mihomo(str(candidate_path))
-            )
-        )
-        validation = {
-            "ok": bool(local_validation.get("ok")) and bool(native_validation.get("ok")),
-            "local": _strip_raw_payload(local_validation),
-            "native": _strip_raw_payload(native_validation),
-            "native_validation_reused": cached_native_validation is not None,
-            "candidate_write_reused": write_reused,
-        }
-        if not validation["ok"]:
-            return {
-                "ok": False,
-                "stage": f"mihomo_{name}_candidate",
-                "error_code": "MIHOMO_CANDIDATE_INVALID",
-                "validation": _strip_raw_payload(validation),
-            }
-        context_after_validation = candidate_input_context()
-        transition_context_changed = name == "final" and transition_context != context_before
-        if context_before is None or context_after_validation != context_before or transition_context_changed:
-            _log_mihomo_input_context_change(
-                stage=f"{name}_native_validation",
-                before=context_before,
-                after=(transition_context if transition_context_changed else context_after_validation),
-            )
-            return {"ok": False, "stage": f"mihomo_{name}_candidate",
-                    "error_code": "MIHOMO_STAGE_INPUTS_CHANGED_AFTER_VALIDATION"}
-        if not _fixed_xray_generation_context_matches(
-                routing_snapshot, fixed_workflow_revision,
-                expected_selection_revision=(
-                    fixed_origin_selection_revision if fixed_workflow_revision is not None
-                    else ordinary_origin_revision
-                ),
-                fixed_origin_selection_revision=fixed_origin_selection_revision,
-                ordinary_fixed_context=ordinary_fixed_context):
-            return {"ok": False, "stage": f"mihomo_{name}_candidate",
-                    "error_code": "FIXED_XRAY_ROUTING_SNAPSHOT_STALE"}
-        if hashlib.sha256(candidate_path.read_bytes()).hexdigest() != candidate_hash:
-            return {"ok": False, "stage": f"mihomo_{name}_candidate", "error_code": "MIHOMO_STAGE_CANDIDATE_CHANGED_DURING_VALIDATION"}
-        if cached_native_validation is None and native_validator_identity is not None:
-            validated_native_candidates[native_cache_key] = dict(native_validation)
-        native[name] = {
-            "candidate_path": str(candidate_path),
-            "candidate_sha256": candidate_hash,
-            "validation": _strip_raw_payload(validation),
-            "write": _strip_raw_payload(written),
-        }
-        staged_mihomo[name] = str(candidate_path)
-    return {
-        "ok": True,
-        "stage_dir": str(stage_dir),
-        "xray_candidate_path": str(xray_candidate),
-        "xray_candidate_sha256": str(xray_result.details.get("candidate_sha256") or ""),
-        "mihomo_candidates": staged_mihomo,
-        "native_validation": native,
-        # Staged files are generated away from config.next.yaml, so they do
-        # not receive the default writer's provenance sidecar. Carry the
-        # exact input revision through the existing stage validation and bind
-        # it when the validated bytes are copied to the default candidate.
-        "mihomo_input_fingerprint": (
-            {"hash": transition_context[0]["hash"]}
-            if transition_context is not None else None
-        ),
-        # The raw fixed projection is private handoff state consumed only by
-        # the operation checkpoint writer. It is not included in public
-        # diagnostics or publication results.
-        "fixed_routing_snapshot": (
-            _fixed_xray_routing_projection(routing_snapshot)
-            if isinstance(routing_snapshot, dict) and routing_snapshot.get("server_mode") == "fixed"
-            else None
-        ),
     }
 
 
@@ -1918,19 +1277,6 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _write_all_fd(descriptor: int, data: bytes) -> None:
-    """Write bytes to an already-owned descriptor without reopening it via fdopen."""
-    remaining = memoryview(data)
-    while remaining:
-        try:
-            written = os.write(descriptor, remaining[:1024 * 1024])
-        except InterruptedError:
-            continue
-        if written <= 0:
-            raise OSError("short write to private checkpoint")
-        remaining = remaining[written:]
-
-
 def _atomic_write_private_checkpoint(path: Path, text: str) -> None:
     """Replace checkpoint bytes atomically with mode 0600 before publication."""
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
@@ -1959,213 +1305,6 @@ def _atomic_write_private_checkpoint(path: Path, text: str) -> None:
             temporary.unlink(missing_ok=True)
         except OSError:
             pass
-
-
-def _generation_source_fingerprint(connection: sqlite3.Connection | None = None) -> str:
-    if connection is None:
-        with db_session() as active:
-            sources = _xray_generation_fingerprint.generation_source_projection(active)
-        return _xray_generation_fingerprint.source_projection_sha256(sources)
-    return _xray_generation_fingerprint.generation_source_fingerprint(connection)
-
-
-def _legacy_admission_source_fingerprint(connection: sqlite3.Connection | None = None) -> str:
-    """Proof-only extension of the historical generation source fence."""
-    if connection is None:
-        with db_session() as active:
-            values = _xray_generation_fingerprint.legacy_admission_source_projection(
-                active, generation_fingerprint=_generation_source_fingerprint,
-            )
-        return _xray_generation_fingerprint.source_projection_sha256(values)
-    return _xray_generation_fingerprint.legacy_admission_source_fingerprint(
-        connection, generation_fingerprint=_generation_source_fingerprint,
-    )
-
-
-def _legacy_admission_core_runtime_snapshot(connection: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
-    """Capture Core/module apply observations for one fresh proof attempt only."""
-    if connection is None:
-        with db_session() as active:
-            return _xray_generation_fingerprint.legacy_admission_core_runtime_snapshot(active)
-    return _xray_generation_fingerprint.legacy_admission_core_runtime_snapshot(connection)
-
-
-def _legacy_admission_core_runtime_fingerprint(connection: sqlite3.Connection | None = None) -> str:
-    snapshot = _legacy_admission_core_runtime_snapshot(connection)
-    return _xray_generation_fingerprint.legacy_admission_core_runtime_fingerprint(snapshot)
-
-
-def _legacy_admission_core_unavailable_reason(connection: sqlite3.Connection | None = None) -> str | None:
-    """Reject bypass, incomplete Core apply state, or an active apply owner."""
-    if connection is None:
-        with db_session() as active:
-            return _legacy_admission_core_unavailable_reason(active)
-    bypass_row = connection.execute(
-        "SELECT value_json FROM settings WHERE key='core.bypass'",
-    ).fetchone()
-    if bypass_row is not None:
-        try:
-            bypass = json.loads(str(bypass_row["value_json"] or ""))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return "core_bypass_state_unverifiable"
-        if not isinstance(bypass, dict):
-            return "core_bypass_state_unverifiable"
-        if type(bypass.get("enabled", False)) is not bool:
-            return "core_bypass_state_unverifiable"
-        if bypass.get("enabled"):
-            return "core_bypass_active"
-
-    core = connection.execute(
-        "SELECT desired_state, lifecycle_mode, apply_state FROM modules WHERE module_name='core'",
-    ).fetchone()
-    routing = connection.execute(
-        "SELECT desired_mode, applied_mode, apply_state FROM routing_global_state WHERE id=1",
-    ).fetchone()
-    latest_apply = connection.execute(
-        "SELECT apply_id, status, core_intent_revision FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
-    ).fetchone()
-    if latest_apply is None or latest_apply["status"] != "applied":
-        return "core_applied_generation_unowned"
-    from fwrouter_api.services.core_intent import read_core_intent_revision
-    try:
-        current_revision = read_core_intent_revision(connection)
-    except ValueError:
-        return "core_intent_revision_unverifiable"
-    if latest_apply["core_intent_revision"] != current_revision:
-        return "core_applied_generation_unowned"
-    if (
-        core is None or core["desired_state"] != "enabled" or core["lifecycle_mode"] != "managed"
-        or core["apply_state"] != "clean" or routing is None
-        or routing["apply_state"] != "clean" or routing["desired_mode"] != routing["applied_mode"]
-    ):
-        return "core_apply_state_unverified"
-
-    # Use the existing lock-key tokenization without its stale-job cleanup side
-    # effect. Admission must remain a read-only observer of active owners.
-    from fwrouter_api.services.jobs import _lock_tokens
-    active_rows = connection.execute(
-        "SELECT job_type, lock_key FROM jobs WHERE status IN ('queued', 'running')",
-    ).fetchall()
-    blocked_tokens = {"apply", "module:core", "selector", "xray"}
-    for row in active_rows:
-        if row["job_type"] == "core_bypass" or blocked_tokens.intersection(_lock_tokens(row["lock_key"])):
-            return "core_apply_inflight"
-    return None
-
-
-def _collect_legacy_admission_core_native_proof() -> dict[str, Any]:
-    """Prove the currently-owned Core apply and its live enforcement mode.
-
-    This is a read-only proof collector. It refreshes only existing short-lived
-    readback cache keys and never invokes the Core apply owner.
-    """
-    from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
-    from fwrouter_api.services.live_probe_cache import get_live_probe_cache
-    from fwrouter_api.services.core_intent import read_core_runtime_context
-
-    try:
-        runtime_context_before = read_core_runtime_context()
-        if runtime_context_before is None:
-            return {"ok": False, "reason": "core_runtime_context_unavailable"}
-        manifest = get_live_probe_cache(
-            "dataplane_global.applied_manifest", ttl_seconds=5.0,
-            loader=dataplane_global._read_applied_manifest_uncached, force_refresh=True,
-        )
-        if not isinstance(manifest, dict) or not isinstance(manifest.get("plan_id"), str):
-            return {"ok": False, "reason": "core_applied_manifest_unavailable"}
-        manifest_apply_id = manifest["plan_id"]
-        if not manifest_apply_id or (
-            "apply_id" in manifest and manifest.get("apply_id") != manifest_apply_id
-        ):
-            return {"ok": False, "reason": "core_applied_manifest_unavailable"}
-        with db_session() as connection:
-            routing_row = connection.execute(
-                "SELECT desired_mode, applied_mode, selective_default, server_mode, "
-                "desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
-                "active_auto_server_id, apply_state FROM routing_global_state WHERE id=1",
-            ).fetchone()
-            owned_apply = connection.execute(
-                "SELECT status, core_intent_revision FROM apply_versions WHERE apply_id=?", (manifest_apply_id,),
-            ).fetchone()
-            latest_apply = connection.execute(
-                "SELECT apply_id, status, core_intent_revision FROM apply_versions ORDER BY created_at DESC, apply_id DESC LIMIT 1",
-            ).fetchone()
-            from fwrouter_api.services.core_intent import read_core_intent_revision
-            try:
-                core_revision = read_core_intent_revision(connection)
-            except ValueError:
-                return {"ok": False, "reason": "core_intent_revision_unverifiable"}
-            routing = dict(routing_row) if routing_row is not None else None
-        if routing is None or routing["apply_state"] != "clean":
-            return {"ok": False, "reason": "core_routing_state_unverified"}
-        if (
-            owned_apply is None or owned_apply["status"] != "applied"
-            or latest_apply is None or latest_apply["status"] != "applied"
-            or str(latest_apply["apply_id"]) != manifest_apply_id
-            or latest_apply["core_intent_revision"] != core_revision
-            or owned_apply["core_intent_revision"] != core_revision
-        ):
-            return {"ok": False, "reason": "core_applied_generation_unowned"}
-        manifest_routing = manifest.get("routing_global_state")
-        if not isinstance(manifest_routing, dict):
-            return {"ok": False, "reason": "core_applied_routing_unavailable"}
-        routing_keys = (
-            "desired_mode", "applied_mode", "selective_default", "server_mode",
-            "desired_fixed_server_id", "applied_fixed_server_id", "fixed_server_until",
-            "active_auto_server_id",
-        )
-        if any(
-            str(manifest_routing.get(key) or "") != str(routing.get(key) or "")
-            for key in routing_keys
-        ):
-            return {"ok": False, "reason": "core_applied_routing_mismatch"}
-        mode = str(routing.get("desired_mode") or "").strip().lower()
-        if mode not in {"direct", "selective", "vpn"} or routing.get("applied_mode") != mode:
-            return {"ok": False, "reason": "core_routing_mode_unverified"}
-
-        payload = dataplane_status._read_live_dataplane_payload()
-        if not dataplane_status._live_owned_table_ready(payload):
-            return {"ok": False, "reason": "core_live_dataplane_unready"}
-        # Refresh the existing active-mode probe explicitly; runtime enforcement
-        # consumes this freshly populated cache entry along with the payload.
-        get_live_probe_cache(
-            "dataplane_live.global_mode", ttl_seconds=2.0,
-            loader=dataplane_live._probe_live_global_mode_uncached, force_refresh=True,
-        )
-        enforcement = dataplane_status.build_runtime_enforcement_state(live_payload=payload)
-        expected_levels = {
-            "direct": "global_direct_enforced",
-            "selective": "global_selective_enforced",
-            "vpn": "global_vpn_enforced",
-        }
-        if (
-            not isinstance(enforcement, dict)
-            or enforcement.get("enforcement_level") != expected_levels[mode]
-            or enforcement.get("traffic_enforcement_guaranteed") is not True
-            or enforcement.get("active_mode_matches_intent") is not True
-            or str(enforcement.get("live_global_mode") or "").strip().lower() != mode
-            or enforcement.get("bypass_active") is True
-        ):
-            return {"ok": False, "reason": "core_native_enforcement_unproven"}
-        manifest_hash = hashlib.sha256(
-            json.dumps(manifest, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8"),
-        ).hexdigest()
-        runtime_context_after = read_core_runtime_context()
-        if runtime_context_after is None or runtime_context_after != runtime_context_before:
-            return {"ok": False, "reason": "core_runtime_context_changed"}
-        return {
-            "ok": True,
-            "apply_id": manifest_apply_id,
-            "manifest_hash": manifest_hash,
-            "enforcement_level": enforcement["enforcement_level"],
-            "traffic_enforcement_guaranteed": True,
-            "active_mode_matches_intent": True,
-            "live_global_mode": mode,
-            "live_selective_default": enforcement.get("live_selective_default"),
-            "runtime_context": runtime_context_after,
-        }
-    except Exception:
-        return {"ok": False, "reason": "core_native_readback_unavailable"}
 
 
 def _legacy_admission_checkpoint_parent_ready(path: Path) -> bool:
@@ -2213,108 +1352,6 @@ _PROOF_ONLY_LEGACY_ADMISSION_CONFIRMATION = "PROOF_ONLY_LEGACY_ADMISSION"
 
 
 
-def _legacy_admission_runtime_fence_facts(admission: Any) -> dict[str, bool]:
-    """Return closed-vocabulary runtime fence facts from one fresh readback pass."""
-    facts = {
-        "xray_incarnation_match": False,
-        "xray_runtime_config_match": False,
-        "xray_active_config_match": False,
-        "mihomo_incarnation_match": False,
-        "mihomo_active_config_match": False,
-        "mihomo_input_fingerprint_match": False,
-        "mihomo_routing_snapshot_match": False,
-        "core_runtime_fingerprint_match": False,
-        "core_state_available": False,
-        "core_native_proof_ok": False,
-        "core_manifest_match": False,
-        "core_apply_id_match": False,
-        "core_enforcement_match": False,
-        "core_live_mode_match": False,
-    }
-    try:
-        adapter = _xray_adapter()
-        from fwrouter_api.services import mihomo_config
-        from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file
-        from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
-        from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
-        with db_session() as connection:
-            core_fingerprint = _legacy_admission_core_runtime_fingerprint(connection)
-            core_unavailable = _legacy_admission_core_unavailable_reason(connection)
-        xray_sha = hashlib.sha256(Path(adapter.config_path).read_bytes()).hexdigest()
-        mihomo_path = Path(mihomo_config._resolved_base_config_path())
-        mihomo_sha = hash_mihomo_yaml_file(mihomo_path)
-        selection = _capture_generation_auto_selection()
-        expected_selection = getattr(admission, "proof_only_selection_snapshot", None)
-        routing_snapshot = getattr(admission, "proof_only_routing_snapshot", None)
-        # Keep the historical no-argument path for ordinary callers/adapters;
-        # only an explicitly captured fixed projection is passed positionally.
-        fingerprint = current_mihomo_input_fingerprint(routing_snapshot) if isinstance(routing_snapshot, dict) else current_mihomo_input_fingerprint()
-        core_native = _collect_legacy_admission_core_native_proof()
-        xray_incarnation_reader = getattr(adapter, "get_runtime_incarnation", None)
-        xray_config_reader = getattr(adapter, "get_runtime_config_sha256", None)
-        facts.update({
-            "xray_incarnation_match": bool(
-                callable(xray_incarnation_reader)
-                and xray_incarnation_reader() == admission.proof_only_xray_incarnation
-            ),
-            "xray_runtime_config_match": bool(
-                callable(xray_config_reader)
-                and xray_config_reader() == admission.proof_only_xray_config_sha256
-            ),
-            "xray_active_config_match": (
-                admission.proof_only_xray_config_sha256 == xray_sha
-            ),
-            "mihomo_incarnation_match": (
-                get_mihomo_runtime_incarnation() == admission.proof_only_mihomo_incarnation
-            ),
-            "mihomo_active_config_match": (
-                mihomo_sha == admission.proof_only_mihomo_config_sha256
-            ),
-            "mihomo_input_fingerprint_match": (
-                fingerprint.get("hash") == admission.proof_only_mihomo_fingerprint_hash
-            ),
-            "mihomo_routing_snapshot_match": (
-                isinstance(expected_selection, dict)
-                and selection == expected_selection
-                and isinstance(routing_snapshot, dict)
-                and selection.get("routing") == routing_snapshot
-            ),
-            "core_runtime_fingerprint_match": (
-                core_fingerprint == admission.proof_only_core_runtime_fingerprint
-            ),
-            "core_state_available": core_unavailable is None,
-            "core_native_proof_ok": core_native.get("ok") is True,
-            "core_manifest_match": (
-                core_native.get("manifest_hash") == admission.proof_only_core_manifest_hash
-            ),
-            "core_apply_id_match": (
-                core_native.get("apply_id") == admission.proof_only_core_apply_id
-            ),
-            "core_enforcement_match": (
-                core_native.get("enforcement_level") == admission.proof_only_core_enforcement_level
-            ),
-            "core_live_mode_match": (
-                core_native.get("live_global_mode") == admission.proof_only_core_live_mode
-            ),
-        })
-    except Exception:
-        return facts
-    return facts
-
-
-def _legacy_admission_runtime_fences_match(admission: Any) -> bool:
-    """Check live native incarnation/config fences immediately before promotion."""
-    required = {
-        "xray_incarnation_match", "xray_runtime_config_match", "xray_active_config_match",
-        "mihomo_incarnation_match", "mihomo_active_config_match", "mihomo_input_fingerprint_match",
-        "mihomo_routing_snapshot_match",
-        "core_runtime_fingerprint_match", "core_state_available", "core_native_proof_ok",
-        "core_manifest_match", "core_apply_id_match", "core_enforcement_match", "core_live_mode_match",
-    }
-    facts = _legacy_admission_runtime_fence_facts(admission)
-    return set(facts) == required and all(facts.get(key) is True for key in required)
-
-
 def _legacy_admission_durable_fences_match(
     *, expected_digest: str, expected_source: str, selection_revision: int,
     selection_decision_id: str | None, expected_status: str, expected_revision: int,
@@ -2347,247 +1384,6 @@ def _legacy_admission_durable_fences_match(
             )
     except Exception:
         return False
-
-
-def _collect_legacy_inventory_native_proof(
-    adapter: Any,
-    *,
-    expected_digest: str,
-    source_fingerprint: str,
-    checkpoint_path: Path,
-) -> dict[str, Any]:
-    """Build private candidates and prove they equal the currently loaded native state.
-
-    This deliberately does not call the regular staging owner: that helper
-    writes shared candidate paths. The temporary directory is private and is
-    removed on return; this function never applies, reloads, or publishes.
-    """
-    from fwrouter_api.services import mihomo_config, subscription_profiles
-    from fwrouter_api.services.mihomo_reconcile import _native_udp_policy_proof
-    from fwrouter_api.services.mihomo_reconcile_fingerprint import current_mihomo_input_fingerprint
-    from fwrouter_api.services.mihomo_runtime import get_mihomo_runtime_incarnation
-    from fwrouter_api.services.subscription import _subscription_inventory_digest
-    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
-    from fwrouter_api.services.xray_materialize import (
-        _verify_active_config_bindings, _verify_active_config_client_modes,
-    )
-    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
-
-    if not xray_writer_guard_is_held():
-        return {"ok": False, "reason": "writer_guard_required"}
-    module = _module_state("xray") or {}
-    # The managed Mihomo dataplane adapter is owned by the existing `vpn`
-    # module lifecycle row; there is no standalone `mihomo` module row.
-    vpn_module = _module_state("vpn") or {}
-    if not (
-        module.get("desired_state") == "enabled" and module.get("lifecycle_mode") == "managed"
-        and vpn_module.get("desired_state") == "enabled" and vpn_module.get("lifecycle_mode") == "managed"
-    ):
-        return {"ok": False, "reason": "managed_native_runtimes_required"}
-    try:
-        with db_session() as connection:
-            digest, count = _subscription_inventory_digest(connection)
-            source_now = _legacy_admission_source_fingerprint(connection)
-            selection = read_selection_fence(connection)
-            core_unavailable = _legacy_admission_core_unavailable_reason(connection)
-            core_runtime_fingerprint = _legacy_admission_core_runtime_fingerprint(connection)
-        if digest != expected_digest or count <= 0 or source_now != source_fingerprint:
-            return {"ok": False, "reason": "durable_source_changed"}
-        if core_unavailable is not None:
-            return {"ok": False, "reason": core_unavailable}
-        core_native_proof = _collect_legacy_admission_core_native_proof()
-        if core_native_proof.get("ok") is not True:
-            return {"ok": False, "reason": core_native_proof.get("reason", "core_native_enforcement_unproven")}
-        if not callable(getattr(adapter, "stage_subscription_generation", None)):
-            return {"ok": False, "reason": "xray_candidate_validation_unavailable"}
-        xray_path = Path(adapter.config_path)
-        active_xray_sha = hashlib.sha256(xray_path.read_bytes()).hexdigest()
-        xray_incarnation = adapter.get_runtime_incarnation()
-        mounted_xray_sha = adapter.get_runtime_config_sha256()
-        if not xray_incarnation or active_xray_sha != mounted_xray_sha:
-            return {"ok": False, "reason": "xray_active_runtime_mismatch"}
-        mihomo_path = Path(mihomo_config._resolved_base_config_path())
-        from fwrouter_api.services.mihomo_config_yaml import hash_mihomo_yaml_file
-        try:
-            active_mihomo_sha = hash_mihomo_yaml_file(mihomo_path)
-        except ValueError:
-            return {"ok": False, "reason": "mihomo_active_config_unavailable"}
-        mihomo_incarnation = get_mihomo_runtime_incarnation()
-        if not mihomo_incarnation:
-            return {"ok": False, "reason": "mihomo_runtime_incarnation_unavailable"}
-        expected_selection = _capture_generation_auto_selection()
-        routing_snapshot = expected_selection.get("routing")
-        if not isinstance(routing_snapshot, dict):
-            return {"ok": False, "reason": "selection_fence_unavailable"}
-        if (
-            expected_selection.get("selection_revision") != selection.get("revision")
-            or expected_selection.get("selection_decision_id") != selection.get("decision_id")
-        ):
-            return {"ok": False, "reason": "selection_fence_changed"}
-        input_fingerprint = current_mihomo_input_fingerprint(routing_snapshot)
-        fingerprint_hash = str(input_fingerprint.get("hash") or "")
-        if len(fingerprint_hash) != 64:
-            return {"ok": False, "reason": "mihomo_input_fingerprint_unavailable"}
-
-        # Refuse deterministic fallback credentials. Proof-only admission may
-        # verify identities already present in durable mapping; it never
-        # creates, registers, repairs, or rotates them.
-        with db_session() as connection:
-            from fwrouter_api.services.subscription_node_identity import credentials_for_scope
-            profile_tokens = list_subscription_profile_tokens()
-            profile_servers = subscription_profiles._subscription_servers()
-            for token in profile_tokens:
-                rows = credentials_for_scope(connection, "subscription:" + token)
-                for server in profile_servers:
-                    server_id = str(server.get("server_id") or "")
-                    if server_id == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
-                        continue
-                    credential = rows.get(server_id)
-                    if credential is None:
-                        return {"ok": False, "reason": "durable_profile_credential_missing"}
-            retained_auto = credentials_for_scope(connection, "vpn-auto")
-        auto_servers = _vpn_auto_servers_for_xray_subscription()
-        desired_nodes = list_desired_subscription_xray_clients()
-        for server in auto_servers:
-            server_id = str(server.get("server_id") or "")
-            credential = retained_auto.get(server_id)
-            if credential is None:
-                return {"ok": False, "reason": "durable_auto_credential_missing"}
-            if credential.get("revoked"):
-                continue
-            desired_nodes.append({
-                "server_id": server_id,
-                "server_name": str(server.get("server_name") or server_id),
-                "client_uuid": str(credential["client_uuid"]),
-                "client_email": str(credential["client_email"]),
-                "xray_alias": str(server.get("server_name") or server_id),
-                "vpn_auto": True,
-            })
-        desired_by_email = {
-            str(node.get("client_email") or ""): node
-            for node in desired_nodes if str(node.get("client_email") or "").strip()
-        }
-        if len(desired_by_email) != len(desired_nodes):
-            return {"ok": False, "reason": "durable_identity_projection_ambiguous"}
-        desired_clients = [{
-            "client_uuid": node["client_uuid"], "client_id": node["client_uuid"],
-            "email": node["client_email"], "alias": node.get("xray_alias") or "",
-        } for node in desired_nodes]
-        managed_prefixes = ["sub-", "vpn-auto-"]
-        bindings, modes, assignments = _prospective_profile_bindings(
-            desired_nodes, token_prefix="sub-", managed_email_prefixes=managed_prefixes,
-            preserve_existing_overrides=True,
-        )
-        selection_proof = _verify_generation_recovery_selection_readback(expected_selection)
-        if not selection_proof.get("ok"):
-            return {"ok": False, "reason": "core_selection_readback_unproven"}
-        current_projection = _current_xray_projection_snapshot()
-        if current_projection.get("fence", {}).get("revision") != selection.get("revision"):
-            return {"ok": False, "reason": "selection_fence_changed"}
-        artifact_ok, bindings_artifact_sha = _current_bindings_artifact_parity(bindings, modes)
-        if not artifact_ok:
-            return {"ok": False, "reason": "xray_bindings_artifact_mismatch"}
-        with tempfile.TemporaryDirectory(prefix="fwrouter-legacy-admission-") as raw_dir:
-            private_dir = Path(raw_dir)
-            private_dir.chmod(0o700)
-            xray_candidate = private_dir / "xray-candidate.json"
-            staged = adapter.stage_subscription_generation(
-                desired_clients=desired_clients, managed_email_prefixes=managed_prefixes,
-                bindings=bindings, client_modes=modes, handoff_assignments=assignments,
-                candidate_path=xray_candidate,
-            )
-            if not staged.ok:
-                return {"ok": False, "reason": "xray_candidate_native_validation_failed"}
-            if not _legacy_xray_candidate_matches_active(xray_path, xray_candidate):
-                return {"ok": False, "reason": "xray_candidate_differs_from_active"}
-            expected_ids = sorted((str(item[0]), str(item[1])) for item in staged.details.get("expected_client_identities", []))
-            loaded_ids = sorted((str(pair[0]), str(pair[1])) for pair in adapter.list_loaded_client_identities())
-            if not expected_ids or loaded_ids != expected_ids:
-                return {"ok": False, "reason": "xray_handler_users_mismatch"}
-            binding_readback = _verify_active_config_bindings(
-                bindings, expected_client_identities=expected_ids,
-            )
-            mode_readback = _verify_active_config_client_modes(modes)
-            if not binding_readback.get("ok") or not mode_readback.get("ok"):
-                return {"ok": False, "reason": "xray_native_binding_or_mode_mismatch"}
-
-            candidate_mihomo = mihomo_config.build_mihomo_config(
-                routing=routing_snapshot,
-                xray_handoff_assignments=assignments,
-            )
-            import yaml
-            mihomo_candidate = private_dir / "mihomo-candidate.yaml"
-            mihomo_candidate.write_text(
-                yaml.safe_dump(candidate_mihomo, sort_keys=False, allow_unicode=True), encoding="utf-8",
-            )
-            mihomo_candidate.chmod(0o600)
-            local_validation = mihomo_config.validate_mihomo_candidate_config(
-                routing=routing_snapshot,
-                candidate_config=candidate_mihomo, candidate_path=mihomo_candidate,
-            )
-            if not local_validation.get("ok"):
-                return {"ok": False, "reason": "mihomo_candidate_validation_failed"}
-            if not _legacy_mihomo_candidate_matches(mihomo_path, mihomo_candidate):
-                return {"ok": False, "reason": "mihomo_candidate_differs_from_active"}
-            native = _native_udp_policy_proof()
-            if not (
-                native.get("ok") is True
-                and native.get("native_top_level_rules_match") is True
-                and native.get("selector_membership_matches") is True
-                and native.get("guarded_rules_match") is True
-            ):
-                return {"ok": False, "reason": "mihomo_native_policy_unproven"}
-        # Detect source/runtime changes that occurred while expensive native
-        # readbacks were in flight. The caller repeats CAS at marker promotion.
-        core_native_recheck = _collect_legacy_admission_core_native_proof()
-        if (
-            _legacy_admission_source_fingerprint() != source_fingerprint
-            or _legacy_admission_core_unavailable_reason() is not None
-            or _legacy_admission_core_runtime_fingerprint() != core_runtime_fingerprint
-            or _capture_generation_auto_selection() != expected_selection
-            or adapter.get_runtime_incarnation() != xray_incarnation
-            or adapter.get_runtime_config_sha256() != active_xray_sha
-            or get_mihomo_runtime_incarnation() != mihomo_incarnation
-            or hash_mihomo_yaml_file(mihomo_path) != active_mihomo_sha
-            or _capture_generation_auto_selection() != expected_selection
-            or current_mihomo_input_fingerprint(routing_snapshot).get("hash") != fingerprint_hash
-            or hashlib.sha256(Path(_xray_bindings_path()).read_bytes()).hexdigest() != bindings_artifact_sha
-            or _current_projection_fingerprint(_current_xray_projection_snapshot())
-            != _current_projection_fingerprint(current_projection)
-            or core_native_recheck.get("ok") is not True
-            or core_native_recheck.get("manifest_hash") != core_native_proof.get("manifest_hash")
-            or core_native_recheck.get("apply_id") != core_native_proof.get("apply_id")
-            or core_native_recheck.get("enforcement_level") != core_native_proof.get("enforcement_level")
-            or core_native_recheck.get("live_global_mode") != core_native_proof.get("live_global_mode")
-        ):
-            return {"ok": False, "reason": "native_proof_fence_changed"}
-        return {
-            "ok": True, "xray_config_match": True, "xray_loaded_users_match": True,
-            "xray_bindings_match": True, "xray_modes_match": True,
-            "core_selection_match": True, "mihomo_candidate_match": True,
-            "mihomo_native_policy_match": True, "source_fingerprint": source_fingerprint,
-            "selection_revision": selection.get("revision"),
-            "selection_decision_id": selection.get("decision_id"),
-            "selection_snapshot": expected_selection,
-            "routing_snapshot": routing_snapshot,
-            "xray_runtime_incarnation": xray_incarnation,
-            "mihomo_runtime_incarnation": mihomo_incarnation,
-            "xray_config_sha256": active_xray_sha,
-            "mihomo_config_sha256": active_mihomo_sha,
-            "mihomo_fingerprint_hash": fingerprint_hash,
-            "core_runtime_fingerprint": core_runtime_fingerprint,
-            "core_dataplane_proof": core_native_proof,
-            "core_native_policy_match": True,
-            "mihomo_proof": {
-                "native_top_level_rules_match": True,
-                "selector_membership_matches": True,
-                "guarded_rules_match": True,
-            },
-        }
-    except Exception as exc:
-        name = type(exc).__name__
-        safe_name = name if name.isascii() and name.isalnum() and name.endswith(("Error", "Exception")) else "proof_error"
-        return {"ok": False, "reason": safe_name}
 
 
 def _publish_legacy_admission_mihomo_receipt(proof: dict[str, Any], operation_id: str) -> bool:
@@ -3257,44 +2053,6 @@ def subscription_inventory_checkpoint_write_gate() -> dict[str, Any]:
                 "error_code": "XRAY_GENERATION_CHECKPOINT_UNAVAILABLE", "last_good_retained": True}
 
 
-def _capture_generation_derived_rows(
-    *, managed_email_prefixes: list[str], expected_client_identities: list[list[str]] | list[tuple[str, str]],
-) -> dict[str, Any]:
-    prefixes = [str(value).lower() for value in managed_email_prefixes if value]
-    expected_ids = {str(pair[0]) for pair in expected_client_identities if len(pair) >= 2 and pair[0]}
-    expected_emails = {str(pair[1]).lower() for pair in expected_client_identities if len(pair) >= 2 and pair[1]}
-    with db_session() as connection:
-        subjects = [dict(row) for row in connection.execute(
-            "SELECT * FROM subjects WHERE implementation_kind = 'xray' ORDER BY subject_id"
-        ).fetchall()]
-        selected = []
-        for row in subjects:
-            try:
-                metadata = json.loads(row.get("metadata_json") or "{}")
-            except (TypeError, json.JSONDecodeError):
-                metadata = {}
-            detail = metadata.get("detail") if isinstance(metadata, dict) else {}
-            detail = detail if isinstance(detail, dict) else {}
-            client_id = str(detail.get("client_uuid") or detail.get("client_id") or "")
-            email = str(detail.get("email") or "").lower()
-            if client_id in expected_ids or email in expected_emails or any(email.startswith(prefix) for prefix in prefixes):
-                selected.append(row)
-        subject_ids = {str(row["subject_id"]) for row in selected}
-        overrides = []
-        user_overrides = []
-        if subject_ids:
-            placeholders = ", ".join("?" for _ in subject_ids)
-            overrides = [dict(row) for row in connection.execute(
-                f"SELECT * FROM subject_server_overrides WHERE subject_id IN ({placeholders}) ORDER BY subject_id",
-                tuple(sorted(subject_ids)),
-            ).fetchall()]
-            user_overrides = [dict(row) for row in connection.execute(
-                f"SELECT * FROM subject_user_overrides WHERE subject_id IN ({placeholders}) ORDER BY subject_id",
-                tuple(sorted(subject_ids)),
-            ).fetchall()]
-    return {"subjects": selected, "server_overrides": overrides, "user_overrides": user_overrides}
-
-
 def _restore_scoped_generation_rows(
     connection: Any, *, before: dict[str, Any], after: dict[str, Any],
 ) -> bool:
@@ -3529,32 +2287,7 @@ def _write_xray_generation_checkpoint(
             "mihomo_final_sha256": ((staged_generation.get("native_validation") or {}).get("final") or {}).get("candidate_sha256"),
         },
     }
-    native_receipts = staged_generation.get("native_validation") or {}
-    xray_receipt = native_receipts.get("xray") or {}
-    mihomo_receipts: dict[str, Any] = {}
-    for name in ("transition", "final"):
-        candidate = native_receipts.get(name) or {}
-        validation = candidate.get("validation") or {}
-        receipt_bytes = json.dumps(
-            validation, sort_keys=True, separators=(",", ":"), default=str,
-        ).encode("utf-8")
-        mihomo_receipts[name] = {
-            "ok": validation.get("ok") is True,
-            "candidate_sha256": candidate.get("candidate_sha256"),
-            "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
-        }
-    identity_receipt_bytes = json.dumps(
-        xray_receipt.get("expected_client_identities") or [],
-        sort_keys=True, separators=(",", ":"), default=str,
-    ).encode("utf-8")
-    data["native_validation_proof"] = {
-        "xray": {
-            "ok": xray_receipt.get("stage") == "validated",
-            "candidate_sha256": xray_receipt.get("candidate_sha256"),
-            "expected_client_identities_sha256": hashlib.sha256(identity_receipt_bytes).hexdigest(),
-        },
-        "mihomo": mihomo_receipts,
-    }
+    data["native_validation_proof"] = _build_checkpoint_native_validation_proof(staged_generation)
     if supersession is not None:
         archive_path = _archive_checkpoint_exact(checkpoint_path, str(supersession["checkpoint_sha256"]))
         data["supersession"] = {
@@ -3609,560 +2342,14 @@ def _record_xray_generation_selection_revision(
     _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
 
-def _capture_generation_auto_selection() -> dict[str, Any]:
-    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
-    with db_session() as connection:
-        routing = connection.execute(
-            "SELECT server_mode, desired_fixed_server_id, applied_fixed_server_id, fixed_server_until, "
-            "active_auto_server_id, desired_mode, applied_mode, selective_default, apply_state, updated_at "
-            "FROM routing_global_state WHERE id = 1"
-        ).fetchone()
-        provenance = connection.execute(
-            "SELECT value_json, updated_at FROM settings WHERE key = 'routing.auto_selection_provenance'"
-        ).fetchone()
-        fence = read_selection_fence(connection)
-    return {
-        "routing": dict(routing) if routing else None,
-        "provenance": dict(provenance) if provenance else None,
-        "selection_revision": fence["revision"],
-        "selection_decision_id": fence["decision_id"],
-    }
-
-
-def _validate_rollback_mihomo_preimage(
-    encoded_config: Any,
-    *,
-    routing_snapshot: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Prove a checkpoint's Mihomo preimage is safe before restoring it.
-
-    Checkpoint identity parity says nothing about the routing policy in its
-    saved Mihomo file. Validate the exact preimage, while it is still private,
-    against the current FWRouter-owned routing contract and the real Mihomo
-    parser. This deliberately refuses old/unknown policy instead of activating
-    it and discovering the downgrade during post-apply readback.
-    """
-    if not isinstance(encoded_config, str):
-        return {"ok": False, "reason": "mihomo_preimage_unavailable"}
-    import yaml
-    try:
-        max_config_bytes = 64 * 1024 * 1024
-        max_encoded_chars = ((max_config_bytes + 2) // 3) * 4
-        if not encoded_config.isascii() or len(encoded_config) > max_encoded_chars:
-            return {"ok": False, "reason": "mihomo_preimage_invalid"}
-        config_bytes = base64.b64decode(encoded_config, validate=True)
-        # Generated configs can contain the accepted ruleset up to the API's
-        # existing 64 MiB policy-input ceiling (hosted evidence reached 20.7
-        # MB). The 4 MiB base-user-config limit is not applicable here.
-        if not config_bytes or len(config_bytes) > max_config_bytes:
-            return {"ok": False, "reason": "mihomo_preimage_invalid"}
-        config_text = config_bytes.decode("utf-8")
-        candidate = yaml.load(config_text, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
-    except (ValueError, UnicodeDecodeError, yaml.YAMLError):
-        return {"ok": False, "reason": "mihomo_preimage_invalid"}
-    if not isinstance(candidate, dict):
-        return {"ok": False, "reason": "mihomo_preimage_invalid"}
-
-    # The generated routing rules include explicit DIRECT exceptions and the
-    # mandatory VPN fail-closed rules. Exact comparison preserves those
-    # established semantics while refusing a checkpoint from an older policy
-    # generator. Do not compare proxies here: subscription topology may have
-    # changed, and native parsing below independently checks all references.
-    try:
-        if not isinstance(routing_snapshot, dict):
-            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-        from fwrouter_api.services.mihomo_config_rules import _build_mihomo_config_with_source
-        from fwrouter_api.services.mihomo_config_paths import (
-            FULL_VPN_RULE_NAME, TRANSPARENT_TPROXY_RULE_NAME,
-        )
-        expected_rules, expected_policy = _build_mihomo_config_with_source(routing_snapshot)
-        sub_rules = candidate.get("sub-rules")
-        if not isinstance(sub_rules, dict):
-            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-        if candidate.get("rules") != expected_rules:
-            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-        if sub_rules.get(FULL_VPN_RULE_NAME) != expected_policy.get("full_vpn_rules"):
-            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-        if sub_rules.get(TRANSPARENT_TPROXY_RULE_NAME) != expected_policy.get("transparent_rules"):
-            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-
-        groups = candidate.get("proxy-groups")
-        if not isinstance(groups, list):
-            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-        group_names = [
-            str(group.get("name") or "").strip()
-            for group in groups if isinstance(group, dict) and str(group.get("name") or "").strip()
-        ]
-        by_name = {
-            str(group.get("name") or "").strip(): group
-            for group in groups if isinstance(group, dict) and str(group.get("name") or "").strip()
-        }
-        if len(group_names) != len(by_name):
-            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-        for required_name in ("vpn-auto", "vpn-global"):
-            group = by_name.get(required_name)
-            targets = group.get("proxies") if isinstance(group, dict) else None
-            if not isinstance(targets, list) or not targets or targets[-1] != "REJECT" or "DIRECT" in targets:
-                return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-        if "vpn-auto" not in by_name["vpn-global"].get("proxies", []):
-            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-
-        mandatory_names = [
-            name for name in by_name
-            if name in {"vpn-auto", "vpn-global"} or name.startswith("fwrouter-subject-")
-        ]
-        group_edges = sum(
-            len(group.get("proxies"))
-            for group in by_name.values()
-            if isinstance(group.get("proxies"), list)
-        )
-        # Bound traversal by the actual graph size, not inventory size. A
-        # selector with many concrete proxy targets is valid and must not be
-        # rejected just because it has few groups.
-        policy_walk_budget = min(max(group_edges + len(by_name) + len(mandatory_names), 1), 100_000)
-        policy_walk_count = 0
-        completed_group_results: dict[str, bool] = {}
-
-        def mandatory_target_is_fail_closed(name: str, visiting: set[str]) -> bool:
-            nonlocal policy_walk_count
-            policy_walk_count += 1
-            if policy_walk_count > policy_walk_budget:
-                return False
-            if name == "DIRECT":
-                return False
-            if name == "REJECT":
-                return True
-            nested = by_name.get(name)
-            if nested is None:
-                # A concrete native proxy is an eligible egress target; native
-                # validation below rejects unknown names and malformed proxies.
-                return True
-            if name in visiting:
-                return False
-            if name in completed_group_results:
-                return completed_group_results[name]
-            nested_targets = nested.get("proxies")
-            if not isinstance(nested_targets, list) or not nested_targets:
-                return False
-            next_visiting = {*visiting, name}
-            result = all(
-                mandatory_target_is_fail_closed(str(target), next_visiting)
-                for target in nested_targets
-            )
-            completed_group_results[name] = result
-            return result
-
-        for name, group in by_name.items():
-            if name.startswith("fwrouter-subject-"):
-                targets = group.get("proxies")
-                if not isinstance(targets, list) or not targets or targets[-1] != "REJECT" or "DIRECT" in targets:
-                    return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-        if any(
-            not mandatory_target_is_fail_closed(name, set())
-            for name in mandatory_names
-        ):
-            return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-    except Exception:
-        return {"ok": False, "reason": "mihomo_preimage_policy_unproven"}
-
-    # Keep the candidate on the existing shared config mount so the Docker
-    # daemon can inspect it; never overwrite an active/apply path.
-    from fwrouter_api.services.mihomo_config import _resolved_base_config_path
-    import tempfile
-
-    candidate_path: Path | None = None
-    native_ok = False
-    cleanup_ok = True
-    try:
-        parent = Path(_resolved_base_config_path()).parent
-        if not parent.is_dir():
-            return {"ok": False, "reason": "mihomo_preimage_native_invalid"}
-        descriptor, raw_path = tempfile.mkstemp(prefix=".rollback-mihomo-preflight-", suffix=".yaml", dir=parent)
-        candidate_path = Path(raw_path)
-        try:
-            descriptor_info = os.fstat(descriptor)
-            if not stat.S_ISREG(descriptor_info.st_mode) or stat.S_IMODE(descriptor_info.st_mode) != 0o600:
-                raise OSError("private Mihomo candidate descriptor is not a mode-0600 regular file")
-            _write_all_fd(descriptor, config_bytes)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        from fwrouter_api.services.subscription_pipeline import validate_mihomo_candidate_config
-
-        native = validate_mihomo_candidate_config(candidate_path=str(candidate_path))
-        native_ok = bool(native.get("ok"))
-    except Exception:
-        native_ok = False
-    finally:
-        if candidate_path is not None:
-            try:
-                candidate_path.unlink(missing_ok=True)
-            except OSError:
-                cleanup_ok = False
-    if not native_ok or not cleanup_ok:
-        return {"ok": False, "reason": "mihomo_preimage_native_invalid"}
-    return {"ok": True, "sha256": hashlib.sha256(config_bytes).hexdigest()}
-
-
 def _restore_generation_auto_selection(*, before: dict[str, Any], after: dict[str, Any], operation_id: str | None = None) -> bool:
     from fwrouter_api.services.selector import restore_auto_selection_snapshot
 
     return bool(restore_auto_selection_snapshot(before=before, after=after, operation_id=operation_id).get("ok"))
 
 
-def _verify_generation_selection_readback(selection: dict[str, Any] | None) -> dict[str, Any]:
-    routing = (selection or {}).get("routing") if isinstance(selection, dict) else None
-    if not isinstance(routing, dict):
-        return {"ok": False, "error_code": "SELECTION_BASELINE_UNAVAILABLE"}
-    mode = str(routing.get("server_mode") or "auto").lower()
-    logical_id = str(
-        routing.get("desired_fixed_server_id") or routing.get("applied_fixed_server_id") or ""
-        if mode == "fixed"
-        else routing.get("active_auto_server_id") or ""
-    ).strip()
-    if not logical_id:
-        return {"ok": False, "error_code": "SELECTION_BASELINE_UNSELECTED"}
-    from fwrouter_api.services.logical_topology import get_logical_runtime_name
-    from fwrouter_api.services.selector import get_vpn_auto_state
-    from fwrouter_api.services.servers import get_routing_global_state
-    state = get_vpn_auto_state(read_only=True)
-    current_routing = get_routing_global_state(expire_ttl=False) or {}
-    selectors = state.get("selector_runtime") if isinstance(state.get("selector_runtime"), dict) else {}
-    selector_name = "vpn_global_now" if mode == "fixed" else "vpn_auto_now"
-    expected = get_logical_runtime_name(logical_id)
-    observed = str(selectors.get(selector_name) or "").strip()
-    current_logical = (
-        str(current_routing.get("desired_fixed_server_id") or current_routing.get("applied_fixed_server_id") or "").strip()
-        if mode == "fixed"
-        else str(state.get("active_auto_server_id") or "").strip()
-    )
-    ok = bool(expected and observed and current_logical == logical_id and observed == expected)
-    return {
-        "ok": ok,
-        "mode": mode,
-        "logical_server_id": logical_id,
-        "expected_effective_target": expected,
-        "effective_target": observed or None,
-        "error_code": None if ok else "SELECTION_RESTORE_READBACK_UNCONFIRMED",
-    }
-
-
-def _verify_generation_recovery_selection_readback(selection: dict[str, Any] | None) -> dict[str, Any]:
-    """Verify selection readback, including an explicitly committed global-DIRECT intent.
-
-    Recovery may legitimately run with no selected VPN target while global DIRECT is
-    applied. That case is accepted only when the checkpoint captured the exact DIRECT
-    intent/fence and fresh native dataplane readback proves the same mode. Older
-    checkpoints lacking the intent fields remain unprovable and fail closed.
-    """
-    ordinary = _verify_generation_selection_readback(selection)
-    if ordinary.get("ok") is True:
-        return ordinary
-    if ordinary.get("error_code") != "SELECTION_BASELINE_UNSELECTED":
-        return ordinary
-
-    captured = selection if isinstance(selection, dict) else {}
-    captured_routing = captured.get("routing") if isinstance(captured.get("routing"), dict) else {}
-    captured_mode = str(captured_routing.get("desired_mode") or "").strip().lower()
-    if (
-        captured_mode != "direct"
-        or str(captured_routing.get("applied_mode") or "").strip().lower() != "direct"
-        or str(captured_routing.get("apply_state") or "").strip().lower() != "clean"
-    ):
-        return {"ok": False, "error_code": "SELECTION_DIRECT_INTENT_UNPROVEN"}
-
-    try:
-        from fwrouter_api.services.servers import get_routing_global_state
-        from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
-
-        current_routing = get_routing_global_state(expire_ttl=False) or {}
-        current_fence = _current_xray_projection_snapshot().get("fence") or {}
-        expected_routing = {
-            key: captured_routing.get(key)
-            for key in (
-                "server_mode", "desired_fixed_server_id", "applied_fixed_server_id",
-                "active_auto_server_id", "desired_mode", "applied_mode", "apply_state",
-            )
-        }
-        observed_routing = {key: current_routing.get(key) for key in expected_routing}
-        with db_session() as connection:
-            durable_fence = read_selection_fence(connection)
-        no_vpn_target = not any(
-            str(value or "").strip()
-            for value in (
-                captured_routing.get("desired_fixed_server_id"),
-                captured_routing.get("applied_fixed_server_id"),
-                captured_routing.get("active_auto_server_id"),
-                current_routing.get("desired_fixed_server_id"),
-                current_routing.get("applied_fixed_server_id"),
-                current_routing.get("active_auto_server_id"),
-                current_fence.get("active_server_id"),
-                current_fence.get("provenance_server_id"),
-                durable_fence.get("active_server_id"),
-                durable_fence.get("provenance_server_id"),
-            )
-        )
-        checkpoint_decision = captured.get("selection_decision_id")
-        if (
-            observed_routing != expected_routing
-            or type(captured.get("selection_revision")) is not int
-            or captured.get("selection_revision") != current_fence.get("revision")
-            or captured.get("selection_revision") != durable_fence.get("revision")
-            or "selection_decision_id" not in captured
-            or checkpoint_decision != current_fence.get("decision_id")
-            or checkpoint_decision != durable_fence.get("decision_id")
-            or (checkpoint_decision is None and not no_vpn_target)
-            or (checkpoint_decision is not None and not str(checkpoint_decision).strip())
-        ):
-            return {"ok": False, "error_code": "SELECTION_DIRECT_FENCE_UNPROVEN"}
-
-        # Use the existing live dataplane/enforcement readbacks. Refresh their
-        # existing short-lived probe keys so stale cached state cannot verify a
-        # checkpoint after restart.
-        from fwrouter_api.services import dataplane_global, dataplane_live, dataplane_status
-        from fwrouter_api.services.live_probe_cache import get_live_probe_cache
-
-        payload = dataplane_status._read_live_dataplane_payload()
-        if not dataplane_status._live_owned_table_ready(payload):
-            return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_READBACK_UNREADY"}
-        manifest = get_live_probe_cache(
-            "dataplane_global.applied_manifest", ttl_seconds=5.0,
-            loader=dataplane_global._read_applied_manifest_uncached, force_refresh=True,
-        )
-        get_live_probe_cache(
-            "dataplane_live.global_mode", ttl_seconds=2.0,
-            loader=dataplane_live._probe_live_global_mode_uncached, force_refresh=True,
-        )
-        manifest_routing = manifest.get("routing_global_state") if isinstance(manifest, dict) else None
-        if not isinstance(manifest_routing, dict) or any(
-            str(manifest_routing.get(key) or "").strip().lower() != "direct"
-            for key in ("desired_mode", "applied_mode")
-        ):
-            return {"ok": False, "error_code": "SELECTION_DIRECT_APPLIED_MANIFEST_UNPROVEN"}
-        proof = dataplane_status.build_runtime_enforcement_state(live_payload=payload)
-        if (
-            not isinstance(proof, dict)
-            or proof.get("enforcement_level") != "global_direct_enforced"
-            or proof.get("traffic_enforcement_guaranteed") is not True
-            or proof.get("active_mode_matches_intent") is not True
-            or str(proof.get("live_global_mode") or "").strip().lower() != "direct"
-        ):
-            return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_POLICY_UNPROVEN"}
-        return {
-            "ok": True,
-            "mode": "direct",
-            "logical_server_id": None,
-            "native_enforcement_level": proof["enforcement_level"],
-        }
-    except Exception:
-        return {"ok": False, "error_code": "SELECTION_DIRECT_NATIVE_READBACK_FAILED"}
-
-
-
-
 def _generation_recovery_attempt_path(checkpoint_path: Path, checkpoint_digest: str) -> Path:
     return checkpoint_path.with_name(f"generation-recovery-attempt-{checkpoint_digest}.json")
-
-
-def _current_xray_projection_snapshot() -> dict[str, Any]:
-    """Read current committed Xray identities, snapshots, and writer fence."""
-    from fwrouter_api.services.vpn_auto_selection_state import read_selection_fence
-
-    with db_session() as connection:
-        rows = connection.execute(
-            """SELECT json_extract(metadata_json, '$.detail.client_uuid') AS client_uuid,
-                      json_extract(metadata_json, '$.detail.client_id') AS client_id,
-                      json_extract(metadata_json, '$.detail.email') AS email
-               FROM subjects WHERE implementation_kind='xray' AND is_active=1 AND is_deleted=0
-                 AND COALESCE(json_extract(metadata_json, '$.detail.enabled'), 1)=1
-               ORDER BY subject_id"""
-        ).fetchall()
-        snapshots = [dict(row) for row in connection.execute(
-            "SELECT token, nodes_json, runtime_verified_at, updated_at FROM subscription_profile_snapshots ORDER BY token"
-        ).fetchall()]
-        published_snapshots = [dict(row) for row in connection.execute(
-            """SELECT p.token, p.nodes_json, p.runtime_verified_at, p.updated_at
-               FROM subscription_profile_snapshots AS p
-               JOIN subscription_clients AS c ON c.token=p.token AND c.enabled=1
-               JOIN subscription_accounts AS a ON a.account_id=c.account_id AND a.enabled=1
-               WHERE p.runtime_verified_at IS NOT NULL ORDER BY p.token"""
-        ).fetchall()]
-        fence = read_selection_fence(connection)
-    identities: list[tuple[str, str]] = []
-    for row in rows:
-        client_id = str(row["client_uuid"] or row["client_id"] or "").strip()
-        email = str(row["email"] or "").strip()
-        if not client_id or not email:
-            raise ValueError("current_xray_identity_incomplete")
-        identities.append((client_id, email))
-    if len(set(identities)) != len(identities):
-        raise ValueError("current_xray_identity_duplicate")
-    return {"identities": sorted(identities), "snapshots": snapshots,
-            "published_snapshots": published_snapshots, "fence": fence}
-
-
-def _current_projection_fingerprint(snapshot: dict[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(
-        {"identities": snapshot["identities"], "snapshots": snapshot["snapshots"],
-         "fence": snapshot["fence"], "source": _generation_source_fingerprint(),
-         "selection": _capture_generation_auto_selection()},
-        sort_keys=True, default=str,
-    ).encode()).hexdigest()
-
-
-def _current_bindings_artifact_parity(bindings: list[dict[str, Any]], modes: list[dict[str, Any]]) -> tuple[bool, str]:
-    from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
-    from fwrouter_api.services.xray_bindings import _bindings_for_state, get_xray_handoff_listeners
-
-    path = _xray_bindings_path()
-    try:
-        raw = path.read_bytes()
-        state = json.loads(raw)
-    except (OSError, json.JSONDecodeError):
-        return False, ""
-    if not isinstance(state, dict) or state.get("error_code"):
-        return False, hashlib.sha256(raw).hexdigest()
-    binding_keys = (
-        "subject_id", "client_id", "client_uuid", "client_email", "selected_server_id",
-        "selected_server_source", "handoff_proxy_name", "server_name", "server_runtime_name",
-        "match_key", "handoff",
-    )
-    mode_keys = ("subject_id", "client_id", "client_uuid", "client_email", "desired_mode", "effective_mode", "mode_support_state")
-    def normalized(items: Any, keys: tuple[str, ...]) -> list[dict[str, Any]]:
-        if not isinstance(items, list):
-            return []
-        return sorted(({key: item.get(key) for key in keys} for item in items if isinstance(item, dict)),
-                      key=lambda item: (str(item.get("client_email") or ""), str(item.get("subject_id") or "")))
-
-    def normalized_handoffs(items: Any) -> list[dict[str, Any]] | None:
-        if not isinstance(items, list):
-            return None
-        normalized_items: list[dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
-                return None
-            normalized_item = dict(item)
-            for key in ("subject_ids", "client_emails"):
-                if key not in normalized_item:
-                    continue
-                values = normalized_item[key]
-                if not isinstance(values, list):
-                    return None
-                try:
-                    # These fields are membership associations. Canonicalize
-                    # order while retaining JSON types and duplicate counts.
-                    normalized_item[key] = sorted(
-                        values,
-                        key=lambda value: json.dumps(
-                            value, sort_keys=True, separators=(",", ":"),
-                            ensure_ascii=False, allow_nan=False,
-                        ),
-                    )
-                except (TypeError, ValueError):
-                    return None
-            normalized_items.append(normalized_item)
-        try:
-            return sorted(
-                normalized_items,
-                key=lambda item: json.dumps(
-                    item, sort_keys=True, separators=(",", ":"),
-                    ensure_ascii=False, allow_nan=False,
-                ),
-            )
-        except (TypeError, ValueError):
-            return None
-
-    expected_bindings = _bindings_for_state(bindings)
-    expected_modes = [{key: item.get(key) for key in mode_keys} for item in modes]
-    expected_handoffs = get_xray_handoff_listeners(bindings)
-    actual_handoffs_normalized = normalized_handoffs(state.get("handoff_listeners"))
-    expected_handoffs_normalized = normalized_handoffs(expected_handoffs)
-    handoff_parity = bool(
-        actual_handoffs_normalized is not None
-        and expected_handoffs_normalized is not None
-        and json.dumps(actual_handoffs_normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-        == json.dumps(expected_handoffs_normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
-    )
-    parity = bool(
-        state.get("bindings_version") == 1
-        and normalized(state.get("bindings"), binding_keys) == normalized(expected_bindings, binding_keys)
-        and normalized(state.get("client_modes"), mode_keys) == normalized(expected_modes, mode_keys)
-        and handoff_parity
-        and state.get("bindings_count") == len(bindings)
-        and state.get("applied_count") == len(bindings)
-        and all(item.get("status") == "applied" for item in state.get("bindings", []) if isinstance(item, dict))
-        and state.get("client_modes_count") == len(modes)
-        and all(item.get("status") == "applied" for item in state.get("client_modes", []) if isinstance(item, dict))
-    )
-    return parity, hashlib.sha256(raw).hexdigest()
-
-
-def _verify_current_public_projection(
-    snapshot: dict[str, Any], *, supersession: dict[str, Any] | None = None,
-) -> bool:
-    """Require every published node to remain a member of current committed Xray identities."""
-    identities = set(snapshot["identities"])
-    from fwrouter_api.services.custom_servers import VIRTUAL_XRAY_VPN_AUTO_SERVER_ID
-
-    auto_selection = _capture_generation_auto_selection()
-    routing = auto_selection.get("routing") or {}
-    active_auto = str(routing.get("active_auto_server_id") or "").strip()
-    binding_by_identity = {
-        (str(item.get("client_uuid") or item.get("client_id") or "").strip(),
-         str(item.get("client_email") or "").strip()): item
-        for item in collect_xray_runtime_bindings()
-    }
-    for row in snapshot["published_snapshots"]:
-        try:
-            nodes = json.loads(row.get("nodes_json") or "[]")
-        except (TypeError, json.JSONDecodeError):
-            return False
-        if not isinstance(nodes, list):
-            return False
-        for node in nodes:
-            if not isinstance(node, dict):
-                return False
-            identity = (str(node.get("client_uuid") or "").strip(), str(node.get("client_email") or "").strip())
-            if identity not in identities:
-                return False
-            binding = binding_by_identity.get(identity)
-            if binding is None:
-                return False
-            public_server_id = str(node.get("server_id") or "").strip()
-            bound_server_id = str(binding.get("selected_server_id") or "").strip()
-            if public_server_id == VIRTUAL_XRAY_VPN_AUTO_SERVER_ID:
-                if (str(binding.get("selected_server_id") or "").strip() != "vpn-global"
-                        or str(binding.get("selected_server_source") or "").strip() != "vpn_auto"
-                        or not active_auto):
-                    return False
-            else:
-                if bound_server_id != public_server_id and not _supersession_alias_owns(
-                    public_server_id, bound_server_id, supersession,
-                ):
-                    return False
-    return True
-
-
-def _supersession_alias_owns(
-    public_server_id: str, bound_server_id: str, supersession: dict[str, Any] | None,
-) -> bool:
-    if not isinstance(supersession, dict):
-        return False
-    checkpoint_sha = str(supersession.get("checkpoint_sha256") or "")
-    plan_sha = str(supersession.get("migration_plan_sha256") or "")
-    if len(checkpoint_sha) != 64 or len(plan_sha) != 64:
-        return False
-    with db_session() as connection:
-        row = connection.execute(
-            """SELECT 1 FROM subscription_node_aliases AS old
-               JOIN subscription_node_aliases AS new ON new.identity_id=old.identity_id
-               JOIN subscription_node_identity_transitions AS t ON t.identity_id=old.identity_id
-               WHERE old.server_id=? AND new.server_id=? AND t.from_server_id=old.server_id
-                 AND t.to_server_id=new.server_id AND t.operator_plan_sha256=?
-                 AND t.checkpoint_sha256=? LIMIT 1""",
-            (public_server_id, bound_server_id, plan_sha, checkpoint_sha),
-        ).fetchone()
-    return row is not None
 
 
 def _supersession_current_candidate_owned(
@@ -4698,51 +2885,6 @@ def _record_xray_generation_snapshot_postimage(checkpoint_path: Path) -> None:
     _atomic_write_private_checkpoint(checkpoint_path, json.dumps(data, sort_keys=True))
 
 
-def _ordinary_fixed_checkpoint_context_matches(
-    checkpoint: dict[str, Any], *, expected_source: str, expected_revision: int,
-) -> bool:
-    """Revalidate the checkpoint's original ordinary-fixed Core/routing owner."""
-    route_snapshot = checkpoint.get("fixed_routing_snapshot")
-    if route_snapshot is None:
-        return True
-    if not isinstance(route_snapshot, dict):
-        return False
-    fixed_workflow_revision = checkpoint.get("fixed_workflow_revision")
-    if type(fixed_workflow_revision) is int:
-        # Fixed-workflow publication is fenced by its existing callback and
-        # workflow receipt; this helper adds proof only for ordinary fixed
-        # startup checkpoints.
-        return True
-    selection_snapshot = checkpoint.get("auto_selection_after")
-    if not isinstance(selection_snapshot, dict):
-        selection_snapshot = checkpoint.get("auto_selection_before")
-    core_proof = checkpoint.get("ordinary_fixed_core_proof")
-    core_runtime_fingerprint = checkpoint.get("ordinary_fixed_core_runtime_fingerprint")
-    if (
-        not isinstance(selection_snapshot, dict)
-        or selection_snapshot.get("selection_revision") != expected_revision
-        or checkpoint.get("selection_revision") != expected_revision
-        or not isinstance(core_proof, dict)
-        or not isinstance(core_runtime_fingerprint, str)
-        or len(core_runtime_fingerprint) != 64
-        or not isinstance(expected_source, str)
-        or len(expected_source) != 64
-    ):
-        return False
-    context = {
-        "routing_snapshot": route_snapshot,
-        "selection_snapshot": selection_snapshot,
-        "core_proof": core_proof,
-        "core_runtime_fingerprint": core_runtime_fingerprint,
-        "source_fingerprint": expected_source,
-    }
-    return _fixed_xray_generation_context_matches(
-        route_snapshot, None,
-        expected_selection_revision=expected_revision,
-        ordinary_fixed_context=context,
-    )
-
-
 def _publish_mihomo_udp_receipt_with_owner(
     *, expected_mihomo_runtime: str, expected_mihomo_sha: str,
     reconcile_reason: str, operation_id: str, owner_matches: Any,
@@ -5108,20 +3250,9 @@ def _finalize_xray_profile_publication(pending: dict[str, Any], verification: di
         "final_mihomo": _strip_raw_payload(values["applied_final_mihomo"]),
         "public_snapshots_changed": _xray_generation_snapshots_changed(checkpoint_path),
     }
-    desired_nodes = values["desired_nodes"]
-    result = {
-        "ok": True, "status": "success", "nodes_count": len(desired_nodes),
-        "created_count": len(values["created"]), "deleted_count": len(values["deleted"]),
-        "recreated_count": len(values["recreated"]), "created": values["created"],
-        "deleted": values["deleted"], "recreated": values["recreated"],
-        "client_reconcile": _strip_raw_payload(values["reconcile_details"]),
-        "nodes": [{"server_id": node["server_id"], "server_name": node["server_name"],
-                   "client_uuid": node["client_uuid"], "client_email": node["client_email"]}
-                  for node in desired_nodes],
-        "materialize": values["materialize_result"], "public_profile_promote": promoted_profile,
-        "generation_apply": generation_apply,
-        "pre_publication_verification": verification,
-    }
+    result = _build_publication_result(
+        values, promoted_profile, verification, generation_apply=generation_apply,
+    )
     inventory_admission = pending.get("inventory_admission")
     if not publication_context_matches():
         return pending_failure("generation_publication_revalidation", "XRAY_GENERATION_STALE_BEFORE_PUBLICATION")
@@ -5167,19 +3298,9 @@ def _finalize_nonstaged_profile_publication(pending: dict[str, Any], verificatio
         if pending["materialize"] and pending["promote_public_profile"]
         else {"profiles_count": 0, "nodes_count": 0}
     )
-    desired_nodes = values["desired_nodes"]
-    return {
-        "ok": True, "status": "success", "nodes_count": len(desired_nodes),
-        "created_count": len(values["created"]), "deleted_count": len(values["deleted"]),
-        "recreated_count": len(values["recreated"]), "created": values["created"],
-        "deleted": values["deleted"], "recreated": values["recreated"],
-        "client_reconcile": _strip_raw_payload(values["reconcile_details"]),
-        "nodes": [{"server_id": node["server_id"], "server_name": node["server_name"],
-                   "client_uuid": node["client_uuid"], "client_email": node["client_email"]}
-                  for node in desired_nodes],
-        "materialize": values["materialize_result"], "public_profile_promote": promoted,
-        "pre_publication_verification": verification,
-    }
+    return _build_publication_result(values, promoted, verification)
+
+
 @xray_writer_guarded
 def _restore_xray_generation_checkpoint(adapter: Any, checkpoint_path: Path) -> dict[str, Any]:
     from fwrouter_api.services.xray_runtime_state import _xray_bindings_path
@@ -6205,26 +4326,13 @@ def _reconcile_xray_subscription_profile_nodes_guarded(
                                            "stage": "generation_auto_credentials",
                                            "error_code": "XRAY_GENERATION_AUTO_CREDENTIALS_UNAVAILABLE"})
     try:
-        desired_by_email = {
-            str(node["client_email"]): node
-            for node in desired_nodes
-            if str(node.get("client_email") or "").strip()
-        }
-        token_prefix = ""
-        if token_or_slug:
-            token_prefix = f"sub-{_stable_digest(str(token_or_slug).strip().lower(), length=10)}-"
-        desired_clients = [
-            {
-                "client_uuid": node["client_uuid"],
-                "client_id": node["client_uuid"],
-                "email": node["client_email"],
-                "alias": node["xray_alias"],
-            }
-            for node in desired_nodes
-        ]
-        managed_prefixes = [token_prefix] if token_prefix else ["sub-"]
-        if include_vpn_auto and token_or_slug is None:
-            managed_prefixes.append("vpn-auto-")
+        candidate_inputs = _compile_generation_inputs(
+            desired_nodes, token_or_slug=token_or_slug, include_vpn_auto=include_vpn_auto,
+        )
+        desired_by_email = candidate_inputs.desired_by_email
+        token_prefix = candidate_inputs.token_prefix
+        desired_clients = candidate_inputs.desired_clients
+        managed_prefixes = candidate_inputs.managed_email_prefixes
     except Exception:
         return fail_before_checkpoint({"ok": False, "status": "failed",
                                        "stage": "generation_candidate_projection",
@@ -7240,3 +5348,70 @@ def export_xray_subscription(client_id: str) -> dict[str, Any]:
             "details": details,
         },
     }
+
+# Legacy setattr/monkeypatch support is separate from the canonical operation path.
+# Only actual consumer-local bindings are mirrored; public component functions
+# remain the implementation owners. No module scanning or operation registry.
+_D2_COMPAT_NAMESPACE = globals()
+_D2_COMPAT_ALIASES: _AttributeAliases = {
+    'DEFAULT_DESIRED_MODE_BY_TYPE': ((_D2_COMPAT_NAMESPACE, 'DEFAULT_DESIRED_MODE_BY_TYPE'), (_d2_xray_profile_planning.__dict__, 'DEFAULT_DESIRED_MODE_BY_TYPE'),),
+    'EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE': ((_D2_COMPAT_NAMESPACE, 'EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE'), (_d2_xray_profile_planning.__dict__, 'EXPLICIT_EXTERNAL_CLIENT_SUBJECT_TYPE'),),
+    'Path': ((_D2_COMPAT_NAMESPACE, 'Path'), (_d2_xray_generation_observation.__dict__, 'Path'), (_d2_xray_generation_staging.__dict__, 'Path'),),
+    'VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME': ((_D2_COMPAT_NAMESPACE, 'VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME'), (_d2_xray_profile_planning.__dict__, 'VIRTUAL_CUSTOM_HTTPS_PROXY_SERVER_NAME'),),
+    'VIRTUAL_XRAY_VPN_AUTO_SERVER_ID': ((_D2_COMPAT_NAMESPACE, 'VIRTUAL_XRAY_VPN_AUTO_SERVER_ID'), (_d2_xray_profile_planning.__dict__, 'VIRTUAL_XRAY_VPN_AUTO_SERVER_ID'), (_d2_xray_generation_staging.__dict__, 'VIRTUAL_XRAY_VPN_AUTO_SERVER_ID'),),
+    'VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME': ((_D2_COMPAT_NAMESPACE, 'VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME'), (_d2_xray_profile_planning.__dict__, 'VIRTUAL_XRAY_VPN_AUTO_SERVER_NAME'),),
+    '_FIXED_XRAY_ROUTING_FIELDS': ((_D2_COMPAT_NAMESPACE, '_FIXED_XRAY_ROUTING_FIELDS'), (_d2_xray_generation_observation.__dict__, '_FIXED_XRAY_ROUTING_FIELDS'),),
+    '_annotate_bindings_with_handoff': ((_D2_COMPAT_NAMESPACE, '_annotate_bindings_with_handoff'), (_d2_xray_profile_planning.__dict__, '_annotate_bindings_with_handoff'),),
+    '_applied_handoff_assignments': ((_D2_COMPAT_NAMESPACE, '_applied_handoff_assignments'), (_d2_xray_profile_planning.__dict__, '_applied_handoff_assignments'), (_d2_xray_generation_staging.__dict__, '_applied_handoff_assignments'),),
+    '_build_binding_for_subject': ((_D2_COMPAT_NAMESPACE, '_build_binding_for_subject'), (_d2_xray_profile_planning.__dict__, '_build_binding_for_subject'),),
+    '_capture_generation_auto_selection': ((_D2_COMPAT_NAMESPACE, '_capture_generation_auto_selection'), (_d2_xray_generation_observation.__dict__, '_capture_generation_auto_selection'), (_d2_xray_generation_views.__dict__, '_capture_generation_auto_selection'), (_d2_xray_generation_staging.__dict__, '_capture_generation_auto_selection'),),
+    '_collect_legacy_admission_core_native_proof': ((_D2_COMPAT_NAMESPACE, '_collect_legacy_admission_core_native_proof'), (_d2_xray_generation_observation.__dict__, '_collect_legacy_admission_core_native_proof'), (_d2_xray_generation_staging.__dict__, '_collect_legacy_admission_core_native_proof'),),
+    '_current_bindings_artifact_parity': ((_D2_COMPAT_NAMESPACE, '_current_bindings_artifact_parity'), (_d2_xray_generation_staging.__dict__, '_current_bindings_artifact_parity'),),
+    '_current_projection_fingerprint': ((_D2_COMPAT_NAMESPACE, '_current_projection_fingerprint'), (_d2_xray_generation_staging.__dict__, '_current_projection_fingerprint'),),
+    '_current_xray_projection_snapshot': ((_D2_COMPAT_NAMESPACE, '_current_xray_projection_snapshot'), (_d2_xray_generation_views.__dict__, '_current_xray_projection_snapshot'), (_d2_xray_generation_staging.__dict__, '_current_xray_projection_snapshot'),),
+    '_fixed_xray_generation_context_matches': ((_D2_COMPAT_NAMESPACE, '_fixed_xray_generation_context_matches'), (_d2_xray_generation_observation.__dict__, '_fixed_xray_generation_context_matches'), (_d2_xray_generation_staging.__dict__, '_fixed_xray_generation_context_matches'),),
+    '_fixed_xray_routing_projection': ((_D2_COMPAT_NAMESPACE, '_fixed_xray_routing_projection'), (_d2_xray_generation_observation.__dict__, '_fixed_xray_routing_projection'), (_d2_xray_generation_staging.__dict__, '_fixed_xray_routing_projection'),),
+    '_fixed_xray_routing_snapshot_matches': ((_D2_COMPAT_NAMESPACE, '_fixed_xray_routing_snapshot_matches'), (_d2_xray_generation_observation.__dict__, '_fixed_xray_routing_snapshot_matches'), (_d2_xray_generation_staging.__dict__, '_fixed_xray_routing_snapshot_matches'),),
+    '_generation_source_fingerprint': ((_D2_COMPAT_NAMESPACE, '_generation_source_fingerprint'), (_d2_xray_generation_observation.__dict__, '_generation_source_fingerprint'), (_d2_xray_generation_views.__dict__, '_generation_source_fingerprint'),),
+    '_is_xray_supported_server_config': ((_D2_COMPAT_NAMESPACE, '_is_xray_supported_server_config'), (_d2_xray_profile_planning.__dict__, '_is_xray_supported_server_config'),),
+    '_legacy_admission_core_runtime_fingerprint': ((_D2_COMPAT_NAMESPACE, '_legacy_admission_core_runtime_fingerprint'), (_d2_xray_generation_observation.__dict__, '_legacy_admission_core_runtime_fingerprint'), (_d2_xray_generation_staging.__dict__, '_legacy_admission_core_runtime_fingerprint'),),
+    '_legacy_admission_core_runtime_snapshot': ((_D2_COMPAT_NAMESPACE, '_legacy_admission_core_runtime_snapshot'), (_d2_xray_generation_observation.__dict__, '_legacy_admission_core_runtime_snapshot'),),
+    '_legacy_admission_core_unavailable_reason': ((_D2_COMPAT_NAMESPACE, '_legacy_admission_core_unavailable_reason'), (_d2_xray_generation_observation.__dict__, '_legacy_admission_core_unavailable_reason'), (_d2_xray_generation_staging.__dict__, '_legacy_admission_core_unavailable_reason'),),
+    '_legacy_admission_runtime_fence_facts': ((_D2_COMPAT_NAMESPACE, '_legacy_admission_runtime_fence_facts'), (_d2_xray_generation_observation.__dict__, '_legacy_admission_runtime_fence_facts'),),
+    '_legacy_admission_source_fingerprint': ((_D2_COMPAT_NAMESPACE, '_legacy_admission_source_fingerprint'), (_d2_xray_generation_staging.__dict__, '_legacy_admission_source_fingerprint'),),
+    '_legacy_mihomo_candidate_matches': ((_D2_COMPAT_NAMESPACE, '_legacy_mihomo_candidate_matches'), (_d2_xray_generation_staging.__dict__, '_legacy_mihomo_candidate_matches'),),
+    '_legacy_xray_candidate_matches_active': ((_D2_COMPAT_NAMESPACE, '_legacy_xray_candidate_matches_active'), (_d2_xray_generation_staging.__dict__, '_legacy_xray_candidate_matches_active'),),
+    '_log_mihomo_input_context_change': ((_D2_COMPAT_NAMESPACE, '_log_mihomo_input_context_change'), (_d2_xray_generation_staging.__dict__, '_log_mihomo_input_context_change'),),
+    '_module_state': ((_D2_COMPAT_NAMESPACE, '_module_state'), (_d2_xray_generation_staging.__dict__, '_module_state'),),
+    '_ordinary_fixed_xray_context_matches': ((_D2_COMPAT_NAMESPACE, '_ordinary_fixed_xray_context_matches'), (_d2_xray_generation_observation.__dict__, '_ordinary_fixed_xray_context_matches'),),
+    '_prospective_profile_bindings': ((_D2_COMPAT_NAMESPACE, '_prospective_profile_bindings'), (_d2_xray_generation_staging.__dict__, '_prospective_profile_bindings'),),
+    '_safe_mihomo_input_context_summary': ((_D2_COMPAT_NAMESPACE, '_safe_mihomo_input_context_summary'), (_d2_xray_generation_staging.__dict__, '_safe_mihomo_input_context_summary'),),
+    '_stable_digest': ((_D2_COMPAT_NAMESPACE, '_stable_digest'), (_d2_xray_profile_planning.__dict__, '_stable_digest'),),
+    '_strip_raw_payload': ((_D2_COMPAT_NAMESPACE, '_strip_raw_payload'), (_d2_xray_generation_views.__dict__, '_strip_raw_payload'), (_d2_xray_generation_staging.__dict__, '_strip_raw_payload'),),
+    '_supersession_alias_owns': ((_D2_COMPAT_NAMESPACE, '_supersession_alias_owns'), (_d2_xray_generation_views.__dict__, '_supersession_alias_owns'),),
+    '_verify_generation_recovery_selection_readback': ((_D2_COMPAT_NAMESPACE, '_verify_generation_recovery_selection_readback'), (_d2_xray_generation_staging.__dict__, '_verify_generation_recovery_selection_readback'),),
+    '_verify_generation_selection_readback': ((_D2_COMPAT_NAMESPACE, '_verify_generation_selection_readback'), (_d2_xray_generation_views.__dict__, '_verify_generation_selection_readback'),),
+    '_vpn_auto_servers_for_xray_subscription': ((_D2_COMPAT_NAMESPACE, '_vpn_auto_servers_for_xray_subscription'), (_d2_xray_generation_staging.__dict__, '_vpn_auto_servers_for_xray_subscription'),),
+    '_write_all_fd': ((_D2_COMPAT_NAMESPACE, '_write_all_fd'), (_d2_xray_generation_staging.__dict__, '_write_all_fd'),),
+    '_xray_adapter': ((_D2_COMPAT_NAMESPACE, '_xray_adapter'), (_d2_xray_generation_observation.__dict__, '_xray_adapter'),),
+    '_xray_generation_fingerprint': ((_D2_COMPAT_NAMESPACE, '_xray_generation_fingerprint'), (_d2_xray_generation_observation.__dict__, '_xray_generation_fingerprint'),),
+    '_xray_subject_for_client': ((_D2_COMPAT_NAMESPACE, '_xray_subject_for_client'), (_d2_xray_profile_planning.__dict__, '_xray_subject_for_client'),),
+    'auto_eligible_sql': ((_D2_COMPAT_NAMESPACE, 'auto_eligible_sql'), (_d2_xray_profile_planning.__dict__, 'auto_eligible_sql'),),
+    'base64': ((_D2_COMPAT_NAMESPACE, 'base64'), (_d2_xray_generation_staging.__dict__, 'base64'),),
+    'build_xray_handoff_assignments': ((_D2_COMPAT_NAMESPACE, 'build_xray_handoff_assignments'), (_d2_xray_profile_planning.__dict__, 'build_xray_handoff_assignments'),),
+    'collect_xray_client_mode_directives': ((_D2_COMPAT_NAMESPACE, 'collect_xray_client_mode_directives'), (_d2_xray_profile_planning.__dict__, 'collect_xray_client_mode_directives'),),
+    'collect_xray_runtime_bindings': ((_D2_COMPAT_NAMESPACE, 'collect_xray_runtime_bindings'), (_d2_xray_profile_planning.__dict__, 'collect_xray_runtime_bindings'), (_d2_xray_generation_views.__dict__, 'collect_xray_runtime_bindings'),),
+    'db_session': ((_D2_COMPAT_NAMESPACE, 'db_session'), (_d2_xray_profile_planning.__dict__, 'db_session'), (_d2_xray_generation_observation.__dict__, 'db_session'), (_d2_xray_generation_views.__dict__, 'db_session'), (_d2_xray_generation_staging.__dict__, 'db_session'),),
+    'hashlib': ((_D2_COMPAT_NAMESPACE, 'hashlib'), (_d2_xray_generation_observation.__dict__, 'hashlib'), (_d2_xray_generation_views.__dict__, 'hashlib'), (_d2_xray_generation_staging.__dict__, 'hashlib'),),
+    'json': ((_D2_COMPAT_NAMESPACE, 'json'), (_d2_xray_profile_planning.__dict__, 'json'), (_d2_xray_generation_observation.__dict__, 'json'), (_d2_xray_generation_views.__dict__, 'json'), (_d2_xray_generation_staging.__dict__, 'json'),),
+    'list_desired_subscription_xray_clients': ((_D2_COMPAT_NAMESPACE, 'list_desired_subscription_xray_clients'), (_d2_xray_generation_staging.__dict__, 'list_desired_subscription_xray_clients'),),
+    'list_subscription_profile_tokens': ((_D2_COMPAT_NAMESPACE, 'list_subscription_profile_tokens'), (_d2_xray_generation_staging.__dict__, 'list_subscription_profile_tokens'),),
+    'os': ((_D2_COMPAT_NAMESPACE, 'os'), (_d2_xray_generation_staging.__dict__, 'os'),),
+    'sqlite3': ((_D2_COMPAT_NAMESPACE, 'sqlite3'), (_d2_xray_generation_staging.__dict__, 'sqlite3'),),
+    'stat': ((_D2_COMPAT_NAMESPACE, 'stat'), (_d2_xray_generation_staging.__dict__, 'stat'),),
+    'subject_policy_service': ((_D2_COMPAT_NAMESPACE, 'subject_policy_service'), (_d2_xray_profile_planning.__dict__, 'subject_policy_service'),),
+    'tempfile': ((_D2_COMPAT_NAMESPACE, 'tempfile'), (_d2_xray_generation_staging.__dict__, 'tempfile'),),
+    'write_technical_log': ((_D2_COMPAT_NAMESPACE, 'write_technical_log'), (_d2_xray_generation_staging.__dict__, 'write_technical_log'),),
+    'xray_writer_guard_is_held': ((_D2_COMPAT_NAMESPACE, 'xray_writer_guard_is_held'), (_d2_xray_generation_staging.__dict__, 'xray_writer_guard_is_held'),),
+}
+_install_attribute_aliases(__name__, _D2_COMPAT_ALIASES)

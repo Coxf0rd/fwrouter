@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -115,3 +116,43 @@ class _AdmissionFenceView:
     proof_only_core_apply_id: str
     proof_only_core_enforcement_level: str
     proof_only_core_live_mode: str
+
+
+def build_native_validation_proof(staged_generation: dict[str, Any]) -> dict[str, Any]:
+    """Project staged native validation receipts into the checkpoint proof."""
+    native_receipts = staged_generation.get("native_validation") or {}
+    xray_receipt = native_receipts.get("xray") or {}
+    mihomo_receipts: dict[str, Any] = {}
+    for name in ("transition", "final"):
+        candidate = native_receipts.get(name) or {}
+        validation = candidate.get("validation") or {}
+        receipt_bytes = json.dumps(
+            validation, sort_keys=True, separators=(",", ":"), default=str,
+        ).encode("utf-8")
+        mihomo_receipts[name] = {
+            "ok": validation.get("ok") is True,
+            "candidate_sha256": candidate.get("candidate_sha256"),
+            "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        }
+    identity_receipt_bytes = json.dumps(
+        xray_receipt.get("expected_client_identities") or [],
+        sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")
+    return {
+        "xray": {
+            "ok": xray_receipt.get("stage") == "validated",
+            "candidate_sha256": xray_receipt.get("candidate_sha256"),
+            "expected_client_identities_sha256": hashlib.sha256(identity_receipt_bytes).hexdigest(),
+        },
+        "mihomo": mihomo_receipts,
+    }
+
+
+__all__ = [
+    "_AdmissionFenceView",
+    "_checkpoint_operation_mode",
+    "_checkpoint_selection_for_recovery",
+    "_legacy_admission_checkpoint_payload",
+    "_xray_generation_checkpoint_path",
+    "build_native_validation_proof",
+]

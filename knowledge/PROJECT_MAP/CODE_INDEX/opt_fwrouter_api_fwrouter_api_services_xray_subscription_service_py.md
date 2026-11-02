@@ -104,3 +104,43 @@ checkpoint writes/phases, staged native apply, CAS, last-good and forward recove
 remain here. Moving these would require a separate authority/transaction design;
 this package does not redistribute them. Optional/strict proof admission and
 ordinary source hashes retain their established distinct meanings.
+
+## Stage 6.1 D2 internal boundary
+
+The coordinator retains all credential/identity mutations, operation admission,
+writer guards, checkpoint phases/persistence, CAS/fencing, native activation,
+publication, finalization, last-good and forward recovery. Four components own
+planning (`xray_profile_planning`), observations (`xray_generation_observation`),
+read/result projections (`xray_generation_views`) and private candidate
+preparation (`xray_generation_staging`). Staging can write private candidates
+and run validators; it cannot activate them or advance a checkpoint. The
+checkpoint module constructs native receipt projections without writing them.
+The shared descriptor write primitive in `artifacts` owns no path/phase policy.
+
+```mermaid
+graph TD
+  Coordinator --> Planning
+  Coordinator --> Observation
+  Coordinator --> Views
+  Coordinator --> Staging
+  Staging --> Planning
+  Staging --> Observation
+  Staging --> Views
+  Views --> Observation
+```
+
+Existing read-session windows, error short-circuiting and mutation ordering are
+preserved. The compatibility-only explicit alias table preserves historical
+private imports and supported setattr/monkeypatch restoration without reverse
+implementation imports. Canonical component functions remain stable identities;
+direct module dictionary writes/concurrent hot-patching are unsupported.
+
+D2 extraction baseline: `818b6eacbeb93df2591e8fbed192ff86fd7c5037`.
+The coordinator changes from 7,242 to 5,417 physical lines and from 92 to 61
+top-level functions. Thirty-one moved function ASTs are unchanged (definition
+names excluded); four remaining owner sites delegate pure input/receipt/result
+construction. AST control-flow node count falls from 1,870 to 1,399 in this file;
+this is a structural count, not a performance claim. The largest owner function
+remains 719 lines because mutation/recovery authority has deliberately not
+been split. Component imports and bounded compatibility bindings add lines
+overall; file size alone is not the architectural acceptance criterion.
