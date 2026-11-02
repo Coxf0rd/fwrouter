@@ -296,3 +296,10 @@ authentication or logging subsystem.
 - [Attribute aliases and limitations](backend_fwrouter_api_services_module_attribute_aliases_py.md)
 - [Mihomo one-way configuration/reconciliation boundary](opt_fwrouter_api_fwrouter_api_services_mihomo_config_py.md)
 - [Apply one-way handler and public API boundary](opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_py.md)
+
+### Xray generation components (Stage 6.1 D2)
+
+- [xray_profile_planning](backend_fwrouter_api_services_xray_profile_planning_py.md)
+- [xray_generation_observation](backend_fwrouter_api_services_xray_generation_observation_py.md)
+- [xray_generation_views](backend_fwrouter_api_services_xray_generation_views_py.md)
+- [xray_generation_staging](backend_fwrouter_api_services_xray_generation_staging_py.md)
