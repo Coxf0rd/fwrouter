@@ -277,6 +277,15 @@ def _run_legacy_inventory_admission(args: argparse.Namespace) -> int:
             "last_good_retained",
         }
         output = {key: result[key] for key in safe_keys if key in result}
+        # The strict failure detail is classified by the native-proof owner.
+        # Keep it limited to failed admission responses and verify it against
+        # that same allowlist before extending the CLI's public JSON projection.
+        native_proof_reason = result.get("native_proof_reason")
+        if result.get("ok") is False and isinstance(native_proof_reason, str):
+            from fwrouter_api.services.native_proof import _SAFE_REASON_CODES
+
+            if native_proof_reason in _SAFE_REASON_CODES:
+                output["native_proof_reason"] = native_proof_reason
         if (result.get("ok") is True and result.get("status") == "verified"
                 and result.get("proof_receipt_written") is True):
             output["proof_receipt_written"] = True

@@ -161,6 +161,23 @@
   ],
   "path_rules": [
     {
+      "glob": "host/libexec/fwrouter/fwrouter-xray-sub-gateway.py",
+      "domains": [
+        "xray",
+        "api-contract",
+        "runtime",
+        "installer"
+      ]
+    },
+    {
+      "glob": "installer/tests/test_xray_sub_gateway_http.py",
+      "domains": [
+        "xray",
+        "api-contract",
+        "installer"
+      ]
+    },
+    {
       "glob": "host/sbin/fwrouter-deploy",
       "domains": [
         "installer",
@@ -6894,9 +6911,37 @@
       "slow": false,
       "timeout_seconds": 30,
       "execution_group": "services-events"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "installer",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "Actual standalone Gateway handler, disposable loopback upstream and bounded HTTP clients; synthetic capability paths and error payloads",
+      "fixture_owner": "installer/tests/test_xray_sub_gateway_http.py",
+      "id": "test_xray_sub_gateway_http",
+      "isolation": "Fresh Gateway module; fixture-owned ephemeral 127.0.0.1 servers with bounded socket/thread cleanup; no backend app, production state, Docker, systemd or external network",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "loopback only; fixture-owned ephemeral 127.0.0.1 HTTP servers",
+      "opt_in": false,
+      "path": "installer/tests/test_xray_sub_gateway_http.py",
+      "primary_level": "L3",
+      "risk_notes": "Real HTTP request/response, GET/HEAD, capability paths, headers and safe error/log contracts; does not qualify public proxy exposure or live VPN",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest",
+        "stdlib HTTP server/client; loopback sockets"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "installer-startup"
     }
   ],
-  "version": "2026.10.29.1",
+  "version": "2026.11.02.1",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

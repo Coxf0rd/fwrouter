@@ -62,6 +62,7 @@ def _resolve_upstream_path(raw_path: str) -> str | None:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "FWRouterXraySubGateway/1.0"
+    upstream_timeout = 180
 
     def _write_safe_log(self, event: str, status: object = "-") -> None:
         method = getattr(self, "command", "")
@@ -126,16 +127,18 @@ class Handler(BaseHTTPRequestHandler):
         }
 
         try:
-            conn = http.client.HTTPConnection(UPSTREAM_HOST, UPSTREAM_PORT, timeout=180)
+            conn = http.client.HTTPConnection(
+                UPSTREAM_HOST, UPSTREAM_PORT, timeout=self.upstream_timeout
+            )
             conn.request("GET", upstream_path, headers=headers)
             resp = conn.getresponse()
             body = resp.read()
-        except Exception as exc:
+        except Exception:
             self.send_response(502)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             if send_body:
-                self.wfile.write(f"upstream error: {exc}\n".encode("utf-8"))
+                self.wfile.write(b"upstream unavailable\n")
             return
         finally:
             try:
