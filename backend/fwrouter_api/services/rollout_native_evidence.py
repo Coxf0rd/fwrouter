@@ -22,6 +22,7 @@ from fwrouter_api.services import maintenance_lifecycle_admission as admission
 from fwrouter_api.services import native_proof
 from fwrouter_api.services import subscription
 from fwrouter_api.services import xray_subscription_service as owner
+from fwrouter_api.services.xray_generation_checkpoint import _AdmissionFenceView
 
 
 def _canonical(value: Any) -> bytes:
@@ -127,7 +128,7 @@ def refresh_rollout_native_evidence(
                 raise ValueError("ROLLOUT_NATIVE_GENERATION_CAPABILITY_MISSING")
             # Preserve the proof-only native/intent fences in the capability;
             # the existing promotion owner rechecks them inside its DB commit.
-            fence = owner._AdmissionFenceView(
+            fence = _AdmissionFenceView(
                 proof_only_source_fingerprint=str(proof["source_fingerprint"]),
                 proof_only_core_runtime_fingerprint=str(proof["core_runtime_fingerprint"]),
                 proof_only_selection_revision=int(proof["selection_revision"]),
