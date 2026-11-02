@@ -386,5 +386,3 @@ def validate_mihomo_candidate_config(
         details=result,
     )
     return result
-
-

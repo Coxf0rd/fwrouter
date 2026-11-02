@@ -1,6 +1,7 @@
 """Fresh-process backend import contracts under the existing safety bootstrap."""
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -122,3 +123,21 @@ def test_fresh_import_orders_and_export_identity(tmp_path, order):
     )
     assert result.returncode == 0, result.stderr[-4096:]
     assert json.loads(result.stdout) == {"status": "passed", "order": list(order)}
+
+
+def test_mihomo_implementation_has_no_facade_or_operation_view_dependency():
+    services = ROOT / "backend/fwrouter_api/services"
+    for name in ("mihomo_config_builder", "mihomo_config_validation", "mihomo_reconcile"):
+        tree = ast.parse((services / f"{name}.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert node.module != "fwrouter_api.services.mihomo_config", name
+                if node.module in {None, "fwrouter_api.services"}:
+                    assert all(alias.name != "mihomo_config" for alias in node.names), name
+            if isinstance(node, ast.Import):
+                assert all(alias.name != "fwrouter_api.services.mihomo_config"
+                           for alias in node.names), name
+        for function in (node for node in tree.body if isinstance(node, ast.FunctionDef)):
+            assert not any(isinstance(node, ast.Attribute)
+                           and isinstance(node.value, ast.Name) and node.value.id == "config"
+                           for node in ast.walk(function)), (name, function.name)
