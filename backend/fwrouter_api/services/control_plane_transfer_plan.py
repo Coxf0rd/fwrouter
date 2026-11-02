@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from fwrouter_api.db.connection import initialize_database
+from fwrouter_api.db.connection import readonly_db_session_scope
 from fwrouter_api.services.core_bypass import BYPASS_SETTINGS_KEY
 from fwrouter_api.services.control_plane_transfer_common import (
     CONTROL_PLANE_TABLES,
@@ -135,7 +135,17 @@ def plan_control_plane_import(
     *,
     normalize_runtime_state: bool = True,
 ) -> dict[str, Any]:
-    initialize_database()
+    with readonly_db_session_scope():
+        return _plan_control_plane_import(
+            snapshot, normalize_runtime_state=normalize_runtime_state,
+        )
+
+
+def _plan_control_plane_import(
+    snapshot: dict[str, Any],
+    *,
+    normalize_runtime_state: bool,
+) -> dict[str, Any]:
     validation = validate_control_plane_snapshot(snapshot)
     state = _state_from_snapshot(snapshot)
     simulated = _enriched_subjects_from_snapshot(state)

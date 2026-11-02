@@ -91,33 +91,18 @@ def test_new_provider_binding_defaults_automatic_member_switch_to_disabled(db):
     assert store.get_binding(db, 'a')['allow_automatic_member_switch'] == 0
 
 
-def test_schema_23_provider_policy_migration_preserves_identity_credentials_and_is_idempotent():
-    from fwrouter_api.db.migrations import _migrate_23_to_24
+def test_current_provider_configuration_persists_without_schema_migration(db):
+    from fwrouter_api.db.connection import initialize_database
 
-    legacy = sqlite3.connect(':memory:')
-    legacy.row_factory = sqlite3.Row
-    legacy.execute('''CREATE TABLE provider_bindings (
-        source_ref TEXT PRIMARY KEY, provider_id TEXT NOT NULL, resource_kind TEXT NOT NULL,
-        resource_id TEXT NOT NULL, logical_server_id TEXT NOT NULL, protocol TEXT NOT NULL,
-        enabled INTEGER NOT NULL, binding_revision INTEGER NOT NULL,
-        current_member_id TEXT, current_location_id TEXT, observed_protocol TEXT, observed_at REAL,
-        applied_member_id TEXT, applied_protocol TEXT, applied_at REAL, applied_revision INTEGER,
-        last_outcome TEXT, updated_at REAL NOT NULL)''')
-    legacy.execute('''INSERT INTO provider_bindings VALUES
-        ('source-a','stealthsurf','config','11','logical-a','hysteria2',1,9,
-         '1456','6','hysteria2',1.0,'1456','hysteria2',1.0,9,'verified',1.0)''')
-    legacy.execute('''CREATE TABLE provider_credentials (
-        source_ref TEXT PRIMARY KEY, api_key TEXT NOT NULL)''')
-    legacy.execute("INSERT INTO provider_credentials VALUES ('source-a','fixture-secret')")
+    service.save_provider_configuration('source-a', enabled=True, api_key='fixture-secret', resource_id=11)
+    before = store.get_binding(db, 'source-a')
 
-    _migrate_23_to_24(legacy)
-    _migrate_23_to_24(legacy)
+    assert initialize_database()['ok'] is True
 
-    row = legacy.execute('SELECT * FROM provider_bindings WHERE source_ref=?', ('source-a',)).fetchone()
-    assert row['allow_automatic_member_switch'] == 0
-    assert (row['binding_revision'], row['current_member_id'], row['applied_member_id'], row['applied_revision']) == (9, '1456', '1456', 9)
-    assert legacy.execute('SELECT api_key FROM provider_credentials WHERE source_ref=?', ('source-a',)).fetchone()[0] == 'fixture-secret'
-    legacy.close()
+    after = store.get_binding(db, 'source-a')
+    assert after['allow_automatic_member_switch'] == before['allow_automatic_member_switch']
+    assert after['binding_revision'] == before['binding_revision']
+    assert store.get_credential(db, 'source-a') == 'fixture-secret'
 
 
 @pytest.mark.parametrize('key', [{'secret-value': 1}, 123, '', ['secret-value']])
@@ -320,19 +305,16 @@ def test_api_configuration_and_projection_never_return_key_or_create_secret_jobs
         assert store.get_credential(connection,ref)=='fixture-private-key'
 
 
-def test_env_bootstrap_migrates_only_existing_bound_resources(db,monkeypatch):
-    from fwrouter_api.db.migrations import _migrate_22_to_23
+def test_environment_credentials_do_not_replace_explicit_provider_secret(db,monkeypatch):
     from pydantic import SecretStr
-    monkeypatch.setattr('fwrouter_api.core.config.get_settings',lambda:SimpleNamespace(stealthsurf_api_key=SecretStr('bootstrap-fixture-key'),stealthsurf_config_id=11))
-    _migrate_22_to_23(db)
-    assert store.list_bindings(db)==[]
+    from fwrouter_api.db.connection import initialize_database
+
     store.save_binding(db,'a','stealthsurf',11,'logical-a','hysteria2',True)
-    store.save_binding(db,'b','stealthsurf',22,'logical-b','hysteria2',True)
-    _migrate_22_to_23(db)
-    assert store.get_credential(db,'a')=='bootstrap-fixture-key'
-    assert store.get_credential(db,'b') is None
     store.set_credential(db,'a','user-replacement')
-    _migrate_22_to_23(db)
+    monkeypatch.setattr('fwrouter_api.core.config.get_settings',lambda:SimpleNamespace(stealthsurf_api_key=SecretStr('bootstrap-fixture-key'),stealthsurf_config_id=11))
+
+    assert initialize_database()['ok'] is True
+
     assert store.get_credential(db,'a')=='user-replacement'
 
 

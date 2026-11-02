@@ -87,7 +87,8 @@
 55. `opt_fwrouter_api_fwrouter_api_services_server_subject_overrides_py.md`
 56. `opt_fwrouter_api_fwrouter_api_services_server_preferences_py.md`
 57. `opt_fwrouter_api_fwrouter_api_db_connection_py.md`
-57a. `opt_fwrouter_api_fwrouter_api_db_migrations_py.md`
+57a. `opt_fwrouter_api_fwrouter_api_db_schema_state_py.md`
+57b. `opt_fwrouter_api_fwrouter_api_services_database_schema_read_model_py.md`
 58. `opt_fwrouter_api_fwrouter_api_jobs_manager_py.md`
 59. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_py.md`
 60. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_common_py.md`
@@ -178,7 +179,7 @@
 - read-only diagnostics: `diagnostics.py`, route `routes/diagnose.py`, CLI `fwrouter diagnose`
 - maintenance/retention/logs: `maintenance.py`, `maintenance_scheduler.py`, `member_probe_scheduler.py`, `runtime_convergence.py`, `runtime_convergence_scheduler.py`, `jobs_retention.py`, `logs.py`, `logs_retention.py`, `state_retention.py`, `apply_versions_retention.py`
 - watchdog: `watchdog.py` is the public facade; `watchdog_flows.py` is the compatibility flow facade; `watchdog_manual_flow.py` and `watchdog_auto_flow.py` own manual/automatic orchestration; `watchdog_auto_active_quality_flow.py` and `watchdog_auto_stall_flow.py` own large automatic decision branches; `vpn_runtime_control.py` owns provider-independent active-target/probe/failover boundary; helper modules own status, persistent `watchdog_state`, debounce/cooldown, traffic signal analysis, active-server quality checks, decision logs, result DTOs, and scheduler lifecycle
-- transfer/database/admin: `control_plane_transfer.py` facade and `control_plane_transfer_*`, `database_admin.py`, `schema_state.py`, `migrations.py`, `server_layout.py`
+- transfer/database/admin: `control_plane_transfer.py` facade and `control_plane_transfer_*`, `database_admin.py`, `schema_state.py`, `database_schema_read_model.py`, `server_layout.py`
 - tests: `tests/conftest.py` отвечает за изоляцию pytest от live dataplane/runtime state
 - systemd timer wrappers outside `/opt/fwrouter-api`: `usr_local_sbin_fwrouter_subscription_refresh_job.md`, `usr_local_sbin_fwrouter_jobs_retention_dry_run.md`
 

@@ -548,7 +548,7 @@ class GateContractTests(unittest.TestCase):
             "tests/test_xray.py::test_disabled_subscription_profile_hard_delete_preserves_other_account",
             "tests/test_xray.py::test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mismatch",
             "tests/test_xray.py::test_subscription_profile_delete_reconcile_failure_does_not_revoke_identity_credentials",
-            "tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade",
+            "tests/test_database_schema_lifecycle.py::test_schema26_is_rejected_intact_without_rewriting_identity_records",
             "tests/test_provider_recovery.py::test_verified_reentry_prepare_skips_reconcile_only_with_installed_policy_and_current_intent",
             "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[False]",
             "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[None]",
@@ -1433,7 +1433,7 @@ class GateContractTests(unittest.TestCase):
         self.assertIn("core", plan["domains"])
         self.assertIn("core", plan["regression_policy"]["reasons"])
         for path in ("backend/tests/test_configuration_contract.py", "backend/tests/test_health_contract.py",
-                     "backend/tests/test_state_routes.py", "backend/tests/test_db_migrations.py"):
+                     "backend/tests/test_state_routes.py", "backend/tests/test_database_schema_lifecycle.py"):
             self.assertIn(path, plan["selected_files"])
 
     def test_core_settings_change_selects_shared_consumer_domains(self) -> None:

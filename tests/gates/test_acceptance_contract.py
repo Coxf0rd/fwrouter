@@ -6600,7 +6600,7 @@ class AcceptanceContractTests(unittest.TestCase):
         workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
             encoding="utf-8")
         self.assertIn('"ci:validate-identities": "identity-diagnostic"', workflow)
-        self.assertIn("Run identity migration L3 regression nodes in the isolated gate", workflow)
+        self.assertIn("Run schema identity preservation and retired-upgrade L3 regression nodes in the isolated gate", workflow)
         self.assertIn("python tests/gates/gate.py subset-plan --domain xray --level L3", workflow)
         self.assertIn("tests/gates/gate.py run --plan \"$root/xray-l3-plan.json\"", workflow)
         self.assertIn("Retain sanitized identity qualification evidence", workflow)
@@ -6621,11 +6621,11 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("gate.redact_failure_output(output)", exact_runner)
         self.assertIn("gate.sanitize_junit_artifact(", exact_runner)
         self.assertIn(
-            "tests/test_db_migrations.py::test_database_upgrade_cli_is_explicit_backed_up_and_idempotent",
+            "tests/test_database_schema_lifecycle.py::test_database_upgrade_cli_verifies_current_schema_without_mutation",
             workflow,
         )
         self.assertIn(
-            "tests/test_db_migrations.py::test_database_upgrade_cli_refuses_schema_24_structural_drift_without_backup",
+            "tests/test_database_schema_lifecycle.py::test_database_upgrade_cli_rejects_retired_historical_transitions",
             workflow,
         )
         self.assertIn(

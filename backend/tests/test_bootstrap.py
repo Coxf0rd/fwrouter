@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +11,7 @@ from _test_support import configure_test_state_dir as _configure_env
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import get_db_path
 from fwrouter_api.services.bootstrap import (
     _has_completed_staged_xray_publication,
     bootstrap_backend,
@@ -178,6 +181,7 @@ def test_bootstrap_preserves_builtin_timestamps_when_rows_are_already_canonical(
     assert after_details == before_details
     assert remaining_overrides == 0
 
+
     row_changes: list[int] = []
     original_db_session = system_subjects.db_session
 
@@ -279,6 +283,85 @@ def test_bootstrap_preserves_builtin_timestamps_when_rows_are_already_canonical(
         "systemd_unit": "ssh.service",
     }
     assert host_detail["updated_at"] != sentinel
+
+
+@pytest.mark.no_database_autoinit
+def test_bootstrap_does_not_mutate_or_run_recovery_for_integrity_invalid_database(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    _configure_env(monkeypatch, tmp_path)
+    path = get_db_path()
+    assert initialize_database()["ok"] is True
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO jobs(job_id, job_type, status, input_json) "
+            "VALUES ('pending-before-bootstrap', 'test', 'running', '{}')"
+        )
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            "INSERT INTO subscription_profile_snapshots(token, nodes_json) "
+            "VALUES ('missing-client', '[]')"
+        )
+        connection.commit()
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("bootstrap must stop before DB cleanup or recovery after failed admission")
+
+    monkeypatch.setattr("fwrouter_api.services.bootstrap.cleanup_stale_running_jobs", unexpected)
+    monkeypatch.setattr("fwrouter_api.services.bootstrap.normalize_subject_taxonomy", unexpected)
+    monkeypatch.setattr("fwrouter_api.services.bootstrap.ensure_builtin_system_subjects", unexpected)
+    monkeypatch.setattr("fwrouter_api.services.bootstrap._run_startup_live_recovery_steps", unexpected)
+    monkeypatch.setattr("fwrouter_api.services.bootstrap._run_startup_apply_reconcile_steps", unexpected)
+
+    result = bootstrap_backend()
+
+    assert result["database_schema"]["ok"] is False
+    assert result["stale_jobs_cleaned"] == 0
+    assert result["startup_live_recovery"]["live_routing"]["reason"] == "database_schema_unavailable"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT status FROM jobs WHERE job_id='pending-before-bootstrap'"
+        ).fetchone() == ("running",)
+
+
+@pytest.mark.no_database_autoinit
+def test_api_startup_aborts_before_handlers_or_schedulers_when_database_admission_fails(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from fastapi.testclient import TestClient
+    from fwrouter_api.main import create_app
+
+    _configure_env(monkeypatch, tmp_path)
+    path = get_db_path()
+    assert initialize_database()["ok"] is True
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            "INSERT INTO subscription_profile_snapshots(token, nodes_json) "
+            "VALUES ('missing-client', '[]')"
+        )
+        connection.commit()
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("API startup must abort before post-admission hooks")
+
+    from fwrouter_api import main as main_module
+    for name in (
+        "scrub_jsonl_files", "register_extended_handlers", "start_maintenance_scheduler",
+        "start_member_probe_scheduler", "start_active_observation_scheduler",
+        "start_subject_inventory_scheduler", "start_external_collector_scheduler",
+        "start_runtime_convergence_scheduler", "start_watchdog_scheduler",
+    ):
+        monkeypatch.setattr(main_module, name, unexpected)
+
+    with pytest.raises(RuntimeError, match="FWROUTER_DATABASE_ADMISSION_FAILED"):
+        with TestClient(create_app(enable_startup_tasks=True)):
+            pytest.fail("startup must not enter application lifespan")
+
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
 
 
 def test_list_subjects_accepts_tailscale_alias_filter(monkeypatch, tmp_path: Path) -> None:

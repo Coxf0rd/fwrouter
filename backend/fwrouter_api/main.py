@@ -105,10 +105,14 @@ def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
         with runtime_shared_lease(DEFAULT_STATE_ROOT):
             try:
                 if startup_tasks_enabled:
-                    bootstrap_backend()
-                    # Installer-side database upgrades may run without the service's
-                    # EnvironmentFile paths. Re-scrub configured logs on every API
-                    # startup so an already-current schema cannot skip secret cleanup.
+                    bootstrap_result = bootstrap_backend()
+                    if not bootstrap_result.get("database_schema", {}).get("ok"):
+                        # Do not scrub logs, register job writers, or start
+                        # background workers against a database that failed
+                        # explicit full integrity admission.
+                        raise RuntimeError("FWROUTER_DATABASE_ADMISSION_FAILED")
+                    # Re-scrub configured logs on every API startup so an
+                    # already-current schema cannot skip secret cleanup.
                     paths = get_settings().paths
                     scrub_jsonl_files([paths.operational_log_dir, paths.technical_log_dir])
                     register_extended_handlers(get_default_job_manager())

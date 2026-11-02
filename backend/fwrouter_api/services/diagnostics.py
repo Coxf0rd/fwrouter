@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from fwrouter_api.db.connection import db_session
+from fwrouter_api.db.connection import existing_database_readonly_connection
 from fwrouter_api.db.schema_state import EXPECTED_SCHEMA_VERSION, inspect_database_schema
 from fwrouter_api.services.events import list_recent_events, summarize_events
 from fwrouter_api.services.event_contract import sanitize_value
@@ -428,7 +428,7 @@ def _call_reconcile_loader(loader: Any, *, snapshot: StateSnapshot) -> Reconcile
 def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
     problems: list[DiagnosticProblem] = []
     try:
-        with db_session() as connection:
+        with existing_database_readonly_connection() as connection:
             schema_state = inspect_database_schema(connection)
             integrity_rows = connection.execute("PRAGMA integrity_check").fetchall()
             fk_rows = connection.execute("PRAGMA foreign_key_check").fetchall()
@@ -515,6 +515,16 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
         reason = "database integrity check failed"
     elif fk_count:
         reason = "legacy database references need cleanup; no runtime impact is confirmed"
+    schema_summary = {
+        "status": schema_state.get("status"),
+        "problem_count": len(schema_state.get("problems") or []),
+    }
+    profile = schema_state.get("compatibility_profile")
+    if isinstance(profile, str):
+        schema_summary["compatibility_profile"] = profile
+        notes = schema_state.get("compatibility_notes")
+        if isinstance(notes, list):
+            schema_summary["compatibility_notes"] = [str(note) for note in notes]
     return {
         "status": severity,
         "reason": reason,
@@ -532,10 +542,7 @@ def _check_database() -> tuple[dict[str, Any], list[DiagnosticProblem]]:
         "foreign_key_violations": fk_count,
         "overall_impact": False if fk_count and schema_ok and integrity_ok else True,
         "classification": "legacy_history_issue" if fk_count and schema_ok and integrity_ok else None,
-        "schema": {
-            "status": schema_state.get("status"),
-            "problem_count": len(schema_state.get("problems") or []),
-        },
+        "schema": schema_summary,
     }, problems
 
 
@@ -1071,6 +1078,36 @@ def build_diagnostic_report(*, snapshot: StateSnapshot | None = None, include_hi
     database_section, database_problems = _check_database()
     sections["database"] = database_section
     problems.extend(database_problems)
+
+    if database_section.get("status") == "failed":
+        not_run = {
+            "status": "unknown",
+            "executed": False,
+            "reason_code": "NOT_RUN_DATABASE_ADMISSION_FAILED",
+        }
+        for section_name in ("subjects", "routing", "vpn", "connections", "watchdog"):
+            sections[section_name] = dict(not_run)
+        hidden_sections: dict[str, Any] = {"modules": dict(not_run)}
+        if include_history:
+            hidden_sections["events"] = dict(not_run)
+        summary = {
+            "overall_status": "failed",
+            "generated_at": generated_at,
+            "checks_total": len(sections),
+            "checks_failed": 1,
+            "checks_warning": 0,
+            "hidden_sections": {
+                **hidden_sections,
+                "diagnostic_only_problem_count": 0,
+            },
+        }
+        return DiagnosticReport(
+            status="failed",
+            summary=summary,
+            sections=sections,
+            problems=problems,
+            generated_at=generated_at,
+        )
 
     module_projection, projection_problem = _safe_call(
         "modules",

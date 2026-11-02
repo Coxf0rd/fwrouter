@@ -11,7 +11,8 @@ S61-F06.
 `project_recent_event_summary(events)` receives the existing category-grouped
 ordinary event rows and returns the same compact audit/operational/diagnostic
 projection. It performs the existing bounded server/subject/member label SELECTs
-through the unchanged `db_session`, preserving SQL/query order, sanitization,
+through `db_session` inside the context-local read-only session scope,
+preserving SQL/query order, sanitization,
 field allowlists, event order and snapshot/current/missing fallback.
 
 It adds no cache, persistent state, configuration, event writer, generic
@@ -25,7 +26,8 @@ it has no dependency on HTTP routes or secure-event readers.
 - Full-view summary and exact event retrieval remain with `services.events`.
 - Secure-event admission, registry capabilities, revoke/drain and serialization
   leases remain separate and unchanged.
-- Default SQLite connection/session/WAL/commit/permission behavior is unchanged.
+- These label-only queries use SQLite `mode=ro`; unrelated service DB writers
+  retain normal WAL/permission behavior.
 - Maximum 1,000 IDs per entity kind and 400 logical member pairs are preserved.
 
 ## Verification ownership

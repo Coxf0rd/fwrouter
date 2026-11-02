@@ -10,9 +10,10 @@ Live nftables, `ip rule`, and `ip route` state are not stored as source of truth
 
 - schema source: `/opt/fwrouter-api/fwrouter_api/db/schema.sql`
 - runtime access: `/opt/fwrouter-api/fwrouter_api/db/connection.py`
-- migration runner: `/opt/fwrouter-api/fwrouter_api/db/migrations.py`
+- complete schema admission: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
 - schema drift checks: `/opt/fwrouter-api/fwrouter_api/db/schema_state.py`
-- source expected schema version: `27` (typed subject override targets; deployment is separate)
+- source schema support floor: exact schema `27`; older versions are retained intact and rejected for operator-managed recovery
+- initialization owner: API bootstrap and an explicitly admitted private rebuild candidate only
 - SQLite modes: `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `busy_timeout=30000`
 
 ## Table Domains
@@ -48,7 +49,7 @@ All subjects remain in the shared inventory, but generic behavior must use `subj
 
 `subject_server_overrides` remains the owner of manual per-subject target intent,24-hour expiry and apply status. In schema27, `selected_target_kind` distinguishes a real `server` target from explicit `vpn_auto`. The latter stores SQL NULL in the physical `selected_server_id` foreign key and projects `virtual:xray:vpn-auto` in API/effective DTOs. A legacy NULL with kind `server` is not virtual intent. The foreign key stays enabled and no synthetic server row is created.
 
-The additive26→27 migration changes only this representation/schema marker, preserving historical overrides and credentials/identities. Its DDL and marker must share an atomic savepoint. Both fresh schema and migration enforce the allowed target kinds and virtual/NULL pairing. Native generation source fingerprints and scoped snapshots include target kind. Source verification/CI does not authorize upgrading a live database or rolling an older backend over schema27.
+The historical additive 26→27 migration changed only this representation/schema marker. Schema upgrades are now retired; deployments with an older schema require a separately reviewed recovery/restore plan. Fresh schema enforces the allowed target kinds and virtual/NULL pairing. Native generation source fingerprints and scoped snapshots include target kind. Source verification/CI does not authorize changing a live database.
 
 ### Routing And Runtime
 
@@ -56,7 +57,7 @@ Routing state tables track global mode intent, apply status, artifacts, selector
 
 `apply_versions.core_intent_revision` (schema 26) binds a canonical global apply receipt to the local Core intent revision. It is nullable for pre-26 generations and those legacy rows never prove a current Core apply. A Core enable request remains pending until the existing global apply owner commits the exact current generation, then confirms fresh native enforcement in the same boot/network namespace and atomically settles that revision. Same-mode routing no-op does not settle Core. Explicit enable is required to renew an enabled legacy state with a NULL/stale binding; startup does not infer or manufacture proof.
 
-The schema-25-to-26 migration runs its DDL, initial Core intent row, enabled-Core pending transition, and schema marker inside one SQLite savepoint. An exception before release rolls all four back together, so reopening an interrupted upgrade sees a genuine schema-25 preimage and can retry. This transaction boundary is intentionally scoped to 25-to-26; it is not a blanket wrapper for historical migrations with different transaction behavior.
+Historically, the schema-25-to-26 migration ran its DDL, initial Core intent row, enabled-Core pending transition, and schema marker inside one SQLite savepoint. This historical transaction boundary did not repair or wrap other transitions. Current schema admission requires the complete schema-27 contract.
 
 ### Server Inventory And Subscription Membership
 
@@ -107,16 +108,29 @@ Rules tables store source metadata, update status, parsed domain/IP lists, gener
 
 Traffic tables store raw snapshots, computed deltas, monthly aggregates, and attribution data. Collectors return structured JSON; the backend owns persistence and aggregation.
 
-## Migration Rules
+## Current Schema Lifecycle
 
-- Schema upgrades use explicit sequential migrations `N -> N+1`; the runner applies only missing versions and updates `schema_meta.schema_version` after each successful step.
-- Schema 26 adds the nullable Core revision binding and local revision setting. Migration 25→26 retains legacy apply rows as NULL, initializes the local counter without importing remote provenance, and marks enabled Core pending so an explicit canonical apply is required. The offline upgrade CLI supports canonical 24→26 and 25→26 preimages with protected backups.
+- Existing DB opens use SQLite `mode=rw` (writers) or `mode=ro` (observations), never create a missing file, and validate the complete schema-27 structure on that same handle before writer permission or WAL setup. This admits either the canonical fresh schema or one exact, baseline-derived legacy schema-27 profile; explicit initialization additionally runs `integrity_check` and `foreign_key_check` read-only. Ordinary opens do not run whole-file integrity checks.
+- Schema version other than `27`, missing canonical objects, changed constraints outside an exact known profile, corruption, or unsupported structure fails closed. No upgrade, reset, reseed, or repair is attempted on an existing file.
+- Only explicit bootstrap initialization or an admitted private rebuild candidate may create a missing database. It builds and validates the canonical schema only, in a private sibling, then publishes without replacing a concurrently created path. A concurrent published winner must pass existing-database structural, integrity, and foreign-key checks without being rewritten.
+- Existing-schema inspection admits complete baseline profiles produced by the historical 7→27 and 10/11→27 routes. The allowlist compares the exact full object inventory and all canonical table semantics, with exact fingerprints for the only changed table set; it is not a generic missing-FK/CHECK exception. Both historical profiles lack the three `routing_global_state` foreign keys to `servers`; this compatibility label does not claim those databases enforce them. Inline CHECK placement and ALTER-added column order are retained as captured. Unknown hybrids continue to fail closed. Existing source/pinned backup validation can read these exact profiles without changing them; rebuild candidates remain canonical-only, and the exact source-to-candidate schema equality guard still refuses a legacy-shape rebuild.
+- Repeated initialization of an existing schema-27 database is observational: intentional deleted seed rows and user data remain untouched.
+- Additive non-unique performance indexes remain compatible, as they were explicitly admitted by the prior schema preflight. Additional unique indexes and other unexpected tables, views, triggers, or canonical-object changes are rejected.
+- Writer opens use a process-local positive structural-admission LRU capped at 32 entries. Each open reads `schema_meta.schema_version` and hashes the ordered same-connection `sqlite_master` content inside a query-only SQLite transaction; the key also contains the canonical `schema.sql`/SQLite runtime identity. A cache hit skips repeated PRAGMA introspection only when the exact schema content and version were previously admitted. Invalid schemas are never cached. DDL/content changes produce a different key; the bounded cache is discarded on process restart. It does not cache data integrity, row state, or native proof.
+- `external_connection_migrations` remains a domain-data migration ledger. Its purpose is separate from retired SQLite DDL/schema version transitions.
+- `database upgrade --expected-schema 27` remains a verified, non-mutating current-schema check. Upgrade execution for schemas 24–26 and earlier is retired; old files remain intact for separately reviewed recovery.
+
+## Historical Schema Transition Record
+
+The following notes describe decisions and migrations that were implemented historically. They are not current upgrade instructions. Exact pre-retirement source is preserved in Git history; the Package E retirement audit records the supported transition list and consumer disposition.
+
+- Historical schema upgrades used explicit sequential migrations `N -> N+1`; this runner and its transitions have been removed from current source.
+- Historical schema 26 added the nullable Core revision binding and local revision setting. Migration 25→26 retained legacy apply rows as NULL, initialized the local counter without importing remote provenance, and marked enabled Core pending so an explicit canonical apply was required. Its old offline upgrade route is no longer an apply path.
 - Maintenance/delete paths that remove parent rows must use the shared DB connection with `PRAGMA foreign_keys=ON`; otherwise current schema actions like `apply_versions.job_id -> jobs.job_id ON DELETE SET NULL` and `subscription_clients.account_id -> subscription_accounts.account_id ON DELETE CASCADE` will not fire.
 - External subscription profile deletion waits for successful Xray runtime convergence before deleting the exact `subscription_accounts` row; FK cascade then removes owned `subscription_clients` and `subscription_profile_snapshots`. Failed convergence preserves those rows for retry.
-- Fresh DB bootstrap creates current schema/version directly from `schema.sql`.
-- Keep migrations deterministic and data-preserving.
-- Preserve persistent intent across schema upgrades.
-- Keep legacy/backfill logic in the migration that introduced the corresponding schema transition.
+- Fresh DB initialization creates current schema/version directly from `schema.sql` only when the target file is absent.
+- Historical transitions aimed to preserve persistent intent; do not infer that old transition code remains supported.
+- Historical backfill details remain in the source repository's Git history and existing dated knowledge records.
 - Schema 21 scrubs known credential-bearing operational rows and JSONL logs; API startup repeats the idempotent configured JSONL scrub to cover installer/service environment path differences.
 - Do not infer desired state from live kernel state.
 - Do not create provider-specific module/connection/subject rows only because a provider capability exists or was discovered at runtime.

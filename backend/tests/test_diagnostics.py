@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from pathlib import Path
+import pytest
 
 from fastapi.testclient import TestClient
 
 from fwrouter_api import cli
-from fwrouter_api.db.connection import db_session
+from fwrouter_api.db.connection import db_session, get_db_path
 from fwrouter_api.main import create_app
 from fwrouter_api.services import diagnostics
 from fwrouter_api.services.events import EventSummary
@@ -508,8 +511,13 @@ def test_diagnose_missing_runtime_binding_is_degraded(monkeypatch) -> None:
 
 def test_diagnose_database_schema_mismatch_is_failed(monkeypatch) -> None:
     _healthy_projection_loaders(monkeypatch)
-    monkeypatch.setattr(diagnostics, "build_reconcile_response", _healthy_reconcile)
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("database admission failure must skip dependent diagnostic projections")
 
+    monkeypatch.setattr(diagnostics, "build_reconcile_response", unexpected)
+    monkeypatch.setattr(diagnostics, "_safe_call", unexpected)
+
+    path = get_db_path()
     with db_session() as connection:
         connection.execute(
             """
@@ -517,12 +525,65 @@ def test_diagnose_database_schema_mismatch_is_failed(monkeypatch) -> None:
             VALUES ('schema_version', '0', CURRENT_TIMESTAMP)
             """
         )
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    mode_before = path.stat().st_mode & 0o777
 
     report = diagnostics.build_diagnostic_report()
 
     assert report.status == "failed"
     assert report.sections["database"]["status"] == "failed"
     assert any(problem.source == "database_schema" for problem in report.problems)
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+    assert path.stat().st_mode & 0o777 == mode_before
+    for section_name in ("subjects", "routing", "vpn", "connections", "watchdog"):
+        assert report.sections[section_name] == {
+            "status": "unknown",
+            "executed": False,
+            "reason_code": "NOT_RUN_DATABASE_ADMISSION_FAILED",
+        }
+    hidden = report.summary["hidden_sections"]
+    assert hidden["modules"]["executed"] is False
+    assert hidden["events"]["executed"] is False
+
+
+@pytest.mark.parametrize("database_state", ["missing", "corrupt"])
+def test_diagnostics_database_observation_does_not_create_or_rewrite_unavailable_file(
+    monkeypatch, database_state: str,
+) -> None:
+    path = get_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if database_state == "missing":
+        path.unlink(missing_ok=True)
+        Path(f"{path}-wal").unlink(missing_ok=True)
+        Path(f"{path}-shm").unlink(missing_ok=True)
+        before_bytes = None
+        before_mode = None
+    else:
+        Path(f"{path}-wal").unlink(missing_ok=True)
+        Path(f"{path}-shm").unlink(missing_ok=True)
+        payload = b"synthetic corrupt test-owned database\x00"
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        before_bytes = hashlib.sha256(payload).hexdigest()
+        before_mode = path.stat().st_mode & 0o777
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("unavailable database must skip dependent diagnostic projections")
+
+    monkeypatch.setattr(diagnostics, "build_reconcile_response", unexpected)
+    monkeypatch.setattr(diagnostics, "_safe_call", unexpected)
+    report = diagnostics.build_diagnostic_report()
+
+    assert report.status == "failed"
+    assert report.sections["database"]["status"] == "failed"
+    assert report.sections["database"]["reason_code"] == "DATABASE_UNAVAILABLE"
+    if database_state == "missing":
+        assert not path.exists()
+    else:
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == before_bytes
+        assert path.stat().st_mode & 0o777 == before_mode
+    assert report.sections["subjects"]["executed"] is False
+    assert report.summary["hidden_sections"]["modules"]["executed"] is False
 
 
 def test_diagnose_diagnostic_only_events_do_not_degrade_system(monkeypatch) -> None:
