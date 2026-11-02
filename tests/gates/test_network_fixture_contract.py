@@ -1229,7 +1229,8 @@ class NetworkFixtureContractTests(unittest.TestCase):
     def test_xray_incarnation_evidence_reads_only_bounded_current_worker_log_append(self):
         source_path = ROOT / "tests" / "application_acceptance" / "test_xray_generation.py"
         tree = ast.parse(source_path.read_text(encoding="utf-8"))
-        selected_names = {"_PROVIDER_WORKER_LOG_PREFIX", "_PROVIDER_WORKER_LOG_MAX_FILES",
+        selected_names = {"_PROVIDER_WORKER_LOG_PREFIX", "_MIHOMO_RECONCILE_WORKER_LOG_PREFIX",
+                          "_PROVIDER_WORKER_LOG_PREFIXES", "_PROVIDER_WORKER_LOG_MAX_FILES",
                           "_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES"}
         selected_functions = {"_snapshot_provider_worker_logs", "_provider_worker_records_since"}
         selected = []
