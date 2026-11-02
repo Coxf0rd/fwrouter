@@ -1,8 +1,8 @@
-# `/opt/fwrouter-api/fwrouter/api/services/xray/subscription/service.py`
+# `backend/fwrouter_api/services/xray_subscription_service.py`
 
 ## Purpose
 
-Extracted module from the apply/Xray split. Keep this card concise and update the shared project map separately when responsibilities change.
+Single coordinator for subscription identity intent, staged Xray/Mihomo publication, generation checkpoint transitions and owned forward recovery.
 
 ## Notes
 
@@ -80,3 +80,27 @@ Extracted module from the apply/Xray split. Keep this card concise and update th
 
 Source commits `001c6e9`, `95f54c1`, `5728d85`, `a139e66` implement fenced current-state recovery, native loaded-identity/config readback, safe terminal receipt/checkpoint closure, and deferred staged publication. Live verification covered the current 78-identity generation and a later no-op refresh; changed-input live acceptance remains open. The original October 2 exception cause remains unproven. See the [recovery report](/srv/fwrouter/knowledge/audits/xray_generation_recovery_2026-10-04/REPORT.md).
 Proof-only Core admission includes the durable Core intent revision in source/runtime fingerprints and rejects legacy or stale apply rows whose nullable revision binding does not match current intent. The Core native proof records boot/network-namespace context; Xray/Mihomo incarnation checks remain separate inventory-admission fences.
+
+## Stage 6.1 Package D: read contracts versus mutation authority
+
+```mermaid
+flowchart TD
+  C[Xray subscription coordinator] --> P[Admission config equivalence]
+  C --> K[Checkpoint and fence read contracts]
+  C --> F[Explicit-connection fingerprint projections]
+  R[Read consumers] --> C
+  R --> K
+```
+
+The three read components have no dependency back to the coordinator. Existing
+private callable seams remain at the coordinator where supported consumers and
+tests require late patching; these adapters do not duplicate the implementation.
+The fence DTO may be consumed through its explicit leaf contract. The source
+fingerprint covers the new executable files in addition to the coordinator.
+
+Credential creation/revocation and migration, generated-subject/override writers,
+prospective policy/native snapshots, live proof gathering, operation admission,
+checkpoint writes/phases, staged native apply, CAS, last-good and forward recovery
+remain here. Moving these would require a separate authority/transaction design;
+this package does not redistribute them. Optional/strict proof admission and
+ordinary source hashes retain their established distinct meanings.

@@ -141,3 +141,83 @@ def test_mihomo_implementation_has_no_facade_or_operation_view_dependency():
             assert not any(isinstance(node, ast.Attribute)
                            and isinstance(node.value, ast.Name) and node.value.id == "config"
                            for node in ast.walk(function)), (name, function.name)
+
+
+_XRAY_LEAF_CHILD = textwrap.dedent("""\
+    import importlib
+    import importlib.util
+    import json
+    from pathlib import Path
+    import sys
+    import threading
+
+    spec = importlib.util.spec_from_file_location(
+        '_xray_leaf_contract_bootstrap', Path('tests/_isolation_bootstrap.py'),
+    )
+    bootstrap = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = bootstrap
+    spec.loader.exec_module(bootstrap)
+    bootstrap.configure_test_process()
+    from fwrouter_api.core.config import Settings
+    Settings.model_config['env_file'] = None
+    db_path = Settings().paths.db_path
+    before_threads = {thread.ident for thread in threading.enumerate()}
+    assert not db_path.exists()
+    prefix = 'fwrouter_api.services.'
+    leaf_first = json.loads(sys.argv[1])
+    if not leaf_first:
+        importlib.import_module(prefix + 'xray_subscription_service')
+    leaves = {name: importlib.import_module(prefix + name) for name in (
+        'xray_admission_config_proof', 'xray_generation_checkpoint',
+        'xray_generation_fingerprint',
+    )}
+    if leaf_first:
+        assert prefix + 'xray_subscription_service' not in sys.modules
+    assert not db_path.exists()
+    assert {thread.ident for thread in threading.enumerate()} == before_threads
+    owner = importlib.import_module(prefix + 'xray_subscription_service')
+    for name in ('_legacy_xray_candidate_matches_active', '_legacy_mihomo_candidate_matches'):
+        assert getattr(owner, name) is getattr(leaves['xray_admission_config_proof'], name)
+    for name in (
+        '_xray_generation_checkpoint_path', '_legacy_admission_checkpoint_payload',
+        '_checkpoint_operation_mode', '_checkpoint_selection_for_recovery',
+        '_AdmissionFenceView',
+    ):
+        assert getattr(owner, name) is getattr(leaves['xray_generation_checkpoint'], name)
+    assert owner._identity_projection_reference_sha256 is leaves[
+        'xray_generation_fingerprint'].identity_projection_reference_sha256
+    assert not db_path.exists()
+    assert {thread.ident for thread in threading.enumerate()} == before_threads
+    print(json.dumps({'status': 'passed', 'leaf_first': leaf_first}))
+""")
+
+
+@pytest.mark.parametrize("leaf_first", [True, False])
+def test_xray_read_contract_imports_and_compatibility_identity(tmp_path, leaf_first):
+    suite, _reports = _GATE.create_suite_root(tmp_path, "xray-read-contract")
+    env = _GATE.clean_test_environment(suite)
+    env["PYTHONPATH"] = str(ROOT / "backend")
+    env["FWROUTER_PYTEST_COORDINATOR_ROOT"] = str(suite)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("FWROUTER_GATE_NODE_REPORT", None)
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", _XRAY_LEAF_CHILD, json.dumps(leaf_first)],
+        cwd=ROOT / "backend", env=env, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr[-4096:]
+    assert json.loads(result.stdout) == {"status": "passed", "leaf_first": leaf_first}
+
+
+def test_xray_read_contracts_have_no_reverse_coordinator_import():
+    services = ROOT / "backend/fwrouter_api/services"
+    for name in (
+        "xray_admission_config_proof", "xray_generation_checkpoint",
+        "xray_generation_fingerprint",
+    ):
+        tree = ast.parse((services / f"{name}.py").read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert not any("xray_subscription_service" in alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                assert "xray_subscription_service" not in (node.module or "")
+                assert not any("xray_subscription_service" in alias.name for alias in node.names)
