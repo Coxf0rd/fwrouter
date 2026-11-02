@@ -1,20 +1,23 @@
+"""Public compatibility facade for Mihomo config and reconcile operations."""
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
+from pathlib import Path as Path
+from typing import Any as Any
 
 import yaml as yaml
 
-from fwrouter_api.services.artifacts import atomic_write_text
+from fwrouter_api.services.artifacts import atomic_write_text as atomic_write_text
 from fwrouter_api.services.custom_servers import (
-    resolve_mihomo_runtime_proxy_rows,
+    resolve_mihomo_runtime_proxy_rows as resolve_mihomo_runtime_proxy_rows,
     resolve_runtime_proxy_rows as resolve_runtime_proxy_rows,
 )
-from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.logs import (
+    write_operational_log as write_operational_log,
+    write_technical_log as write_technical_log,
+)
 from fwrouter_api.services.mihomo_runtime import restart_mihomo_container as restart_mihomo_container
 from fwrouter_api.services.modules import managed_runtime_operation_blocked as managed_runtime_operation_blocked
-from fwrouter_api.services.mihomo_serialization import dump_mihomo_config
-
+from fwrouter_api.services.mihomo_serialization import dump_mihomo_config as dump_mihomo_config
 from fwrouter_api.services.mihomo_config_paths import (
     APPLIED_MANIFEST_PATH as APPLIED_MANIFEST_PATH,
     BASE_CONFIG_PATH as BASE_CONFIG_PATH,
@@ -22,53 +25,62 @@ from fwrouter_api.services.mihomo_config_paths import (
     DEFAULT_FULL_VPN_UDP_TPROXY_PORT as DEFAULT_FULL_VPN_UDP_TPROXY_PORT,
     DEFAULT_TRANSPARENT_TCP_REDIR_PORT as DEFAULT_TRANSPARENT_TCP_REDIR_PORT,
     DEFAULT_TRANSPARENT_UDP_TPROXY_PORT as DEFAULT_TRANSPARENT_UDP_TPROXY_PORT,
-    EXPLICIT_MIXED_LISTENER_BIND,
-    EXPLICIT_MIXED_LISTENER_NAME,
-    EXPLICIT_MIXED_LISTENER_PORT,
+    EXPLICIT_MIXED_LISTENER_BIND as EXPLICIT_MIXED_LISTENER_BIND,
+    EXPLICIT_MIXED_LISTENER_NAME as EXPLICIT_MIXED_LISTENER_NAME,
+    EXPLICIT_MIXED_LISTENER_PORT as EXPLICIT_MIXED_LISTENER_PORT,
     FULL_VPN_REDIR_LISTENER_NAME as FULL_VPN_REDIR_LISTENER_NAME,
-    FULL_VPN_RULE_NAME,
+    FULL_VPN_RULE_NAME as FULL_VPN_RULE_NAME,
     FULL_VPN_TPROXY_LISTENER_NAME as FULL_VPN_TPROXY_LISTENER_NAME,
     LEGACY_INBOUND_KEYS as LEGACY_INBOUND_KEYS,
     MIHOMO_CANDIDATE_CONFIG_PATH as MIHOMO_CANDIDATE_CONFIG_PATH,
-    MIHOMO_CONTROLLER_ADDRESS,
+    MIHOMO_CONTROLLER_ADDRESS as MIHOMO_CONTROLLER_ADDRESS,
     SUBJECT_SELECTOR_PREFIX as SUBJECT_SELECTOR_PREFIX,
     TRANSPARENT_BIND_ADDRESS as TRANSPARENT_BIND_ADDRESS,
     TRANSPARENT_REDIR_LISTENER_NAME as TRANSPARENT_REDIR_LISTENER_NAME,
-    TRANSPARENT_TPROXY_LISTENER_NAME,
+    TRANSPARENT_TPROXY_LISTENER_NAME as TRANSPARENT_TPROXY_LISTENER_NAME,
     TRANSPARENT_TPROXY_PROXY_NAME as TRANSPARENT_TPROXY_PROXY_NAME,
-    TRANSPARENT_TPROXY_RULE_NAME,
+    TRANSPARENT_TPROXY_RULE_NAME as TRANSPARENT_TPROXY_RULE_NAME,
     XRAY_MIHOMO_LISTENER_PREFIX as XRAY_MIHOMO_LISTENER_PREFIX,
     _iso8601_mtime as _iso8601_mtime,
     _resolved_base_config_path as _resolved_base_config_path,
-    _resolved_candidate_config_path,
+    _resolved_candidate_config_path as _resolved_candidate_config_path,
     _resolved_last_good_mihomo_dir as _resolved_last_good_mihomo_dir,
-    _safe_load_yaml,
+    _safe_load_yaml as _safe_load_yaml,
     subject_selector_name as subject_selector_name,
 )
 from fwrouter_api.services.mihomo_config_inbounds import (
-    _build_explicit_mixed_listener,
-    _build_managed_transparent_listeners,
-    _build_xray_handoff_listeners,
-    _collect_xray_handoff_assignments,
-    _ensure_fwrouter_sniffer,
-    _load_base_config,
-    _managed_full_vpn_redir_port,
-    _managed_full_vpn_tproxy_port,
-    _managed_transparent_redir_port,
-    _managed_transparent_tproxy_port,
-    _resolve_transparent_bind_address,
-    _sanitize_fwrouter_managed_inbounds,
+    _build_explicit_mixed_listener as _build_explicit_mixed_listener,
+    _build_managed_transparent_listeners as _build_managed_transparent_listeners,
+    _build_xray_handoff_listeners as _build_xray_handoff_listeners,
+    _collect_xray_handoff_assignments as _collect_xray_handoff_assignments,
+    _ensure_fwrouter_sniffer as _ensure_fwrouter_sniffer,
+    _load_base_config as _load_base_config,
+    _managed_full_vpn_redir_port as _managed_full_vpn_redir_port,
+    _managed_full_vpn_tproxy_port as _managed_full_vpn_tproxy_port,
+    _managed_transparent_redir_port as _managed_transparent_redir_port,
+    _managed_transparent_tproxy_port as _managed_transparent_tproxy_port,
+    _resolve_transparent_bind_address as _resolve_transparent_bind_address,
+    _sanitize_fwrouter_managed_inbounds as _sanitize_fwrouter_managed_inbounds,
+)
+from fwrouter_api.services import mihomo_config_builder as _builder
+from fwrouter_api.services import mihomo_config_proxies as _proxies
+from fwrouter_api.services import mihomo_config_validation as _validation
+from fwrouter_api.services import mihomo_reconcile as _reconcile
+from fwrouter_api.services.module_attribute_aliases import (
+    AttributeAliases as _AttributeAliases,
+    install_attribute_aliases as _install_attribute_aliases,
 )
 from fwrouter_api.services.mihomo_config_proxies import (
-    _ensure_selector_groups,
-    _fixed_runtime_target,
-    _merge_runtime_proxies,
+    _ensure_selector_groups as _ensure_selector_groups,
+    _fixed_runtime_target as _fixed_runtime_target,
+    _merge_runtime_proxies as _merge_runtime_proxies,
+    _runtime_proxy_inventory_count as _runtime_proxy_inventory_count,
 )
 from fwrouter_api.services.mihomo_config_rules import (
     _build_fallback_rule as _build_fallback_rule,
-    _build_mihomo_config_with_source,
+    _build_mihomo_config_with_source as _build_mihomo_config_with_source,
     _build_transparent_fallback_rule as _build_transparent_fallback_rule,
-    _resolved_selective_default,
+    _resolved_selective_default as _resolved_selective_default,
 )
 from fwrouter_api.services.mihomo_config_status import (
     _configs_equal as _configs_equal,
@@ -77,392 +89,59 @@ from fwrouter_api.services.mihomo_config_status import (
     get_mihomo_config_status as get_mihomo_config_status,
     mihomo_runtime_satisfies_routing as mihomo_runtime_satisfies_routing,
 )
-
-
-def _runtime_proxy_inventory_count() -> int:
-    rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
-    return sum(
-        1
-        for row in rows
-        if isinstance(row, dict)
-        and isinstance(row.get("raw"), dict)
-        and str((row.get("raw") or {}).get("name") or "").strip()
-    )
-
-
-def _write_mihomo_reconcile_logs(
-    *,
-    ok: bool,
-    event_type: str,
-    message: str,
-    details: dict[str, Any],
-    operational_level: str = "info",
-    technical_level: str = "info",
-) -> None:
-    if operational_level != "debug":
-        write_operational_log(
-            event_type=event_type,
-            level=operational_level,
-            message=message,
-            details=details,
-        )
-    write_technical_log(
-        component="mihomo",
-        event_type=event_type,
-        level=technical_level,
-        message=message,
-        details=details,
-    )
-
-
-def build_mihomo_config(
-    routing: dict[str, Any] | None = None,
-    *,
-    xray_handoff_assignments: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    rules, metadata = _build_mihomo_config_with_source(routing)
-
-    base_config = _load_base_config()
-    base_config, sanitized_inbounds = _sanitize_fwrouter_managed_inbounds(base_config)
-    handoff_assignments = (
-        _collect_xray_handoff_assignments()
-        if xray_handoff_assignments is None
-        else list(xray_handoff_assignments)
-    )
-    required_last_good_handoff_proxies = {
-        str(assignment.get("proxy") or "").strip()
-        for assignment in handoff_assignments
-        if str(assignment.get("proxy") or "").strip()
-    }
-    required_last_good_handoff_server_ids = {
-        str(assignment.get("selected_server_id") or "").strip()
-        for assignment in handoff_assignments
-        if str(assignment.get("selected_server_id") or "").strip()
-    }
-    fixed_runtime_target = _fixed_runtime_target(routing)
-    base_config["rules"] = list(rules)
-    base_config["proxies"] = _merge_runtime_proxies(
-        base_config,
-        routing=routing,
-        required_last_good_names=required_last_good_handoff_proxies,
-        required_last_good_server_ids=required_last_good_handoff_server_ids,
-    )
-    base_config["proxy-groups"] = _ensure_selector_groups(
-        base_config,
-        routing=routing,
-        fixed_runtime_target=fixed_runtime_target,
-    )
-    sub_rules = base_config.get("sub-rules")
-    if not isinstance(sub_rules, dict):
-        sub_rules = {}
-    else:
-        sub_rules = dict(sub_rules)
-    sub_rules[TRANSPARENT_TPROXY_RULE_NAME] = list(metadata["transparent_rules"])
-    sub_rules[FULL_VPN_RULE_NAME] = list(metadata["full_vpn_rules"])
-    base_config["sub-rules"] = sub_rules
-    transparent_bind_address = _resolve_transparent_bind_address()
-    managed_transparent_listeners = _build_managed_transparent_listeners(transparent_bind_address)
-    base_config["listeners"] = (
-        [_build_explicit_mixed_listener()]
-        + managed_transparent_listeners
-        + list(base_config.get("listeners") or [])
-        + _build_xray_handoff_listeners(handoff_assignments)
-    )
-    transparent_redir_port = _managed_transparent_redir_port()
-    transparent_tproxy_port = _managed_transparent_tproxy_port()
-    full_vpn_redir_port = _managed_full_vpn_redir_port()
-    full_vpn_tproxy_port = _managed_full_vpn_tproxy_port()
-    if "redir-port" in base_config:
-        del base_config["redir-port"]
-    if "tproxy-port" in base_config:
-        del base_config["tproxy-port"]
-    base_config["bind-address"] = transparent_bind_address
-    base_config["external-controller"] = MIHOMO_CONTROLLER_ADDRESS
-    base_config["allow-lan"] = True
-    # FWRouter transparent ingress is currently IPv4-only. Leaving Mihomo
-    # IPv6 enabled here can make the tproxy listener bind as IPv6-only
-    # (`[::]:5202`), which breaks LAN transparent interception for IPv4
-    # clients even though the YAML still says `listen: 0.0.0.0`.
-    base_config["ipv6"] = False
-    base_config.setdefault("mode", "rule")
-    _ensure_fwrouter_sniffer(base_config)
-    base_config.setdefault("fwrouter", {})
-    if isinstance(base_config["fwrouter"], dict):
-        base_config["fwrouter"].update(
-            {
-                "resolved_selective_default": metadata["resolved_selective_default"],
-                "final_match_rule": metadata["final_match_rule"],
-                "transparent_final_match_rule": metadata["transparent_final_match_rule"],
-                "rendered_rules_count": metadata["rendered_rules_count"],
-                "scoped_vpn_source_rules_count": metadata["scoped_vpn_source_rules_count"],
-                "transparent_rule_name": TRANSPARENT_TPROXY_RULE_NAME,
-                "path_kind": metadata["path_kind"],
-                "state_consistency_ok": True,
-                "transparent_mechanism": "split_redir_tproxy_ports",
-                "mixed_listener_name": EXPLICIT_MIXED_LISTENER_NAME,
-                "mixed_listener_bind": EXPLICIT_MIXED_LISTENER_BIND,
-                "mixed_listener_port": EXPLICIT_MIXED_LISTENER_PORT,
-                "transparent_listener_name": TRANSPARENT_TPROXY_LISTENER_NAME,
-                "transparent_listener_bind": transparent_bind_address,
-                "transparent_redir_port": transparent_redir_port,
-                "transparent_tproxy_port": transparent_tproxy_port,
-                "full_vpn_redir_port": full_vpn_redir_port,
-                "full_vpn_tproxy_port": full_vpn_tproxy_port,
-                "transparent_listener_port": transparent_tproxy_port,
-                "transparent_inbound_rules": [],
-                "sanitized_legacy_inbound_keys": list(sanitized_inbounds["removed_top_level_keys"]),
-                "sanitized_managed_listeners": list(sanitized_inbounds["removed_listener_names"]),
-            }
-        )
-    return base_config
-
-
 from fwrouter_api.services.mihomo_config_validation import (
-    _validate_candidate_structure,
-    _validate_candidate_with_binary,
+    _validate_candidate_structure as _validate_candidate_structure,
+    _validate_candidate_with_binary as _validate_candidate_with_binary,
 )
-
-def write_mihomo_candidate_config(
-    routing: dict[str, Any] | None = None,
-    *,
-    include_internal_config: bool = False,
-    candidate_path: str | Path | None = None,
-    xray_handoff_assignments: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Generate and write Mihomo config."""
-    from fwrouter_api.services.mihomo_reconcile_fingerprint import (
-        _candidate_provenance_path, current_mihomo_input_fingerprint,
-        record_candidate_provenance,
-    )
-
-    try:
-        before_fingerprint = current_mihomo_input_fingerprint(routing)
-    except Exception:
-        before_fingerprint = None
-    base_config = build_mihomo_config(
-        routing,
-        xray_handoff_assignments=xray_handoff_assignments,
-    )
-    rules = list(base_config.get("rules") or [])
-    handoff_assignments = (
-        _collect_xray_handoff_assignments()
-        if xray_handoff_assignments is None
-        else list(xray_handoff_assignments)
-    )
-
-    resolved_candidate_path = Path(candidate_path or _resolved_candidate_config_path())
-    atomic_write_text(resolved_candidate_path, dump_mihomo_config(base_config))
-    if resolved_candidate_path.resolve(strict=False) == Path(_resolved_candidate_config_path()).resolve(strict=False):
-        try:
-            after_fingerprint = current_mihomo_input_fingerprint(routing)
-        except Exception:
-            after_fingerprint = None
-        if (isinstance(before_fingerprint, dict) and isinstance(after_fingerprint, dict)
-                and before_fingerprint.get("hash") == after_fingerprint.get("hash")):
-            record_candidate_provenance(
-                candidate_path=resolved_candidate_path, fingerprint=after_fingerprint,
-            )
-        else:
-            _candidate_provenance_path().unlink(missing_ok=True)
-
-    fwrouter_meta = base_config.get("fwrouter") if isinstance(base_config.get("fwrouter"), dict) else {}
-    result = {
-        "candidate_path": str(resolved_candidate_path),
-        "rules_count": len(rules),
-        "handoff_assignments_count": len(handoff_assignments),
-        "resolved_selective_default": fwrouter_meta.get("resolved_selective_default"),
-        "final_match_rule": fwrouter_meta.get("final_match_rule"),
-        "transparent_final_match_rule": fwrouter_meta.get("transparent_final_match_rule"),
-    }
-    if include_internal_config:
-        result["_candidate_config"] = base_config
-    write_technical_log(
-        component="mihomo",
-        event_type="mihomo_candidate_config_written",
-        level="info",
-        message="Mihomo candidate config generated.",
-        details={
-            "candidate_path": result["candidate_path"],
-            "rules_count": result["rules_count"],
-            "resolved_selective_default": result["resolved_selective_default"],
-            "final_match_rule": result["final_match_rule"],
-            "transparent_final_match_rule": result["transparent_final_match_rule"],
-            "handoff_assignments_count": result["handoff_assignments_count"],
-        },
-    )
-    return result
-
-
-def validate_mihomo_candidate_config(
-    routing: dict[str, Any] | None = None,
-    *,
-    candidate_config: dict[str, Any] | None = None,
-    candidate_path: str | Path | None = None,
-) -> dict[str, Any]:
-    resolved_candidate_path = str(candidate_path or _resolved_candidate_config_path())
-    candidate_config = candidate_config if isinstance(candidate_config, dict) else _safe_load_yaml(resolved_candidate_path)
-    if not isinstance(candidate_config, dict):
-        return {
-            "ok": False,
-            "returncode": 1,
-            "stdout_tail": "",
-            "stderr_tail": "Candidate config is missing or invalid.",
-            "error_code": "MIHOMO_CANDIDATE_INVALID",
-        }
-
-    selective_default = _resolved_selective_default(routing)
-    structural = _validate_candidate_structure(candidate_config, routing=routing)
-    binary_validation = _validate_candidate_with_binary(resolved_candidate_path)
-
-    error_code = None
-    stderr_tail = ""
-    if not structural["allow_lan_enabled"]:
-        error_code = "MIHOMO_ALLOW_LAN_REQUIRED"
-        stderr_tail = "FWRouter Mihomo contour requires allow-lan=true."
-    elif structural["routing_mark_value"] != structural["expected_routing_mark_value"]:
-        error_code = "MIHOMO_ROUTING_MARK_MISMATCH"
-        stderr_tail = (
-            "Mihomo routing-mark does not match the FWRouter bypass mark contract."
-        )
-    elif structural["legacy_inbound_keys_present"]:
-        error_code = "MIHOMO_LEGACY_INBOUND_CONFLICT"
-        stderr_tail = (
-            "Candidate Mihomo config still contains legacy top-level inbound keys: "
-            + ", ".join(structural["legacy_inbound_keys_present"])
-        )
-    elif structural["mixed_listener_count"] != 1:
-        error_code = "MIHOMO_MIXED_LISTENER_CONFLICT"
-        stderr_tail = "FWRouter explicit mixed listener must exist exactly once."
-    elif (
-        structural["mixed_listener_bind"] != EXPLICIT_MIXED_LISTENER_BIND
-        or structural["mixed_listener_port"] != EXPLICIT_MIXED_LISTENER_PORT
-        or structural["mixed_listener_proxy"] != "vpn-global"
-    ):
-        error_code = "MIHOMO_MIXED_LISTENER_INVALID"
-        stderr_tail = "FWRouter explicit mixed listener does not match the expected 127.0.0.1:5201 -> vpn-global contract."
-    elif not structural["proxy_inventory_ok"]:
-        error_code = "MIHOMO_PROXYSET_EMPTY"
-        stderr_tail = "Candidate Mihomo config has no proxies while runtime VPN inventory is non-empty."
-    elif not structural["vpn_auto_present"]:
-        error_code = "MIHOMO_VPN_AUTO_MISSING"
-        stderr_tail = "Candidate Mihomo config is missing vpn-auto selector."
-    elif not structural["vpn_global_present"]:
-        error_code = "MIHOMO_VPN_GLOBAL_MISSING"
-        stderr_tail = "Candidate Mihomo config is missing vpn-global selector."
-    elif (
-        str((routing or {}).get("server_mode") or "auto").strip().lower() == "fixed"
-        and not structural.get("fixed_targetless_direct_compat")
-        and not structural.get("fixed_global_membership_ok")
-    ):
-        error_code = "MIHOMO_FIXED_GLOBAL_MEMBERSHIP_INVALID"
-        stderr_tail = "Fixed vpn-global selector must contain only REJECT and its canonical fixed target."
-    elif (
-        str((routing or {}).get("server_mode") or "auto").strip().lower() != "fixed"
-        and not structural["vpn_global_has_vpn_auto"]
-    ):
-        error_code = "MIHOMO_VPN_GLOBAL_MISWIRED"
-        stderr_tail = "vpn-global selector does not include vpn-auto."
-    elif not structural["selector_groups_ok"]:
-        error_code = "MIHOMO_SELECTOR_FAIL_CLOSED_MISMATCH"
-        stderr_tail = "FWRouter-owned VPN selectors must exclude DIRECT and terminate in REJECT."
-    elif structural["transparent_required"] and structural["transparent_listener_count"] != 2:
-        error_code = "MIHOMO_TRANSPARENT_LISTENER_CONFLICT"
-        stderr_tail = "FWRouter transparent ingress must expose exactly one REDIR port and one TPROXY port."
-    elif structural["transparent_required"] and not structural["transparent_listener_present"]:
-        error_code = "MIHOMO_TRANSPARENT_LISTENER_MISSING"
-        stderr_tail = "Transparent REDIR/TPROXY ports are missing from candidate config."
-    elif structural["transparent_required"] and not structural["transparent_listener_bind_valid"]:
-        error_code = "MIHOMO_TRANSPARENT_LISTENER_BIND_INVALID"
-        stderr_tail = (
-            "Transparent TPROXY ingress must bind to the wildcard address or a real router IPv4, "
-            f"got {structural['transparent_listener_bind'] or 'missing'}."
-        )
-    elif structural["transparent_required"] and not structural["transparent_inbound_rule_ok"]:
-        error_code = "MIHOMO_TRANSPARENT_TARGET_MISSING"
-        stderr_tail = "Transparent REDIR/TPROXY listeners must target vpn-global directly."
-    elif (
-        structural["transparent_required"]
-        and not structural["transparent_direct_proxy_ok"]
-        and not structural["transparent_subrules_ok"]
-    ):
-        error_code = "MIHOMO_TRANSPARENT_TARGET_MISSING"
-        stderr_tail = "Transparent REDIR/TPROXY ingress must route to vpn-global directly or reference valid fwrouter sub-rules."
-    elif not structural["full_vpn_subrules_ok"]:
-        error_code = "MIHOMO_FULL_VPN_UDP_GUARD_MISMATCH"
-        stderr_tail = "Full-VPN sub-rules are missing an exact UDP fail-closed guard sequence."
-    elif not structural["state_consistency_ok"]:
-        error_code = "MIHOMO_SELECTIVE_DEFAULT_MISMATCH"
-        stderr_tail = "Resolved selective_default does not match candidate fallback rule."
-    elif structural["transparent_required"] and not structural["transparent_state_consistency_ok"]:
-        error_code = "MIHOMO_TRANSPARENT_FALLBACK_MISMATCH"
-        stderr_tail = "Transparent listener sub-rules fallback does not match the resolved selective_default."
-    elif structural["xray_handoff_targets_missing"]:
-        error_code = "MIHOMO_XRAY_HANDOFF_TARGET_MISSING"
-        stderr_tail = "One or more Xray handoff listeners reference missing proxy or selector targets."
-    elif not binary_validation["ok"]:
-        error_code = "MIHOMO_BINARY_VALIDATION_FAILED"
-        stderr_tail = binary_validation["stderr_tail"] or "Mihomo binary validation failed."
-    result = {
-        "ok": error_code is None,
-        "returncode": 0 if error_code is None else 1,
-        "stdout_tail": binary_validation["stdout_tail"],
-        "stderr_tail": stderr_tail,
-        "resolved_selective_default": selective_default,
-        "final_match_rule": structural["final_match_rule"],
-        "expected_final_match_rule": structural["expected_final_match_rule"],
-        "state_consistency_ok": structural["state_consistency_ok"],
-        "runtime_proxy_inventory_count": structural["runtime_proxy_inventory_count"],
-        "candidate_proxies_count": structural["candidate_proxies_count"],
-        "proxy_inventory_ok": structural["proxy_inventory_ok"],
-        "allow_lan_enabled": structural["allow_lan_enabled"],
-        "routing_mark_value": structural["routing_mark_value"],
-        "expected_routing_mark_value": structural["expected_routing_mark_value"],
-        "legacy_inbound_keys_present": structural["legacy_inbound_keys_present"],
-        "vpn_auto_present": structural["vpn_auto_present"],
-        "vpn_global_present": structural["vpn_global_present"],
-        "vpn_global_has_vpn_auto": structural["vpn_global_has_vpn_auto"],
-        "fixed_global_membership_ok": structural["fixed_global_membership_ok"],
-        "selector_groups_ok": structural["selector_groups_ok"],
-        "mixed_listener_count": structural["mixed_listener_count"],
-        "mixed_listener_bind": structural["mixed_listener_bind"],
-        "mixed_listener_port": structural["mixed_listener_port"],
-        "mixed_listener_proxy": structural["mixed_listener_proxy"],
-        "transparent_required": structural["transparent_required"],
-        "transparent_listener_present": structural["transparent_listener_present"],
-        "transparent_listener_count": structural["transparent_listener_count"],
-        "transparent_listener_bind": structural["transparent_listener_bind"],
-        "transparent_redir_port": structural["transparent_redir_port"],
-        "transparent_listener_port": structural["transparent_listener_port"],
-        "transparent_listener_bind_valid": structural["transparent_listener_bind_valid"],
-        "transparent_listener_proxy": structural["transparent_listener_proxy"],
-        "transparent_rule_name": structural["transparent_rule_name"],
-        "transparent_direct_proxy_ok": structural["transparent_direct_proxy_ok"],
-        "transparent_inbound_rule": structural["transparent_inbound_rule"],
-        "transparent_inbound_rules": structural["transparent_inbound_rules"],
-        "transparent_inbound_rule_ok": structural["transparent_inbound_rule_ok"],
-        "transparent_subrules_ok": structural["transparent_subrules_ok"],
-        "full_vpn_subrules_ok": structural["full_vpn_subrules_ok"],
-        "expected_full_vpn_subrules": structural["expected_full_vpn_subrules"],
-        "transparent_final_match_rule": structural["transparent_final_match_rule"],
-        "expected_transparent_final_match_rule": structural["expected_transparent_final_match_rule"],
-        "transparent_state_consistency_ok": structural["transparent_state_consistency_ok"],
-        "xray_handoff_targets_missing": structural["xray_handoff_targets_missing"],
-        "binary_validation": binary_validation,
-        "error_code": error_code,
-    }
-    write_technical_log(
-        component="mihomo",
-        event_type="mihomo_candidate_config_validated",
-        level="info" if result["ok"] else "warning",
-        message="Mihomo candidate config validation completed." if result["ok"] else "Mihomo candidate config validation failed.",
-        details=result,
-    )
-    return result
-
-
-from fwrouter_api.services.mihomo_reconcile import (  # noqa: E402
+from fwrouter_api.services.mihomo_config_builder import (
+    build_mihomo_config as build_mihomo_config,
+    validate_mihomo_candidate_config as validate_mihomo_candidate_config,
+    write_mihomo_candidate_config as write_mihomo_candidate_config,
+)
+from fwrouter_api.services.mihomo_reconcile import (
+    _write_mihomo_reconcile_logs as _write_mihomo_reconcile_logs,
     promote_mihomo_candidate_config as promote_mihomo_candidate_config,
     reconcile_mihomo_runtime as reconcile_mihomo_runtime,
     reconcile_mihomo_selective_default_fast as reconcile_mihomo_selective_default_fast,
     validate_and_promote_mihomo_candidate_config as validate_and_promote_mihomo_candidate_config,
 )
+
+# Retain the exact facade alias surface while routing assignments only to the
+# consumer-local bindings that historically read these names.
+_ALIASES: _AttributeAliases = {
+    "_build_mihomo_config_with_source": ((_builder.__dict__, "_build_mihomo_config_with_source"), (_validation.__dict__, "_build_mihomo_config_with_source")),
+    "_build_fallback_rule": ((_validation.__dict__, "_build_fallback_rule"),),
+    "_build_transparent_fallback_rule": ((_validation.__dict__, "_build_transparent_fallback_rule"),),
+    "_collect_xray_handoff_assignments": ((_builder.__dict__, "_collect_xray_handoff_assignments"),),
+    "_configs_equal": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["_configs_equal"],
+    "_ensure_selector_groups": ((_builder.__dict__, "_ensure_selector_groups"),),
+    "_iso8601_mtime": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["_iso8601_mtime"],
+    "_merge_runtime_proxies": ((_builder.__dict__, "_merge_runtime_proxies"),),
+    "_resolve_transparent_bind_address": ((_builder.__dict__, "_resolve_transparent_bind_address"),),
+    "_resolved_base_config_path": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["_resolved_base_config_path"],
+    "_resolved_candidate_config_path": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["_resolved_candidate_config_path"],
+    "_resolved_last_good_mihomo_dir": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["_resolved_last_good_mihomo_dir"],
+    "_resolved_selective_default": ((_builder.__dict__, "_resolved_selective_default"),),
+    "_runtime_proxy_inventory_count": ((_validation.__dict__, "_runtime_proxy_inventory_count"),),
+    "_safe_load_yaml": ((_builder.__dict__, "_safe_load_yaml"),),
+    "_summarize_candidate": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["_summarize_candidate"],
+    "_summarize_config_status": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["_summarize_config_status"],
+    "_validate_candidate_structure": ((_builder.__dict__, "_validate_candidate_structure"),),
+    "_validate_candidate_with_binary": ((_builder.__dict__, "_validate_candidate_with_binary"),),
+    "_write_mihomo_reconcile_logs": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["_write_mihomo_reconcile_logs"],
+    "build_mihomo_config": ((_builder.__dict__, "build_mihomo_config"),),
+    "get_mihomo_config_status": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["get_mihomo_config_status"],
+    "managed_runtime_operation_blocked": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["managed_runtime_operation_blocked"],
+    "promote_mihomo_candidate_config": ((_reconcile.__dict__, "promote_mihomo_candidate_config"),),
+    "reconcile_mihomo_runtime": ((_reconcile.__dict__, "reconcile_mihomo_runtime"),),
+    "reconcile_mihomo_selective_default_fast": ((_reconcile.__dict__, "reconcile_mihomo_selective_default_fast"),),
+    "resolve_mihomo_runtime_proxy_rows": ((_proxies.__dict__, "_resolve_config_inventory_rows"),),
+    "restart_mihomo_container": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["restart_mihomo_container"],
+    "validate_and_promote_mihomo_candidate_config": ((_reconcile.__dict__, "validate_and_promote_mihomo_candidate_config"),),
+    "validate_mihomo_candidate_config": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["validate_mihomo_candidate_config"],
+    "write_mihomo_candidate_config": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["write_mihomo_candidate_config"],
+    "write_operational_log": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["write_operational_log"],
+    "write_technical_log": _reconcile._RECONCILE_COMPAT_ALIAS_TARGETS["write_technical_log"],
+}
+
+_install_attribute_aliases(__name__, _ALIASES)

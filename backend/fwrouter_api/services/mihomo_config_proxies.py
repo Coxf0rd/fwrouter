@@ -16,6 +16,8 @@ from fwrouter_api.adapters.mihomo import NON_SERVER_PROXY_TARGETS
 
 LOGICAL_PROFILE_GROUP_INTERVAL_SECONDS = 300
 
+_resolve_config_inventory_rows = resolve_mihomo_runtime_proxy_rows
+
 
 def _project_native_proxy(proxy: dict[str, Any]) -> dict[str, Any]:
     """Project FWRouter capability metadata into native Mihomo fields."""
@@ -291,7 +293,7 @@ def _stale_generated_logical_profile_group_names(
 
 
 def _runtime_proxy_inventory_count() -> int:
-    rows = resolve_mihomo_runtime_proxy_rows(inventory_state="active", limit=1000)
+    rows = _resolve_config_inventory_rows(inventory_state="active", limit=1000)
     return sum(
         1
         for row in rows

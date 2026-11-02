@@ -123,3 +123,35 @@ configuration. Assignment records use the existing listener shape:
 `services/mihomo_serialization.py` quotes only strings that may resolve as
 numeric, boolean, or null scalars under another YAML resolver. Actual integer,
 boolean, and null values retain their native types.
+
+## Stage 6.1 Package C — one-way ownership
+
+`mihomo_config` is the compatibility surface; configuration build/write/validate
+implementation lives in `mihomo_config_builder`. Reconciliation imports its
+builder, paths, status, runtime and lifecycle collaborators directly. Structural
+validation imports rules/proxy helpers directly, never the public facade.
+Promotion, checkpoints, fingerprints, native proof, selection CAS, recovery and
+last-good remain with their existing owners and ordering.
+
+```mermaid
+flowchart LR
+  Facade[mihomo_config compatibility] --> Builder[mihomo_config_builder]
+  Facade --> Reconcile[mihomo_reconcile]
+  Reconcile --> Builder
+  Reconcile --> Owners[paths / status / runtime / lifecycle]
+  Builder --> Validation[mihomo_config_validation]
+  Validation --> Leaves[rules / proxies]
+```
+
+Public function identities and established `setattr` monkeypatch paths are
+preserved through explicit consumer-local aliases. The historical
+`mihomo_reconcile.config` attribute is a narrow compatibility view, not an
+implementation dependency or configuration authority. Default algorithms never
+read it; provider recovery reads the reconcile-owned path binding directly.
+See [attribute compatibility](backend_fwrouter_api_services_module_attribute_aliases_py.md).
+
+The selective-default fast entrypoint still returns `fallback_required` without
+mutation; it cannot manufacture verified publication. Fresh-process tests run the
+existing denied-capability bootstrap before application imports and check both
+import orders, export identity and fallback. Native/host/live acceptance remains
+a separate gate; this restructuring does not authorize production changes.

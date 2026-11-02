@@ -14,8 +14,27 @@ from uuid import UUID, uuid4
 from typing import Any
 from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
-from fwrouter_api.services import mihomo_config as config
 from fwrouter_api.services.artifacts import atomic_write_text
+from fwrouter_api.services.logs import write_operational_log, write_technical_log
+from fwrouter_api.services.modules import managed_runtime_operation_blocked
+from fwrouter_api.services.mihomo_runtime import restart_mihomo_container
+from fwrouter_api.services import mihomo_config_builder as _config_builder
+from fwrouter_api.services.mihomo_config_builder import (
+    validate_mihomo_candidate_config,
+    write_mihomo_candidate_config,
+)
+from fwrouter_api.services.mihomo_config_paths import (
+    _iso8601_mtime,
+    _resolved_base_config_path,
+    _resolved_candidate_config_path,
+    _resolved_last_good_mihomo_dir,
+)
+from fwrouter_api.services.mihomo_config_status import (
+    _configs_equal,
+    _summarize_candidate,
+    _summarize_config_status,
+    get_mihomo_config_status,
+)
 from fwrouter_api.services.mihomo_config_yaml import (
     MAX_MIHOMO_CONFIG_BYTES,
     MAX_MIHOMO_YAML_DEPTH,
@@ -55,6 +74,31 @@ def reconcile_mihomo_selective_default_fast(
     }
 
 
+def _write_mihomo_reconcile_logs(
+    *,
+    ok: bool,
+    event_type: str,
+    message: str,
+    details: dict[str, Any],
+    operational_level: str = "info",
+    technical_level: str = "info",
+) -> None:
+    if operational_level != "debug":
+        write_operational_log(
+            event_type=event_type,
+            level=operational_level,
+            message=message,
+            details=details,
+        )
+    write_technical_log(
+        component="mihomo",
+        event_type=event_type,
+        level=technical_level,
+        message=message,
+        details=details,
+    )
+
+
 def _build_config_status_summary(
     *,
     base_path: str,
@@ -67,8 +111,8 @@ def _build_config_status_summary(
         "candidate_path": candidate_path,
         "base_exists": os.path.exists(base_path),
         "candidate_exists": os.path.exists(candidate_path),
-        "base_updated_at": config._iso8601_mtime(base_path),
-        "candidate_updated_at": config._iso8601_mtime(candidate_path),
+        "base_updated_at": _iso8601_mtime(base_path),
+        "candidate_updated_at": _iso8601_mtime(candidate_path),
         "base_rules_count": base_rules_count,
         "candidate_rules_count": candidate_rules_count,
     }
@@ -87,7 +131,7 @@ def _fixed_generation_checkpoint_path(operation_id: str) -> Path | None:
         return None
     if canonical_id != operation_id:
         return None
-    directory = config._resolved_last_good_mihomo_dir()
+    directory = _resolved_last_good_mihomo_dir()
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         info = directory.lstat()
@@ -294,7 +338,7 @@ def _semantic_config_files_equal(active_path: str, candidate_path: str) -> bool:
         except (MihomoYamlError, OSError, UnicodeError, yaml.YAMLError, ValueError, TypeError, RecursionError):
             return False
     try:
-        return config._configs_equal(parsed[0], parsed[1])
+        return _configs_equal(parsed[0], parsed[1])
     except (TypeError, ValueError):
         return False
 
@@ -407,7 +451,7 @@ def _promote_mihomo_candidate_config_under_fence(
     blocked = _inventory_candidate_promotion_blocked(inventory_admission)
     if blocked is not None:
         return blocked
-    blocked = config.managed_runtime_operation_blocked(
+    blocked = managed_runtime_operation_blocked(
         "vpn",
         error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
         operation="mihomo_config_promote",
@@ -416,12 +460,12 @@ def _promote_mihomo_candidate_config_under_fence(
         return {
             **blocked,
             "promoted": False,
-            "base_path": config._resolved_base_config_path(),
-            "candidate_path": config._resolved_candidate_config_path(),
+            "base_path": _resolved_base_config_path(),
+            "candidate_path": _resolved_candidate_config_path(),
         }
 
-    candidate_path = config._resolved_candidate_config_path()
-    base_path = config._resolved_base_config_path()
+    candidate_path = _resolved_candidate_config_path()
+    base_path = _resolved_base_config_path()
     if not os.path.exists(candidate_path):
         result = {
             "ok": False,
@@ -429,7 +473,7 @@ def _promote_mihomo_candidate_config_under_fence(
             "error_code": "MIHOMO_CANDIDATE_MISSING",
             "error_message": "Mihomo candidate config does not exist.",
         }
-        config.write_technical_log(
+        write_technical_log(
             component="mihomo",
             event_type="mihomo_candidate_promote_failed",
             level="warning",
@@ -478,7 +522,7 @@ def _promote_mihomo_candidate_config_under_fence(
             candidate_path=candidate_path,
         ),
     }
-    config.write_technical_log(
+    write_technical_log(
         component="mihomo",
         event_type="mihomo_candidate_promoted",
         level="info",
@@ -488,8 +532,40 @@ def _promote_mihomo_candidate_config_under_fence(
     return result
 
 
+# Historical tests and provider recovery code patch/read this narrow view.
+# Reconciliation itself uses its direct module-local bindings above.
+from fwrouter_api.services.module_attribute_aliases import attribute_alias_view
+
+_RECONCILE_COMPAT_ALIAS_NAMES = (
+    "_configs_equal",
+    "_iso8601_mtime",
+    "_resolved_base_config_path",
+    "_resolved_candidate_config_path",
+    "_resolved_last_good_mihomo_dir",
+    "_summarize_candidate",
+    "_summarize_config_status",
+    "_write_mihomo_reconcile_logs",
+    "get_mihomo_config_status",
+    "managed_runtime_operation_blocked",
+    "restart_mihomo_container",
+    "validate_mihomo_candidate_config",
+    "write_mihomo_candidate_config",
+    "write_operational_log",
+    "write_technical_log",
+)
+_RECONCILE_COMPAT_ALIAS_TARGETS = {
+    name: ((globals(), name),)
+    + (((_config_builder.__dict__, name),) if name in _config_builder.__dict__ else ())
+    for name in _RECONCILE_COMPAT_ALIAS_NAMES
+}
+config = attribute_alias_view(
+    f"{__name__}.config",
+    _RECONCILE_COMPAT_ALIAS_TARGETS,
+)
+
+
 def validate_and_promote_mihomo_candidate_config() -> dict[str, Any]:
-    blocked = config.managed_runtime_operation_blocked(
+    blocked = managed_runtime_operation_blocked(
         "vpn",
         error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
         operation="mihomo_config_validate_and_promote",
@@ -497,12 +573,12 @@ def validate_and_promote_mihomo_candidate_config() -> dict[str, Any]:
     if blocked is not None:
         return {
             **blocked,
-            "config": config.get_mihomo_config_status(),
+            "config": get_mihomo_config_status(),
             "config_validation": None,
             "container_restarted": False,
         }
 
-    config_validation = config.validate_mihomo_candidate_config()
+    config_validation = validate_mihomo_candidate_config()
     if not config_validation["ok"]:
         return {
             "ok": False,
@@ -510,7 +586,7 @@ def validate_and_promote_mihomo_candidate_config() -> dict[str, Any]:
             "stage": "config_validation",
             "error_code": "MIHOMO_CONFIG_VALIDATION_FAILED",
             "error_message": "Mihomo candidate config failed validation.",
-            "config": config.get_mihomo_config_status(),
+            "config": get_mihomo_config_status(),
             "config_validation": config_validation,
             "container_restarted": False,
         }
@@ -540,7 +616,7 @@ def _capture_mihomo_reconcile_checkpoint(
     base = Path(base_path)
     backup = (
         _fixed_generation_checkpoint_path(operation_id)
-        if operation_id is not None else config._resolved_last_good_mihomo_dir() / "config.previous.yaml"
+        if operation_id is not None else _resolved_last_good_mihomo_dir() / "config.previous.yaml"
     )
     if backup is None:
         return {"ok": False, "reason": "checkpoint_operation_invalid", "base_path": str(base)}
@@ -735,7 +811,7 @@ def _selection_publication_still_owned(
     try:
         current_input = current_mihomo_input_fingerprint(routing)
         current_incarnation = _mihomo_incarnation()
-        active_hash = _file_hash(config._resolved_base_config_path())
+        active_hash = _file_hash(_resolved_base_config_path())
         with db_session() as connection:
             current_revision = read_selection_revision(connection)
     except Exception:
@@ -836,7 +912,7 @@ def reconcile_mihomo_runtime(
     fixed_generation_reservation: dict[str, Any] | None = None,
     _inventory_admission: Any = None,
 ) -> dict[str, Any]:
-    blocked = config.managed_runtime_operation_blocked(
+    blocked = managed_runtime_operation_blocked(
         "vpn",
         error_code="MIHOMO_MANAGED_RUNTIME_REQUIRED",
         operation="mihomo_runtime_reconcile",
@@ -859,7 +935,7 @@ def reconcile_mihomo_runtime(
             },
             "reconcile_action": "none",
             "reconcile_reason": "managed_runtime_required",
-            "config": config.get_mihomo_config_status(),
+            "config": get_mihomo_config_status(),
         }
 
     from fwrouter_api.services.subscription import _subscription_inventory_generation_gate
@@ -937,7 +1013,7 @@ def reconcile_mihomo_runtime(
             ),
             "operation_id": operation_id,
         }
-    base_path = config._resolved_base_config_path()
+    base_path = _resolved_base_config_path()
     active_config_hash_before = _file_hash(base_path)
 
     def last_good_still_active() -> bool:
@@ -1017,7 +1093,7 @@ def reconcile_mihomo_runtime(
             "before_revision": reservation_source_revision,
             "selection_revision": expected_selection_revision,
             "input_fingerprint_hash": (input_fingerprint or {}).get("hash"),
-            "candidate_config_hash": _file_hash(config._resolved_candidate_config_path()),
+            "candidate_config_hash": _file_hash(_resolved_candidate_config_path()),
             "active_config_hash": active_hash,
             "runtime_incarnation": runtime_incarnation,
             "native_udp_policy_verified": native_proof.get("ok") is True,
@@ -1125,8 +1201,8 @@ def reconcile_mihomo_runtime(
                         "error_code": "MIHOMO_GENERATION_RECEIPT_PUBLICATION_FAILED",
                         "last_good_retained": True, "operation_id": operation_id,
                     }
-        base_path = config._resolved_base_config_path()
-        candidate_path = config._resolved_candidate_config_path()
+        base_path = _resolved_base_config_path()
+        candidate_path = _resolved_candidate_config_path()
         return {
             "ok": True,
             "operation_id": operation_id,
@@ -1182,7 +1258,7 @@ def reconcile_mihomo_runtime(
         prepared
         and prepared.get("input_fingerprint_hash") == (input_fingerprint or {}).get("hash")
         and prepared.get("candidate_file_hash")
-        and prepared.get("candidate_file_hash") == _file_hash(config._resolved_candidate_config_path())
+        and prepared.get("candidate_file_hash") == _file_hash(_resolved_candidate_config_path())
     )
     prepared_candidate_config = (
         prepared.get("_candidate_config")
@@ -1192,24 +1268,24 @@ def reconcile_mihomo_runtime(
     )
     if reuse_prepared:
         candidate = {
-            "candidate_path": config._resolved_candidate_config_path(),
+            "candidate_path": _resolved_candidate_config_path(),
             "reused_prepared": True,
             "file_hash": prepared.get("candidate_file_hash"),
         }
     else:
-        candidate = config.write_mihomo_candidate_config(routing_dict)
+        candidate = write_mihomo_candidate_config(routing_dict)
     config_validation = (
-        config.validate_mihomo_candidate_config(
+        validate_mihomo_candidate_config(
             routing_dict,
             candidate_config=prepared_candidate_config,
         )
         if prepared_candidate_config is not None
-        else config.validate_mihomo_candidate_config(routing_dict)
+        else validate_mihomo_candidate_config(routing_dict)
     )
-    candidate_summary = config._summarize_candidate(candidate)
-    candidate_path = str(candidate.get("candidate_path") or config._resolved_candidate_config_path())
+    candidate_summary = _summarize_candidate(candidate)
+    candidate_path = str(candidate.get("candidate_path") or _resolved_candidate_config_path())
     prepared_candidate_hash = _file_hash(candidate_path)
-    base_path = config._resolved_base_config_path()
+    base_path = _resolved_base_config_path()
     if resume_reservation is not None:
         checkpoint_ref = resume_reservation.get("checkpoint_ref")
         current_active_hash = _file_hash(base_path)
@@ -1255,7 +1331,7 @@ def reconcile_mihomo_runtime(
             "reconcile_reason": "validation_failed",
             "config": status_summary,
         }
-        config._write_mihomo_reconcile_logs(
+        _write_mihomo_reconcile_logs(
             ok=False,
             event_type="mihomo_reconcile_failed",
             operational_level="warning",
@@ -1275,13 +1351,13 @@ def reconcile_mihomo_runtime(
             files_match = _semantic_config_files_equal(base_path, candidate_path)
     else:
         try:
-            status = config.get_mihomo_config_status(include_config=True)
+            status = get_mihomo_config_status(include_config=True)
         except TypeError:
-            status = config.get_mihomo_config_status()
+            status = get_mihomo_config_status()
         active_config = status.get("base_config") if isinstance(status, dict) else None
         candidate_config = status.get("candidate_config") if isinstance(status, dict) else None
-        files_match = config._configs_equal(active_config, candidate_config)
-        status_summary = config._summarize_config_status(status)
+        files_match = _configs_equal(active_config, candidate_config)
+        status_summary = _summarize_config_status(status)
 
     if (
         resume_reservation is not None
@@ -1329,7 +1405,7 @@ def reconcile_mihomo_runtime(
             "state_consistency_ok": True,
             "config": status_summary,
         }
-        config._write_mihomo_reconcile_logs(
+        _write_mihomo_reconcile_logs(
             ok=bool(result["ok"]),
             event_type="mihomo_reconcile_skipped" if result["ok"] else "mihomo_reconcile_failed",
             message="Mihomo reconcile skipped because active config already matches candidate.",
@@ -1621,7 +1697,7 @@ def reconcile_mihomo_runtime(
                 "generation_verification_callback": generation_materialization_callback,
                 "operation_id": operation_id,
             })
-        restarted = config.restart_mihomo_container(**restart_kwargs)
+        restarted = restart_mihomo_container(**restart_kwargs)
         recovery_checkpoint["runtime_incarnation_after"] = _mihomo_incarnation()
     verification = None
     if bool(promoted.get("ok")) and bool(restarted.get("ok")) and callable(verification_callback):
@@ -1773,7 +1849,7 @@ def reconcile_mihomo_runtime(
         }
     log_result = {key: value for key, value in result.items()
                   if key not in {"operation_id", "reentry_generation_fence"}}
-    config._write_mihomo_reconcile_logs(
+    _write_mihomo_reconcile_logs(
         ok=bool(result["ok"]),
         event_type="mihomo_reconciled" if result["ok"] else "mihomo_reconcile_failed",
         operational_level="info" if result["ok"] else "warning",
