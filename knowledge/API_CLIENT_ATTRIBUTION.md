@@ -23,6 +23,16 @@ business objects and credential secrets. Internal request/job snapshots use the
 registry's `client_id`/`credential_id` names. No credential secret, secret digest,
 Authorization header or request body belongs in attribution.
 
+The HTTP response policy keeps `X-FWRouter-Request-ID` on ordinary API
+responses. Public subscription responses in the `/s` namespace (`/s` and
+`/s/...`) must not expose that exact server-attribution header, including
+success, handled errors, redirect and method-rejection responses. A supplied
+copy of that header is removed there. `X-Request-ID` and both internal request
+contexts retain their existing behavior; endpoint errors, bodies, status codes,
+subscription content and routing are not rewritten. Context reset still runs
+on success and propagated exceptions. This is response-header policy, not an
+authentication or capability admission rule.
+
 The client-list owner writes its required intent audit in the same SQLite
 transaction as the setting and field revision. Audit insertion failure prevents
 the mutation. A committed row proves durable intent, not response delivery,

@@ -971,11 +971,19 @@ class GateContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown field\\(s\\): unexpected"):
             gate_plugin._merged_node_metadata(row, override)
 
-    def test_exact_routine_node_overrides_carve_only_the_two_reviewed_xray_baseline_nodes(self) -> None:
+    def test_exact_routine_node_overrides_carve_only_reviewed_xray_contract_nodes(self) -> None:
         overrides = [row for row in self.manifest["node_overrides"] if "execution_profile" in row]
         self.assertEqual({
             ("backend/tests/test_xray.py", "test_legacy_subscription_get_is_read_only"),
             ("backend/tests/test_xray.py", "test_vpn_auto_invalid_stage_keeps_database_and_active_xray_unchanged"),
+            ("backend/tests/test_xray.py", "test_public_subscription_route_detects_happ"),
+            ("backend/tests/test_xray.py", "test_public_subscription_route_explicit_happ_format_wins"),
+            ("backend/tests/test_xray.py", "test_public_subscription_route_explicit_clash_format_wins"),
+            ("backend/tests/test_xray.py", "test_public_subscription_route_explicit_raw_vless_format_wins"),
+            ("backend/tests/test_xray.py", "test_public_subscription_route_rejects_removed_happ_json_format"),
+            ("backend/tests/test_xray.py", "test_public_subscription_route_rejects_removed_happ_full_json_format"),
+            ("backend/tests/test_xray.py", "test_public_subscription_request_id_header_policy"),
+            ("backend/tests/test_xray.py", "test_public_subscription_middleware_preserves_context_and_propagates_errors"),
         }, {(row["path"], row["node"]) for row in overrides})
         self.assertTrue(all(row["execution_profile"] is None and row["primary_level"] == "L1"
                             for row in overrides))
@@ -1010,7 +1018,7 @@ class GateContractTests(unittest.TestCase):
             "path": "backend/tests/test_xray.py", "node": "test_unreviewed_xray_case",
             "primary_level": "L1", "execution_profile": None,
         })
-        with self.assertRaisesRegex(gate.GateError, "exact two reviewed routine Xray node carve-outs"):
+        with self.assertRaisesRegex(gate.GateError, "exact reviewed routine Xray node carve-outs"):
             gate.validate_manifest(invalid)
 
     def test_fixed_unit_fixture_cohort_is_exact_catalogued_and_non_native(self) -> None:

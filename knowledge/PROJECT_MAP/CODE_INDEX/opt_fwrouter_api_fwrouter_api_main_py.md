@@ -20,3 +20,16 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+
+## Public subscription response header boundary
+
+The request-context middleware creates and resets internal caller and server
+request IDs for every request. It preserves `X-Request-ID` but removes only
+`X-FWRouter-Request-ID` from `/s` and `/s/...` responses. Ordinary API responses
+retain the server-attribution header. This policy also covers public namespace
+errors, redirects and HEAD/method-rejection responses; it neither adds HEAD
+routing nor changes status/body/error handling or authentication.
+
+The six existing public subscription format/header assertions and two focused
+header/context tests are exact routine overrides in the existing profiled Xray
+test file. Qualified native/process ownership remains separate.
