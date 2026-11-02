@@ -221,3 +221,84 @@ def test_xray_read_contracts_have_no_reverse_coordinator_import():
             elif isinstance(node, ast.ImportFrom):
                 assert "xray_subscription_service" not in (node.module or "")
                 assert not any("xray_subscription_service" in alias.name for alias in node.names)
+
+
+_XRAY_D2_IMPORT_CHILD = textwrap.dedent("""\
+    import importlib
+    import importlib.util
+    import json
+    from pathlib import Path
+    import sys
+    import threading
+
+    spec = importlib.util.spec_from_file_location(
+        '_xray_d2_contract_bootstrap', Path('tests/_isolation_bootstrap.py'),
+    )
+    bootstrap = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = bootstrap
+    spec.loader.exec_module(bootstrap)
+    bootstrap.configure_test_process()
+    from fwrouter_api.core.config import Settings
+    Settings.model_config['env_file'] = None
+    db_path = Settings().paths.db_path
+    before_threads = {thread.ident for thread in threading.enumerate()}
+    assert not db_path.exists()
+
+    prefix = 'fwrouter_api.services.'
+    order = json.loads(sys.argv[1])
+    expected = {
+        'xray_profile_planning', 'xray_generation_observation',
+        'xray_generation_views', 'xray_generation_staging',
+    }
+    assert set(order) == expected
+    for name in order:
+        assert prefix + 'xray_subscription_service' not in sys.modules
+        importlib.import_module(prefix + name)
+
+    assert prefix + 'xray_subscription_service' not in sys.modules
+    owner = importlib.import_module(prefix + 'xray_subscription_service')
+    modules = {
+        name: importlib.import_module(prefix + name)
+        for name in expected
+    }
+    assert owner._prospective_profile_bindings is modules[
+        'xray_profile_planning'
+    ].prepare_profile_bindings
+    assert owner._capture_generation_auto_selection is modules[
+        'xray_generation_observation'
+    ].capture_generation_selection
+    assert owner._current_xray_projection_snapshot is modules[
+        'xray_generation_views'
+    ].capture_current_projection
+    assert owner._stage_profile_native_candidates is modules[
+        'xray_generation_staging'
+    ].prepare_native_candidates
+    assert not db_path.exists()
+    assert {thread.ident for thread in threading.enumerate()} == before_threads
+    print(json.dumps({'status': 'passed', 'order': order}))
+""")
+
+
+@pytest.mark.parametrize("order", [
+    (
+        "xray_profile_planning", "xray_generation_observation",
+        "xray_generation_views", "xray_generation_staging",
+    ),
+    (
+        "xray_generation_staging", "xray_generation_views",
+        "xray_generation_observation", "xray_profile_planning",
+    ),
+])
+def test_xray_d2_components_cold_import_in_both_orders(tmp_path, order):
+    suite, _reports = _GATE.create_suite_root(tmp_path, "xray-d2-import-contract")
+    env = _GATE.clean_test_environment(suite)
+    env["PYTHONPATH"] = str(ROOT / "backend")
+    env["FWROUTER_PYTEST_COORDINATOR_ROOT"] = str(suite)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.pop("FWROUTER_GATE_NODE_REPORT", None)
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", _XRAY_D2_IMPORT_CHILD, json.dumps(order)],
+        cwd=ROOT / "backend", env=env, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr[-4096:]
+    assert json.loads(result.stdout) == {"status": "passed", "order": list(order)}

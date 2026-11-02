@@ -300,7 +300,9 @@ def test_identity_projection_reference_hash_tracks_subject_and_snapshot_rows(
 
 @pytest.mark.parametrize("changed_name", [
     "xray_admission_config_proof.py", "xray_generation_checkpoint.py",
-    "xray_generation_fingerprint.py",
+    "xray_generation_fingerprint.py", "xray_profile_planning.py",
+    "xray_generation_observation.py", "xray_generation_views.py",
+    "xray_generation_staging.py", "module_attribute_aliases.py", "artifacts.py",
 ])
 def test_extracted_executable_bytes_remain_in_mihomo_source_fence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, changed_name: str,
@@ -312,7 +314,9 @@ def test_extracted_executable_bytes_remain_in_mihomo_source_fence(
     service_dir.mkdir()
     names = (
         "xray_admission_config_proof.py", "xray_generation_checkpoint.py",
-        "xray_generation_fingerprint.py",
+        "xray_generation_fingerprint.py", "xray_profile_planning.py",
+        "xray_generation_observation.py", "xray_generation_views.py",
+        "xray_generation_staging.py", "module_attribute_aliases.py", "artifacts.py",
     )
     for name in names:
         (service_dir / name).write_bytes(b"initial-source-bytes")

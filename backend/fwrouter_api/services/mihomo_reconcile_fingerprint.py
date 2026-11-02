@@ -265,6 +265,12 @@ def _source_fingerprint() -> dict[str, Any]:
         "xray_admission_config_proof.py",
         "xray_generation_checkpoint.py",
         "xray_generation_fingerprint.py",
+        "xray_profile_planning.py",
+        "xray_generation_observation.py",
+        "xray_generation_views.py",
+        "xray_generation_staging.py",
+        "module_attribute_aliases.py",
+        "artifacts.py",
     ]
     fingerprints = {name: _file_hash(service_dir / name) for name in files}
     adapter_path = service_dir.parent / "adapters" / "mihomo.py"
