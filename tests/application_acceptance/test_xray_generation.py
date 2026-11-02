@@ -33,8 +33,65 @@ from .xray_support import (
 
 
 _PROVIDER_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
+_MIHOMO_RECONCILE_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE "
 _PROVIDER_WORKER_LOG_MAX_FILES = 16
 _PROVIDER_WORKER_LOG_MAX_APPEND_BYTES = 64 * 1024
+_PROVIDER_WORKER_LOG_PREFIXES = frozenset({
+    _PROVIDER_WORKER_LOG_PREFIX,
+    _MIHOMO_RECONCILE_WORKER_LOG_PREFIX,
+})
+
+# These values are closed contracts owned by the Mihomo reconciliation,
+# candidate validator, and runtime implementations. Arbitrary worker log text
+# must never become part of a pytest failure message.
+_MIHOMO_RECONCILE_STAGES = frozenset({
+    "candidate_provenance", "config_validation", "generation_checkpoint",
+    "generation_fence", "generation_publication_revalidation",
+    "generation_receipt_publication", "generation_reservation",
+    "generation_resume_reservation", "generation_revalidation", "generation_snapshot",
+    "inventory_generation_admission", "inventory_generation_publication_revalidation",
+    "native_udp_policy_readback", "native_udp_policy_receipt", "verification",
+})
+_MIHOMO_RECONCILE_ERROR_CODES = frozenset({
+    "MIHOMO_CANDIDATE_INVALID", "MIHOMO_CANDIDATE_MISSING", "MIHOMO_CANDIDATE_PROVENANCE_UNVERIFIED",
+    "MIHOMO_CONFIG_VALIDATION_FAILED", "MIHOMO_FINAL_READBACK_FAILED",
+    "MIHOMO_GENERATION_CHECKPOINT_UNAVAILABLE", "MIHOMO_GENERATION_RECEIPT_PUBLICATION_FAILED",
+    "MIHOMO_GENERATION_RESERVATION_FAILED", "MIHOMO_GENERATION_RESERVATION_INVALID",
+    "MIHOMO_GENERATION_RESERVATION_STALE", "MIHOMO_GENERATION_STALE",
+    "MIHOMO_GENERATION_STALE_AFTER_RECEIPT", "MIHOMO_GENERATION_STALE_BEFORE_PUBLICATION",
+    "MIHOMO_INPUT_REVALIDATION_FAILED", "MIHOMO_MANAGED_RUNTIME_REQUIRED",
+    "MIHOMO_RUNTIME_IDENTITY_UNAVAILABLE", "SUBSCRIPTION_INVENTORY_GENERATION_UNVERIFIED",
+    "VPN_AUTO_SELECTION_FENCE_INVALID", "VPN_AUTO_SELECTION_FENCE_REQUIRED",
+    "VPN_AUTO_SELECTION_REVISION_CONFLICT",
+    # Candidate validator statuses are included because the wrapper's
+    # top-level MIHOMO_CONFIG_VALIDATION_FAILED otherwise hides the reason.
+    "MIHOMO_ALLOW_LAN_REQUIRED", "MIHOMO_BINARY_VALIDATION_FAILED",
+    "MIHOMO_FIXED_GLOBAL_MEMBERSHIP_INVALID", "MIHOMO_FULL_VPN_UDP_GUARD_MISMATCH",
+    "MIHOMO_LEGACY_INBOUND_CONFLICT", "MIHOMO_MIXED_LISTENER_CONFLICT",
+    "MIHOMO_MIXED_LISTENER_INVALID", "MIHOMO_PROXYSET_EMPTY",
+    "MIHOMO_ROUTING_MARK_MISMATCH", "MIHOMO_SELECTIVE_DEFAULT_MISMATCH",
+    "MIHOMO_SELECTOR_FAIL_CLOSED_MISMATCH", "MIHOMO_TRANSPARENT_FALLBACK_MISMATCH",
+    "MIHOMO_TRANSPARENT_LISTENER_BIND_INVALID", "MIHOMO_TRANSPARENT_LISTENER_CONFLICT",
+    "MIHOMO_TRANSPARENT_LISTENER_MISSING", "MIHOMO_TRANSPARENT_TARGET_MISSING",
+    "MIHOMO_VPN_AUTO_MISSING", "MIHOMO_VPN_GLOBAL_MISSING", "MIHOMO_VPN_GLOBAL_MISWIRED",
+    "MIHOMO_XRAY_HANDOFF_TARGET_MISSING",
+})
+_MIHOMO_RECONCILE_REASONS = frozenset({
+    "generation_fence_conflict", "input_fingerprint_unavailable",
+    "input_fingerprint_unchanged", "inventory_generation_stale",
+    "inventory_generation_unverified", "generation_unverified", "managed_runtime_required",
+    "native_policy_or_fence_unconfirmed", "no_active_config", "receipt_fence_mismatch",
+    "checkpoint_operation_invalid", "checkpoint_source_changed",
+    "checkpoint_write_failed", "previous_config_not_failclosed_for_vpn_udp",
+    "rollback_context_missing_or_mismatched", "active_config_changed",
+    "selection_revision_changed", "restore_write_failed", "restore_hash_mismatch",
+    "restore_restart_failed", "selection_or_runtime_superseded",
+    "stale_generation_candidate", "structural_change", "unchanged_config",
+    "validation_failed", "verification_callback_not_requested",
+})
+_MIHOMO_RECONCILE_ACTIONS = frozenset({"force_recreate", "none", "restart"})
+_MIHOMO_RECONCILE_EVENTS = frozenset({"failure_result_input"})
+_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES = 1024
 def current_xray_subject_identity_pairs(database_path: Path) -> set[tuple[str, str]]:
     """Read the canonical active Xray subject identities from a synthetic DB."""
     connection = sqlite3.connect(database_path, timeout=5)
@@ -145,8 +202,10 @@ def _snapshot_provider_worker_logs(root):
     return (root_info.st_dev, root_info.st_ino), snapshot
 
 
-def _provider_worker_records_since(root, snapshot):
-    """Read only bounded bytes appended since the pre-action log snapshot."""
+def _provider_worker_records_since(root, snapshot, *, prefix=_PROVIDER_WORKER_LOG_PREFIX):
+    """Read bounded identity-safe worker records for one fixed suite prefix."""
+    if prefix not in _PROVIDER_WORKER_LOG_PREFIXES:
+        raise ValueError("unsupported acceptance worker log prefix")
     root_identity, prior_logs = snapshot
     root_info = root.lstat()
     assert (not stat.S_ISLNK(root_info.st_mode) and stat.S_ISDIR(root_info.st_mode)
@@ -176,15 +235,100 @@ def _provider_worker_records_since(root, snapshot):
         finally:
             os.close(fd)
         for line in payload.splitlines():
-            if not line.startswith(_PROVIDER_WORKER_LOG_PREFIX.encode("ascii")):
+            prefix_bytes = prefix.encode("ascii")
+            if not line.startswith(prefix_bytes):
                 continue
             try:
-                record = json.loads(line[len(_PROVIDER_WORKER_LOG_PREFIX):])
+                record = json.loads(line[len(prefix_bytes):])
             except (UnicodeError, json.JSONDecodeError):
                 continue
             if isinstance(record, dict):
                 records.append(record)
     return records
+
+
+def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
+    """Project only closed Mihomo status enums and bounded primitive facts."""
+    records = _provider_worker_records_since(
+        root, snapshot, prefix=_MIHOMO_RECONCILE_WORKER_LOG_PREFIX,
+    )
+    def enum(value, allowed):
+        return value if isinstance(value, str) and value in allowed else None
+
+    def flag_map(value, keys):
+        if not isinstance(value, dict):
+            return {}
+        return {key: value[key] for key in keys if type(value.get(key)) is bool}
+
+    def bounded_int(value, minimum, maximum):
+        return value if type(value) is int and minimum <= value <= maximum else None
+
+    for record in reversed(records):
+        if (record.get("schema") != "fwrouter-acceptance-mihomo-reconcile-failure/v1"
+                or record.get("event") not in _MIHOMO_RECONCILE_EVENTS):
+            continue
+        summary = record.get("summary")
+        if not isinstance(summary, dict):
+            continue
+        validation = summary.get("validation") if isinstance(summary.get("validation"), dict) else {}
+        promoted = summary.get("promoted") if isinstance(summary.get("promoted"), dict) else {}
+        container = summary.get("container") if isinstance(summary.get("container"), dict) else {}
+        native = summary.get("native_udp_policy_proof") if isinstance(summary.get("native_udp_policy_proof"), dict) else {}
+        recovery = summary.get("recovery") if isinstance(summary.get("recovery"), dict) else {}
+        raw_enums = (
+            (summary.get("stage"), _MIHOMO_RECONCILE_STAGES),
+            (summary.get("error_code"), _MIHOMO_RECONCILE_ERROR_CODES),
+            (summary.get("reconcile_action"), _MIHOMO_RECONCILE_ACTIONS),
+            (summary.get("reconcile_reason"), _MIHOMO_RECONCILE_REASONS),
+            (validation.get("error_code"), _MIHOMO_RECONCILE_ERROR_CODES),
+            (container.get("action"), _MIHOMO_RECONCILE_ACTIONS),
+            (recovery.get("reason"), _MIHOMO_RECONCILE_REASONS),
+            (recovery.get("error_code"), _MIHOMO_RECONCILE_ERROR_CODES),
+        )
+        unknown_enum = any(value is not None and enum(value, choices) is None for value, choices in raw_enums)
+        projected = {
+            "schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
+            "event": record["event"],
+            "summary": {
+                "ok": summary.get("ok") if type(summary.get("ok")) is bool else None,
+                "stage": enum(summary.get("stage"), _MIHOMO_RECONCILE_STAGES),
+                "error_code": enum(summary.get("error_code"), _MIHOMO_RECONCILE_ERROR_CODES),
+                "reconcile_action": enum(summary.get("reconcile_action"), _MIHOMO_RECONCILE_ACTIONS),
+                "reconcile_reason": enum(summary.get("reconcile_reason"), _MIHOMO_RECONCILE_REASONS),
+                "unknown_enum": unknown_enum,
+                "validation": {
+                    **flag_map(validation, ("ok",)),
+                    "returncode": bounded_int(validation.get("returncode"), -1, 255),
+                    "error_code": enum(validation.get("error_code"), _MIHOMO_RECONCILE_ERROR_CODES),
+                },
+                "promoted": flag_map(promoted, ("ok", "promoted")),
+                "container": {
+                    **flag_map(container, ("ok", "restarted", "started")),
+                    "action": enum(container.get("action"), _MIHOMO_RECONCILE_ACTIONS),
+                },
+                "native_udp_policy_proof": flag_map(
+                    native, ("ok", "native_top_level_rules_match",
+                             "selector_membership_matches", "guarded_rules_match"),
+                ),
+                "recovery": {
+                    **flag_map(recovery, ("ok", "recovered", "restart", "restored")),
+                    "reason": enum(recovery.get("reason"), _MIHOMO_RECONCILE_REASONS),
+                    "error_code": enum(recovery.get("error_code"), _MIHOMO_RECONCILE_ERROR_CODES),
+                },
+                "last_good_retained": (
+                    summary.get("last_good_retained")
+                    if type(summary.get("last_good_retained")) is bool else None
+                ),
+            },
+        }
+        encoded = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        if len(encoded) > _MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES:
+            break
+        # Skip later unrelated/malformed records, then return the latest
+        # eligible failure projection only.
+        encoded = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        return [projected] if len(encoded) <= _MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES else []
+    return []
 
 
 def test_email_client_generation_persists_and_matches_native_after_worker_restart(acceptance_stack):
@@ -373,13 +517,19 @@ def test_unverified_subscription_inventory_stays_pending_across_startup_until_na
         {"mode": "direct", "requested_by": "hosted-acceptance", "run_now": True},
         {"server_mode": "fixed", "requested_by": "hosted-acceptance", "run_now": True},
     ):
+        mihomo_log_snapshot = _snapshot_provider_worker_logs(stack["root"])
         code, response = http_json(
             f"{stack['api']}/routing/global", method="POST", payload=routing_payload,
+        )
+        failure_diagnostics = (
+            _safe_mihomo_reconcile_diagnostics_since(stack["root"], mihomo_log_snapshot)
+            if code != 200 or response.get("ok") is not True else []
         )
         assert code == 200 and response.get("ok") is True, {
             "status": code, "ok": response.get("ok"),
             "error_code": (response.get("error") or {}).get("code")
             if isinstance(response.get("error"), dict) else None,
+            "mihomo_reconcile": failure_diagnostics,
         }
         job = await_job(stack["api"], response)
         assert job.get("status") == "success", job

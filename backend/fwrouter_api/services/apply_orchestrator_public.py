@@ -14,20 +14,31 @@ from fwrouter_api.services.apply_orchestrator_constants import (
 )
 from fwrouter_api.services.apply_orchestrator_jobs import _lock_for_intent
 from fwrouter_api.services.jobs import JobLockConflictError
+from fwrouter_api.services.apply_orchestrator_drift import (
+    _current_routing_drift as _current_routing_drift,
+)
+from fwrouter_api.services.apply_orchestrator_results import (
+    _build_failure_result as _build_failure_result,
+)
+from fwrouter_api.services.servers import (
+    ensure_routing_global_state as ensure_routing_global_state,
+)
+from fwrouter_api.services.subject_policy import (
+    get_routing_snapshot as get_routing_snapshot,
+)
+
+from fwrouter_api.jobs.manager import (
+    get_default_job_manager as get_default_job_manager,
+)
+
+
 
 
 def _job_manager() -> Any:
-    from fwrouter_api.services import apply_orchestrator as orchestrator
 
-    return orchestrator.get_default_job_manager()
+    return get_default_job_manager()
 
 
-from fwrouter_api.services.apply_orchestrator import (  # noqa: E402
-    _build_failure_result,
-    _current_routing_drift,
-    ensure_routing_global_state,
-    get_routing_snapshot,
-)
 
 
 class ApplyOrchestrator:

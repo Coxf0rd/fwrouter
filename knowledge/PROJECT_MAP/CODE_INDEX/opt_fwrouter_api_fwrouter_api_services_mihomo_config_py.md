@@ -2,7 +2,12 @@
 
 ## Назначение
 
-Фасад генерации и валидации `mihomo` config. Сохраняет старые import/re-export имена для совместимости routes, tests и `mihomo_reconcile.py`, но низкоуровневые path/YAML helpers вынесены в `mihomo_config_paths.py`, base config / managed listeners / sniffer / inbound sanitize вынесены в `mihomo_config_inbounds.py`, rules rendering вынесен в `mihomo_config_rules.py`, proxy/selector groups вынесены в `mihomo_config_proxies.py`, status/runtime read-only checks вынесены в `mihomo_config_status.py`, а structural validation helpers вынесены в `mihomo_config_validation.py`. Runtime promote/reconcile живет в `mihomo_reconcile.py`.
+Public compatibility surface for Mihomo configuration and reconciliation. Build,
+candidate write and validation are owned by `mihomo_config_builder`; promotion,
+reconcile and recovery remain owned by `mihomo_reconcile`. Both use specialized
+path/YAML, inbounds, rules, proxies, status and validation owners. Implementation
+modules do not import this facade. Public reconcile operations remain normal
+reexports: patching the facade does not replace their canonical definitions.
 
 ## Важные функции
 
@@ -123,3 +128,35 @@ configuration. Assignment records use the existing listener shape:
 `services/mihomo_serialization.py` quotes only strings that may resolve as
 numeric, boolean, or null scalars under another YAML resolver. Actual integer,
 boolean, and null values retain their native types.
+
+## Stage 6.1 Package C — one-way ownership
+
+`mihomo_config` is the compatibility surface; configuration build/write/validate
+implementation lives in `mihomo_config_builder`. Reconciliation imports its
+builder, paths, status, runtime and lifecycle collaborators directly. Structural
+validation imports rules/proxy helpers directly, never the public facade.
+Promotion, checkpoints, fingerprints, native proof, selection CAS, recovery and
+last-good remain with their existing owners and ordering.
+
+```mermaid
+flowchart LR
+  Facade[mihomo_config compatibility] --> Builder[mihomo_config_builder]
+  Facade --> Reconcile[mihomo_reconcile]
+  Reconcile --> Builder
+  Reconcile --> Owners[paths / status / runtime / lifecycle]
+  Builder --> Validation[mihomo_config_validation]
+  Validation --> Leaves[rules / proxies]
+```
+
+Public function identities and established `setattr` monkeypatch paths are
+preserved through explicit consumer-local aliases. The historical
+`mihomo_reconcile.config` attribute is a narrow compatibility view, not an
+implementation dependency or configuration authority. Default algorithms never
+read it; provider recovery reads the reconcile-owned path binding directly.
+See [attribute compatibility](backend_fwrouter_api_services_module_attribute_aliases_py.md).
+
+The selective-default fast entrypoint still returns `fallback_required` without
+mutation; it cannot manufacture verified publication. Fresh-process tests run the
+existing denied-capability bootstrap before application imports and check both
+import orders, export identity and fallback. Native/host/live acceptance remains
+a separate gate; this restructuring does not authorize production changes.

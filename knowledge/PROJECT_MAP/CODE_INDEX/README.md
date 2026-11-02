@@ -287,3 +287,9 @@ authentication or logging subsystem.
 - [Shared JSONL I/O lease and publication](backend_fwrouter_api_services_jsonl_io_py.md) — existing log owners, not a new store.
 
 - [Registry-scoped secure event reader](backend_fwrouter_api_services_secure_events_py.md) — bounded audit/security projection; no legacy-reader upgrade.
+
+## Stage 6.1 Package C module compatibility
+
+- [Attribute aliases and limitations](backend_fwrouter_api_services_module_attribute_aliases_py.md)
+- [Mihomo one-way configuration/reconciliation boundary](opt_fwrouter_api_fwrouter_api_services_mihomo_config_py.md)
+- [Apply one-way handler and public API boundary](opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_py.md)

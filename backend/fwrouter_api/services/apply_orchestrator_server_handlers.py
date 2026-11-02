@@ -2,13 +2,50 @@ from __future__ import annotations
 
 from typing import Any
 
-from fwrouter_api.services import apply_orchestrator as orchestrator
 from fwrouter_api.services.apply_orchestrator_handler_common import (
     _reconcile_vpn_runtime_for_apply,
     _subject_needs_mihomo_selector_from_committed,
     _switch_subject_mihomo_selector,
 )
 from fwrouter_api.services.subject_taxonomy import is_explicit_external_client_subject_type
+
+from fwrouter_api.services.apply_orchestrator_commits import (
+    _validate_subject_server_override_request as _validate_subject_server_override_request,
+)
+from fwrouter_api.services.apply_orchestrator_constants import (
+    INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE as INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
+    INTENT_SET_SUBJECT_SERVER_OVERRIDE as INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+)
+from fwrouter_api.services.apply_orchestrator_pipeline import (
+    materialize_explicit_external_client_runtime_bindings as materialize_explicit_external_client_runtime_bindings,
+)
+from fwrouter_api.services.apply_orchestrator_results import (
+    _build_failure_result as _build_failure_result,
+    _build_success_result as _build_success_result,
+    _scoped_runtime_error_code as _scoped_runtime_error_code,
+    _scoped_runtime_message as _scoped_runtime_message,
+)
+from fwrouter_api.services.apply_orchestrator_state import (
+    _load_server_override_map as _load_server_override_map,
+    _load_subjects_with_overrides as _load_subjects_with_overrides,
+    _load_user_override_map as _load_user_override_map,
+    _sync_subject_server_override_statuses as _sync_subject_server_override_statuses,
+)
+from fwrouter_api.services.servers import (
+    clear_subject_server_override as clear_subject_server_override,
+    get_subject_server_override as get_subject_server_override,
+    set_subject_server_override as set_subject_server_override,
+    update_subject_server_override_apply_status as update_subject_server_override_apply_status,
+)
+from fwrouter_api.services.subject_policy import (
+    get_routing_snapshot as get_routing_snapshot,
+    get_subject_with_effective_state as get_subject_with_effective_state,
+)
+from fwrouter_api.services.subjects import (
+    get_subject as get_subject,
+)
+
+
 
 
 def _with_assignment_audit_context(
@@ -35,16 +72,16 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
     subject_id = str(payload.get("subject_id") or "").strip()
     server_id = str(payload.get("server_id") or "").strip()
     actor_scope = str(payload.get("actor_scope") or "user").strip().lower()
-    prior_override = orchestrator.get_subject_server_override(subject_id)
+    prior_override = get_subject_server_override(subject_id)
     previous_server_id = (
         str(prior_override.get("selected_server_id") or "") or None
         if isinstance(prior_override, dict)
         else None
     )
-    subject = orchestrator.get_subject(subject_id)
+    subject = get_subject(subject_id)
     if subject is None:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+        return _build_failure_result(
+            intent=INTENT_SET_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -54,8 +91,8 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
 
     desired_mode = str(subject.get("desired_mode") or "").strip().lower()
     if actor_scope == "user" and desired_mode in {"direct", "disabled"}:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+        return _build_failure_result(
+            intent=INTENT_SET_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -64,10 +101,10 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
             details={"subject_id": subject_id, "admin_mode": desired_mode},
         )
 
-    validation = orchestrator._validate_subject_server_override_request(subject, server_id)
+    validation = _validate_subject_server_override_request(subject, server_id)
     if validation is not None:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+        return _build_failure_result(
+            intent=INTENT_SET_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -76,15 +113,15 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
             details={"server": validation.get("server")},
         )
 
-    persisted = orchestrator.set_subject_server_override(
+    persisted = set_subject_server_override(
         subject_id,
         server_id,
         requested_by=requested_by,
         job_id=str(job["job_id"]),
     )
     if not persisted["ok"]:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+        return _build_failure_result(
+            intent=INTENT_SET_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="persist",
@@ -94,7 +131,7 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
         )
 
     if is_explicit_external_client_subject_type(str(subject.get("subject_type") or "")):
-        materialized = orchestrator.materialize_explicit_external_client_runtime_bindings(
+        materialized = materialize_explicit_external_client_runtime_bindings(
             str(subject.get("subject_type") or ""),
             requested_by=requested_by,
             prepare_mihomo_handoff=False,
@@ -110,34 +147,34 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
                 or materialized.get("error_message")
                 or "Failed to materialize Xray runtime bindings."
             )
-            orchestrator.update_subject_server_override_apply_status(
+            update_subject_server_override_apply_status(
                 subject_id,
                 apply_state="failed",
                 error_code=materialize_code,
                 error_message=materialize_message,
             )
-            return _with_assignment_audit_context(orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+            return _with_assignment_audit_context(_build_failure_result(
+                intent=INTENT_SET_SUBJECT_SERVER_OVERRIDE,
                 job_id=str(job["job_id"]),
                 requested_by=requested_by,
                 stage="runtime_materialize",
                 code=materialize_code,
                 message=materialize_message,
                 details={
-                    "subject": orchestrator.get_subject_with_effective_state(subject_id),
-                    "server_override": orchestrator.get_subject_server_override(subject_id),
+                    "subject": get_subject_with_effective_state(subject_id),
+                    "server_override": get_subject_server_override(subject_id),
                     "explicit_client_materialization": materialized,
                 },
             ), subject_id=subject_id, previous_server_id=previous_server_id, new_server_id=server_id)
 
-        future_subjects = orchestrator._load_subjects_with_overrides(
-            routing=orchestrator.get_routing_snapshot(),
-            user_overrides=orchestrator._load_user_override_map(),
-            server_overrides=orchestrator._load_server_override_map(),
+        future_subjects = _load_subjects_with_overrides(
+            routing=get_routing_snapshot(),
+            user_overrides=_load_user_override_map(),
+            server_overrides=_load_server_override_map(),
         )
-        orchestrator._sync_subject_server_override_statuses(future_subjects)
-        return _with_assignment_audit_context(orchestrator._build_success_result(
-            intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+        _sync_subject_server_override_statuses(future_subjects)
+        return _with_assignment_audit_context(_build_success_result(
+            intent=INTENT_SET_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="commit",
@@ -147,13 +184,13 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
                 "message": "Explicit external client runtime metadata materialized.",
             },
             details={
-                "subject": orchestrator.get_subject_with_effective_state(subject_id),
-                "server_override": orchestrator.get_subject_server_override(subject_id),
+                "subject": get_subject_with_effective_state(subject_id),
+                "server_override": get_subject_server_override(subject_id),
             },
             runtime_state_unchanged=True,
         ), subject_id=subject_id, previous_server_id=previous_server_id, new_server_id=server_id)
 
-    routing = orchestrator.get_routing_snapshot()
+    routing = get_routing_snapshot()
     needs_selector = _subject_needs_mihomo_selector_from_committed(subject, routing=routing)
     mihomo_selector_switch: dict[str, Any] | None = None
     mihomo_reconcile: dict[str, Any] | None = None
@@ -167,14 +204,14 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
             if mihomo_reconcile["ok"]:
                 mihomo_selector_switch = _switch_subject_mihomo_selector(subject_id, server_id)
         if not mihomo_selector_switch["ok"]:
-            orchestrator.update_subject_server_override_apply_status(
+            update_subject_server_override_apply_status(
                 subject_id,
                 apply_state="failed",
                 error_code=str(mihomo_selector_switch.get("error_code") or "MIHOMO_SUBJECT_SELECTOR_SWITCH_FAILED"),
                 error_message=str(mihomo_selector_switch.get("error_message") or "Failed to switch subject Mihomo selector."),
             )
-            return _with_assignment_audit_context(orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+            return _with_assignment_audit_context(_build_failure_result(
+                intent=INTENT_SET_SUBJECT_SERVER_OVERRIDE,
                 job_id=str(job["job_id"]),
                 requested_by=requested_by,
                 stage="mihomo_selector_switch",
@@ -183,22 +220,22 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
                 details={
                     "mihomo_selector_switch": mihomo_selector_switch,
                     "mihomo_reconcile": mihomo_reconcile,
-                    "subject": orchestrator.get_subject_with_effective_state(subject_id),
-                    "server_override": orchestrator.get_subject_server_override(subject_id),
+                    "subject": get_subject_with_effective_state(subject_id),
+                    "server_override": get_subject_server_override(subject_id),
                 },
             ), subject_id=subject_id, previous_server_id=previous_server_id, new_server_id=server_id)
 
-        orchestrator.update_subject_server_override_apply_status(subject_id, apply_state="clean")
+        update_subject_server_override_apply_status(subject_id, apply_state="clean")
     else:
-        orchestrator.update_subject_server_override_apply_status(
+        update_subject_server_override_apply_status(
             subject_id,
             apply_state="pending",
-            error_code=orchestrator._scoped_runtime_error_code("pending_not_vpn_path"),
-            error_message=orchestrator._scoped_runtime_message("pending_not_vpn_path"),
+            error_code=_scoped_runtime_error_code("pending_not_vpn_path"),
+            error_message=_scoped_runtime_message("pending_not_vpn_path"),
         )
-    override_state = orchestrator.get_subject_server_override(subject_id)
-    return _with_assignment_audit_context(orchestrator._build_success_result(
-        intent=orchestrator.INTENT_SET_SUBJECT_SERVER_OVERRIDE,
+    override_state = get_subject_server_override(subject_id)
+    return _with_assignment_audit_context(_build_success_result(
+        intent=INTENT_SET_SUBJECT_SERVER_OVERRIDE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",
@@ -208,7 +245,7 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
             "message": "Subject server selector switched; dataplane unchanged.",
         },
         details={
-            "subject": orchestrator.get_subject(subject_id),
+            "subject": get_subject(subject_id),
             "server_override": override_state,
             "mihomo_selector_switch": mihomo_selector_switch,
             "mihomo_reconcile": mihomo_reconcile,
@@ -220,10 +257,10 @@ def _execute_set_subject_server_override(job: dict[str, Any], payload: dict[str,
 def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     requested_by = str(job.get("requested_by") or "api")
     subject_id = str(payload.get("subject_id") or "").strip()
-    subject = orchestrator.get_subject(subject_id)
+    subject = get_subject(subject_id)
     if subject is None:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
+        return _build_failure_result(
+            intent=INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -231,25 +268,25 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
             message=f"Subject not found: {subject_id}",
         )
 
-    existing_override = orchestrator.get_subject_server_override(subject_id)
+    existing_override = get_subject_server_override(subject_id)
     if existing_override is None:
-        return orchestrator._build_success_result(
-            intent=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
+        return _build_success_result(
+            intent=INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="commit",
             apply_result={"apply_id": None, "ok": True},
-            details={"subject": orchestrator.get_subject_with_effective_state(subject_id), "server_override": None},
+            details={"subject": get_subject_with_effective_state(subject_id), "server_override": None},
         )
 
     if is_explicit_external_client_subject_type(str(subject.get("subject_type") or "")):
         previous_server_id = str(existing_override.get("selected_server_id") or "") or None
-        cleared = orchestrator.clear_subject_server_override(
+        cleared = clear_subject_server_override(
             subject_id,
             requested_by=requested_by,
             job_id=str(job["job_id"]),
         )
-        materialized = orchestrator.materialize_explicit_external_client_runtime_bindings(
+        materialized = materialize_explicit_external_client_runtime_bindings(
             str(subject.get("subject_type") or ""),
             requested_by=requested_by,
             prepare_mihomo_handoff=False,
@@ -265,8 +302,8 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
                 or materialized.get("error_message")
                 or "Failed to materialize Xray runtime bindings."
             )
-            return _with_assignment_audit_context(orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
+            return _with_assignment_audit_context(_build_failure_result(
+                intent=INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
                 job_id=str(job["job_id"]),
                 requested_by=requested_by,
                 stage="runtime_materialize",
@@ -275,14 +312,14 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
                 details={"server_override": existing_override, "cleared": cleared},
             ), subject_id=subject_id, previous_server_id=previous_server_id, new_server_id=None)
 
-        future_subjects = orchestrator._load_subjects_with_overrides(
-            routing=orchestrator.get_routing_snapshot(),
-            user_overrides=orchestrator._load_user_override_map(),
-            server_overrides=orchestrator._load_server_override_map(),
+        future_subjects = _load_subjects_with_overrides(
+            routing=get_routing_snapshot(),
+            user_overrides=_load_user_override_map(),
+            server_overrides=_load_server_override_map(),
         )
-        orchestrator._sync_subject_server_override_statuses(future_subjects)
-        return _with_assignment_audit_context(orchestrator._build_success_result(
-            intent=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
+        _sync_subject_server_override_statuses(future_subjects)
+        return _with_assignment_audit_context(_build_success_result(
+            intent=INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="commit",
@@ -292,8 +329,8 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
                 "message": "Explicit external client runtime metadata materialized.",
             },
             details={
-                "subject": orchestrator.get_subject_with_effective_state(subject_id),
-                "server_override": orchestrator.get_subject_server_override(subject_id),
+                "subject": get_subject_with_effective_state(subject_id),
+                "server_override": get_subject_server_override(subject_id),
             },
             runtime_state_unchanged=True,
         ), subject_id=subject_id, previous_server_id=previous_server_id, new_server_id=None)
@@ -303,8 +340,8 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
         not mihomo_selector_switch["ok"]
         and mihomo_selector_switch.get("error_code") != "MIHOMO_SELECTOR_NOT_FOUND"
     ):
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
+        return _build_failure_result(
+            intent=INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="mihomo_selector_switch",
@@ -315,14 +352,14 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
                 "server_override": existing_override,
             },
         )
-    cleared = orchestrator.clear_subject_server_override(
+    cleared = clear_subject_server_override(
         subject_id,
         requested_by=requested_by,
         job_id=str(job["job_id"]),
     )
     previous_server_id = str(existing_override.get("selected_server_id") or "") or None
-    return _with_assignment_audit_context(orchestrator._build_success_result(
-        intent=orchestrator.INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
+    return _with_assignment_audit_context(_build_success_result(
+        intent=INTENT_CLEAR_SUBJECT_SERVER_OVERRIDE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",
@@ -332,7 +369,7 @@ def _execute_clear_subject_server_override(job: dict[str, Any], payload: dict[st
             "message": "Subject server selector reset; dataplane unchanged.",
         },
         details={
-            "subject": orchestrator.get_subject(subject_id),
+            "subject": get_subject(subject_id),
             "server_override": cleared,
             "mihomo_selector_switch": mihomo_selector_switch,
         },

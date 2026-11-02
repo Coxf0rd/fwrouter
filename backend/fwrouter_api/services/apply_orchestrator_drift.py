@@ -10,16 +10,23 @@ from fwrouter_api.services.apply_orchestrator_constants import (
     LIVE_DATAPLANE_ARTIFACT_DRIFT_CODE,
 )
 
-def _facade_attr(name: str) -> Any:
-    from fwrouter_api.services import apply_orchestrator as orchestrator
-
-    return getattr(orchestrator, name)
+from fwrouter_api.services.dataplane_global import (
+    read_applied_manifest as read_applied_manifest,
+)
+from fwrouter_api.services.dataplane_live import (
+    applied_nft_markers_match_live as applied_nft_markers_match_live,
+    probe_live_global_mode as probe_live_global_mode,
+)
+from fwrouter_api.services.logs import (
+    write_operational_log as write_operational_log,
+    write_technical_log as write_technical_log,
+)
 
 
 def _current_routing_drift(*, routing: dict[str, Any] | None = None) -> dict[str, Any]:
     resolved_routing = dict(routing or get_routing_snapshot() or {})
-    live_probe = _facade_attr("probe_live_global_mode")()
-    live_artifact_consistency = _facade_attr("_live_applied_nft_artifact_consistency")()
+    live_probe = probe_live_global_mode()
+    live_artifact_consistency = _probe_live_artifact_consistency()
     expected_mode = str(
         resolved_routing.get("applied_mode") or resolved_routing.get("desired_mode") or "direct"
     ).strip().lower()
@@ -75,7 +82,7 @@ def _live_applied_nft_artifact_consistency() -> dict[str, Any]:
             "applied_nft_path": str(applied_nft_path),
         }
 
-    consistency = _facade_attr("applied_nft_markers_match_live")(applied_nft_path)
+    consistency = applied_nft_markers_match_live(applied_nft_path)
     return {
         "detected": not bool(consistency.get("ok", True)),
         "checked": True,
@@ -85,9 +92,13 @@ def _live_applied_nft_artifact_consistency() -> dict[str, Any]:
     }
 
 
+_probe_live_artifact_consistency = _live_applied_nft_artifact_consistency
+
+
+
 def _applied_manifest_routing_drift(*, routing: dict[str, Any] | None = None) -> dict[str, Any]:
     resolved_routing = dict(routing or get_routing_snapshot() or {})
-    applied_manifest = _facade_attr("read_applied_manifest")()
+    applied_manifest = read_applied_manifest()
     if not (
         isinstance(applied_manifest, dict)
         and isinstance(applied_manifest.get("routing_global_state"), dict)
@@ -145,13 +156,13 @@ def _log_routing_drift(*, intent: str, requested_by: str, drift: dict[str, Any])
         "live_probe": drift.get("live_probe"),
         "live_artifact_consistency": drift.get("live_artifact_consistency"),
     }
-    _facade_attr("write_operational_log")(
+    write_operational_log(
         event_type="routing_live_drift_detected",
         level="warning",
         message="Persisted global routing state does not match live dataplane mode.",
         details=details,
     )
-    _facade_attr("write_technical_log")(
+    write_technical_log(
         component="apply-orchestrator",
         level="warning",
         event_type="routing_live_drift_detected",
@@ -171,13 +182,13 @@ def _log_artifact_drift(*, intent: str, requested_by: str, drift: dict[str, Any]
         "applied_manifest_routing": drift.get("applied_manifest_routing"),
         "mismatches": drift.get("mismatches"),
     }
-    _facade_attr("write_operational_log")(
+    write_operational_log(
         event_type="routing_artifact_drift_detected",
         level="warning",
         message="Applied routing manifest does not match persisted global routing state.",
         details=details,
     )
-    _facade_attr("write_technical_log")(
+    write_technical_log(
         component="apply-orchestrator",
         level="warning",
         event_type="routing_artifact_drift_detected",

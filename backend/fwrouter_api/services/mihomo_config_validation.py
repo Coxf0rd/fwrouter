@@ -20,6 +20,19 @@ from fwrouter_api.services.mihomo_config_paths import (
     XRAY_MIHOMO_LISTENER_PREFIX,
     _resolve_proxy_bypass_mark_value,
 )
+from fwrouter_api.services.mihomo_config_rules import (
+    _build_mihomo_config_with_source,
+    _build_fallback_rule,
+    _build_transparent_fallback_rule,
+    _mandatory_vpn_udp_guard,
+)
+from fwrouter_api.services.mihomo_config_proxies import (
+    _ensure_selector_groups,
+    _fixed_routing_server_id,
+    _fixed_targetless_direct_compat,
+    _fixed_runtime_target,
+    _runtime_proxy_inventory_count,
+)
 
 
 def _candidate_runtime_proxies(candidate_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -88,20 +101,6 @@ def _validate_candidate_structure(
     *,
     routing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from fwrouter_api.services.mihomo_config import (
-        _build_mihomo_config_with_source,
-        _build_fallback_rule,
-        _build_transparent_fallback_rule,
-        _runtime_proxy_inventory_count,
-    )
-    from fwrouter_api.services.mihomo_config_rules import _mandatory_vpn_udp_guard
-    from fwrouter_api.services.mihomo_config_proxies import (
-        _ensure_selector_groups,
-        _fixed_routing_server_id,
-        _fixed_targetless_direct_compat,
-        _fixed_runtime_target,
-    )
-
     rules = candidate_config.get("rules") if isinstance(candidate_config.get("rules"), list) else []
     proxies = candidate_config.get("proxies") if isinstance(candidate_config.get("proxies"), list) else []
     groups = candidate_config.get("proxy-groups") if isinstance(candidate_config.get("proxy-groups"), list) else []

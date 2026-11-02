@@ -3,12 +3,41 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from fwrouter_api.services import apply_orchestrator as orchestrator
+from fwrouter_api.services.apply_orchestrator_constants import (
+    INTENT_APPLY_MANUAL_RULES as INTENT_APPLY_MANUAL_RULES,
+)
+from fwrouter_api.services.apply_orchestrator_pipeline import (
+    _commit_manual_rules_apply as _commit_manual_rules_apply,
+    _run_pipeline_for_state as _run_pipeline_for_state,
+)
+from fwrouter_api.services.apply_orchestrator_results import (
+    _build_failure_result as _build_failure_result,
+    _build_success_result as _build_success_result,
+)
+from fwrouter_api.services.apply_orchestrator_state import (
+    _load_server_override_map as _load_server_override_map,
+    _load_subjects_with_overrides as _load_subjects_with_overrides,
+    _load_user_override_map as _load_user_override_map,
+    _persist_rules_error as _persist_rules_error,
+    _sync_subject_server_override_statuses as _sync_subject_server_override_statuses,
+)
+from fwrouter_api.services.rules import (
+    get_manual_rules_texts as get_manual_rules_texts,
+    mark_rules_job_running as mark_rules_job_running,
+    prepare_manual_rules_candidate as prepare_manual_rules_candidate,
+    validate_manual_rules as validate_manual_rules,
+)
+from fwrouter_api.services.subject_policy import (
+    get_routing_snapshot as get_routing_snapshot,
+)
+
+
+
 
 
 def _execute_apply_manual_rules(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     job_id = str(job["job_id"])
-    orchestrator.mark_rules_job_running(job_id=job_id, update_type="manual_apply")
+    mark_rules_job_running(job_id=job_id, update_type="manual_apply")
     try:
         return _execute_apply_manual_rules_running(job, payload)
     except Exception as exc:
@@ -16,7 +45,7 @@ def _execute_apply_manual_rules(job: dict[str, Any], payload: dict[str, Any]) ->
         # rules-domain failure here, before allowing that original exception
         # to reach the manager; never convert render/write failures to success.
         try:
-            orchestrator._persist_rules_error(
+            _persist_rules_error(
                 job_id=job_id,
                 code=str(getattr(exc, "error_code", "RULES_APPLY_FAILED")),
                 message=str(exc),
@@ -31,13 +60,13 @@ def _execute_apply_manual_rules_running(job: dict[str, Any], payload: dict[str, 
     del payload
     requested_by = str(job.get("requested_by") or "api")
     job_id = str(job["job_id"])
-    previous_active_text = str(orchestrator.get_manual_rules_texts().get("active_text") or "")
-    candidate = orchestrator.prepare_manual_rules_candidate(job_id=job_id)
+    previous_active_text = str(get_manual_rules_texts().get("active_text") or "")
+    candidate = prepare_manual_rules_candidate(job_id=job_id)
     validation = candidate["manual_validation"]
 
     if not validation["valid"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_APPLY_MANUAL_RULES,
+        result = _build_failure_result(
+            intent=INTENT_APPLY_MANUAL_RULES,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -45,7 +74,7 @@ def _execute_apply_manual_rules_running(job: dict[str, Any], payload: dict[str, 
             message="Manual rules validation failed.",
             details={"validation": validation},
         )
-        orchestrator._persist_rules_error(
+        _persist_rules_error(
             job_id=str(job["job_id"]),
             code=result["code"],
             message=result["message"],
@@ -53,24 +82,24 @@ def _execute_apply_manual_rules_running(job: dict[str, Any], payload: dict[str, 
         return result
 
     effective_artifact = candidate["effective_artifact"]
-    routing = orchestrator.get_routing_snapshot()
-    subjects = orchestrator._load_subjects_with_overrides(
+    routing = get_routing_snapshot()
+    subjects = _load_subjects_with_overrides(
         routing=routing,
-        user_overrides=orchestrator._load_user_override_map(),
-        server_overrides=orchestrator._load_server_override_map(),
+        user_overrides=_load_user_override_map(),
+        server_overrides=_load_server_override_map(),
     )
-    apply_result = orchestrator._run_pipeline_for_state(
+    apply_result = _run_pipeline_for_state(
         job_id=str(job["job_id"]),
-        reason=orchestrator.INTENT_APPLY_MANUAL_RULES,
-        input_data={"intent": orchestrator.INTENT_APPLY_MANUAL_RULES},
+        reason=INTENT_APPLY_MANUAL_RULES,
+        input_data={"intent": INTENT_APPLY_MANUAL_RULES},
         routing=routing,
         subjects=subjects,
         extra={"rules_effective": effective_artifact},
     )
 
     if not apply_result["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_APPLY_MANUAL_RULES,
+        result = _build_failure_result(
+            intent=INTENT_APPLY_MANUAL_RULES,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(apply_result.get("stage") or "apply"),
@@ -79,7 +108,7 @@ def _execute_apply_manual_rules_running(job: dict[str, Any], payload: dict[str, 
             apply_id=apply_result["apply_id"],
             details={"apply": apply_result, "validation": validation},
         )
-        orchestrator._persist_rules_error(
+        _persist_rules_error(
             job_id=str(job["job_id"]),
             code=result["code"],
             message=result["message"],
@@ -87,7 +116,7 @@ def _execute_apply_manual_rules_running(job: dict[str, Any], payload: dict[str, 
         )
         return result
 
-    committed = orchestrator._commit_manual_rules_apply(
+    committed = _commit_manual_rules_apply(
         job_id=str(job["job_id"]),
         draft_text=validation["normalized_text"],
         effective_artifact=effective_artifact,
@@ -105,7 +134,7 @@ def _execute_apply_manual_rules_running(job: dict[str, Any], payload: dict[str, 
             "apply_id": apply_result.get("apply_id"),
             "previous_value": {
                 "sha256": hashlib.sha256(previous_active_text.encode("utf-8")).hexdigest(),
-                "rule_count": len(orchestrator.validate_manual_rules(previous_active_text).get("rules") or []),
+                "rule_count": len(validate_manual_rules(previous_active_text).get("rules") or []),
             },
             "new_value": {
                 "sha256": hashlib.sha256(validation["normalized_text"].encode("utf-8")).hexdigest(),
@@ -113,9 +142,9 @@ def _execute_apply_manual_rules_running(job: dict[str, Any], payload: dict[str, 
             },
         },
     )
-    orchestrator._sync_subject_server_override_statuses(subjects)
-    return orchestrator._build_success_result(
-        intent=orchestrator.INTENT_APPLY_MANUAL_RULES,
+    _sync_subject_server_override_statuses(subjects)
+    return _build_success_result(
+        intent=INTENT_APPLY_MANUAL_RULES,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",

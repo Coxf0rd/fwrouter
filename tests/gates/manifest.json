@@ -161,6 +161,22 @@
   ],
   "path_rules": [
     {
+      "glob": "backend/fwrouter_api/services/module_attribute_aliases.py",
+      "domains": [
+        "core",
+        "mihomo",
+        "runtime"
+      ]
+    },
+    {
+      "glob": "installer/tests/test_backend_module_contracts.py",
+      "domains": [
+        "installer",
+        "core",
+        "mihomo"
+      ]
+    },
+    {
       "glob": "host/libexec/fwrouter/fwrouter-xray-sub-gateway.py",
       "domains": [
         "xray",
@@ -6939,9 +6955,37 @@
       "slow": false,
       "timeout_seconds": 60,
       "execution_group": "installer-startup"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "installer",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "Fresh Python interpreters with existing denied-capability safety bootstrap; explicit module order and public object identity assertions",
+      "fixture_owner": "installer/tests/test_backend_module_contracts.py",
+      "id": "test_backend_module_contracts",
+      "isolation": "Coordinator-owned temporary state; child configures production-path/process/network denial before application imports; dotenv disabled",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "installer/tests/test_backend_module_contracts.py",
+      "primary_level": "L3",
+      "risk_notes": "Cold import-order, compatibility export identity and fallback contracts; no native operations or live state; proves imports do not need facade callback wiring",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest",
+        "project backend dependencies"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "installer-startup"
     }
   ],
-  "version": "2026.11.02.1",
+  "version": "2026.11.02.2",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

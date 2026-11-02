@@ -5,11 +5,71 @@ from typing import Any
 from fwrouter_api.adapters.xray_common import xray_writer_guarded
 from fwrouter_api.db.connection import db_session
 
-from fwrouter_api.services import apply_orchestrator as orchestrator
 from fwrouter_api.services.apply_orchestrator_handler_common import (
     _reconcile_vpn_runtime_for_apply,
     _selective_default_artifact_drift_is_ignorable_for_global_direct,
 )
+
+from fwrouter_api.services.apply_orchestrator_commits import (
+    _commit_global_mode as _commit_global_mode,
+    _commit_global_server_mode as _commit_global_server_mode,
+    _commit_repaired_global_runtime as _commit_repaired_global_runtime,
+    _commit_selective_default as _commit_selective_default,
+)
+from fwrouter_api.services.apply_orchestrator_constants import (
+    INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME as INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME,
+    INTENT_SET_GLOBAL_MODE as INTENT_SET_GLOBAL_MODE,
+    INTENT_SET_GLOBAL_SERVER_MODE as INTENT_SET_GLOBAL_SERVER_MODE,
+    INTENT_SET_SELECTIVE_DEFAULT as INTENT_SET_SELECTIVE_DEFAULT,
+)
+from fwrouter_api.services.apply_orchestrator_drift import (
+    _applied_manifest_routing_drift as _applied_manifest_routing_drift,
+    _current_routing_drift as _current_routing_drift,
+    _log_artifact_drift as _log_artifact_drift,
+    _log_routing_drift as _log_routing_drift,
+)
+from fwrouter_api.services.apply_orchestrator_pipeline import (
+    _run_pipeline_for_manifest as _run_pipeline_for_manifest,
+    _run_pipeline_for_state as _run_pipeline_for_state,
+)
+from fwrouter_api.services.apply_orchestrator_results import (
+    _build_failure_result as _build_failure_result,
+    _build_success_result as _build_success_result,
+)
+from fwrouter_api.services.apply_orchestrator_state import (
+    _load_server_override_map as _load_server_override_map,
+    _load_subjects_with_overrides as _load_subjects_with_overrides,
+    _load_user_override_map as _load_user_override_map,
+    _persist_global_error as _persist_global_error,
+    _subject_follows_global as _subject_follows_global,
+    _sync_subject_server_override_statuses as _sync_subject_server_override_statuses,
+)
+from fwrouter_api.services.dataplane_global import (
+    read_effective_rules_artifact as read_effective_rules_artifact,
+    validate_global_mode_request as validate_global_mode_request,
+)
+from fwrouter_api.services.global_mode_profiles import (
+    load_precompiled_global_mode_profile as load_precompiled_global_mode_profile,
+    materialize_precompiled_manifest as materialize_precompiled_manifest,
+)
+from fwrouter_api.services.jobs import (
+    touch_job_running as touch_job_running,
+)
+from fwrouter_api.services.mihomo_config_status import (
+    mihomo_runtime_satisfies_routing as mihomo_runtime_satisfies_routing,
+)
+from fwrouter_api.services.mihomo_reconcile import (
+    reconcile_mihomo_selective_default_fast as reconcile_mihomo_selective_default_fast,
+)
+from fwrouter_api.services.rules import (
+    effective_rules_with_selective_default as effective_rules_with_selective_default,
+    sync_active_selective_default as sync_active_selective_default,
+)
+from fwrouter_api.services.subject_policy import (
+    get_routing_snapshot as get_routing_snapshot,
+)
+
+
 
 
 @xray_writer_guarded
@@ -17,8 +77,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
     requested_by = str(job.get("requested_by") or "api")
     mode = str(payload.get("mode") or "").strip().lower()
     if mode not in {"direct", "selective", "vpn"}:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+        return _build_failure_result(
+            intent=INTENT_SET_GLOBAL_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -53,8 +113,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                 and expected_snapshot == workflow.get("core_snapshot")
             )
             if not owns_fixed_core_stage:
-                return orchestrator._build_failure_result(
-                    intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+                return _build_failure_result(
+                    intent=INTENT_SET_GLOBAL_MODE,
                     job_id=str(job["job_id"]),
                     requested_by=requested_by,
                     stage="fixed_workflow_fence",
@@ -70,8 +130,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
     expected_core_revision = payload.get("expected_core_revision")
     expected_core_snapshot = payload.get("expected_core_snapshot")
     if expected_selection_revision is not None and type(expected_selection_revision) is not int:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+        return _build_failure_result(
+            intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
             requested_by=requested_by, stage="fence", code="SELECTION_REVISION_INVALID",
             message="Expected selection revision is invalid; Core apply was not started.",
         )
@@ -80,8 +140,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         or len(expected_core_snapshot) != 3
         or not all(isinstance(value, str) for value in expected_core_snapshot)
     ):
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+        return _build_failure_result(
+            intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
             requested_by=requested_by, stage="fence", code="CORE_SNAPSHOT_INVALID",
             message="Expected Core snapshot is invalid; Core apply was not started.",
         )
@@ -97,22 +157,22 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             try:
                 core_revision = read_core_intent_revision(connection)
             except ValueError:
-                return orchestrator._build_failure_result(
-                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                return _build_failure_result(
+                    intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                     requested_by=requested_by, stage="fence", code="CORE_INTENT_REVISION_INVALID",
                     message="Core intent revision is unavailable; apply was not started.",
                 )
             if expected_core_revision is not None and (
                 type(expected_core_revision) is not int or core_revision != expected_core_revision
             ):
-                return orchestrator._build_failure_result(
-                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                return _build_failure_result(
+                    intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                     requested_by=requested_by, stage="fence", code="CORE_INTENT_STALE",
                     message="Core intent changed before the fixed workflow apply began.",
                 )
             if expected_core_snapshot is not None and list(core_module_snapshot) != expected_core_snapshot:
-                return orchestrator._build_failure_result(
-                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                return _build_failure_result(
+                    intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                     requested_by=requested_by, stage="fence", code="CORE_INTENT_STALE",
                     message="Core state changed before the fixed workflow apply began.",
                 )
@@ -127,8 +187,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                 except (TypeError, ValueError, json.JSONDecodeError):
                     decoded = None
                 if not isinstance(decoded, dict) or type(decoded.get("enabled", False)) is not bool:
-                    return orchestrator._build_failure_result(
-                        intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                    return _build_failure_result(
+                        intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                         requested_by=requested_by, stage="fence", code="CORE_BYPASS_STATE_INVALID",
                         message="Core bypass state is unavailable; apply was not started.",
                     )
@@ -138,16 +198,16 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                 and core["apply_state"] != "clean"
             )
             if bypass_enabled and core_enable_pending:
-                return orchestrator._build_failure_result(
-                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                return _build_failure_result(
+                    intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                     requested_by=requested_by, stage="fence", code="CORE_BYPASS_ACTIVE",
                     message="Core bypass is active; Core enable apply was not started.",
                 )
         if expected_selection_revision is not None:
             from fwrouter_api.services.vpn_auto_selection_state import read_selection_revision
             if read_selection_revision(connection) != expected_selection_revision:
-                return orchestrator._build_failure_result(
-                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                return _build_failure_result(
+                    intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                     requested_by=requested_by, stage="fence", code="SELECTION_INTENT_STALE",
                     message="Selection intent changed before the fixed workflow Core apply began.",
                 )
@@ -156,15 +216,15 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         from fwrouter_api.services.core_intent import read_core_runtime_context
         core_runtime_context = read_core_runtime_context()
         if core_runtime_context is None:
-            return orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+            return _build_failure_result(
+                intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                 requested_by=requested_by, stage="fence", code="CORE_RUNTIME_CONTEXT_UNAVAILABLE",
                 message="Core runtime context cannot be fenced; Core remains pending.",
             )
 
-    routing = orchestrator.get_routing_snapshot()
-    drift = orchestrator._current_routing_drift(routing=routing)
-    artifact_drift = orchestrator._applied_manifest_routing_drift(routing=routing)
+    routing = get_routing_snapshot()
+    drift = _current_routing_drift(routing=routing)
+    artifact_drift = _applied_manifest_routing_drift(routing=routing)
     if (
         str(routing.get("applied_mode")) == mode
         and str(routing.get("apply_state")) == "clean"
@@ -172,8 +232,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         and not artifact_drift["detected"]
         and not core_enable_pending
     ):
-        return orchestrator._build_success_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+        return _build_success_result(
+            intent=INTENT_SET_GLOBAL_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -182,14 +242,14 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             runtime_state_unchanged=True,
         )
     if drift["detected"]:
-        orchestrator._log_routing_drift(
-            intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+        _log_routing_drift(
+            intent=INTENT_SET_GLOBAL_MODE,
             requested_by=requested_by,
             drift=drift,
         )
     if artifact_drift["detected"]:
-        orchestrator._log_artifact_drift(
-            intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+        _log_artifact_drift(
+            intent=INTENT_SET_GLOBAL_MODE,
             requested_by=requested_by,
             drift=artifact_drift,
         )
@@ -200,20 +260,20 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
     future_routing["error_code"] = None
     future_routing["error_message"] = None
 
-    mode_validation = orchestrator.validate_global_mode_request(mode, routing=future_routing)
+    mode_validation = validate_global_mode_request(mode, routing=future_routing)
     if not mode_validation["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+        result = _build_failure_result(
+            intent=INTENT_SET_GLOBAL_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(mode_validation["stage"]),
             code=str(mode_validation["code"]),
             message=str(mode_validation["message"]),
         )
-        orchestrator._persist_global_error(code=result["code"], message=result["message"])
+        _persist_global_error(code=result["code"], message=result["message"])
         return result
 
-    orchestrator.touch_job_running(str(job["job_id"]))
+    touch_job_running(str(job["job_id"]))
 
     if mode == "direct":
         mihomo_reconcile: dict[str, Any] = {
@@ -233,7 +293,7 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             and routing.get("apply_state") == "clean"
             else future_routing
         )
-        mihomo_reconcile = orchestrator.mihomo_runtime_satisfies_routing(readiness_routing)
+        mihomo_reconcile = mihomo_runtime_satisfies_routing(readiness_routing)
         if mihomo_reconcile.get("ok"):
             mihomo_reconcile = {
                 **mihomo_reconcile,
@@ -247,8 +307,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                 job_id=str(job["job_id"]),
             )
         if not mihomo_reconcile["ok"]:
-            result = orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+            result = _build_failure_result(
+                intent=INTENT_SET_GLOBAL_MODE,
                 job_id=str(job["job_id"]),
                 requested_by=requested_by,
                 stage=str(mihomo_reconcile.get("stage") or "mihomo_reconcile"),
@@ -256,10 +316,10 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                 message="Failed to reconcile Mihomo runtime before global mode apply.",
                 details={"mihomo_reconcile": mihomo_reconcile},
             )
-            orchestrator._persist_global_error(code=result["code"], message=result["message"])
+            _persist_global_error(code=result["code"], message=result["message"])
             return result
 
-    precompiled_profile = orchestrator.load_precompiled_global_mode_profile(mode, routing=routing)
+    precompiled_profile = load_precompiled_global_mode_profile(mode, routing=routing)
     affected_subjects: list[str]
     subjects: list[dict[str, Any]]
     if precompiled_profile is not None:
@@ -269,24 +329,24 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             if str(subject_id).strip()
         ]
         subjects = list(precompiled_profile.get("subject_runtime_statuses") or [])
-        apply_result = orchestrator._run_pipeline_for_manifest(
+        apply_result = _run_pipeline_for_manifest(
             job_id=str(job["job_id"]),
-            reason=orchestrator.INTENT_SET_GLOBAL_MODE,
-            input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode,
+            reason=INTENT_SET_GLOBAL_MODE,
+            input_data={"intent": INTENT_SET_GLOBAL_MODE, "mode": mode,
                         "repair_owned_table": bool((drift.get("live_artifact_consistency") or {}).get("detected"))},
-            manifest=orchestrator.materialize_precompiled_manifest(
+            manifest=materialize_precompiled_manifest(
                 precompiled_profile,
                 plan_id="unused",
-                reason=orchestrator.INTENT_SET_GLOBAL_MODE,
-                input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode,
+                reason=INTENT_SET_GLOBAL_MODE,
+                input_data={"intent": INTENT_SET_GLOBAL_MODE, "mode": mode,
                         "repair_owned_table": bool((drift.get("live_artifact_consistency") or {}).get("detected"))},
             ),
             core_intent_revision=core_revision,
         )
     else:
-        user_overrides = orchestrator._load_user_override_map()
-        server_overrides = orchestrator._load_server_override_map()
-        subjects = orchestrator._load_subjects_with_overrides(
+        user_overrides = _load_user_override_map()
+        server_overrides = _load_server_override_map()
+        subjects = _load_subjects_with_overrides(
             routing=future_routing,
             user_overrides=user_overrides,
             server_overrides=server_overrides,
@@ -295,15 +355,15 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         affected_subjects = [
             str(subject["subject_id"])
             for subject in subjects
-            if orchestrator._subject_follows_global(subject)
+            if _subject_follows_global(subject)
             and str(subject["desired_mode"]) == "global"
             and subject["effective_state"]["mode_source"] == "global"
         ]
 
-        apply_result = orchestrator._run_pipeline_for_state(
+        apply_result = _run_pipeline_for_state(
             job_id=str(job["job_id"]),
-            reason=orchestrator.INTENT_SET_GLOBAL_MODE,
-            input_data={"intent": orchestrator.INTENT_SET_GLOBAL_MODE, "mode": mode,
+            reason=INTENT_SET_GLOBAL_MODE,
+            input_data={"intent": INTENT_SET_GLOBAL_MODE, "mode": mode,
                         "repair_owned_table": bool((drift.get("live_artifact_consistency") or {}).get("detected"))},
             routing=future_routing,
             subjects=subjects,
@@ -312,8 +372,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
         )
 
     if not apply_result["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+        result = _build_failure_result(
+            intent=INTENT_SET_GLOBAL_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(apply_result.get("stage") or "apply"),
@@ -322,10 +382,10 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             apply_id=apply_result["apply_id"],
             details={"apply": apply_result, "affected_subject_ids": affected_subjects},
         )
-        orchestrator._persist_global_error(code=result["code"], message=result["message"])
+        _persist_global_error(code=result["code"], message=result["message"])
         return result
 
-    orchestrator.touch_job_running(str(job["job_id"]))
+    touch_job_running(str(job["job_id"]))
     if core_revision is not None:
         from fwrouter_api.services.core_intent import assert_core_intent_snapshot_current
         with db_session() as connection:
@@ -337,14 +397,14 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
                     and read_selection_revision(connection) != expected_selection_revision
                 )
             ):
-                return orchestrator._build_failure_result(
-                    intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+                return _build_failure_result(
+                    intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                     requested_by=requested_by, stage="fence", code="CORE_INTENT_STALE",
                     message="Core intent changed during apply; routing was not committed.",
                     apply_id=apply_result.get("apply_id"),
                 )
     try:
-        committed = orchestrator._commit_global_mode(
+        committed = _commit_global_mode(
             mode=mode,
             requested_by=requested_by,
             job_id=str(job["job_id"]),
@@ -354,8 +414,8 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             expected_core_snapshot=core_module_snapshot,
         )
     except RuntimeError:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+        return _build_failure_result(
+            intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
             requested_by=requested_by, stage="fence", code="CORE_INTENT_STALE",
             message="Core intent changed before routing commit.",
             apply_id=apply_result.get("apply_id"),
@@ -369,15 +429,15 @@ def _execute_set_global_mode(job: dict[str, Any], payload: dict[str, Any]) -> di
             apply_id=str(apply_result.get("apply_id") or ""), proof=proof,
             expected_runtime_context=core_runtime_context or {},
         ):
-            return orchestrator._build_failure_result(
-                intent=orchestrator.INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
+            return _build_failure_result(
+                intent=INTENT_SET_GLOBAL_MODE, job_id=str(job["job_id"]),
                 requested_by=requested_by, stage="native_proof", code="CORE_NATIVE_PROOF_UNVERIFIED",
                 message="Fresh Core native proof did not match the current owned apply; Core remains pending.",
                 apply_id=apply_result.get("apply_id"), details={"proof_reason": proof.get("reason")},
             )
-    orchestrator._sync_subject_server_override_statuses(subjects)
-    return orchestrator._build_success_result(
-        intent=orchestrator.INTENT_SET_GLOBAL_MODE,
+    _sync_subject_server_override_statuses(subjects)
+    return _build_success_result(
+        intent=INTENT_SET_GLOBAL_MODE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",
@@ -391,8 +451,8 @@ def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]
     requested_by = str(job.get("requested_by") or "api")
     server_mode = str(payload.get("server_mode") or "").strip().lower()
     if server_mode not in {"auto", "fixed"}:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
+        return _build_failure_result(
+            intent=INTENT_SET_GLOBAL_SERVER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -400,12 +460,12 @@ def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]
             message="Server mode must be one of: auto, fixed.",
         )
 
-    routing = orchestrator.get_routing_snapshot()
-    drift = orchestrator._current_routing_drift(routing=routing)
-    artifact_drift = orchestrator._applied_manifest_routing_drift(routing=routing)
+    routing = get_routing_snapshot()
+    drift = _current_routing_drift(routing=routing)
+    artifact_drift = _applied_manifest_routing_drift(routing=routing)
     if str(routing.get("server_mode")) == server_mode and not drift["detected"] and not artifact_drift["detected"]:
-        return orchestrator._build_success_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
+        return _build_success_result(
+            intent=INTENT_SET_GLOBAL_SERVER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -414,14 +474,14 @@ def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]
             runtime_state_unchanged=True,
         )
     if drift["detected"]:
-        orchestrator._log_routing_drift(
-            intent=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
+        _log_routing_drift(
+            intent=INTENT_SET_GLOBAL_SERVER_MODE,
             requested_by=requested_by,
             drift=drift,
         )
     if artifact_drift["detected"]:
-        orchestrator._log_artifact_drift(
-            intent=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
+        _log_artifact_drift(
+            intent=INTENT_SET_GLOBAL_SERVER_MODE,
             requested_by=requested_by,
             drift=artifact_drift,
         )
@@ -432,29 +492,29 @@ def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]
     future_routing["error_code"] = None
     future_routing["error_message"] = None
 
-    current_mode = orchestrator.get_routing_snapshot().get("applied_mode") or orchestrator.get_routing_snapshot().get("desired_mode") or "direct"
-    mode_validation = orchestrator.validate_global_mode_request(current_mode, routing=future_routing)
+    current_mode = get_routing_snapshot().get("applied_mode") or get_routing_snapshot().get("desired_mode") or "direct"
+    mode_validation = validate_global_mode_request(current_mode, routing=future_routing)
     if not mode_validation["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
+        result = _build_failure_result(
+            intent=INTENT_SET_GLOBAL_SERVER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(mode_validation["stage"]),
             code=str(mode_validation["code"]),
             message=str(mode_validation["message"]),
         )
-        orchestrator._persist_global_error(code=result["code"], message=result["message"])
+        _persist_global_error(code=result["code"], message=result["message"])
         return result
 
-    orchestrator.touch_job_running(str(job["job_id"]))
+    touch_job_running(str(job["job_id"]))
 
     mihomo_reconcile = _reconcile_vpn_runtime_for_apply(
         routing=future_routing,
         job_id=str(job["job_id"]),
     )
     if not mihomo_reconcile["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
+        result = _build_failure_result(
+            intent=INTENT_SET_GLOBAL_SERVER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(mihomo_reconcile.get("stage") or "mihomo_reconcile"),
@@ -462,12 +522,12 @@ def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]
             message="Failed to reconcile Mihomo runtime before server mode apply.",
             details={"mihomo_reconcile": mihomo_reconcile},
         )
-        orchestrator._persist_global_error(code=result["code"], message=result["message"])
+        _persist_global_error(code=result["code"], message=result["message"])
         return result
 
-    user_overrides = orchestrator._load_user_override_map()
-    server_overrides = orchestrator._load_server_override_map()
-    subjects = orchestrator._load_subjects_with_overrides(
+    user_overrides = _load_user_override_map()
+    server_overrides = _load_server_override_map()
+    subjects = _load_subjects_with_overrides(
         routing=future_routing,
         user_overrides=user_overrides,
         server_overrides=server_overrides,
@@ -476,23 +536,23 @@ def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]
     affected_subjects = [
         str(subject["subject_id"])
         for subject in subjects
-        if orchestrator._subject_follows_global(subject)
+        if _subject_follows_global(subject)
         and str(subject["desired_mode"]) == "global"
         and subject["effective_state"]["mode_source"] == "global"
     ]
 
-    apply_result = orchestrator._run_pipeline_for_state(
+    apply_result = _run_pipeline_for_state(
         job_id=str(job["job_id"]),
-        reason=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
-        input_data={"intent": orchestrator.INTENT_SET_GLOBAL_SERVER_MODE, "server_mode": server_mode},
+        reason=INTENT_SET_GLOBAL_SERVER_MODE,
+        input_data={"intent": INTENT_SET_GLOBAL_SERVER_MODE, "server_mode": server_mode},
         routing=future_routing,
         subjects=subjects,
         extra={"affected_subject_ids": affected_subjects},
     )
 
     if not apply_result["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
+        result = _build_failure_result(
+            intent=INTENT_SET_GLOBAL_SERVER_MODE,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(apply_result.get("stage") or "apply"),
@@ -501,19 +561,19 @@ def _execute_set_global_server_mode(job: dict[str, Any], payload: dict[str, Any]
             apply_id=apply_result["apply_id"],
             details={"apply": apply_result, "affected_subject_ids": affected_subjects},
         )
-        orchestrator._persist_global_error(code=result["code"], message=result["message"])
+        _persist_global_error(code=result["code"], message=result["message"])
         return result
 
-    orchestrator.touch_job_running(str(job["job_id"]))
-    committed = orchestrator._commit_global_server_mode(
+    touch_job_running(str(job["job_id"]))
+    committed = _commit_global_server_mode(
         server_mode=server_mode,
         requested_by=requested_by,
         job_id=str(job["job_id"]),
         apply_id=apply_result.get("apply_id"),
     )
-    orchestrator._sync_subject_server_override_statuses(subjects)
-    return orchestrator._build_success_result(
-        intent=orchestrator.INTENT_SET_GLOBAL_SERVER_MODE,
+    _sync_subject_server_override_statuses(subjects)
+    return _build_success_result(
+        intent=INTENT_SET_GLOBAL_SERVER_MODE,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",
@@ -526,8 +586,8 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
     requested_by = str(job.get("requested_by") or "api")
     selective_default = str(payload.get("selective_default") or "").strip().lower()
     if selective_default not in {"direct", "vpn"}:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
+        return _build_failure_result(
+            intent=INTENT_SET_SELECTIVE_DEFAULT,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -535,12 +595,12 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
             message="Selective default must be one of: direct, vpn.",
         )
 
-    routing = orchestrator.get_routing_snapshot()
-    drift = orchestrator._current_routing_drift(routing=routing)
-    artifact_drift = orchestrator._applied_manifest_routing_drift(routing=routing)
+    routing = get_routing_snapshot()
+    drift = _current_routing_drift(routing=routing)
+    artifact_drift = _applied_manifest_routing_drift(routing=routing)
     if str(routing.get("selective_default")) == selective_default and not drift["detected"] and not artifact_drift["detected"]:
-        return orchestrator._build_success_result(
-            intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
+        return _build_success_result(
+            intent=INTENT_SET_SELECTIVE_DEFAULT,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="validate",
@@ -549,8 +609,8 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
             runtime_state_unchanged=True,
         )
     if drift["detected"]:
-        orchestrator._log_routing_drift(
-            intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
+        _log_routing_drift(
+            intent=INTENT_SET_SELECTIVE_DEFAULT,
             requested_by=requested_by,
             drift=drift,
         )
@@ -561,8 +621,8 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
         )
     )
     if artifact_drift["detected"] and not selective_default_artifact_drift_ignorable:
-        orchestrator._log_artifact_drift(
-            intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
+        _log_artifact_drift(
+            intent=INTENT_SET_SELECTIVE_DEFAULT,
             requested_by=requested_by,
             drift=artifact_drift,
         )
@@ -572,17 +632,17 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
         and not drift["detected"]
         and selective_default_artifact_drift_ignorable
     ):
-        committed = orchestrator._commit_selective_default(
+        committed = _commit_selective_default(
             selective_default=selective_default,
             requested_by=requested_by,
             job_id=str(job["job_id"]),
         )
-        rules_state = orchestrator.sync_active_selective_default(
+        rules_state = sync_active_selective_default(
             selective_default=selective_default,
             job_id=str(job["job_id"]),
         )
-        return orchestrator._build_success_result(
-            intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
+        return _build_success_result(
+            intent=INTENT_SET_SELECTIVE_DEFAULT,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage="commit",
@@ -594,13 +654,13 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
     future_routing = dict(routing)
     future_routing["selective_default"] = selective_default
     future_routing["apply_state"] = "applying"
-    effective_rules = orchestrator.effective_rules_with_selective_default(
-        orchestrator.read_effective_rules_artifact(),
+    effective_rules = effective_rules_with_selective_default(
+        read_effective_rules_artifact(),
         selective_default=selective_default,
     )
 
-    orchestrator.touch_job_running(str(job["job_id"]))
-    mihomo_reconcile = orchestrator.mihomo_runtime_satisfies_routing(future_routing)
+    touch_job_running(str(job["job_id"]))
+    mihomo_reconcile = mihomo_runtime_satisfies_routing(future_routing)
     if mihomo_reconcile.get("ok"):
         mihomo_reconcile = {
             **mihomo_reconcile,
@@ -609,7 +669,7 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
             "reconcile_reason": "active_runtime_already_matches_routing",
         }
     else:
-        mihomo_reconcile = orchestrator.reconcile_mihomo_selective_default_fast(
+        mihomo_reconcile = reconcile_mihomo_selective_default_fast(
             routing=future_routing,
             job_id=str(job["job_id"]),
         )
@@ -619,37 +679,37 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
                 job_id=str(job["job_id"]),
             )
     if not mihomo_reconcile["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
+        result = _build_failure_result(
+            intent=INTENT_SET_SELECTIVE_DEFAULT,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(mihomo_reconcile.get("stage") or "mihomo_reconcile"),
             code="MIHOMO_RECONCILE_FAILED",
             message="Failed to reconcile Mihomo runtime before selective default apply.",
         )
-        orchestrator._persist_global_error(code=result["code"], message=result["message"])
+        _persist_global_error(code=result["code"], message=result["message"])
         return result
 
-    user_overrides = orchestrator._load_user_override_map()
-    server_overrides = orchestrator._load_server_override_map()
-    subjects = orchestrator._load_subjects_with_overrides(
+    user_overrides = _load_user_override_map()
+    server_overrides = _load_server_override_map()
+    subjects = _load_subjects_with_overrides(
         routing=future_routing,
         user_overrides=user_overrides,
         server_overrides=server_overrides,
     )
 
-    apply_result = orchestrator._run_pipeline_for_state(
+    apply_result = _run_pipeline_for_state(
         job_id=str(job["job_id"]),
-        reason=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
-        input_data={"intent": orchestrator.INTENT_SET_SELECTIVE_DEFAULT, "selective_default": selective_default},
+        reason=INTENT_SET_SELECTIVE_DEFAULT,
+        input_data={"intent": INTENT_SET_SELECTIVE_DEFAULT, "selective_default": selective_default},
         routing=future_routing,
         subjects=subjects,
         extra={"rules_effective": effective_rules},
     )
 
     if not apply_result["ok"]:
-        result = orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
+        result = _build_failure_result(
+            intent=INTENT_SET_SELECTIVE_DEFAULT,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(apply_result.get("stage") or "apply"),
@@ -658,24 +718,24 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
             apply_id=apply_result["apply_id"],
             details={"apply": apply_result},
         )
-        orchestrator._persist_global_error(code=result["code"], message=result["message"])
+        _persist_global_error(code=result["code"], message=result["message"])
         return result
 
-    orchestrator.touch_job_running(str(job["job_id"]))
-    committed = orchestrator._commit_selective_default(
+    touch_job_running(str(job["job_id"]))
+    committed = _commit_selective_default(
         selective_default=selective_default,
         requested_by=requested_by,
         job_id=str(job["job_id"]),
         apply_id=apply_result.get("apply_id"),
     )
-    rules_state = orchestrator.sync_active_selective_default(
+    rules_state = sync_active_selective_default(
         selective_default=selective_default,
         job_id=str(job["job_id"]),
         effective_artifact=effective_rules,
     )
-    orchestrator._sync_subject_server_override_statuses(subjects)
-    return orchestrator._build_success_result(
-        intent=orchestrator.INTENT_SET_SELECTIVE_DEFAULT,
+    _sync_subject_server_override_statuses(subjects)
+    return _build_success_result(
+        intent=INTENT_SET_SELECTIVE_DEFAULT,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",
@@ -687,25 +747,25 @@ def _execute_set_selective_default(job: dict[str, Any], payload: dict[str, Any])
 def _execute_repair_global_direct_runtime(job: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     del payload
     requested_by = str(job.get("requested_by") or "api")
-    routing = orchestrator.get_routing_snapshot()
+    routing = get_routing_snapshot()
 
-    subjects = orchestrator._load_subjects_with_overrides(
+    subjects = _load_subjects_with_overrides(
         routing=routing,
-        user_overrides=orchestrator._load_user_override_map(),
-        server_overrides=orchestrator._load_server_override_map(),
+        user_overrides=_load_user_override_map(),
+        server_overrides=_load_server_override_map(),
     )
 
-    apply_result = orchestrator._run_pipeline_for_state(
+    apply_result = _run_pipeline_for_state(
         job_id=str(job["job_id"]),
-        reason=orchestrator.INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME,
-        input_data={"intent": orchestrator.INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME},
+        reason=INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME,
+        input_data={"intent": INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME},
         routing=routing,
         subjects=subjects,
     )
 
     if not apply_result["ok"]:
-        return orchestrator._build_failure_result(
-            intent=orchestrator.INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME,
+        return _build_failure_result(
+            intent=INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME,
             job_id=str(job["job_id"]),
             requested_by=requested_by,
             stage=str(apply_result.get("stage") or "apply"),
@@ -715,10 +775,10 @@ def _execute_repair_global_direct_runtime(job: dict[str, Any], payload: dict[str
             details={"apply": apply_result},
         )
 
-    committed = orchestrator._commit_repaired_global_runtime()
-    orchestrator._sync_subject_server_override_statuses(subjects)
-    return orchestrator._build_success_result(
-        intent=orchestrator.INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME,
+    committed = _commit_repaired_global_runtime()
+    _sync_subject_server_override_statuses(subjects)
+    return _build_success_result(
+        intent=INTENT_REPAIR_GLOBAL_DIRECT_RUNTIME,
         job_id=str(job["job_id"]),
         requested_by=requested_by,
         stage="commit",

@@ -33,6 +33,135 @@ def _prepare_manual_candidate_promotion(monkeypatch, tmp_path: Path):
     return mihomo_reconcile, current, candidate, base
 
 
+def test_mihomo_compat_exports_and_patch_views_preserve_identity(monkeypatch) -> None:
+    from fwrouter_api.services import mihomo_config_builder, mihomo_reconcile
+
+    expected_star_exports = set(
+        """
+        APPLIED_MANIFEST_PATH Any BASE_CONFIG_PATH DEFAULT_FULL_VPN_TCP_REDIR_PORT annotations
+        DEFAULT_FULL_VPN_UDP_TPROXY_PORT DEFAULT_TRANSPARENT_TCP_REDIR_PORT
+        DEFAULT_TRANSPARENT_UDP_TPROXY_PORT EXPLICIT_MIXED_LISTENER_BIND
+        EXPLICIT_MIXED_LISTENER_NAME EXPLICIT_MIXED_LISTENER_PORT
+        FULL_VPN_REDIR_LISTENER_NAME FULL_VPN_RULE_NAME FULL_VPN_TPROXY_LISTENER_NAME
+        LEGACY_INBOUND_KEYS MIHOMO_CANDIDATE_CONFIG_PATH MIHOMO_CONTROLLER_ADDRESS
+        Path SUBJECT_SELECTOR_PREFIX TRANSPARENT_BIND_ADDRESS TRANSPARENT_REDIR_LISTENER_NAME
+        TRANSPARENT_TPROXY_LISTENER_NAME TRANSPARENT_TPROXY_PROXY_NAME
+        TRANSPARENT_TPROXY_RULE_NAME XRAY_MIHOMO_LISTENER_PREFIX atomic_write_text
+        build_mihomo_config dump_mihomo_config get_mihomo_config_status
+        managed_runtime_operation_blocked mihomo_runtime_satisfies_routing
+        promote_mihomo_candidate_config reconcile_mihomo_runtime
+        reconcile_mihomo_selective_default_fast resolve_mihomo_runtime_proxy_rows
+        resolve_runtime_proxy_rows restart_mihomo_container subject_selector_name
+        validate_and_promote_mihomo_candidate_config validate_mihomo_candidate_config
+        write_mihomo_candidate_config write_operational_log write_technical_log yaml
+        """.split()
+    )
+    actual_star_exports = {
+        name for name in vars(mihomo_config) if not name.startswith("_")
+    }
+    assert actual_star_exports == expected_star_exports, {
+        "missing": sorted(expected_star_exports - actual_star_exports),
+        "extra": sorted(actual_star_exports - expected_star_exports),
+    }
+
+    assert mihomo_config.build_mihomo_config is mihomo_config_builder.build_mihomo_config
+    assert mihomo_config.write_mihomo_candidate_config is mihomo_config_builder.write_mihomo_candidate_config
+    assert mihomo_config.validate_mihomo_candidate_config is mihomo_config_builder.validate_mihomo_candidate_config
+    assert mihomo_config.promote_mihomo_candidate_config is mihomo_reconcile.promote_mihomo_candidate_config
+    assert mihomo_config.reconcile_mihomo_runtime is mihomo_reconcile.reconcile_mihomo_runtime
+
+    original = mihomo_reconcile._resolved_base_config_path
+
+    def replacement() -> str:
+        return "/tmp/mihomo-compat-alias.yaml"
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mihomo_config, "_resolved_base_config_path", replacement)
+        assert mihomo_config._resolved_base_config_path is replacement
+        assert mihomo_reconcile.config._resolved_base_config_path is replacement
+        assert mihomo_reconcile._resolved_base_config_path is replacement
+    assert mihomo_config._resolved_base_config_path is original
+    assert mihomo_reconcile.config._resolved_base_config_path is original
+
+    def replacement_view() -> str:
+        return "/tmp/mihomo-view-alias.yaml"
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mihomo_reconcile.config, "_resolved_base_config_path", replacement_view)
+        assert mihomo_config._resolved_base_config_path is replacement_view
+        assert mihomo_reconcile._resolved_base_config_path is replacement_view
+    assert mihomo_config._resolved_base_config_path is original
+    assert mihomo_reconcile._resolved_base_config_path is original
+
+
+def test_legacy_facade_reconcile_exports_remain_facade_local_when_patched(monkeypatch) -> None:
+    from fwrouter_api.services import mihomo_reconcile
+
+    names = (
+        "promote_mihomo_candidate_config",
+        "reconcile_mihomo_runtime",
+        "reconcile_mihomo_selective_default_fast",
+        "validate_and_promote_mihomo_candidate_config",
+    )
+    for name in names:
+        original = getattr(mihomo_reconcile, name)
+        assert getattr(mihomo_config, name) is original
+
+        replacement = object()
+        with monkeypatch.context() as patch:
+            patch.setattr(mihomo_config, name, replacement)
+            assert getattr(mihomo_config, name) is replacement
+            assert getattr(mihomo_reconcile, name) is original
+
+        assert getattr(mihomo_config, name) is original
+        assert getattr(mihomo_reconcile, name) is original
+
+
+def test_legacy_inventory_resolver_patch_is_scoped_to_inventory_consumer(monkeypatch) -> None:
+    from fwrouter_api.services import mihomo_config_proxies
+
+    unrelated_proxy_resolver = mihomo_config_proxies.resolve_mihomo_runtime_proxy_rows
+    inventory_resolver = mihomo_config_proxies._resolve_config_inventory_rows
+    rows = [{"raw": {"name": "inventory-proxy"}}]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            mihomo_config,
+            "resolve_mihomo_runtime_proxy_rows",
+            lambda **_kwargs: rows,
+        )
+        assert mihomo_config_proxies._resolve_config_inventory_rows is not inventory_resolver
+        assert mihomo_config_proxies.resolve_mihomo_runtime_proxy_rows is unrelated_proxy_resolver
+        assert mihomo_config_proxies._resolve_config_inventory_rows(
+            inventory_state="active", limit=1000,
+        ) == rows
+        assert mihomo_config_proxies._runtime_proxy_inventory_count() == 1
+        assert mihomo_config._runtime_proxy_inventory_count() == 1
+
+    assert mihomo_config_proxies._resolve_config_inventory_rows is inventory_resolver
+    assert mihomo_config_proxies.resolve_mihomo_runtime_proxy_rows is unrelated_proxy_resolver
+
+
+def test_legacy_inventory_count_patch_targets_validator_binding_only(monkeypatch) -> None:
+    from fwrouter_api.services import mihomo_config_proxies, mihomo_config_validation
+
+    validator_binding = mihomo_config_validation._runtime_proxy_inventory_count
+    proxy_owner_function = mihomo_config_proxies._runtime_proxy_inventory_count
+
+    def fake_inventory_count() -> int:
+        return 7
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mihomo_config, "_runtime_proxy_inventory_count", fake_inventory_count)
+        assert mihomo_config._runtime_proxy_inventory_count is fake_inventory_count
+        assert mihomo_config_validation._runtime_proxy_inventory_count is fake_inventory_count
+        assert mihomo_config_proxies._runtime_proxy_inventory_count is proxy_owner_function
+
+    assert mihomo_config._runtime_proxy_inventory_count is validator_binding
+    assert mihomo_config_validation._runtime_proxy_inventory_count is validator_binding
+    assert mihomo_config_proxies._runtime_proxy_inventory_count is proxy_owner_function
+
+
 def test_staged_candidate_writer_uses_only_explicit_path_and_handoff_assignments(monkeypatch, tmp_path: Path) -> None:
     staged_path = tmp_path / "staged" / "config.yaml"
     active_candidate = tmp_path / "active" / "config.next.yaml"

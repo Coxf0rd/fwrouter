@@ -9,11 +9,14 @@ from fwrouter_api.services.subject_taxonomy import (
 )
 from fwrouter_api.services.xray import materialize_xray_runtime_bindings
 
+from fwrouter_api.services.apply import (
+    run_apply_pipeline as run_apply_pipeline,
+)
+from fwrouter_api.services.rules import (
+    finalize_manual_rules_apply as finalize_manual_rules_apply,
+)
 
-def _facade_attr(name: str) -> Any:
-    from fwrouter_api.services import apply_orchestrator as orchestrator
 
-    return getattr(orchestrator, name)
 
 
 def _run_pipeline_for_state(
@@ -30,7 +33,7 @@ def _run_pipeline_for_state(
     if not isinstance(extra_payload.get("core_bypass"), dict):
         extra_payload["core_bypass"] = get_core_bypass_state()
 
-    return _facade_attr("run_apply_pipeline")(
+    return run_apply_pipeline(
         job_id=job_id,
         reason=reason,
         mode=ApplyMode.APPLY,
@@ -52,7 +55,7 @@ def _run_pipeline_for_manifest(
     manifest: dict[str, Any],
     core_intent_revision: int | None = None,
 ) -> dict[str, Any]:
-    return _facade_attr("run_apply_pipeline")(
+    return run_apply_pipeline(
         job_id=job_id,
         reason=reason,
         mode=ApplyMode.APPLY,
@@ -89,7 +92,7 @@ def _commit_manual_rules_apply(
     runtime_enforcement: dict[str, Any],
     audit_change: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return _facade_attr("finalize_manual_rules_apply")(
+    return finalize_manual_rules_apply(
         job_id=job_id,
         manual_active_text=draft_text,
         effective_artifact=effective_artifact,

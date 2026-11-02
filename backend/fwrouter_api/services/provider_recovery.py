@@ -279,7 +279,7 @@ def _reentry_generation_fence_matches(
         return False
     try:
         from fwrouter_api.services import mihomo_reconcile
-        active_path = mihomo_reconcile.config._resolved_base_config_path()
+        active_path = mihomo_reconcile._resolved_base_config_path()
         if mihomo_reconcile._file_hash(active_path) != active_hash:
             return False
     except Exception:
