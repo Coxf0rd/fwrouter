@@ -668,4 +668,3 @@ def test_coordinator_compatibility_patch_updates_consumer_bindings_and_restores(
     assert xray_generation_staging._current_xray_projection_snapshot is canonical_projection
     assert xray_generation_observation.capture_generation_selection is canonical_selection
     assert xray_generation_views.capture_current_projection is canonical_projection
-
