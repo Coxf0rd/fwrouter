@@ -17,3 +17,12 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+
+## Process ownership
+
+`DEFAULT_JOB_MANAGER` is the supported process-owned manager used by API
+routes, scheduler jobs, and startup/shutdown. Built-in handler registration
+completion and its separate serialization lock belong to that manager
+instance; ordinary explicitly constructed `JobManager` instances remain empty
+until callers register handlers. Failed partial registration remains
+retryable, while concurrent first access registers the default set once.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 import os
 from time import monotonic
@@ -48,6 +48,10 @@ from fwrouter_api.services.maintenance_lifecycle_admission import (
     DEFAULT_STATE_ROOT,
     runtime_shared_lease,
 )
+from fwrouter_api.services.application_lifecycle import (
+    ApplicationLifecycle,
+    ApplicationLifecycleOperations,
+)
 from fwrouter_api.services.event_contract import (
     reset_event_context,
     safe_request_id,
@@ -91,65 +95,59 @@ def _startup_tasks_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-def create_app(*, enable_startup_tasks: bool | None = None) -> FastAPI:
+def _production_lifecycle() -> ApplicationLifecycle:
+    """Compose the existing process owners when the lifespan actually starts."""
+    return ApplicationLifecycle(
+        ApplicationLifecycleOperations(
+            bootstrap=bootstrap_backend,
+            settings_provider=get_settings,
+            scrub_logs=scrub_jsonl_files,
+            job_manager_provider=get_default_job_manager,
+            register_extended_handlers=register_extended_handlers,
+            start_schedulers=(
+                start_maintenance_scheduler,
+                start_member_probe_scheduler,
+                start_active_observation_scheduler,
+                start_subject_inventory_scheduler,
+                start_external_collector_scheduler,
+                start_runtime_convergence_scheduler,
+                start_watchdog_scheduler,
+            ),
+            stop_schedulers=(
+                stop_maintenance_scheduler,
+                stop_member_probe_scheduler,
+                stop_active_observation_scheduler,
+                stop_subject_inventory_scheduler,
+                stop_external_collector_scheduler,
+                stop_runtime_convergence_scheduler,
+                stop_watchdog_scheduler,
+            ),
+            resume_prewarm=resume_runtime_read_models_prewarm,
+            prime_prewarm=prime_runtime_read_models_async,
+            stop_prewarm=stop_runtime_read_models_prewarm,
+            monotonic=monotonic,
+        )
+    )
+
+
+def create_app(
+    *,
+    enable_startup_tasks: bool | None = None,
+    lifecycle_factory: Callable[[], ApplicationLifecycle] | None = None,
+) -> FastAPI:
     settings = get_settings()
     startup_tasks_enabled = _startup_tasks_enabled() if enable_startup_tasks is None else bool(enable_startup_tasks)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        # API request and worker writers must remain excluded even when
-        # optional startup schedulers are disabled (including tests/headless
-        # embedding). That flag is not maintenance authority.
-        # The admission lock has one fixed host identity. Environment-selected
-        # database paths never redirect the cooperative lifecycle barrier.
+        # API and worker writers remain excluded even when startup schedulers
+        # are disabled. The fixed host lease is deliberately outside the
+        # injectable operations: environment-selected DB paths do not redirect
+        # this barrier, and tests cannot replace it with app-local policy.
         with runtime_shared_lease(DEFAULT_STATE_ROOT):
-            try:
-                if startup_tasks_enabled:
-                    bootstrap_result = bootstrap_backend()
-                    if not bootstrap_result.get("database_schema", {}).get("ok"):
-                        # Do not scrub logs, register job writers, or start
-                        # background workers against a database that failed
-                        # explicit full integrity admission.
-                        raise RuntimeError("FWROUTER_DATABASE_ADMISSION_FAILED")
-                    # Re-scrub configured logs on every API startup so an
-                    # already-current schema cannot skip secret cleanup.
-                    paths = get_settings().paths
-                    scrub_jsonl_files([paths.operational_log_dir, paths.technical_log_dir])
-                    register_extended_handlers(get_default_job_manager())
-                    start_maintenance_scheduler()
-                    start_member_probe_scheduler()
-                    start_active_observation_scheduler()
-                    start_subject_inventory_scheduler()
-                    start_external_collector_scheduler()
-                    start_runtime_convergence_scheduler()
-                    start_watchdog_scheduler()
-                    if resume_runtime_read_models_prewarm():
-                        prime_runtime_read_models_async(include_global_profiles=False)
+            coordinator = (lifecycle_factory or _production_lifecycle)()
+            async with coordinator.run(startup_tasks_enabled=startup_tasks_enabled):
                 yield
-            finally:
-                # Signal every application-owned background worker first. Runtime
-                # mutations can start prewarm and job workers even when startup
-                # schedulers are disabled.
-                if startup_tasks_enabled:
-                    scheduler_stops = (
-                        stop_maintenance_scheduler, stop_member_probe_scheduler,
-                        stop_active_observation_scheduler, stop_subject_inventory_scheduler,
-                        stop_external_collector_scheduler, stop_runtime_convergence_scheduler,
-                        stop_watchdog_scheduler,
-                    )
-                    for stop in scheduler_stops:
-                        stop(timeout_seconds=0.0)
-                else:
-                    scheduler_stops = ()
-                stop_runtime_read_models_prewarm(timeout_seconds=0.0)
-
-                deadline = monotonic() + 14.0
-                for stop in scheduler_stops:
-                    stop(timeout_seconds=max(0.0, deadline - monotonic()))
-                stop_runtime_read_models_prewarm(timeout_seconds=max(0.0, deadline - monotonic()))
-                get_default_job_manager().wait_for_idle(
-                    timeout_seconds=max(0.0, deadline - monotonic()),
-                )
 
     app = FastAPI(
         title=settings.app_name,

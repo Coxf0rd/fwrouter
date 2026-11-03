@@ -20,13 +20,12 @@ from fwrouter_api.services.ui_display_settings import (
     UI_DISPLAY_SETTINGS_KEY,
     _json_loads,
 )
+from fwrouter_api.services.worker_lifecycle import WorkerLifecycle
 
 ALLOWED_FILE_ROOT = Path("/var/lib/fwrouter-v2/external-collectors").resolve()
 MAX_COLLECTOR_RESPONSE_BYTES = 256 * 1024
 
-_SCHEDULER_THREAD: threading.Thread | None = None
-_SCHEDULER_STOP = threading.Event()
-_SCHEDULER_LOCK = threading.Lock()
+_SCHEDULER_WORKER = WorkerLifecycle()
 _LAST_RUN_AT: dict[str, float] = {}
 
 
@@ -256,7 +255,7 @@ def external_connection_collector_last_run(connection_id: str) -> float | None:
 def _external_collector_scheduler_loop() -> None:
     settings = get_settings()
     interval = settings.external_collector_check_interval_seconds
-    while not _SCHEDULER_STOP.wait(interval):
+    while not _SCHEDULER_WORKER.stop_event.wait(interval):
         try:
             run_due_external_collectors_once()
         except Exception as exc:
@@ -270,31 +269,15 @@ def _external_collector_scheduler_loop() -> None:
 
 
 def start_external_collector_scheduler() -> bool:
-    global _SCHEDULER_THREAD
     settings = get_settings()
     if not settings.external_collector_scheduler_enabled:
         return False
-    with _SCHEDULER_LOCK:
-        if _SCHEDULER_THREAD and _SCHEDULER_THREAD.is_alive():
-            return False
-        _SCHEDULER_STOP.clear()
-        _SCHEDULER_THREAD = threading.Thread(
-            target=_external_collector_scheduler_loop,
-            name="fwrouter-external-collector-scheduler",
-            daemon=True,
-        )
-        _SCHEDULER_THREAD.start()
-        return True
+    return _SCHEDULER_WORKER.start(
+        _external_collector_scheduler_loop,
+        name="fwrouter-external-collector-scheduler",
+        thread_factory=threading.Thread,
+    )
 
 
 def stop_external_collector_scheduler(*, timeout_seconds: float = 2.0) -> bool:
-    global _SCHEDULER_THREAD
-    with _SCHEDULER_LOCK:
-        if _SCHEDULER_THREAD is None:
-            return False
-        _SCHEDULER_STOP.set()
-        _SCHEDULER_THREAD.join(timeout=timeout_seconds)
-        stopped = not _SCHEDULER_THREAD.is_alive()
-        if stopped:
-            _SCHEDULER_THREAD = None
-        return stopped
+    return _SCHEDULER_WORKER.stop(timeout_seconds=timeout_seconds)

@@ -5,6 +5,8 @@
 Рекомендуемый порядок чтения:
 
 1. `opt_fwrouter_api_fwrouter_api_main_py.md`
+1a. `backend_fwrouter_api_services_application_lifecycle_py.md`
+1b. `backend_fwrouter_api_services_worker_lifecycle_py.md`
 2. `opt_fwrouter_api_fwrouter_api_services_bootstrap_py.md`
 3. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_py.md`
 4. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_constants_py.md`
@@ -90,6 +92,9 @@
 57a. `opt_fwrouter_api_fwrouter_api_db_schema_state_py.md`
 57b. `opt_fwrouter_api_fwrouter_api_services_database_schema_read_model_py.md`
 58. `opt_fwrouter_api_fwrouter_api_jobs_manager_py.md`
+58a. `opt_fwrouter_api_fwrouter_api_services_maintenance_scheduler_py.md`
+58b. `opt_fwrouter_api_fwrouter_api_services_active_observation_scheduler_py.md`
+58c. `opt_fwrouter_api_fwrouter_api_services_subject_inventory_scheduler_py.md`
 59. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_py.md`
 60. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_common_py.md`
 61. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_export_py.md`
@@ -158,7 +163,7 @@
 
 ## Быстрая карта доменов
 
-- startup/boot: `main.py`, `bootstrap.py`, `runtime_prewarm.py`, `maintenance_scheduler.py`, `member_probe_scheduler.py`, `runtime_convergence_scheduler.py`, systemd unit docs
+- startup/boot: `main.py`, `application_lifecycle.py`, `bootstrap.py`, `runtime_prewarm.py`, `worker_lifecycle.py`, all existing scheduler owners, systemd unit docs
 - apply/dataplane: `apply_orchestrator.py` facade, `apply_orchestrator_*`, `apply.py`, `apply_context.py`, `apply_results.py`, `apply_plan.py`, `apply_manifest.py`, `apply_hot_swap.py`, `dataplane_*.py`, `dataplane_nft.py` facade plus `dataplane_nft_{constants,sets,chains,render,artifacts}.py`, `adapters/dataplane.py`, libexec `dataplane-*.sh`
 - [Core recovery metadata](usr_local_libexec_fwrouter_dataplane_snapshot_state_py.md): `host/libexec/fwrouter/dataplane-snapshot-state.py`
   supports existing apply/rollback, without owning intent or native proof.

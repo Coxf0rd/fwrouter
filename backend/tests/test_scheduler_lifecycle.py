@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from threading import Barrier, Event, Thread
 from types import SimpleNamespace
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -20,12 +22,11 @@ def _start_watchdog() -> bool:
 
 
 @pytest.mark.parametrize(
-    ("module", "thread_name", "stop_event_name", "loop_name", "enabled_setting", "start", "stop"),
+    ("module", "worker_name", "loop_name", "enabled_setting", "start", "stop"),
     [
         (
             maintenance_scheduler,
-            "_MAINTENANCE_THREAD",
-            "_MAINTENANCE_STOP_EVENT",
+            "_WORKER",
             "_maintenance_scheduler_loop",
             "maintenance_scheduler_enabled",
             maintenance_scheduler.start_maintenance_scheduler,
@@ -33,8 +34,7 @@ def _start_watchdog() -> bool:
         ),
         (
             member_probe_scheduler,
-            "_MEMBER_PROBE_THREAD",
-            "_MEMBER_PROBE_STOP_EVENT",
+            "_WORKER",
             "_member_probe_scheduler_loop",
             "member_probe_scheduler_enabled",
             member_probe_scheduler.start_member_probe_scheduler,
@@ -42,8 +42,7 @@ def _start_watchdog() -> bool:
         ),
         (
             active_observation_scheduler,
-            "_THREAD",
-            "_STOP",
+            "_WORKER",
             "_loop",
             "active_observation_scheduler_enabled",
             active_observation_scheduler.start_active_observation_scheduler,
@@ -51,8 +50,7 @@ def _start_watchdog() -> bool:
         ),
         (
             subject_inventory_scheduler,
-            "_SUBJECT_INVENTORY_THREAD",
-            "_SUBJECT_INVENTORY_STOP_EVENT",
+            "_WORKER",
             "_subject_inventory_scheduler_loop",
             "subject_inventory_scheduler_enabled",
             subject_inventory_scheduler.start_subject_inventory_scheduler,
@@ -60,8 +58,7 @@ def _start_watchdog() -> bool:
         ),
         (
             external_collectors,
-            "_SCHEDULER_THREAD",
-            "_SCHEDULER_STOP",
+            "_SCHEDULER_WORKER",
             "_external_collector_scheduler_loop",
             "external_collector_scheduler_enabled",
             external_collectors.start_external_collector_scheduler,
@@ -69,8 +66,7 @@ def _start_watchdog() -> bool:
         ),
         (
             runtime_convergence_scheduler,
-            "_RUNTIME_CONVERGENCE_THREAD",
-            "_RUNTIME_CONVERGENCE_STOP_EVENT",
+            "_WORKER",
             "_runtime_convergence_scheduler_loop",
             "runtime_convergence_scheduler_enabled",
             runtime_convergence_scheduler.start_runtime_convergence_scheduler,
@@ -78,8 +74,7 @@ def _start_watchdog() -> bool:
         ),
         (
             watchdog_scheduler,
-            "_THREAD",
-            "_STOP_EVENT",
+            "_WORKER",
             "scheduler_loop",
             "watchdog_scheduler_enabled",
             _start_watchdog,
@@ -90,21 +85,18 @@ def _start_watchdog() -> bool:
 def test_timed_out_scheduler_stop_retains_worker_until_it_exits(
     monkeypatch,
     module,
-    thread_name: str,
-    stop_event_name: str,
+    worker_name: str,
     loop_name: str,
     enabled_setting: str,
     start,
     stop,
 ) -> None:
-    existing = getattr(module, thread_name)
+    worker = getattr(module, worker_name)
+    existing = worker.thread
     assert existing is None or not existing.is_alive()
-    if existing is not None:
-        setattr(module, thread_name, None)
-
-    entered = module.threading.Event() if module is external_collectors else module.Event()
-    release = module.threading.Event() if module is external_collectors else module.Event()
-    second_entered = module.threading.Event() if module is external_collectors else module.Event()
+    entered = Event()
+    release = Event()
+    second_entered = Event()
     launches = 0
 
     def blocked_worker(*_args, **_kwargs) -> None:
@@ -125,26 +117,136 @@ def test_timed_out_scheduler_stop_retains_worker_until_it_exits(
 
     assert start() is True
     assert entered.wait(timeout=2)
-    first_worker = getattr(module, thread_name)
+    first_worker = worker.thread
 
     try:
         assert stop(timeout_seconds=0) is False
-        assert getattr(module, thread_name) is first_worker
+        assert worker.thread is first_worker
         assert start() is False
         assert launches == 1
-        assert getattr(module, stop_event_name).is_set()
+        assert worker.stop_event.is_set()
 
         release.set()
         assert stop(timeout_seconds=2) is True
-        assert getattr(module, thread_name) is None
+        assert worker.thread is None
 
         assert start() is True
         assert second_entered.wait(timeout=2)
         assert stop(timeout_seconds=2) is True
-        assert getattr(module, thread_name) is None
+        assert worker.thread is None
     finally:
         release.set()
-        current = getattr(module, thread_name)
+        current = worker.thread
         if current is not None:
             current.join(timeout=2)
             stop(timeout_seconds=2)
+
+
+def test_worker_lifecycle_releases_unstarted_handle_after_factory_start_failure() -> None:
+    from fwrouter_api.services.worker_lifecycle import WorkerLifecycle
+
+    worker = WorkerLifecycle()
+
+    class FailedStartThread(Thread):
+        def start(self) -> None:
+            raise RuntimeError("synthetic thread-start failure")
+
+    def failed_factory(**kwargs) -> Thread:
+        return FailedStartThread(**kwargs)
+
+    with pytest.raises(RuntimeError, match="synthetic thread-start failure"):
+        worker.start(lambda: None, name="failed-worker", thread_factory=failed_factory)
+    assert worker.thread is None
+    assert worker.stop() is False
+
+    entered = Event()
+    release = Event()
+
+    def held_worker() -> None:
+        entered.set()
+        if not release.wait(timeout=5):
+            return
+
+    try:
+        assert worker.start(held_worker, name="retry-worker") is True
+        assert entered.wait(timeout=2)
+        assert worker.stop(timeout_seconds=0) is False
+        assert worker.thread is not None and worker.thread.is_alive()
+        release.set()
+        assert worker.stop(timeout_seconds=2) is True
+    finally:
+        release.set()
+        worker.stop(timeout_seconds=2)
+
+
+def test_worker_lifecycle_retains_worker_that_starts_before_factory_error() -> None:
+    from fwrouter_api.services.worker_lifecycle import WorkerLifecycle
+
+    worker = WorkerLifecycle()
+    entered = Event()
+    release = Event()
+
+    def held_worker() -> None:
+        entered.set()
+        if not release.wait(timeout=5):
+            return
+
+    class StartThenRaiseThread(Thread):
+        def start(self) -> None:
+            super().start()
+            raise RuntimeError("synthetic post-start failure")
+
+    try:
+        with pytest.raises(RuntimeError, match="synthetic post-start failure"):
+            worker.start(
+                held_worker,
+                name="partial-start-worker",
+                thread_factory=StartThenRaiseThread,
+            )
+
+        assert entered.wait(timeout=2)
+        thread = worker.thread
+        assert thread is not None and thread.is_alive()
+        assert worker.stop_event.is_set()
+        assert worker.start(lambda: None, name="duplicate-worker") is False
+        release.set()
+        assert worker.stop(timeout_seconds=2) is True
+    finally:
+        release.set()
+        worker.stop(timeout_seconds=2)
+
+
+def test_worker_lifecycle_serializes_concurrent_start_requests() -> None:
+    from fwrouter_api.services.worker_lifecycle import WorkerLifecycle
+
+    worker = WorkerLifecycle()
+    entered = Event()
+    release = Event()
+    attempts = Barrier(9)
+    launches = 0
+
+    def held_worker() -> None:
+        nonlocal launches
+        launches += 1
+        entered.set()
+        if not release.wait(timeout=5):
+            return
+
+    def start_together() -> bool:
+        attempts.wait(timeout=2)
+        return worker.start(held_worker, name="concurrent-worker")
+
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            starts = [pool.submit(start_together) for _ in range(8)]
+            attempts.wait(timeout=2)
+            results = [future.result(timeout=2) for future in starts]
+
+        assert results.count(True) == 1
+        assert launches == 1
+        assert entered.wait(timeout=2)
+        release.set()
+        assert worker.stop(timeout_seconds=2) is True
+    finally:
+        release.set()
+        worker.stop(timeout_seconds=2)

@@ -32,3 +32,11 @@ push updates into the FWRouter API themselves.
   and `dry_run=false`.
 - This module does not auto-import `clients` into `subjects`; that requires a
   separate provider contract because it affects routing.
+
+## Worker lifetime
+
+One module-owned `WorkerLifecycle` retains the collector scheduler thread and
+cooperative stop Event. The existing initial interval wait before its first
+collector pass, interval, enablement, failure logging, and per-connection
+collector semantics remain unchanged. Timeout retains the worker handle and
+prevents a duplicate scheduler from starting.

@@ -1,23 +1,22 @@
 from __future__ import annotations
 
-from threading import Event, Lock, Thread
+from threading import Thread
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.services.logs import write_technical_log
 from fwrouter_api.services.runtime_convergence import run_runtime_convergence_check
 from fwrouter_api.services.xray_vpn_auto_pending import dispatch_due_xray_vpn_auto_reconcile
+from fwrouter_api.services.worker_lifecycle import WorkerLifecycle
 
 
-_RUNTIME_CONVERGENCE_THREAD: Thread | None = None
-_RUNTIME_CONVERGENCE_STOP_EVENT = Event()
-_RUNTIME_CONVERGENCE_LOCK = Lock()
+_WORKER = WorkerLifecycle()
 
 
 def _runtime_convergence_scheduler_loop() -> None:
     settings = get_settings()
     interval = settings.runtime_convergence_interval_seconds
 
-    while not _RUNTIME_CONVERGENCE_STOP_EVENT.is_set():
+    while not _WORKER.stop_event.is_set():
         try:
             run_runtime_convergence_check(
                 requested_by="runtime_convergence_scheduler",
@@ -43,7 +42,7 @@ def _runtime_convergence_scheduler_loop() -> None:
                 details={"error": str(exc)},
             )
 
-        if _RUNTIME_CONVERGENCE_STOP_EVENT.wait(interval):
+        if _WORKER.stop_event.wait(interval):
             break
 
 
@@ -52,30 +51,12 @@ def start_runtime_convergence_scheduler() -> bool:
     if not settings.runtime_convergence_scheduler_enabled:
         return False
 
-    global _RUNTIME_CONVERGENCE_THREAD
-    with _RUNTIME_CONVERGENCE_LOCK:
-        if _RUNTIME_CONVERGENCE_THREAD is not None and _RUNTIME_CONVERGENCE_THREAD.is_alive():
-            return False
-
-        _RUNTIME_CONVERGENCE_STOP_EVENT.clear()
-        _RUNTIME_CONVERGENCE_THREAD = Thread(
-            target=_runtime_convergence_scheduler_loop,
-            name="fwrouter-runtime-convergence",
-            daemon=True,
-        )
-        _RUNTIME_CONVERGENCE_THREAD.start()
-        return True
+    return _WORKER.start(
+        _runtime_convergence_scheduler_loop,
+        name="fwrouter-runtime-convergence",
+        thread_factory=Thread,
+    )
 
 
 def stop_runtime_convergence_scheduler(*, timeout_seconds: float = 2.0) -> bool:
-    global _RUNTIME_CONVERGENCE_THREAD
-    with _RUNTIME_CONVERGENCE_LOCK:
-        if _RUNTIME_CONVERGENCE_THREAD is None:
-            return False
-
-        _RUNTIME_CONVERGENCE_STOP_EVENT.set()
-        _RUNTIME_CONVERGENCE_THREAD.join(timeout=timeout_seconds)
-        stopped = not _RUNTIME_CONVERGENCE_THREAD.is_alive()
-        if stopped:
-            _RUNTIME_CONVERGENCE_THREAD = None
-        return stopped
+    return _WORKER.stop(timeout_seconds=timeout_seconds)

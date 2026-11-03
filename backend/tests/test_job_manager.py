@@ -10,6 +10,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import JobManager
 from _test_support import sqlite_temp_trigger_on_connections
@@ -37,6 +39,60 @@ def _configure_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FWROUTER_JOB_RUN_NOW_WAIT_TIMEOUT_SECONDS", "1")
     monkeypatch.setenv("FWROUTER_JOB_STALE_TIMEOUT_SECONDS", "5")
     get_settings.cache_clear()
+
+
+def test_default_handler_registration_is_instance_owned_and_concurrent() -> None:
+    manager = JobManager()
+    registration_entered = threading.Event()
+    release_registration = threading.Event()
+    attempts = threading.Barrier(9)
+    calls = 0
+
+    def register(target: JobManager) -> None:
+        nonlocal calls
+        calls += 1
+        registration_entered.set()
+        assert release_registration.wait(timeout=2)
+        target.register_handler("registered-once", lambda _job: {"ok": True})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        def contend() -> None:
+            attempts.wait(timeout=2)
+            manager.register_default_handlers_once(register)
+
+        futures = [pool.submit(contend) for _ in range(8)]
+        attempts.wait(timeout=2)
+        assert registration_entered.wait(timeout=2)
+        release_registration.set()
+        for future in futures:
+            future.result(timeout=2)
+
+    assert calls == 1
+    assert manager._get_handler("registered-once") is not None
+    # Ordinary managers retain their explicit empty-handler construction.
+    assert JobManager()._get_handler("registered-once") is None
+
+
+def test_default_handler_registration_can_retry_after_partial_failure() -> None:
+    manager = JobManager()
+    calls = 0
+
+    def register(target: JobManager) -> None:
+        nonlocal calls
+        calls += 1
+        target.register_handler("partial", lambda _job: None)
+        if calls == 1:
+            raise RuntimeError("synthetic registration failure")
+        target.register_handler("complete", lambda _job: {"ok": True})
+
+    with pytest.raises(RuntimeError, match="synthetic registration failure"):
+        manager.register_default_handlers_once(register)
+    manager.register_default_handlers_once(register)
+    manager.register_default_handlers_once(register)
+
+    assert calls == 2
+    assert manager._get_handler("partial") is not None
+    assert manager._get_handler("complete") is not None
 
 
 def test_run_now_true_fast_handler_returns_completed(monkeypatch, tmp_path: Path) -> None:

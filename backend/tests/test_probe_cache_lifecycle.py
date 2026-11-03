@@ -30,8 +30,12 @@ Ownership and invalidation:
 * Expiry is checked on the requested key on every access and the bounded cache
   is swept at most once per second of subsequent cache activity. There is no
   worker and no disk state: restart begins empty and normal requests rebuild
-  observations. Loader errors still reach all existing followers and are not
-  cached. Followers retain the existing unbounded Event wait contract.
+  observations. Loader ``Exception`` and ``BaseException`` outcomes reach all
+  existing followers and are not cached. Same-thread same-key reentry fails
+  fast with ``LIVE_PROBE_CACHE_REENTRANT_LOAD``; different-key nesting remains
+  valid. Followers retain the existing unbounded Event wait contract when a
+  leader has not completed; loaders/callers own their deadlines. This cache
+  does not cancel leaders or return stale values.
 """
 
 from dataclasses import dataclass

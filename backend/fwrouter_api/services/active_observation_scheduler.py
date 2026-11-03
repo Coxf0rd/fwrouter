@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-from threading import Event, Lock, Thread
+from threading import Thread
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.services.logical_topology import observe_active_paths
 from fwrouter_api.services.logs import write_technical_log
+from fwrouter_api.services.worker_lifecycle import WorkerLifecycle
 
 
-_THREAD: Thread | None = None
-_STOP = Event()
-_LOCK = Lock()
+_WORKER = WorkerLifecycle()
 
 
 def _loop() -> None:
     settings = get_settings()
-    while not _STOP.is_set():
+    while not _WORKER.stop_event.is_set():
         try:
             observe_active_paths()
         except Exception as exc:
@@ -25,7 +24,7 @@ def _loop() -> None:
                 message="Active runtime observation tick failed.",
                 details={"error": str(exc)},
             )
-        if _STOP.wait(settings.active_observation_interval_seconds):
+        if _WORKER.stop_event.wait(settings.active_observation_interval_seconds):
             break
 
 
@@ -33,24 +32,12 @@ def start_active_observation_scheduler() -> bool:
     settings = get_settings()
     if not settings.active_observation_scheduler_enabled:
         return False
-    global _THREAD
-    with _LOCK:
-        if _THREAD is not None and _THREAD.is_alive():
-            return False
-        _STOP.clear()
-        _THREAD = Thread(target=_loop, name="fwrouter-active-observation", daemon=True)
-        _THREAD.start()
-        return True
+    return _WORKER.start(
+        _loop,
+        name="fwrouter-active-observation",
+        thread_factory=Thread,
+    )
 
 
 def stop_active_observation_scheduler(*, timeout_seconds: float = 2.0) -> bool:
-    global _THREAD
-    with _LOCK:
-        if _THREAD is None:
-            return False
-        _STOP.set()
-        _THREAD.join(timeout=timeout_seconds)
-        stopped = not _THREAD.is_alive()
-        if stopped:
-            _THREAD = None
-        return stopped
+    return _WORKER.stop(timeout_seconds=timeout_seconds)

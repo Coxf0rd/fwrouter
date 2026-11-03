@@ -27,3 +27,8 @@ This does not add a daemon or a second scheduler. Deferred work remains pending
 while managed Xray is disabled or authoritative subscription inventory is
 unavailable; the next scheduler pass reevaluates it. Failed work obeys its
 bounded retry time even when critical drift is present.
+
+One module-owned `WorkerLifecycle` holds this scheduler's thread and stop
+Event. Runtime convergence and vpn-auto dispatch remain separate operations
+with their own failure logs; the immediate first tick and configured interval
+are unchanged. A timed-out stop retains the handle and blocks restart.

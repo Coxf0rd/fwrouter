@@ -45,6 +45,21 @@ class JobManager:
         self._handlers: dict[str, JobHandler] = {}
         self._lock = Lock()
         self._workers: dict[str, Thread] = {}
+        # Default-handler registration belongs to the manager instance. Keep
+        # its lock separate: register_handler acquires _lock for each entry.
+        self._default_handlers_lock = Lock()
+        self._default_handlers_registered = False
+
+    def register_default_handlers_once(
+        self,
+        register: Callable[[JobManager], None],
+    ) -> None:
+        """Register the built-in set once, publishing completion atomically."""
+        with self._default_handlers_lock:
+            if self._default_handlers_registered:
+                return
+            register(self)
+            self._default_handlers_registered = True
 
     def register_handler(self, job_type: str, handler: JobHandler) -> None:
         """Register a handler for one job type."""
@@ -275,18 +290,15 @@ class JobManager:
 
 
 DEFAULT_JOB_MANAGER = JobManager()
-_default_handlers_registered = False
 
 
 def get_default_job_manager() -> JobManager:
     """Return global job manager with built-in safe handlers registered once."""
 
-    global _default_handlers_registered
+    # Resolve lazily before taking the manager's registration lock. Handler
+    # modules import JobManager and may load this module during initialization.
+    from fwrouter_api.jobs.handlers import register_default_handlers
 
-    if not _default_handlers_registered:
-        from fwrouter_api.jobs.handlers import register_default_handlers
-
-        register_default_handlers(DEFAULT_JOB_MANAGER)
-        _default_handlers_registered = True
+    DEFAULT_JOB_MANAGER.register_default_handlers_once(register_default_handlers)
 
     return DEFAULT_JOB_MANAGER
