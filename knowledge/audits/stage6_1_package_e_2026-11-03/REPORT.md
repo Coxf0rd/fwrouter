@@ -1,6 +1,6 @@
 # Stage 6.1 Package E — Schema Lifecycle Retirement
 
-Status: **source implemented and independently reviewed on `stage6/backend-completion`; exact-HEAD hosted qualification pending at this documentation checkpoint. Not merged or deployed.**
+Status: **implementation acceptance VERIFIED at `2b79fab74c05e50342c793a2a69b0cda6f3e7479` (source, independent QA, exact-head branch CI and offline bundle). Final documentation HEAD is qualified separately and recorded in the canonical roadmap. Not merged or deployed.**
 
 ## Source identity and basis
 
@@ -93,9 +93,9 @@ The new schema lifecycle tests also cover fresh canonical initialization, missin
 - During the final correction, the original mismatch diagnostic test first failed because full writer admission prevented raw schema inspection; after the read-only observation seam and early failed-report return were added, `tests/test_diagnostics.py` passed **29 tests** and the unchanged `test_diagnose_database_schema_mismatch_is_failed` passed.
 - Pinned Ruff 0.17.0, `--select F,E9` over changed Python source/tests — **PASS after final source changes**.
 - `git diff --check` — **PASS after final source changes**.
-- No full CI, qualified native runtime, deployment, service restart, or production-state check was run.
+- At this initial source-candidate checkpoint, no full CI, qualified native runtime, deployment, service restart, or production-state check had been run.
 - Qualified/native runtime tests are **NOT RUN** locally. Hosted L6/qualified profiles remain responsible for those checks.
-- The prior gate-contract result remains **PARTIAL (296 passed, 1 skipped)** on its recorded pre-QA candidate; it was not rerun after the final schema profile/startup changes. The exact skipped node remains `tests/gates/test_gate_contract.py:2167` because `/usr/bin/time` is unavailable locally and required by the real child runner. Root must obtain the final exact-HEAD hosted L6/qualified result.
+- The prior gate-contract result remains **PARTIAL (296 passed, 1 skipped)** on its recorded pre-QA candidate; it was not rerun after the final schema profile/startup changes. The exact skipped node remains `tests/gates/test_gate_contract.py:2167` because `/usr/bin/time` is unavailable locally and required by the real child runner. At that time, the final exact-HEAD hosted L6/qualified result still had to be obtained; the later verified-acceptance checkpoint records its actual outcome.
 
 ### Final-candidate open microbenchmark
 
@@ -184,3 +184,27 @@ Command: `/tmp/fwrouter-private-test-venv/bin/python knowledge/audits/stage6_1_p
 Final fixture-only follow-up QA **PASSED** on 54-entry source manifest `51619591cba4ab7e2ab67fd45fb16d467e46a78a92bf7e59c4cdfe1e52b5f6de`. The reviewer independently executed the retained probe, which calls the actual `_prepare_db` and full current-schema acceptance function, and verified all source digests/deletions. The probe passed all real SQLite assertions, normalizing `sqlite3.Row` values to tuples for exact snapshots and the actual integrity result. Worker lifecycle, native identity reads and HTTP transport alone were stubbed; this is not native/Compose evidence. The 57-node scenario catalog, fixed diagnostic-node contract and diff check also passed. The prior independent 157-test backend/lifecycle/offline follow-up run remains applicable to unchanged files.
 
 No application code, workflow, gate condition, schema validation, compatibility profile, resource limit or binary pin was changed by this follow-up. The existing failed hosted run remains historical evidence. Package E remains **INCOMPLETE** until the new exact-HEAD push-fast and complete qualified branch L6 succeed, the actual Compose case passes there, and independent offline verification accepts the complete bundle.
+
+## Verified implementation acceptance — 2026-11-03
+
+The follow-up commit `2b79fab74c05e50342c793a2a69b0cda6f3e7479` follows implementation commit `746c49f3e16afda0af0f7044a57c8eb5a617854c` on the persistent `stage6/backend-completion` branch. It fixes the retained CI fixtures and the real acceptance body; it does not change application code, schema admission, profiles, workflow conditions, resource budgets or binary pins. The paused `sqlite3.Row` defect was fixed in both integrity-result comparison and exact row snapshots. The retained local probe calls the actual `_prepare_db` and complete acceptance function; only worker lifecycle, native reads and HTTP transport are stubbed. Independent follow-up QA passed the 54-entry source manifest and independently ran that probe, the 57-node catalog and the diagnostic-node contract.
+
+Actual GitHub qualification on this exact commit:
+
+| Gate | Evidence | Result |
+|---|---|---|
+| Push-fast | [41627311292](https://github.com/Coxf0rd/fwrouter/actions/runs/41627311292), event `push` | SUCCESS |
+| Complete qualified branch L6 | [41627329040](https://github.com/Coxf0rd/fwrouter/actions/runs/41627329040), attempt 1, `workflow_dispatch` | SUCCESS, 19/19 jobs |
+| Selected test inventory | Immutable full-safe plan, manifest `2026.11.03.2` | 211 selected files out of the 212-file catalog; no selected file NOT RUN |
+| Results | Independently replayed `reports/visibility.json` | 3,455 unique IDs; 3,501 executions/PASS; zero FAIL, SKIP, BLOCKED or NOT RUN |
+| L5 coverage | Required anchors | PASS |
+| Current-schema Compose scenario | `test_current_schema_initialization_preserves_control_plane_and_native_state` | PASS in both independent hosted repetitions, distinct nonces and successful cleanup |
+| Complete final artifact | `13226019998`, `fwrouter-l6-evidence-2b79fab74c05e50342c793a2a69b0cda6f3e7479-41627329040-1` | Unexpired; API and downloaded ZIP digest match |
+
+Artifact SHA-256: `04677d109582c09304763cf0fe5962d5a40e68d5e0a07ef332c9e287ed304a9f`. The Orchestrator and independent QA separately replayed the existing `tests/gates/l6_ci.py verify` from a clean exact-source checkout, with independently established SHA, repository/workflow, event/ref, run/attempt and GitHub job/artifact expectations. Both returned `l6_evidence_verified_not_deploy_authorized`. Verification reconciled the complete content inventory, immutable plan, required result set, original producer evidence, source/build/runtime bindings, independent hosted repeats, safe-recovery evidence and observed coverage. Review evidence is retained locally under `/tmp/fwrouter-package-e-evidence-41627329040/`.
+
+The original failed runs `41540014026` and `41540068872` remain failed historical evidence, not PASS. The old local `/usr/bin/time` skip remains accurately recorded; the complete selected hosted result has zero skipped tests. The sole catalog file omitted by the established L6 policy is optional/deferred `tests/application_acceptance/test_xray_worker_crash_l7.py`; this is explicit in the plan and is not an executed L7 test.
+
+Scope is `branch-regression-non-promotional`, `minimum_repeats=2`, `deploy_eligibility=false`. Ordinary acceptance proves its process-backed Xray/SQLite/API/native-identity scope; it is not stock Docker/host-systemd/reboot parity or real provider traffic. Qualified native, packet, provider and browser cohorts passed under their existing separate isolation contracts. No production access, deployment, PR, merge or Packages F/G work occurred.
+
+This documentation checkpoint records actual qualification of the implementation commit above. Its report-only follow-up commit must receive its own exact-HEAD push-fast/L6 qualification; the canonical owner-local roadmap and final handoff record those resulting run identities. Earlier pending and failed checkpoints above are preserved as history and superseded only within this verified scope.
