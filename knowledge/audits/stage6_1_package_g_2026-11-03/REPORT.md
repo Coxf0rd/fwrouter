@@ -1,6 +1,6 @@
 # Stage 6.1 Package G — Security Boundaries & Backend Architecture Closure
 
-**Status: implementation acceptance VERIFIED at `b58f44ca3a60c864a179a33fabacb43b8c882f8c`.** Independent source QA, exact-HEAD push-fast/full branch L6 and the official independent offline verification passed. The report-only publication commit still requires its own exact-HEAD qualification; only after those checks will the owner-local [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md) record the final Package G/branch-readiness receipt. No PR, merge, deployment or production verification is included.
+**Current status: NOT READY FOR FINAL PR; Package G acceptance remains INCOMPLETE.** The earlier `b58f44ca3a60c864a179a33fabacb43b8c882f8c` qualification and offline bundle are verified historical evidence. The later report-only HEAD `b9df379ecb50bad3915a05a4d0219bdf8b3f61a4` failed required exact-HEAD L6 with a recurring packet setup rejection. This blocker is not waived by a prior PASS or by a documentation-only diff. The [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md) will receive the final blocked checkpoint after this documentation publication. No PR, merge, deployment or production verification is included.
 
 ## Source and authority
 
@@ -138,7 +138,7 @@ Qualification is `branch-regression-non-promotional`, minimum_repeats2, deploy_e
 
 Initial run41674572830 remains FAIL. Its unexplained packet setup failure is **not fixed or explained** by later PASS. Current complete qualification is evidence for b58f44c only; diagnostic observability changed, application behavior and all native/fencing acceptance predicates did not. Recurrence must fail the gate and be investigated using the retained bounded context, not bypassed by retries or weaker expectations.
 
-## Final dispositions and blocking versus accepted residual risks
+## Reviewed dispositions and b58f44c risk classification — superseded for readiness below
 
 All12source dispositions in [FINDING_DISPOSITIONS.md](FINDING_DISPOSITIONS.md) remain unchanged after independent review: F03/F05/F06/F07/F08/F09/F11/F12 RESOLVED within their stated seams; F02 RETIRED BY SUPPORT POLICY without historical repair; F04/F10 PARTIALLY ADDRESSED; F01 DOCUMENTED with broader policy DEFERRED. The following classification applies specifically to opening the single E+F+G source-review PR, not to merge, deployment or public security certification.
 
@@ -156,4 +156,32 @@ All12source dispositions in [FINDING_DISPOSITIONS.md](FINDING_DISPOSITIONS.md) r
 | Optional L7, host/systemd/reboot parity, production native/services/timers and external VPN E2E not verified here | **SEPARATE ACCEPTANCE GATES** | Not blockers to source PR opening under the existing branch profile; they remain blockers where required for release/production acceptance. No PASS is inferred. |
 | Actual PR checks, owner merge and actual-main qualification | **NOT RUN; later integration gates** | Opening a PR is not merge readiness. Full mandatory PR CI at its final source, owner-only Squash and Merge, and actual-main checks remain required. |
 
-The implementation is eligible for the final PR review within these boundaries. Overall branch readiness remains pending the report-only publication commit's exact-HEAD qualification and canonical final receipt. The documented unknown packet cause and policy/technical residuals are not erased by that future receipt.
+At the b58f44c checkpoint, implementation qualification was accepted within these boundaries, pending publication qualification. That provisional eligibility is superseded by the blocking b9df379 recurrence below. The historical unknown cause and policy/technical residuals are not erased by a later successful cohort.
+
+## Final publication qualification — blocking recurrence, 2026-11-04
+
+Report-only commit `b9df379ecb50bad3915a05a4d0219bdf8b3f61a4` changes only this REPORT relative to qualified parent b58f44c. Push-fast [41680516031](https://github.com/Coxf0rd/fwrouter/actions/runs/41680516031) SUCCESS. Full L6 [41680517598/1](https://github.com/Coxf0rd/fwrouter/actions/runs/41680517598) **FAIL**:17jobs successful, packet-r1 job126073428300 failed, and strict aggregate job126077615078 failed. No complete `fwrouter-l6-evidence-*` artifact was published. Exact-source full-bundle verification for b9df379 is therefore **NOT RUN / unavailable**, not PASS. Packet-r2 passed4/4; it does not substitute for failed packet-r1.
+
+The same packet test failed before subscription import/legacy admission, on the initial `server_mode=fixed` setup call. The new bounded string diagnostic preserved this actual result:
+
+```json
+{"error_code":"MIHOMO_RECONCILE_FAILED","stage":"generation_revalidation","native_error_code":"MIHOMO_GENERATION_STALE","reconcile_reason":"stale_generation_candidate","last_good_retained":true,"reconcile_action":"none"}
+```
+
+This is a compact transcription of the closed worker projection, not a new native proof. Source inspection of `mihomo_reconcile.py` at the stale-generation branch shows a disjunction over selection revision, input fingerprint, candidate presence/hash, active-config hash, and runtime incarnation. The retained projection does not identify which comparison failed or why. Thus the observed rejecting stage/code are established; the causal change, concurrency attribution and existence of an implementation defect remain **UNKNOWN**. The safety predicate rejected publication and reported last-good retention; it was not relaxed. The older3418214 failure shares the outer code/test/setup call, but its missing nested cause cannot be retroactively equated with this one.
+
+The Orchestrator retained job log `/tmp/fwrouter-package-g-audit/packet-final-r1-126073428300.log`, decoded report `packet-final-r1-report.json`, and independently obtained run/jobs/artifact metadata `final-b9-*.json`. A separate fresh QA session independently checked the same GitHub failure and redacted diagnostic artifact under `/tmp/fwrouter-package-g-final-b9/`; it also replayed the official b58f44c verifier successfully and confirmed that only this REPORT differs at b9df379. Its final readiness verdict was **CHANGES_REQUIRED / blocked**, despite unchanged reviewed source and earlier successful qualification. This subsequent review supersedes the earlier agent-availability limitation only for the checks actually completed. No current-head verified bundle is claimed.
+
+### Current blocking versus accepted risks
+
+- **BLOCKING now:** recurring required packet failure on b9df379, failed strict aggregate, absent complete exact-head evidence, and closing QA CHANGES_REQUIRED. This supersedes the earlier historical-risk/non-blocking classification for PR readiness. Package G is not complete and the combined E+F+G branch is NOT READY FOR FINAL PR.
+- **Not established:** a source regression introduced by G, a particular stale-generation predicate/actor, a production defect, or a repair. Application/host/installer/workflow source is unchanged across these G commits; b9df379 is report-only relative to b58f44c. Neither fact makes the failed gate acceptable.
+- **Still bounded source residuals:** F01 trusted-local policy/deployed reachability, F04 coordinator debt, F10 custom-loader deadline ownership, exact legacy schema-27 compatibility limitations, single-process semantics and separate L7/host/live acceptance. Their documented dispositions remain; they do not waive the new qualification blocker. All12source dispositions have been reviewed, but source review is not overall acceptance.
+
+No evidence-supported code correction can be selected from the current retained comparisons. Further required work is qualified disposable reproduction/observation identifying the stale input/predicate and whether it is valid concurrent change, fixture ordering, source fingerprint behavior or another demonstrated cause. Only then should the owning scope implement a bounded correction, re-run affected contracts, obtain independent QA, and pass complete exact-HEAD L6 plus offline evidence verification. No speculative native/fencing/lifecycle change, added retry, arbitrary timeout or assertion relaxation is made here. No unchanged qualification rerun is used to search for a green outcome.
+
+### Evidence relationship for this blocked documentation checkpoint
+
+The final follow-up commit changes only this factual report from failed parent b9df379; all14reviewed source-manifest entries and all executable/test/gate/inventory inputs are identical. Under the user's explicit permission to document the evidence relationship for a changed HEAD, this is **negative carry-forward**, not acceptance reuse: the unresolved failure and NOT READY verdict apply to the unchanged implementation. Full L6/offline acceptance for this report-only follow-up is **NOT RUN**. The earlier verified b58f44c bundle retains exactly its original SHA/run/attempt identity and cannot qualify the later branch. Automatic push-fast, even if successful, does not lift the blocker. Final commit identity and actual push-fast status are recorded in the owner-local canonical checkpoint and handoff.
+
+No PR, merge, deployment, production access, reset, clean or force-push was performed. Canonical Stage6A decisions/history and the pre-existing repository roadmap change remain preserved. Stop at this NOT READY assessment; no new architecture work or unrelated infrastructure change is started.
