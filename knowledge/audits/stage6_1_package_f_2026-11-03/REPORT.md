@@ -1,6 +1,6 @@
 # Stage 6.1 Package F — Application Lifecycle & State Ownership
 
-**Status: implementation acceptance VERIFIED at `35ed543295b91363b06a6c69593c2774b7d3f60a`.** Source QA, exact-HEAD push-fast, complete qualified branch L6 and independent offline evidence verification passed. This report records those actual results. The report-only publication commit must receive its own exact-HEAD checks; final publication receipts and overall Package F closure are recorded in the dated owner-local [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md). No production data, deployed native runtime, or system service was accessed.
+**Status: implementation acceptance VERIFIED at `35ed543295b91363b06a6c69593c2774b7d3f60a`.** Source QA, exact-HEAD push-fast, complete qualified branch L6 and independent offline evidence verification passed. This report records those actual results. The report-only publication commit must receive its own exact-HEAD checks; final publication receipts and overall Package F closure remain pending and will be appended after those checks in the dated owner-local [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md). No production data, deployed native runtime, or system service was accessed.
 
 ## Source identity
 
@@ -139,3 +139,7 @@ Qualification scope is `branch-regression-non-promotional`, `minimum_repeats=2`,
 Residuals remain explicit: a custom loader that never returns can still hold followers; cache TTL does not supply an I/O deadline. No built-in recursive chain was found, while adapter/loader reentry now fails fast. Concurrent app lifespans and active state-root environment switching remain unsupported. These are documented compatibility/availability boundaries, not hidden PASS exemptions.
 
 This report-only closure commit does not change the reviewed 31-file source manifest. Its own exact-HEAD push-fast/L6 and independently verified bundle must pass before the canonical roadmap records overall Package F COMPLETE. That final receipt stays outside the Git tree to avoid a self-referential source SHA. Package G remains NOT STARTED; continue future work on the same stage branch.
+
+### Report chronology review correction
+
+Independent receipt review confirmed all implementation receipts above, but found that the status paragraph described the future canonical closure in the present tense. That sentence is corrected to retain an explicit pending state until the publication candidate passes its exact-HEAD checks. The superseded report-only commit `dc91cad0a896bd39bf9468cabd4925f05825cfba` had push-fast `41636884233` SUCCESS; cancellation of its L6 `41636886931` was requested for this documentation correction, with two successful jobs and no failed job observed before cancellation. The cancelled run is not acceptance evidence. No application, test, source-manifest, workflow or gate policy changed.
