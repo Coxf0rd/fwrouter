@@ -27,6 +27,7 @@ def _clean_environment() -> None:
         "FWROUTER_ACCEPTANCE_RPC_SOCKET", "FWROUTER_ACCEPTANCE_PROFILE",
         "FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL",
         "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL", "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT",
+        "FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE", "FWROUTER_ACCEPTANCE_NODEID",
         "FWROUTER_APPLICATION_ACCEPTANCE_ROOT", "FWROUTER_ACCEPTANCE_RECEIPT_PATH",
         "FWROUTER_XRAY_BINARY", "FWROUTER_MIHOMO_BINARY", "FWROUTER_BROWSER_EXECUTABLE",
         "FWROUTER_CHROMIUM_BINARY", "HOME", "TMPDIR",
@@ -1872,6 +1873,7 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
     max_bytes = 8192
     max_total_bytes = 64 * 1024
     pending = threading.local()
+    prewarm_probe = getattr(mihomo_reconcile, "_acceptance_prewarm_probe", None)
 
     def safe_code(value: Any) -> str | None:
         if (isinstance(value, str) and 0 < len(value) <= 96
@@ -2109,6 +2111,10 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
                     elif event == "return" and frame.f_code is fingerprint_code and frame.f_back is not None \
                             and frame.f_back.f_code is reconcile_code:
                         timing["fingerprint_returned_ns"] = time.monotonic_ns()
+                        if isinstance(prewarm_probe, dict):
+                            routing = frame.f_back.f_locals.get("routing_dict")
+                            if isinstance(routing, dict) and routing.get("server_mode") == "fixed":
+                                prewarm_probe["fixed_fingerprint_return"](arg)
                     elif event == "return" and frame.f_code is file_hash_code and frame.f_back is not None \
                             and frame.f_back.f_code is reconcile_code:
                         callsite = frame.f_back.f_lineno
@@ -2221,6 +2227,31 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
                                 "total": min(600_000, max(0, (time.monotonic_ns() - started_ns) // 1_000_000)),
                             },
                         }
+                        if isinstance(prewarm_probe, dict):
+                            probe_record = prewarm_probe["snapshot"]()
+                            probe_module = probe_record.get("module") if isinstance(probe_record, dict) else None
+                            guard_module = modules.get(probe_module) if probe_module in modules else None
+                            probe_times = probe_record.get("times_ms") if isinstance(probe_record, dict) else {}
+                            stale["prewarm_sync_probe"] = {
+                                "status": probe_record.get("status") if isinstance(probe_record, dict) else "invalid",
+                                "actor": probe_record.get("actor") if isinstance(probe_record, dict) else None,
+                                "module": probe_module,
+                                "original_sync_called": probe_record.get("original_sync_called") is True
+                                if isinstance(probe_record, dict) else False,
+                                "fixed_fingerprint_matches_expected": (
+                                    probe_record.get("fixed_fingerprint_sha256")
+                                    == (expected_fp.get("hash") if isinstance(expected_fp, dict) else None)
+                                    if isinstance(probe_record, dict) else False
+                                ),
+                                "expected_row_matches_guard": bool(guard_module)
+                                and probe_record.get("expected_sha256") == guard_module.get("expected_row_sha256"),
+                                "current_row_matches_guard": bool(guard_module)
+                                and probe_record.get("current_sha256") == guard_module.get("current_row_sha256"),
+                                "times_ms": {key: probe_times.get(key)
+                                             for key in ("entered_ms", "fixed_snapshot_ms",
+                                                         "released_ms", "completed_ms")}
+                                if isinstance(probe_times, dict) else {},
+                            }
                         pending.generation_revalidation = stale
                 except Exception:
                     # Diagnostics never alter the source guard result or its fence.
@@ -2237,6 +2268,155 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
     apply_orchestrator._build_failure_result = observed_failure
     install_profile_observer()
     apply_orchestrator.mihomo_runtime_satisfies_routing = observed_satisfies
+
+
+def _install_acceptance_mihomo_prewarm_probe() -> dict[str, Any] | None:
+    """Hold only the exact packet scenario's first real prewarm sync for a bounded schedule."""
+    if os.environ.get("FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE") != "1":
+        return None
+    from .profile import load_profile
+    profile, _ = load_profile(Path(os.environ.get("FWROUTER_ACCEPTANCE_PROFILE", "")))
+    expected_node = (
+        "tests/application_acceptance/test_packet_dataplane.py::"
+        "test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh"
+    )
+    if (profile.get("profile") != "hosted-kernel-packet"
+            or os.environ.get("FWROUTER_ACCEPTANCE_NODEID") != expected_node):
+        raise RuntimeError("Mihomo prewarm probe is restricted to its exact qualified packet node")
+
+    from fwrouter_api.services import mihomo_reconcile, xray_status
+
+    original_sync = xray_status._sync_xray_module_runtime_state
+    entered = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+    lock = threading.Lock()
+    started_ns = time.monotonic_ns()
+    state_data: dict[str, Any] = {"claimed": False, "record": None, "fixed_seen": False,
+                                  "emitted": False, "times": {}}
+    fields = ("desired_state", "runtime_state", "apply_state", "lifecycle_mode")
+
+    def elapsed_ms() -> int:
+        return min(600_000, max(0, (time.monotonic_ns() - started_ns) // 1_000_000))
+
+    def row_digest(row: dict[str, Any] | None) -> str | None:
+        if row is None:
+            return None
+        value = {field: row.get(field) for field in fields}
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def module_projection(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        projected = {field: value.get(field) for field in fields}
+        if any(item is not None and not isinstance(item, str) for item in projected.values()):
+            return None
+        if any(isinstance(item, str) and len(item) > 128 for item in projected.values()):
+            return None
+        return projected
+
+    def fixed_fingerprint_return(fingerprint: Any) -> None:
+        with lock:
+            if state_data["fixed_seen"]:
+                return
+            state_data["fixed_seen"] = True
+            state_data["fixed_fingerprint_sha256"] = (
+                fingerprint.get("hash") if isinstance(fingerprint, dict)
+                and isinstance(fingerprint.get("hash"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", fingerprint["hash"]) else None
+            )
+            state_data["times"]["fixed_snapshot_ms"] = elapsed_ms()
+        wait_started = time.monotonic_ns()
+        if entered.wait(timeout=5):
+            with lock:
+                state_data["times"]["released_ms"] = elapsed_ms()
+            release.set()
+            completed.wait(timeout=5)
+        with lock:
+            state_data["fixed_wait_ms"] = min(10_000, max(0, (time.monotonic_ns() - wait_started) // 1_000_000))
+        emit_probe_record()
+
+    def emit_probe_record() -> None:
+        with lock:
+            if state_data["emitted"]:
+                return
+            state_data["emitted"] = True
+        payload = {"schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+                   "event": "prewarm_sync_probe", "summary": snapshot()}
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if len(encoded.encode("ascii")) <= 2048:
+            sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE " + encoded + "\n")
+            sys.stderr.flush()
+
+    def snapshot() -> dict[str, Any]:
+        with lock:
+            record = state_data.get("record")
+            if not isinstance(record, dict):
+                return {"status": "sync_observation_incomplete" if state_data["claimed"]
+                        else "not_reproduced_no_sync_actor",
+                        "fixed_snapshot_seen": bool(state_data["fixed_seen"]),
+                        "fixed_fingerprint_sha256": state_data.get("fixed_fingerprint_sha256"),
+                        "times_ms": dict(state_data["times"])}
+            return dict(record)
+
+    def observed_sync(**kwargs: Any) -> Any:
+        hold = False
+        if threading.current_thread().name == "fwrouter-runtime-prewarm":
+            with lock:
+                if not state_data["claimed"]:
+                    state_data["claimed"] = True
+                    hold = True
+        if not hold:
+            return original_sync(**kwargs)
+        before = module_projection(kwargs.get("module"))
+        hold_started = time.monotonic_ns()
+        with lock:
+            state_data["times"]["entered_ms"] = elapsed_ms()
+        entered.set()
+        released = release.wait(timeout=5)
+        with lock:
+            state_data["times"].setdefault("released_ms", elapsed_ms())
+        result = None
+        error: BaseException | None = None
+        try:
+            result = original_sync(**kwargs)
+        except BaseException as exc:
+            error = exc
+        try:
+            after = module_projection(result)
+            raw_module_name = kwargs.get("module", {}).get("module_name") \
+                if isinstance(kwargs.get("module"), dict) else None
+            module_name = raw_module_name if isinstance(raw_module_name, str) \
+                and raw_module_name in {"vpn", "xray"} else None
+            with lock:
+                state_data["times"]["completed_ms"] = elapsed_ms()
+                state_data["record"] = {
+                    "status": "original_raised" if error is not None else
+                    "held_and_released" if released else "self_released_timeout",
+                    "actor": "fwrouter-runtime-prewarm", "original_sync_called": True,
+                    "fixed_fingerprint_sha256": state_data.get("fixed_fingerprint_sha256"),
+                    "module": module_name, "expected_sha256": row_digest(before),
+                    "current_sha256": row_digest(after),
+                    "changed_fields": {key: before is not None and after is not None
+                                       and before.get(key) != after.get(key) for key in fields},
+                    "times_ms": dict(state_data["times"]),
+                    "fixed_snapshot_seen": bool(state_data["fixed_seen"]),
+                    "fixed_wait_ms": state_data.get("fixed_wait_ms"),
+                    "hold_ms": min(5000, max(0, (time.monotonic_ns() - hold_started) // 1_000_000)),
+                    "original_raised": error is not None,
+                }
+        finally:
+            completed.set()
+        if error is not None:
+            raise error
+        return result
+
+    xray_status._sync_xray_module_runtime_state = observed_sync
+    mihomo_reconcile._acceptance_prewarm_probe = {
+        "fixed_fingerprint_return": fixed_fingerprint_return, "snapshot": snapshot,
+    }
+    return mihomo_reconcile._acceptance_prewarm_probe
 
 
 def _install_acceptance_recovery_apply_observer() -> None:
@@ -4425,6 +4605,7 @@ def build_app(socket_path: Path):
     mihomo_delay_observer = _install_acceptance_mihomo_delay_error_observer()
     mihomo_adapter._acceptance_group_probe_observer = mihomo_delay_observer
     _install_acceptance_selection_fence_observer()
+    _install_acceptance_mihomo_prewarm_probe()
     _install_acceptance_mihomo_reconcile_failure_observer()
     _install_acceptance_recovery_apply_observer()
     if acceptance_profile.get("profile") == "hosted-kernel-packet":

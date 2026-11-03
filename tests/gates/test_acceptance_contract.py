@@ -122,7 +122,7 @@ def _extract_startup_readiness_policy():
     tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
     names = {
         "MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS", "QUALIFIED_STARTUP_DEADLINE_SECONDS",
-        "SLOW_STARTUP_WARNING_SECONDS", "_bootstrap_observation_state",
+        "SLOW_STARTUP_WARNING_SECONDS", "_MIHOMO_PREWARM_NODEID", "_bootstrap_observation_state",
         "_startup_attempt_state", "_slow_startup_warning_due",
     }
     body = []
@@ -1802,7 +1802,10 @@ class AcceptanceContractTests(unittest.TestCase):
                         return clock.wait(seconds)
 
                 provider_bridge = SimpleNamespace(base_url="http://127.0.0.1:9000", mihomo_probe_url=None)
-                request = SimpleNamespace(config=SimpleNamespace(_fwrouter_startup_observations=observations))
+                request = SimpleNamespace(
+                    config=SimpleNamespace(_fwrouter_startup_observations=observations),
+                    node=SimpleNamespace(nodeid=policy["_MIHOMO_PREWARM_NODEID"]),
+                )
 
                 def warn(fake_proc, elapsed, qualification):
                     record = {"code": "SLOW_STARTUP", "elapsed_seconds": elapsed,
@@ -1843,6 +1846,7 @@ class AcceptanceContractTests(unittest.TestCase):
                     "MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS": policy["MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS"],
                     "QUALIFIED_STARTUP_DEADLINE_SECONDS": policy["QUALIFIED_STARTUP_DEADLINE_SECONDS"],
                     "SLOW_STARTUP_WARNING_SECONDS": policy["SLOW_STARTUP_WARNING_SECONDS"],
+                    "_MIHOMO_PREWARM_NODEID": policy["_MIHOMO_PREWARM_NODEID"],
                 }
                 start_worker = _compile_acceptance_start_worker(namespace)
                 try:
@@ -4874,6 +4878,7 @@ class AcceptanceContractTests(unittest.TestCase):
         parsed = ast.parse(test_path.read_text(encoding="utf-8"))
         wanted = {
             "_PROVIDER_WORKER_LOG_PREFIX", "_MIHOMO_RECONCILE_WORKER_LOG_PREFIX",
+            "_MIHOMO_PREWARM_WORKER_LOG_PREFIX",
             "_PROVIDER_WORKER_LOG_MAX_FILES", "_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES",
             "_PROVIDER_WORKER_LOG_PREFIXES", "_MIHOMO_RECONCILE_STAGES",
             "_MIHOMO_RECONCILE_ERROR_CODES", "_MIHOMO_RECONCILE_REASONS",
@@ -5010,11 +5015,11 @@ class AcceptanceContractTests(unittest.TestCase):
                              "tables": {"expected_sha256": "c" * 64,
                                         "current_sha256": "d" * 64}},
                              generation["fingerprint"]["changed_component_hashes"])
-            self.assertEqual([{"name": "modules", "expected_sha256": "e" * 64,
-                               "current_sha256": "f" * 64, "comparison": "changed"}],
+            self.assertEqual([{"name": "modules", "expected": "e" * 64,
+                               "current": "f" * 64, "comparison": "changed"}],
                              generation["fingerprint"]["changed_tables"])
-            self.assertEqual([{"name": "contours", "expected_sha256": "1" * 64,
-                               "current_sha256": "2" * 64, "comparison": "changed"}],
+            self.assertEqual([{"name": "contours", "expected": "1" * 64,
+                               "current": "2" * 64, "comparison": "changed"}],
                              generation["fingerprint"]["changed_files"])
             self.assertEqual({"runtime_state": True}, generation["fingerprint"]["modules"]["vpn"]["changed_fields"])
             self.assertFalse(generation["active_config"]["read_evaluated"])
@@ -5074,6 +5079,14 @@ class AcceptanceContractTests(unittest.TestCase):
             file_names = ("effective_rules", "last_good_effective_rules", "applied_manifest", "contours")
             maximal = json.loads(json.dumps(valid))
             maximal_generation = maximal["summary"]["generation_revalidation"]
+            maximal_generation["prewarm_sync_probe"] = {
+                "status": "held_and_released", "actor": "fwrouter-runtime-prewarm",
+                "module": "xray", "original_sync_called": True, "original_raised": False,
+                "fixed_fingerprint_matches_expected": True,
+                "expected_row_matches_guard": True, "current_row_matches_guard": True,
+                "times_ms": {"entered_ms": 1, "fixed_snapshot_ms": 2,
+                             "released_ms": 3, "completed_ms": 4},
+            }
             maximal_generation["fingerprint"].update({
                 "changed_components": ["routing", "tables", "files", "source"],
                 "changed_component_hashes": {
@@ -5109,6 +5122,38 @@ class AcceptanceContractTests(unittest.TestCase):
             }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
             self.assertLessEqual(len(rendered_packet_failure.encode("ascii")), 6 * 1024,
                                  f"maximal packet diagnostic bytes={len(rendered_packet_failure.encode('ascii'))}")
+
+            probe_prefix = namespace["_MIHOMO_PREWARM_WORKER_LOG_PREFIX"].encode("ascii")
+            probe_snapshot = namespace["_snapshot_provider_worker_logs"](root)
+            probe = {
+                "schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+                "event": "prewarm_sync_probe",
+                "summary": {
+                    "status": "held_and_released", "actor": "fwrouter-runtime-prewarm",
+                    "module": "xray", "original_sync_called": True,
+                    "fixed_fingerprint_sha256": "a" * 64,
+                    "expected_sha256": "b" * 64, "current_sha256": "c" * 64,
+                    "changed_fields": {"runtime_state": True, "apply_state": True},
+                    "times_ms": {"entered_ms": 10, "fixed_snapshot_ms": 11,
+                                 "released_ms": 12, "completed_ms": 13},
+                    "raw_config": "DO_NOT_EXPORT", "secret": "DO_NOT_EXPORT",
+                },
+            }
+            with log.open("ab") as stream:
+                stream.write(probe_prefix + json.dumps(probe).encode("ascii") + b"\n")
+            projected_probe = namespace["_safe_mihomo_reconcile_diagnostics_since"](root, probe_snapshot)
+            self.assertEqual(1, len(projected_probe))
+            self.assertEqual("prewarm_sync_probe", projected_probe[0]["event"])
+            self.assertEqual("held_and_released", projected_probe[0]["summary"]["status"])
+            self.assertEqual("b" * 64, projected_probe[0]["summary"]["expected_sha256"])
+            self.assertNotIn("DO_NOT_EXPORT", json.dumps(projected_probe))
+            nested_probe_snapshot = namespace["_snapshot_provider_worker_logs"](root)
+            probe["summary"].update(status=["held_and_released"], module={"name": "xray"})
+            with log.open("ab") as stream:
+                stream.write(probe_prefix + json.dumps(probe).encode("ascii") + b"\n")
+            nested_probe = namespace["_safe_mihomo_reconcile_diagnostics_since"](root, nested_probe_snapshot)
+            self.assertEqual("invalid", nested_probe[0]["summary"]["status"])
+            self.assertIsNone(nested_probe[0]["summary"]["module"])
 
     def test_mihomo_stale_generation_profiler_observes_actual_guard_short_circuit(self):
         worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
@@ -5315,6 +5360,214 @@ class AcceptanceContractTests(unittest.TestCase):
                        "running", "stopped"):
             self.assertNotIn(secret, output.getvalue())
 
+    def test_mihomo_prewarm_probe_holds_only_exact_packet_sync_and_preserves_original(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        installer = next(node for node in parsed.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "_install_acceptance_mihomo_prewarm_probe")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance", "os": os,
+            "sys": sys, "threading": threading, "time": time, "json": json,
+            "hashlib": hashlib, "re": re, "Any": Any, "Path": Path,
+        }
+        exec(compile(ast.Module(body=[installer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        expected_node = ("tests/application_acceptance/test_packet_dataplane.py::"
+                         "test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh")
+        profile_module = ModuleType("application_acceptance.profile")
+        profile_module.load_profile = lambda path: ({"profile": "hosted-kernel-packet"}, "a" * 64)
+        reconcile_module = SimpleNamespace()
+        status_module = SimpleNamespace()
+        services = ModuleType("fwrouter_api.services")
+        services.mihomo_reconcile = reconcile_module
+        services.xray_status = status_module
+        calls = []
+        write_order = []
+        updated = {}
+
+        def original_sync(**kwargs):
+            calls.append(kwargs)
+            write_order.append("original_sync")
+            updated.update(kwargs["module"])
+            updated.update(runtime_state="running", apply_state="clean")
+            return updated
+
+        status_module._sync_xray_module_runtime_state = original_sync
+        exact_env = {
+            "FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE": "1",
+            "FWROUTER_ACCEPTANCE_NODEID": expected_node,
+            "FWROUTER_ACCEPTANCE_PROFILE": "/run/fixture/profile.json",
+        }
+        output = io.StringIO()
+        with mock.patch.dict(sys.modules, {
+            "application_acceptance.profile": profile_module,
+            "fwrouter_api.services": services,
+        }), mock.patch.dict(os.environ, exact_env, clear=False), mock.patch("sys.stderr", output):
+            probe = namespace[installer.name]()
+            module = {"module_name": "xray", "desired_state": "enabled",
+                      "runtime_state": "not_configured", "apply_state": "pending",
+                      "lifecycle_mode": "managed"}
+            worker = threading.Thread(
+                name="fwrouter-runtime-prewarm",
+                target=lambda: status_module._sync_xray_module_runtime_state(module=module),
+            )
+            worker.start()
+            write_order.append("fixed_snapshot")
+            probe["fixed_fingerprint_return"]({"hash": "b" * 64})
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive(), "the barrier must release the existing writer")
+            write_order.append("revalidation")
+            self.assertEqual(["fixed_snapshot", "original_sync", "revalidation"], write_order)
+            self.assertEqual(1, len(calls), "observer must call the original sync exactly once")
+            self.assertEqual("running", updated["runtime_state"])
+            summary = probe["snapshot"]()
+            self.assertEqual("held_and_released", summary["status"])
+            self.assertEqual("fwrouter-runtime-prewarm", summary["actor"])
+            self.assertTrue(summary["original_sync_called"])
+            self.assertEqual("xray", summary["module"])
+            self.assertEqual("b" * 64, summary["fixed_fingerprint_sha256"])
+            self.assertEqual({"runtime_state": True, "apply_state": True,
+                              "desired_state": False, "lifecycle_mode": False}, summary["changed_fields"])
+            times = summary["times_ms"]
+            self.assertLessEqual(times["entered_ms"], times["released_ms"])
+            self.assertLessEqual(times["fixed_snapshot_ms"], times["released_ms"])
+            self.assertLessEqual(times["released_ms"], times["completed_ms"])
+            self.assertLessEqual(len(output.getvalue().encode("ascii")), 2048 + 64)
+            self.assertNotIn("module_name", output.getvalue())
+
+        for invalid_env, profile in (
+            ({**exact_env, "FWROUTER_ACCEPTANCE_NODEID": "other::node"}, "hosted-kernel-packet"),
+            (exact_env, "hosted-native-process"),
+        ):
+            profile_module.load_profile = lambda path, profile=profile: ({"profile": profile}, "a" * 64)
+            with mock.patch.dict(sys.modules, {
+                "application_acceptance.profile": profile_module,
+                "fwrouter_api.services": services,
+            }), mock.patch.dict(os.environ, invalid_env, clear=False):
+                with self.assertRaises(RuntimeError):
+                    namespace[installer.name]()
+        self.assertEqual("held_and_released", summary["status"])
+
+    def test_mihomo_prewarm_probe_timeout_still_calls_original_once(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        installer = next(node for node in parsed.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "_install_acceptance_mihomo_prewarm_probe")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance", "os": os,
+            "sys": sys, "threading": threading, "time": time, "json": json,
+            "hashlib": hashlib, "re": re, "Any": Any, "Path": Path,
+        }
+        exec(compile(ast.Module(body=[installer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        expected_node = ("tests/application_acceptance/test_packet_dataplane.py::"
+                         "test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh")
+        profile_module = ModuleType("application_acceptance.profile")
+        profile_module.load_profile = lambda path: ({"profile": "hosted-kernel-packet"}, "a" * 64)
+        reconcile_module = SimpleNamespace()
+        status_module = SimpleNamespace()
+        services = ModuleType("fwrouter_api.services")
+        services.mihomo_reconcile = reconcile_module
+        services.xray_status = status_module
+        calls = []
+        original_failure = RuntimeError("private sync failure")
+
+        def original_sync(**kwargs):
+            calls.append(kwargs)
+            raise original_failure
+
+        status_module._sync_xray_module_runtime_state = original_sync
+        env = {
+            "FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE": "1",
+            "FWROUTER_ACCEPTANCE_NODEID": expected_node,
+            "FWROUTER_ACCEPTANCE_PROFILE": "/run/fixture/profile.json",
+        }
+        real_event = threading.Event
+        wait_values = []
+
+        class FastTimeoutEvent:
+            def __init__(self):
+                self.event = real_event()
+
+            def set(self):
+                self.event.set()
+
+            def wait(self, timeout=None):
+                wait_values.append(timeout)
+                if not self.event.is_set():
+                    return False
+                return True
+
+        with mock.patch.dict(sys.modules, {
+            "application_acceptance.profile": profile_module,
+            "fwrouter_api.services": services,
+        }), mock.patch.dict(os.environ, env, clear=False), mock.patch.object(threading, "Event", FastTimeoutEvent):
+            probe = namespace[installer.name]()
+            current_thread = threading.current_thread()
+            previous_name = current_thread.name
+            current_thread.name = "fwrouter-runtime-prewarm"
+            try:
+                with self.assertRaises(RuntimeError) as raised:
+                    status_module._sync_xray_module_runtime_state(
+                        module={"module_name": ["xray"], "desired_state": "enabled",
+                                "runtime_state": "stopped", "apply_state": "pending", "lifecycle_mode": "managed"},
+                    )
+            finally:
+                current_thread.name = previous_name
+            self.assertEqual(1, len(calls))
+            self.assertIs(original_failure, raised.exception)
+            self.assertEqual("original_raised", probe["snapshot"]()["status"])
+            self.assertIsNone(probe["snapshot"]()["module"])
+        self.assertTrue(wait_values and all(value == 5 for value in wait_values))
+
+    def test_mihomo_prewarm_probe_routing_and_terminal_transport_are_closed(self):
+        fixture_path = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
+        fixture_tree = ast.parse(fixture_path.read_text(encoding="utf-8"))
+        owner = next(node for node in fixture_tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "acceptance_stack")
+        start_worker = next(node for node in ast.walk(owner) if isinstance(node, ast.FunctionDef)
+                            and node.name == "start_worker")
+        start_source = ast.unparse(start_worker)
+        self.assertIn("not owned_workers", start_source)
+        self.assertIn("profile.get('profile') == 'hosted-kernel-packet'", start_source)
+        self.assertIn("request.node.nodeid == _MIHOMO_PREWARM_NODEID", start_source)
+        self.assertIn("env['FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE'] = '1'", start_source)
+        self.assertIn("env['FWROUTER_ACCEPTANCE_NODEID'] = _MIHOMO_PREWARM_NODEID", start_source)
+        terminal_hook = next(node for node in fixture_tree.body
+                             if isinstance(node, ast.FunctionDef)
+                             and node.name == "pytest_terminal_summary")
+        self.assertIn("_fwrouter_mihomo_prewarm_probe_records", ast.unparse(terminal_hook))
+        self.assertIn("terminalreporter.write_line", ast.unparse(terminal_hook))
+        self.assertIn("1024", ast.unparse(terminal_hook))
+
+        sanitizer = next(node for node in fixture_tree.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "_safe_mihomo_prewarm_probe_record")
+        namespace = {"__builtins__": __builtins__, "json": json, "re": re}
+        exec(compile(ast.Module(body=[sanitizer], type_ignores=[]), str(fixture_path), "exec"), namespace)
+        unsafe = {
+            "schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+            "event": "prewarm_sync_probe",
+            "summary": {
+                "status": "held_and_released", "actor": "fwrouter-runtime-prewarm",
+                "module": "xray", "original_sync_called": True,
+                "expected_sha256": "a" * 64, "current_sha256": "b" * 64,
+                "changed_fields": {"runtime_state": True, "secret": "DO_NOT_EXPORT"},
+                "times_ms": {"entered_ms": 1, "raw_time": 999999999},
+                "raw_config": "DO_NOT_EXPORT", "uuid": "DO_NOT_EXPORT",
+            },
+            "unknown": "DO_NOT_EXPORT",
+        }
+        safe = namespace[sanitizer.name](unsafe)
+        self.assertIsNotNone(safe)
+        self.assertEqual({"runtime_state": True}, safe["summary"]["changed_fields"])
+        self.assertEqual({"entered_ms": 1}, safe["summary"]["times_ms"])
+        self.assertNotIn("DO_NOT_EXPORT", json.dumps(safe))
+        self.assertIsNone(namespace[sanitizer.name]({**unsafe, "event": "unrecognized"}))
+        nested_unsafe = {**unsafe, "summary": {**unsafe["summary"],
+                                                   "status": ["held_and_released"],
+                                                   "module": {"name": "xray"}}}
+        nested_safe = namespace[sanitizer.name](nested_unsafe)
+        self.assertEqual("invalid", nested_safe["summary"]["status"])
+        self.assertIsNone(nested_safe["summary"]["module"])
+
     def test_packet_post_apply_includes_only_bounded_failure_diagnostics(self):
         packet_tree = ast.parse(PACKET_ACCEPTANCE_SOURCE.read_text(encoding="utf-8"),
                                 filename=str(PACKET_ACCEPTANCE_SOURCE))
@@ -5339,6 +5592,7 @@ class AcceptanceContractTests(unittest.TestCase):
                                     filename=str(diagnostic_path))
         wanted = {
             "_PROVIDER_WORKER_LOG_PREFIX", "_MIHOMO_RECONCILE_WORKER_LOG_PREFIX",
+            "_MIHOMO_PREWARM_WORKER_LOG_PREFIX",
             "_PROVIDER_WORKER_LOG_MAX_FILES", "_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES",
             "_PROVIDER_WORKER_LOG_PREFIXES", "_MIHOMO_RECONCILE_STAGES",
             "_MIHOMO_RECONCILE_ERROR_CODES", "_MIHOMO_RECONCILE_REASONS",

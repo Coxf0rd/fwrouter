@@ -34,11 +34,13 @@ from .xray_support import (
 
 _PROVIDER_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
 _MIHOMO_RECONCILE_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE "
+_MIHOMO_PREWARM_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE "
 _PROVIDER_WORKER_LOG_MAX_FILES = 16
 _PROVIDER_WORKER_LOG_MAX_APPEND_BYTES = 64 * 1024
 _PROVIDER_WORKER_LOG_PREFIXES = frozenset({
     _PROVIDER_WORKER_LOG_PREFIX,
     _MIHOMO_RECONCILE_WORKER_LOG_PREFIX,
+    _MIHOMO_PREWARM_WORKER_LOG_PREFIX,
 })
 
 # These values are closed contracts owned by the Mihomo reconciliation,
@@ -252,6 +254,9 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
     records = _provider_worker_records_since(
         root, snapshot, prefix=_MIHOMO_RECONCILE_WORKER_LOG_PREFIX,
     )
+    prewarm_records = _provider_worker_records_since(
+        root, snapshot, prefix=_MIHOMO_PREWARM_WORKER_LOG_PREFIX,
+    )
     def enum(value, allowed):
         return value if isinstance(value, str) and value in allowed else None
 
@@ -275,6 +280,7 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
         active = value.get("active_config") if isinstance(value.get("active_config"), dict) else {}
         incarnation = value.get("runtime_incarnation") if isinstance(value.get("runtime_incarnation"), dict) else {}
         timing = value.get("timing_ms") if isinstance(value.get("timing_ms"), dict) else {}
+        raw_probe = value.get("prewarm_sync_probe")
         components = ("routing", "tables", "files", "source", "version")
         table_names = ("servers", "server_preferences", "vpn_auto_exclusive",
                        "subscription_inventory_generation", "server_custom_https_proxy",
@@ -318,13 +324,13 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
                     continue
                 comparison = entry.get("comparison")
                 result.append({"name": entry["name"],
-                               "expected_sha256": safe_hash(entry.get("expected_sha256")),
-                               "current_sha256": safe_hash(entry.get("current_sha256")),
+                               "expected": safe_hash(entry.get("expected_sha256")),
+                               "current": safe_hash(entry.get("current_sha256")),
                                "comparison": comparison
                                if isinstance(comparison, str)
                                and comparison in {"changed", "unavailable"} else None})
             return result
-        return {
+        projected = {
             "selection_revision": {
                 "expected": bounded_int(revision.get("expected"), 0, 2**63 - 1),
                 "current": bounded_int(revision.get("current"), 0, 2**63 - 1),
@@ -375,6 +381,44 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
             "timing_ms": {key: bounded_int(timing.get(key), 0, 600_000)
                           for key in ("fingerprint", "revalidation_after_fingerprint", "total")},
         }
+        if isinstance(raw_probe, dict):
+            projected["prewarm_sync_probe"] = safe_prewarm_probe(raw_probe)
+        return projected
+
+    def safe_prewarm_probe(value):
+        def probe_hash(item):
+            return item if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item) else None
+
+        statuses = {"not_reproduced_no_sync_actor", "not_reproduced_event_absent",
+                    "sync_observation_incomplete",
+                    "held_and_released", "self_released_timeout", "original_raised"}
+        fields = ("desired_state", "runtime_state", "apply_state", "lifecycle_mode")
+        changed = value.get("changed_fields") if isinstance(value.get("changed_fields"), dict) else {}
+        times = value.get("times_ms") if isinstance(value.get("times_ms"), dict) else {}
+        actor = value.get("actor")
+        module = value.get("module")
+        projected = {
+            "status": value.get("status")
+            if isinstance(value.get("status"), str) and value.get("status") in statuses else "invalid",
+            "actor": actor if actor == "fwrouter-runtime-prewarm" else None,
+            "module": module if isinstance(module, str) and module in {"vpn", "xray"} else None,
+            "original_sync_called": value.get("original_sync_called")
+            if type(value.get("original_sync_called")) is bool else False,
+        }
+        for key in ("fixed_fingerprint_sha256", "expected_sha256", "current_sha256"):
+            if key in value:
+                projected[key] = probe_hash(value.get(key))
+        if "changed_fields" in value:
+            projected["changed_fields"] = {key: changed[key] for key in fields
+                                            if type(changed.get(key)) is bool}
+        if "times_ms" in value:
+            projected["times_ms"] = {key: bounded_int(times.get(key), 0, 600_000)
+                                      for key in ("entered_ms", "fixed_snapshot_ms", "released_ms", "completed_ms")}
+        for key in ("fixed_fingerprint_matches_expected", "expected_row_matches_guard",
+                    "current_row_matches_guard"):
+            if type(value.get(key)) is bool:
+                projected[key] = value[key]
+        return projected
 
     for record in reversed(records):
         if (record.get("schema") != "fwrouter-acceptance-mihomo-reconcile-failure/v1"
@@ -444,6 +488,17 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
         # eligible failure projection only.
         encoded = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
         return [projected] if len(encoded) <= _MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES else []
+    for record in reversed(prewarm_records):
+        if (record.get("schema") != "fwrouter-acceptance-mihomo-prewarm-probe/v1"
+                or record.get("event") != "prewarm_sync_probe"
+                or not isinstance(record.get("summary"), dict)):
+            continue
+        projected = {"schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+                     "event": "prewarm_sync_probe",
+                     "summary": safe_prewarm_probe(record["summary"])}
+        encoded = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        if len(encoded) <= _MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES:
+            return [projected]
     return []
 
 

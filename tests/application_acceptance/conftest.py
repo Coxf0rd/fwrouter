@@ -5,6 +5,7 @@ import hashlib
 import logging
 import math
 import os
+import re
 import signal
 import resource
 import shutil
@@ -38,6 +39,76 @@ SLOW_STARTUP_WARNING_SECONDS = 45.0
 def _retain_acceptance_diagnostic(nodeid: str, *, failed: bool, has_records: bool) -> bool:
     """Retain all failures, the first success, and one exact critical recovery success."""
     return bool(failed or nodeid in _CRITICAL_SUCCESS_DIAGNOSTIC_NODEIDS or not has_records)
+
+
+_MIHOMO_PREWARM_NODEID = (
+    "tests/application_acceptance/test_packet_dataplane.py::"
+    "test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh"
+)
+_MIHOMO_PREWARM_LOG_PREFIX = b"FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE "
+
+
+def _safe_mihomo_prewarm_probe_record(value: object) -> dict[str, object] | None:
+    if (not isinstance(value, dict)
+            or value.get("schema") != "fwrouter-acceptance-mihomo-prewarm-probe/v1"
+            or value.get("event") != "prewarm_sync_probe"):
+        return None
+    summary = value.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    statuses = {"not_reproduced_no_sync_actor", "not_reproduced_event_absent",
+                "sync_observation_incomplete",
+                "held_and_released", "self_released_timeout", "original_raised"}
+    def safe_hash(item: object) -> str | None:
+        return item if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item) else None
+    raw_times = summary.get("times_ms") if isinstance(summary.get("times_ms"), dict) else {}
+    raw_changes = summary.get("changed_fields") if isinstance(summary.get("changed_fields"), dict) else {}
+    times = {key: item for key in ("entered_ms", "fixed_snapshot_ms", "released_ms", "completed_ms")
+             if type(item := raw_times.get(key)) is int and 0 <= item <= 600_000}
+    projected = {
+        "schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+        "event": "prewarm_sync_probe",
+        "summary": {
+            "status": summary.get("status")
+            if isinstance(summary.get("status"), str) and summary.get("status") in statuses else "invalid",
+            "actor": "fwrouter-runtime-prewarm"
+            if summary.get("actor") == "fwrouter-runtime-prewarm" else None,
+            "module": summary.get("module")
+            if isinstance(summary.get("module"), str) and summary.get("module") in {"vpn", "xray"} else None,
+            "original_sync_called": summary.get("original_sync_called")
+            if type(summary.get("original_sync_called")) is bool else False,
+            "fixed_fingerprint_sha256": safe_hash(summary.get("fixed_fingerprint_sha256")),
+            "expected_sha256": safe_hash(summary.get("expected_sha256")),
+            "current_sha256": safe_hash(summary.get("current_sha256")),
+            "changed_fields": {key: raw_changes[key] for key in
+                               ("desired_state", "runtime_state", "apply_state", "lifecycle_mode")
+                               if type(raw_changes.get(key)) is bool},
+            "times_ms": times,
+        },
+    }
+    encoded = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    return projected if len(encoded) <= 1024 else None
+
+
+def _read_mihomo_prewarm_probe_log(path: Path) -> dict[str, object] | None:
+    try:
+        with path.open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, size - 16 * 1024))
+            raw = stream.read(16 * 1024)
+    except OSError:
+        return None
+    for line in reversed(raw.splitlines()):
+        if not line.startswith(_MIHOMO_PREWARM_LOG_PREFIX) or len(line) > 2304:
+            continue
+        try:
+            value = json.loads(line[len(_MIHOMO_PREWARM_LOG_PREFIX):].decode("ascii"))
+        except (UnicodeError, json.JSONDecodeError):
+            continue
+        projected = _safe_mihomo_prewarm_probe_record(value)
+        if projected is not None:
+            return projected
+    return None
 
 
 def _owned_dir(path: Path) -> bool:
@@ -410,6 +481,7 @@ def pytest_configure(config):
     config._fwrouter_acceptance_started = time.monotonic()
     config._fwrouter_acceptance_reports = {}
     config._fwrouter_diagnostic_records = []
+    config._fwrouter_mihomo_prewarm_probe_records = []
     config._fwrouter_startup_failures = []
     config._fwrouter_startup_observations = []
     config._fwrouter_acceptance_cleanup_errors = []
@@ -496,6 +568,10 @@ def acceptance_stack(request):
                 "FWROUTER_CHROMIUM_BINARY": profile["chromium"]["path"],
                 "HOME": str(suite_root), "TMPDIR": str(suite_root),
             }
+            if (not owned_workers and request.node.nodeid == _MIHOMO_PREWARM_NODEID
+                    and profile.get("profile") == "hosted-kernel-packet"):
+                env["FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE"] = "1"
+                env["FWROUTER_ACCEPTANCE_NODEID"] = _MIHOMO_PREWARM_NODEID
             if provider_bridge.mihomo_probe_url is not None:
                 env["FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL"] = provider_bridge.mihomo_probe_url
                 env["FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT"] = str(provider_bridge.mihomo_probe_port)
@@ -747,6 +823,18 @@ def acceptance_stack(request):
                 worker_logs.append({"name": log_path.name, "tail": _redact_diagnostic(raw, limit=16 * 1024)})
             except OSError:
                 worker_logs.append({"name": log_path.name, "tail": "[unreadable]"})
+        if (request.node.nodeid == _MIHOMO_PREWARM_NODEID
+                and profile.get("profile") == "hosted-kernel-packet" and owned_workers):
+            initial_log = getattr(owned_workers[0], "_acceptance_log_path", None)
+            probe_record = _read_mihomo_prewarm_probe_log(Path(initial_log)) if initial_log else None
+            if probe_record is None:
+                probe_record = {
+                    "schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+                    "event": "prewarm_sync_probe",
+                    "summary": {"status": "not_reproduced_event_absent", "actor": None,
+                                "original_sync_called": False},
+                }
+            request.config._fwrouter_mihomo_prewarm_probe_records.append(probe_record)
         native_diagnostics = native.diagnostic_snapshot()
         native_diagnostics["xray_checkpoint_lifecycle"] = _read_acceptance_xray_checkpoint_lifecycle(state)
         candidate_graph_path = state / "run" / "mihomo-candidate-graph.json"
@@ -832,6 +920,18 @@ def pytest_runtest_makereport(item, call):
     report = outcome.get_result()
     records = item.config._fwrouter_acceptance_reports.setdefault(item.nodeid, {})
     records[report.when] = "passed" if report.passed else "skipped" if report.skipped else "failed"
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Transport only the exact bounded prewarm experiment into hosted pytest output."""
+    if getattr(config, "_fwrouter_acceptance_profile", {}).get("profile") != "hosted-kernel-packet":
+        return
+    records = getattr(config, "_fwrouter_mihomo_prewarm_probe_records", [])
+    if not records:
+        return
+    encoded = json.dumps(records[-1], sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    if len(encoded.encode("ascii")) <= 1024:
+        terminalreporter.write_line("FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE " + encoded)
 
 
 def pytest_sessionfinish(session, exitstatus):
