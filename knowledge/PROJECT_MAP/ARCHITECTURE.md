@@ -37,6 +37,16 @@ blocks below retain their historical meaning.
   deferred trust/availability residuals. A green CI receipt alone closes none
   of those architecture questions.
 
+The Package G qualification follow-up excludes the stateful settings workspace
+from opportunistic startup/Apply prewarm. That workspace's Xray status loader
+can synchronize persistent module state; it remains an explicit UI/API read
+path, with its existing cache TTL and invalidation. Background prewarm keeps
+its existing owner, cancellation and other projections/profile compilation.
+This prevents an incidental module-state write from invalidating a concurrent
+Mihomo generation snapshot. The fingerprint, CAS/native fences and rejection
+of legitimate concurrent status/intent changes remain intact. See the Package G
+report for controlled reproduction and source-versus-qualified acceptance.
+
 Stage 6A is now **Unified CI & Test Architecture (PLANNED)**. Its canonical
 [design](/решения/roadmap/fwrouter/designs/STAGE6A_UNIFIED_CI_TEST_ARCHITECTURE.md)
 requires a reviewed audit before execution-contract work; no CI restructuring,

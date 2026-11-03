@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -2061,6 +2062,193 @@ def test_reconcile_mihomo_runtime_skips_candidate_generation_when_inputs_unchang
     assert result["config_validation"]["skipped"] is True
     assert result["reconcile_action"] == "none"
     assert result["reconcile_reason"] == "input_fingerprint_unchanged"
+
+
+def test_incidental_prewarm_cannot_invalidate_mihomo_generation_snapshot(
+    monkeypatch,
+    tmp_path: Path,
+    controlled_runtime_prewarm,
+) -> None:
+    """The actual prewarm sequence must not run a stateful Xray settings projection."""
+    from fwrouter_api.adapters.xray import XrayHealth, XrayRuntimeState
+    from fwrouter_api.services import runtime, runtime_prewarm, system_summary, ui_state, xray_status
+
+    _configure_env(monkeypatch, tmp_path)
+    initialize_database()
+    with db_session() as connection:
+        connection.execute(
+            """
+            INSERT INTO modules (
+                module_name, desired_state, lifecycle_mode, runtime_state,
+                apply_state, status_text
+            ) VALUES ('xray', 'enabled', 'managed', 'running', 'clean', 'initial')
+            ON CONFLICT(module_name) DO UPDATE SET
+                desired_state='enabled', lifecycle_mode='managed', runtime_state='running',
+                apply_state='clean', status_text='initial', error_code=NULL, error_message=NULL
+            """
+        )
+
+    monkeypatch.setattr(
+        xray_status.DEFAULT_XRAY_ADAPTER,
+        "health",
+        lambda: XrayHealth(
+            runtime_state=XrayRuntimeState.RUNNING,
+            message="pytest controlled Xray observation",
+            details={"adapter": "pytest"},
+        ),
+    )
+    # Keep the earlier independent projections from performing unrelated I/O;
+    # the prewarm owner and its stateful settings-workspace call remain real.
+    monkeypatch.setattr(runtime, "get_runtime_summary", lambda: None)
+    monkeypatch.setattr(system_summary, "build_system_summary", lambda: None)
+    monkeypatch.setattr(ui_state, "list_ui_clients", lambda: None)
+    monkeypatch.setattr(ui_state, "get_ui_router_summary", lambda: None)
+    monkeypatch.setattr(mihomo_reconcile_service, "_mihomo_incarnation", lambda: "pytest-mihomo-instance")
+    monkeypatch.setattr(
+        mihomo_reconcile_fingerprint_service,
+        "_current_runtime_incarnation",
+        lambda: "pytest-mihomo-instance",
+    )
+    monkeypatch.setattr(mihomo_reconcile_service, "_native_udp_policy_proof", lambda: {
+        "ok": True,
+        "native_top_level_rules_match": True,
+        "selector_membership_matches": True,
+        "guarded_rules_match": True,
+    })
+
+    settings = get_settings()
+    active_path = settings.paths.generated_dir / "mihomo" / "config.yaml"
+    candidate_path = settings.paths.generated_dir / "mihomo" / "config.next.yaml"
+    active_path.parent.mkdir(parents=True, exist_ok=True)
+    active_path.write_text("rules:\n- MATCH,DIRECT\n", encoding="utf-8")
+    promoted: list[dict[str, object]] = []
+
+    def write_candidate(_routing=None):
+        candidate_path.write_text("rules:\n- MATCH,REJECT\n", encoding="utf-8")
+        return {"ok": True, "candidate_path": str(candidate_path), "rules_count": 1}
+
+    monkeypatch.setattr(mihomo_reconcile_service, "write_mihomo_candidate_config", write_candidate)
+    monkeypatch.setattr(
+        mihomo_reconcile_service,
+        "validate_mihomo_candidate_config",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        mihomo_reconcile_service,
+        "promote_mihomo_candidate_config",
+        lambda **kwargs: promoted.append(kwargs) or {"ok": True, "promoted": True},
+    )
+    monkeypatch.setattr(
+        mihomo_reconcile_service,
+        "restart_mihomo_container",
+        lambda **_kwargs: {"ok": True, "action": "pytest-native-boundary"},
+    )
+
+    workspace_entered = threading.Event()
+    allow_workspace = threading.Event()
+    workspace_completed = threading.Event()
+    original_workspace = ui_state.get_ui_settings_workspace
+
+    def observed_workspace():
+        if threading.current_thread().name == "fwrouter-runtime-prewarm":
+            workspace_entered.set()
+            if not allow_workspace.wait(timeout=5.0):
+                raise AssertionError("test did not release the prewarm workspace projection")
+        result = original_workspace()
+        if threading.current_thread().name == "fwrouter-runtime-prewarm":
+            workspace_completed.set()
+        return result
+
+    monkeypatch.setattr(ui_state, "get_ui_settings_workspace", observed_workspace)
+    clear_live_probe_cache()
+    assert runtime_prewarm.prime_runtime_read_models_async(include_global_profiles=False) is True
+    prewarm_worker = runtime_prewarm._PREWARM_THREAD
+    assert prewarm_worker is not None
+
+    # On the old source this blocks the real prewarm worker immediately before
+    # its real workspace loader. The first actual reconcile fingerprint return
+    # releases it, waits for the real Xray status/module synchronization, and
+    # then gives the unmodified fingerprint back to the real generation guard.
+    actor_present = workspace_entered.wait(timeout=2.0)
+    original_fingerprint = mihomo_reconcile_service.current_mihomo_input_fingerprint
+    fingerprint_returns = 0
+
+    def observe_snapshot_then_allow_real_writer(routing=None):
+        nonlocal fingerprint_returns
+        fingerprint = original_fingerprint(routing)
+        fingerprint_returns += 1
+        if fingerprint_returns == 1 and actor_present:
+            allow_workspace.set()
+            assert workspace_completed.wait(timeout=5.0)
+        return fingerprint
+
+    monkeypatch.setattr(
+        mihomo_reconcile_service,
+        "current_mihomo_input_fingerprint",
+        observe_snapshot_then_allow_real_writer,
+    )
+    try:
+        result = mihomo_reconcile_service.reconcile_mihomo_runtime({"selective_default": "direct"})
+    finally:
+        allow_workspace.set()
+        prewarm_worker.join(timeout=5.0)
+
+    assert not prewarm_worker.is_alive()
+    assert fingerprint_returns >= 2
+    if actor_present:
+        assert workspace_completed.is_set()
+        with db_session() as connection:
+            row = connection.execute(
+                "SELECT runtime_state, apply_state FROM modules WHERE module_name='xray'"
+            ).fetchone()
+        assert tuple(row) == ("running", "pending")
+    else:
+        assert not workspace_completed.is_set()
+
+    # Promotion is reached only after the real final generation revalidation.
+    # The promotion/restart/native boundaries above are sentinels so this test
+    # performs no native action; all fingerprints and the guard are real.
+    assert result.get("error_code") != "MIHOMO_GENERATION_STALE", result
+    assert not actor_present, "incidental prewarm must not invoke the stateful workspace"
+    assert promoted, result
+
+    # Direct, explicit UI workspace reads retain their established Xray status
+    # synchronization behavior. A real concurrent direct read still invalidates
+    # the same actual reconcile guard and is rejected closed.
+    with db_session() as connection:
+        connection.execute(
+            "UPDATE modules SET runtime_state='running', apply_state='clean', status_text='initial' "
+            "WHERE module_name='xray'"
+        )
+    clear_live_probe_cache()
+    promoted.clear()
+    direct_sync_calls = 0
+    direct_fingerprint = mihomo_reconcile_service.current_mihomo_input_fingerprint
+
+    def direct_workspace_after_snapshot(routing=None):
+        nonlocal direct_sync_calls
+        fingerprint = direct_fingerprint(routing)
+        if direct_sync_calls == 0:
+            direct_sync_calls += 1
+            original_workspace()
+        return fingerprint
+
+    monkeypatch.setattr(
+        mihomo_reconcile_service,
+        "current_mihomo_input_fingerprint",
+        direct_workspace_after_snapshot,
+    )
+    direct_result = mihomo_reconcile_service.reconcile_mihomo_runtime({"selective_default": "direct"})
+    assert direct_sync_calls == 1
+    assert direct_result.get("error_code") == "MIHOMO_GENERATION_STALE", direct_result
+    assert direct_result.get("last_good_retained") is True
+    assert direct_result.get("reconcile_action") == "none"
+    assert promoted == []
+    with db_session() as connection:
+        direct_row = connection.execute(
+            "SELECT runtime_state, apply_state FROM modules WHERE module_name='xray'"
+        ).fetchone()
+    assert tuple(direct_row) == ("running", "pending")
 
 
 def test_mihomo_config_status_uses_summary_by_default(monkeypatch, tmp_path: Path) -> None:
