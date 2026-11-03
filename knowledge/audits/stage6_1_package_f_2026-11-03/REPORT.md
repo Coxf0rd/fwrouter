@@ -1,13 +1,13 @@
 # Stage 6.1 Package F — Application Lifecycle & State Ownership
 
-**Status: implementation candidate ready for independent QA; overall Package F acceptance is INCOMPLETE.** This report records local source/tests only. Exact-head hosted push-fast, qualified branch L6, final evidence verification, root review/commit/push and canonical roadmap update remain with the Orchestrator. No production, runtime, or native system was accessed.
+**Status: implementation acceptance VERIFIED at `35ed543295b91363b06a6c69593c2774b7d3f60a`.** Source QA, exact-HEAD push-fast, complete qualified branch L6 and independent offline evidence verification passed. This report records those actual results. The report-only publication commit must receive its own exact-HEAD checks; final publication receipts and overall Package F closure are recorded in the dated owner-local [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md). No production data, deployed native runtime, or system service was accessed.
 
 ## Source identity
 
 - Repository: `/root/fwrouter-approved-main`
 - Branch and baseline: `stage6/backend-completion` at `7800ea857d662f718164f0b2a36872678135e235`
-- Baseline source digests for the initial audit are recorded in the Orchestrator handoff; the final candidate source and documentation digests are listed in [SOURCE_SHA256.txt](SOURCE_SHA256.txt), SHA-256 `84aae00e1068b6f75882e5f05c2a5114a8942be0bf65db51b971a78521e8b03f`. It covers 31 changed source/test/knowledge files and excludes this report, itself, and the protected repository roadmap pointer.
-- The only pre-existing change remains `knowledge/ROADMAP.md`; it was preserved byte-for-byte. Canonical `/решения/roadmap/fwrouter/ROADMAP.md` was not changed by this package.
+- The approved baseline is reproducible from the exact Git commit above; the final candidate source and documentation digests are listed in [SOURCE_SHA256.txt](SOURCE_SHA256.txt), SHA-256 `84aae00e1068b6f75882e5f05c2a5114a8942be0bf65db51b971a78521e8b03f`. It covers 31 changed source/test/knowledge files and excludes this report, itself, and the protected repository roadmap pointer.
+- The only pre-existing change remains `knowledge/ROADMAP.md`; it was preserved byte-for-byte. At candidate freeze, the canonical roadmap was unchanged. Its final dated Package F closure is an owner-local append, preserving every prior byte and unpublished Stage 6A decision.
 
 ## Before and after ownership
 
@@ -96,7 +96,7 @@ Additional checks: `backend/tests/test_offline_maintenance_admission.py` **29 pa
 
 The first broader local composition exposed two test-harness isolation boundaries: the process-execution guard denied `os.fork`, so the recursion regression uses a bounded disposable thread whose test-only Event returns after 0.5s if the guard regresses. The application cache code does not receive this test bound. The first broad run also showed that a prior maintenance lifespan leaves the prewarm stop Event set for later tests. The fixture now reserves the idle admission flag, joins/rechecks a previous worker handle outside its lock, then clears stop only after that worker is dead. This does not clear a live worker's cancellation signal or bypass the production owner. The final focused regression passed with both corrections.
 
-Exact-head GitHub Actions, independent QA and offline artifact verification are **NOT RUN by this writer**; they remain required Package F gates for the Orchestrator. Qualified native/process proof remains reserved for the established hosted L6 profile. No production DB, credentials, native runtime, system service, CI workflow or application runtime was touched.
+Exact-head GitHub Actions, independent QA and offline artifact verification are **NOT RUN by this writer**; they remain required Package F gates for the Orchestrator. Qualified native/process proof remains reserved for the established hosted L6 profile. No production DB, credentials, native runtime, system service, CI workflow or deployed application runtime was touched.
 
 ## Remaining gates and risks
 
@@ -112,3 +112,30 @@ Independent architecture/security/concurrency review **PASSED** against baseline
 Independent isolated runs: lifecycle/scheduler/manager/cache **62 passed**; startup/maintenance admission/prewarm **59 passed**, each with the existing Starlette/httpx deprecation warning. Diff whitespace check **PASS**. The Orchestrator additionally verified the unchanged 212-file gate catalog, all candidate digests, and `installer/check-clean-tree-surface.sh` **PASS**. New helper modules import only standard-library dependencies; no reverse service ownership edge was introduced. The scheduler policy AST check covers 23 unchanged functions in all seven modules after only stop-Event reference normalization.
 
 These source/local checks do not establish hosted acceptance. Commit/push, exact-HEAD push-fast and qualified branch L6, offline evidence verification, and the canonical closure remain pending. No PR, merge, deployment, production operation or Package G work is authorized by this checkpoint.
+
+## Verified implementation acceptance — 2026-11-03
+
+Implementation commit `35ed543295b91363b06a6c69593c2774b7d3f60a` was committed and pushed normally on `stage6/backend-completion`, directly after baseline `7800ea857d662f718164f0b2a36872678135e235`. No amend, force-push, fetch, reset, clean, PR, merge or deployment occurred. The 31-file source manifest remains unchanged from independent source QA. Historical pending statements above describe their original checkpoints and are superseded by these verified results within this scope.
+
+| Gate | Actual evidence | Result |
+|---|---|---|
+| Source architecture/security QA | Independently recomputed 31 digests; lifecycle/worker/manager/cache callers and invariants reviewed | PASSED; no material finding |
+| Local regression | 382 focused + 29 offline-admission tests | PASS |
+| Independent local checks | 62 lifecycle/scheduler/manager/cache + 59 startup/admission/prewarm tests | PASS |
+| Catalog / gate contracts | 212-file manifest; 57 acceptance scenario nodes; 296 gate/acceptance tests | PASS; one explicitly recorded local `/usr/bin/time` capability SKIP |
+| Push-fast | [41635259711](https://github.com/Coxf0rd/fwrouter/actions/runs/41635259711), exact implementation SHA, event `push` | SUCCESS |
+| Complete qualified branch L6 | [41635279732](https://github.com/Coxf0rd/fwrouter/actions/runs/41635279732), attempt 1, exact implementation SHA | SUCCESS, 19/19 jobs |
+| Required test inventory | Immutable plan, manifest `2026.11.03.2` | 211 selected safe files of 212 catalog files; zero selected files NOT RUN |
+| Result coverage | Independently checked `reports/visibility.json` | 3,463 unique IDs, 3,509 executions/PASS; zero FAIL/SKIP/BLOCKED/NOT RUN |
+| L5 contract coverage | Ten required anchors | PASS |
+| Package E current-schema Compose preservation | Actual `test_current_schema_initialization_preserves_control_plane_and_native_state` in both hosted repetitions | PASS in both |
+| Final L6 artifact | `13230876343`, `fwrouter-l6-evidence-35ed543295b91363b06a6c69593c2774b7d3f60a-41635279732-1` | Unexpired; downloaded ZIP digest equals GitHub API digest |
+| Independent offline verification | Orchestrator and separate QA replayed the existing verifier from clean exact-source checkout | `l6_evidence_verified_not_deploy_authorized` |
+
+Artifact SHA-256: `d24ce239f386eeb469e107c0ea7af501869b24e24d55b23c2f61ea6c127e8ffd`. Evidence and independent metadata snapshots are retained locally under `/tmp/fwrouter-package-f-evidence-41635279732/`; clean source is `/tmp/fwrouter-package-f-offline-35ed543`. The separate reviewer re-established workflow/run/attempt, source SHA, event/ref, repository, all 19 job results and artifact metadata with read-only GitHub API calls, recomputed the ZIP digest, and replayed the official verifier independently. The verifier validates embedded source, plan, complete content inventory, required test results and producer evidence. GitHub artifact retention is finite; this receipt does not claim permanent archival.
+
+Qualification scope is `branch-regression-non-promotional`, `minimum_repeats=2`, `deploy_eligibility=false`. Qualified native, packet, provider, browser and recovery evidence retains each existing profile's boundaries. The sole omitted catalog file is the established optional/deferred `tests/application_acceptance/test_xray_worker_crash_l7.py`; it was not executed and is not claimed PASS. No CI policy, inventory exclusion, budget, timeout or security/native assertion was weakened. Stock Docker/host-systemd/reboot parity, production traffic and external-client live acceptance are not inferred.
+
+Residuals remain explicit: a custom loader that never returns can still hold followers; cache TTL does not supply an I/O deadline. No built-in recursive chain was found, while adapter/loader reentry now fails fast. Concurrent app lifespans and active state-root environment switching remain unsupported. These are documented compatibility/availability boundaries, not hidden PASS exemptions.
+
+This report-only closure commit does not change the reviewed 31-file source manifest. Its own exact-HEAD push-fast/L6 and independently verified bundle must pass before the canonical roadmap records overall Package F COMPLETE. That final receipt stays outside the Git tree to avoid a self-referential source SHA. Package G remains NOT STARTED; continue future work on the same stage branch.
