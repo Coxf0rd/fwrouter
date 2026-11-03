@@ -1,5 +1,34 @@
 # Code Index
 
+## Current backend navigation — 2026-11-03
+
+This index locates source responsibilities; a historical `/opt` heading or
+generated flattened filename in an older card is not an import path, deployed
+revision or live acceptance receipt. Backend source lives in
+`backend/fwrouter_api/`; its supported installed package lives under
+`/opt/fwrouter-api/fwrouter_api/`. Use actual source before modifying a card.
+The dated descriptions below remain navigation/history, not a second roadmap.
+
+| Current responsibility | Source owner | Review contract |
+|---|---|---|
+| HTTP/lifespan composition | `main.py`, `services/application_lifecycle.py` | Fixed host lease outside injected lifecycle; process-owned default services. |
+| API admission | `presentation_client_list_admission.py`, `secure_event_read_admission.py`, `control_plane_import_admission.py` | Distinct per-surface credentials/scopes/leases; correlation is not authority. |
+| DB connection/admission | `db/connection.py`, `db/schema_state.py` | Schema 27, no-create observation, explicit fresh initialization; no historical DDL runner. |
+| Schema read cache | `services/database_schema_read_model.py` | Service-owned observation, not a DB→services dependency. |
+| Ordinary event summaries | `services/ordinary_event_read_model.py` | Bounded read projection; secure events retain separate admission/projection. |
+| Apply/Mihomo | `apply_orchestrator*`, `mihomo_config*`, `mihomo_reconcile.py` | Downward internal bindings plus deliberate compatibility aliases; one mutation owner. |
+| Xray generation | `xray_subscription_service.py`, checkpoint/fingerprint, planning/observation/views/staging components | One publication/recovery coordinator; leaves do not acquire settlement authority. |
+| Scheduler lifetime | `services/worker_lifecycle.py` and seven scheduler facades | Separate tick policies, retained live handles; prewarm has its own owner. |
+| Read-model single-flight | `services/live_probe_cache.py` | TTL/invalidation/fences, fail-fast own-flight reentry, caller-owned loader deadline. |
+| Gateway HTTP boundary | `host/libexec/fwrouter/fwrouter-xray-sub-gateway.py` | Narrow capability paths; joined disposable HTTP tests under `installer/tests/`. |
+
+The [endpoint matrix](../../audits/stage6_1_package_g_2026-11-03/ENDPOINT_AUTHORITY_MATRIX.md),
+[all twelve finding dispositions](../../audits/stage6_1_package_g_2026-11-03/FINDING_DISPOSITIONS.md)
+and [closure report](../../audits/stage6_1_package_g_2026-11-03/REPORT.md) connect
+these owners to current evidence and limitations. Canonical planning remains
+owner-local at `/решения/roadmap/fwrouter/ROADMAP.md`; Stage 6A Unified CI & Test
+Architecture remains planned, not an implemented replacement for current CI.
+
 Здесь лежат точечные описания ключевых файлов проекта. Индекс покрывает файлы, которые влияют на boot persistence, dataplane, generated configs, system orchestration и API entrypoints.
 
 Рекомендуемый порядок чтения:

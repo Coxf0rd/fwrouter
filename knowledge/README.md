@@ -1,5 +1,24 @@
 # FWRouter Knowledge
 
+## Current architecture and planning authority — 2026-11-03
+
+The single active roadmap is the owner-local `/решения/roadmap/fwrouter/ROADMAP.md`.
+The versioned [roadmap snapshot](ROADMAP.md) retains older checkpoints; it must
+not replace newer canonical decisions or be read as the latest acceptance state.
+Its existing unpublished pointer change is deliberately preserved separately.
+
+For the current backend source boundaries and all twelve original Stage 6.1
+finding dispositions, use the [Stage 6.1 closure report](audits/stage6_1_package_g_2026-11-03/REPORT.md)
+and [endpoint authority matrix](audits/stage6_1_package_g_2026-11-03/ENDPOINT_AUTHORITY_MATRIX.md).
+The report and dated canonical receipts distinguish source/branch qualification
+from PR/main integration, deployment and live acceptance. Older dated “current”
+checkpoints below and in the project map are historical at their stated dates.
+
+Stage 6A is **Unified CI & Test Architecture, PLANNED**, with independently
+reviewable 6A.1–6A.5 gates in the canonical linked design. It does not implement
+Docker migration. Existing test/CI contracts remain authoritative until a
+reviewed replacement is qualified; this documentation is not that replacement.
+
 This directory contains user-facing and operator-facing project knowledge: installation, API usage, external management, ingress models, troubleshooting, and rule updates.
 
 ## User-Facing Guides

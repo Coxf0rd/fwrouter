@@ -1,6 +1,48 @@
 # FWRouter Architecture
 
-## Approved target architecture — 2026-10-20 (planned, not extraction acceptance)
+## Actual backend source boundary — 2026-11-03
+
+This section describes the current source on `stage6/backend-completion`; it
+makes no claim of main integration, installation or current production state.
+The [Stage 6.1 closure report](../audits/stage6_1_package_g_2026-11-03/REPORT.md)
+contains reviewed source identities and actual test/CI receipts. The single
+active plan is the owner-local `/решения/roadmap/fwrouter/ROADMAP.md`; the
+versioned roadmap is a historical snapshot. Earlier dated target/checkpoint
+blocks below retain their historical meaning.
+
+- HTTP composition remains a trusted-local native API with route-specific
+  scoped admissions and public subscription capabilities. Attribution is not
+  authority. The complete [endpoint matrix](../audits/stage6_1_package_g_2026-11-03/ENDPOINT_AUTHORITY_MATRIX.md)
+  records those different surfaces; current deployed proxy exposure is not
+  established by source loopback defaults.
+- SQLite schema 27 owns durable intent. Only explicit bootstrap/private-candidate
+  initialization creates an absent file. Existing files are admitted without
+  reseeding or automatic repair; historical DDL transitions are retired. Two
+  exact existing legacy schema-27 profiles are retained, with their documented
+  historical FK limitations. [Package E](../audits/stage6_1_package_e_2026-11-03/REPORT.md)
+  defines the support floor, WAL/transaction, backup/import and recovery boundaries.
+- Domain apply/generation owners retain revisions, CAS/fencing, native publication,
+  checkpoint transitions, last-good and forward recovery. Extracted planning,
+  observation, checkpoint/fingerprint and result components do not become new
+  writers. The Xray coordinator is still substantial; physical modularization
+  and completely enforced layer separation are not achieved claims.
+- [Package F](../audits/stage6_1_package_f_2026-11-03/REPORT.md) makes lifecycle
+  coordination explicit over the existing process owners. Settings, jobs,
+  schedulers and observation caches remain one process/state-root lifetime.
+  Seven independent scheduler policies share only worker bookkeeping; prewarm
+  keeps its distinct admission owner. Cache TTL never becomes native proof or
+  a universal loader deadline.
+- [Finding dispositions](../audits/stage6_1_package_g_2026-11-03/FINDING_DISPOSITIONS.md)
+  distinguish resolved seams, retired support, partial architecture work and
+  deferred trust/availability residuals. A green CI receipt alone closes none
+  of those architecture questions.
+
+Stage 6A is now **Unified CI & Test Architecture (PLANNED)**. Its canonical
+[design](/решения/roadmap/fwrouter/designs/STAGE6A_UNIFIED_CI_TEST_ARCHITECTURE.md)
+requires a reviewed audit before execution-contract work; no CI restructuring,
+component extraction or Docker migration is implemented by Stage 6.1 closure.
+
+## Historical approved target architecture — 2026-10-20 (planned, not extraction acceptance)
 
 FWRouter Core is a standalone **native Debian/systemd control plane**, not a
 Docker workload. Core alone owns routing authority, authorized user intent,
@@ -27,14 +69,19 @@ provider APIs, runtime configuration and lifecycle stay separate specialized
 adapters. No mandatory global canonical subscription/config model or universal
 parser is approved; unsupported fields cannot be silently discarded.
 
-Stage6A designs independent Compose projects by functional group, rather than
-one server-wide stack or necessarily one project per container. Core and
-host-critical networking/Rescue/administrative access stay independent of
-Docker. Physical server-wide migrations wait for stable contracts, extraction
-and applicable host/recovery qualification; unrelated service migration is not
-a Stage7 dependency. Late telemetry is a separate Go/Docker module with scoped
-collectors and bounded delivery/backpressure/retention; it has no routing,
-Core SQLite or intent authority. Core is not being migrated to Go.
+The following historical Stage6A wording is preserved as its 2026-10-20 target
+snapshot. The 2026-11-03 canonical Unified CI & Test Architecture decision above
+supersedes its assignment of Compose design to the main Stage6A scope; the
+companion service-ownership audit remains backlog and migration stays deferred.
+
+> Stage6A designs independent Compose projects by functional group, rather than
+> one server-wide stack or necessarily one project per container. Core and
+> host-critical networking/Rescue/administrative access stay independent of
+> Docker. Physical server-wide migrations wait for stable contracts, extraction
+> and applicable host/recovery qualification; unrelated service migration is not
+> a Stage7 dependency. Late telemetry is a separate Go/Docker module with scoped
+> collectors and bounded delivery/backpressure/retention; it has no routing,
+> Core SQLite or intent authority. Core is not being migrated to Go.
 
 Mandatory VPN stays fail-closed, explicit/protected DIRECT is preserved,
 UNKNOWN is distinct from DOWN, and SUCCESS requires applicable fresh native

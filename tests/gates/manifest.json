@@ -6955,6 +6955,33 @@
       "domain": "api-contract",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
+      "fixture_identity": "isolated app construction and reviewed route snapshot; no lifespan, network, deployed verifier or service access",
+      "fixture_owner": "backend/tests/conftest.py",
+      "id": "test_endpoint_authority_inventory",
+      "isolation": "backend isolation bootstrap and disposable test state; app lifespan disabled",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "backend/tests/test_endpoint_authority_inventory.py",
+      "primary_level": "L3",
+      "risk_notes": "complete HTTP route, method, handler, visibility, order and admission inventory; no HTTP requests or live state",
+      "runtime_dependencies": [
+        "Python 3.11",
+        "pytest (project dev constraint)"
+      ],
+      "slow": false,
+      "timeout_seconds": 30,
+      "execution_group": "local-integration"
+    },
+    {
+      "baseline_policy": "exact-node-id; fail on novel/unclassified; historical failures are not exemptions",
+      "destructive": false,
+      "domain": "api-contract",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
       "fixture_identity": "owned disposable host-policy paths, synthetic credentials, isolated API/CLI and SQLite; no deployed verifier or services",
       "fixture_owner": "backend/tests/conftest.py",
       "id": "test_api_client_registry",
@@ -7114,7 +7141,7 @@
       "execution_group": "installer-startup"
     }
   ],
-  "version": "2026.11.03.2",
+  "version": "2026.11.03.3",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",

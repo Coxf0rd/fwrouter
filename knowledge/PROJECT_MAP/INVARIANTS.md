@@ -1,5 +1,23 @@
 # Invariants
 
+## Status interpretation and current persistence boundary — 2026-11-03
+
+Invariant rules remain binding; dated source/production checkpoints below are
+historical at their stated date, even where their headings say “current”.
+Current source review and unrun integration/deployment/live gates are tracked
+in the [Stage 6.1 closure report](../audits/stage6_1_package_g_2026-11-03/REPORT.md)
+and the owner-local canonical roadmap `/решения/roadmap/fwrouter/ROADMAP.md`.
+Do not infer the production revision from this versioned historical map.
+
+Package E retains schema 27 and exact existing-profile admission, WAL-aware
+backup and transaction ownership. Fresh initialization is explicit and
+no-replace; existing databases are never reset, reseeded or automatically
+converted. Historical DDL migration chains are retired. Any future forward
+transition or unsupported-file recovery needs a separately reviewed plan.
+Package F retains process/maintenance leases, cooperative shutdown, live handle
+retention and caller-owned cache invalidation. These are source contracts, not
+a new production verification receipt.
+
 ## Current checkpoint — 2026-10-15
 
 The CI milestone is CLOSED following actual squash/main validation (PR5, main run38363962787). PR8 merged as dabf9f4; PR10 merged/deployed as ffe506e. Production remains ffe506e with the original78 identities restored and API/Gateway recovered. PR11 isolation/redaction fixes are source-only, not deployed: Synthetic Functional Acceptance PASS, Production State Acceptance PARTIAL, controlled external E2E NOT RUN, overall Production Acceptance BLOCKED. These are recorded receipts, not new live probes. Earlier dated checkpoints below are historical where superseded; they do not reopen CI or describe the current held/recovery state.
@@ -24,7 +42,7 @@ Use the [active roadmap](../ROADMAP.md) and [decision register](DECISIONS/ROADMA
 - Emergency Direct is a temporary effective runtime override. Persistent desired VPN, provider intent, selection, and provenance remain intact. Run connectivity probes outside the writer guard; revalidate intent, revision, runtime incarnation, and eligibility before apply/readback and verified re-entry.
 - Default tests use isolated state and bounded resources. Every implementation report states which levels ran and why: affected L0–L4 by contract, L5 for shared/domain contract changes, L6 only at scheduled/manual, milestone, release or explicit policy gates, and L7 only in disposable staging/release acceptance (never normal CI). Follow the [Test Architecture and CI/CD Foundation](TEST_ARCHITECTURE_AND_CICD_FOUNDATION.md).
 - Preserve a minimal CPU/RAM/SSD footprint as an architectural invariant; performance fixes require measurements and before/after evidence.
-- Health schema inspection observes the existing database read-only; initialization/migration remain explicit startup/installer operations. Technical-log queries sanitize every returned record after bounded newest-record selection; optimization must preserve filters, ordering and redaction.
+- Health schema inspection observes the existing database read-only; fresh canonical initialization remains explicit; historical DDL migration chains are retired and future transitions require separate review. Technical-log queries sanitize every returned record after bounded newest-record selection; optimization must preserve filters, ordering and redaction.
 
 - Applied dataplane status observes the live contour and applied manifest/critical markers; it does not repeat candidate syntax validation of the already-applied nft file. Strict native candidate validation remains mandatory in apply/check and candidate-only fallback. Unchanged intent alone never permits skipping runtime readback.
 - Core desired/lifecycle/bypass/import writers advance the durable local `core.intent_revision` fence atomically. The existing reentrant Xray writer guard is the shared Core/native writer exclusion: it is acquired before SQLite transactions and held across global reconcile/apply/commit/proof/settlement, bypass apply/recovery, and Core intent writes. The canonical apply pipeline captures the current revision and binds every successful apply receipt; explicit stale revisions fail before runtime mutation. The route commit rechecks the Core snapshot and final pending→clean settlement requires the same latest owned apply plus fresh native enforcement in unchanged boot and network-namespace context. Legacy apply rows with NULL revision remain unowned for Core admission. Dependent bypass restoration must not overwrite a newer module intent. This is a source contract; it does not imply hosted or production runtime acceptance.

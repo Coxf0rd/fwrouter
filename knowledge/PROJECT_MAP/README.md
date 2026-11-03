@@ -1,5 +1,25 @@
 # Project Map
 
+## Current backend map and status authority — 2026-11-03
+
+The owner-local `/решения/roadmap/fwrouter/ROADMAP.md` is the single active plan.
+[Versioned ROADMAP.md](../ROADMAP.md) and the dated operational checkpoints below
+are historical snapshots, including statements once labelled “current”. They
+are not evidence of today's production version or pending PR state.
+
+The [Stage 6.1 closure report](../audits/stage6_1_package_g_2026-11-03/REPORT.md)
+records source review, exact acceptance identities and remaining gates. Its
+[finding dispositions](../audits/stage6_1_package_g_2026-11-03/FINDING_DISPOSITIONS.md)
+and [endpoint authority matrix](../audits/stage6_1_package_g_2026-11-03/ENDPOINT_AUTHORITY_MATRIX.md)
+are the current bounded backend review. Consult [Architecture](ARCHITECTURE.md)
+for actual ownership versus future target boundaries and [Security](SECURITY_AND_PERMISSIONS.md)
+for caller trust. Source/CI acceptance does not imply deployment or live proof.
+
+Stage 6A's current canonical scope is **Unified CI & Test Architecture**, still
+PLANNED. Historical Compose/service-ownership audit backlog remains separately
+tracked; Docker migration and physical extraction are not implemented here.
+Stage 8/8A contracts still precede Stage 7 extraction.
+
 ## Operational Packages2/3 implementation — current source checkpoint 2026-10-16
 
 PR15 remains DRAFT. Package2 source was qualified at526221c by fullCI38826004751 (1679/0/0), but user explicitly authorized actual Package3 implementation afterward; closure-by-DEFER was corrected. Package3 now implements no-change JSONL output elimination with mandatory full scan and source-drift checks, and existing-helper/chunked Xray subject+override projections. Independent Package3 QA105PASS. Changed-file scrub CPU and batch transient-memory overhead are explicitly measured in the [implementation report](/srv/fwrouter/knowledge/audits/operational_package23_2026-10-16/PACKAGE3_IMPLEMENTATION.md). Conditional chmod and unsupported extra native/I/O candidates remain DEFERRED.
