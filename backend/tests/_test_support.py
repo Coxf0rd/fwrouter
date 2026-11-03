@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import secrets
 from typing import Any
@@ -16,6 +17,38 @@ def configure_test_state_dir(monkeypatch: Any, tmp_path: Path) -> None:
     from fwrouter_api.core.config import get_settings
 
     get_settings.cache_clear()
+
+
+def healthy_bootstrap_report() -> dict[str, object]:
+    """Return the public startup-result shape for isolated lifespan tests."""
+    return {"database_schema": {"ok": True, "status": "ok"}}
+
+
+@contextmanager
+def sqlite_temp_trigger_on_connections(monkeypatch: Any, trigger_sql: str):
+    """Install a TEMP-only SQLite fault trigger after normal schema admission.
+
+    The trigger lives on each test connection, so production schema admission
+    remains strict and the real SQLite constraint failure is still exercised.
+    """
+    from fwrouter_api.db import connection as db_connection
+    from fwrouter_api.services import jobs_retention
+
+    original_connect = db_connection.connect
+
+    def connect_with_fault():
+        connection = original_connect()
+        try:
+            connection.execute(trigger_sql)
+        except Exception:
+            connection.close()
+            raise
+        return connection
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db_connection, "connect", connect_with_fault)
+        patch.setattr(jobs_retention, "connect", connect_with_fault)
+        yield
 
 
 def configure_test_state_dir_and_clear_live_probe_cache(monkeypatch: Any, tmp_path: Path) -> None:
@@ -118,9 +151,6 @@ def database_table_diff(
             "added": [new_index[key] for key in sorted(new_index.keys() - old_index.keys())],
         }
     return changed
-
-
-from contextlib import contextmanager
 
 
 @contextmanager

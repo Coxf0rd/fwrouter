@@ -365,7 +365,7 @@ def test_health_reports_missing_database_without_creating_it(monkeypatch, tmp_pa
 
 
 @pytest.mark.no_database_autoinit
-@pytest.mark.parametrize("schema_version", ["8", "10", "11", "24", "25", "26"])
+@pytest.mark.parametrize("schema_version", ["8", "10", "11", "23", "24", "25", "26"])
 def test_unsupported_version_is_rejected_intact(monkeypatch, tmp_path: Path, schema_version: str) -> None:
     path = _retarget(monkeypatch, tmp_path / "state")
     assert initialize_database()["ok"] is True

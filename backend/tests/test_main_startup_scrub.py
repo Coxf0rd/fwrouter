@@ -9,13 +9,17 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from fwrouter_api import main
-from fwrouter_api.db.connection import db_session
+from fwrouter_api.db.connection import db_session, get_db_path, initialize_database
 from fwrouter_api.jobs.manager import get_default_job_manager
+from _test_support import configure_test_state_dir, healthy_bootstrap_report
 
 
-def test_v21_startup_scrubs_configured_jsonl_before_schedulers(
+def test_current_schema_startup_scrubs_configured_jsonl_before_schedulers(
     monkeypatch, tmp_path: Path
 ) -> None:
+    configure_test_state_dir(monkeypatch, tmp_path)
+    state = initialize_database()
+    assert state["ok"] is True
     operational_dir = tmp_path / "operational"
     technical_dir = tmp_path / "technical"
     operational_dir.mkdir()
@@ -31,12 +35,7 @@ def test_v21_startup_scrubs_configured_jsonl_before_schedulers(
         encoding="utf-8",
     )
 
-    db_path = tmp_path / "already-current.db"
-    with sqlite3.connect(db_path) as connection:
-        connection.execute("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT)")
-        connection.execute(
-            "INSERT INTO schema_meta (key, value) VALUES ('schema_version', '21')"
-        )
+    db_path = get_db_path()
 
     paths = SimpleNamespace(
         operational_log_dir=operational_dir,
@@ -52,13 +51,14 @@ def test_v21_startup_scrubs_configured_jsonl_before_schedulers(
 
     sequence: list[str] = []
 
-    def bootstrap() -> None:
+    def bootstrap() -> dict[str, object]:
         with sqlite3.connect(db_path) as connection:
             version = connection.execute(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version'"
             ).fetchone()[0]
-        assert version == "21"
+        assert version == "27"
         sequence.append("bootstrap")
+        return healthy_bootstrap_report()
 
     actual_scrub = main.scrub_jsonl_files
 
@@ -151,7 +151,7 @@ def test_maintenance_lifespan_skips_bootstrap_registration_and_background_worker
         monkeypatch.setattr(main, name, forbidden(name))
 
     app = main.create_app(enable_startup_tasks=False)
-    route_paths = {route.path for route in app.routes}
+    route_paths = set(app.openapi()["paths"])
     assert "/api/v2/modules/{module_name}/desired-state" in route_paths
     assert "/api/v2/routing/global" in route_paths
 

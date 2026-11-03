@@ -2,7 +2,6 @@ from __future__ import annotations
 from _test_support import configure_test_state_dir_and_clear_live_probe_cache as _configure_env
 
 import json
-import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -1940,115 +1939,49 @@ def test_external_connection_operations_reject_duplicate_system_id_identity(monk
     assert get_external_connection_generated_state("connection-b") is not None
 
 
-def test_external_connection_schema_migration_allows_duplicate_system_id(monkeypatch, tmp_path: Path) -> None:
+def test_current_schema_allows_duplicate_external_system_id_without_migration(
+    monkeypatch, tmp_path: Path,
+) -> None:
     _configure_env(monkeypatch, tmp_path)
-    db_path = tmp_path / "state" / "fwrouter.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    db_path.unlink(missing_ok=True)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE schema_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        connection.execute(
-            "INSERT INTO schema_meta (key, value) VALUES ('schema_version', '11')"
-        )
-        connection.execute(
-            """
-            CREATE TABLE external_connections (
-                connection_id TEXT PRIMARY KEY,
-                system_id TEXT NOT NULL UNIQUE,
-                label TEXT NOT NULL,
-                connection_type TEXT NOT NULL,
-                runtime_type TEXT,
-                replacement_target TEXT,
-                location TEXT NOT NULL DEFAULT 'manual',
-                address TEXT,
-                integration_mode TEXT NOT NULL DEFAULT 'api_push',
-                refresh_mode TEXT NOT NULL DEFAULT 'on_change',
-                enabled INTEGER NOT NULL DEFAULT 1,
-                value_json TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                last_seen_at TEXT
-            )
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO external_connections (
-                connection_id, system_id, label, connection_type, runtime_type,
-                replacement_target, location, address, integration_mode, refresh_mode,
-                enabled, value_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "connection-a",
-                "shared-system",
-                "Connection A",
-                "external_management",
-                "provider-a",
-                "",
-                "manual",
-                "",
-                "api_push",
-                "on_change",
-                1,
-                json.dumps(
-                    {
-                        "connection_id": "connection-a",
-                        "system_id": "shared-system",
-                        "label": "Connection A",
-                        "connection_type": "external_management",
-                        "runtime_type": "provider-a",
-                    }
-                ),
-            ),
-        )
-        connection.execute(
-            """
-            CREATE TABLE external_connection_generated_state (
-                connection_id TEXT PRIMARY KEY,
-                state_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO external_connection_generated_state (connection_id, state_json)
-            VALUES (?, ?)
-            """,
-            ("connection-a", json.dumps({"connection_id": "connection-a", "artifact": "old"})),
-        )
+    first = initialize_database()
+    assert first["ok"] is True
 
-    initialize_database()
-    upsert_external_connection_record(
-        {
-            "connection_id": "connection-b",
-            "system_id": "shared-system",
-            "label": "Connection B",
-            "connection_type": "external_management",
-            "runtime_type": "provider-a",
-        }
+    original = {
+        "connection_id": "connection-a",
+        "system_id": "shared-system",
+        "label": "Connection A",
+        "connection_type": "external_management",
+        "runtime_type": "provider-a",
+    }
+    duplicate = {
+        "connection_id": "connection-b",
+        "system_id": "shared-system",
+        "label": "Connection B",
+        "connection_type": "external_management",
+        "runtime_type": "provider-a",
+    }
+    upsert_external_connection_record(original)
+    upsert_external_connection_generated_state(
+        "connection-a", {"artifact": "preserved-generated-state"},
     )
+
+    second = initialize_database()
+    assert second["ok"] is True
+    upsert_external_connection_record(duplicate)
 
     shared = [item for item in list_external_connections() if item["system_id"] == "shared-system"]
     assert [item["connection_id"] for item in shared] == ["connection-a", "connection-b"]
-    assert get_external_connection_generated_state("connection-a")["artifact"] == "old"
+    assert get_external_connection_generated_state("connection-a")["artifact"] == (
+        "preserved-generated-state"
+    )
     with db_session() as connection:
+        version = connection.execute(
+            "SELECT value FROM schema_meta WHERE key='schema_version'",
+        ).fetchone()["value"]
         table_sql = connection.execute(
-            """
-            SELECT sql
-            FROM sqlite_master
-            WHERE type = 'table' AND name = 'external_connections'
-            """
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='external_connections'",
         ).fetchone()["sql"].lower()
+    assert version == "27"
     assert "system_id text not null unique" not in table_sql
 
 

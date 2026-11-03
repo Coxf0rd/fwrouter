@@ -117,3 +117,70 @@ Independent architecture/security/data-integrity QA **PASSED** on source manifes
 The Orchestrator independently repeated the final synthetic native-proof/generation/recovery matrix: **277 passed in 21.88 seconds**. The actual fresh initializer was compared again against the approved baseline: all 47 SQLite tables (46 user tables), 129 objects, exact DDL, column/default/PK/FK/index metadata and seed semantics matched; integrity was `ok`, FK violations zero, and repeat initialization preserved database bytes. Syntax/Ruff F,E9 for all 27 changed/new Python files, the 212-file test catalog, clean-surface guard and diff check passed.
 
 Qualified hosted/native profiles and final exact-HEAD branch L6 remain pending at this documentation checkpoint; the canonical owner-local roadmap will record their actual run and offline verification separately. Earlier local gate evidence remains explicitly PARTIAL because `/usr/bin/time` is unavailable. Source/local tests do not imply PR/main/release, deployment or production acceptance. No PR, merge, deployment, production SQLite/native/service access or mutation occurred. Packages F and G are not started; subsequent Stage 6.1 work continues on the same persistent branch.
+
+## Hosted L6 fixture follow-up — 2026-11-03
+
+The hosted L6 run `41540068872` on committed source `746c49f` reported seven failures in six requested test files. They exposed fixtures that still assumed historical schema-21/11 automatic upgrades, returned `None` from mocked startup bootstrap, initialized the missing-database probe through a writer session, or installed persistent main-schema triggers that the new strict schema admission correctly rejects on subsequent connections. No application contract bug was established by these failures.
+
+The follow-up updates only tests and shared test support:
+
+- Startup scrub and shutdown tests now provide the established healthy bootstrap result shape; startup scrub uses a freshly initialized schema-27 database and asserts its version while retaining scrub-before-scheduler and redaction assertions.
+- The duplicate external `system_id` case now initializes current schema 27 twice, stores two independent connections with the same system ID, and confirms generated state survives. It no longer asserts the retired schema-11 automatic migration behavior.
+- The `no_database_autoinit` route test creates an isolated SQLite fixture directly, observes it with raw read-only SQLite, and checks response, table identity, database bytes, and mode remain unchanged.
+- Three transactional failure tests use connection-local TEMP triggers installed only after the ordinary current-schema admission. They still require a real SQLite `IntegrityError`, verify job/retention rollback and preserved orphan files, and retry after the temporary fault is removed. No persistent main-schema trigger is introduced.
+- A route-list assertion uses the generated OpenAPI path map to remain compatible with FastAPI's router representation while preserving the same two route-presence checks.
+
+Targeted verification from `backend/`:
+
+`/tmp/fwrouter-private-test-venv/bin/python -m pytest -q tests/test_main_startup_scrub.py tests/test_lifespan_shutdown.py tests/test_ui_state.py tests/test_state_routes.py tests/test_job_manager.py tests/test_jobs_retention.py` — **PASS: 92 passed**, one existing Starlette/httpx deprecation warning. The initial run exposed two fixture issues (new FastAPI included-router shape and raw SQLite tuple rows); both were corrected without changing application behavior or relaxing assertions.
+
+`git diff --check` — **PASS**. No production DB, app runtime, native runtime, workflow/gate, or catalog change was made. The exact-hosted L6 run has not yet been repeated on these follow-up sources; the previous L6 result remains failed until a fresh exact-head hosted run proves otherwise.
+
+Updated `SOURCE_SHA256.txt` now covers 49 entries, including the seven changed test/support files. Manifest SHA-256: `750b9b3e16bf667c810e9b59da5bb63dde25c52166cbfae91f5f807c31e416f4`. This follow-up manifest is a local candidate record, not hosted acceptance evidence.
+
+## Second hosted-L6 fixture follow-up — 2026-11-03
+
+The retained exact-head L6 evidence for run `41540068872` showed three additional fixture categories:
+
+- In `local-integration`, `test_offline_rebuild_rejects_unexported_durable_rows_before_backup[True]` and the custom-trigger rebuild case attempted to export from a database after adding a schema object that is now correctly refused by strict admission.
+- Both hosted ordinary Compose repetitions (`hosted-125602282690.json` and `hosted-125602282932.json`) failed the old `test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state`; each had 29 passing nodes and that one unsupported migration expectation failed because initialization returned schema-version 23 as not admitted. The qualified QCP/Xray and packet/provider scenarios passed in that run.
+
+The local offline fixtures now export their snapshot from canonical schema before adding an unexported future table or custom trigger. The durable-table preflight continues to reject before backup. For triggers, strict backup validation surfaces its established sanitized `DATABASE_REBUILD_BACKUP_INVALID` boundary; the test still checks one retained backup, unchanged source logical digest, original trigger presence, and `integrity_check=ok`. A second parameter introduces a harmless additive non-unique index, which is valid for existing schema observation but must still fail the exact source-to-candidate object comparison with `DATABASE_REBUILD_SCHEMA_OBJECTS_UNSUPPORTED`. This retains both strict admission and rebuild schema-equality coverage.
+
+The obsolete schema-23 migration test is replaced by exact current-schema idempotence coverage. It creates synthetic provider binding/credential rows, a Core intent revision, server and user routing overrides, external generated state, and subscription identity/alias/credential rows. It snapshots every SQLite table and its columns, requires exact equality after each of two initializations, checks SQLite integrity and foreign keys, then verifies loaded native Xray identities remain unchanged after the isolated worker restarts. The helper no longer permits historical Core apply-state invalidation. Schema 23 was also added to the isolated unsupported-version byte-preservation cases.
+
+The acceptance node changed from `test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state` to `test_current_schema_initialization_preserves_control_plane_and_native_state`. Its source-derived `scenarios.json` entry was regenerated using `tests/acceptance/source_catalog.py --write`; the fixed diagnostic node set and corresponding gate contract were updated to the same node. No scenario count, profile, budget, exclusion, Docker definition, or native check was changed.
+
+Verification:
+
+- Full `test_offline_maintenance_admission.py` and `test_database_schema_lifecycle.py` — **PASS: 65 passed**, including both custom-object branches and schema-23 rejection.
+- The six-file L6 fixture compatibility suite — **PASS: 92 passed**, one existing Starlette/httpx deprecation warning.
+- With pinned Ruff on PATH, `tests/gates/test_gate_contract.py tests/gates/test_acceptance_contract.py` — **PASS: 296 passed, 1 skipped**, five existing unknown `pytest.mark.browser` warnings. The skip is the existing local `/usr/bin/time` child-runner capability skip; no gate condition was changed.
+- Pinned Ruff F/E9 for changed Python files, JSON parsing of `tests/acceptance/scenarios.json`, and Python compilation of the acceptance test and launcher — **PASS**. `git diff --check` — **PASS**.
+- The Compose acceptance test was **NOT RUN locally** because its contract requires the qualified hosted isolated Compose/native environment. The previous hosted L6 remains failed evidence until the next exact-head run.
+
+The updated source manifest covers 54 source entries. Its SHA-256 is `51619591cba4ab7e2ab67fd45fb16d467e46a78a92bf7e59c4cdfe1e52b5f6de`. This local report/manifest does not supersede the retained hosted failed artifacts or claim hosted acceptance.
+
+### Qualified fixture setup review correction
+
+Independent review found the Compose `_prepare_db` fixture seeds the current schema, module rows, and routing state but no subjects. The preservation scenario now creates its own `lan:acceptance-preserve` LAN subject (`subject_role=lan_client`, `implementation_kind=lan`) and matching `subject_lan` detail using the locally administered `02:00:00:00:00:27` MAC and documentation-range `192.0.2.27` address. It adds a test-owned active server, then binds both subject override rows to this owned LAN subject; it does not select the protected global subject or a mandatory VPN client.
+
+The Core revision fixture no longer writes the revision value directly. With the worker stopped, it verifies the seeded Core row is enabled/clean, records a controlled disabled/pending Core intent change in the same owned SQLite transaction, and calls `services.core_intent.advance_core_intent_revision(connection)`. The returned nonzero revision and pending Core state are then covered by the full before/after table-and-row equality check. Fixture writes run with foreign keys enabled; both integrity and FK checks pass before the first repeated initialization as well as after it. Loaded native Xray identities remain a separate read-only before/after assertion; the fixture does not claim the pending intent was applied or proven by native state.
+
+A disposable schema-27 fixture check, without Compose or native runtime, exercised the same SQL rows and Core revision owner against a temporary database and passed exact row preservation plus FK/integrity checks. The first scratch checker compared `sqlite3.Row` results directly to tuples and failed in the checker; its readback was corrected to normalize rows before comparison, then the disposable check passed. No repository assertion or application behavior was relaxed.
+
+The final fixture-description edit changed the source-derived scenario contract, so the first focused gate-contract attempt correctly detected a stale generated `scenarios.json`. The source catalog was regenerated; its 57-node validation and the fixed four-node diagnostic contract test then passed. Final static checks and `git diff --check` passed on that regenerated catalog.
+
+### Exact acceptance-body QA probe
+
+Independent review found the acceptance function uses `sqlite3.Row` for its pre-initialization snapshot (needed by the Core intent owner), but tuple rows for the later raw SQLite snapshots. The shared `_database_rows` helper now converts each result row to a tuple before digesting, so its complete columns and values compare uniformly across connection configurations. The `integrity_check` result is likewise normalized when read through the row-factory connection; its real `ok` result remains required.
+
+The retained [probe script](probe_current_schema_acceptance_fixture.py) imports and calls the actual acceptance test function and actual `application_acceptance.conftest._prepare_db` against a temporary owned state directory. It stubs only worker process lifecycle, native identity reads, and HTTP response transport; it starts no Compose stack, API service, Xray, or Mihomo runtime. Its output is **PASS** for the entire SQL/init/row-preservation test body, including FK/integrity and Core revision assertions. Its synthetic identity-read assertion is fixture wiring only and is not native proof; the qualified hosted Compose test remains required for real loaded-identity before/after verification.
+
+Command: `/tmp/fwrouter-private-test-venv/bin/python knowledge/audits/stage6_1_package_e_2026-11-03/probe_current_schema_acceptance_fixture.py` — **PASS**. This probe reproduces the actual `_prepare_db` shape and executes the actual body; it is not a replacement acceptance node or hosted evidence.
+
+## Resumed follow-up QA checkpoint
+
+Final fixture-only follow-up QA **PASSED** on 54-entry source manifest `51619591cba4ab7e2ab67fd45fb16d467e46a78a92bf7e59c4cdfe1e52b5f6de`. The reviewer independently executed the retained probe, which calls the actual `_prepare_db` and full current-schema acceptance function, and verified all source digests/deletions. The probe passed all real SQLite assertions, normalizing `sqlite3.Row` values to tuples for exact snapshots and the actual integrity result. Worker lifecycle, native identity reads and HTTP transport alone were stubbed; this is not native/Compose evidence. The 57-node scenario catalog, fixed diagnostic-node contract and diff check also passed. The prior independent 157-test backend/lifecycle/offline follow-up run remains applicable to unchanged files.
+
+No application code, workflow, gate condition, schema validation, compatibility profile, resource limit or binary pin was changed by this follow-up. The existing failed hosted run remains historical evidence. Package E remains **INCOMPLETE** until the new exact-HEAD push-fast and complete qualified branch L6 succeed, the actual Compose case passes there, and independent offline verification accepts the complete bundle.

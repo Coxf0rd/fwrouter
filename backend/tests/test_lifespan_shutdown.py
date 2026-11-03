@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 from fwrouter_api import main
+from _test_support import healthy_bootstrap_report
 
 
 def test_lifespan_signals_all_components_before_shared_join_budget(monkeypatch) -> None:
@@ -13,7 +14,11 @@ def test_lifespan_signals_all_components_before_shared_join_budget(monkeypatch) 
 
     monkeypatch.setattr(main, "resume_runtime_read_models_prewarm", lambda: True)
     startup_calls: list[str] = []
-    monkeypatch.setattr(main, "bootstrap_backend", lambda: startup_calls.append("bootstrap"))
+    def bootstrap():
+        startup_calls.append("bootstrap")
+        return healthy_bootstrap_report()
+
+    monkeypatch.setattr(main, "bootstrap_backend", bootstrap)
     monkeypatch.setattr(main, "scrub_jsonl_files", lambda _paths: startup_calls.append("scrub"))
     monkeypatch.setattr(
         main,

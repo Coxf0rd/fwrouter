@@ -12,6 +12,7 @@ from pathlib import Path
 
 from fwrouter_api.db.connection import db_session
 from fwrouter_api.jobs.manager import JobManager
+from _test_support import sqlite_temp_trigger_on_connections
 from fwrouter_api.services.apply_orchestrator import (
     INTENT_SET_GLOBAL_MODE,
     submit_apply_mutation,
@@ -519,13 +520,12 @@ def test_sqlite_terminal_event_insert_abort_rolls_back_and_retry_succeeds(
     initialize_database()
     job = create_job("terminal_insert_abort_probe")
     mark_job_running(job["job_id"])
-    with db_session() as connection:
-        connection.execute(
-            """CREATE TRIGGER reject_terminal_snapshot BEFORE INSERT ON operational_logs
-               WHEN NEW.event_type = 'job.terminal_outcome'
-               BEGIN SELECT RAISE(ABORT, 'test terminal event insert failure'); END"""
-        )
-    try:
+    with sqlite_temp_trigger_on_connections(
+        monkeypatch,
+        """CREATE TEMP TRIGGER reject_terminal_snapshot BEFORE INSERT ON operational_logs
+           WHEN NEW.event_type = 'job.terminal_outcome'
+           BEGIN SELECT RAISE(ABORT, 'test terminal event insert failure'); END""",
+    ):
         with pytest.raises(sqlite3.IntegrityError, match="test terminal event insert failure"):
             mark_job_success(job["job_id"], result={"ok": True})
         with db_session() as connection:
@@ -535,15 +535,11 @@ def test_sqlite_terminal_event_insert_abort_rolls_back_and_retry_succeeds(
             assert connection.execute(
                 "SELECT COUNT(*) FROM operational_logs WHERE event_type = 'job.terminal_outcome'"
             ).fetchone()[0] == 0
-            connection.execute("DROP TRIGGER reject_terminal_snapshot")
-        assert mark_job_success(job["job_id"], result={"ok": True})["status"] == "success"
-        with db_session() as connection:
-            assert connection.execute(
-                "SELECT COUNT(*) FROM operational_logs WHERE event_type = 'job.terminal_outcome'"
-            ).fetchone()[0] == 1
-    finally:
-        with db_session() as connection:
-            connection.execute("DROP TRIGGER IF EXISTS reject_terminal_snapshot")
+    assert mark_job_success(job["job_id"], result={"ok": True})["status"] == "success"
+    with db_session() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM operational_logs WHERE event_type = 'job.terminal_outcome'"
+        ).fetchone()[0] == 1
 
 
 def test_concurrent_terminal_calls_and_stale_cleanup_emit_only_winning_snapshot(
