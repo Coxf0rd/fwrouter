@@ -1,6 +1,6 @@
 # Stage 6.1 Package G — Security Boundaries & Backend Architecture Closure
 
-**Status: candidate review; Package G and final E+F+G branch readiness are INCOMPLETE until the recorded QA, exact-HEAD branch CI and offline evidence gates pass.** No PR, merge, deployment or production verification is included. The owner-local canonical roadmap will receive the actual final publication receipt only after those gates; it is not pre-recorded here.
+**Status: implementation acceptance VERIFIED at `b58f44ca3a60c864a179a33fabacb43b8c882f8c`.** Independent source QA, exact-HEAD push-fast/full branch L6 and the official independent offline verification passed. The report-only publication commit still requires its own exact-HEAD qualification; only after those checks will the owner-local [canonical roadmap](/решения/roadmap/fwrouter/ROADMAP.md) record the final Package G/branch-readiness receipt. No PR, merge, deployment or production verification is included.
 
 ## Source and authority
 
@@ -113,3 +113,47 @@ The regression compiles and executes the actual nested `post_apply` body with ow
 Local combined gate contracts **297 passed,1 skipped**, five existing marker warnings,22.65s with already-installed hash-locked Ruff0.17.0 on PATH. The same command's initial run without that PATH had296PASS/1SKIP/1FAIL due to missing Ruff; the final result is execution after restoring the required tool environment, not an exemption or assertion change. The skip remains local `/usr/bin/time` capability. Acceptance contracts alone192PASS;57scenario nodes remain unchanged and no regeneration was needed. Ruff F/E9, compilation and diff checksPASS. This correction improves evidence on recurrence; it does not establish or fix the unknown historical reconcile cause from41674572830.
 
 Independent diagnostic follow-up QA **PASSED** on the complete14-entry source manifest SHA-256 `a86423f6c34c167bb30776067815e39ff35caacc1c066d1ed9aedbfa21fae23c`. The reviewer independently checked every digest, unchanged application/host/installer/workflow source and protected pointer, unchanged assertions/timeouts/await order, bounded no-follow identity/offset reads and closed failure-only output. It executed the real nested-helper regression via `test_acceptance_contract.py`: **192 passed**, five existing marker warnings,19.55s. The import adds no test-module cycle or startup side effect. Failed packet-r1/r2 ZIP metadata/digests were independently verified; the historical nested cause remains unknown. New exact-HEAD hosted acceptance remains pending.
+
+## Verified implementation acceptance — 2026-11-04
+
+Published source `b58f44ca3a60c864a179a33fabacb43b8c882f8c` follows initial G commit `34182141dd8bf317c015fc885bfbe1544399027f` on the existing stage branch. Both commits were normal forward commits/pushes; no amend, reset, clean, fetch, force-push, PR, merge or deployment occurred. The implementation and diagnostic candidate's14-entry source manifest remains `a86423f6c34c167bb30776067815e39ff35caacc1c066d1ed9aedbfa21fae23c`. Package G changes no application/host/installer/workflow/schema/auth-policy implementation.
+
+| Gate | Exact-source evidence | Result |
+|---|---|---|
+| Independent architecture/security QA | Reviewed authority matrix, all12dispositions and corrected14-entry candidate;126admission/inventory tests plus192diagnostic-contract tests in separate reviewed runs | PASSED; earlier inventory finding fixed/rechecked |
+| Push-fast | [41678043811](https://github.com/Coxf0rd/fwrouter/actions/runs/41678043811), event push, exact b58f44c | SUCCESS |
+| Complete qualified branch L6 | [41678048074/1](https://github.com/Coxf0rd/fwrouter/actions/runs/41678048074), workflow_dispatch, exact b58f44c | SUCCESS,19/19jobs |
+| Complete required inventory | Immutable manifest `2026.11.03.3` | 212selected safe files of213catalog; zero selected files NOT RUN |
+| Results | Original producer evidence plus independently replayed `reports/visibility.json` | 3,489unique IDs;3,535executions/PASS; zeroFAIL/SKIP/BLOCKED/NOT RUN |
+| Required L5 anchors | Ten contract anchors | PASS |
+| Packet startup/admission contract | Both independent packet repetitions, including previously failing test | Both4/4PASS; no assertion, timeout or guard weakening |
+| Final bundle | Artifact13251838013, `fwrouter-l6-evidence-b58f44ca3a60c864a179a33fabacb43b8c882f8c-41678048074-1` | Unexpired; API digest equals downloaded ZIP |
+| Strict offline replay | Official verifier from clean detached exact-source checkout | `l6_evidence_verified_not_deploy_authorized` |
+
+ZIP SHA-256: `3f2af9e49ec5f366be0143cca40365699b08e2359e4234c7b388f8202728d4b4`. The Orchestrator independently established repository/workflow/event/ref/run/attempt/source expectations using GitHub metadata, verified19successful jobs and the unique matching artifact, checked ZIP digest/path safety, and replayed the unmodified trusted verifier from `/tmp/fwrouter-package-g-offline-b58f44c`. The replay validates complete content hashes, plan and inventory union, original required producer evidence, distinct repeats, native/build/runtime/source bindings, safe recovery and observed results. Evidence is retained locally at `/tmp/fwrouter-package-g-evidence-41678048074/`; GitHub retention remains finite. No bundled verifier code was executed as an authority.
+
+The already completed independent source/security reviews remain PASSED for the unchanged14-file candidate. An attempted additional closing agent review was unavailable because the service reported a usage limit; no new agent artifact replay or closing verdict is claimed. Offline evidence verification above was independently performed by the Orchestrator outside the CI producer using the official exact-source verifier and external metadata. This note does not replace or relabel an unperformed review. This publication update changes only factual report text, with final Orchestrator review; it introduces no new architecture/code candidate.
+
+Qualification is `branch-regression-non-promotional`, minimum_repeats2, deploy_eligibility=false. The existing optional/deferred `tests/application_acceptance/test_xray_worker_crash_l7.py` is the only immutable-plan omission, not an executed test. Local `/usr/bin/time` SKIP stays recorded; the selected hosted result has zeroSKIP. Current-schema Compose preservation, qualified native/process, packet, provider, browser and recovery retain their existing profile boundaries.
+
+Initial run41674572830 remains FAIL. Its unexplained packet setup failure is **not fixed or explained** by later PASS. Current complete qualification is evidence for b58f44c only; diagnostic observability changed, application behavior and all native/fencing acceptance predicates did not. Recurrence must fail the gate and be investigated using the retained bounded context, not bypassed by retries or weaker expectations.
+
+## Final dispositions and blocking versus accepted residual risks
+
+All12source dispositions in [FINDING_DISPOSITIONS.md](FINDING_DISPOSITIONS.md) remain unchanged after independent review: F03/F05/F06/F07/F08/F09/F11/F12 RESOLVED within their stated seams; F02 RETIRED BY SUPPORT POLICY without historical repair; F04/F10 PARTIALLY ADDRESSED; F01 DOCUMENTED with broader policy DEFERRED. The following classification applies specifically to opening the single E+F+G source-review PR, not to merge, deployment or public security certification.
+
+| Item | Classification for final PR opening | Boundary and required follow-up |
+|---|---|---|
+| Failed/missing final-source required CI, invalid/incomplete evidence, unreviewed implementation changes | **BLOCKING** until satisfied | Final publication must have its own exact-HEAD push-fast/L6, complete verified bundle and unchanged reviewed candidate; never reuse another SHA as if it were current. |
+| Known current reproducible security/persistence/native/lifecycle regression | **BLOCKING** | None established by the current source review and complete b58f44c qualification. Any later demonstrated regression reopens the gate. |
+| F01 trusted-local uncredentialed management and unverified deployed proxy reachability | **ACCEPTED RESIDUAL for the preserved source policy** | Not a claim of safe public exposure. New global auth/public management needs separate policy; deployed reachability and protection are mandatory pre-deploy/live decisions. |
+| F04 remaining coordinator/deferred compatibility coupling | **ACCEPTED TECHNICAL DEBT** | Bounded extracted contracts retain one native publication/recovery owner; further physical modularization/refactor is separate work. |
+| F10 custom nonreturning loader, caller-owned deadlines | **ACCEPTED AVAILABILITY RESIDUAL** | Same-key reentry/abort propagation are addressed; no universal wait deadline or stale native-proof fallback is invented. New loaders must define supported termination/deadline semantics. |
+| Historical packet setup failure41674572830, underlying cause UNKNOWN | **ACCEPTED HISTORICAL QUALIFICATION RISK for PR review; NOT FIXED** | Preserve failed evidence. No source regression attribution is proved; current complete run passed both unchanged-predicate cohorts. Any recurrence blocks that run and requires diagnosis, not a flaky-test exemption. |
+| Exact legacy schema-27 profiles lack three historical routing FKs | **ACCEPTED COMPATIBILITY LIMIT under Package E policy** | Exact profiles only; no broadened admission, reset or conversion. Verify actual schema/data under the separately authorized pre-deploy procedure. |
+| Pre-27, unknown hybrid, partial/corrupt DB or unsupported live state | **BLOCKING for that installation/deployment**, not a new source migration task | Fail closed/intact; separately reviewed recovery or future transition is required. Source closure does not assert a production DB was inspected. |
+| One process/state-root lifetime; overlapping active lifespans/root switching unsupported | **ACCEPTED SUPPORTED-MODEL LIMIT** | No multi-root/embedding guarantee or new global owner is introduced. |
+| Optional L7, host/systemd/reboot parity, production native/services/timers and external VPN E2E not verified here | **SEPARATE ACCEPTANCE GATES** | Not blockers to source PR opening under the existing branch profile; they remain blockers where required for release/production acceptance. No PASS is inferred. |
+| Actual PR checks, owner merge and actual-main qualification | **NOT RUN; later integration gates** | Opening a PR is not merge readiness. Full mandatory PR CI at its final source, owner-only Squash and Merge, and actual-main checks remain required. |
+
+The implementation is eligible for the final PR review within these boundaries. Overall branch readiness remains pending the report-only publication commit's exact-HEAD qualification and canonical final receipt. The documented unknown packet cause and policy/technical residuals are not erased by that future receipt.
