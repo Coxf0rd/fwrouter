@@ -4981,6 +4981,181 @@ class AcceptanceContractTests(unittest.TestCase):
             unknown_text = json.dumps(projected_untrusted, sort_keys=True)
             for secret in ("secret-code", "token-secret", "private-stage", "never include"):
                 self.assertNotIn(secret, unknown_text)
+
+    def test_packet_post_apply_includes_only_bounded_failure_diagnostics(self):
+        packet_tree = ast.parse(PACKET_ACCEPTANCE_SOURCE.read_text(encoding="utf-8"),
+                                filename=str(PACKET_ACCEPTANCE_SOURCE))
+        owner = next(
+            node for node in packet_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_run_verified_legacy_startup_lifecycle"
+        )
+        post_apply = next(
+            node for node in owner.body
+            if isinstance(node, ast.FunctionDef) and node.name == "post_apply"
+        )
+        imports = [node for node in packet_tree.body
+                   if isinstance(node, ast.ImportFrom) and node.module == "test_xray_generation"]
+        self.assertEqual(1, len(imports), "packet helper must explicitly import the reviewed diagnostic readers")
+        self.assertEqual(
+            {"_snapshot_provider_worker_logs", "_safe_mihomo_reconcile_diagnostics_since"},
+            {alias.name for alias in imports[0].names},
+        )
+
+        diagnostic_path = Path(__file__).parents[1] / "application_acceptance" / "test_xray_generation.py"
+        diagnostic_tree = ast.parse(diagnostic_path.read_text(encoding="utf-8"),
+                                    filename=str(diagnostic_path))
+        wanted = {
+            "_PROVIDER_WORKER_LOG_PREFIX", "_MIHOMO_RECONCILE_WORKER_LOG_PREFIX",
+            "_PROVIDER_WORKER_LOG_MAX_FILES", "_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES",
+            "_PROVIDER_WORKER_LOG_PREFIXES", "_MIHOMO_RECONCILE_STAGES",
+            "_MIHOMO_RECONCILE_ERROR_CODES", "_MIHOMO_RECONCILE_REASONS",
+            "_MIHOMO_RECONCILE_ACTIONS", "_MIHOMO_RECONCILE_EVENTS",
+            "_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES",
+            "_snapshot_provider_worker_logs", "_provider_worker_records_since",
+            "_safe_mihomo_reconcile_diagnostics_since",
+        }
+        selected = []
+        for node in diagnostic_tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name in wanted:
+                selected.append(node)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                names = ({target.id for target in node.targets if isinstance(target, ast.Name)}
+                         if isinstance(node, ast.Assign)
+                         else ({node.target.id} if isinstance(node.target, ast.Name) else set()))
+                if names & wanted:
+                    selected.append(node)
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-post-apply-diagnostic-") as tmp:
+            root = Path(tmp)
+            log = root / "uvicorn-123.log"
+            log.write_bytes(b"")
+            calls = {"http": [], "await": [], "read": []}
+            stack = {"root": root}
+            namespace = {
+                "__builtins__": __builtins__, "Any": Any, "Path": Path,
+                "os": os, "stat": stat, "re": re, "json": json,
+                "stack": stack, "api": "http://127.0.0.1/api/v2",
+                "_http_mode": "success", "_await_mode": "success",
+                "_append_worker_record": None,
+            }
+            module = ast.Module(body=[*selected, post_apply], type_ignores=[])
+            exec(compile(module, str(PACKET_ACCEPTANCE_SOURCE), "exec"), namespace)
+
+            reader = namespace["_safe_mihomo_reconcile_diagnostics_since"]
+            def tracked_reader(*args):
+                calls["read"].append(args[1])
+                return reader(*args)
+
+            namespace["_safe_mihomo_reconcile_diagnostics_since"] = tracked_reader
+
+            def append_failure(*, stage="inventory_generation_admission", error_code="MIHOMO_PROXYSET_EMPTY",
+                               private="SECRET_SENTINEL"):
+                record = {
+                    "schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
+                    "event": "failure_result_input",
+                    "summary": {
+                        "ok": False, "stage": stage, "error_code": error_code,
+                        "reconcile_action": "none", "reconcile_reason": "inventory_generation_stale",
+                        "validation": {"ok": False, "returncode": 1,
+                                       "error_code": "MIHOMO_PROXYSET_EMPTY", "stderr": private},
+                        "private": private,
+                    },
+                }
+                with log.open("ab") as stream:
+                    stream.write(namespace["_MIHOMO_RECONCILE_WORKER_LOG_PREFIX"].encode("ascii"))
+                    stream.write(json.dumps(record).encode("ascii") + b"\n")
+
+            def http_json(url, *, method, payload, timeout):
+                calls["http"].append((url, method, payload, timeout))
+                if namespace["_append_worker_record"]:
+                    namespace["_append_worker_record"]()
+                if namespace["_http_mode"] == "failure":
+                    return 200, {"ok": False, "error": {"code": "MIHOMO_RECONCILE_FAILED"}}
+                return 200, {"ok": True, "data": {"job_id": "owned-fixture-job"}}
+
+            def await_job(api, result):
+                calls["await"].append((api, result))
+                if namespace["_append_worker_record"]:
+                    namespace["_append_worker_record"]()
+                return {"status": "failed" if namespace["_await_mode"] == "failure" else "success"}
+
+            namespace.update({"http_json": http_json, "await_job": await_job})
+
+            # Successful calls preserve the existing 45-second request and
+            # await-job behavior, and do not inspect worker logs.
+            namespace["_http_mode"] = "success"
+            namespace["_await_mode"] = "success"
+            namespace["_append_worker_record"] = None
+            job = namespace["post_apply"]({"mode": "direct"})
+            self.assertEqual("success", job["status"])
+            self.assertEqual(45, calls["http"][-1][3])
+            self.assertEqual(1, len(calls["await"]))
+            self.assertEqual([], calls["read"])
+
+            # A pre-call record is outside the captured offset. Only the
+            # current failed request contributes closed, bounded facts.
+            append_failure(stage="generation_fence", error_code="MIHOMO_GENERATION_STALE")
+            namespace["_http_mode"] = "failure"
+            namespace["_append_worker_record"] = lambda: append_failure(
+                stage="inventory_generation_admission", error_code="MIHOMO_PROXYSET_EMPTY",
+            )
+            await_before = len(calls["await"])
+            with self.assertRaises(AssertionError) as request_failure:
+                namespace["post_apply"]({"server_mode": "fixed"})
+            failure_message = request_failure.exception.args[0]
+            self.assertIsInstance(failure_message, str)
+            detail = json.loads(failure_message)
+            self.assertEqual("MIHOMO_RECONCILE_FAILED", detail["error_code"])
+            self.assertEqual("inventory_generation_admission",
+                             detail["mihomo_reconcile"][0]["summary"]["stage"])
+            self.assertEqual("MIHOMO_PROXYSET_EMPTY",
+                             detail["mihomo_reconcile"][0]["summary"]["error_code"])
+            self.assertEqual(await_before, len(calls["await"]))
+            self.assertLessEqual(len(failure_message.encode("ascii")), 1280)
+            self.assertLessEqual(len(json.dumps(detail["mihomo_reconcile"], sort_keys=True).encode("ascii")), 1024)
+            encoded_request = json.dumps(detail, sort_keys=True)
+            self.assertNotIn("SECRET_SENTINEL", encoded_request)
+            self.assertNotIn("MIHOMO_GENERATION_STALE", encoded_request)
+
+            # Pytest's real assertion formatter truncates non-string messages
+            # via saferepr (240 characters here), which hid nested causes.
+            # The emitted string keeps the bounded projection intact.
+            from _pytest.assertion.rewrite import _format_assertmsg
+            formatted_string = _format_assertmsg(failure_message)
+            self.assertIn("MIHOMO_PROXYSET_EMPTY", formatted_string)
+            self.assertIn("inventory_generation_admission", formatted_string)
+            self.assertGreater(formatted_string.index("inventory_generation_admission"), 240)
+            formatted_mapping = _format_assertmsg({
+                "status": 200, "ok": False, "error_code": "MIHOMO_RECONCILE_FAILED",
+                "mihomo_reconcile": detail["mihomo_reconcile"],
+            })
+            self.assertNotIn("inventory_generation_admission", formatted_mapping)
+
+            # Queued requests retain await_job dispatch; a failed job reports
+            # only the same allowlisted failure projection.
+            namespace["_http_mode"] = "success"
+            namespace["_await_mode"] = "failure"
+            namespace["_append_worker_record"] = lambda: append_failure(
+                stage="private-stage", error_code="SECRET_CODE",
+            )
+            await_before = len(calls["await"])
+            with self.assertRaises(AssertionError) as job_failure:
+                namespace["post_apply"]({"mode": "direct"})
+            job_message = job_failure.exception.args[0]
+            self.assertIsInstance(job_message, str)
+            job_detail = json.loads(job_message)
+            self.assertEqual("failed", job_detail["job_status"])
+            job_summary = job_detail["mihomo_reconcile"][0]["summary"]
+            self.assertIs(job_summary["unknown_enum"], True)
+            self.assertIsNone(job_summary["stage"])
+            self.assertIsNone(job_summary["error_code"])
+            self.assertEqual(await_before + 1, len(calls["await"]))
+            self.assertLessEqual(len(json.dumps(job_detail, sort_keys=True).encode("ascii")), 4096)
+            serialized_job = json.dumps(job_detail, sort_keys=True)
+            self.assertNotIn("SECRET_SENTINEL", serialized_job)
+            self.assertNotIn("private-stage", serialized_job)
+            self.assertNotIn("SECRET_CODE", serialized_job)
+
     def test_provider_verification_observer_redacts_phase_and_reraises(self):
         worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
         parsed = ast.parse(worker_path.read_text(encoding="utf-8"))

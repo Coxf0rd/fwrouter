@@ -29,6 +29,10 @@ from .joined_support import await_core_job
 from .native_runner import _redact_diagnostic
 from .synthetic_subscription import SyntheticSubscriptionSource
 from .test_core_provider_mihomo import _configure_provider, _enable_owned_mihomo_runtime_state, _seed_source
+from .test_xray_generation import (
+    _safe_mihomo_reconcile_diagnostics_since,
+    _snapshot_provider_worker_logs,
+)
 from .xray_support import (
     assert_mihomo_launch_matches_active,
     assert_native_matches_active,
@@ -508,10 +512,37 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                 and len(result.stderr) <= 4096), "bounded named-counter fixture operation failed"
 
     def post_apply(payload: dict[str, Any]) -> dict[str, Any]:
+        mihomo_log_snapshot = _snapshot_provider_worker_logs(stack["root"])
         status, result = http_json(f"{api}/routing/global", method="POST", payload=payload, timeout=45)
-        assert status == 200 and result.get("ok") is True, result
+        if status != 200 or result.get("ok") is not True:
+            failure_diagnostics = _safe_mihomo_reconcile_diagnostics_since(
+                stack["root"], mihomo_log_snapshot,
+            )
+            error = result.get("error") if isinstance(result.get("error"), dict) else {}
+            error_code = error.get("code") if error.get("code") == "MIHOMO_RECONCILE_FAILED" else None
+            failure_message = json.dumps({
+                "status": status if type(status) is int and 100 <= status <= 599 else None,
+                "ok": result.get("ok") is True,
+                "error_code": error_code,
+                "mihomo_reconcile": failure_diagnostics,
+            }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            assert len(failure_message.encode("ascii")) <= 1280, "bounded routing failure diagnostic exceeded limit"
+            assert status == 200 and result.get("ok") is True, failure_message
         job = await_job(api, result)
-        assert job.get("status") == "success", job
+        if job.get("status") != "success":
+            failure_diagnostics = _safe_mihomo_reconcile_diagnostics_since(
+                stack["root"], mihomo_log_snapshot,
+            )
+            job_status = job.get("status")
+            if (not isinstance(job_status, str)
+                    or job_status not in {"queued", "running", "success", "failed", "cancelled"}):
+                job_status = "unknown"
+            failure_message = json.dumps({
+                "job_status": job_status,
+                "mihomo_reconcile": failure_diagnostics,
+            }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            assert len(failure_message.encode("ascii")) <= 1280, "bounded job failure diagnostic exceeded limit"
+            assert job.get("status") == "success", failure_message
         return job
 
     def mutation_apply_id(job: dict[str, Any]) -> str:
