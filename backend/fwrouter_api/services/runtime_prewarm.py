@@ -14,13 +14,14 @@ def warm_runtime_read_models(*, include_global_profiles: bool = True) -> None:
     from fwrouter_api.services.system_summary import build_system_summary
     from fwrouter_api.services.ui_state import (
         get_ui_router_summary,
-        get_ui_settings_workspace,
         list_ui_clients,
     )
 
     # Stop between complete read-only projections, never interrupt a writer.
+    # The settings workspace is intentionally excluded: its Xray status read
+    # can synchronize fingerprinted module state, so keep that work on explicit UI reads.
     for projection in (get_runtime_summary, build_system_summary, list_ui_clients,
-                       get_ui_router_summary, get_ui_settings_workspace):
+                       get_ui_router_summary):
         if _PREWARM_STOP.is_set():
             return
         projection()

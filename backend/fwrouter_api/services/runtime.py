@@ -11,7 +11,7 @@ from fwrouter_api.adapters.mihomo import DEFAULT_MIHOMO_ADAPTER
 from fwrouter_api.adapters.scripts import DEFAULT_SCRIPT_RUNNER
 from fwrouter_api.adapters.xray import DEFAULT_XRAY_ADAPTER
 from fwrouter_api.core.config import get_settings
-from fwrouter_api.db.connection import get_cached_schema_state
+from fwrouter_api.services.database_schema_read_model import get_cached_schema_state
 from fwrouter_api.db.schema_state import summarize_schema_state
 from fwrouter_api.services.core_bypass import get_core_bypass_state
 from fwrouter_api.services.dataplane_status import (

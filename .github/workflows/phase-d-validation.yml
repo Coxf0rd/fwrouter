@@ -233,7 +233,7 @@ jobs:
           PY
           rm -f "$root/subscription-l1-run.raw"
           exit "$result"
-      - name: Run identity migration L3 regression nodes in the isolated gate
+      - name: Run schema identity preservation and retired-upgrade L3 regression nodes in the isolated gate
         if: needs.select-stage.outputs.stage == 'identity-diagnostic'
         run: |
           set -euo pipefail
@@ -244,10 +244,10 @@ jobs:
             --junit "$root/migration-l3.xml" \
             --report "$root/migration-l3-report.json" \
             --log "$root/migration-l3.log" \
-            tests/test_db_migrations.py::test_database_upgrade_cli_is_explicit_backed_up_and_idempotent \
-            tests/test_db_migrations.py::test_database_upgrade_cli_refuses_schema_24_structural_drift_without_backup \
-            tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade \
-            tests/test_db_migrations.py::test_subscription_identity_migration_preserves_references_and_membership \
+            tests/test_database_schema_lifecycle.py::test_database_upgrade_cli_verifies_current_schema_without_mutation \
+            tests/test_database_schema_lifecycle.py::test_database_upgrade_cli_rejects_retired_historical_transitions \
+            tests/test_database_schema_lifecycle.py::test_schema26_is_rejected_intact_without_rewriting_identity_records \
+            tests/test_database_schema_lifecycle.py::test_schema27_identity_rows_survive_repeated_initialization \
             tests/test_xray_vpn_auto_lifecycle.py::test_reviewed_profile_identity_mapping_preserves_credentials_without_publishing \
             tests/test_xray_vpn_auto_lifecycle.py::test_unmapped_inventory_replacement_does_not_inherit_or_publish_identity \
             tests/test_subscription_refresh_outcomes.py::test_staged_profile_verification_runs_outside_writer_guard \
@@ -348,7 +348,7 @@ jobs:
             tests/test_xray.py::test_disabled_subscription_profile_hard_delete_preserves_other_account \
             tests/test_xray.py::test_subscription_profile_delete_rolls_back_projection_cleanup_on_account_mismatch \
             tests/test_xray.py::test_subscription_profile_delete_reconcile_failure_does_not_revoke_identity_credentials \
-            tests/test_db_migrations.py::test_v24_to25_adds_identity_tables_without_changing_legacy_rows_or_admitting_downgrade \
+            tests/test_database_schema_lifecycle.py::test_schema26_is_rejected_intact_without_rewriting_identity_records \
             tests/test_provider_recovery.py::test_verified_reentry_prepare_skips_reconcile_only_with_installed_policy_and_current_intent \
             "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[False]" \
             "tests/test_provider_recovery.py::test_mihomo_reentry_ready_requires_native_policy_installed_boolean[None]" \

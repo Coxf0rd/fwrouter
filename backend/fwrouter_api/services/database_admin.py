@@ -16,6 +16,7 @@ from fwrouter_api.db.connection import (
     connect,
     get_db_path,
     initialize_database,
+    inspect_existing_database_schema,
     offline_candidate_database_path,
 )
 from fwrouter_api.db.schema_state import inspect_database_schema, summarize_schema_state
@@ -137,7 +138,9 @@ def _verified_replayed_import(
     return {**receipt["result"], "replayed": True}
 
 
-def _validate_database_file(path: Path) -> dict[str, Any]:
+def _validate_database_file(
+    path: Path, *, allow_legacy_schema27_profiles: bool = True,
+) -> dict[str, Any]:
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
             or stat.S_IMODE(info.st_mode) != 0o600):
@@ -147,7 +150,10 @@ def _validate_database_file(path: Path) -> dict[str, Any]:
     try:
         integrity = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
         foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
-        schema = inspect_database_schema(connection)
+        schema = inspect_database_schema(
+            connection,
+            allow_legacy_schema27_profiles=allow_legacy_schema27_profiles,
+        )
         if integrity != ["ok"] or foreign_keys or not schema.get("ok"):
             raise ValueError("DATABASE_REBUILD_DATABASE_VALIDATION_FAILED")
         return schema
@@ -615,7 +621,7 @@ def _finish_candidate_rebuild(
         if not replay.get("ok") or replay.get("operation_id") != operation_id_hex:
             raise ValueError("DATABASE_REBUILD_CANDIDATE_REPLAY_CONFLICT")
         _checkpoint_database_for_publication(candidate, "CANDIDATE")
-        _validate_database_file(candidate)
+        _validate_database_file(candidate, allow_legacy_schema27_profiles=False)
         from fwrouter_api.services.maintenance_lifecycle_admission import offline_rebuild_phase
         if offline_rebuild_phase() == "pending":
             _offline_phase("candidate_ready")
@@ -651,7 +657,7 @@ def _finish_candidate_rebuild(
         if Path(f"{candidate}{suffix}").exists():
             raise ValueError("DATABASE_REBUILD_CANDIDATE_SIDECAR_REMAINS")
     os.chmod(candidate, 0o600, follow_symlinks=False)
-    _validate_database_file(candidate)
+    _validate_database_file(candidate, allow_legacy_schema27_profiles=False)
     file_fd = os.open(candidate, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         os.fsync(file_fd)
@@ -669,10 +675,9 @@ def _finish_candidate_rebuild(
 
 
 def get_database_schema_state() -> dict[str, Any]:
-    # Preserve the established repair/initialize contract for normal callers.
-    initialize_database()
-    with connect() as connection:
-        schema_state = inspect_database_schema(connection)
+    # Schema inspection is observational. Fresh initialization is owned by
+    # bootstrap and private rebuild candidates, never a health/read operation.
+    schema_state = inspect_existing_database_schema()
     return {
         **schema_state,
         "summary": summarize_schema_state(schema_state),
@@ -870,7 +875,7 @@ def rebuild_control_plane_database(
             db_path, backup, operation_id=operation_id, state_root=admitted_root,
         )
         _offline_phase("published")
-        _validate_database_file(db_path)
+        _validate_database_file(db_path, allow_legacy_schema27_profiles=False)
         if _database_receipt(db_path, operation_id) is None:
             raise ValueError("DATABASE_REBUILD_PUBLISHED_RECEIPT_MISSING")
     reconciliation = reconcile_control_plane_runtime(requested_by=requested_by)

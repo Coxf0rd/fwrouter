@@ -5,7 +5,7 @@ from typing import Any
 from fwrouter_api.adapters.xray_common import xray_writer_guarded
 
 from fwrouter_api.core.config import get_settings
-from fwrouter_api.db.connection import initialize_database
+from fwrouter_api.db.connection import readonly_db_session_scope
 from fwrouter_api.services.artifacts import atomic_write_json
 from fwrouter_api.services.control_plane_transfer_common import (
     CONTROL_PLANE_SNAPSHOT_VERSION,
@@ -108,7 +108,11 @@ def _export_rules_bundle() -> dict[str, Any]:
 
 @xray_writer_guarded
 def export_control_plane_snapshot(*, include_secrets: bool = False, write_file: bool = True) -> dict[str, Any]:
-    initialize_database()
+    with readonly_db_session_scope():
+        return _export_control_plane_snapshot(include_secrets=include_secrets, write_file=write_file)
+
+
+def _export_control_plane_snapshot(*, include_secrets: bool, write_file: bool) -> dict[str, Any]:
     subscription_state, redaction_warnings = _redact_subscription_state(
         get_subscription_state(),
         include_secrets=include_secrets,

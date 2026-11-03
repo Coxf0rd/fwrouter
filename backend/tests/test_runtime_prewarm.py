@@ -84,7 +84,11 @@ def test_warm_runtime_read_models_invokes_each_read_model_once(monkeypatch) -> N
     monkeypatch.setattr(system_summary, "build_system_summary", lambda: calls.append("system"))
     monkeypatch.setattr(ui_state, "list_ui_clients", lambda: calls.append("clients"))
     monkeypatch.setattr(ui_state, "get_ui_router_summary", lambda: calls.append("router"))
-    monkeypatch.setattr(ui_state, "get_ui_settings_workspace", lambda: calls.append("settings"))
+
+    def unexpected_settings_workspace() -> None:
+        raise AssertionError("incidental warm must not call the stateful settings workspace")
+
+    monkeypatch.setattr(ui_state, "get_ui_settings_workspace", unexpected_settings_workspace)
     monkeypatch.setattr(
         global_mode_profiles,
         "compile_all_global_mode_profiles",
@@ -93,7 +97,7 @@ def test_warm_runtime_read_models_invokes_each_read_model_once(monkeypatch) -> N
 
     runtime_prewarm.warm_runtime_read_models(include_global_profiles=True)
 
-    assert calls == ["runtime", "system", "clients", "router", "settings", "profiles"]
+    assert calls == ["runtime", "system", "clients", "router", "profiles"]
 
 
 def test_prewarm_stop_cancels_between_read_model_projections(
@@ -116,7 +120,11 @@ def test_prewarm_stop_cancels_between_read_model_projections(
     monkeypatch.setattr(system_summary, "build_system_summary", lambda: calls.append("system"))
     monkeypatch.setattr(ui_state, "list_ui_clients", lambda: calls.append("clients"))
     monkeypatch.setattr(ui_state, "get_ui_router_summary", lambda: calls.append("router"))
-    monkeypatch.setattr(ui_state, "get_ui_settings_workspace", lambda: calls.append("settings"))
+
+    def unexpected_settings_workspace() -> None:
+        raise AssertionError("incidental warm must not call the stateful settings workspace")
+
+    monkeypatch.setattr(ui_state, "get_ui_settings_workspace", unexpected_settings_workspace)
     monkeypatch.setattr(
         global_mode_profiles,
         "compile_all_global_mode_profiles",

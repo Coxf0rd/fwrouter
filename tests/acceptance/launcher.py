@@ -149,7 +149,7 @@ _IDENTITY_DIAGNOSTIC_NODEIDS = (
 )
 _FINAL_REGRESSIONS_DIAGNOSTIC_SUITE = "final-regressions-diagnostic"
 _FINAL_REGRESSIONS_DIAGNOSTIC_NODEIDS = (
-    "tests/application_acceptance/test_database_application.py::test_provider_v23_shape_initialization_reaches_schema25_and_preserves_state",
+    "tests/application_acceptance/test_database_application.py::test_current_schema_initialization_preserves_control_plane_and_native_state",
     *_RECOVERY_DIAGNOSTIC_NODEIDS,
     "tests/application_acceptance/test_browser_locale.py::test_real_chromium_xray_client_editor_uses_api_jobs_and_native_readback",
 )

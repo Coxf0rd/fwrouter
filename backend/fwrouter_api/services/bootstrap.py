@@ -932,10 +932,23 @@ def bootstrap_backend() -> dict[str, Any]:
 
     directories = ensure_bootstrap_directories()
     schema_state = initialize_database()
-    stale_jobs = cleanup_stale_running_jobs(stale_after_seconds=0)
+    # A structurally current database can still contain corrupt pages or
+    # foreign-key violations.  The explicit initializer performs those
+    # read-only checks; do not let bootstrap's ordinary writers, cleanup, or
+    # native recovery touch persistent state after that admission fails.
+    stale_jobs = 0
     if schema_state["ok"]:
+        stale_jobs = cleanup_stale_running_jobs(stale_after_seconds=0)
         subject_taxonomy = normalize_subject_taxonomy()
         builtin_system_subjects = ensure_builtin_system_subjects()
+        settings = get_settings()
+        startup_recovery_enabled = bool(settings.startup_recovery_enabled)
+        startup_live_recovery_steps = _run_startup_live_recovery_steps(
+            enabled=startup_recovery_enabled
+        )
+        startup_apply_reconcile_steps = _run_startup_apply_reconcile_steps(
+            enabled=startup_recovery_enabled
+        )
     else:
         subject_taxonomy = {
             "legacy_tailscale_subjects_count": 0,
@@ -945,31 +958,30 @@ def bootstrap_backend() -> dict[str, Any]:
             "reason": "database_schema_mismatch",
         }
         builtin_system_subjects = []
-        write_technical_log(
-            component="bootstrap",
-            event_type="database_schema_mismatch_detected",
-            message="SQLite schema drift detected during backend bootstrap.",
-            details=schema_state,
-        )
-
-    settings = get_settings()
-    startup_recovery_enabled = bool(settings.startup_recovery_enabled)
-    startup_live_recovery_steps = _run_startup_live_recovery_steps(
-        enabled=startup_recovery_enabled
-    )
-    startup_apply_reconcile_steps = _run_startup_apply_reconcile_steps(
-        enabled=startup_recovery_enabled
-    )
+        startup_recovery_enabled = bool(get_settings().startup_recovery_enabled)
+        skipped = {"skipped": True, "reason": "database_schema_unavailable"}
+        startup_live_recovery_steps = {
+            "scope": "bounded_startup_live_recovery",
+            "live_routing": skipped,
+            "selector": skipped,
+        }
+        startup_apply_reconcile_steps = {
+            "scope": "startup_apply_reconcile",
+            "intended_routing": skipped,
+            "scoped_subject_routing": skipped,
+            "xray_subscription_profiles": skipped,
+            "dnsmasq_reconcile": skipped,
+        }
 
     return {
         "directories": directories,
-        "database_initialized": True,
+        "database_initialized": bool(schema_state["ok"]),
         "database_schema": schema_state,
         "stale_jobs_cleaned": stale_jobs,
         "startup_foundation": {
             "scope": "safe_startup_foundation",
             "directories": directories,
-            "database_initialized": True,
+            "database_initialized": bool(schema_state["ok"]),
             "database_schema": schema_state,
             "stale_jobs_cleaned": stale_jobs,
         },

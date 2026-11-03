@@ -22,7 +22,25 @@ Static FWRouter operator/user interface.
 - Browser requests are handled by live backend routes under `/api/v2`.
 - Nginx/Nginx Proxy Manager may serve the static files and reverse proxy API calls, but source-of-truth state remains in the backend.
 
-## Suggested Nginx Shape
+## Historical Nginx transport example — trusted management boundary required
+
+This retained example shows transport wiring, **not a secure standalone or
+public deployment configuration**. `listen 5500` binds all local interfaces;
+`server_name _` is not access control. The broad `/api/v2/` proxy reaches the
+management listener, whose ordinary endpoints have no global HTTP
+authentication. A scoped API-client credential does not restrict that whole
+listener. The example is unsafe for untrusted reachability unless a separately
+enforced trusted management boundary protects it.
+
+Before using a UI/API proxy, its owner must establish the actual caller and
+network/proxy access boundary. The source installer does not install this
+snippet; no deployed Nginx/NPM mapping was inspected or changed by this note.
+Public management exposure needs a separately reviewed security policy. The
+subscription Gateway's narrow allowlist does not protect this broad UI proxy.
+See the [current endpoint/admission matrix](../knowledge/audits/stage6_1_package_g_2026-11-03/ENDPOINT_AUTHORITY_MATRIX.md)
+and [security boundaries](../knowledge/PROJECT_MAP/SECURITY_AND_PERMISSIONS.md).
+The original example below is preserved as history, not a recommendation to
+expose it without those prerequisites.
 
 ```nginx
 server {

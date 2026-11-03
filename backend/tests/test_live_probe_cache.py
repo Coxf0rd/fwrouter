@@ -178,6 +178,71 @@ def test_live_probe_cache_starts_ttl_after_loader_finishes(monkeypatch) -> None:
     assert len(calls) == 1
 
 
+def test_same_thread_same_key_load_fails_fast_and_different_key_nesting_works() -> None:
+    clear_live_probe_cache()
+    original_event_factory = live_probe_cache.Event
+    wait_calls = 0
+
+    class BoundedEvent:
+        """Contain an accidental old-style self-wait inside this test only."""
+
+        def __init__(self):
+            self._event = threading.Event()
+
+        def wait(self, timeout=None):
+            nonlocal wait_calls
+            wait_calls += 1
+            return self._event.wait(0.5 if timeout is None else timeout)
+
+        def set(self):
+            self._event.set()
+
+    live_probe_cache.Event = BoundedEvent
+    outcomes = {}
+
+    def recursive_load() -> None:
+        try:
+            outcomes["value"] = get_live_probe_cache(
+                "recursive",
+                ttl_seconds=60,
+                loader=lambda: get_live_probe_cache(
+                    "recursive", ttl_seconds=60, loader=lambda: {"unexpected": True},
+                ),
+            )
+        except BaseException as exc:
+            outcomes["error"] = (type(exc).__name__, str(exc))
+
+    thread = threading.Thread(target=recursive_load, daemon=True)
+    try:
+        thread.start()
+        thread.join(timeout=1)
+        assert not thread.is_alive(), "same-key cache recursion exceeded its disposable bound"
+        assert outcomes == {
+            "error": ("RuntimeError", "LIVE_PROBE_CACHE_REENTRANT_LOAD"),
+        }
+        assert wait_calls == 0
+    finally:
+        live_probe_cache.Event = original_event_factory
+        clear_live_probe_cache()
+
+    nested_calls: list[str] = []
+    outer = get_live_probe_cache(
+        "nested.outer",
+        ttl_seconds=60,
+        loader=lambda: {
+            "inner": get_live_probe_cache(
+                "nested.inner",
+                ttl_seconds=60,
+                loader=lambda: nested_calls.append("inner") or {"value": "inner"},
+            ),
+        },
+    )
+    assert outer == {"inner": {"value": "inner"}}
+    assert nested_calls == ["inner"]
+    assert get_live_probe_cache("nested.inner", ttl_seconds=60, loader=lambda: None) is outer["inner"]
+    clear_live_probe_cache()
+
+
 def test_clear_fences_old_leader_and_preserves_preclear_waiter_result() -> None:
     result = _run_clear_race(live_probe_cache)
 
@@ -389,6 +454,61 @@ def test_exception_is_shared_with_preclear_waiter_and_force_refresh_replaces_cac
     }
     assert calls == ["initial", "expired", "forced"]
     clear_live_probe_cache()
+
+
+def test_base_exception_is_shared_with_waiter_and_flight_can_be_retried() -> None:
+    clear_live_probe_cache()
+    leader_started = threading.Event()
+    release_leader = threading.Event()
+    waiter_entered, restore_event = _instrument_first_event_wait(live_probe_cache)
+    outcomes = {}
+
+    class OwnedAbort(BaseException):
+        pass
+
+    failure = OwnedAbort("controlled owner abort")
+
+    def aborting_loader():
+        leader_started.set()
+        if not release_leader.wait(5):
+            raise TimeoutError("test did not release the owned cache leader")
+        raise failure
+
+    def invoke(name, loader):
+        try:
+            outcomes[name] = get_live_probe_cache("base-exception", ttl_seconds=60, loader=loader)
+        except BaseException as exc:
+            outcomes[name] = exc
+
+    leader = threading.Thread(target=invoke, args=("leader", aborting_loader), daemon=True)
+    waiter = threading.Thread(
+        target=invoke,
+        args=("waiter", lambda: {"unexpected": True}),
+        daemon=True,
+    )
+    started_threads = []
+    try:
+        leader.start()
+        started_threads.append(leader)
+        assert leader_started.wait(5)
+        waiter.start()
+        started_threads.append(waiter)
+        assert waiter_entered.wait(5)
+        release_leader.set()
+        for thread in started_threads:
+            thread.join(5)
+        assert all(not thread.is_alive() for thread in started_threads)
+        assert outcomes == {"leader": failure, "waiter": failure}
+        assert get_live_probe_cache(
+            "base-exception", ttl_seconds=60, loader=lambda: {"value": "retry"},
+        ) == {"value": "retry"}
+    finally:
+        release_leader.set()
+        for thread in started_threads:
+            thread.join(5)
+        restore_event()
+        clear_live_probe_cache()
+        assert all(not thread.is_alive() for thread in started_threads)
 
 
 def test_readonly_mihomo_health_coalesces_by_adapter_and_refreshes_after_clear() -> None:

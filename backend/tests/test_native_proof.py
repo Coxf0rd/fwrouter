@@ -703,19 +703,17 @@ def test_nested_projection_uses_readonly_connection_and_blocks_expired_ttl_write
 
     path = tmp_path / "state.db"
     creator = sqlite3.connect(path)
-    creator.executescript("""
-        CREATE TABLE routing_global_state (
-            id INTEGER PRIMARY KEY, desired_mode TEXT, applied_mode TEXT, selective_default TEXT,
-            server_mode TEXT, desired_fixed_server_id TEXT, applied_fixed_server_id TEXT,
-            fixed_server_until TEXT, active_auto_server_id TEXT, apply_state TEXT,
-            error_code TEXT, error_message TEXT, updated_at TEXT
-        );
-        CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
-        INSERT INTO routing_global_state VALUES
-            (1, 'vpn', 'vpn', 'direct', 'fixed', 'server-a', 'server-a',
-             '2000-01-01 00:00:00', NULL, 'clean', NULL, NULL, '2000-01-01 00:00:00');
-        INSERT INTO settings VALUES ('routing.auto_selection_revision', '4');
-    """)
+    creator.executescript(db_connection.get_schema_path().read_text(encoding="utf-8"))
+    creator.execute("INSERT INTO servers(server_id, server_name) VALUES ('server-a', 'Server A')")
+    creator.execute(
+        """INSERT OR REPLACE INTO routing_global_state(
+            id, desired_mode, applied_mode, selective_default, server_mode,
+            desired_fixed_server_id, applied_fixed_server_id, fixed_server_until,
+            active_auto_server_id, apply_state, error_code, error_message, updated_at)
+            VALUES (1, 'vpn', 'vpn', 'direct', 'fixed', 'server-a', 'server-a',
+                    '2000-01-01 00:00:00', NULL, 'clean', NULL, NULL, '2000-01-01 00:00:00')"""
+    )
+    creator.execute("INSERT OR REPLACE INTO settings(key, value_json) VALUES ('routing.auto_selection_revision', '4')")
     creator.commit()
     creator.close()
     path.chmod(0o640)

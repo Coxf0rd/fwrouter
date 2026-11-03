@@ -34,11 +34,13 @@ from .xray_support import (
 
 _PROVIDER_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_PROVIDER_VERIFY_EXCEPTION "
 _MIHOMO_RECONCILE_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE "
+_MIHOMO_PREWARM_WORKER_LOG_PREFIX = "FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE "
 _PROVIDER_WORKER_LOG_MAX_FILES = 16
 _PROVIDER_WORKER_LOG_MAX_APPEND_BYTES = 64 * 1024
 _PROVIDER_WORKER_LOG_PREFIXES = frozenset({
     _PROVIDER_WORKER_LOG_PREFIX,
     _MIHOMO_RECONCILE_WORKER_LOG_PREFIX,
+    _MIHOMO_PREWARM_WORKER_LOG_PREFIX,
 })
 
 # These values are closed contracts owned by the Mihomo reconciliation,
@@ -91,7 +93,7 @@ _MIHOMO_RECONCILE_REASONS = frozenset({
 })
 _MIHOMO_RECONCILE_ACTIONS = frozenset({"force_recreate", "none", "restart"})
 _MIHOMO_RECONCILE_EVENTS = frozenset({"failure_result_input"})
-_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES = 1024
+_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES = 6000
 def current_xray_subject_identity_pairs(database_path: Path) -> set[tuple[str, str]]:
     """Read the canonical active Xray subject identities from a synthetic DB."""
     connection = sqlite3.connect(database_path, timeout=5)
@@ -252,6 +254,9 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
     records = _provider_worker_records_since(
         root, snapshot, prefix=_MIHOMO_RECONCILE_WORKER_LOG_PREFIX,
     )
+    prewarm_records = _provider_worker_records_since(
+        root, snapshot, prefix=_MIHOMO_PREWARM_WORKER_LOG_PREFIX,
+    )
     def enum(value, allowed):
         return value if isinstance(value, str) and value in allowed else None
 
@@ -262,6 +267,158 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
 
     def bounded_int(value, minimum, maximum):
         return value if type(value) is int and minimum <= value <= maximum else None
+
+    def safe_hash(value):
+        return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+    def generation_revalidation(value):
+        if not isinstance(value, dict) or value.get("schema") != "fwrouter-acceptance-generation-revalidation/v1":
+            return None
+        revision = value.get("selection_revision") if isinstance(value.get("selection_revision"), dict) else {}
+        fingerprint = value.get("fingerprint") if isinstance(value.get("fingerprint"), dict) else {}
+        candidate = value.get("candidate") if isinstance(value.get("candidate"), dict) else {}
+        active = value.get("active_config") if isinstance(value.get("active_config"), dict) else {}
+        incarnation = value.get("runtime_incarnation") if isinstance(value.get("runtime_incarnation"), dict) else {}
+        timing = value.get("timing_ms") if isinstance(value.get("timing_ms"), dict) else {}
+        raw_probe = value.get("prewarm_sync_probe")
+        components = ("routing", "tables", "files", "source", "version")
+        table_names = ("servers", "server_preferences", "vpn_auto_exclusive",
+                       "subscription_inventory_generation", "server_custom_https_proxy",
+                       "subject_routes", "subject_user_overrides", "explicit_external_clients",
+                       "routing_global_state", "rules_state", "modules")
+        file_names = ("effective_rules", "last_good_effective_rules", "applied_manifest", "contours")
+        def changed_component_hashes(raw):
+            if not isinstance(raw, dict):
+                return {}
+            result = {}
+            for key in ("routing", "tables", "files", "source", "version"):
+                item = raw.get(key)
+                if not isinstance(item, dict):
+                    continue
+                result[key] = {"expected_sha256": safe_hash(item.get("expected_sha256")),
+                               "current_sha256": safe_hash(item.get("current_sha256"))}
+            return result
+        raw_modules = fingerprint.get("modules") if isinstance(fingerprint.get("modules"), dict) else {}
+        modules = {}
+        for name in ("vpn", "xray"):
+            raw = raw_modules.get(name)
+            if not isinstance(raw, dict):
+                continue
+            fields = raw.get("changed_fields") if isinstance(raw.get("changed_fields"), dict) else {}
+            modules[name] = {
+                "expected_row_sha256": safe_hash(raw.get("expected_row_sha256")),
+                "current_row_sha256": safe_hash(raw.get("current_row_sha256")),
+                "changed_fields": {field: fields[field] for field in
+                                   ("desired_state", "runtime_state", "apply_state", "lifecycle_mode")
+                                   if type(fields.get(field)) is bool},
+            }
+        changed = fingerprint.get("changed_components")
+        changed_components = sorted({item for item in changed if isinstance(item, str) and item in components}) \
+            if isinstance(changed, list) else []
+        def changed_entries(raw, allowed):
+            if not isinstance(raw, list):
+                return []
+            result = []
+            for entry in raw[:len(allowed)]:
+                if not isinstance(entry, dict) or entry.get("name") not in allowed:
+                    continue
+                comparison = entry.get("comparison")
+                result.append({"name": entry["name"],
+                               "expected": safe_hash(entry.get("expected_sha256")),
+                               "current": safe_hash(entry.get("current_sha256")),
+                               "comparison": comparison
+                               if isinstance(comparison, str)
+                               and comparison in {"changed", "unavailable"} else None})
+            return result
+        projected = {
+            "selection_revision": {
+                "expected": bounded_int(revision.get("expected"), 0, 2**63 - 1),
+                "current": bounded_int(revision.get("current"), 0, 2**63 - 1),
+                "matches": revision.get("matches") if type(revision.get("matches")) is bool else None,
+            },
+            "fingerprint": {
+                "expected_sha256": safe_hash(fingerprint.get("expected_sha256")),
+                "current_sha256": safe_hash(fingerprint.get("current_sha256")),
+                "matches": fingerprint.get("matches") if type(fingerprint.get("matches")) is bool else None,
+                "changed_component_hashes": changed_component_hashes(fingerprint.get("changed_component_hashes")),
+                "changed_components": changed_components,
+                "changed_tables": changed_entries(fingerprint.get("changed_tables"), table_names),
+                "changed_files": changed_entries(fingerprint.get("changed_files"), file_names),
+                "modules": modules,
+            },
+            "candidate": {
+                "expected_sha256": safe_hash(candidate.get("expected_sha256")),
+                "expected_hash_available": candidate.get("expected_hash_available")
+                if type(candidate.get("expected_hash_available")) is bool else None,
+                "read_evaluated": candidate.get("read_evaluated")
+                if type(candidate.get("read_evaluated")) is bool else None,
+                "current_sha256": safe_hash(candidate.get("current_sha256")),
+                "current_hash_available": candidate.get("current_hash_available")
+                if type(candidate.get("current_hash_available")) is bool else None,
+                "matches": candidate.get("matches") if type(candidate.get("matches")) is bool else None,
+                "elapsed_ms": bounded_int(candidate.get("elapsed_ms"), 0, 600_000),
+            },
+            "active_config": {
+                "expected_sha256": safe_hash(active.get("expected_sha256")),
+                "expected_hash_available": active.get("expected_hash_available")
+                if type(active.get("expected_hash_available")) is bool else None,
+                "read_evaluated": active.get("read_evaluated")
+                if type(active.get("read_evaluated")) is bool else None,
+                "current_sha256": safe_hash(active.get("current_sha256")),
+                "current_hash_available": active.get("current_hash_available")
+                if type(active.get("current_hash_available")) is bool else None,
+                "matches": active.get("matches") if type(active.get("matches")) is bool else None,
+                "elapsed_ms": bounded_int(active.get("elapsed_ms"), 0, 600_000),
+            },
+            "runtime_incarnation": {
+                "expected_sha256": safe_hash(incarnation.get("expected_sha256")),
+                "current_sha256": safe_hash(incarnation.get("current_sha256")),
+                "matches": incarnation.get("matches") if type(incarnation.get("matches")) is bool else None,
+                "checked": incarnation.get("checked") if type(incarnation.get("checked")) is bool else None,
+            },
+            "resume_reservation_present": value.get("resume_reservation_present")
+            if type(value.get("resume_reservation_present")) is bool else None,
+            "timing_ms": {key: bounded_int(timing.get(key), 0, 600_000)
+                          for key in ("fingerprint", "revalidation_after_fingerprint", "total")},
+        }
+        if isinstance(raw_probe, dict):
+            projected["prewarm_sync_probe"] = safe_prewarm_probe(raw_probe)
+        return projected
+
+    def safe_prewarm_probe(value):
+        def probe_hash(item):
+            return item if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item) else None
+
+        statuses = {"not_reproduced_no_sync_actor", "not_reproduced_event_absent",
+                    "sync_observation_incomplete",
+                    "held_and_released", "self_released_timeout", "original_raised"}
+        fields = ("desired_state", "runtime_state", "apply_state", "lifecycle_mode")
+        changed = value.get("changed_fields") if isinstance(value.get("changed_fields"), dict) else {}
+        times = value.get("times_ms") if isinstance(value.get("times_ms"), dict) else {}
+        actor = value.get("actor")
+        module = value.get("module")
+        projected = {
+            "status": value.get("status")
+            if isinstance(value.get("status"), str) and value.get("status") in statuses else "invalid",
+            "actor": actor if actor == "fwrouter-runtime-prewarm" else None,
+            "module": module if isinstance(module, str) and module in {"vpn", "xray"} else None,
+            "original_sync_called": value.get("original_sync_called")
+            if type(value.get("original_sync_called")) is bool else False,
+        }
+        for key in ("fixed_fingerprint_sha256", "expected_sha256", "current_sha256"):
+            if key in value:
+                projected[key] = probe_hash(value.get(key))
+        if "changed_fields" in value:
+            projected["changed_fields"] = {key: changed[key] for key in fields
+                                            if type(changed.get(key)) is bool}
+        if "times_ms" in value:
+            projected["times_ms"] = {key: bounded_int(times.get(key), 0, 600_000)
+                                      for key in ("entered_ms", "fixed_snapshot_ms", "released_ms", "completed_ms")}
+        for key in ("fixed_fingerprint_matches_expected", "expected_row_matches_guard",
+                    "current_row_matches_guard"):
+            if type(value.get(key)) is bool:
+                projected[key] = value[key]
+        return projected
 
     for record in reversed(records):
         if (record.get("schema") != "fwrouter-acceptance-mihomo-reconcile-failure/v1"
@@ -321,6 +478,9 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
                 ),
             },
         }
+        stale_generation = generation_revalidation(summary.get("generation_revalidation"))
+        if stale_generation is not None:
+            projected["summary"]["generation_revalidation"] = stale_generation
         encoded = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
         if len(encoded) > _MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES:
             break
@@ -328,6 +488,17 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
         # eligible failure projection only.
         encoded = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
         return [projected] if len(encoded) <= _MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES else []
+    for record in reversed(prewarm_records):
+        if (record.get("schema") != "fwrouter-acceptance-mihomo-prewarm-probe/v1"
+                or record.get("event") != "prewarm_sync_probe"
+                or not isinstance(record.get("summary"), dict)):
+            continue
+        projected = {"schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+                     "event": "prewarm_sync_probe",
+                     "summary": safe_prewarm_probe(record["summary"])}
+        encoded = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        if len(encoded) <= _MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES:
+            return [projected]
     return []
 
 

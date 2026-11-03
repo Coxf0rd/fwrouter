@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from fwrouter_api import main
+from fwrouter_api.services.application_lifecycle import (
+    ApplicationLifecycle,
+    ApplicationLifecycleOperations,
+)
+from _test_support import healthy_bootstrap_report
 
 
 def test_lifespan_signals_all_components_before_shared_join_budget(monkeypatch) -> None:
@@ -13,7 +19,11 @@ def test_lifespan_signals_all_components_before_shared_join_budget(monkeypatch) 
 
     monkeypatch.setattr(main, "resume_runtime_read_models_prewarm", lambda: True)
     startup_calls: list[str] = []
-    monkeypatch.setattr(main, "bootstrap_backend", lambda: startup_calls.append("bootstrap"))
+    def bootstrap():
+        startup_calls.append("bootstrap")
+        return healthy_bootstrap_report()
+
+    monkeypatch.setattr(main, "bootstrap_backend", bootstrap)
     monkeypatch.setattr(main, "scrub_jsonl_files", lambda _paths: startup_calls.append("scrub"))
     monkeypatch.setattr(
         main,
@@ -168,3 +178,73 @@ def test_disabled_startup_tasks_still_drain_prewarm_and_started_jobs(monkeypatch
     finally:
         release_job.set()
         job_thread.join(timeout=1.0)
+
+
+def test_lifecycle_factory_is_resolved_inside_fixed_host_lease(monkeypatch) -> None:
+    settings = SimpleNamespace(app_name="test", app_version="test", debug=False, paths=SimpleNamespace())
+    monkeypatch.setattr(main, "get_settings", lambda: settings)
+    lease_active = False
+    lease_roots: list[object] = []
+
+    @contextmanager
+    def fake_lease(root):
+        nonlocal lease_active
+        assert not lease_active
+        lease_active = True
+        lease_roots.append(root)
+        try:
+            yield
+        finally:
+            lease_active = False
+
+    monkeypatch.setattr(main, "runtime_shared_lease", fake_lease)
+    factory_calls = 0
+    prewarm_stops: list[float] = []
+    drains = 0
+
+    def lifecycle_factory() -> ApplicationLifecycle:
+        nonlocal factory_calls, drains
+        assert lease_active
+        factory_calls += 1
+        manager = SimpleNamespace(
+            wait_for_idle=lambda *, timeout_seconds: _record_drain(timeout_seconds),
+        )
+        operations = ApplicationLifecycleOperations(
+            bootstrap=lambda: healthy_bootstrap_report(),
+            settings_provider=lambda: settings,
+            scrub_logs=lambda _paths: None,
+            job_manager_provider=lambda: manager,
+            register_extended_handlers=lambda _manager: None,
+            start_schedulers=(),
+            stop_schedulers=(),
+            resume_prewarm=lambda: False,
+            prime_prewarm=lambda **_kwargs: None,
+            stop_prewarm=lambda *, timeout_seconds: prewarm_stops.append(timeout_seconds),
+        )
+        return ApplicationLifecycle(operations)
+
+    def _record_drain(_timeout_seconds: float) -> bool:
+        nonlocal drains
+        drains += 1
+        return True
+
+    apps = [
+        main.create_app(enable_startup_tasks=False, lifecycle_factory=lifecycle_factory)
+        for _ in range(2)
+    ]
+    assert factory_calls == 0
+
+    async def exercise(app) -> None:
+        async with app.router.lifespan_context(app):
+            assert lease_active
+
+    for app in apps:
+        asyncio.run(exercise(app))
+
+    assert factory_calls == 2
+    assert drains == 2
+    assert len(prewarm_stops) == 4
+    assert prewarm_stops[::2] == [0.0, 0.0]
+    assert all(13.0 < timeout <= 14.0 for timeout in prewarm_stops[1::2])
+    assert lease_roots == [main.DEFAULT_STATE_ROOT, main.DEFAULT_STATE_ROOT]
+    assert not lease_active

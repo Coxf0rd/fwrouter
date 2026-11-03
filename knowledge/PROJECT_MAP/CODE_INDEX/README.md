@@ -1,10 +1,41 @@
 # Code Index
 
+## Current backend navigation — 2026-11-03
+
+This index locates source responsibilities; a historical `/opt` heading or
+generated flattened filename in an older card is not an import path, deployed
+revision or live acceptance receipt. Backend source lives in
+`backend/fwrouter_api/`; its supported installed package lives under
+`/opt/fwrouter-api/fwrouter_api/`. Use actual source before modifying a card.
+The dated descriptions below remain navigation/history, not a second roadmap.
+
+| Current responsibility | Source owner | Review contract |
+|---|---|---|
+| HTTP/lifespan composition | `main.py`, `services/application_lifecycle.py` | Fixed host lease outside injected lifecycle; process-owned default services. |
+| API admission | `presentation_client_list_admission.py`, `secure_event_read_admission.py`, `control_plane_import_admission.py` | Distinct per-surface credentials/scopes/leases; correlation is not authority. |
+| DB connection/admission | `db/connection.py`, `db/schema_state.py` | Schema 27, no-create observation, explicit fresh initialization; no historical DDL runner. |
+| Schema read cache | `services/database_schema_read_model.py` | Service-owned observation, not a DB→services dependency. |
+| Ordinary event summaries | `services/ordinary_event_read_model.py` | Bounded read projection; secure events retain separate admission/projection. |
+| Apply/Mihomo | `apply_orchestrator*`, `mihomo_config*`, `mihomo_reconcile.py` | Downward internal bindings plus deliberate compatibility aliases; one mutation owner. |
+| Xray generation | `xray_subscription_service.py`, checkpoint/fingerprint, planning/observation/views/staging components | One publication/recovery coordinator; leaves do not acquire settlement authority. |
+| Scheduler lifetime | `services/worker_lifecycle.py` and seven scheduler facades | Separate tick policies, retained live handles; prewarm has its own owner. |
+| Read-model single-flight | `services/live_probe_cache.py` | TTL/invalidation/fences, fail-fast own-flight reentry, caller-owned loader deadline. |
+| Gateway HTTP boundary | `host/libexec/fwrouter/fwrouter-xray-sub-gateway.py` | Narrow capability paths; joined disposable HTTP tests under `installer/tests/`. |
+
+The [endpoint matrix](../../audits/stage6_1_package_g_2026-11-03/ENDPOINT_AUTHORITY_MATRIX.md),
+[all twelve finding dispositions](../../audits/stage6_1_package_g_2026-11-03/FINDING_DISPOSITIONS.md)
+and [closure report](../../audits/stage6_1_package_g_2026-11-03/REPORT.md) connect
+these owners to current evidence and limitations. Canonical planning remains
+owner-local at `/решения/roadmap/fwrouter/ROADMAP.md`; Stage 6A Unified CI & Test
+Architecture remains planned, not an implemented replacement for current CI.
+
 Здесь лежат точечные описания ключевых файлов проекта. Индекс покрывает файлы, которые влияют на boot persistence, dataplane, generated configs, system orchestration и API entrypoints.
 
 Рекомендуемый порядок чтения:
 
 1. `opt_fwrouter_api_fwrouter_api_main_py.md`
+1a. `backend_fwrouter_api_services_application_lifecycle_py.md`
+1b. `backend_fwrouter_api_services_worker_lifecycle_py.md`
 2. `opt_fwrouter_api_fwrouter_api_services_bootstrap_py.md`
 3. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_py.md`
 4. `opt_fwrouter_api_fwrouter_api_services_apply_orchestrator_constants_py.md`
@@ -87,8 +118,12 @@
 55. `opt_fwrouter_api_fwrouter_api_services_server_subject_overrides_py.md`
 56. `opt_fwrouter_api_fwrouter_api_services_server_preferences_py.md`
 57. `opt_fwrouter_api_fwrouter_api_db_connection_py.md`
-57a. `opt_fwrouter_api_fwrouter_api_db_migrations_py.md`
+57a. `opt_fwrouter_api_fwrouter_api_db_schema_state_py.md`
+57b. `opt_fwrouter_api_fwrouter_api_services_database_schema_read_model_py.md`
 58. `opt_fwrouter_api_fwrouter_api_jobs_manager_py.md`
+58a. `opt_fwrouter_api_fwrouter_api_services_maintenance_scheduler_py.md`
+58b. `opt_fwrouter_api_fwrouter_api_services_active_observation_scheduler_py.md`
+58c. `opt_fwrouter_api_fwrouter_api_services_subject_inventory_scheduler_py.md`
 59. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_py.md`
 60. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_common_py.md`
 61. `opt_fwrouter_api_fwrouter_api_services_control_plane_transfer_export_py.md`
@@ -157,7 +192,7 @@
 
 ## Быстрая карта доменов
 
-- startup/boot: `main.py`, `bootstrap.py`, `runtime_prewarm.py`, `maintenance_scheduler.py`, `member_probe_scheduler.py`, `runtime_convergence_scheduler.py`, systemd unit docs
+- startup/boot: `main.py`, `application_lifecycle.py`, `bootstrap.py`, `runtime_prewarm.py`, `worker_lifecycle.py`, all existing scheduler owners, systemd unit docs
 - apply/dataplane: `apply_orchestrator.py` facade, `apply_orchestrator_*`, `apply.py`, `apply_context.py`, `apply_results.py`, `apply_plan.py`, `apply_manifest.py`, `apply_hot_swap.py`, `dataplane_*.py`, `dataplane_nft.py` facade plus `dataplane_nft_{constants,sets,chains,render,artifacts}.py`, `adapters/dataplane.py`, libexec `dataplane-*.sh`
 - [Core recovery metadata](usr_local_libexec_fwrouter_dataplane_snapshot_state_py.md): `host/libexec/fwrouter/dataplane-snapshot-state.py`
   supports existing apply/rollback, without owning intent or native proof.
@@ -178,7 +213,7 @@
 - read-only diagnostics: `diagnostics.py`, route `routes/diagnose.py`, CLI `fwrouter diagnose`
 - maintenance/retention/logs: `maintenance.py`, `maintenance_scheduler.py`, `member_probe_scheduler.py`, `runtime_convergence.py`, `runtime_convergence_scheduler.py`, `jobs_retention.py`, `logs.py`, `logs_retention.py`, `state_retention.py`, `apply_versions_retention.py`
 - watchdog: `watchdog.py` is the public facade; `watchdog_flows.py` is the compatibility flow facade; `watchdog_manual_flow.py` and `watchdog_auto_flow.py` own manual/automatic orchestration; `watchdog_auto_active_quality_flow.py` and `watchdog_auto_stall_flow.py` own large automatic decision branches; `vpn_runtime_control.py` owns provider-independent active-target/probe/failover boundary; helper modules own status, persistent `watchdog_state`, debounce/cooldown, traffic signal analysis, active-server quality checks, decision logs, result DTOs, and scheduler lifecycle
-- transfer/database/admin: `control_plane_transfer.py` facade and `control_plane_transfer_*`, `database_admin.py`, `schema_state.py`, `migrations.py`, `server_layout.py`
+- transfer/database/admin: `control_plane_transfer.py` facade and `control_plane_transfer_*`, `database_admin.py`, `schema_state.py`, `database_schema_read_model.py`, `server_layout.py`
 - tests: `tests/conftest.py` отвечает за изоляцию pytest от live dataplane/runtime state
 - systemd timer wrappers outside `/opt/fwrouter-api`: `usr_local_sbin_fwrouter_subscription_refresh_job.md`, `usr_local_sbin_fwrouter_jobs_retention_dry_run.md`
 

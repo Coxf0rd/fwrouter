@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fwrouter_api.db.connection import initialize_database
 from fwrouter_api.services.control_plane_transfer_common import _state_from_snapshot, _transfer_dir
 
 
@@ -107,7 +106,6 @@ def resolve_control_plane_snapshot_source(
 
 
 def list_control_plane_snapshot_files() -> dict[str, Any]:
-    initialize_database()
     snapshots: list[dict[str, Any]] = []
     for path in sorted(_transfer_dir().glob("control-plane-snapshot.*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
         item: dict[str, Any] = {

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from threading import Event, Lock, Thread
+from threading import Thread
 from typing import Any, Callable
 
 from fwrouter_api.core.config import get_settings
+from fwrouter_api.services.worker_lifecycle import WorkerLifecycle
 
 
-_THREAD: Thread | None = None
-_STOP_EVENT = Event()
-_LOCK = Lock()
+_WORKER = WorkerLifecycle()
 
 
 def run_scheduler_tick(
@@ -90,14 +89,14 @@ def scheduler_loop(tick: Callable[[], dict[str, Any]]) -> None:
     interval = settings.watchdog_auto_interval_seconds
     suspicious_interval = settings.watchdog_suspicious_interval_seconds
 
-    while not _STOP_EVENT.is_set():
+    while not _WORKER.stop_event.is_set():
         result = tick()
         wait_seconds = _next_interval_seconds(
             result,
             default_interval=interval,
             suspicious_interval=suspicious_interval,
         )
-        if _STOP_EVENT.wait(wait_seconds):
+        if _WORKER.stop_event.wait(wait_seconds):
             break
 
 
@@ -111,30 +110,12 @@ def start_scheduler(
         disabled()
         return False
 
-    global _THREAD
-    with _LOCK:
-        if _THREAD is not None and _THREAD.is_alive():
-            return False
-
-        _STOP_EVENT.clear()
-        _THREAD = Thread(
-            target=lambda: scheduler_loop(tick),
-            name="fwrouter-watchdog",
-            daemon=True,
-        )
-        _THREAD.start()
-        return True
+    return _WORKER.start(
+        lambda: scheduler_loop(tick),
+        name="fwrouter-watchdog",
+        thread_factory=Thread,
+    )
 
 
 def stop_scheduler(*, timeout_seconds: float = 2.0) -> bool:
-    global _THREAD
-    with _LOCK:
-        if _THREAD is None:
-            return False
-
-        _STOP_EVENT.set()
-        _THREAD.join(timeout=timeout_seconds)
-        stopped = not _THREAD.is_alive()
-        if stopped:
-            _THREAD = None
-        return stopped
+    return _WORKER.stop(timeout_seconds=timeout_seconds)

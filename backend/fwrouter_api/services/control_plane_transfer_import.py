@@ -5,7 +5,7 @@ import hashlib
 import re
 from typing import Any
 
-from fwrouter_api.db.connection import db_session, initialize_database
+from fwrouter_api.db.connection import db_session, validate_existing_database_for_initialization
 from fwrouter_api.adapters.xray_common import xray_writer_guarded
 from fwrouter_api.services.control_plane_import_files import prepare_rules_files, RECEIPT_PREFIX
 from fwrouter_api.services.control_plane_transfer_common import (
@@ -268,6 +268,18 @@ def _import_control_plane_snapshot_validated(
             "error_message": "A verified maintenance import request is required.",
         }
 
+    # Imports are an independent offline writer path.  Require the same
+    # read-only schema, integrity and foreign-key admission as backend startup
+    # before opening a write transaction or preparing imported files.
+    database_state = validate_existing_database_for_initialization()
+    if not database_state["ok"]:
+        return {
+            "ok": False,
+            "imported": False,
+            "error_code": "CONTROL_PLANE_IMPORT_DATABASE_UNAVAILABLE",
+            "error_message": "The local database is not eligible for import.",
+        }
+
     fingerprint = hashlib.sha256(json.dumps(
         {"snapshot": snapshot, "normalize_runtime_state": normalize_runtime_state},
         ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -275,7 +287,6 @@ def _import_control_plane_snapshot_validated(
     operation_id = fingerprint if operation_id is None else operation_id
     if not isinstance(operation_id, str) or not re.fullmatch(r"(?:[0-9a-f]{32}|[0-9a-f]{64})", operation_id):
         return {"ok": False, "imported": False, "error_code": "IMPORT_OPERATION_ID_INVALID"}
-    initialize_database()
     key = RECEIPT_PREFIX + operation_id
     with db_session() as connection:
         # Reserve the existing database writer before eligibility/read-modify-write.

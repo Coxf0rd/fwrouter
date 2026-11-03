@@ -37,3 +37,8 @@ Update rule:
 
 - when code or config changes, update the affected files in `knowledge/`
 - do not rewrite the full project map without a specific reason
+
+
+## Reporting and evidence
+
+Follow the active `AGENTS.md`: default to a 5–10 line final summary of changes, actual test status, blockers and commit SHA. Do not create routine task reports, hash inventories, QA transcripts or duplicate evidence. Persist detail only when an existing safety, verification or measurement contract requires it, in that contract's existing location. Reporting cleanup must not alter CI, acceptance bundles or test requirements.

@@ -20,7 +20,7 @@ from _test_support import (
     maintenance_import_test_client,
 )
 from fwrouter_api.core.config import get_settings
-from fwrouter_api.db.connection import get_db_path
+from fwrouter_api.db.connection import get_db_path, initialize_database
 from fwrouter_api.main import create_app
 from fwrouter_api.services.control_plane_transfer import import_control_plane_snapshot
 from fwrouter_api.services import control_plane_import_admission as admission
@@ -322,6 +322,47 @@ def test_import_service_denies_direct_call_before_database_or_writer_lock(monkey
     assert not settings.paths.run_dir.exists()
 
 
+@pytest.mark.no_database_autoinit
+def test_import_refuses_integrity_invalid_existing_database_before_files_or_receipt(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    import hashlib
+    import sqlite3
+
+    from fwrouter_api.db.connection import get_db_path
+
+    _configure_env(monkeypatch, tmp_path)
+    path = get_db_path()
+    assert initialize_database()["ok"] is True
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            "INSERT INTO subscription_profile_snapshots(token, nodes_json) "
+            "VALUES ('missing-client', '[]')"
+        )
+        connection.commit()
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        "fwrouter_api.services.control_plane_transfer_import.control_plane_import_is_admitted",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.control_plane_import_admission.control_plane_import_is_admitted",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "fwrouter_api.services.control_plane_transfer_import.validate_control_plane_snapshot",
+        lambda _snapshot: {"ok": True},
+    )
+
+    result = import_control_plane_snapshot({"snapshot_version": "valid-for-patched-validator"})
+
+    assert result["ok"] is False
+    assert result["error_code"] == "CONTROL_PLANE_IMPORT_DATABASE_UNAVAILABLE"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+    assert not get_settings().paths.state_dir.joinpath("transfer").exists()
+
+
 def test_authorized_admission_context_is_cleared_after_response(
     monkeypatch, tmp_path: Path,
 ) -> None:
@@ -367,8 +408,8 @@ def test_copied_admission_queued_on_writer_guard_is_revoked_before_import_side_e
         transfer_import, "validate_control_plane_snapshot", lambda _snapshot: {"ok": True},
     )
     monkeypatch.setattr(
-        transfer_import, "initialize_database",
-        lambda: pytest.fail("revoked queued import must not initialize SQLite"),
+        transfer_import, "validate_existing_database_for_initialization",
+        lambda: pytest.fail("revoked queued import must not inspect SQLite"),
     )
     lock = _ObservedRLock()
     lock.acquire()

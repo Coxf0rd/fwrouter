@@ -988,13 +988,18 @@ def test_offline_rebuild_rejects_unexported_durable_rows_before_backup(
             "INSERT INTO provider_credentials(source_ref,api_key) VALUES ('test-source','synthetic-secret')",
         )
         connection.execute("INSERT INTO subscription_accounts(slug,display_name) VALUES ('test-account','synthetic')")
-        if add_future_table:
-            connection.execute("CREATE TABLE future_managed_state (value TEXT NOT NULL)")
-            connection.execute("INSERT INTO future_managed_state(value) VALUES ('must-not-be-lost')")
         connection.commit()
     finally:
         connection.close()
-    source_snapshot = export_control_plane_snapshot(include_secrets=False, write_file=False)["snapshot"]
+    # Export while the source has canonical schema, then introduce the
+    # unknown object whose durable rows must be refused before backup.
+    source_snapshot = export_control_plane_snapshot(
+        include_secrets=False, write_file=False,
+    )["snapshot"]
+    if add_future_table:
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("CREATE TABLE future_managed_state (value TEXT NOT NULL)")
+            connection.execute("INSERT INTO future_managed_state(value) VALUES ('must-not-be-lost')")
     monkeypatch.setattr(
         database_admin, "_operation_backup",
         lambda *_args, **_kwargs: pytest.fail("must reject unsupported state before backup"),
@@ -1022,8 +1027,9 @@ def test_offline_rebuild_rejects_unexported_durable_rows_before_backup(
 
 
 @pytest.mark.no_database_autoinit
+@pytest.mark.parametrize("object_kind", ["trigger", "additive_index"])
 def test_offline_rebuild_rejects_custom_sqlite_schema_objects_without_dropping_them(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, object_kind: str,
 ) -> None:
     from fwrouter_api.core.config import get_settings
     from fwrouter_api.db.connection import get_db_path, initialize_database
@@ -1042,27 +1048,47 @@ def test_offline_rebuild_rejects_custom_sqlite_schema_objects_without_dropping_t
     )
     initialize_database()
     db_path = get_db_path()
+    source_snapshot = export_control_plane_snapshot(
+        include_secrets=False, write_file=False,
+    )["snapshot"]
     connection = sqlite3.connect(db_path)
     try:
-        connection.execute(
-            "CREATE TRIGGER test_restore_custom_trigger AFTER INSERT ON settings "
-            "BEGIN SELECT 1; END",
-        )
+        if object_kind == "trigger":
+            object_sql = (
+                "CREATE TRIGGER test_restore_custom_trigger AFTER INSERT ON settings "
+                "BEGIN SELECT 1; END"
+            )
+            object_type, object_name = "trigger", "test_restore_custom_trigger"
+        else:
+            object_sql = "CREATE INDEX test_restore_custom_index ON settings(updated_at)"
+            object_type, object_name = "index", "test_restore_custom_index"
+        connection.execute(object_sql)
         connection.commit()
     finally:
         connection.close()
-    source_snapshot = export_control_plane_snapshot(include_secrets=False, write_file=False)["snapshot"]
     before = database_admin._logical_database_digest(db_path)
     try:
         with admission.offline_rebuild_lease(
             maintenance_fd, lifecycle_fd, state_root=state_root,
         ):
-            with pytest.raises(ValueError, match="DATABASE_REBUILD_SCHEMA_OBJECTS_UNSUPPORTED"):
+            expected_error = (
+                    "DATABASE_REBUILD_BACKUP_INVALID"
+                if object_kind == "trigger"
+                else "DATABASE_REBUILD_SCHEMA_OBJECTS_UNSUPPORTED"
+            )
+            with pytest.raises(ValueError, match=expected_error):
                 database_admin.rebuild_control_plane_database(
                     snapshot=source_snapshot, operation_id=operation_id,
                 )
         assert database_admin._logical_database_digest(db_path) == before
         assert len(list((state_root / "backups").glob("*.bak"))) == 1
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
+            retained = connection.execute(
+                "SELECT type,name,sql FROM sqlite_master WHERE type=? AND name=?",
+                (object_type, object_name),
+            ).fetchone()
+            assert retained is not None and object_sql in retained[2]
+            assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
     finally:
         os.close(maintenance_fd)
         os.close(lifecycle_fd)

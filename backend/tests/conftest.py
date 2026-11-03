@@ -250,6 +250,25 @@ def isolate_fwrouter_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, re
             # prevents incidental Apply/UI/startup hooks from starting an
             # asynchronous read-model worker in ordinary component tests.
             monkeypatch.setattr(runtime_prewarm, "_PREWARM_RUNNING", True)
+            previous_worker = runtime_prewarm._PREWARM_THREAD
+
+        # _PREWARM_RUNNING is cleared inside the worker's finally block just
+        # before Thread.run returns. Reserve admission above, then join that
+        # last tail outside the owner lock and recheck it is gone before opening
+        # a new disposable test epoch.
+        if previous_worker is not None and previous_worker.is_alive():
+            previous_worker.join(timeout=5.0)
+        if previous_worker is not None and previous_worker.is_alive():
+            pytest.fail("runtime prewarm worker outlived its idle admission state")
+
+        with runtime_prewarm._PREWARM_LOCK:
+            if runtime_prewarm._PREWARM_THREAD is not previous_worker:
+                pytest.fail("runtime prewarm owner changed during test isolation")
+            # A prior lifespan may leave cooperative stop set after a normal
+            # shutdown. The old handle is now dead; begin a fresh disposable
+            # epoch without clearing cancellation for a live worker.
+            runtime_prewarm._PREWARM_STOP.clear()
+            monkeypatch.setattr(runtime_prewarm, "_PREWARM_RUNNING", True)
 
     if "live_dataplane" not in request.keywords:
         if not get_default_job_manager().wait_for_idle():

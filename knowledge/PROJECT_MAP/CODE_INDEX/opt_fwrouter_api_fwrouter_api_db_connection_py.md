@@ -17,18 +17,32 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 TestClient/job tests and startup paths from failing when a previous SQLite
 connection is still releasing its lock.
 
-`initialize_database()` is now bootstrap orchestration only: it runs the
-versioned migration runner from `db/migrations.py` when an existing DB has an
-older `schema_meta.schema_version`, then applies current `schema.sql` and
-returns schema inspection state. Historical backfill/rebuild logic must stay in
-the migration for the schema transition that introduced it, not in this module.
+`initialize_database()` creates schema 27 only when the database path is absent.
+For an existing path it performs read-only schema inspection; it never migrates,
+reseeds, repairs, resets, or replaces data. Bootstrap and an admitted private
+rebuild candidate are the only fresh-database initialization owners. Historical
+schema transitions were retired; see the Package E audit for the support floor
+and retained history.
 
-Health/runtime reads use `get_cached_schema_state()` with the existing
-30-second cache and `inspect_existing_database_schema()` against a SQLite
-`mode=ro` URI. They never initialize, migrate, create a missing database or
-invoke writable connection permission/WAL setup. Inspection drift stays drift;
-SQLite errors propagate for the API's existing unavailable-database response.
-Startup/installer remain the explicit writable initialization owners.
+Every writer opens an existing file with SQLite `mode=rw` and validates the
+complete canonical-or-exact-known-legacy schema contract on that same
+connection before chmod or WAL setup. Fresh initialization remains
+canonical-only.
+Successful structural admission is cached process-locally by the exact ordered
+`sqlite_master` content digest, current schema version, canonical schema source
+identity, and SQLite runtime version. The positive LRU is bounded to 32 entries;
+the signature and version are read on every connection in a query-only read
+transaction. Invalid results are not cached. DDL changes create a new key and a
+process restart clears the cache.
+Observation uses `mode=ro`. Explicit initialization also checks SQLite
+integrity and foreign keys without writing. Ordinary opens do not run whole-file
+integrity checks. Reads and health never initialize or create a missing
+database. Unsupported schema and inspection errors fail closed.
+`existing_database_readonly_connection()` is the low-level raw existing-file
+observation seam for health/diagnostics that must inspect an unsupported schema
+without writer admission, chmod, or WAL setup; it never creates a missing file.
+Health/runtime schema projections use the service-owned existing 30-second
+cache; its identity includes the path/file metadata and SQLite schema cookie.
 
 `readonly_db_session_scope()` is a context-local override for nested projection
 reads during native proof capture. It opens existing databases with

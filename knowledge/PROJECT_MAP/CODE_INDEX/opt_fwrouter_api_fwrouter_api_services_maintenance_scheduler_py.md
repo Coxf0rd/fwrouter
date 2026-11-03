@@ -17,3 +17,11 @@ This file is part of the FWRouter source/runtime surface. Keep this card synchro
 - Keep FWRouter core as the authority for classification and policy routing.
 - Keep Mihomo as a VPN egress adapter, not the network policy engine.
 - Preserve direct-safe behavior for host/control-plane traffic unless an explicit scoped contour says otherwise.
+
+## Worker lifetime
+
+One module-owned `WorkerLifecycle` retains this scheduler's thread handle and
+cooperative stop Event. This owner only standardizes start/stop bookkeeping;
+maintenance admission, immediate first tick, interval, logging and the public
+start/stop functions stay here. A timed-out stop keeps the handle and set stop
+signal until the worker exits, so restart cannot overlap the old worker.

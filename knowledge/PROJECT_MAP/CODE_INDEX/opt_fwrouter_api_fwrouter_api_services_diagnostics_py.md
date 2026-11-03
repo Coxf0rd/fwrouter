@@ -27,6 +27,7 @@ Mihomo, Xray, or systemd network units.
 
 ## Notes
 
+- Database schema/integrity inspection uses an existing-file `mode=ro`, `query_only` connection, so it can report unsupported schema without admission writes, chmod, WAL setup, or creating missing files. If schema/integrity/database admission fails, the report preserves that database problem and returns dependent sections as `unknown`, `executed=false`, with a not-run reason; projections, reconcile, events, and native reads are skipped. Supported schema-27 compatibility metadata is carried through while public schema status remains `ok`.
 - Severity model: `healthy`, `warning`, `degraded`, `failed`, `inactive`, `disabled`, `unknown`.
 - Missing or empty projections and `reconcile=unknown` remain `unknown` and do not create `DiagnosticProblem`; explicit healthy/in-sync evidence stays healthy, while confirmed stale/drift states still affect severity.
 - Health UI localizes `reason_code` and selects administrative actions by stable code; unknown reasons do not fall back to a generic diagnostics instruction.

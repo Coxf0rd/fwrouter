@@ -3,9 +3,11 @@ from __future__ import annotations
 import sqlite3
 import pytest
 from fastapi.testclient import TestClient
-from _test_support import database_table_diff, database_table_snapshot
+from _test_support import (
+    configure_test_state_dir, database_table_diff, database_table_snapshot,
+)
 
-from fwrouter_api.db.connection import db_session
+from fwrouter_api.db.connection import db_session, get_db_path
 from fwrouter_api.main import create_app
 
 
@@ -84,24 +86,35 @@ def test_read_endpoints_do_not_bootstrap_builtin_subjects_or_routing_state(monke
 
 
 @pytest.mark.no_database_autoinit
-def test_system_summary_get_does_not_initialize_empty_database(monkeypatch) -> None:
+def test_system_summary_get_does_not_initialize_empty_database(monkeypatch, tmp_path) -> None:
+    configure_test_state_dir(monkeypatch, tmp_path)
+    db_path = get_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE fixture_only (value TEXT)")
+    db_path.chmod(0o640)
+    before_bytes = db_path.read_bytes()
+    before_mode = db_path.stat().st_mode & 0o777
+
     client = TestClient(create_app(enable_startup_tasks=False))
 
-    with db_session() as connection:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
         before_tables = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
         ).fetchall()
 
     response = client.get("/api/v2/system/summary")
 
-    with db_session() as connection:
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
         after_tables = connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
         ).fetchall()
 
     assert response.status_code == 200
     assert response.json()["ok"] is False
-    assert [row["name"] for row in after_tables] == [row["name"] for row in before_tables]
+    assert [row[0] for row in after_tables] == [row[0] for row in before_tables]
+    assert db_path.read_bytes() == before_bytes
+    assert db_path.stat().st_mode & 0o777 == before_mode
 
 
 def test_public_system_responses_do_not_expose_database_paths_or_exceptions(

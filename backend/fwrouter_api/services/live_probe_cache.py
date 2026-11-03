@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from collections import OrderedDict
 from enum import Enum
-from threading import Event, Lock
+from threading import Event, Lock, get_ident
 from time import monotonic
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -218,7 +218,7 @@ def get_live_probe_cache(
         inflight = _INFLIGHT.get(key)
         if inflight is None:
             event = Event()
-            holder: dict[str, Any] = {}
+            holder: dict[str, Any] = {"owner_thread_id": get_ident()}
             _INFLIGHT[key] = (event, holder)
             leader = True
         else:
@@ -227,6 +227,8 @@ def get_live_probe_cache(
     retired.clear()
 
     if not leader:
+        if holder.get("owner_thread_id") == get_ident():
+            raise RuntimeError("LIVE_PROBE_CACHE_REENTRANT_LOAD")
         event.wait()
         if "error" in holder:
             raise holder["error"]
@@ -270,7 +272,7 @@ def get_live_probe_cache(
                     _sweep_expired_locked(admitted_at, retired)
                     _admit_cache_entry_locked(key, expires_at, value, retained_bytes, retired)
         return value
-    except Exception as exc:
+    except BaseException as exc:
         holder["error"] = exc
         raise
     finally:

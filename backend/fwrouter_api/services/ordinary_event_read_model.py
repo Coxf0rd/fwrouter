@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fwrouter_api.db.connection import db_session
+from fwrouter_api.db.connection import db_session, readonly_db_session_scope
 from fwrouter_api.services.events import safe_actor_identifier, safe_human_label
 
 
@@ -44,7 +44,7 @@ def _safe_entity_labels(events: list[dict[str, object]]) -> dict[tuple[str, str]
     subject_ids = sorted(item for item in subject_id_set if item)[:1000]
     labels: dict[tuple[str, str], str] = {}
     if server_ids or subject_ids:
-        with db_session() as connection:
+        with readonly_db_session_scope(), db_session() as connection:
             if server_ids:
                 placeholders = ",".join("?" for _ in server_ids)
                 rows = connection.execute(
@@ -85,7 +85,7 @@ def _member_entity_labels(events: list[dict[str, object]]) -> dict[tuple[str, st
         return {}
     clauses = " OR ".join("(m.logical_server_id = ? AND m.member_id = ?)" for _ in bounded_pairs)
     params = [part for pair in bounded_pairs for part in pair]
-    with db_session() as connection:
+    with readonly_db_session_scope(), db_session() as connection:
         rows = connection.execute(
             f"""SELECT m.logical_server_id, m.member_id, m.member_order, s.server_name
                 FROM logical_server_members m

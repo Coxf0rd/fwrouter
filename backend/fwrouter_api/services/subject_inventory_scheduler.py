@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from threading import Event, Lock, Thread
+from threading import Thread
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.jobs.manager import get_default_job_manager
 from fwrouter_api.services.logs import write_technical_log
+from fwrouter_api.services.worker_lifecycle import WorkerLifecycle
 
 
-_SUBJECT_INVENTORY_THREAD: Thread | None = None
-_SUBJECT_INVENTORY_STOP_EVENT = Event()
-_SUBJECT_INVENTORY_LOCK = Lock()
+_WORKER = WorkerLifecycle()
 
 
 def _run_subject_inventory_job() -> None:
@@ -33,10 +32,10 @@ def _subject_inventory_scheduler_loop() -> None:
     startup_delay = settings.subject_inventory_startup_delay_seconds
     interval = settings.subject_inventory_interval_seconds
 
-    if startup_delay and _SUBJECT_INVENTORY_STOP_EVENT.wait(startup_delay):
+    if startup_delay and _WORKER.stop_event.wait(startup_delay):
         return
 
-    while not _SUBJECT_INVENTORY_STOP_EVENT.is_set():
+    while not _WORKER.stop_event.is_set():
         try:
             _run_subject_inventory_job()
         except Exception as exc:
@@ -48,7 +47,7 @@ def _subject_inventory_scheduler_loop() -> None:
                 details={"error": str(exc)},
             )
 
-        if _SUBJECT_INVENTORY_STOP_EVENT.wait(interval):
+        if _WORKER.stop_event.wait(interval):
             break
 
 
@@ -57,30 +56,12 @@ def start_subject_inventory_scheduler() -> bool:
     if not settings.subject_inventory_scheduler_enabled:
         return False
 
-    global _SUBJECT_INVENTORY_THREAD
-    with _SUBJECT_INVENTORY_LOCK:
-        if _SUBJECT_INVENTORY_THREAD is not None and _SUBJECT_INVENTORY_THREAD.is_alive():
-            return False
-
-        _SUBJECT_INVENTORY_STOP_EVENT.clear()
-        _SUBJECT_INVENTORY_THREAD = Thread(
-            target=_subject_inventory_scheduler_loop,
-            name="fwrouter-subject-inventory",
-            daemon=True,
-        )
-        _SUBJECT_INVENTORY_THREAD.start()
-        return True
+    return _WORKER.start(
+        _subject_inventory_scheduler_loop,
+        name="fwrouter-subject-inventory",
+        thread_factory=Thread,
+    )
 
 
 def stop_subject_inventory_scheduler(*, timeout_seconds: float = 2.0) -> bool:
-    global _SUBJECT_INVENTORY_THREAD
-    with _SUBJECT_INVENTORY_LOCK:
-        if _SUBJECT_INVENTORY_THREAD is None:
-            return False
-
-        _SUBJECT_INVENTORY_STOP_EVENT.set()
-        _SUBJECT_INVENTORY_THREAD.join(timeout=timeout_seconds)
-        stopped = not _SUBJECT_INVENTORY_THREAD.is_alive()
-        if stopped:
-            _SUBJECT_INVENTORY_THREAD = None
-        return stopped
+    return _WORKER.stop(timeout_seconds=timeout_seconds)

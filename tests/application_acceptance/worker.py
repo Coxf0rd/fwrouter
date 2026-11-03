@@ -27,6 +27,7 @@ def _clean_environment() -> None:
         "FWROUTER_ACCEPTANCE_RPC_SOCKET", "FWROUTER_ACCEPTANCE_PROFILE",
         "FWROUTER_ACCEPTANCE_PROVIDER_BASE_URL",
         "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_URL", "FWROUTER_ACCEPTANCE_MIHOMO_PROBE_PORT",
+        "FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE", "FWROUTER_ACCEPTANCE_NODEID",
         "FWROUTER_APPLICATION_ACCEPTANCE_ROOT", "FWROUTER_ACCEPTANCE_RECEIPT_PATH",
         "FWROUTER_XRAY_BINARY", "FWROUTER_MIHOMO_BINARY", "FWROUTER_BROWSER_EXECUTABLE",
         "FWROUTER_CHROMIUM_BINARY", "HOME", "TMPDIR",
@@ -1862,14 +1863,17 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
             or os.environ.get("FWROUTER_APPLICATION_ACCEPTANCE_ROOT") != "/tmp/fwrouter-application-acceptance"):
         raise RuntimeError("Mihomo reconcile observer requires the qualified acceptance worker")
 
-    from fwrouter_api.services import apply_orchestrator
+    from fwrouter_api.services import apply_orchestrator, mihomo_reconcile
 
     original = apply_orchestrator._build_failure_result
     original_satisfies = apply_orchestrator.mihomo_runtime_satisfies_routing
     lock = threading.Lock()
-    state = {"records": 0}
+    state = {"records": 0, "bytes": 0}
     limit = 16
-    max_bytes = 4096
+    max_bytes = 8192
+    max_total_bytes = 64 * 1024
+    pending = threading.local()
+    prewarm_probe = getattr(mihomo_reconcile, "_acceptance_prewarm_probe", None)
 
     def safe_code(value: Any) -> str | None:
         if (isinstance(value, str) and 0 < len(value) <= 96
@@ -1881,6 +1885,9 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
         if not isinstance(value, dict):
             return {}
         return {key: value[key] for key in keys if type(value.get(key)) is bool}
+
+    def safe_sha256(value: Any) -> str | None:
+        return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
 
     def safe_summary(details: Any) -> dict[str, Any] | None:
         if not isinstance(details, dict):
@@ -1929,22 +1936,25 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
             "last_good_retained": reconcile.get("last_good_retained")
             if type(reconcile.get("last_good_retained")) is bool else None,
         }
+        stale_guard = getattr(pending, "generation_revalidation", None)
+        if isinstance(stale_guard, dict):
+            summary["generation_revalidation"] = stale_guard
         return summary
 
     def emit(event: str, summary: dict[str, Any]) -> None:
-        with lock:
-            allowed = state["records"] < limit
-            if allowed:
-                state["records"] += 1
-        if not allowed:
-            return
         try:
             payload = {"schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
                        "event": event, "summary": summary}
             encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-            if len(encoded.encode("ascii")) <= max_bytes:
-                sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE " + encoded + "\n")
-                sys.stderr.flush()
+            cost = len(encoded.encode("ascii")) + len("FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE ") + 1
+            with lock:
+                if state["records"] >= limit or cost > max_bytes + len("FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE ") + 1 \
+                        or state["bytes"] + cost > max_total_bytes:
+                    return
+                state["records"] += 1
+                state["bytes"] += cost
+            sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE " + encoded + "\n")
+            sys.stderr.flush()
         except Exception:
             pass
 
@@ -2000,10 +2010,413 @@ def _install_acceptance_mihomo_reconcile_failure_observer() -> None:
         summary = safe_summary(details)
         if summary is not None:
             emit("failure_result_input", summary)
+        pending.generation_revalidation = None
         return original(*args, **kwargs)
 
+    def canonical_hash(value: Any) -> str | None:
+        try:
+            encoded = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                 ensure_ascii=True).encode("ascii")
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if len(encoded) > 512 * 1024:
+            return None
+        return hashlib.sha256(encoded).hexdigest()
+
+    def fingerprint_components(value: Any) -> dict[str, str | None]:
+        payload = value.get("payload") if isinstance(value, dict) else None
+        if not isinstance(payload, dict):
+            return {}
+        return {key: canonical_hash(payload[key]) for key in
+                ("routing", "tables", "files", "source", "version") if key in payload}
+
+    def changed_fingerprint_entries(expected: Any, current: Any, component: str,
+                                    allowed: tuple[str, ...]) -> list[dict[str, Any]]:
+        before_payload = expected.get("payload") if isinstance(expected, dict) else None
+        after_payload = current.get("payload") if isinstance(current, dict) else None
+        before = before_payload.get(component) if isinstance(before_payload, dict) else None
+        after = after_payload.get(component) if isinstance(after_payload, dict) else None
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            return []
+        changed: list[dict[str, Any]] = []
+        for name in allowed:
+            if name not in before and name not in after:
+                continue
+            before_hash = canonical_hash(before[name]) if name in before else None
+            after_hash = canonical_hash(after[name]) if name in after else None
+            if before_hash != after_hash or before_hash is None or after_hash is None:
+                changed.append({"name": name, "expected_sha256": before_hash,
+                                "current_sha256": after_hash,
+                                "comparison": "unavailable" if before_hash is None or after_hash is None
+                                else "changed"})
+        return changed
+
+    def module_rows(value: Any) -> dict[str, dict[str, Any]]:
+        payload = value.get("payload") if isinstance(value, dict) else None
+        tables = payload.get("tables") if isinstance(payload, dict) else None
+        rows = tables.get("modules") if isinstance(tables, dict) else None
+        result: dict[str, dict[str, Any]] = {}
+        if not isinstance(rows, list) or len(rows) > 256:
+            return result
+        allowed_fields = ("desired_state", "runtime_state", "apply_state", "lifecycle_mode")
+        for row in rows:
+            if not isinstance(row, dict) or row.get("module_name") not in {"vpn", "xray"}:
+                continue
+            name = row["module_name"]
+            safe_row = {field: row.get(field) for field in allowed_fields
+                        if row.get(field) is None or type(row.get(field)) is bool
+                        or type(row.get(field)) is int and abs(row.get(field)) <= 2**63 - 1
+                        or isinstance(row.get(field), str) and len(row.get(field)) <= 256}
+            if len(safe_row) != len(allowed_fields):
+                continue
+            result[name] = safe_row
+        return result
+
+    def install_profile_observer() -> Any:
+        reconcile_function = apply_orchestrator.reconcile_mihomo_runtime
+        if reconcile_function is not mihomo_reconcile.reconcile_mihomo_runtime:
+            raise RuntimeError("Mihomo reconcile facade alias differs from the profiled implementation")
+        reconcile_code = reconcile_function.__code__
+        fingerprint_function = mihomo_reconcile.current_mihomo_input_fingerprint
+        file_hash_function = mihomo_reconcile._file_hash
+        fingerprint_code = getattr(fingerprint_function, "__code__", None)
+        file_hash_code = getattr(file_hash_function, "__code__", None)
+        if fingerprint_code is None or file_hash_code is None:
+            raise RuntimeError("Mihomo acceptance profiling requires Python wrapper callables")
+        source_lines, first_line = __import__("inspect").getsourcelines(reconcile_function)
+        candidate_line = next((first_line + index for index, line in enumerate(source_lines)
+                               if "_file_hash(candidate_path) != prepared_candidate_hash" in line), None)
+        active_line = next((first_line + index for index, line in enumerate(source_lines)
+                            if "_file_hash(base_path) != active_config_hash_before" in line), None)
+        if candidate_line is None or active_line is None:
+            raise RuntimeError("Mihomo revalidation file-hash callsites could not be identified")
+        target_codes = {reconcile_code, fingerprint_code, file_hash_code}
+
+        def observed_reconcile(*args: Any, **kwargs: Any) -> Any:
+            pending.generation_revalidation = None
+            started_ns = time.monotonic_ns()
+            previous_profile = sys.getprofile()
+            timing: dict[str, Any] = {"fingerprint_started_ns": None,
+                                      "fingerprint_returned_ns": None,
+                                      "candidate_read": None, "active_read": None}
+            def profile(frame: Any, event: str, arg: Any) -> None:
+                if previous_profile is not None:
+                    previous_profile(frame, event, arg)
+                if frame.f_code not in target_codes:
+                    return
+                try:
+                    if event == "call" and frame.f_code is fingerprint_code and frame.f_back is not None \
+                            and frame.f_back.f_code is reconcile_code:
+                        timing["fingerprint_started_ns"] = time.monotonic_ns()
+                    elif event == "return" and frame.f_code is fingerprint_code and frame.f_back is not None \
+                            and frame.f_back.f_code is reconcile_code:
+                        timing["fingerprint_returned_ns"] = time.monotonic_ns()
+                        if isinstance(prewarm_probe, dict):
+                            routing = frame.f_back.f_locals.get("routing_dict")
+                            if isinstance(routing, dict) and routing.get("server_mode") == "fixed":
+                                prewarm_probe["fixed_fingerprint_return"](arg)
+                    elif event == "return" and frame.f_code is file_hash_code and frame.f_back is not None \
+                            and frame.f_back.f_code is reconcile_code:
+                        callsite = frame.f_back.f_lineno
+                        label = "candidate_read" if callsite == candidate_line else (
+                            "active_read" if callsite == active_line else None)
+                        if label is not None:
+                            timing[label] = {
+                                "evaluated": True, "sha256": safe_sha256(arg),
+                                "elapsed_ms": min(600_000, max(0, (time.monotonic_ns() - started_ns) // 1_000_000)),
+                            }
+                    elif event == "return" and frame.f_code is reconcile_code:
+                        result = arg
+                        if not isinstance(result, dict) or result.get("error_code") != "MIHOMO_GENERATION_STALE" \
+                                or result.get("stage") != "generation_revalidation":
+                            return
+                        local = frame.f_locals
+                        expected_fp = local.get("input_fingerprint")
+                        current_fp = local.get("current_fingerprint")
+                        expected_components = fingerprint_components(expected_fp)
+                        current_components = fingerprint_components(current_fp)
+                        changed_components = sorted(
+                            key for key in ("routing", "tables", "files", "source", "version")
+                            if expected_components.get(key) != current_components.get(key))
+                        before_modules = module_rows(expected_fp)
+                        after_modules = module_rows(current_fp)
+                        modules: dict[str, Any] = {}
+                        for name in ("vpn", "xray"):
+                            before = before_modules.get(name)
+                            after = after_modules.get(name)
+                            if before != after:
+                                modules[name] = {
+                                    "expected_row_sha256": canonical_hash(before) if before is not None else None,
+                                    "current_row_sha256": canonical_hash(after) if after is not None else None,
+                                    "changed_fields": {field: before is not None and after is not None
+                                                       and before.get(field) != after.get(field)
+                                                       for field in ("desired_state", "runtime_state",
+                                                                     "apply_state", "lifecycle_mode")},
+                                }
+                        expected_revision = local.get("expected_selection_revision")
+                        current_revision = local.get("current_revision")
+                        expected_candidate = safe_sha256(local.get("prepared_candidate_hash"))
+                        expected_active = safe_sha256(local.get("active_config_hash_before"))
+                        expected_incarnation = local.get("runtime_incarnation_before")
+                        current_incarnation = local.get("current_incarnation")
+                        def incarnation_hash(value: Any) -> str | None:
+                            return (hashlib.sha256(value.encode("utf-8")).hexdigest()
+                                    if isinstance(value, str) and 0 < len(value) <= 256 else None)
+                        fp_started = timing.get("fingerprint_started_ns") or started_ns
+                        fp_returned = timing.get("fingerprint_returned_ns") or fp_started
+                        stale = {
+                            "schema": "fwrouter-acceptance-generation-revalidation/v1",
+                            "selection_revision": {
+                                "expected": expected_revision if type(expected_revision) is int
+                                and 0 <= expected_revision <= 2**63 - 1 else None,
+                                "current": current_revision if type(current_revision) is int
+                                and 0 <= current_revision <= 2**63 - 1 else None,
+                                "matches": type(expected_revision) is int and expected_revision == current_revision,
+                            },
+                            "fingerprint": {
+                                "expected_sha256": safe_sha256(expected_fp.get("hash") if isinstance(expected_fp, dict) else None),
+                                "current_sha256": safe_sha256(current_fp.get("hash") if isinstance(current_fp, dict) else None),
+                                "matches": isinstance(expected_fp, dict) and isinstance(current_fp, dict)
+                                and expected_fp.get("hash") == current_fp.get("hash"),
+                                "changed_components": changed_components,
+                                "changed_component_hashes": {
+                                    key: {"expected_sha256": expected_components.get(key),
+                                          "current_sha256": current_components.get(key)}
+                                    for key in changed_components if key not in {"tables", "files"}},
+                                "changed_tables": changed_fingerprint_entries(
+                                    expected_fp, current_fp, "tables",
+                                    ("servers", "server_preferences", "vpn_auto_exclusive",
+                                     "subscription_inventory_generation", "server_custom_https_proxy",
+                                     "subject_routes", "subject_user_overrides", "explicit_external_clients",
+                                     "routing_global_state", "rules_state", "modules")),
+                                "changed_files": changed_fingerprint_entries(
+                                    expected_fp, current_fp, "files",
+                                    ("effective_rules", "last_good_effective_rules", "applied_manifest", "contours")),
+                                "modules": modules,
+                            },
+                            "candidate": {
+                                "expected_sha256": expected_candidate,
+                                "expected_hash_available": expected_candidate is not None,
+                                "read_evaluated": timing["candidate_read"] is not None,
+                                "current_sha256": (timing["candidate_read"] or {}).get("sha256"),
+                                "current_hash_available": (timing["candidate_read"] or {}).get("sha256") is not None,
+                                "matches": timing["candidate_read"] is not None and expected_candidate is not None
+                                and timing["candidate_read"].get("sha256") == expected_candidate,
+                                "elapsed_ms": (timing["candidate_read"] or {}).get("elapsed_ms"),
+                            },
+                            "active_config": {
+                                "expected_sha256": expected_active,
+                                "expected_hash_available": expected_active is not None,
+                                "read_evaluated": timing["active_read"] is not None,
+                                "current_sha256": (timing["active_read"] or {}).get("sha256"),
+                                "current_hash_available": (timing["active_read"] or {}).get("sha256") is not None,
+                                "matches": timing["active_read"] is not None and expected_active is not None
+                                and timing["active_read"].get("sha256") == expected_active,
+                                "elapsed_ms": (timing["active_read"] or {}).get("elapsed_ms"),
+                            },
+                            "runtime_incarnation": {
+                                "expected_sha256": incarnation_hash(expected_incarnation),
+                                "current_sha256": incarnation_hash(current_incarnation),
+                                "matches": expected_incarnation == current_incarnation,
+                                "checked": local.get("resume_reservation") is None,
+                            },
+                            "resume_reservation_present": local.get("resume_reservation") is not None,
+                            "timing_ms": {
+                                "fingerprint": min(600_000, max(0, (fp_returned - fp_started) // 1_000_000)),
+                                "revalidation_after_fingerprint": min(600_000, max(0, (time.monotonic_ns() - fp_returned) // 1_000_000)),
+                                "total": min(600_000, max(0, (time.monotonic_ns() - started_ns) // 1_000_000)),
+                            },
+                        }
+                        if isinstance(prewarm_probe, dict):
+                            probe_record = prewarm_probe["snapshot"]()
+                            probe_module = probe_record.get("module") if isinstance(probe_record, dict) else None
+                            guard_module = modules.get(probe_module) if probe_module in modules else None
+                            probe_times = probe_record.get("times_ms") if isinstance(probe_record, dict) else {}
+                            stale["prewarm_sync_probe"] = {
+                                "status": probe_record.get("status") if isinstance(probe_record, dict) else "invalid",
+                                "actor": probe_record.get("actor") if isinstance(probe_record, dict) else None,
+                                "module": probe_module,
+                                "original_sync_called": probe_record.get("original_sync_called") is True
+                                if isinstance(probe_record, dict) else False,
+                                "fixed_fingerprint_matches_expected": (
+                                    probe_record.get("fixed_fingerprint_sha256")
+                                    == (expected_fp.get("hash") if isinstance(expected_fp, dict) else None)
+                                    if isinstance(probe_record, dict) else False
+                                ),
+                                "expected_row_matches_guard": bool(guard_module)
+                                and probe_record.get("expected_sha256") == guard_module.get("expected_row_sha256"),
+                                "current_row_matches_guard": bool(guard_module)
+                                and probe_record.get("current_sha256") == guard_module.get("current_row_sha256"),
+                                "times_ms": {key: probe_times.get(key)
+                                             for key in ("entered_ms", "fixed_snapshot_ms",
+                                                         "released_ms", "completed_ms")}
+                                if isinstance(probe_times, dict) else {},
+                            }
+                        pending.generation_revalidation = stale
+                except Exception:
+                    # Diagnostics never alter the source guard result or its fence.
+                    return
+
+            sys.setprofile(profile)
+            try:
+                return reconcile_function(*args, **kwargs)
+            finally:
+                sys.setprofile(previous_profile)
+
+        apply_orchestrator.reconcile_mihomo_runtime = observed_reconcile
+
     apply_orchestrator._build_failure_result = observed_failure
+    install_profile_observer()
     apply_orchestrator.mihomo_runtime_satisfies_routing = observed_satisfies
+
+
+def _install_acceptance_mihomo_prewarm_probe() -> dict[str, Any] | None:
+    """Hold only the exact packet scenario's first real prewarm sync for a bounded schedule."""
+    if os.environ.get("FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE") != "1":
+        return None
+    from .profile import load_profile
+    profile, _ = load_profile(Path(os.environ.get("FWROUTER_ACCEPTANCE_PROFILE", "")))
+    expected_node = (
+        "tests/application_acceptance/test_packet_dataplane.py::"
+        "test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh"
+    )
+    if (profile.get("profile") != "hosted-kernel-packet"
+            or os.environ.get("FWROUTER_ACCEPTANCE_NODEID") != expected_node):
+        raise RuntimeError("Mihomo prewarm probe is restricted to its exact qualified packet node")
+
+    from fwrouter_api.services import mihomo_reconcile, xray_status
+
+    original_sync = xray_status._sync_xray_module_runtime_state
+    entered = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+    lock = threading.Lock()
+    started_ns = time.monotonic_ns()
+    state_data: dict[str, Any] = {"claimed": False, "record": None, "fixed_seen": False,
+                                  "emitted": False, "times": {}}
+    fields = ("desired_state", "runtime_state", "apply_state", "lifecycle_mode")
+
+    def elapsed_ms() -> int:
+        return min(600_000, max(0, (time.monotonic_ns() - started_ns) // 1_000_000))
+
+    def row_digest(row: dict[str, Any] | None) -> str | None:
+        if row is None:
+            return None
+        value = {field: row.get(field) for field in fields}
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def module_projection(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        projected = {field: value.get(field) for field in fields}
+        if any(item is not None and not isinstance(item, str) for item in projected.values()):
+            return None
+        if any(isinstance(item, str) and len(item) > 128 for item in projected.values()):
+            return None
+        return projected
+
+    def fixed_fingerprint_return(fingerprint: Any) -> None:
+        with lock:
+            if state_data["fixed_seen"]:
+                return
+            state_data["fixed_seen"] = True
+            state_data["fixed_fingerprint_sha256"] = (
+                fingerprint.get("hash") if isinstance(fingerprint, dict)
+                and isinstance(fingerprint.get("hash"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", fingerprint["hash"]) else None
+            )
+            state_data["times"]["fixed_snapshot_ms"] = elapsed_ms()
+        wait_started = time.monotonic_ns()
+        if entered.wait(timeout=5):
+            with lock:
+                state_data["times"]["released_ms"] = elapsed_ms()
+            release.set()
+            completed.wait(timeout=5)
+        with lock:
+            state_data["fixed_wait_ms"] = min(10_000, max(0, (time.monotonic_ns() - wait_started) // 1_000_000))
+        emit_probe_record()
+
+    def emit_probe_record() -> None:
+        with lock:
+            if state_data["emitted"]:
+                return
+            state_data["emitted"] = True
+        payload = {"schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+                   "event": "prewarm_sync_probe", "summary": snapshot()}
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if len(encoded.encode("ascii")) <= 2048:
+            sys.stderr.write("FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE " + encoded + "\n")
+            sys.stderr.flush()
+
+    def snapshot() -> dict[str, Any]:
+        with lock:
+            record = state_data.get("record")
+            if not isinstance(record, dict):
+                return {"status": "sync_observation_incomplete" if state_data["claimed"]
+                        else "not_reproduced_no_sync_actor",
+                        "fixed_snapshot_seen": bool(state_data["fixed_seen"]),
+                        "fixed_fingerprint_sha256": state_data.get("fixed_fingerprint_sha256"),
+                        "times_ms": dict(state_data["times"])}
+            return dict(record)
+
+    def observed_sync(**kwargs: Any) -> Any:
+        hold = False
+        if threading.current_thread().name == "fwrouter-runtime-prewarm":
+            with lock:
+                if not state_data["claimed"]:
+                    state_data["claimed"] = True
+                    hold = True
+        if not hold:
+            return original_sync(**kwargs)
+        before = module_projection(kwargs.get("module"))
+        hold_started = time.monotonic_ns()
+        with lock:
+            state_data["times"]["entered_ms"] = elapsed_ms()
+        entered.set()
+        released = release.wait(timeout=5)
+        with lock:
+            state_data["times"].setdefault("released_ms", elapsed_ms())
+        result = None
+        error: BaseException | None = None
+        try:
+            result = original_sync(**kwargs)
+        except BaseException as exc:
+            error = exc
+        try:
+            after = module_projection(result)
+            raw_module_name = kwargs.get("module", {}).get("module_name") \
+                if isinstance(kwargs.get("module"), dict) else None
+            module_name = raw_module_name if isinstance(raw_module_name, str) \
+                and raw_module_name in {"vpn", "xray"} else None
+            with lock:
+                state_data["times"]["completed_ms"] = elapsed_ms()
+                state_data["record"] = {
+                    "status": "original_raised" if error is not None else
+                    "held_and_released" if released else "self_released_timeout",
+                    "actor": "fwrouter-runtime-prewarm", "original_sync_called": True,
+                    "fixed_fingerprint_sha256": state_data.get("fixed_fingerprint_sha256"),
+                    "module": module_name, "expected_sha256": row_digest(before),
+                    "current_sha256": row_digest(after),
+                    "changed_fields": {key: before is not None and after is not None
+                                       and before.get(key) != after.get(key) for key in fields},
+                    "times_ms": dict(state_data["times"]),
+                    "fixed_snapshot_seen": bool(state_data["fixed_seen"]),
+                    "fixed_wait_ms": state_data.get("fixed_wait_ms"),
+                    "hold_ms": min(5000, max(0, (time.monotonic_ns() - hold_started) // 1_000_000)),
+                    "original_raised": error is not None,
+                }
+        finally:
+            completed.set()
+        if error is not None:
+            raise error
+        return result
+
+    xray_status._sync_xray_module_runtime_state = observed_sync
+    mihomo_reconcile._acceptance_prewarm_probe = {
+        "fixed_fingerprint_return": fixed_fingerprint_return, "snapshot": snapshot,
+    }
+    return mihomo_reconcile._acceptance_prewarm_probe
 
 
 def _install_acceptance_recovery_apply_observer() -> None:
@@ -4192,6 +4605,7 @@ def build_app(socket_path: Path):
     mihomo_delay_observer = _install_acceptance_mihomo_delay_error_observer()
     mihomo_adapter._acceptance_group_probe_observer = mihomo_delay_observer
     _install_acceptance_selection_fence_observer()
+    _install_acceptance_mihomo_prewarm_probe()
     _install_acceptance_mihomo_reconcile_failure_observer()
     _install_acceptance_recovery_apply_observer()
     if acceptance_profile.get("profile") == "hosted-kernel-packet":

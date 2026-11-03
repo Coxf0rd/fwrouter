@@ -122,7 +122,7 @@ def _extract_startup_readiness_policy():
     tree = ast.parse(APPLICATION_ACCEPTANCE_CONFTEST.read_text(encoding="utf-8"))
     names = {
         "MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS", "QUALIFIED_STARTUP_DEADLINE_SECONDS",
-        "SLOW_STARTUP_WARNING_SECONDS", "_bootstrap_observation_state",
+        "SLOW_STARTUP_WARNING_SECONDS", "_MIHOMO_PREWARM_NODEID", "_bootstrap_observation_state",
         "_startup_attempt_state", "_slow_startup_warning_due",
     }
     body = []
@@ -1802,7 +1802,10 @@ class AcceptanceContractTests(unittest.TestCase):
                         return clock.wait(seconds)
 
                 provider_bridge = SimpleNamespace(base_url="http://127.0.0.1:9000", mihomo_probe_url=None)
-                request = SimpleNamespace(config=SimpleNamespace(_fwrouter_startup_observations=observations))
+                request = SimpleNamespace(
+                    config=SimpleNamespace(_fwrouter_startup_observations=observations),
+                    node=SimpleNamespace(nodeid=policy["_MIHOMO_PREWARM_NODEID"]),
+                )
 
                 def warn(fake_proc, elapsed, qualification):
                     record = {"code": "SLOW_STARTUP", "elapsed_seconds": elapsed,
@@ -1843,6 +1846,7 @@ class AcceptanceContractTests(unittest.TestCase):
                     "MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS": policy["MINIMAL_WORKER_STARTUP_DEADLINE_SECONDS"],
                     "QUALIFIED_STARTUP_DEADLINE_SECONDS": policy["QUALIFIED_STARTUP_DEADLINE_SECONDS"],
                     "SLOW_STARTUP_WARNING_SECONDS": policy["SLOW_STARTUP_WARNING_SECONDS"],
+                    "_MIHOMO_PREWARM_NODEID": policy["_MIHOMO_PREWARM_NODEID"],
                 }
                 start_worker = _compile_acceptance_start_worker(namespace)
                 try:
@@ -4744,7 +4748,8 @@ class AcceptanceContractTests(unittest.TestCase):
         namespace = {
             "__builtins__": __builtins__, "__package__": "application_acceptance",
             "os": __import__("os"), "sys": sys, "json": json,
-            "threading": threading, "Any": __import__("typing").Any,
+            "threading": threading, "time": time, "hashlib": hashlib, "re": re,
+            "Any": __import__("typing").Any,
         }
         exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
         calls = []
@@ -4769,11 +4774,34 @@ class AcceptanceContractTests(unittest.TestCase):
                 raise satisfies_failure
             return satisfies_returned
 
+        def reconcile_function(*args, **kwargs):
+            candidate_path = "candidate"
+            base_path = "active"
+            prepared_candidate_hash = "0" * 64
+            active_config_hash_before = "0" * 64
+            if _file_hash(candidate_path) != prepared_candidate_hash:
+                return {"ok": False}
+            if _file_hash(base_path) != active_config_hash_before:
+                return {"ok": False}
+            return {"ok": True}
+
+        def current_fingerprint(*args, **kwargs):
+            return {"hash": "0" * 64, "payload": {"version": 3}}
+
+        def _file_hash(path):
+            return "0" * 64
+
         apply_orchestrator = SimpleNamespace(
             _build_failure_result=original, mihomo_runtime_satisfies_routing=original_satisfies,
+            reconcile_mihomo_runtime=reconcile_function,
         )
         services = ModuleType("fwrouter_api.services")
         services.apply_orchestrator = apply_orchestrator
+        services.mihomo_reconcile = SimpleNamespace(
+            reconcile_mihomo_runtime=reconcile_function,
+            current_mihomo_input_fingerprint=current_fingerprint,
+            _file_hash=_file_hash,
+        )
         reconcile = {
             "ok": False, "stage": "native_udp_policy_readback", "error_code": "PROOF_FAILED",
             "reconcile_action": "restart", "reconcile_reason": "native_policy_or_fence_unconfirmed",
@@ -4814,10 +4842,10 @@ class AcceptanceContractTests(unittest.TestCase):
 
         text = observed.getvalue()
         prefix = "FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE "
-        self.assertLessEqual(len(text.encode("ascii")), 16 * (4096 + len(prefix) + 1))
+        self.assertLessEqual(len(text.encode("ascii")), 64 * 1024)
         for line in text.splitlines():
             self.assertTrue(line.startswith(prefix))
-            self.assertLessEqual(len(line[len(prefix):].encode("ascii")), 4096)
+            self.assertLessEqual(len(line[len(prefix):].encode("ascii")), 8192)
         self.assertNotIn("secret-config-content", text)
         self.assertNotIn("/private/path", text)
         self.assertNotIn("private message", text)
@@ -4850,6 +4878,7 @@ class AcceptanceContractTests(unittest.TestCase):
         parsed = ast.parse(test_path.read_text(encoding="utf-8"))
         wanted = {
             "_PROVIDER_WORKER_LOG_PREFIX", "_MIHOMO_RECONCILE_WORKER_LOG_PREFIX",
+            "_MIHOMO_PREWARM_WORKER_LOG_PREFIX",
             "_PROVIDER_WORKER_LOG_MAX_FILES", "_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES",
             "_PROVIDER_WORKER_LOG_PREFIXES", "_MIHOMO_RECONCILE_STAGES",
             "_MIHOMO_RECONCILE_ERROR_CODES", "_MIHOMO_RECONCILE_REASONS",
@@ -4901,6 +4930,47 @@ class AcceptanceContractTests(unittest.TestCase):
                     },
                     "recovery": {"ok": False, "reason": "restore_restart_failed"},
                     "last_good_retained": True, "secret": "never include",
+                    "generation_revalidation": {
+                        "schema": "fwrouter-acceptance-generation-revalidation/v1",
+                        "selection_revision": {"expected": 8, "current": 8, "matches": True,
+                                               "secret": "omit"},
+                        "fingerprint": {
+                            "expected_sha256": "a" * 64, "current_sha256": "b" * 64,
+                            "matches": False,
+                            "changed_component_hashes": {"routing": {"expected_sha256": "a" * 64,
+                                                                        "current_sha256": "b" * 64},
+                                                          "tables": {"expected_sha256": "c" * 64,
+                                                                     "current_sha256": "d" * 64},
+                                                          "secret": {"expected_sha256": "omit"}},
+                            "changed_components": ["tables", "secret-component", {"nested": "bad"}, ["bad"]],
+                            "changed_tables": [{"name": "modules", "expected_sha256": "e" * 64,
+                                                "current_sha256": "f" * 64, "comparison": "changed"},
+                                               {"name": "secret-table", "expected_sha256": "bad",
+                                                "current_sha256": "bad"}],
+                            "changed_files": [{"name": "contours", "expected_sha256": "1" * 64,
+                                               "current_sha256": "2" * 64, "comparison": "changed"}],
+                            "modules": {"vpn": {
+                                "expected_row_sha256": "e" * 64, "current_row_sha256": "f" * 64,
+                                "changed_fields": {"runtime_state": True, "secret": "omit"},
+                                "raw_value": "module-secret",
+                            }, "private-module": {"expected_row_sha256": "secret"}},
+                            "raw_rows": "never include",
+                        },
+                        "candidate": {"expected_sha256": "1" * 64, "expected_hash_available": True,
+                                      "read_evaluated": True,
+                                      "current_sha256": "2" * 64, "matches": False, "elapsed_ms": 12,
+                                      "path": "/secret/config"},
+                        "active_config": {"expected_sha256": "3" * 64, "expected_hash_available": True,
+                                          "read_evaluated": False,
+                                          "current_sha256": None, "matches": False, "elapsed_ms": None},
+                        "runtime_incarnation": {"expected_sha256": "4" * 64,
+                                                 "current_sha256": "secret-runtime-incarnation-value",
+                                                 "matches": False, "checked": True},
+                        "resume_reservation_present": False,
+                        "timing_ms": {"fingerprint": 2, "revalidation_after_fingerprint": 3,
+                                      "total": 5, "secret": 10},
+                        "extra": "untrusted-secret",
+                    },
                 },
                 "private": "never include",
             }
@@ -4937,8 +5007,26 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertIs(summary["unknown_enum"], False)
             self.assertNotIn("candidate", summary)
             serialized = json.dumps(diagnostics, sort_keys=True)
-            self.assertLessEqual(len(serialized.encode("ascii")), 1024)
-            for secret in ("secret", "private-stage", "secret-code", "token-secret", "/secret/path", "never include"):
+            self.assertLessEqual(len(serialized.encode("ascii")), 6000)
+            generation = summary["generation_revalidation"]
+            self.assertEqual(["tables"], generation["fingerprint"]["changed_components"])
+            self.assertEqual({"routing": {"expected_sha256": "a" * 64,
+                                           "current_sha256": "b" * 64},
+                             "tables": {"expected_sha256": "c" * 64,
+                                        "current_sha256": "d" * 64}},
+                             generation["fingerprint"]["changed_component_hashes"])
+            self.assertEqual([{"name": "modules", "expected": "e" * 64,
+                               "current": "f" * 64, "comparison": "changed"}],
+                             generation["fingerprint"]["changed_tables"])
+            self.assertEqual([{"name": "contours", "expected": "1" * 64,
+                               "current": "2" * 64, "comparison": "changed"}],
+                             generation["fingerprint"]["changed_files"])
+            self.assertEqual({"runtime_state": True}, generation["fingerprint"]["modules"]["vpn"]["changed_fields"])
+            self.assertFalse(generation["active_config"]["read_evaluated"])
+            self.assertIsNone(generation["runtime_incarnation"]["current_sha256"])
+            for secret in ("secret", "private-stage", "secret-code", "token-secret", "/secret/path",
+                           "never include", "module-secret", "untrusted-secret", "private-module",
+                           "secret-runtime-incarnation-value"):
                 self.assertNotIn(secret, serialized)
 
             # The latest recognized failure wins when an earlier generic
@@ -4958,13 +5046,13 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertEqual("generation_resume_reservation", bounded[0]["summary"]["stage"])
             self.assertEqual("receipt_fence_mismatch", bounded[0]["summary"]["reconcile_reason"])
             self.assertEqual("MIHOMO_CANDIDATE_INVALID", bounded[0]["summary"]["error_code"])
-            self.assertLessEqual(len(json.dumps(bounded, sort_keys=True).encode("ascii")), 1024)
+            self.assertLessEqual(len(json.dumps(bounded, sort_keys=True).encode("ascii")), 6000)
 
             # Even known values are omitted if the serialized diagnostic would
             # exceed its explicit byte cap.
             namespace["_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES"] = 32
             self.assertEqual([], namespace["_safe_mihomo_reconcile_diagnostics_since"](root, snapshot))
-            namespace["_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES"] = 1024
+            namespace["_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES"] = 6000
 
             # Unknown enum strings are nulled and marked, while secret payload
             # fields remain absent. A new snapshot isolates this record.
@@ -4981,6 +5069,680 @@ class AcceptanceContractTests(unittest.TestCase):
             unknown_text = json.dumps(projected_untrusted, sort_keys=True)
             for secret in ("secret-code", "token-secret", "private-stage", "never include"):
                 self.assertNotIn(secret, unknown_text)
+
+            # Full whitelist churn must fit both the reader and packet failure string caps.
+            max_snapshot = namespace["_snapshot_provider_worker_logs"](root)
+            table_names = ("servers", "server_preferences", "vpn_auto_exclusive",
+                           "subscription_inventory_generation", "server_custom_https_proxy",
+                           "subject_routes", "subject_user_overrides", "explicit_external_clients",
+                           "routing_global_state", "rules_state", "modules")
+            file_names = ("effective_rules", "last_good_effective_rules", "applied_manifest", "contours")
+            maximal = json.loads(json.dumps(valid))
+            maximal_generation = maximal["summary"]["generation_revalidation"]
+            maximal_generation["prewarm_sync_probe"] = {
+                "status": "held_and_released", "actor": "fwrouter-runtime-prewarm",
+                "module": "xray", "original_sync_called": True, "original_raised": False,
+                "fixed_fingerprint_matches_expected": True,
+                "expected_row_matches_guard": True, "current_row_matches_guard": True,
+                "times_ms": {"entered_ms": 1, "fixed_snapshot_ms": 2,
+                             "released_ms": 3, "completed_ms": 4},
+            }
+            maximal_generation["fingerprint"].update({
+                "changed_components": ["routing", "tables", "files", "source"],
+                "changed_component_hashes": {
+                    name: {"expected_sha256": hashlib.sha256((name + "-before").encode()).hexdigest(),
+                           "current_sha256": hashlib.sha256((name + "-after").encode()).hexdigest()}
+                    for name in ("routing", "source")
+                },
+                "changed_tables": [{
+                    "name": name,
+                    "expected_sha256": hashlib.sha256((name + "-before").encode()).hexdigest(),
+                    "current_sha256": hashlib.sha256((name + "-after").encode()).hexdigest(),
+                    "comparison": "changed",
+                } for name in table_names],
+                "changed_files": [{
+                    "name": name,
+                    "expected_sha256": hashlib.sha256((name + "-before").encode()).hexdigest(),
+                    "current_sha256": hashlib.sha256((name + "-after").encode()).hexdigest(),
+                    "comparison": "changed",
+                } for name in file_names],
+            })
+            maximal_payload = json.dumps(maximal, sort_keys=True, separators=(",", ":")).encode("ascii")
+            self.assertLessEqual(len(maximal_payload), 8192)
+            with log.open("ab") as stream:
+                stream.write(mihomo_prefix + maximal_payload + b"\n")
+            maximal_diagnostics = namespace["_safe_mihomo_reconcile_diagnostics_since"](root, max_snapshot)
+            self.assertEqual(1, len(maximal_diagnostics), "valid full-whitelist diagnostics must not be dropped")
+            self.assertLessEqual(len(json.dumps(maximal_diagnostics, sort_keys=True,
+                                                separators=(",", ":")).encode("ascii")), 6000,
+                                 "maximal projected diagnostic must fit its declared reader cap")
+            rendered_packet_failure = json.dumps({
+                "status": 200, "ok": False, "error_code": "MIHOMO_RECONCILE_FAILED",
+                "mihomo_reconcile": maximal_diagnostics,
+            }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            self.assertLessEqual(len(rendered_packet_failure.encode("ascii")), 6 * 1024,
+                                 f"maximal packet diagnostic bytes={len(rendered_packet_failure.encode('ascii'))}")
+
+            probe_prefix = namespace["_MIHOMO_PREWARM_WORKER_LOG_PREFIX"].encode("ascii")
+            probe_snapshot = namespace["_snapshot_provider_worker_logs"](root)
+            probe = {
+                "schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+                "event": "prewarm_sync_probe",
+                "summary": {
+                    "status": "held_and_released", "actor": "fwrouter-runtime-prewarm",
+                    "module": "xray", "original_sync_called": True,
+                    "fixed_fingerprint_sha256": "a" * 64,
+                    "expected_sha256": "b" * 64, "current_sha256": "c" * 64,
+                    "changed_fields": {"runtime_state": True, "apply_state": True},
+                    "times_ms": {"entered_ms": 10, "fixed_snapshot_ms": 11,
+                                 "released_ms": 12, "completed_ms": 13},
+                    "raw_config": "DO_NOT_EXPORT", "secret": "DO_NOT_EXPORT",
+                },
+            }
+            with log.open("ab") as stream:
+                stream.write(probe_prefix + json.dumps(probe).encode("ascii") + b"\n")
+            projected_probe = namespace["_safe_mihomo_reconcile_diagnostics_since"](root, probe_snapshot)
+            self.assertEqual(1, len(projected_probe))
+            self.assertEqual("prewarm_sync_probe", projected_probe[0]["event"])
+            self.assertEqual("held_and_released", projected_probe[0]["summary"]["status"])
+            self.assertEqual("b" * 64, projected_probe[0]["summary"]["expected_sha256"])
+            self.assertNotIn("DO_NOT_EXPORT", json.dumps(projected_probe))
+            nested_probe_snapshot = namespace["_snapshot_provider_worker_logs"](root)
+            probe["summary"].update(status=["held_and_released"], module={"name": "xray"})
+            with log.open("ab") as stream:
+                stream.write(probe_prefix + json.dumps(probe).encode("ascii") + b"\n")
+            nested_probe = namespace["_safe_mihomo_reconcile_diagnostics_since"](root, nested_probe_snapshot)
+            self.assertEqual("invalid", nested_probe[0]["summary"]["status"])
+            self.assertIsNone(nested_probe[0]["summary"]["module"])
+
+    def test_mihomo_stale_generation_profiler_observes_actual_guard_short_circuit(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        observer = next(node for node in parsed.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_mihomo_reconcile_failure_observer")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": os, "sys": sys, "json": json, "threading": threading,
+            "time": time, "hashlib": hashlib, "re": re, "Any": Any,
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        state = {"input": None, "current": None,
+                 "hashes": {"candidate": "a" * 64, "active": "b" * 64}, "reads": [],
+                 "raise": False, "failure": RuntimeError("private reconcile exception")}
+        stale_result = {"ok": False, "stage": "generation_revalidation",
+                        "error_code": "MIHOMO_GENERATION_STALE", "last_good_retained": True,
+                        "reconcile_action": "none", "reconcile_reason": "stale_generation_candidate"}
+
+        def fingerprint(routing=None):
+            return state["current"]
+
+        def _file_hash(path):
+            state["reads"].append(path)
+            return state["hashes"][path]
+
+        def synthetic_reconcile(routing=None):
+            if state["raise"]:
+                raise state["failure"]
+            expected_selection_revision = 9
+            current_revision = 9
+            input_fingerprint = state["input"]
+            prepared_candidate_hash = "a" * 64
+            active_config_hash_before = "b" * 64
+            runtime_incarnation_before = "incarnation-private-a"
+            resume_reservation = None
+            candidate_path = "candidate"
+            base_path = "active"
+            current_fingerprint = fingerprint(routing)
+            current_incarnation = "incarnation-private-a"
+            if (
+                current_revision != expected_selection_revision
+                or (input_fingerprint or {}).get("hash") != (current_fingerprint or {}).get("hash")
+                or not prepared_candidate_hash
+                or _file_hash(candidate_path) != prepared_candidate_hash
+                or _file_hash(base_path) != active_config_hash_before
+                or (resume_reservation is None and current_incarnation != runtime_incarnation_before)
+            ):
+                return stale_result
+            return {"ok": True}
+
+        def original_failure(*args, **kwargs):
+            return {"passthrough": True}
+
+        def original_satisfies(*args, **kwargs):
+            return {"ok": True}
+
+        apply_orchestrator = SimpleNamespace(
+            _build_failure_result=original_failure,
+            mihomo_runtime_satisfies_routing=original_satisfies,
+            reconcile_mihomo_runtime=synthetic_reconcile,
+        )
+        services = ModuleType("fwrouter_api.services")
+        services.apply_orchestrator = apply_orchestrator
+        services.mihomo_reconcile = SimpleNamespace(
+            reconcile_mihomo_runtime=synthetic_reconcile,
+            current_mihomo_input_fingerprint=fingerprint,
+            _file_hash=_file_hash,
+        )
+        output = io.StringIO()
+        prefix = "FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE "
+
+        def make_fingerprint(module_state):
+            payload = {"version": 3, "routing": {"mode": "fixed"},
+                       "tables": {"modules": [{"module_name": "vpn", "desired_state": "running",
+                                                   "runtime_state": module_state, "apply_state": "applied",
+                                                   "lifecycle_mode": "managed"}]},
+                       "files": {"generated.py": "c" * 64}, "source": {"config.py": "d" * 64}}
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+            return {"hash": digest, "payload": payload}
+
+        table_names = ("servers", "server_preferences", "vpn_auto_exclusive",
+                       "subscription_inventory_generation", "server_custom_https_proxy",
+                       "subject_routes", "subject_user_overrides", "explicit_external_clients",
+                       "routing_global_state", "rules_state", "modules")
+        file_names = ("effective_rules", "last_good_effective_rules", "applied_manifest", "contours")
+
+        def make_full_fingerprint(suffix):
+            payload = {
+                "version": 3,
+                "routing": {"mode": "fixed"},
+                "tables": {name: [{"fixture": f"{name}-{suffix}"}] for name in table_names},
+                "files": {name: hashlib.sha256(f"{name}-{suffix}".encode()).hexdigest()
+                          for name in file_names},
+                "source": {"config.py": "d" * 64},
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+            return {"hash": digest, "payload": payload}
+
+        with mock.patch.dict(sys.modules, {"fwrouter_api.services": services}), \
+                mock.patch.dict(os.environ, {"FWROUTER_ENVIRONMENT": "test",
+                                             "FWROUTER_APPLICATION_ACCEPTANCE_ROOT":
+                                             "/tmp/fwrouter-application-acceptance"}), \
+                mock.patch("sys.stderr", output):
+            namespace["_install_acceptance_mihomo_reconcile_failure_observer"]()
+            state["input"] = make_fingerprint("running")
+            state["current"] = make_fingerprint("stopped")
+            prior_profile = sys.getprofile()
+            prior_profile_events = [0]
+
+            def prior_profile_observer(frame, event, arg):
+                prior_profile_events[0] += 1
+
+            sys.setprofile(prior_profile_observer)
+            try:
+                result = apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+                self.assertIs(stale_result, result,
+                              "acceptance profiler must preserve original reconcile result")
+                self.assertIs(prior_profile_observer, sys.getprofile(),
+                              "per-call profiling must restore the invoking thread profiler")
+            finally:
+                sys.setprofile(prior_profile)
+            self.assertGreater(prior_profile_events[0], 0, "existing profiler must be chained")
+            self.assertEqual("MIHOMO_GENERATION_STALE", result["error_code"])
+            self.assertEqual([], state["reads"], "fingerprint mismatch must preserve original short-circuit")
+            apply_orchestrator._build_failure_result(
+                "opaque", details={"mihomo_reconcile": result},
+            )
+            same_fingerprint = make_fingerprint("running")
+            state["input"] = same_fingerprint
+            state["current"] = same_fingerprint
+            state["hashes"] = {"candidate": "f" * 64, "active": "b" * 64}
+            state["reads"].clear()
+            candidate_result = apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+            apply_orchestrator._build_failure_result(
+                "opaque", details={"mihomo_reconcile": candidate_result},
+            )
+            self.assertEqual(["candidate"], state["reads"], "candidate mismatch must short-circuit active hash read")
+            state["hashes"] = {"candidate": "a" * 64, "active": "c" * 64}
+            state["reads"].clear()
+            active_result = apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+            apply_orchestrator._build_failure_result(
+                "opaque", details={"mihomo_reconcile": active_result},
+            )
+            self.assertEqual(["candidate", "active"], state["reads"])
+            state["input"] = make_full_fingerprint("before")
+            state["current"] = make_full_fingerprint("after")
+            state["reads"].clear()
+            all_components_result = apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+            apply_orchestrator._build_failure_result(
+                "opaque", details={"mihomo_reconcile": all_components_result},
+            )
+            prior_profile = sys.getprofile()
+            raise_profile_events = [0]
+
+            def raise_path_profile(frame, event, arg):
+                raise_profile_events[0] += 1
+
+            sys.setprofile(raise_path_profile)
+            state["raise"] = True
+            try:
+                with self.assertRaises(RuntimeError) as raised:
+                    apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+                self.assertIs(state["failure"], raised.exception,
+                              "acceptance profiler must preserve original reconcile exception")
+                self.assertIs(raise_path_profile, sys.getprofile(),
+                              "exception path must restore the invoking thread profiler")
+            finally:
+                sys.setprofile(prior_profile)
+                state["raise"] = False
+            self.assertGreater(raise_profile_events[0], 0)
+
+        records = [json.loads(line[len(prefix):]) for line in output.getvalue().splitlines()]
+        self.assertEqual(4, len(records))
+        summary = records[0]["summary"]
+        self.assertEqual("MIHOMO_GENERATION_STALE", summary["error_code"])
+        guard = summary["generation_revalidation"]
+        self.assertFalse(guard["fingerprint"]["matches"])
+        self.assertEqual(["tables"], guard["fingerprint"]["changed_components"])
+        self.assertEqual(["modules"], [entry["name"] for entry in guard["fingerprint"]["changed_tables"]])
+        self.assertEqual({}, guard["fingerprint"]["changed_component_hashes"])
+        self.assertEqual([], guard["fingerprint"]["changed_files"])
+        self.assertEqual({"desired_state": False, "runtime_state": True, "apply_state": False,
+                          "lifecycle_mode": False}, guard["fingerprint"]["modules"]["vpn"]["changed_fields"])
+        self.assertFalse(guard["candidate"]["read_evaluated"])
+        self.assertFalse(guard["active_config"]["read_evaluated"])
+        candidate_guard = records[1]["summary"]["generation_revalidation"]
+        self.assertTrue(candidate_guard["candidate"]["read_evaluated"])
+        self.assertEqual("f" * 64, candidate_guard["candidate"]["current_sha256"])
+        self.assertTrue(candidate_guard["candidate"]["current_hash_available"])
+        self.assertFalse(candidate_guard["active_config"]["read_evaluated"])
+        active_guard = records[2]["summary"]["generation_revalidation"]
+        self.assertEqual("a" * 64, active_guard["candidate"]["current_sha256"])
+        self.assertEqual("c" * 64, active_guard["active_config"]["current_sha256"])
+        self.assertTrue(active_guard["active_config"]["read_evaluated"])
+        self.assertTrue(active_guard["active_config"]["current_hash_available"])
+        full_record = records[3]
+        self.assertLessEqual(len(json.dumps(full_record, separators=(",", ":")).encode("ascii")), 8192)
+        full_guard = full_record["summary"]["generation_revalidation"]
+        self.assertEqual(list(table_names), [entry["name"] for entry in full_guard["fingerprint"]["changed_tables"]])
+        self.assertEqual(list(file_names), [entry["name"] for entry in full_guard["fingerprint"]["changed_files"]])
+        for secret in ("incarnation-private", "candidate-private-path", "active-private-path",
+                       "running", "stopped"):
+            self.assertNotIn(secret, output.getvalue())
+
+    def test_mihomo_prewarm_probe_holds_only_exact_packet_sync_and_preserves_original(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        installer = next(node for node in parsed.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "_install_acceptance_mihomo_prewarm_probe")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance", "os": os,
+            "sys": sys, "threading": threading, "time": time, "json": json,
+            "hashlib": hashlib, "re": re, "Any": Any, "Path": Path,
+        }
+        exec(compile(ast.Module(body=[installer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        expected_node = ("tests/application_acceptance/test_packet_dataplane.py::"
+                         "test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh")
+        profile_module = ModuleType("application_acceptance.profile")
+        profile_module.load_profile = lambda path: ({"profile": "hosted-kernel-packet"}, "a" * 64)
+        reconcile_module = SimpleNamespace()
+        status_module = SimpleNamespace()
+        services = ModuleType("fwrouter_api.services")
+        services.mihomo_reconcile = reconcile_module
+        services.xray_status = status_module
+        calls = []
+        write_order = []
+        updated = {}
+
+        def original_sync(**kwargs):
+            calls.append(kwargs)
+            write_order.append("original_sync")
+            updated.update(kwargs["module"])
+            updated.update(runtime_state="running", apply_state="clean")
+            return updated
+
+        status_module._sync_xray_module_runtime_state = original_sync
+        exact_env = {
+            "FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE": "1",
+            "FWROUTER_ACCEPTANCE_NODEID": expected_node,
+            "FWROUTER_ACCEPTANCE_PROFILE": "/run/fixture/profile.json",
+        }
+        output = io.StringIO()
+        with mock.patch.dict(sys.modules, {
+            "application_acceptance.profile": profile_module,
+            "fwrouter_api.services": services,
+        }), mock.patch.dict(os.environ, exact_env, clear=False), mock.patch("sys.stderr", output):
+            probe = namespace[installer.name]()
+            module = {"module_name": "xray", "desired_state": "enabled",
+                      "runtime_state": "not_configured", "apply_state": "pending",
+                      "lifecycle_mode": "managed"}
+            worker = threading.Thread(
+                name="fwrouter-runtime-prewarm",
+                target=lambda: status_module._sync_xray_module_runtime_state(module=module),
+            )
+            worker.start()
+            write_order.append("fixed_snapshot")
+            probe["fixed_fingerprint_return"]({"hash": "b" * 64})
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive(), "the barrier must release the existing writer")
+            write_order.append("revalidation")
+            self.assertEqual(["fixed_snapshot", "original_sync", "revalidation"], write_order)
+            self.assertEqual(1, len(calls), "observer must call the original sync exactly once")
+            self.assertEqual("running", updated["runtime_state"])
+            summary = probe["snapshot"]()
+            self.assertEqual("held_and_released", summary["status"])
+            self.assertEqual("fwrouter-runtime-prewarm", summary["actor"])
+            self.assertTrue(summary["original_sync_called"])
+            self.assertEqual("xray", summary["module"])
+            self.assertEqual("b" * 64, summary["fixed_fingerprint_sha256"])
+            self.assertEqual({"runtime_state": True, "apply_state": True,
+                              "desired_state": False, "lifecycle_mode": False}, summary["changed_fields"])
+            times = summary["times_ms"]
+            self.assertLessEqual(times["entered_ms"], times["released_ms"])
+            self.assertLessEqual(times["fixed_snapshot_ms"], times["released_ms"])
+            self.assertLessEqual(times["released_ms"], times["completed_ms"])
+            self.assertLessEqual(len(output.getvalue().encode("ascii")), 2048 + 64)
+            self.assertNotIn("module_name", output.getvalue())
+
+        for invalid_env, profile in (
+            ({**exact_env, "FWROUTER_ACCEPTANCE_NODEID": "other::node"}, "hosted-kernel-packet"),
+            (exact_env, "hosted-native-process"),
+        ):
+            profile_module.load_profile = lambda path, profile=profile: ({"profile": profile}, "a" * 64)
+            with mock.patch.dict(sys.modules, {
+                "application_acceptance.profile": profile_module,
+                "fwrouter_api.services": services,
+            }), mock.patch.dict(os.environ, invalid_env, clear=False):
+                with self.assertRaises(RuntimeError):
+                    namespace[installer.name]()
+        self.assertEqual("held_and_released", summary["status"])
+
+    def test_mihomo_prewarm_probe_timeout_still_calls_original_once(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        installer = next(node for node in parsed.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "_install_acceptance_mihomo_prewarm_probe")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance", "os": os,
+            "sys": sys, "threading": threading, "time": time, "json": json,
+            "hashlib": hashlib, "re": re, "Any": Any, "Path": Path,
+        }
+        exec(compile(ast.Module(body=[installer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        expected_node = ("tests/application_acceptance/test_packet_dataplane.py::"
+                         "test_verified_legacy_admission_survives_normal_startup_without_reapply_or_refresh")
+        profile_module = ModuleType("application_acceptance.profile")
+        profile_module.load_profile = lambda path: ({"profile": "hosted-kernel-packet"}, "a" * 64)
+        reconcile_module = SimpleNamespace()
+        status_module = SimpleNamespace()
+        services = ModuleType("fwrouter_api.services")
+        services.mihomo_reconcile = reconcile_module
+        services.xray_status = status_module
+        calls = []
+        original_failure = RuntimeError("private sync failure")
+
+        def original_sync(**kwargs):
+            calls.append(kwargs)
+            raise original_failure
+
+        status_module._sync_xray_module_runtime_state = original_sync
+        env = {
+            "FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE": "1",
+            "FWROUTER_ACCEPTANCE_NODEID": expected_node,
+            "FWROUTER_ACCEPTANCE_PROFILE": "/run/fixture/profile.json",
+        }
+        real_event = threading.Event
+        wait_values = []
+
+        class FastTimeoutEvent:
+            def __init__(self):
+                self.event = real_event()
+
+            def set(self):
+                self.event.set()
+
+            def wait(self, timeout=None):
+                wait_values.append(timeout)
+                if not self.event.is_set():
+                    return False
+                return True
+
+        with mock.patch.dict(sys.modules, {
+            "application_acceptance.profile": profile_module,
+            "fwrouter_api.services": services,
+        }), mock.patch.dict(os.environ, env, clear=False), mock.patch.object(threading, "Event", FastTimeoutEvent):
+            probe = namespace[installer.name]()
+            current_thread = threading.current_thread()
+            previous_name = current_thread.name
+            current_thread.name = "fwrouter-runtime-prewarm"
+            try:
+                with self.assertRaises(RuntimeError) as raised:
+                    status_module._sync_xray_module_runtime_state(
+                        module={"module_name": ["xray"], "desired_state": "enabled",
+                                "runtime_state": "stopped", "apply_state": "pending", "lifecycle_mode": "managed"},
+                    )
+            finally:
+                current_thread.name = previous_name
+            self.assertEqual(1, len(calls))
+            self.assertIs(original_failure, raised.exception)
+            self.assertEqual("original_raised", probe["snapshot"]()["status"])
+            self.assertIsNone(probe["snapshot"]()["module"])
+        self.assertTrue(wait_values and all(value == 5 for value in wait_values))
+
+    def test_mihomo_prewarm_probe_routing_and_terminal_transport_are_closed(self):
+        fixture_path = Path(__file__).parents[1] / "application_acceptance" / "conftest.py"
+        fixture_tree = ast.parse(fixture_path.read_text(encoding="utf-8"))
+        owner = next(node for node in fixture_tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "acceptance_stack")
+        start_worker = next(node for node in ast.walk(owner) if isinstance(node, ast.FunctionDef)
+                            and node.name == "start_worker")
+        start_source = ast.unparse(start_worker)
+        self.assertIn("not owned_workers", start_source)
+        self.assertIn("profile.get('profile') == 'hosted-kernel-packet'", start_source)
+        self.assertIn("request.node.nodeid == _MIHOMO_PREWARM_NODEID", start_source)
+        self.assertIn("env['FWROUTER_ACCEPTANCE_MIHOMO_PREWARM_PROBE'] = '1'", start_source)
+        self.assertIn("env['FWROUTER_ACCEPTANCE_NODEID'] = _MIHOMO_PREWARM_NODEID", start_source)
+        terminal_hook = next(node for node in fixture_tree.body
+                             if isinstance(node, ast.FunctionDef)
+                             and node.name == "pytest_terminal_summary")
+        self.assertIn("_fwrouter_mihomo_prewarm_probe_records", ast.unparse(terminal_hook))
+        self.assertIn("terminalreporter.write_line", ast.unparse(terminal_hook))
+        self.assertIn("1024", ast.unparse(terminal_hook))
+
+        sanitizer = next(node for node in fixture_tree.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "_safe_mihomo_prewarm_probe_record")
+        namespace = {"__builtins__": __builtins__, "json": json, "re": re}
+        exec(compile(ast.Module(body=[sanitizer], type_ignores=[]), str(fixture_path), "exec"), namespace)
+        unsafe = {
+            "schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+            "event": "prewarm_sync_probe",
+            "summary": {
+                "status": "held_and_released", "actor": "fwrouter-runtime-prewarm",
+                "module": "xray", "original_sync_called": True,
+                "expected_sha256": "a" * 64, "current_sha256": "b" * 64,
+                "changed_fields": {"runtime_state": True, "secret": "DO_NOT_EXPORT"},
+                "times_ms": {"entered_ms": 1, "raw_time": 999999999},
+                "raw_config": "DO_NOT_EXPORT", "uuid": "DO_NOT_EXPORT",
+            },
+            "unknown": "DO_NOT_EXPORT",
+        }
+        safe = namespace[sanitizer.name](unsafe)
+        self.assertIsNotNone(safe)
+        self.assertEqual({"runtime_state": True}, safe["summary"]["changed_fields"])
+        self.assertEqual({"entered_ms": 1}, safe["summary"]["times_ms"])
+        self.assertNotIn("DO_NOT_EXPORT", json.dumps(safe))
+        self.assertIsNone(namespace[sanitizer.name]({**unsafe, "event": "unrecognized"}))
+        nested_unsafe = {**unsafe, "summary": {**unsafe["summary"],
+                                                   "status": ["held_and_released"],
+                                                   "module": {"name": "xray"}}}
+        nested_safe = namespace[sanitizer.name](nested_unsafe)
+        self.assertEqual("invalid", nested_safe["summary"]["status"])
+        self.assertIsNone(nested_safe["summary"]["module"])
+
+    def test_packet_post_apply_includes_only_bounded_failure_diagnostics(self):
+        packet_tree = ast.parse(PACKET_ACCEPTANCE_SOURCE.read_text(encoding="utf-8"),
+                                filename=str(PACKET_ACCEPTANCE_SOURCE))
+        owner = next(
+            node for node in packet_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_run_verified_legacy_startup_lifecycle"
+        )
+        post_apply = next(
+            node for node in owner.body
+            if isinstance(node, ast.FunctionDef) and node.name == "post_apply"
+        )
+        imports = [node for node in packet_tree.body
+                   if isinstance(node, ast.ImportFrom) and node.module == "test_xray_generation"]
+        self.assertEqual(1, len(imports), "packet helper must explicitly import the reviewed diagnostic readers")
+        self.assertEqual(
+            {"_snapshot_provider_worker_logs", "_safe_mihomo_reconcile_diagnostics_since"},
+            {alias.name for alias in imports[0].names},
+        )
+
+        diagnostic_path = Path(__file__).parents[1] / "application_acceptance" / "test_xray_generation.py"
+        diagnostic_tree = ast.parse(diagnostic_path.read_text(encoding="utf-8"),
+                                    filename=str(diagnostic_path))
+        wanted = {
+            "_PROVIDER_WORKER_LOG_PREFIX", "_MIHOMO_RECONCILE_WORKER_LOG_PREFIX",
+            "_MIHOMO_PREWARM_WORKER_LOG_PREFIX",
+            "_PROVIDER_WORKER_LOG_MAX_FILES", "_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES",
+            "_PROVIDER_WORKER_LOG_PREFIXES", "_MIHOMO_RECONCILE_STAGES",
+            "_MIHOMO_RECONCILE_ERROR_CODES", "_MIHOMO_RECONCILE_REASONS",
+            "_MIHOMO_RECONCILE_ACTIONS", "_MIHOMO_RECONCILE_EVENTS",
+            "_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES",
+            "_snapshot_provider_worker_logs", "_provider_worker_records_since",
+            "_safe_mihomo_reconcile_diagnostics_since",
+        }
+        selected = []
+        for node in diagnostic_tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name in wanted:
+                selected.append(node)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                names = ({target.id for target in node.targets if isinstance(target, ast.Name)}
+                         if isinstance(node, ast.Assign)
+                         else ({node.target.id} if isinstance(node.target, ast.Name) else set()))
+                if names & wanted:
+                    selected.append(node)
+
+        with tempfile.TemporaryDirectory(prefix="fwrouter-post-apply-diagnostic-") as tmp:
+            root = Path(tmp)
+            log = root / "uvicorn-123.log"
+            log.write_bytes(b"")
+            calls = {"http": [], "await": [], "read": []}
+            stack = {"root": root}
+            namespace = {
+                "__builtins__": __builtins__, "Any": Any, "Path": Path,
+                "os": os, "stat": stat, "re": re, "json": json,
+                "stack": stack, "api": "http://127.0.0.1/api/v2",
+                "_http_mode": "success", "_await_mode": "success",
+                "_append_worker_record": None,
+            }
+            module = ast.Module(body=[*selected, post_apply], type_ignores=[])
+            exec(compile(module, str(PACKET_ACCEPTANCE_SOURCE), "exec"), namespace)
+
+            reader = namespace["_safe_mihomo_reconcile_diagnostics_since"]
+            def tracked_reader(*args):
+                calls["read"].append(args[1])
+                return reader(*args)
+
+            namespace["_safe_mihomo_reconcile_diagnostics_since"] = tracked_reader
+
+            def append_failure(*, stage="inventory_generation_admission", error_code="MIHOMO_PROXYSET_EMPTY",
+                               private="SECRET_SENTINEL"):
+                record = {
+                    "schema": "fwrouter-acceptance-mihomo-reconcile-failure/v1",
+                    "event": "failure_result_input",
+                    "summary": {
+                        "ok": False, "stage": stage, "error_code": error_code,
+                        "reconcile_action": "none", "reconcile_reason": "inventory_generation_stale",
+                        "validation": {"ok": False, "returncode": 1,
+                                       "error_code": "MIHOMO_PROXYSET_EMPTY", "stderr": private},
+                        "private": private,
+                    },
+                }
+                with log.open("ab") as stream:
+                    stream.write(namespace["_MIHOMO_RECONCILE_WORKER_LOG_PREFIX"].encode("ascii"))
+                    stream.write(json.dumps(record).encode("ascii") + b"\n")
+
+            def http_json(url, *, method, payload, timeout):
+                calls["http"].append((url, method, payload, timeout))
+                if namespace["_append_worker_record"]:
+                    namespace["_append_worker_record"]()
+                if namespace["_http_mode"] == "failure":
+                    return 200, {"ok": False, "error": {"code": "MIHOMO_RECONCILE_FAILED"}}
+                return 200, {"ok": True, "data": {"job_id": "owned-fixture-job"}}
+
+            def await_job(api, result):
+                calls["await"].append((api, result))
+                if namespace["_append_worker_record"]:
+                    namespace["_append_worker_record"]()
+                return {"status": "failed" if namespace["_await_mode"] == "failure" else "success"}
+
+            namespace.update({"http_json": http_json, "await_job": await_job})
+
+            # Successful calls preserve the existing 45-second request and
+            # await-job behavior, and do not inspect worker logs.
+            namespace["_http_mode"] = "success"
+            namespace["_await_mode"] = "success"
+            namespace["_append_worker_record"] = None
+            job = namespace["post_apply"]({"mode": "direct"})
+            self.assertEqual("success", job["status"])
+            self.assertEqual(45, calls["http"][-1][3])
+            self.assertEqual(1, len(calls["await"]))
+            self.assertEqual([], calls["read"])
+
+            # A pre-call record is outside the captured offset. Only the
+            # current failed request contributes closed, bounded facts.
+            append_failure(stage="generation_fence", error_code="MIHOMO_GENERATION_STALE")
+            namespace["_http_mode"] = "failure"
+            namespace["_append_worker_record"] = lambda: append_failure(
+                stage="inventory_generation_admission", error_code="MIHOMO_PROXYSET_EMPTY",
+            )
+            await_before = len(calls["await"])
+            with self.assertRaises(AssertionError) as request_failure:
+                namespace["post_apply"]({"server_mode": "fixed"})
+            failure_message = request_failure.exception.args[0]
+            self.assertIsInstance(failure_message, str)
+            detail = json.loads(failure_message)
+            self.assertEqual("MIHOMO_RECONCILE_FAILED", detail["error_code"])
+            self.assertEqual("inventory_generation_admission",
+                             detail["mihomo_reconcile"][0]["summary"]["stage"])
+            self.assertEqual("MIHOMO_PROXYSET_EMPTY",
+                             detail["mihomo_reconcile"][0]["summary"]["error_code"])
+            self.assertEqual(await_before, len(calls["await"]))
+            self.assertLessEqual(len(failure_message.encode("ascii")), 1280)
+            self.assertLessEqual(len(json.dumps(detail["mihomo_reconcile"], sort_keys=True).encode("ascii")), 1024)
+            encoded_request = json.dumps(detail, sort_keys=True)
+            self.assertNotIn("SECRET_SENTINEL", encoded_request)
+            self.assertNotIn("MIHOMO_GENERATION_STALE", encoded_request)
+
+            # Pytest's real assertion formatter truncates non-string messages
+            # via saferepr (240 characters here), which hid nested causes.
+            # The emitted string keeps the bounded projection intact.
+            from _pytest.assertion.rewrite import _format_assertmsg
+            formatted_string = _format_assertmsg(failure_message)
+            self.assertIn("MIHOMO_PROXYSET_EMPTY", formatted_string)
+            self.assertIn("inventory_generation_admission", formatted_string)
+            self.assertGreater(formatted_string.index("inventory_generation_admission"), 240)
+            formatted_mapping = _format_assertmsg({
+                "status": 200, "ok": False, "error_code": "MIHOMO_RECONCILE_FAILED",
+                "mihomo_reconcile": detail["mihomo_reconcile"],
+            })
+            self.assertNotIn("inventory_generation_admission", formatted_mapping)
+
+            # Queued requests retain await_job dispatch; a failed job reports
+            # only the same allowlisted failure projection.
+            namespace["_http_mode"] = "success"
+            namespace["_await_mode"] = "failure"
+            namespace["_append_worker_record"] = lambda: append_failure(
+                stage="private-stage", error_code="SECRET_CODE",
+            )
+            await_before = len(calls["await"])
+            with self.assertRaises(AssertionError) as job_failure:
+                namespace["post_apply"]({"mode": "direct"})
+            job_message = job_failure.exception.args[0]
+            self.assertIsInstance(job_message, str)
+            job_detail = json.loads(job_message)
+            self.assertEqual("failed", job_detail["job_status"])
+            job_summary = job_detail["mihomo_reconcile"][0]["summary"]
+            self.assertIs(job_summary["unknown_enum"], True)
+            self.assertIsNone(job_summary["stage"])
+            self.assertIsNone(job_summary["error_code"])
+            self.assertEqual(await_before + 1, len(calls["await"]))
+            self.assertLessEqual(len(json.dumps(job_detail, sort_keys=True).encode("ascii")), 4096)
+            serialized_job = json.dumps(job_detail, sort_keys=True)
+            self.assertNotIn("SECRET_SENTINEL", serialized_job)
+            self.assertNotIn("private-stage", serialized_job)
+            self.assertNotIn("SECRET_CODE", serialized_job)
+
     def test_provider_verification_observer_redacts_phase_and_reraises(self):
         worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
         parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
@@ -6297,36 +7059,56 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual("NOTRUN", receipt["status"])
 
     def test_junit_requires_exact_suite_node_ids_without_skips_or_duplicates(self):
-        for suite in ("functional-ordinary", "recovery", "reentry-diagnostic",
-                      "identity-diagnostic", "runtime-scale-diagnostic"):
-            with self.subTest(suite=suite), tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-junit-") as temp:
-                expected = launcher.expected_acceptance_nodeids(suite)
-                root = ET.Element("testsuite")
-                for nodeid in sorted(expected):
-                    path, _, name = nodeid.partition("::")
-                    ET.SubElement(root, "testcase", {
-                        "classname": path[:-3].replace("/", "."), "name": name,
-                    })
-                junit = Path(temp) / "junit.xml"
-                ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
-                observed = launcher.validate_junit(junit, suite)
-                self.assertEqual(sorted(expected), observed["nodeids"])
-                rows = [{"nodeid": nodeid, "status": "passed",
-                         "phases": {phase: "passed" for phase in ("setup", "call", "teardown")}}
-                        for nodeid in sorted(expected)]
-                launcher.validate_suite_node_receipt(rows, suite, observed["nodeids"])
-                with self.assertRaises(launcher.NotRun):
-                    launcher.validate_suite_node_receipt(rows[:-1], suite, observed["nodeids"])
-                rows[0]["phases"].pop("teardown")
-                with self.assertRaises(launcher.NotRun):
+        suites = ("functional-ordinary", "recovery", "reentry-diagnostic",
+                  "identity-diagnostic", "runtime-scale-diagnostic")
+        actual_expected = launcher.expected_acceptance_nodeids
+        validated_inventory: dict[str, set[str]] = {}
+        cached_lookups: dict[str, int] = {}
+
+        def validated_expected(suite: str) -> set[str]:
+            if suite not in validated_inventory:
+                return actual_expected(suite)
+            cached_lookups[suite] += 1
+            return set(validated_inventory[suite])
+
+        # Each suite's live source/registry inventory is read and validated
+        # once here. Repeated checks within this subtest reuse that immutable
+        # exact node set; source_catalog mutation/freshness is tested separately.
+        with mock.patch.object(launcher, "expected_acceptance_nodeids", side_effect=validated_expected):
+            for suite in suites:
+                with self.subTest(suite=suite), tempfile.TemporaryDirectory(
+                    prefix="fwrouter-acceptance-junit-",
+                ) as temp:
+                    expected = actual_expected(suite)
+                    validated_inventory[suite] = set(expected)
+                    cached_lookups[suite] = 0
+                    root = ET.Element("testsuite")
+                    for nodeid in sorted(expected):
+                        path, _, name = nodeid.partition("::")
+                        ET.SubElement(root, "testcase", {
+                            "classname": path[:-3].replace("/", "."), "name": name,
+                        })
+                    junit = Path(temp) / "junit.xml"
+                    ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
+                    observed = launcher.validate_junit(junit, suite)
+                    self.assertEqual(sorted(expected), observed["nodeids"])
+                    rows = [{"nodeid": nodeid, "status": "passed",
+                             "phases": {phase: "passed" for phase in ("setup", "call", "teardown")}}
+                            for nodeid in sorted(expected)]
                     launcher.validate_suite_node_receipt(rows, suite, observed["nodeids"])
-                ET.SubElement(root, "testcase", {
-                    "classname": next(iter(sorted(expected))).split("::", 1)[0][:-3].replace("/", "."),
-                    "name": next(iter(sorted(expected))).split("::", 1)[1],
-                })
-                ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
-                with self.assertRaises(launcher.NotRun):
-                    launcher.validate_junit(junit, suite)
+                    with self.assertRaises(launcher.NotRun):
+                        launcher.validate_suite_node_receipt(rows[:-1], suite, observed["nodeids"])
+                    rows[0]["phases"].pop("teardown")
+                    with self.assertRaises(launcher.NotRun):
+                        launcher.validate_suite_node_receipt(rows, suite, observed["nodeids"])
+                    ET.SubElement(root, "testcase", {
+                        "classname": next(iter(sorted(expected))).split("::", 1)[0][:-3].replace("/", "."),
+                        "name": next(iter(sorted(expected))).split("::", 1)[1],
+                    })
+                    ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
+                    with self.assertRaises(launcher.NotRun):
+                        launcher.validate_junit(junit, suite)
+                    self.assertEqual(5, cached_lookups[suite])
 
     def test_provider_diagnostic_is_one_fixed_functional_node(self):
         nodeid = (
@@ -6600,7 +7382,7 @@ class AcceptanceContractTests(unittest.TestCase):
         workflow = (Path(__file__).parents[2] / ".github/workflows/phase-d-validation.yml").read_text(
             encoding="utf-8")
         self.assertIn('"ci:validate-identities": "identity-diagnostic"', workflow)
-        self.assertIn("Run identity migration L3 regression nodes in the isolated gate", workflow)
+        self.assertIn("Run schema identity preservation and retired-upgrade L3 regression nodes in the isolated gate", workflow)
         self.assertIn("python tests/gates/gate.py subset-plan --domain xray --level L3", workflow)
         self.assertIn("tests/gates/gate.py run --plan \"$root/xray-l3-plan.json\"", workflow)
         self.assertIn("Retain sanitized identity qualification evidence", workflow)
@@ -6621,11 +7403,11 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertIn("gate.redact_failure_output(output)", exact_runner)
         self.assertIn("gate.sanitize_junit_artifact(", exact_runner)
         self.assertIn(
-            "tests/test_db_migrations.py::test_database_upgrade_cli_is_explicit_backed_up_and_idempotent",
+            "tests/test_database_schema_lifecycle.py::test_database_upgrade_cli_verifies_current_schema_without_mutation",
             workflow,
         )
         self.assertIn(
-            "tests/test_db_migrations.py::test_database_upgrade_cli_refuses_schema_24_structural_drift_without_backup",
+            "tests/test_database_schema_lifecycle.py::test_database_upgrade_cli_rejects_retired_historical_transitions",
             workflow,
         )
         self.assertIn(

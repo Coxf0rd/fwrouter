@@ -16,6 +16,7 @@ from fwrouter_api.services.rules import get_rules_state
 from fwrouter_api.jobs.manager import JobManager
 from fwrouter_api.jobs.handlers import jobs_retention_cleanup_handler
 from fwrouter_api.services.event_contract import current_event_context, reset_event_context, set_event_context
+from _test_support import sqlite_temp_trigger_on_connections
 
 
 
@@ -217,11 +218,6 @@ def test_retention_database_rollback_preserves_orphans_until_retry(
             "DELETE FROM operational_logs WHERE event_type = ?", ("job.terminal_outcome",),
         )
         _age_job(connection, job["job_id"])
-        connection.execute(
-            """CREATE TRIGGER reject_legacy_snapshot BEFORE INSERT ON operational_logs
-               WHEN NEW.event_type = 'job.terminal_outcome'
-               BEGIN SELECT RAISE(ABORT, 'test retention snapshot failure'); END"""
-        )
 
     orphan_dir = get_settings().paths.jobs_dir / "orphan-snapshot-failure"
     orphan_dir.mkdir(parents=True)
@@ -230,14 +226,19 @@ def test_retention_database_rollback_preserves_orphans_until_retry(
     old_time = time.time() - 2 * 86400
     os.utime(orphan_dir, (old_time, old_time))
 
-    with pytest.raises(sqlite3.IntegrityError, match="test retention snapshot failure"):
-        cleanup_jobs_retention(dry_run=False)
-    assert orphan_file.read_text(encoding="utf-8") == "preserve until database retry"
-    with db_session() as connection:
-        assert connection.execute(
-            "SELECT 1 FROM jobs WHERE job_id = ?", (job["job_id"],),
-        ).fetchone() is not None
-        connection.execute("DROP TRIGGER reject_legacy_snapshot")
+    with sqlite_temp_trigger_on_connections(
+        monkeypatch,
+        """CREATE TEMP TRIGGER reject_legacy_snapshot BEFORE INSERT ON operational_logs
+           WHEN NEW.event_type = 'job.terminal_outcome'
+           BEGIN SELECT RAISE(ABORT, 'test retention snapshot failure'); END""",
+    ):
+        with pytest.raises(sqlite3.IntegrityError, match="test retention snapshot failure"):
+            cleanup_jobs_retention(dry_run=False)
+        assert orphan_file.read_text(encoding="utf-8") == "preserve until database retry"
+        with db_session() as connection:
+            assert connection.execute(
+                "SELECT 1 FROM jobs WHERE job_id = ?", (job["job_id"],),
+            ).fetchone() is not None
 
     retried = cleanup_jobs_retention(dry_run=False)
     assert retried["deleted_jobs_count"] == 1
@@ -266,14 +267,13 @@ def test_retention_snapshot_sqlite_failure_fails_enclosing_manager_job(
     old_time = time.time() - 2 * 86400
     os.utime(orphan_dir, (old_time, old_time))
 
-    with db_session() as connection:
-        connection.execute(
-            """CREATE TRIGGER reject_legacy_snapshot BEFORE INSERT ON operational_logs
-               WHEN NEW.event_type = 'job.terminal_outcome'
-                AND NEW.details_json LIKE '%legacy_terminal_observed%'
-               BEGIN SELECT RAISE(ABORT, 'test legacy snapshot insert failure'); END"""
-        )
-    try:
+    with sqlite_temp_trigger_on_connections(
+        monkeypatch,
+        """CREATE TEMP TRIGGER reject_legacy_snapshot BEFORE INSERT ON operational_logs
+           WHEN NEW.event_type = 'job.terminal_outcome'
+            AND NEW.details_json LIKE '%legacy_terminal_observed%'
+           BEGIN SELECT RAISE(ABORT, 'test legacy snapshot insert failure'); END""",
+    ):
         manager = JobManager()
         manager.register_handler("jobs_retention_cleanup", jobs_retention_cleanup_handler)
         cleanup_job = manager.create(
@@ -296,9 +296,6 @@ def test_retention_snapshot_sqlite_failure_fails_enclosing_manager_job(
                 if payload.get("entity_id") == cleanup_job["job_id"]
             )
             assert own_event["execution_status"] == "failed"
-    finally:
-        with db_session() as connection:
-            connection.execute("DROP TRIGGER IF EXISTS reject_legacy_snapshot")
 
 
 def test_cleanup_jobs_retention_preserves_apply_versions_fk_integrity(

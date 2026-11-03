@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 import json
+from pathlib import Path
 
 from fwrouter_api.core.config import get_settings
 from fwrouter_api.db import connection as db_connection
@@ -11,6 +12,7 @@ from fwrouter_api.services.events import safe_human_label, write_operational_eve
 from fwrouter_api.routes import events as events_route
 from fwrouter_api.services import logs as logs_service
 from fwrouter_api.services.logs import list_operational_logs, write_operational_log
+from fwrouter_api.services.ordinary_event_read_model import project_recent_event_summary
 
 
 def test_events_recent_endpoint_returns_audit_operational_and_diagnostic() -> None:
@@ -631,3 +633,34 @@ def test_operational_log_commit_failure_does_not_append_jsonl(monkeypatch) -> No
         raise AssertionError("expected the injected commit failure")
 
     assert (target.read_bytes() if target.exists() else b"") == before
+
+
+def test_read_only_label_and_system_schema_reads_preserve_database_file_state(monkeypatch) -> None:
+    import stat
+
+    from fwrouter_api.routes import system as system_route
+
+    path = get_settings().paths.db_path
+    path.chmod(0o640)
+    path.parent.chmod(0o750)
+    monkeypatch.setattr(system_route, "build_system_summary", lambda *, schema_state: {"schema": schema_state})
+
+    project_recent_event_summary({
+        "audit": [{
+            "event_code": "server.preferences_changed",
+            "entity_type": "server",
+            "entity_id": "server-not-in-fixture",
+        }],
+        "operational": [],
+        "diagnostic": [],
+    })
+    response = system_route.system_summary()
+
+    assert response.ok is True
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o750
+    assert not Path(f"{path}-wal").exists()
+    assert not Path(f"{path}-shm").exists()
+    import sqlite3
+    with sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
