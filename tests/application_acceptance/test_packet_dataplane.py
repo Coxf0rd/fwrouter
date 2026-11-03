@@ -526,7 +526,7 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                 "error_code": error_code,
                 "mihomo_reconcile": failure_diagnostics,
             }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-            assert len(failure_message.encode("ascii")) <= 1280, "bounded routing failure diagnostic exceeded limit"
+            assert len(failure_message.encode("ascii")) <= 6 * 1024, "bounded routing failure diagnostic exceeded limit"
             assert status == 200 and result.get("ok") is True, failure_message
         job = await_job(api, result)
         if job.get("status") != "success":
@@ -541,7 +541,7 @@ def _run_verified_legacy_startup_lifecycle(stack, *, fixed_target: bool, record_
                 "job_status": job_status,
                 "mihomo_reconcile": failure_diagnostics,
             }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-            assert len(failure_message.encode("ascii")) <= 1280, "bounded job failure diagnostic exceeded limit"
+            assert len(failure_message.encode("ascii")) <= 6 * 1024, "bounded job failure diagnostic exceeded limit"
             assert job.get("status") == "success", failure_message
         return job
 

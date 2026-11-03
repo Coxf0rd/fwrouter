@@ -4744,7 +4744,8 @@ class AcceptanceContractTests(unittest.TestCase):
         namespace = {
             "__builtins__": __builtins__, "__package__": "application_acceptance",
             "os": __import__("os"), "sys": sys, "json": json,
-            "threading": threading, "Any": __import__("typing").Any,
+            "threading": threading, "time": time, "hashlib": hashlib, "re": re,
+            "Any": __import__("typing").Any,
         }
         exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
         calls = []
@@ -4769,11 +4770,34 @@ class AcceptanceContractTests(unittest.TestCase):
                 raise satisfies_failure
             return satisfies_returned
 
+        def reconcile_function(*args, **kwargs):
+            candidate_path = "candidate"
+            base_path = "active"
+            prepared_candidate_hash = "0" * 64
+            active_config_hash_before = "0" * 64
+            if _file_hash(candidate_path) != prepared_candidate_hash:
+                return {"ok": False}
+            if _file_hash(base_path) != active_config_hash_before:
+                return {"ok": False}
+            return {"ok": True}
+
+        def current_fingerprint(*args, **kwargs):
+            return {"hash": "0" * 64, "payload": {"version": 3}}
+
+        def _file_hash(path):
+            return "0" * 64
+
         apply_orchestrator = SimpleNamespace(
             _build_failure_result=original, mihomo_runtime_satisfies_routing=original_satisfies,
+            reconcile_mihomo_runtime=reconcile_function,
         )
         services = ModuleType("fwrouter_api.services")
         services.apply_orchestrator = apply_orchestrator
+        services.mihomo_reconcile = SimpleNamespace(
+            reconcile_mihomo_runtime=reconcile_function,
+            current_mihomo_input_fingerprint=current_fingerprint,
+            _file_hash=_file_hash,
+        )
         reconcile = {
             "ok": False, "stage": "native_udp_policy_readback", "error_code": "PROOF_FAILED",
             "reconcile_action": "restart", "reconcile_reason": "native_policy_or_fence_unconfirmed",
@@ -4814,10 +4838,10 @@ class AcceptanceContractTests(unittest.TestCase):
 
         text = observed.getvalue()
         prefix = "FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE "
-        self.assertLessEqual(len(text.encode("ascii")), 16 * (4096 + len(prefix) + 1))
+        self.assertLessEqual(len(text.encode("ascii")), 64 * 1024)
         for line in text.splitlines():
             self.assertTrue(line.startswith(prefix))
-            self.assertLessEqual(len(line[len(prefix):].encode("ascii")), 4096)
+            self.assertLessEqual(len(line[len(prefix):].encode("ascii")), 8192)
         self.assertNotIn("secret-config-content", text)
         self.assertNotIn("/private/path", text)
         self.assertNotIn("private message", text)
@@ -4901,6 +4925,47 @@ class AcceptanceContractTests(unittest.TestCase):
                     },
                     "recovery": {"ok": False, "reason": "restore_restart_failed"},
                     "last_good_retained": True, "secret": "never include",
+                    "generation_revalidation": {
+                        "schema": "fwrouter-acceptance-generation-revalidation/v1",
+                        "selection_revision": {"expected": 8, "current": 8, "matches": True,
+                                               "secret": "omit"},
+                        "fingerprint": {
+                            "expected_sha256": "a" * 64, "current_sha256": "b" * 64,
+                            "matches": False,
+                            "changed_component_hashes": {"routing": {"expected_sha256": "a" * 64,
+                                                                        "current_sha256": "b" * 64},
+                                                          "tables": {"expected_sha256": "c" * 64,
+                                                                     "current_sha256": "d" * 64},
+                                                          "secret": {"expected_sha256": "omit"}},
+                            "changed_components": ["tables", "secret-component", {"nested": "bad"}, ["bad"]],
+                            "changed_tables": [{"name": "modules", "expected_sha256": "e" * 64,
+                                                "current_sha256": "f" * 64, "comparison": "changed"},
+                                               {"name": "secret-table", "expected_sha256": "bad",
+                                                "current_sha256": "bad"}],
+                            "changed_files": [{"name": "contours", "expected_sha256": "1" * 64,
+                                               "current_sha256": "2" * 64, "comparison": "changed"}],
+                            "modules": {"vpn": {
+                                "expected_row_sha256": "e" * 64, "current_row_sha256": "f" * 64,
+                                "changed_fields": {"runtime_state": True, "secret": "omit"},
+                                "raw_value": "module-secret",
+                            }, "private-module": {"expected_row_sha256": "secret"}},
+                            "raw_rows": "never include",
+                        },
+                        "candidate": {"expected_sha256": "1" * 64, "expected_hash_available": True,
+                                      "read_evaluated": True,
+                                      "current_sha256": "2" * 64, "matches": False, "elapsed_ms": 12,
+                                      "path": "/secret/config"},
+                        "active_config": {"expected_sha256": "3" * 64, "expected_hash_available": True,
+                                          "read_evaluated": False,
+                                          "current_sha256": None, "matches": False, "elapsed_ms": None},
+                        "runtime_incarnation": {"expected_sha256": "4" * 64,
+                                                 "current_sha256": "secret-runtime-incarnation-value",
+                                                 "matches": False, "checked": True},
+                        "resume_reservation_present": False,
+                        "timing_ms": {"fingerprint": 2, "revalidation_after_fingerprint": 3,
+                                      "total": 5, "secret": 10},
+                        "extra": "untrusted-secret",
+                    },
                 },
                 "private": "never include",
             }
@@ -4937,8 +5002,26 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertIs(summary["unknown_enum"], False)
             self.assertNotIn("candidate", summary)
             serialized = json.dumps(diagnostics, sort_keys=True)
-            self.assertLessEqual(len(serialized.encode("ascii")), 1024)
-            for secret in ("secret", "private-stage", "secret-code", "token-secret", "/secret/path", "never include"):
+            self.assertLessEqual(len(serialized.encode("ascii")), 6000)
+            generation = summary["generation_revalidation"]
+            self.assertEqual(["tables"], generation["fingerprint"]["changed_components"])
+            self.assertEqual({"routing": {"expected_sha256": "a" * 64,
+                                           "current_sha256": "b" * 64},
+                             "tables": {"expected_sha256": "c" * 64,
+                                        "current_sha256": "d" * 64}},
+                             generation["fingerprint"]["changed_component_hashes"])
+            self.assertEqual([{"name": "modules", "expected_sha256": "e" * 64,
+                               "current_sha256": "f" * 64, "comparison": "changed"}],
+                             generation["fingerprint"]["changed_tables"])
+            self.assertEqual([{"name": "contours", "expected_sha256": "1" * 64,
+                               "current_sha256": "2" * 64, "comparison": "changed"}],
+                             generation["fingerprint"]["changed_files"])
+            self.assertEqual({"runtime_state": True}, generation["fingerprint"]["modules"]["vpn"]["changed_fields"])
+            self.assertFalse(generation["active_config"]["read_evaluated"])
+            self.assertIsNone(generation["runtime_incarnation"]["current_sha256"])
+            for secret in ("secret", "private-stage", "secret-code", "token-secret", "/secret/path",
+                           "never include", "module-secret", "untrusted-secret", "private-module",
+                           "secret-runtime-incarnation-value"):
                 self.assertNotIn(secret, serialized)
 
             # The latest recognized failure wins when an earlier generic
@@ -4958,13 +5041,13 @@ class AcceptanceContractTests(unittest.TestCase):
             self.assertEqual("generation_resume_reservation", bounded[0]["summary"]["stage"])
             self.assertEqual("receipt_fence_mismatch", bounded[0]["summary"]["reconcile_reason"])
             self.assertEqual("MIHOMO_CANDIDATE_INVALID", bounded[0]["summary"]["error_code"])
-            self.assertLessEqual(len(json.dumps(bounded, sort_keys=True).encode("ascii")), 1024)
+            self.assertLessEqual(len(json.dumps(bounded, sort_keys=True).encode("ascii")), 6000)
 
             # Even known values are omitted if the serialized diagnostic would
             # exceed its explicit byte cap.
             namespace["_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES"] = 32
             self.assertEqual([], namespace["_safe_mihomo_reconcile_diagnostics_since"](root, snapshot))
-            namespace["_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES"] = 1024
+            namespace["_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES"] = 6000
 
             # Unknown enum strings are nulled and marked, while secret payload
             # fields remain absent. A new snapshot isolates this record.
@@ -4981,6 +5064,256 @@ class AcceptanceContractTests(unittest.TestCase):
             unknown_text = json.dumps(projected_untrusted, sort_keys=True)
             for secret in ("secret-code", "token-secret", "private-stage", "never include"):
                 self.assertNotIn(secret, unknown_text)
+
+            # Full whitelist churn must fit both the reader and packet failure string caps.
+            max_snapshot = namespace["_snapshot_provider_worker_logs"](root)
+            table_names = ("servers", "server_preferences", "vpn_auto_exclusive",
+                           "subscription_inventory_generation", "server_custom_https_proxy",
+                           "subject_routes", "subject_user_overrides", "explicit_external_clients",
+                           "routing_global_state", "rules_state", "modules")
+            file_names = ("effective_rules", "last_good_effective_rules", "applied_manifest", "contours")
+            maximal = json.loads(json.dumps(valid))
+            maximal_generation = maximal["summary"]["generation_revalidation"]
+            maximal_generation["fingerprint"].update({
+                "changed_components": ["routing", "tables", "files", "source"],
+                "changed_component_hashes": {
+                    name: {"expected_sha256": hashlib.sha256((name + "-before").encode()).hexdigest(),
+                           "current_sha256": hashlib.sha256((name + "-after").encode()).hexdigest()}
+                    for name in ("routing", "source")
+                },
+                "changed_tables": [{
+                    "name": name,
+                    "expected_sha256": hashlib.sha256((name + "-before").encode()).hexdigest(),
+                    "current_sha256": hashlib.sha256((name + "-after").encode()).hexdigest(),
+                    "comparison": "changed",
+                } for name in table_names],
+                "changed_files": [{
+                    "name": name,
+                    "expected_sha256": hashlib.sha256((name + "-before").encode()).hexdigest(),
+                    "current_sha256": hashlib.sha256((name + "-after").encode()).hexdigest(),
+                    "comparison": "changed",
+                } for name in file_names],
+            })
+            maximal_payload = json.dumps(maximal, sort_keys=True, separators=(",", ":")).encode("ascii")
+            self.assertLessEqual(len(maximal_payload), 8192)
+            with log.open("ab") as stream:
+                stream.write(mihomo_prefix + maximal_payload + b"\n")
+            maximal_diagnostics = namespace["_safe_mihomo_reconcile_diagnostics_since"](root, max_snapshot)
+            self.assertEqual(1, len(maximal_diagnostics), "valid full-whitelist diagnostics must not be dropped")
+            self.assertLessEqual(len(json.dumps(maximal_diagnostics, sort_keys=True,
+                                                separators=(",", ":")).encode("ascii")), 6000,
+                                 "maximal projected diagnostic must fit its declared reader cap")
+            rendered_packet_failure = json.dumps({
+                "status": 200, "ok": False, "error_code": "MIHOMO_RECONCILE_FAILED",
+                "mihomo_reconcile": maximal_diagnostics,
+            }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+            self.assertLessEqual(len(rendered_packet_failure.encode("ascii")), 6 * 1024,
+                                 f"maximal packet diagnostic bytes={len(rendered_packet_failure.encode('ascii'))}")
+
+    def test_mihomo_stale_generation_profiler_observes_actual_guard_short_circuit(self):
+        worker_path = Path(__file__).parents[1] / "application_acceptance" / "worker.py"
+        parsed = ast.parse(worker_path.read_text(encoding="utf-8"))
+        observer = next(node for node in parsed.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_install_acceptance_mihomo_reconcile_failure_observer")
+        namespace = {
+            "__builtins__": __builtins__, "__package__": "application_acceptance",
+            "os": os, "sys": sys, "json": json, "threading": threading,
+            "time": time, "hashlib": hashlib, "re": re, "Any": Any,
+        }
+        exec(compile(ast.Module(body=[observer], type_ignores=[]), str(worker_path), "exec"), namespace)
+        state = {"input": None, "current": None,
+                 "hashes": {"candidate": "a" * 64, "active": "b" * 64}, "reads": [],
+                 "raise": False, "failure": RuntimeError("private reconcile exception")}
+        stale_result = {"ok": False, "stage": "generation_revalidation",
+                        "error_code": "MIHOMO_GENERATION_STALE", "last_good_retained": True,
+                        "reconcile_action": "none", "reconcile_reason": "stale_generation_candidate"}
+
+        def fingerprint(routing=None):
+            return state["current"]
+
+        def _file_hash(path):
+            state["reads"].append(path)
+            return state["hashes"][path]
+
+        def synthetic_reconcile(routing=None):
+            if state["raise"]:
+                raise state["failure"]
+            expected_selection_revision = 9
+            current_revision = 9
+            input_fingerprint = state["input"]
+            prepared_candidate_hash = "a" * 64
+            active_config_hash_before = "b" * 64
+            runtime_incarnation_before = "incarnation-private-a"
+            resume_reservation = None
+            candidate_path = "candidate"
+            base_path = "active"
+            current_fingerprint = fingerprint(routing)
+            current_incarnation = "incarnation-private-a"
+            if (
+                current_revision != expected_selection_revision
+                or (input_fingerprint or {}).get("hash") != (current_fingerprint or {}).get("hash")
+                or not prepared_candidate_hash
+                or _file_hash(candidate_path) != prepared_candidate_hash
+                or _file_hash(base_path) != active_config_hash_before
+                or (resume_reservation is None and current_incarnation != runtime_incarnation_before)
+            ):
+                return stale_result
+            return {"ok": True}
+
+        def original_failure(*args, **kwargs):
+            return {"passthrough": True}
+
+        def original_satisfies(*args, **kwargs):
+            return {"ok": True}
+
+        apply_orchestrator = SimpleNamespace(
+            _build_failure_result=original_failure,
+            mihomo_runtime_satisfies_routing=original_satisfies,
+            reconcile_mihomo_runtime=synthetic_reconcile,
+        )
+        services = ModuleType("fwrouter_api.services")
+        services.apply_orchestrator = apply_orchestrator
+        services.mihomo_reconcile = SimpleNamespace(
+            reconcile_mihomo_runtime=synthetic_reconcile,
+            current_mihomo_input_fingerprint=fingerprint,
+            _file_hash=_file_hash,
+        )
+        output = io.StringIO()
+        prefix = "FWROUTER_ACCEPTANCE_MIHOMO_RECONCILE_FAILURE "
+
+        def make_fingerprint(module_state):
+            payload = {"version": 3, "routing": {"mode": "fixed"},
+                       "tables": {"modules": [{"module_name": "vpn", "desired_state": "running",
+                                                   "runtime_state": module_state, "apply_state": "applied",
+                                                   "lifecycle_mode": "managed"}]},
+                       "files": {"generated.py": "c" * 64}, "source": {"config.py": "d" * 64}}
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+            return {"hash": digest, "payload": payload}
+
+        table_names = ("servers", "server_preferences", "vpn_auto_exclusive",
+                       "subscription_inventory_generation", "server_custom_https_proxy",
+                       "subject_routes", "subject_user_overrides", "explicit_external_clients",
+                       "routing_global_state", "rules_state", "modules")
+        file_names = ("effective_rules", "last_good_effective_rules", "applied_manifest", "contours")
+
+        def make_full_fingerprint(suffix):
+            payload = {
+                "version": 3,
+                "routing": {"mode": "fixed"},
+                "tables": {name: [{"fixture": f"{name}-{suffix}"}] for name in table_names},
+                "files": {name: hashlib.sha256(f"{name}-{suffix}".encode()).hexdigest()
+                          for name in file_names},
+                "source": {"config.py": "d" * 64},
+            }
+            digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+            return {"hash": digest, "payload": payload}
+
+        with mock.patch.dict(sys.modules, {"fwrouter_api.services": services}), \
+                mock.patch.dict(os.environ, {"FWROUTER_ENVIRONMENT": "test",
+                                             "FWROUTER_APPLICATION_ACCEPTANCE_ROOT":
+                                             "/tmp/fwrouter-application-acceptance"}), \
+                mock.patch("sys.stderr", output):
+            namespace["_install_acceptance_mihomo_reconcile_failure_observer"]()
+            state["input"] = make_fingerprint("running")
+            state["current"] = make_fingerprint("stopped")
+            prior_profile = sys.getprofile()
+            prior_profile_events = [0]
+
+            def prior_profile_observer(frame, event, arg):
+                prior_profile_events[0] += 1
+
+            sys.setprofile(prior_profile_observer)
+            try:
+                result = apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+                self.assertIs(stale_result, result,
+                              "acceptance profiler must preserve original reconcile result")
+                self.assertIs(prior_profile_observer, sys.getprofile(),
+                              "per-call profiling must restore the invoking thread profiler")
+            finally:
+                sys.setprofile(prior_profile)
+            self.assertGreater(prior_profile_events[0], 0, "existing profiler must be chained")
+            self.assertEqual("MIHOMO_GENERATION_STALE", result["error_code"])
+            self.assertEqual([], state["reads"], "fingerprint mismatch must preserve original short-circuit")
+            apply_orchestrator._build_failure_result(
+                "opaque", details={"mihomo_reconcile": result},
+            )
+            same_fingerprint = make_fingerprint("running")
+            state["input"] = same_fingerprint
+            state["current"] = same_fingerprint
+            state["hashes"] = {"candidate": "f" * 64, "active": "b" * 64}
+            state["reads"].clear()
+            candidate_result = apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+            apply_orchestrator._build_failure_result(
+                "opaque", details={"mihomo_reconcile": candidate_result},
+            )
+            self.assertEqual(["candidate"], state["reads"], "candidate mismatch must short-circuit active hash read")
+            state["hashes"] = {"candidate": "a" * 64, "active": "c" * 64}
+            state["reads"].clear()
+            active_result = apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+            apply_orchestrator._build_failure_result(
+                "opaque", details={"mihomo_reconcile": active_result},
+            )
+            self.assertEqual(["candidate", "active"], state["reads"])
+            state["input"] = make_full_fingerprint("before")
+            state["current"] = make_full_fingerprint("after")
+            state["reads"].clear()
+            all_components_result = apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+            apply_orchestrator._build_failure_result(
+                "opaque", details={"mihomo_reconcile": all_components_result},
+            )
+            prior_profile = sys.getprofile()
+            raise_profile_events = [0]
+
+            def raise_path_profile(frame, event, arg):
+                raise_profile_events[0] += 1
+
+            sys.setprofile(raise_path_profile)
+            state["raise"] = True
+            try:
+                with self.assertRaises(RuntimeError) as raised:
+                    apply_orchestrator.reconcile_mihomo_runtime({"mode": "fixed"})
+                self.assertIs(state["failure"], raised.exception,
+                              "acceptance profiler must preserve original reconcile exception")
+                self.assertIs(raise_path_profile, sys.getprofile(),
+                              "exception path must restore the invoking thread profiler")
+            finally:
+                sys.setprofile(prior_profile)
+                state["raise"] = False
+            self.assertGreater(raise_profile_events[0], 0)
+
+        records = [json.loads(line[len(prefix):]) for line in output.getvalue().splitlines()]
+        self.assertEqual(4, len(records))
+        summary = records[0]["summary"]
+        self.assertEqual("MIHOMO_GENERATION_STALE", summary["error_code"])
+        guard = summary["generation_revalidation"]
+        self.assertFalse(guard["fingerprint"]["matches"])
+        self.assertEqual(["tables"], guard["fingerprint"]["changed_components"])
+        self.assertEqual(["modules"], [entry["name"] for entry in guard["fingerprint"]["changed_tables"]])
+        self.assertEqual({}, guard["fingerprint"]["changed_component_hashes"])
+        self.assertEqual([], guard["fingerprint"]["changed_files"])
+        self.assertEqual({"desired_state": False, "runtime_state": True, "apply_state": False,
+                          "lifecycle_mode": False}, guard["fingerprint"]["modules"]["vpn"]["changed_fields"])
+        self.assertFalse(guard["candidate"]["read_evaluated"])
+        self.assertFalse(guard["active_config"]["read_evaluated"])
+        candidate_guard = records[1]["summary"]["generation_revalidation"]
+        self.assertTrue(candidate_guard["candidate"]["read_evaluated"])
+        self.assertEqual("f" * 64, candidate_guard["candidate"]["current_sha256"])
+        self.assertTrue(candidate_guard["candidate"]["current_hash_available"])
+        self.assertFalse(candidate_guard["active_config"]["read_evaluated"])
+        active_guard = records[2]["summary"]["generation_revalidation"]
+        self.assertEqual("a" * 64, active_guard["candidate"]["current_sha256"])
+        self.assertEqual("c" * 64, active_guard["active_config"]["current_sha256"])
+        self.assertTrue(active_guard["active_config"]["read_evaluated"])
+        self.assertTrue(active_guard["active_config"]["current_hash_available"])
+        full_record = records[3]
+        self.assertLessEqual(len(json.dumps(full_record, separators=(",", ":")).encode("ascii")), 8192)
+        full_guard = full_record["summary"]["generation_revalidation"]
+        self.assertEqual(list(table_names), [entry["name"] for entry in full_guard["fingerprint"]["changed_tables"]])
+        self.assertEqual(list(file_names), [entry["name"] for entry in full_guard["fingerprint"]["changed_files"]])
+        for secret in ("incarnation-private", "candidate-private-path", "active-private-path",
+                       "running", "stopped"):
+            self.assertNotIn(secret, output.getvalue())
 
     def test_packet_post_apply_includes_only_bounded_failure_diagnostics(self):
         packet_tree = ast.parse(PACKET_ACCEPTANCE_SOURCE.read_text(encoding="utf-8"),

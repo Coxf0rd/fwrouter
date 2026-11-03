@@ -91,7 +91,7 @@ _MIHOMO_RECONCILE_REASONS = frozenset({
 })
 _MIHOMO_RECONCILE_ACTIONS = frozenset({"force_recreate", "none", "restart"})
 _MIHOMO_RECONCILE_EVENTS = frozenset({"failure_result_input"})
-_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES = 1024
+_MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES = 6000
 def current_xray_subject_identity_pairs(database_path: Path) -> set[tuple[str, str]]:
     """Read the canonical active Xray subject identities from a synthetic DB."""
     connection = sqlite3.connect(database_path, timeout=5)
@@ -263,6 +263,119 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
     def bounded_int(value, minimum, maximum):
         return value if type(value) is int and minimum <= value <= maximum else None
 
+    def safe_hash(value):
+        return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+    def generation_revalidation(value):
+        if not isinstance(value, dict) or value.get("schema") != "fwrouter-acceptance-generation-revalidation/v1":
+            return None
+        revision = value.get("selection_revision") if isinstance(value.get("selection_revision"), dict) else {}
+        fingerprint = value.get("fingerprint") if isinstance(value.get("fingerprint"), dict) else {}
+        candidate = value.get("candidate") if isinstance(value.get("candidate"), dict) else {}
+        active = value.get("active_config") if isinstance(value.get("active_config"), dict) else {}
+        incarnation = value.get("runtime_incarnation") if isinstance(value.get("runtime_incarnation"), dict) else {}
+        timing = value.get("timing_ms") if isinstance(value.get("timing_ms"), dict) else {}
+        components = ("routing", "tables", "files", "source", "version")
+        table_names = ("servers", "server_preferences", "vpn_auto_exclusive",
+                       "subscription_inventory_generation", "server_custom_https_proxy",
+                       "subject_routes", "subject_user_overrides", "explicit_external_clients",
+                       "routing_global_state", "rules_state", "modules")
+        file_names = ("effective_rules", "last_good_effective_rules", "applied_manifest", "contours")
+        def changed_component_hashes(raw):
+            if not isinstance(raw, dict):
+                return {}
+            result = {}
+            for key in ("routing", "tables", "files", "source", "version"):
+                item = raw.get(key)
+                if not isinstance(item, dict):
+                    continue
+                result[key] = {"expected_sha256": safe_hash(item.get("expected_sha256")),
+                               "current_sha256": safe_hash(item.get("current_sha256"))}
+            return result
+        raw_modules = fingerprint.get("modules") if isinstance(fingerprint.get("modules"), dict) else {}
+        modules = {}
+        for name in ("vpn", "xray"):
+            raw = raw_modules.get(name)
+            if not isinstance(raw, dict):
+                continue
+            fields = raw.get("changed_fields") if isinstance(raw.get("changed_fields"), dict) else {}
+            modules[name] = {
+                "expected_row_sha256": safe_hash(raw.get("expected_row_sha256")),
+                "current_row_sha256": safe_hash(raw.get("current_row_sha256")),
+                "changed_fields": {field: fields[field] for field in
+                                   ("desired_state", "runtime_state", "apply_state", "lifecycle_mode")
+                                   if type(fields.get(field)) is bool},
+            }
+        changed = fingerprint.get("changed_components")
+        changed_components = sorted({item for item in changed if isinstance(item, str) and item in components}) \
+            if isinstance(changed, list) else []
+        def changed_entries(raw, allowed):
+            if not isinstance(raw, list):
+                return []
+            result = []
+            for entry in raw[:len(allowed)]:
+                if not isinstance(entry, dict) or entry.get("name") not in allowed:
+                    continue
+                comparison = entry.get("comparison")
+                result.append({"name": entry["name"],
+                               "expected_sha256": safe_hash(entry.get("expected_sha256")),
+                               "current_sha256": safe_hash(entry.get("current_sha256")),
+                               "comparison": comparison
+                               if isinstance(comparison, str)
+                               and comparison in {"changed", "unavailable"} else None})
+            return result
+        return {
+            "selection_revision": {
+                "expected": bounded_int(revision.get("expected"), 0, 2**63 - 1),
+                "current": bounded_int(revision.get("current"), 0, 2**63 - 1),
+                "matches": revision.get("matches") if type(revision.get("matches")) is bool else None,
+            },
+            "fingerprint": {
+                "expected_sha256": safe_hash(fingerprint.get("expected_sha256")),
+                "current_sha256": safe_hash(fingerprint.get("current_sha256")),
+                "matches": fingerprint.get("matches") if type(fingerprint.get("matches")) is bool else None,
+                "changed_component_hashes": changed_component_hashes(fingerprint.get("changed_component_hashes")),
+                "changed_components": changed_components,
+                "changed_tables": changed_entries(fingerprint.get("changed_tables"), table_names),
+                "changed_files": changed_entries(fingerprint.get("changed_files"), file_names),
+                "modules": modules,
+            },
+            "candidate": {
+                "expected_sha256": safe_hash(candidate.get("expected_sha256")),
+                "expected_hash_available": candidate.get("expected_hash_available")
+                if type(candidate.get("expected_hash_available")) is bool else None,
+                "read_evaluated": candidate.get("read_evaluated")
+                if type(candidate.get("read_evaluated")) is bool else None,
+                "current_sha256": safe_hash(candidate.get("current_sha256")),
+                "current_hash_available": candidate.get("current_hash_available")
+                if type(candidate.get("current_hash_available")) is bool else None,
+                "matches": candidate.get("matches") if type(candidate.get("matches")) is bool else None,
+                "elapsed_ms": bounded_int(candidate.get("elapsed_ms"), 0, 600_000),
+            },
+            "active_config": {
+                "expected_sha256": safe_hash(active.get("expected_sha256")),
+                "expected_hash_available": active.get("expected_hash_available")
+                if type(active.get("expected_hash_available")) is bool else None,
+                "read_evaluated": active.get("read_evaluated")
+                if type(active.get("read_evaluated")) is bool else None,
+                "current_sha256": safe_hash(active.get("current_sha256")),
+                "current_hash_available": active.get("current_hash_available")
+                if type(active.get("current_hash_available")) is bool else None,
+                "matches": active.get("matches") if type(active.get("matches")) is bool else None,
+                "elapsed_ms": bounded_int(active.get("elapsed_ms"), 0, 600_000),
+            },
+            "runtime_incarnation": {
+                "expected_sha256": safe_hash(incarnation.get("expected_sha256")),
+                "current_sha256": safe_hash(incarnation.get("current_sha256")),
+                "matches": incarnation.get("matches") if type(incarnation.get("matches")) is bool else None,
+                "checked": incarnation.get("checked") if type(incarnation.get("checked")) is bool else None,
+            },
+            "resume_reservation_present": value.get("resume_reservation_present")
+            if type(value.get("resume_reservation_present")) is bool else None,
+            "timing_ms": {key: bounded_int(timing.get(key), 0, 600_000)
+                          for key in ("fingerprint", "revalidation_after_fingerprint", "total")},
+        }
+
     for record in reversed(records):
         if (record.get("schema") != "fwrouter-acceptance-mihomo-reconcile-failure/v1"
                 or record.get("event") not in _MIHOMO_RECONCILE_EVENTS):
@@ -321,6 +434,9 @@ def _safe_mihomo_reconcile_diagnostics_since(root, snapshot):
                 ),
             },
         }
+        stale_generation = generation_revalidation(summary.get("generation_revalidation"))
+        if stale_generation is not None:
+            projected["summary"]["generation_revalidation"] = stale_generation
         encoded = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
         if len(encoded) > _MIHOMO_RECONCILE_DIAGNOSTIC_MAX_BYTES:
             break
