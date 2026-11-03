@@ -7059,36 +7059,56 @@ class AcceptanceContractTests(unittest.TestCase):
         self.assertEqual("NOTRUN", receipt["status"])
 
     def test_junit_requires_exact_suite_node_ids_without_skips_or_duplicates(self):
-        for suite in ("functional-ordinary", "recovery", "reentry-diagnostic",
-                      "identity-diagnostic", "runtime-scale-diagnostic"):
-            with self.subTest(suite=suite), tempfile.TemporaryDirectory(prefix="fwrouter-acceptance-junit-") as temp:
-                expected = launcher.expected_acceptance_nodeids(suite)
-                root = ET.Element("testsuite")
-                for nodeid in sorted(expected):
-                    path, _, name = nodeid.partition("::")
-                    ET.SubElement(root, "testcase", {
-                        "classname": path[:-3].replace("/", "."), "name": name,
-                    })
-                junit = Path(temp) / "junit.xml"
-                ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
-                observed = launcher.validate_junit(junit, suite)
-                self.assertEqual(sorted(expected), observed["nodeids"])
-                rows = [{"nodeid": nodeid, "status": "passed",
-                         "phases": {phase: "passed" for phase in ("setup", "call", "teardown")}}
-                        for nodeid in sorted(expected)]
-                launcher.validate_suite_node_receipt(rows, suite, observed["nodeids"])
-                with self.assertRaises(launcher.NotRun):
-                    launcher.validate_suite_node_receipt(rows[:-1], suite, observed["nodeids"])
-                rows[0]["phases"].pop("teardown")
-                with self.assertRaises(launcher.NotRun):
+        suites = ("functional-ordinary", "recovery", "reentry-diagnostic",
+                  "identity-diagnostic", "runtime-scale-diagnostic")
+        actual_expected = launcher.expected_acceptance_nodeids
+        validated_inventory: dict[str, set[str]] = {}
+        cached_lookups: dict[str, int] = {}
+
+        def validated_expected(suite: str) -> set[str]:
+            if suite not in validated_inventory:
+                return actual_expected(suite)
+            cached_lookups[suite] += 1
+            return set(validated_inventory[suite])
+
+        # Each suite's live source/registry inventory is read and validated
+        # once here. Repeated checks within this subtest reuse that immutable
+        # exact node set; source_catalog mutation/freshness is tested separately.
+        with mock.patch.object(launcher, "expected_acceptance_nodeids", side_effect=validated_expected):
+            for suite in suites:
+                with self.subTest(suite=suite), tempfile.TemporaryDirectory(
+                    prefix="fwrouter-acceptance-junit-",
+                ) as temp:
+                    expected = actual_expected(suite)
+                    validated_inventory[suite] = set(expected)
+                    cached_lookups[suite] = 0
+                    root = ET.Element("testsuite")
+                    for nodeid in sorted(expected):
+                        path, _, name = nodeid.partition("::")
+                        ET.SubElement(root, "testcase", {
+                            "classname": path[:-3].replace("/", "."), "name": name,
+                        })
+                    junit = Path(temp) / "junit.xml"
+                    ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
+                    observed = launcher.validate_junit(junit, suite)
+                    self.assertEqual(sorted(expected), observed["nodeids"])
+                    rows = [{"nodeid": nodeid, "status": "passed",
+                             "phases": {phase: "passed" for phase in ("setup", "call", "teardown")}}
+                            for nodeid in sorted(expected)]
                     launcher.validate_suite_node_receipt(rows, suite, observed["nodeids"])
-                ET.SubElement(root, "testcase", {
-                    "classname": next(iter(sorted(expected))).split("::", 1)[0][:-3].replace("/", "."),
-                    "name": next(iter(sorted(expected))).split("::", 1)[1],
-                })
-                ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
-                with self.assertRaises(launcher.NotRun):
-                    launcher.validate_junit(junit, suite)
+                    with self.assertRaises(launcher.NotRun):
+                        launcher.validate_suite_node_receipt(rows[:-1], suite, observed["nodeids"])
+                    rows[0]["phases"].pop("teardown")
+                    with self.assertRaises(launcher.NotRun):
+                        launcher.validate_suite_node_receipt(rows, suite, observed["nodeids"])
+                    ET.SubElement(root, "testcase", {
+                        "classname": next(iter(sorted(expected))).split("::", 1)[0][:-3].replace("/", "."),
+                        "name": next(iter(sorted(expected))).split("::", 1)[1],
+                    })
+                    ET.ElementTree(root).write(junit, encoding="utf-8", xml_declaration=True)
+                    with self.assertRaises(launcher.NotRun):
+                        launcher.validate_junit(junit, suite)
+                    self.assertEqual(5, cached_lookups[suite])
 
     def test_provider_diagnostic_is_one_fixed_functional_node(self):
         nodeid = (

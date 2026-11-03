@@ -1230,6 +1230,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         source_path = ROOT / "tests" / "application_acceptance" / "test_xray_generation.py"
         tree = ast.parse(source_path.read_text(encoding="utf-8"))
         selected_names = {"_PROVIDER_WORKER_LOG_PREFIX", "_MIHOMO_RECONCILE_WORKER_LOG_PREFIX",
+                          "_MIHOMO_PREWARM_WORKER_LOG_PREFIX",
                           "_PROVIDER_WORKER_LOG_PREFIXES", "_PROVIDER_WORKER_LOG_MAX_FILES",
                           "_PROVIDER_WORKER_LOG_MAX_APPEND_BYTES"}
         selected_functions = {"_snapshot_provider_worker_logs", "_provider_worker_records_since"}
@@ -1247,6 +1248,7 @@ class NetworkFixtureContractTests(unittest.TestCase):
         snapshot_logs = namespace["_snapshot_provider_worker_logs"]
         records_since = namespace["_provider_worker_records_since"]
         prefix = namespace["_PROVIDER_WORKER_LOG_PREFIX"]
+        prewarm_prefix = namespace["_MIHOMO_PREWARM_WORKER_LOG_PREFIX"]
         old_record = {"event": "refresh_result", "marker": "before-action", "targeted_source_match": True,
                       "summary": {"error": {"code": "XRAY_GENERATION_RUNTIME_READBACK_FAILED"}}}
         current_record = {"event": "refresh_result", "marker": "current-action", "targeted_source_match": True,
@@ -1263,6 +1265,15 @@ class NetworkFixtureContractTests(unittest.TestCase):
                 stream.write(current_line)
             self.assertEqual(records_since(root, before), [current_record],
                              "current targeted native failure record must be retained")
+
+            prewarm_record = {"schema": "fwrouter-acceptance-mihomo-prewarm-probe/v1",
+                              "event": "prewarm_sync_probe", "summary": {"status": "held_and_released"}}
+            prewarm_line = (prewarm_prefix + json.dumps(prewarm_record, separators=(",", ":")) + "\n").encode("ascii")
+            prewarm_before = snapshot_logs(root)
+            with existing.open("ab") as stream:
+                stream.write(prewarm_line)
+            self.assertEqual(records_since(root, prewarm_before, prefix=prewarm_prefix), [prewarm_record],
+                             "new prewarm probe prefix remains a supported bounded current-log record")
 
             replacement_before = snapshot_logs(root)
             existing.rename(root / "uvicorn-8123.log.rotated")
