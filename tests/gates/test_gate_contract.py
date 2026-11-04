@@ -48,6 +48,35 @@ WHEEL_VERIFIER_SPEC.loader.exec_module(wheel_verifier)
 
 
 class GateContractTests(unittest.TestCase):
+    def test_verified_github_run_context_must_match_actual_environment(self) -> None:
+        launcher_path = gate.ROOT / "tests/acceptance/launcher.py"
+        spec = importlib.util.spec_from_file_location("fwrouter_run_context_launcher", launcher_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        launcher = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(launcher)
+        expected = {
+            "hosted": True, "runner_environment": "github-hosted", "runner_os": "Linux",
+            "repository": "owner/repo", "source_sha": "a" * 40, "workflow": "qualification",
+            "event": "workflow_dispatch", "ref": "refs/heads/feature", "run_id": "12345",
+            "attempt": "2",
+        }
+        env = {
+            "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux",
+            "GITHUB_REPOSITORY": "owner/repo", "GITHUB_SHA": "a" * 40,
+            "GITHUB_WORKFLOW": "qualification", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": "refs/heads/feature", "GITHUB_RUN_ID": "12345",
+            "GITHUB_RUN_ATTEMPT": "2",
+        }
+        self.assertEqual([], launcher.github_run_context_mismatches(env, expected))
+        self.assertEqual(["hosted"], launcher.github_run_context_mismatches(
+            {**env, "GITHUB_ACTIONS": "false"}, expected))
+        self.assertEqual(["source_sha", "attempt"], launcher.github_run_context_mismatches(
+            {**env, "GITHUB_SHA": "b" * 40, "GITHUB_RUN_ATTEMPT": "1"}, expected))
+        missing = dict(env)
+        del missing["GITHUB_WORKFLOW"]
+        self.assertEqual(["workflow"], launcher.github_run_context_mismatches(missing, expected))
+
     def test_proof_only_admission_branch_can_select_existing_qualified_cohort(self) -> None:
         branch = "fix/proof-only-legacy-admission"
         workflow_path = gate.ROOT / ".github/workflows/phase-d-validation.yml"
@@ -81,10 +110,16 @@ class GateContractTests(unittest.TestCase):
     def test_manifest_v2_runner_registry_and_suite_identity_are_closed(self) -> None:
         self.assertEqual(2, self.manifest["schema_version"])
         self.assertEqual(gate.RUNNER_CONTRACTS, self.manifest["runner_contracts"])
+        self.assertEqual(214, len(self.manifest["test_files"]))
         adapters = {gate.runner_adapter(row, self.manifest) for row in self.manifest["test_files"]}
         self.assertEqual({"pytest-nodeid", "node-tap", "declared-shell-case",
                           "qualified-scenario-nodeid"}, adapters)
         by_path = {row["path"]: row for row in self.manifest["test_files"]}
+        host_contract = by_path["tests/gates/test_host_qualification.py"]
+        self.assertEqual("pytest", host_contract["runner"])
+        self.assertIsNone(host_contract.get("execution_profile"))
+        self.assertFalse(host_contract["native"])
+        self.assertFalse(host_contract["opt_in"])
         self.assertEqual("pytest-nodeid", gate.runner_adapter(by_path["tests/acceptance/test_dependency_image_contract.py"], self.manifest))
         self.assertEqual("node-tap", gate.runner_adapter(by_path["ui/tests/admin-client-presentation.test.js"], self.manifest))
         self.assertEqual("declared-shell-case", gate.runner_adapter(by_path["installer/test-install.sh"], self.manifest))

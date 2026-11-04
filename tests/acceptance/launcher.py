@@ -422,6 +422,37 @@ class NotRun(RuntimeError):
     """Qualification failed before any acceptance container was started."""
 
 
+GITHUB_RUN_CONTEXT_FIELDS = {
+    "runner_environment": "RUNNER_ENVIRONMENT",
+    "runner_os": "RUNNER_OS",
+    "repository": "GITHUB_REPOSITORY",
+    "source_sha": "GITHUB_SHA",
+    "workflow": "GITHUB_WORKFLOW",
+    "event": "GITHUB_EVENT_NAME",
+    "ref": "GITHUB_REF",
+    "run_id": "GITHUB_RUN_ID",
+    "attempt": "GITHUB_RUN_ATTEMPT",
+}
+
+
+def github_run_context_mismatches(env: dict[str, str], expected: dict[str, Any]) -> list[str]:
+    """Compare a verified run identity with the actual process environment.
+
+    Environment labels are only checked against an independently obtained
+    identity; they are never accepted as proof on their own.
+    """
+    mismatches: list[str] = []
+    actual_hosted = env.get("GITHUB_ACTIONS", "").lower() == "true"
+    if expected.get("hosted") is not actual_hosted:
+        mismatches.append("hosted")
+    for field, name in GITHUB_RUN_CONTEXT_FIELDS.items():
+        value = expected.get(field)
+        actual = env.get(name, "")
+        if not isinstance(value, str) or not value or actual != value:
+            mismatches.append(field)
+    return mismatches
+
+
 def sha256_file(path: Path) -> str:
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or path.is_symlink():

@@ -5416,6 +5416,34 @@
       "runner": "pytest"
     },
     {
+      "baseline_policy": "not applicable: tests opt-in host controller admission and cleanup failure contracts",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "synthetic verified-run metadata, temporary pinned input files and fake guest lifecycle; no QEMU or host runtime",
+      "fixture_owner": "tests/gates/test_host_qualification.py",
+      "id": "host-qualification-contract",
+      "isolation": "temporary files and mocked guest process; no network, Docker daemon, host services or VM launch",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/gates/test_host_qualification.py",
+      "primary_level": "L1",
+      "risk_notes": "validates opt-in controller admission and failed cleanup outcomes; fake guest exercises control flow only and is not host qualification evidence",
+      "runtime_dependencies": [
+        "Python 3.11 standard library",
+        "pytest"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "ui-tooling",
+      "runner": "pytest"
+    },
+    {
       "baseline_policy": "not applicable: tests CI evidence bundle and retention contract",
       "destructive": false,
       "domain": "test-infrastructure",
@@ -7354,7 +7382,7 @@
       "runner": "pytest"
     }
   ],
-  "version": "2026.11.04.1",
+  "version": "2026.11.05.1",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
