@@ -78,6 +78,119 @@ class GateContractTests(unittest.TestCase):
         self.assertTrue(all(row["primary_level"] not in {"L0", "L5", "L6"} for row in self.manifest["test_files"]))
         self.assertEqual(len(self.manifest["test_files"]), len(gate.manifest_paths(self.manifest)))
 
+    def test_manifest_v2_runner_registry_and_suite_identity_are_closed(self) -> None:
+        self.assertEqual(2, self.manifest["schema_version"])
+        self.assertEqual(gate.RUNNER_CONTRACTS, self.manifest["runner_contracts"])
+        adapters = {gate.runner_adapter(row, self.manifest) for row in self.manifest["test_files"]}
+        self.assertEqual({"pytest-nodeid", "node-tap", "declared-shell-case",
+                          "qualified-scenario-nodeid"}, adapters)
+        by_path = {row["path"]: row for row in self.manifest["test_files"]}
+        self.assertEqual("pytest-nodeid", gate.runner_adapter(by_path["tests/acceptance/test_dependency_image_contract.py"], self.manifest))
+        self.assertEqual("node-tap", gate.runner_adapter(by_path["ui/tests/admin-client-presentation.test.js"], self.manifest))
+        self.assertEqual("declared-shell-case", gate.runner_adapter(by_path["installer/test-install.sh"], self.manifest))
+        self.assertEqual("qualified-scenario-nodeid", gate.runner_adapter(by_path["backend/tests/test_xray.py"], self.manifest))
+        with self.assertRaises(gate.GateError):
+            gate.runner_adapter({"path": "unknown", "runner": "future-runner"}, self.manifest)
+        for invalid in ("mystery", "node"):
+            changed = copy.deepcopy(self.manifest)
+            changed["test_files"][0]["runner"] = invalid
+            with self.assertRaises(gate.GateError):
+                gate.validate_manifest(changed)
+        changed = copy.deepcopy(self.manifest)
+        changed["test_files"][1]["id"] = changed["test_files"][0]["id"]
+        with self.assertRaisesRegex(gate.GateError, "duplicate suite ID"):
+            gate.validate_manifest(changed)
+        changed = copy.deepcopy(self.manifest)
+        changed["runner_contracts"]["pytest"]["capabilities"].remove("pytest")
+        with self.assertRaisesRegex(gate.GateError, "closed supported registry"):
+            gate.validate_manifest(changed)
+        changed = copy.deepcopy(self.manifest)
+        changed["schema_version"] = 1
+        with self.assertRaisesRegex(gate.GateError, "unsupported or missing"):
+            gate.validate_manifest(changed)
+        changed = copy.deepcopy(self.manifest)
+        changed["candidate_exclusions"] = [{"path": "tests/helpers/test_helper.py"}]
+        with self.assertRaisesRegex(gate.GateError, "empty exclusion register"):
+            gate.validate_manifest(changed)
+
+    def test_explicit_runners_allow_supported_extensions_outside_legacy_prefixes(self) -> None:
+        changed = copy.deepcopy(self.manifest)
+        rows = {row["path"]: row for row in changed["test_files"]}
+        rows["tests/acceptance/test_dependency_image_contract.py"]["path"] = "tools/ci/test_inventory.py"
+        rows["ui/tests/admin-client-presentation.test.js"]["path"] = "tools/ci/test_ui_adapter.cjs"
+        rows["installer/test-install.sh"]["path"] = "tools/ci/smoke_test.sh"
+        gate.validate_manifest(changed)
+        for path, runner, adapter in (
+            ("tools/ci/test_inventory.py", "pytest", "pytest-nodeid"),
+            ("tools/ci/test_ui_adapter.cjs", "node", "node-tap"),
+            ("tools/ci/smoke_test.sh", "shell", "declared-shell-case"),
+        ):
+            row = next(item for item in changed["test_files"] if item["path"] == path)
+            self.assertEqual(adapter, gate.runner_adapter(row, changed))
+
+    def test_manifest_extension_must_match_the_explicit_runner(self) -> None:
+        for path, runner in (("tools/test_invalid.js", "pytest"),
+                             ("tools/test_invalid.sh", "node"),
+                             ("tools/test_invalid.py", "shell")):
+            changed = copy.deepcopy(self.manifest)
+            row = changed["test_files"][0]
+            row["path"] = path
+            row["runner"] = runner
+            with self.assertRaisesRegex(gate.GateError, "incompatible with the declared test extension"):
+                gate.validate_manifest(changed)
+
+    def test_node_cannot_have_two_manifest_owners(self) -> None:
+        changed = copy.deepcopy(self.manifest)
+        profile = changed["node_execution_profiles"][0]
+        path, node = profile["nodeid"].split("::", 1)
+        changed["node_overrides"].append({"path": path, "node": node, "primary_level": "L3"})
+        with self.assertRaisesRegex(gate.GateError, "duplicate test-node ownership"):
+            gate.validate_manifest(changed)
+
+    def test_acceptance_test_glob_discovers_new_test_and_symlink_candidate(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gate-discovery-") as temp:
+            root = Path(temp)
+            acceptance = root / "tests/acceptance"
+            acceptance.mkdir(parents=True)
+            case = acceptance / "test_new_contract.py"
+            case.write_text("def test_new(): pass\n", encoding="utf-8")
+            with mock.patch.object(gate, "ROOT", root):
+                self.assertIn("tests/acceptance/test_new_contract.py", gate.discover_test_files())
+                link = acceptance / "test_link.py"
+                link.symlink_to(case)
+                self.assertIn("tests/acceptance/test_link.py", gate.discover_test_files())
+
+    def test_catalog_rejects_unassigned_tracked_candidate_and_path_symlink(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gate-catalog-") as temp:
+            root = Path(temp)
+            target = root / "target.py"
+            target.write_text("def test_x(): pass\n", encoding="utf-8")
+            (root / "tests/gates").mkdir(parents=True)
+            link = root / "tests/gates/test_linked.py"
+            link.symlink_to(target)
+            linked = {"path": "tests/gates/test_linked.py", "domain": "test-infrastructure",
+                      "execution_group": "ui-tooling", "primary_level": "L1"}
+            fake_git = SimpleNamespace(returncode=0, stdout=b"outside/test_candidate.py\0")
+            with mock.patch.object(gate, "ROOT", root), \
+                 mock.patch.object(gate.subprocess, "run", return_value=fake_git):
+                errors = gate.check_catalog({"test_files": [linked]})
+            self.assertTrue(any("unassigned tracked test candidate" in error for error in errors))
+            self.assertTrue(any("symlink" in error for error in errors))
+
+    def test_catalog_detects_new_unassigned_node_and_shell_candidates_outside_globs(self) -> None:
+        names = (
+            "outside/test-tool.js", "outside/test_tool.cjs", "outside/test.mjs",
+            "outside/tool_test.js", "outside/tool.test.cjs", "outside/tool.spec.mjs",
+            "outside/test.sh", "outside/test-helper.sh", "outside/test_helper.sh",
+            "outside/helper_test.sh",
+        )
+        fake_git = SimpleNamespace(returncode=0, stdout=("\0".join(names) + "\0").encode())
+        with mock.patch.object(gate.subprocess, "run", return_value=fake_git):
+            errors = gate.check_catalog({"test_files": []})
+        joined = "\n".join(errors)
+        for name in names:
+            self.assertIn(name, joined)
+
     def test_existing_standard_library_contracts_have_explicit_routine_runner_adapters(self) -> None:
         paths = {row["path"] for row in self.manifest["test_files"]}
         self.assertEqual({

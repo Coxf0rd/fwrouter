@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 GATES = ROOT / "tests" / "gates"
 MANIFEST = GATES / "manifest.json"
 REPORT_DIR = ROOT / "knowledge" / "audits" / "test_architecture_cicd_2026-10-04" / "reports"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TOOL_VERSION = "fwrouter-test-gate/3"
 ROUTINE_SHARD_GROUPS = (
     "core-state",
@@ -206,7 +206,16 @@ TEST_FILE_GLOBS = (
     "integrations/homeassistant/tests/test_*.py",
     "tests/application_acceptance/test_*.py",
     "tests/gates/test_*.py",
+    "tests/acceptance/test_*.py",
 )
+RUNNER_CONTRACTS = {
+    "pytest": {"identity_adapter": "pytest-nodeid", "environment": "python", "capabilities": ["python", "pytest"]},
+    "node": {"identity_adapter": "node-tap", "environment": "node", "capabilities": ["node", "tap"]},
+    "shell": {"identity_adapter": "declared-shell-case", "environment": "shell", "capabilities": ["posix-shell"]},
+    "qualified-child": {"identity_adapter": "qualified-scenario-nodeid", "environment": "qualified-child", "capabilities": ["isolated-process", "exact-scenario"]},
+    "hosted-compose": {"identity_adapter": "qualified-scenario-nodeid", "environment": "hosted-compose", "capabilities": ["compose-isolation", "exact-scenario"]},
+    "hosted-kernel": {"identity_adapter": "qualified-scenario-nodeid", "environment": "hosted-kernel", "capabilities": ["kernel-network", "packet-capture", "exact-scenario"]},
+}
 STDLIB_CONTRACT_PATHS = {
     "tests/gates/test_core_snapshot_recovery_contract.py",
     "tests/gates/test_acceptance_contract.py", "tests/gates/test_gate_contract.py",
@@ -251,15 +260,20 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         raise GateError("unsupported or missing manifest schema_version")
     if not isinstance(manifest.get("version"), str) or not manifest["version"]:
         raise GateError("manifest version must be a nonempty string")
+    if manifest.get("runner_contracts") != RUNNER_CONTRACTS:
+        raise GateError("manifest runner_contracts differ from the closed supported registry")
+    if manifest.get("candidate_exclusions") != []:
+        raise GateError("manifest candidate_exclusions differ from the reviewed empty exclusion register")
     rows = manifest.get("test_files")
     if not isinstance(rows, list) or not rows:
         raise GateError("manifest test_files must be a nonempty list")
     seen: set[str] = set()
+    seen_ids: set[str] = set()
     for row in rows:
         required = {
             "path", "id", "domain", "primary_level", "fixture_owner",
             "runtime_dependencies", "isolation", "network", "destructive",
-            "slow", "timeout_seconds", "max_output_bytes", "max_artifact_bytes",
+            "slow", "timeout_seconds", "max_output_bytes", "max_artifact_bytes", "runner",
         }
         if not isinstance(row, dict) or not required <= row.keys():
             raise GateError(f"manifest row lacks required fields: {row!r}")
@@ -269,6 +283,19 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if path in seen:
             raise GateError(f"duplicate test path: {path}")
         seen.add(path)
+        suite_id = row["id"]
+        if not isinstance(suite_id, str) or not suite_id or suite_id in seen_ids:
+            raise GateError(f"missing or duplicate suite ID: {suite_id!r}")
+        seen_ids.add(suite_id)
+        profile = row.get("execution_profile")
+        if profile is not None and profile not in EXECUTION_PROFILES:
+            raise GateError(f"{path}: unknown execution_profile")
+        runner_name = row["runner"]
+        contract = RUNNER_CONTRACTS.get(runner_name)
+        if contract is None:
+            raise GateError(f"{path}: unknown runner contract {runner_name!r}")
+        if row.get("required_capabilities", contract["capabilities"]) != contract["capabilities"]:
+            raise GateError(f"{path}: runner capabilities cannot weaken the closed contract")
         if row["primary_level"] not in LEVELS:
             raise GateError(f"{path}: invalid primary_level")
         if row["primary_level"] in {"L0", "L5", "L6"}:
@@ -282,9 +309,6 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError(f"{path}: slow must be true, false or unknown")
         if not isinstance(row["destructive"], bool):
             raise GateError(f"{path}: destructive must be boolean")
-        profile = row.get("execution_profile")
-        if profile is not None and profile not in EXECUTION_PROFILES:
-            raise GateError(f"{path}: unknown execution_profile")
         if profile == KERNEL_DATAPLANE_EXECUTION_PROFILE:
             raise GateError(f"{path}: hosted-kernel-dataplane is reserved for exact provider-cohort node bindings")
         if profile == PACKET_EXECUTION_PROFILE and (
@@ -299,6 +323,22 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise GateError(f"{path}: hosted-kernel-packet is reserved for the exact opt-in L3 packet suite")
         if row.get("native") is True and profile not in EXECUTION_PROFILES:
             raise GateError(f"{path}: native suites require an explicit qualified execution profile")
+        suffix = Path(path).suffix.lower()
+        if profile:
+            expected_runner = {
+                "qualified-child-process": "qualified-child",
+                "hosted-isolated-compose": "hosted-compose",
+                PACKET_EXECUTION_PROFILE: "hosted-kernel",
+                KERNEL_DATAPLANE_EXECUTION_PROFILE: "hosted-kernel",
+            }[profile]
+            if runner_name != expected_runner or suffix != ".py":
+                raise GateError(f"{path}: execution profile requires its exact qualified Python runner")
+        else:
+            compatible_extensions = {
+                "pytest": {".py"}, "node": {".js", ".cjs", ".mjs"}, "shell": {".sh"},
+            }
+            if runner_name not in compatible_extensions or suffix not in compatible_extensions[runner_name]:
+                raise GateError(f"{path}: runner contract is incompatible with the declared test extension")
     node_profiles = manifest.get("node_execution_profiles", [])
     if not isinstance(node_profiles, list):
         raise GateError("node_execution_profiles must be a list")
@@ -332,6 +372,9 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             base = next(item for item in manifest["test_files"] if item["path"] == key[0])
             if row["execution_profile"] is not None or base.get("execution_profile") not in EXECUTION_PROFILES:
                 raise GateError(f"routine node overrides may only carve exact nodes out of a profiled file: {row!r}")
+    override_nodeids = {f"{path}::{node}" for path, node in override_ids}
+    if override_nodeids & node_profile_ids:
+        raise GateError("duplicate test-node ownership across node profiles and overrides")
     if routine_profile_carveouts != ROUTINE_PROFILE_CARVEOUTS:
         raise GateError("manifest must preserve the exact reviewed routine Xray node carve-outs")
     rules = manifest.get("path_rules")
@@ -377,12 +420,29 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
 def discover_test_files() -> set[str]:
     files: set[str] = set()
     for pattern in TEST_FILE_GLOBS:
-        files.update(p.relative_to(ROOT).as_posix() for p in ROOT.glob(pattern) if p.is_file())
+        for path in ROOT.glob(pattern):
+            if path.is_symlink():
+                files.add(path.relative_to(ROOT).as_posix())
+            elif path.is_file():
+                files.add(path.relative_to(ROOT).as_posix())
     return files
 
 
 def manifest_paths(manifest: dict[str, Any]) -> set[str]:
     return {row["path"] for row in manifest["test_files"]}
+
+
+def runner_adapter(row: dict[str, Any], manifest: dict[str, Any]) -> str:
+    """Resolve only an explicitly declared adapter from the closed registry."""
+    contracts = manifest.get("runner_contracts")
+    name = row.get("runner")
+    contract = contracts.get(name) if isinstance(contracts, dict) else None
+    adapter = contract.get("identity_adapter") if isinstance(contract, dict) else None
+    if not isinstance(adapter, str) or adapter not in {
+        "pytest-nodeid", "node-tap", "declared-shell-case", "qualified-scenario-nodeid",
+    }:
+        raise GateError(f"test row has no resolvable runner identity adapter: {row.get('path', '<unknown>')}")
+    return adapter
 
 
 def check_catalog(manifest: dict[str, Any]) -> list[str]:
@@ -392,6 +452,40 @@ def check_catalog(manifest: dict[str, Any]) -> list[str]:
     stale = sorted(path for path in catalog - expected if not (ROOT / path).is_file())
     errors = [f"unclassified test file: {p}" for p in missing]
     errors.extend(f"catalog path does not exist: {p}" for p in stale)
+    for path in sorted(catalog):
+        candidate = ROOT / path
+        try:
+            candidate.resolve(strict=True).relative_to(ROOT.resolve(strict=True))
+        except (OSError, ValueError):
+            errors.append(f"catalog path escapes repository or is unresolved: {path}")
+        if candidate.is_symlink() or any(parent.is_symlink() for parent in candidate.parents
+                                         if parent != ROOT and ROOT in parent.parents):
+            errors.append(f"catalog test path must not be a symlink: {path}")
+    # Scan tracked candidates independently of the supported roots/globs so a
+    # newly named test cannot disappear by being placed beside an adapter.
+    tracked = subprocess.run(["git", "ls-files", "--cached", "-z"], cwd=ROOT,
+                             capture_output=True, check=False)
+    if tracked.returncode:
+        errors.append("cannot enumerate tracked test candidates")
+    else:
+        for raw in tracked.stdout.split(b"\0"):
+            if not raw:
+                continue
+            path = raw.decode("utf-8", "strict")
+            name = Path(path).name
+            node_suffixes = (".js", ".cjs", ".mjs")
+            node_test_name = (
+                name.startswith(("test-", "test_")) and name.endswith(node_suffixes)
+            ) or (name.startswith("test.") and name.endswith(node_suffixes)) or (
+                name.endswith(("_test.js", "_test.cjs", "_test.mjs"))
+            ) or (name.endswith((".test.js", ".test.cjs", ".test.mjs"))) or (
+                name.endswith((".spec.js", ".spec.cjs", ".spec.mjs"))
+            )
+            shell_test_name = name in {"test.sh"} or name.startswith(("test-", "test_")) and name.endswith(".sh") or name.endswith("_test.sh")
+            candidate = (name == "test.py" or name.startswith("test_") and name.endswith(".py")
+                         or name.endswith("_test.py") or node_test_name or shell_test_name)
+            if candidate and path not in catalog:
+                errors.append(f"unassigned tracked test candidate: {path}")
     owners: dict[str, list[str]] = {}
     for row in manifest.get("test_files", []):
         group = row.get("execution_group") if isinstance(row, dict) else None
@@ -2399,6 +2493,7 @@ def command_run(args: argparse.Namespace) -> int:
                         env["FWROUTER_XRAY_TEST_IMAGE"] = image
         for row in selected:
             path = row["path"]
+            adapter = runner_adapter(row, manifest)
             if path in deferred_paths:
                 local_node_names = routine_node_override_names(manifest, path)
                 local_node_status: dict[str, str] = {}
@@ -2470,7 +2565,7 @@ def command_run(args: argparse.Namespace) -> int:
                 continue
             suite_env = dict(env)
             node_report_path: Path | None = None
-            if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/") or path in STDLIB_CONTRACT_PATHS:
+            if adapter == "pytest-nodeid":
                 rel = path.removeprefix("backend/")
                 suite_root, reports_root = create_suite_root(owned, row["id"])
                 report_id = hashlib.sha256(row["id"].encode("utf-8")).hexdigest()[:16]
@@ -2485,12 +2580,12 @@ def command_run(args: argparse.Namespace) -> int:
                 # Both integration and installer pytest files need backend modules.
                 if cwd == ROOT:
                     suite_env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "backend/tests"), str(ROOT / "backend")])
-            elif path.startswith("ui/"):
+            elif adapter == "node-tap":
                 suite_root, _reports_root = create_suite_root(owned, row["id"])
                 suite_env["TMPDIR"] = str(suite_root / "tmp")
                 argv = ["node", "--test", "--test-reporter=tap", path]
                 cwd = ROOT
-            elif path == "installer/test-install.sh":
+            elif adapter == "declared-shell-case":
                 argv = ["sh", path]
                 cwd = ROOT
             else:
@@ -2509,10 +2604,10 @@ def command_run(args: argparse.Namespace) -> int:
                 if node_report_path is not None and node_report_path.exists() else 0
             )
             artifact_exceeded = node_report_size > row["max_artifact_bytes"]
-            if path.startswith("backend/tests/") or path.startswith("integrations/") or path.startswith("installer/tests/") or path in STDLIB_CONTRACT_PATHS:
+            if adapter == "pytest-nodeid":
                 assert node_report_path is not None
                 observed = {} if artifact_exceeded else node_status_from_plugin(node_report_path, row["max_artifact_bytes"])
-            elif path.startswith("ui/"):
+            elif adapter == "node-tap":
                 observed = node_status_from_tap(output, path, require_observed=True)
             else:
                 observed = {f"{path}::{row['id']}": "passed" if code == 0 else "failed"}
