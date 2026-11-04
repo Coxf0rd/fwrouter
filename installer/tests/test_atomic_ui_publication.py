@@ -79,6 +79,28 @@ class AtomicUiPublicationTests(unittest.TestCase):
         (active / "index.html").write_text("old complete ui\n")
         return source, target, active
 
+    def test_backend_ui_installer_retires_migration_test_before_compatibility_check(self) -> None:
+        source, target, active = self._actual_installer_fixture()
+        # Keep this real installer regression small; content size is covered elsewhere.
+        (source / "ui/large-asset.bin").unlink()
+        retired = target / "opt/fwrouter-api/tests/test_db_migrations.py"
+        retired.parent.mkdir()
+        retired.write_text("from fwrouter_api.db.migrations import migrate_database\n")
+        protected = target / "var/lib/fwrouter-v2/operator-data"
+        protected.parent.mkdir(parents=True)
+        protected.write_bytes(b"user data must survive source cleanup")
+        with self.assertRaisesRegex(ui_publication.PublicationError, "installed backend does not match"):
+            ui_publication.publish(source / "ui", active, source / "backend", target / "opt/fwrouter-api")
+        result = subprocess.run(
+            [str(source / "installer/install.sh"), "--deploy", "--component", "backend",
+             "--component", "ui", "--target", str(target)],
+            cwd=source, capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(retired.exists())
+        self.assertEqual((active / "index.html").read_text(), "new immutable ui\n")
+        self.assertEqual(protected.read_bytes(), b"user data must survive source cleanup")
+
     def _copy_failure_installer_fixture(self) -> tuple[Path, Path, Path, Path]:
         source = self.root / "copy-failure-source"
         installer = source / "installer"

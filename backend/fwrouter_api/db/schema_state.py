@@ -301,6 +301,12 @@ _LEGACY_SCHEMA27_PROFILES: tuple[tuple[str, dict[str, str]], ...] = (
         "routing_global_state": "5ac8a8c06df945a1eb7ab0b45adcd23e1357569d512bd4bfbd7a59eb8ca219e8",
         "server_preferences": "8c0085efdc69f58e2c8d948b2cb6bc01e4aa3b52a9cb0b327cc7aa0118f3a49a",
     }),
+    ("legacy_migrated_schema27_manual_ping_additive", {
+        "modules": "9394895782232a6655c0c13a88d9cb10c1f10e55eb9ead6422786323ce0bd4f9",
+        "server_custom_https_proxy": "fdc6c4c6f5f04d5df60e46d34316b510724c433aae350e6dd638a49a9ad685aa",
+        "server_ping_state": "a7491aacb34318c02893ed967abb7cb031d93007b9bb53934c0f6f6b238416f4",
+        "server_preferences": "8c0085efdc69f58e2c8d948b2cb6bc01e4aa3b52a9cb0b327cc7aa0118f3a49a",
+    }),
 )
 _LEGACY_SCHEMA27_PROFILE_TABLES = {
     name: frozenset(fingerprints) for name, fingerprints in _LEGACY_SCHEMA27_PROFILES
@@ -313,6 +319,11 @@ _LEGACY_SCHEMA27_PROFILE_NOTES = {
     "legacy_migrated_schema27_from_10_or_11": (
         "Preserves the baseline 10/11-to-27 table declarations, including three absent "
         "routing_global_state server foreign keys and historical inline CHECK placement."
+    ),
+    "legacy_migrated_schema27_manual_ping_additive": (
+        "Preserves historical ALTER-added module/proxy/preference columns and schema-15 "
+        "manual ping fields; the latter intentionally lack the manual_status CHECK. "
+        "Canonical foreign keys and all other schema contracts remain present."
     ),
 }
 
