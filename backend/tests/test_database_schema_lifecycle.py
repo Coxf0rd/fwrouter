@@ -23,13 +23,15 @@ def _retarget(monkeypatch: pytest.MonkeyPatch, root: Path) -> Path:
     return get_settings().paths.db_path
 
 
-def _install_known_legacy_schema27_profile(path: Path, *, origin: int) -> None:
+def _install_known_legacy_schema27_profile(
+    path: Path, *, origin: int | str, tables_override: tuple[str, ...] | None = None,
+) -> None:
     """Build the reviewed baseline 7/10/11→27 DDL profile without migrations."""
     with sqlite3.connect(path) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=OFF")
-        tables = ["routing_global_state", "server_preferences"]
-        if origin == 7:
+        tables = list(tables_override or ("routing_global_state", "server_preferences"))
+        if tables_override is None and origin == 7:
             tables.extend(("modules", "server_custom_https_proxy"))
         for table in tables:
             sql = connection.execute(
@@ -89,6 +91,14 @@ def _install_known_legacy_schema27_profile(path: Path, *, origin: int) -> None:
                     r"\1 CHECK (proxy_type IN ('http', 'socks5'))",
                     sql, flags=re.IGNORECASE,
                 )
+            if origin == "deployment" and table == "server_ping_state":
+                sql = re.sub(
+                    r",\s*CHECK\s*\(\s*manual_status\s+IS\s+NULL\s+OR\s+"
+                    r"manual_status\s+IN\s*\(\s*'unknown'\s*,\s*'success'\s*,\s*"
+                    r"'failed'\s*,\s*'skipped'\s*\)\s*\)",
+                    "", sql, flags=re.IGNORECASE,
+                )
+                assert "CHECK (manual_status" not in sql
             legacy_name = f"{table}_legacy_profile"
             sql = re.sub(rf"^CREATE TABLE\s+{table}\b", f"CREATE TABLE {legacy_name}",
                          sql, flags=re.IGNORECASE)
@@ -103,6 +113,59 @@ def _install_known_legacy_schema27_profile(path: Path, *, origin: int) -> None:
             connection.execute(f'ALTER TABLE "{legacy_name}" RENAME TO "{table}"')
         connection.commit()
         connection.executescript(get_schema_path().read_text(encoding="utf-8"))
+
+
+def _install_deployment_legacy_schema27_profile(path: Path) -> None:
+    """Compose the observed 7→8 and 13→15 ALTER-addition DDL on a canonical fixture."""
+    _install_known_legacy_schema27_profile(
+        path, origin=10, tables_override=("server_preferences",),
+    )
+    _install_known_legacy_schema27_profile(
+        path, origin=7, tables_override=("modules", "server_custom_https_proxy"),
+    )
+    _install_known_legacy_schema27_profile(
+        path, origin="deployment", tables_override=("server_ping_state",),
+    )
+
+
+@pytest.mark.no_database_autoinit
+@pytest.mark.parametrize("mutation", ["isolated_check", "hybrid", "unique_index", "trigger", "foreign_key"])
+def test_additive_manual_ping_profile_rejects_unreviewed_near_misses(monkeypatch, tmp_path, mutation):
+    path = _retarget(monkeypatch, tmp_path / "state")
+    assert initialize_database()["ok"]
+    if mutation == "isolated_check":
+        _install_known_legacy_schema27_profile(
+            path, origin="deployment", tables_override=("server_ping_state",),
+        )
+    else:
+        _install_deployment_legacy_schema27_profile(path)
+        assert inspect_existing_database_schema()["ok"]
+        with sqlite3.connect(path) as connection:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            if mutation == "unique_index":
+                connection.execute("CREATE UNIQUE INDEX extra_unique ON server_preferences(updated_at)")
+            elif mutation == "trigger":
+                connection.execute("CREATE TRIGGER extra_trigger AFTER INSERT ON server_ping_state BEGIN SELECT 1; END")
+            else:
+                with sqlite3.connect(":memory:") as canonical:
+                    canonical.executescript(get_schema_path().read_text())
+                    ddl = canonical.execute(
+                        "SELECT sql FROM sqlite_master WHERE name='modules'"
+                    ).fetchone()[0]
+                table = "modules"
+                if mutation == "foreign_key":
+                    table = "server_ping_state"
+                    ddl = connection.execute("SELECT sql FROM sqlite_master WHERE name=?", (table,)).fetchone()[0]
+                    ddl = re.sub(r",\s*FOREIGN KEY\s*\(server_id\)\s*REFERENCES servers\(server_id\) ON DELETE CASCADE", "", ddl, flags=re.I)
+                connection.execute(f'DROP TABLE "{table}"')
+                connection.execute(ddl)
+    before = path.read_bytes()
+    assert inspect_existing_database_schema()["ok"] is False
+    assert initialize_database()["ok"] is False
+    with pytest.raises(sqlite3.DatabaseError, match="^FWROUTER_DATABASE_SCHEMA_UNSUPPORTED$"):
+        with connect():
+            pytest.fail("unsupported schema must not admit a writer")
+    assert path.read_bytes() == before
 
 
 @pytest.mark.no_database_autoinit
@@ -149,14 +212,18 @@ def test_existing_current_database_is_observed_without_reseeding_or_rewriting(mo
     [
         (7, "legacy_migrated_schema27_from_7"),
         (10, "legacy_migrated_schema27_from_10_or_11"),
+        ("deployment", "legacy_migrated_schema27_manual_ping_additive"),
     ],
 )
 def test_known_historical_schema27_profiles_are_existing_only_and_fail_closed_for_unknown_hybrids(
-    monkeypatch, tmp_path: Path, origin: int, profile: str, capsys,
+    monkeypatch, tmp_path: Path, origin: int | str, profile: str, capsys,
 ) -> None:
     path = _retarget(monkeypatch, tmp_path / "state")
     assert initialize_database()["ok"] is True
-    _install_known_legacy_schema27_profile(path, origin=origin)
+    if origin == "deployment":
+        _install_deployment_legacy_schema27_profile(path)
+    else:
+        _install_known_legacy_schema27_profile(path, origin=origin)
 
     compatible = inspect_existing_database_schema()
     assert compatible["ok"] is True
@@ -180,10 +247,11 @@ def test_known_historical_schema27_profiles_are_existing_only_and_fail_closed_fo
         _require_canonical_rebuild_schema, _validate_database_file,
     )
     assert _validate_database_file(path)["compatibility_profile"] == profile
-    backup_path = tmp_path / "legacy-backup.sqlite"
-    with sqlite3.connect(path) as source, sqlite3.connect(backup_path) as backup:
-        source.backup(backup)
-    backup_path.chmod(0o600)
+    from fwrouter_api.services.database_backup import create_sqlite_backup
+    backup_dir = tmp_path / "backups"
+    receipt = create_sqlite_backup(path, backup_dir, prefix="historical-profile.")
+    backup_path = Path(receipt["backup_path"])
+    assert receipt["source_snapshot"] == "sqlite_read_transaction"
     assert _validate_database_file(backup_path)["compatibility_profile"] == profile
     with pytest.raises(ValueError, match="DATABASE_REBUILD_DATABASE_VALIDATION_FAILED"):
         _validate_database_file(path, allow_legacy_schema27_profiles=False)
