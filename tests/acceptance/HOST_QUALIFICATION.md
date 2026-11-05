@@ -79,7 +79,7 @@ the full `/state/system` projection a separate 4 MiB smoke budget. The deployed
 projection measured 1,363,679 bytes; the larger budget is bounded test
 headroom, not an API size guarantee. Responses are never truncated and parsed
 partially: an oversized, malformed, truncated, or contract-invalid response
-fails with a safe reason code. Each request has the existing 20-second total
+fails with a safe reason code. Each request has a 20-second total
 process deadline plus the gate runner's bounded process cleanup, as well as
 urllib's socket timeout; a peer that trickles bytes cannot extend the total
 request indefinitely. Only allowlisted response fields and the failure reason
