@@ -74,6 +74,17 @@ Use the approved installation's paths; the placeholders above must not be used
 as defaults. Missing/invalid configuration after opt-in is an error, not SKIP.
 GitHub Actions plus the manual flag is rejected before any host smoke invocation.
 
+The read-only HTTP reader keeps the health response budget at 32 KiB and gives
+the full `/state/system` projection a separate 4 MiB smoke budget. The deployed
+projection measured 1,363,679 bytes; the larger budget is bounded test
+headroom, not an API size guarantee. Responses are never truncated and parsed
+partially: an oversized, malformed, truncated, or contract-invalid response
+fails with a safe reason code. Each request has a 20-second total
+process deadline plus the gate runner's bounded process cleanup, as well as
+urllib's socket timeout; a peer that trickles bytes cannot extend the total
+request indefinitely. Only allowlisted response fields and the failure reason
+are reported, never the response body.
+
 Retain the existing smoke's allowlisted checks using its normal
 `python3 tests/gates/smoke.py --profile live-readonly --opt-in --reason ...
 --api-base-url ... --db-path ... --validators-json ...
