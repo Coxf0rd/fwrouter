@@ -12,6 +12,57 @@ import visibility_report as visibility
 
 
 class VisibilityTests(unittest.TestCase):
+    def test_authorized_skip_reason_is_visible_and_host_qualification_stays_separate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); evidence = root / "evidence"; required = root / "required"
+            unit_dir = evidence / "unit"; unit_dir.mkdir(parents=True); required.mkdir()
+            manifest = visibility.gate.load_manifest()
+            plan = {"source_commit": "a" * 40, "plan_digest": "b" * 64,
+                    "manifest_digest": "c" * 64,
+                    "selected_files": ["tests/gates/test_manual_host_smoke.py"]}
+            node = visibility.gate.MANUAL_HOST_NODEID
+            policy = visibility.gate.SKIP_POLICY_REGISTRY[node]
+            reason = {**policy, "pytest_reason": visibility.gate.node_skip_reason(policy)}
+            unit = {"host_qualification_status": "NOT_VERIFIED",
+                    "node_status": {node: "skipped"},
+                    "authorized_skip_reasons": {node: reason},
+                    "executions": [{"path": "tests/gates/test_manual_host_smoke.py",
+                                    "node_status": {node: "skipped"}, "executed_node_ids": [node]}]}
+            (unit_dir / "fwrouter-affected-unit.json").write_text(json.dumps(unit))
+            (required / "required-result.json").write_text(json.dumps({"eligible": True}))
+            (required / "fwrouter-aggregate.json").write_text(json.dumps({"eligible": True}))
+            with patch.object(visibility.gate, "load_manifest", return_value=manifest):
+                value = visibility.collect(evidence, required, plan)
+            self.assertEqual("NOT_VERIFIED", value["host_qualification_status"])
+            self.assertEqual("passed", value["qualification_status"])
+            self.assertEqual(reason, value["executions"][0]["skip_reason"])
+
+    def test_invalid_selected_manual_skip_demotes_displayed_qualification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); evidence = root / "evidence"; required = root / "required"
+            unit_dir = evidence / "unit"; unit_dir.mkdir(parents=True); required.mkdir()
+            manifest = visibility.gate.load_manifest()
+            plan = {"source_commit": "a" * 40, "plan_digest": "b" * 64,
+                    "manifest_digest": "c" * 64,
+                    "selected_files": ["tests/gates/test_manual_host_smoke.py"]}
+            node = visibility.gate.MANUAL_HOST_NODEID
+            unit = {"host_qualification_status": "NOT_VERIFIED",
+                    "node_status": {node: "skipped"}, "authorized_skip_reasons": {},
+                    "executions": [{"path": "tests/gates/test_manual_host_smoke.py",
+                                    "node_status": {node: "skipped"}, "executed_node_ids": [node]}]}
+            (unit_dir / "fwrouter-affected-unit.json").write_text(json.dumps(unit))
+            (required / "required-result.json").write_text(json.dumps({"eligible": True}))
+            (required / "fwrouter-aggregate.json").write_text(json.dumps({"eligible": True}))
+            with patch.object(visibility.gate, "load_manifest", return_value=manifest):
+                value = visibility.collect(evidence, required, plan)
+            self.assertEqual("incomplete_or_failed", value["qualification_status"])
+            self.assertEqual("INVALID_OR_UNAVAILABLE", value["host_qualification_status"])
+            self.assertEqual("passed", value["strict_aggregate_status"])
+            self.assertTrue(value["required_result_eligible"])
+            self.assertTrue(value["strict_aggregate_eligible"])
+            self.assertIn("unit skip-policy validation failed", " ".join(value["diagnostic_limitations"]))
+            self.assertNotIn("Qualification: **passed**", visibility.summary(value))
+
     def test_expected_native_ids_do_not_establish_execution(self):
         self.assertEqual({}, visibility.receipt_nodes({'status': 'passed', 'tests': {
             'expected_ids': ['x.py::test_x'], 'passed': 1}}))

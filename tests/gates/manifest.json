@@ -5416,15 +5416,15 @@
       "runner": "pytest"
     },
     {
-      "baseline_policy": "not applicable: tests opt-in host controller admission and cleanup failure contracts",
+      "baseline_policy": "active tests validate only generic launcher GitHub context; retired QEMU IDs are exact reviewed SKIPs",
       "destructive": false,
       "domain": "test-infrastructure",
       "duration_estimate_seconds": "not_measured",
       "duration_measured_seconds": null,
-      "fixture_identity": "synthetic verified-run metadata, temporary pinned input files and fake guest lifecycle; no QEMU or host runtime",
+      "fixture_identity": "generic GitHub run-context comparison only; no QEMU or host runtime",
       "fixture_owner": "tests/gates/test_host_qualification.py",
       "id": "host-qualification-contract",
-      "isolation": "temporary files and mocked guest process; no network, Docker daemon, host services or VM launch",
+      "isolation": "pure environment mapping comparisons; no processes, network, Docker or host services",
       "max_artifact_bytes": 1048576,
       "max_output_bytes": 262144,
       "max_workers": 1,
@@ -5433,7 +5433,7 @@
       "opt_in": false,
       "path": "tests/gates/test_host_qualification.py",
       "primary_level": "L1",
-      "risk_notes": "validates opt-in controller admission and failed cleanup outcomes; fake guest exercises control flow only and is not host qualification evidence",
+      "risk_notes": "QEMU-specific tests are retained as explicit retired SKIP identities and do not assert host qualification",
       "runtime_dependencies": [
         "Python 3.11 standard library",
         "pytest"
@@ -7380,9 +7380,37 @@
       "timeout_seconds": 60,
       "execution_group": "installer-startup",
       "runner": "pytest"
+    },
+    {
+      "baseline_policy": "manual-only live-readonly smoke; ordinary CI records the exact reviewed environment-unavailable SKIP",
+      "destructive": false,
+      "domain": "test-infrastructure",
+      "duration_estimate_seconds": "not_measured",
+      "duration_measured_seconds": null,
+      "fixture_identity": "CI records the reviewed environment-unavailable SKIP; the explicitly invoked manual body reuses live-readonly loopback GET, read-only SQLite and bounded pinned native checks",
+      "fixture_owner": "tests/gates/test_manual_host_smoke.py",
+      "id": "manual-host-smoke-contract",
+      "isolation": "manual deployed-host only; pytest plugin rejects GitHub Actions and requires explicit bounded inputs",
+      "max_artifact_bytes": 1048576,
+      "max_output_bytes": 262144,
+      "max_workers": 1,
+      "native": false,
+      "network": "none",
+      "opt_in": false,
+      "path": "tests/gates/test_manual_host_smoke.py",
+      "primary_level": "L1",
+      "risk_notes": "native, network, opt_in and L1 fields describe ordinary CI accounting only; the explicit manual body follows HOST_QUALIFICATION live-readonly authorization and never establishes CI host qualification",
+      "runtime_dependencies": [
+        "Python 3.11 standard library",
+        "pytest"
+      ],
+      "slow": false,
+      "timeout_seconds": 60,
+      "execution_group": "ui-tooling",
+      "runner": "pytest"
     }
   ],
-  "version": "2026.11.05.1",
+  "version": "2026.11.05.2",
   "node_execution_profiles": [
     {
       "nodeid": "tests/application_acceptance/test_browser_locale.py::test_real_chromium_provider_exclusive_control_persists_and_excludes_auto_candidate",
@@ -7495,5 +7523,154 @@
       ]
     }
   },
-  "candidate_exclusions": []
+  "candidate_exclusions": [],
+  "node_skip_policies": [
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_checkout_source_mismatch_is_rejected",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_dirty_checkout_is_rejected_even_when_head_sha_matches",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_guest_backing_chain_or_disk_overrun_is_rejected_before_qemu",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_guest_boot_systemd_reboot_and_cleanup_failures_never_pass",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_missing_or_invalid_capability_pin_and_headroom_fail_closed",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_missing_pin_is_structured_admission_incomplete",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_qemu_guest_cleanup_reaps_only_its_owned_process_group",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_qemu_guest_reboot_rechecks_new_boot_and_required_readiness",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_qemu_guest_uuid_debian_identity_and_systemd_probes_are_pinned",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_qga_delimited_sync_frames_command_and_closes_descriptor",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_qga_partial_slow_drip_frame_cannot_extend_absolute_deadline",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_real_command_spec_is_tcg_and_user_network_without_host_passthrough",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_reboot_uses_one_deadline_instead_of_boot_timeout_per_retry",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_successful_controller_flow_is_nonpromotional_and_cleans_up",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_host_qualification.py::HostQualificationTests::test_timeouts_must_be_finite_and_bounded",
+      "reason_code": "retired_qemu",
+      "owner": "ui-tooling",
+      "environment": "retired-qemu-controller",
+      "capabilities": [],
+      "manual_phase": "retired",
+      "disposition": "retired; QEMU controller rejected"
+    },
+    {
+      "nodeid": "tests/gates/test_manual_host_smoke.py::HostSmokeTests::test_manual_live_readonly_host_smoke",
+      "reason_code": "host_environment_unavailable",
+      "owner": "ui-tooling",
+      "environment": "deployed-host",
+      "capabilities": [
+        "installed-services",
+        "readonly-live-smoke"
+      ],
+      "manual_phase": "post-deployment",
+      "disposition": "manual-only; explicit opt-in required"
+    }
+  ]
 }

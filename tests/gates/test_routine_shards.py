@@ -31,6 +31,8 @@ def _fixture(*, mandatory_all=False):
         row = next(item for item in manifest["test_files"]
                    if item["execution_group"] == group)
         selected.append(row["path"])
+    selected.extend(("tests/gates/test_host_qualification.py",
+                     "tests/gates/test_manual_host_smoke.py"))
     anchors = sorted(manifest["policies"]["L5"]["anchors"]) if mandatory_all else []
     selected = sorted(set(selected) | set(anchors))
     plan = {
@@ -52,8 +54,23 @@ def _fixture(*, mandatory_all=False):
                 if override.get("path") == row["path"]
                 and "execution_profile" in override and override.get("execution_profile") is None
             ) if row.get("execution_profile") else []
-            nodes = local_nodes if row.get("execution_profile") else [row["path"] + "::test_case"]
-            node_status = {node: "passed" for node in nodes}
+            if row["path"] == "tests/gates/test_host_qualification.py":
+                nodes = sorted([node for node in gate.SKIP_POLICY_REGISTRY
+                                if node.startswith(row["path"] + "::")] + [
+                    row["path"] + "::HostQualificationTests::test_absent_or_mismatched_github_context_fails_before_guest_factory",
+                    row["path"] + "::HostQualificationTests::test_missing_github_context_fails_before_guest_factory",
+                    row["path"] + "::HostQualificationTests::test_admission_failure_is_structured_incomplete_and_nonpromotional",
+                ])
+            elif row["path"] == "tests/gates/test_manual_host_smoke.py":
+                nodes = [gate.MANUAL_HOST_NODEID]
+            else:
+                nodes = local_nodes if row.get("execution_profile") else [row["path"] + "::test_case"]
+            node_status = {node: ("skipped" if node in gate.SKIP_POLICY_REGISTRY else "passed")
+                           for node in nodes}
+            skip_reasons = {node: {**gate.SKIP_POLICY_REGISTRY[node],
+                                   "pytest_reason": gate.node_skip_reason(gate.SKIP_POLICY_REGISTRY[node])}
+                            for node in nodes
+                            if node in gate.SKIP_POLICY_REGISTRY}
             shard_status.update(node_status)
             executions.append({
                 "suite": row["id"], "path": row["path"],
@@ -63,6 +80,7 @@ def _fixture(*, mandatory_all=False):
                 "status": "deferred_remote_hosted" if row.get("execution_profile") else "passed",
                 "elapsed_seconds": 0.25, "collected_node_ids": nodes, "executed_node_ids": nodes,
                 "node_status": node_status,
+                "authorized_skip_reasons": skip_reasons,
                 **({"routine_node_status": node_status} if row.get("execution_profile") and nodes else {}),
             })
         report = gate._routine_shard_report(
@@ -117,6 +135,29 @@ class RoutineShardContractTests(unittest.TestCase):
                          {row["path"] for row in merged["executions"] if row["path"] != "@L0"})
         self.assertFalse(merged["eligible"])
         self.assertIn("strict aggregate validates hosted/native evidence", merged["eligibility_note"])
+        self.assertEqual("NOT_VERIFIED", merged["host_qualification_status"])
+        self.assertEqual(16, len(merged["authorized_skip_reasons"]))
+
+    def test_shards_fail_closed_on_missing_wrong_or_forged_host_skip_evidence(self):
+        plan, manifest, _, reports = _fixture()
+        group = next(row["execution_group"] for row in manifest["test_files"]
+                     if row["path"] == "tests/gates/test_manual_host_smoke.py")
+        for mutate, message in (
+                (lambda report: report["authorized_skip_reasons"].pop(gate.MANUAL_HOST_NODEID),
+                 "reasons do not exactly match"),
+                (lambda report: report["authorized_skip_reasons"][gate.MANUAL_HOST_NODEID].update(
+                    environment="forged"), "differs from reviewed policy"),
+                (lambda report: report["node_status"].update({gate.MANUAL_HOST_NODEID: "passed"}),
+                 "must remain SKIP"),
+                (lambda report: report.update(host_qualification_status="PASS"),
+                 "cannot claim host qualification"),
+        ):
+            candidate = copy.deepcopy(reports)
+            mutate(candidate[group])
+            candidate[group]["shard_digest"] = gate.canonical_digest(
+                {key: value for key, value in candidate[group].items() if key != "shard_digest"})
+            with self.subTest(message=message), self.assertRaisesRegex(gate.GateError, message):
+                routine_shards.merge_reports(plan, manifest, candidate, run_id=RUN_ID, attempt=ATTEMPT)
 
     def test_l5_anchors_are_selected_and_executed_under_their_primary_owner(self):
         plan, manifest, _, reports = _fixture(mandatory_all=True)
@@ -260,6 +301,7 @@ class RoutineShardContractTests(unittest.TestCase):
         node = "backend/tests/test_contract.py::TestContract::test_roundtrip[param]"
         good = {"schema_version": 2, "collected_nodeids": [node],
                 "node_status": {node: "passed"},
+                "authorized_skip_reasons": {},
                 "node_executions": {node: {"start_count": 1, "call_report_count": 1,
                                             "terminal_report_count": 1, "status": "passed"}}}
         with tempfile.TemporaryDirectory() as temporary:

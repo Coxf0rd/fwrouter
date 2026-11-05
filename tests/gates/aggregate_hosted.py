@@ -489,6 +489,12 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
 
     rows = {row["path"]: row for row in manifest["test_files"]}
     selected = set(plan["selected_files"])
+    if unit.get("host_qualification_status") != "NOT_VERIFIED":
+        raise gate.GateError("routine unit evidence cannot claim host qualification")
+    gate.validate_authorized_node_skips(
+        manifest, unit.get("node_status"), unit.get("authorized_skip_reasons"),
+        required_paths=selected,
+    )
     deferred = {path for path in selected if rows[path].get("execution_profile")}
     xray_docker_path = "backend/tests/test_xray_native_readback.py"
     qualified_child = sorted(path for path in deferred
@@ -505,10 +511,25 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
     by_path = {entry.get("path"): entry for entry in suite_rows}
     if len(by_path) != len(suite_rows) or set(by_path) != selected:
         raise gate.GateError("unit report suite coverage is incomplete or duplicated")
+    projected_nodes: dict[str, str] = {}
+    projected_skip_reasons: dict[str, dict[str, Any]] = {}
     for path, entry in by_path.items():
         required_status = "deferred_remote_hosted" if path in deferred else "passed"
         if entry.get("status") != required_status:
             raise gate.GateError(f"unit execution status is not acceptable for {path}")
+        per_suite = entry.get("node_status", {})
+        per_suite_reasons = entry.get("authorized_skip_reasons", {})
+        expected_reasons = {node: reason for node, reason in unit["authorized_skip_reasons"].items()
+                            if node in per_suite}
+        if per_suite_reasons != expected_reasons:
+            raise gate.GateError(f"unit authorized SKIP evidence differs from suite receipt: {path}")
+        if not isinstance(per_suite, dict) or set(projected_nodes) & set(per_suite):
+            raise gate.GateError(f"unit suite node results are malformed or duplicated: {path}")
+        projected_nodes.update(per_suite)
+        projected_skip_reasons.update(per_suite_reasons)
+    if (projected_nodes != unit.get("node_status")
+            or projected_skip_reasons != unit.get("authorized_skip_reasons")):
+        raise gate.GateError("unit top-level node results differ from per-suite execution receipts")
     if unit.get("l0", {}).get("status") != "passed" or "L0" not in unit.get("completed_levels", []):
         raise gate.GateError("unit report lacks a completed L0 gate")
 
@@ -675,6 +696,8 @@ def aggregate(plan_path: Path, unit_path: Path, hosted_paths: list[Path], qcp_pa
         problems.append("profile selection has no matching hosted receipt adapter")
     return {
         "schema_version": 1,
+        "qualification_scope": "CI policy accounting; host qualification not performed",
+        "host_qualification_status": "NOT_VERIFIED",
         "source_commit": plan["source_commit"],
         "plan_digest": plan["plan_digest"],
         "manifest_version": manifest["version"],

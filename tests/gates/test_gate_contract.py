@@ -9,6 +9,7 @@ import os
 import shutil
 import shlex
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -110,7 +111,7 @@ class GateContractTests(unittest.TestCase):
     def test_manifest_v2_runner_registry_and_suite_identity_are_closed(self) -> None:
         self.assertEqual(2, self.manifest["schema_version"])
         self.assertEqual(gate.RUNNER_CONTRACTS, self.manifest["runner_contracts"])
-        self.assertEqual(214, len(self.manifest["test_files"]))
+        self.assertEqual(215, len(self.manifest["test_files"]))
         adapters = {gate.runner_adapter(row, self.manifest) for row in self.manifest["test_files"]}
         self.assertEqual({"pytest-nodeid", "node-tap", "declared-shell-case",
                           "qualified-scenario-nodeid"}, adapters)
@@ -120,6 +121,10 @@ class GateContractTests(unittest.TestCase):
         self.assertIsNone(host_contract.get("execution_profile"))
         self.assertFalse(host_contract["native"])
         self.assertFalse(host_contract["opt_in"])
+        manual_host = by_path["tests/gates/test_manual_host_smoke.py"]
+        self.assertEqual("pytest", manual_host["runner"])
+        self.assertEqual("ui-tooling", manual_host["execution_group"])
+        self.assertFalse(manual_host["native"])
         self.assertEqual("pytest-nodeid", gate.runner_adapter(by_path["tests/acceptance/test_dependency_image_contract.py"], self.manifest))
         self.assertEqual("node-tap", gate.runner_adapter(by_path["ui/tests/admin-client-presentation.test.js"], self.manifest))
         self.assertEqual("declared-shell-case", gate.runner_adapter(by_path["installer/test-install.sh"], self.manifest))
@@ -147,6 +152,220 @@ class GateContractTests(unittest.TestCase):
         changed["candidate_exclusions"] = [{"path": "tests/helpers/test_helper.py"}]
         with self.assertRaisesRegex(gate.GateError, "empty exclusion register"):
             gate.validate_manifest(changed)
+
+    def test_node_skip_policy_is_closed_exact_and_nonpromotional(self) -> None:
+        self.assertEqual(16, len(self.manifest["node_skip_policies"]))
+        self.assertEqual(set(gate.SKIP_POLICY_REGISTRY),
+                         {row["nodeid"] for row in self.manifest["node_skip_policies"]})
+        changed = copy.deepcopy(self.manifest)
+        changed["node_skip_policies"].append({
+            "nodeid": "backend/tests/test_xray.py::test_anything", "reason_code": "host_environment_unavailable",
+            "owner": "self", "environment": "claimed-host", "capabilities": [],
+            "manual_phase": "manual", "disposition": "skip",
+        })
+        with self.assertRaisesRegex(gate.GateError, "closed reviewed registry"):
+            gate.validate_manifest(changed)
+
+        nodeid = gate.MANUAL_HOST_NODEID
+        reason = {**gate.SKIP_POLICY_REGISTRY[nodeid],
+                  "pytest_reason": gate.node_skip_reason(gate.SKIP_POLICY_REGISTRY[nodeid])}
+        gate.validate_authorized_node_skips(
+            self.manifest, {nodeid: "skipped"}, {nodeid: reason},
+            required_paths={"tests/gates/test_manual_host_smoke.py"},
+        )
+        for statuses, reasons in (
+                ({nodeid: "skipped"}, {}),
+                ({nodeid: "skipped"}, {nodeid: {**reason, "environment": "other"}}),
+                ({nodeid: "passed"}, {}),
+                ({"backend/tests/test_xray.py::test_anything": "skipped"}, {}),
+                ({}, {})):
+            with self.subTest(statuses=statuses, reasons=reasons):
+                with self.assertRaises(gate.GateError):
+                    gate.validate_authorized_node_skips(
+                        self.manifest, statuses, reasons,
+                        required_paths={"tests/gates/test_manual_host_smoke.py"},
+                    )
+
+    def test_plugin_only_records_skip_metadata_when_injected_reason_matches(self) -> None:
+        nodeid = gate.MANUAL_HOST_NODEID
+        policy = gate.SKIP_POLICY_REGISTRY[nodeid]
+        injected = f"FWROUTER_SKIP_POLICY[{policy['reason_code']}]: {policy['disposition']}"
+        plugin = gate_plugin
+        saved = (dict(plugin._INJECTED_SKIP_REASONS), dict(plugin._REVIEWED_SKIP_POLICIES),
+                 dict(plugin._AUTHORIZED_SKIP_REASONS), dict(plugin._NODE_EXECUTIONS),
+                 dict(plugin._NODE_STATUSES))
+        try:
+            plugin._INJECTED_SKIP_REASONS.clear()
+            plugin._REVIEWED_SKIP_POLICIES.clear()
+            plugin._AUTHORIZED_SKIP_REASONS.clear()
+            plugin._NODE_EXECUTIONS.clear()
+            plugin._NODE_STATUSES.clear()
+            plugin._INJECTED_SKIP_REASONS[nodeid] = injected
+            plugin._REVIEWED_SKIP_POLICIES[nodeid] = policy
+            event = SimpleNamespace(nodeid=nodeid, failed=False, skipped=True, when="call")
+            event.longrepr = ("test_manual_host_smoke.py", 1, "FWROUTER_SKIP_POLICY[wrong]: forged")
+            plugin.pytest_runtest_logreport(event)
+            self.assertNotIn(nodeid, plugin._AUTHORIZED_SKIP_REASONS)
+            event.longrepr = ("test_manual_host_smoke.py", 1, injected)
+            plugin.pytest_runtest_logreport(event)
+            self.assertEqual({nodeid: {**policy, "pytest_reason": injected}},
+                             plugin._AUTHORIZED_SKIP_REASONS)
+        finally:
+            (injected_reasons, reviewed, authorized, executions, statuses) = saved
+            plugin._INJECTED_SKIP_REASONS.clear(); plugin._INJECTED_SKIP_REASONS.update(injected_reasons)
+            plugin._REVIEWED_SKIP_POLICIES.clear(); plugin._REVIEWED_SKIP_POLICIES.update(reviewed)
+            plugin._AUTHORIZED_SKIP_REASONS.clear(); plugin._AUTHORIZED_SKIP_REASONS.update(authorized)
+            plugin._NODE_EXECUTIONS.clear(); plugin._NODE_EXECUTIONS.update(executions)
+            plugin._NODE_STATUSES.clear(); plugin._NODE_STATUSES.update(statuses)
+
+    def test_child_pytest_receipt_carries_only_exact_registry_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            report_path = Path(temporary) / "nodes.json"
+            env = dict(os.environ, PYTHONPATH=str(gate.ROOT / "backend/tests"),
+                       FWROUTER_GATE_NODE_REPORT=str(report_path), PYTHONDONTWRITEBYTECODE="1")
+            command = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-q",
+                       "tests/gates/test_host_qualification.py", "tests/gates/test_manual_host_smoke.py"]
+            result = subprocess.run(command, cwd=gate.ROOT, env=env, capture_output=True, text=True,
+                                    timeout=20, check=False)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            payload = gate.node_report_from_plugin(report_path, 1_048_576)
+            self.assertEqual(16, sum(status == "skipped" for status in payload["node_status"].values()))
+            gate.validate_authorized_node_skips(
+                self.manifest, payload["node_status"], payload["authorized_skip_reasons"],
+                required_paths={"tests/gates/test_host_qualification.py",
+                                "tests/gates/test_manual_host_smoke.py"},
+            )
+            for mutation in (
+                    lambda value: value["authorized_skip_reasons"].pop(gate.MANUAL_HOST_NODEID),
+                    lambda value: value["authorized_skip_reasons"][gate.MANUAL_HOST_NODEID].update(
+                        environment="forged"),
+                    lambda value: value["node_status"].pop(gate.MANUAL_HOST_NODEID)):
+                changed = copy.deepcopy(payload)
+                mutation(changed)
+                with self.assertRaises(gate.GateError):
+                    gate.validate_authorized_node_skips(
+                        self.manifest, changed["node_status"], changed["authorized_skip_reasons"],
+                        required_paths={"tests/gates/test_manual_host_smoke.py"},
+                    )
+
+    def test_ordinary_gate_runner_accepts_policy_complete_ci_without_host_pass(self) -> None:
+        paths = ["tests/gates/test_host_qualification.py", "tests/gates/test_manual_host_smoke.py"]
+        plan = {
+            "source_commit": "c" * 40, "base_commit": "b" * 40, "changed_paths": paths,
+            "manifest_version": self.manifest["version"],
+            "manifest_digest": gate.canonical_digest(self.manifest), "plan_digest": "synthetic",
+            "selected_files": paths, "required_levels": ["L0", "L1"],
+            "required_execution_profiles": [], "required_native_suites": [],
+            "include_native": False, "full_suite_required": False, "manual_subset": False,
+            "mandatory_suite_required": False, "quick_push": False,
+        }
+        with tempfile.TemporaryDirectory(prefix="fwrouter-manual-host-runner-contract-") as temporary:
+            plan_path = Path(temporary) / "plan.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            args = SimpleNamespace(
+                manifest=str(gate.MANIFEST), plan=str(plan_path), manual_full_suite=False,
+                manual_subset=False, include_native=False, output=None,
+                baseline=str(gate.ROOT / self.manifest["baseline_policy_file"]),
+                mihomo_binary=None, xray_image=None,
+            )
+            output = StringIO()
+            with mock.patch.object(gate, "ensure_plan"), \
+                    mock.patch.object(gate, "run_l0", return_value=(True, [])), \
+                    mock.patch.object(gate, "load_baseline", return_value={"baseline_commit": "a" * 40,
+                                                                            "failures": []}), \
+                    mock.patch.object(gate, "classify", return_value={"eligible": True}), \
+                    redirect_stdout(output):
+                code = gate.command_run(args)
+        report = json.loads(output.getvalue())
+        self.assertEqual(0, code, (report.get("eligible"), report.get("blocked_reasons"),
+                                   report.get("completed_levels"), report.get("classification")))
+        self.assertTrue(report["eligible"])
+        self.assertEqual("NOT_VERIFIED", report["host_qualification_status"])
+        self.assertEqual(16, sum(status == "skipped" for status in report["node_status"].values()))
+        self.assertEqual(16, len(report["authorized_skip_reasons"]))
+        self.assertTrue(all(row["status"] == "passed" for row in report["executions"][1:]))
+
+    def test_manual_host_opt_in_rejects_github_and_missing_manual_inputs(self) -> None:
+        argv = [sys.executable, "-m", "pytest", "-p", "gate_plugin", "-q",
+                "--fwrouter-manual-host-smoke", "tests/gates/test_manual_host_smoke.py::"
+                "HostSmokeTests::test_manual_live_readonly_host_smoke"]
+        env = dict(os.environ, PYTHONPATH=str(gate.ROOT / "backend/tests"))
+        env["GITHUB_ACTIONS"] = "true"
+        blocked = subprocess.run(argv, cwd=gate.ROOT, env=env, capture_output=True, text=True,
+                                 timeout=20, check=False)
+        self.assertNotEqual(0, blocked.returncode)
+        self.assertIn("forbidden in GitHub Actions", blocked.stderr)
+        env.pop("GITHUB_ACTIONS", None)
+        incomplete = subprocess.run(argv, cwd=gate.ROOT, env=env, capture_output=True, text=True,
+                                    timeout=20, check=False)
+        self.assertNotEqual(0, incomplete.returncode)
+        self.assertIn("manual host smoke opt-in requires", incomplete.stderr)
+
+    def test_strict_aggregate_rejects_forged_manual_host_pass(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "fwrouter_aggregate_host_skip_contract", gate.ROOT / "tests/gates/aggregate_hosted.py")
+        assert spec and spec.loader
+        aggregate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(aggregate)
+        plan = gate.make_plan("HEAD", self.manifest, paths=["tests/gates/test_manual_host_smoke.py"])
+        forged_status = {
+            node: ("passed" if node == gate.MANUAL_HOST_NODEID else "skipped")
+            for node in gate.SKIP_POLICY_REGISTRY
+            if node.split("::", 1)[0] in set(plan["selected_files"])
+        }
+        forged_reasons = {
+            node: {**gate.SKIP_POLICY_REGISTRY[node],
+                   "pytest_reason": gate.node_skip_reason(gate.SKIP_POLICY_REGISTRY[node])}
+            for node, status in forged_status.items() if status == "skipped"
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan_path, unit_path = root / "plan.json", root / "unit.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            unit = {
+                "source_commit": plan["source_commit"], "plan_digest": plan["plan_digest"],
+                "manifest_version": self.manifest["version"],
+                "manifest_digest": gate.canonical_digest(self.manifest),
+                "host_qualification_status": "NOT_VERIFIED",
+                "node_status": forged_status,
+                "authorized_skip_reasons": forged_reasons,
+            }
+            unit["report_digest"] = gate.canonical_digest(unit)
+            unit_path.write_text(json.dumps(unit), encoding="utf-8")
+            with mock.patch.object(aggregate.gate, "ensure_plan"), \
+                    self.assertRaisesRegex(aggregate.gate.GateError, "must remain SKIP"):
+                aggregate.aggregate(plan_path, unit_path, [], [], [], minimum_repeats=1)
+
+    def test_direct_promotion_rejects_forged_host_qualification_claim(self) -> None:
+        plan = gate.make_plan("HEAD", self.manifest, paths=["tests/gates/test_manual_host_smoke.py"])
+        report = {
+            "source_commit": plan["source_commit"], "plan_digest": plan["plan_digest"],
+            "manifest_version": self.manifest["version"],
+            "manifest_digest": gate.canonical_digest(self.manifest),
+            "host_qualification_status": "PASS",
+        }
+        report["report_digest"] = gate.canonical_digest(report)
+        with mock.patch.object(gate, "ensure_plan"), mock.patch.object(gate, "git", return_value=""):
+            with self.assertRaisesRegex(gate.GateError, "host qualification is NOT_VERIFIED"):
+                gate.promote(plan, self.manifest, [report])
+
+    def test_host_smoke_row_is_selected_without_reclassifying_existing_suites(self) -> None:
+        host_path = "tests/gates/test_manual_host_smoke.py"
+        ordinary = gate.make_mandatory_suite_plan("HEAD", self.manifest, paths=[host_path])
+        full = gate.make_plan("HEAD", self.manifest, paths=[host_path])
+        self.assertIn(host_path, ordinary["selected_files"])
+        self.assertIn(host_path, full["selected_files"])
+        original = __import__("subprocess").check_output(
+            ["git", "show", "HEAD:tests/gates/manifest.json"], cwd=gate.ROOT, text=True)
+        old_manifest = json.loads(original)
+        old_rows = {row["path"]: row for row in old_manifest["test_files"]}
+        new_rows = {row["path"]: row for row in self.manifest["test_files"]}
+        self.assertEqual(set(old_rows) | {host_path}, set(new_rows))
+        for path, old in old_rows.items():
+            current = new_rows[path]
+            for field in ("runner", "execution_group", "execution_profile", "primary_level", "domain",
+                          "native", "opt_in", "slow", "destructive", "runtime_dependencies"):
+                self.assertEqual(old.get(field), current.get(field), f"{path}: {field} changed")
 
     def test_explicit_runners_allow_supported_extensions_outside_legacy_prefixes(self) -> None:
         changed = copy.deepcopy(self.manifest)
@@ -2065,6 +2284,8 @@ class GateContractTests(unittest.TestCase):
         report = {
             "source_commit": plan["source_commit"], "plan_digest": plan["plan_digest"],
             "manifest_version": self.manifest["version"], "manifest_digest": gate.canonical_digest(self.manifest),
+            "host_qualification_status": "NOT_VERIFIED", "node_status": {},
+            "authorized_skip_reasons": {},
             "tool_version": gate.TOOL_VERSION, "eligible": True,
             "completed_levels": ["L0", "L1"], "l0": {"status": "passed"},
             "executions": [{"path": "@L0", "status": "passed"}],

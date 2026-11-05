@@ -23,6 +23,42 @@ SPEC.loader.exec_module(bundle)
 
 
 class EvidenceBundleTests(unittest.TestCase):
+    def test_offline_strict_replay_rejects_rehashed_forged_host_pass(self) -> None:
+        manifest = bundle.gate.load_manifest()
+        plan = bundle.gate.make_plan(
+            "HEAD", manifest, paths=["tests/gates/test_manual_host_smoke.py"])
+        forged_status = {
+            node: ("passed" if node == bundle.gate.MANUAL_HOST_NODEID else "skipped")
+            for node in bundle.gate.SKIP_POLICY_REGISTRY
+            if node.split("::", 1)[0] in set(plan["selected_files"])
+        }
+        forged_reasons = {
+            node: {**bundle.gate.SKIP_POLICY_REGISTRY[node],
+                   "pytest_reason": bundle.gate.node_skip_reason(bundle.gate.SKIP_POLICY_REGISTRY[node])}
+            for node, status in forged_status.items() if status == "skipped"
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            plan_dir, unit_dir = evidence / "plan", evidence / "unit"
+            plan_dir.mkdir(); unit_dir.mkdir()
+            (plan_dir / "fwrouter-affected-plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            unit = {
+                "source_commit": plan["source_commit"], "plan_digest": plan["plan_digest"],
+                "manifest_version": manifest["version"],
+                "manifest_digest": bundle.gate.canonical_digest(manifest),
+                "host_qualification_status": "NOT_VERIFIED",
+                "node_status": forged_status,
+                "authorized_skip_reasons": forged_reasons,
+            }
+            unit["report_digest"] = bundle.gate.canonical_digest(unit)
+            (unit_dir / "fwrouter-affected-unit.json").write_text(json.dumps(unit), encoding="utf-8")
+            with patch.object(bundle, "verify_routine_shards"), \
+                    patch.object(bundle.parallel_ci, "requirements", return_value={
+                        "native": False, "hosted": False, "provider": False, "packet": False}), \
+                    patch.object(bundle.strict.gate, "ensure_plan"), \
+                    self.assertRaisesRegex(bundle.gate.GateError, "must remain SKIP"):
+                bundle.replay_strict(evidence, plan, main_smoke=False)
+
     def test_main_smoke_is_derived_only_from_actual_main_push(self) -> None:
         self.assertTrue(bundle.main_smoke_for("push", "refs/heads/main"))
         self.assertFalse(bundle.main_smoke_for("pull_request", "refs/pull/35/merge"))

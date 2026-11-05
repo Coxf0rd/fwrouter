@@ -99,6 +99,8 @@ def verify_shard(report: dict[str, Any], group: str, plan: dict[str, Any],
     }
     if any(report.get(key) != value for key, value in expected_fields.items()):
         raise gate.GateError(f"{group}: shard source, owner, run/attempt or status does not match")
+    if report.get("host_qualification_status") != "NOT_VERIFIED":
+        raise gate.GateError(f"{group}: routine shard cannot claim host qualification")
     expected = [{"suite": row["id"], "path": row["path"],
                  "primary_level": row["primary_level"], "domain": row["domain"],
                  "execution_group": group,
@@ -155,6 +157,9 @@ def verify_shard(report: dict[str, Any], group: str, plan: dict[str, Any],
             or report.get("node_status_count") != len(statuses)
             or report.get("unique_node_status_count") != len(set(statuses))):
         raise gate.GateError(f"{group}: node-ID collection is missing, duplicated or malformed")
+    gate.validate_authorized_node_skips(gate.load_manifest(), statuses,
+                                       report.get("authorized_skip_reasons"),
+                                       required_paths=set(paths))
     row_node_ids = [node for execution in executions
                     for node in execution.get("collected_node_ids", [])]
     row_executed_ids = [node for execution in executions
@@ -169,6 +174,10 @@ def verify_shard(report: dict[str, Any], group: str, plan: dict[str, Any],
                 or per_suite_ids != sorted(per_suite)
                 or any(statuses.get(node) != value for node, value in per_suite.items())):
             raise gate.GateError(f"{group}: per-suite node status disagrees with the shard inventory")
+        expected_reasons = {node: reason for node, reason in report["authorized_skip_reasons"].items()
+                            if node in per_suite}
+        if execution.get("authorized_skip_reasons", {}) != expected_reasons:
+            raise gate.GateError(f"{group}: per-suite authorized SKIP evidence disagrees with shard policy")
         if any(node.split("::", 1)[0] != execution["path"] for node in per_suite_ids):
             raise gate.GateError(f"{group}: collected node ID is attributed to the wrong suite path")
         if execution.get("status") == "deferred_remote_hosted":
@@ -183,8 +192,8 @@ def verify_shard(report: dict[str, Any], group: str, plan: dict[str, Any],
                 raise gate.GateError(f"{group}: profiled suite routine carve-outs are missing or inconsistent")
         elif not per_suite_ids:
             raise gate.GateError(f"{group}: executed routine suite has no observed test IDs")
-    if any(status != "passed" for status in statuses.values()):
-        raise gate.GateError(f"{group}: node evidence contains a failure or skip")
+    if any(status not in {"passed", "skipped"} for status in statuses.values()):
+        raise gate.GateError(f"{group}: node evidence contains a failure")
     file_markers = report.get("file_marker_paths")
     if not isinstance(file_markers, list) or len(file_markers) != len(set(file_markers)):
         raise gate.GateError(f"{group}: file-marker inventory is malformed")
@@ -242,6 +251,7 @@ def merge_reports(plan: dict[str, Any], manifest: dict[str, Any], reports: dict[
         extra = sorted(set(reports) - set(gate.ROUTINE_SHARD_GROUPS))
         raise gate.GateError(f"routine shard report set is incomplete or unexpected; missing={missing}, extra={extra}")
     node_status: dict[str, str] = {}
+    authorized_skip_reasons: dict[str, dict[str, Any]] = {}
     file_markers: list[str] = []
     rows_by_path: dict[str, dict[str, Any]] = {}
     shard_summaries = []
@@ -257,6 +267,7 @@ def merge_reports(plan: dict[str, Any], manifest: dict[str, Any], reports: dict[
         if overlap:
             raise gate.GateError("duplicate collected node IDs across shards: " + ", ".join(sorted(overlap)[:8]))
         node_status.update(report["node_status"])
+        authorized_skip_reasons.update(report["authorized_skip_reasons"])
         file_markers.extend(report["file_marker_paths"])
         if report["l0"]["owned"]:
             if l0_report is not None:
@@ -318,6 +329,8 @@ def merge_reports(plan: dict[str, Any], manifest: dict[str, Any], reports: dict[
         "executions": [{"suite": "L0-static", "path": "@L0", "status": "passed",
                         "primary_level": "L0", "elapsed_seconds": l0_report["elapsed_seconds"]}, *executions],
         "node_status": node_status,
+        "authorized_skip_reasons": authorized_skip_reasons,
+        "host_qualification_status": "NOT_VERIFIED",
         "file_marker_paths": sorted(file_markers),
         "node_ownership": node_ownership,
         "blocked_reasons": [], "failure_diagnostics": [],

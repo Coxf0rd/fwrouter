@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,9 @@ _NODE_STATUSES: dict[str, str] = {}
 _COLLECTED_NODEIDS: list[str] = []
 _NODE_EXECUTIONS: dict[str, dict[str, Any]] = {}
 _EXACT_NODEIDS: dict[str, str] = {}
+_AUTHORIZED_SKIP_REASONS: dict[str, dict[str, Any]] = {}
+_INJECTED_SKIP_REASONS: dict[str, str] = {}
+_REVIEWED_SKIP_POLICIES: dict[str, dict[str, Any]] = {}
 _NODE_OVERRIDE_FIELDS = frozenset({"path", "node", "primary_level", "execution_profile"})
 # `execution_profile` is merged only when the override contains that key;
 # explicit null clears the file profile, while absence preserves inheritance.
@@ -25,6 +29,20 @@ def _manifest() -> dict[str, Any]:
     path = Path(os.environ.get("FWROUTER_GATE_MANIFEST", _repo_root() / "tests/gates/manifest.json"))
     data = json.loads(path.read_text(encoding="utf-8"))
     return data
+
+
+def _reviewed_skip_policies(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    gate_path = _repo_root() / "tests/gates/gate.py"
+    spec = importlib.util.spec_from_file_location("_fwrouter_gate_policy_registry", gate_path)
+    if spec is None or spec.loader is None:
+        raise pytest.UsageError("cannot load source-owned node skip registry")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        module.validate_manifest(data)
+    except Exception as exc:
+        raise pytest.UsageError(f"gate manifest or reviewed node skip registry is invalid: {exc}") from exc
+    return dict(module.SKIP_POLICY_REGISTRY)
 
 
 def _normalized_node(nodeid: str) -> str:
@@ -72,6 +90,19 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     _COLLECTED_NODEIDS.clear()
     _NODE_EXECUTIONS.clear()
     _EXACT_NODEIDS.clear()
+    _AUTHORIZED_SKIP_REASONS.clear()
+    _INJECTED_SKIP_REASONS.clear()
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    group = parser.getgroup("fwrouter-manual-host-smoke")
+    group.addoption("--fwrouter-manual-host-smoke", action="store_true", default=False,
+                    help="explicitly run the registered manual live-readonly host smoke")
+    group.addoption("--fwrouter-host-smoke-reason", default=None)
+    group.addoption("--fwrouter-host-smoke-api-base-url", default=None)
+    group.addoption("--fwrouter-host-smoke-db-path", default=None)
+    group.addoption("--fwrouter-host-smoke-validators-json", default=None)
+    group.addoption("--fwrouter-host-smoke-failed-units-allowlist-json", default=None)
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
@@ -105,6 +136,12 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
             _NODE_STATUSES[nodeid] = "skipped"
             execution["status"] = "skipped"
         execution["terminal_report_count"] += 1
+        actual_reason = _actual_skip_reason(report)
+        execution["skip_reason"] = actual_reason
+        injected_reason = _INJECTED_SKIP_REASONS.get(nodeid)
+        if injected_reason is not None and actual_reason == injected_reason:
+            policy = _REVIEWED_SKIP_POLICIES[nodeid]
+            _AUTHORIZED_SKIP_REASONS[nodeid] = {**policy, "pytest_reason": actual_reason}
     elif report.when == "call" and report.passed and previous is None:
         _NODE_STATUSES[nodeid] = "passed"
         execution["status"] = "passed"
@@ -124,6 +161,7 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "collected_nodeids": _COLLECTED_NODEIDS,
         "node_status": dict(sorted(_NODE_STATUSES.items())),
         "node_executions": dict(sorted(_NODE_EXECUTIONS.items())),
+        "authorized_skip_reasons": dict(sorted(_AUTHORIZED_SKIP_REASONS.items())),
     }
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
@@ -141,19 +179,61 @@ def pytest_configure(config: pytest.Config) -> None:
         ("live", "live system test; forbidden in routine CI"),
     ):
         config.addinivalue_line("markers", f"{marker}: {description}")
+    if config.getoption("--fwrouter-manual-host-smoke"):
+        if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+            raise pytest.UsageError("manual host smoke opt-in is forbidden in GitHub Actions")
+        required = ("--fwrouter-host-smoke-reason", "--fwrouter-host-smoke-api-base-url",
+                    "--fwrouter-host-smoke-db-path", "--fwrouter-host-smoke-validators-json",
+                    "--fwrouter-host-smoke-failed-units-allowlist-json")
+        absent = [name for name in required if not config.getoption(name)]
+        if absent:
+            raise pytest.UsageError("manual host smoke opt-in requires: " + ", ".join(absent))
+
+
+def _actual_skip_reason(report: pytest.TestReport) -> str:
+    longrepr = report.longrepr
+    if isinstance(longrepr, tuple) and len(longrepr) >= 3:
+        value = str(longrepr[2])
+    else:
+        value = str(longrepr)
+    return value.removeprefix("Skipped: ").strip()
+
+
+def _policy_reason(policy: dict[str, Any]) -> str:
+    return f"FWROUTER_SKIP_POLICY[{policy['reason_code']}]: {policy['disposition']}"
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     data = _manifest()
+    reviewed_policies = _reviewed_skip_policies(data)
+    _REVIEWED_SKIP_POLICIES.clear()
+    _REVIEWED_SKIP_POLICIES.update(reviewed_policies)
     rows = {row["path"]: row for row in data["test_files"]}
     overrides = {(row["path"], row["node"]): row for row in data.get("node_overrides", [])}
     unsafe: list[str] = []
+    manual_host_enabled = config.getoption("--fwrouter-manual-host-smoke")
+    policies = {row["nodeid"]: row for row in data.get("node_skip_policies", [])}
     for item in items:
         path = _root_relative(item)
         row = rows.get(path)
         if row is None:
             unsafe.append(f"unclassified pytest item: {item.nodeid}")
             continue
+        exact_id = _root_relative(item) + "::" + item.nodeid.partition("::")[2]
+        policy = policies.get(exact_id)
+        if policy is not None:
+            expected_policy = reviewed_policies.get(exact_id)
+            if expected_policy is None or any(policy.get(key) != value for key, value in expected_policy.items()):
+                unsafe.append(f"node skip policy differs from the source-owned registry: {exact_id}")
+                continue
+            if policy["reason_code"] == "retired_qemu":
+                policy_value = dict(reviewed_policies[exact_id])
+                _INJECTED_SKIP_REASONS[exact_id] = _policy_reason(policy_value)
+                item.add_marker(pytest.mark.skip(reason=_INJECTED_SKIP_REASONS[exact_id]))
+            elif not manual_host_enabled:
+                policy_value = dict(reviewed_policies[exact_id])
+                _INJECTED_SKIP_REASONS[exact_id] = _policy_reason(policy_value)
+                item.add_marker(pytest.mark.skip(reason=_INJECTED_SKIP_REASONS[exact_id]))
         base_node = _normalized_node(item.nodeid)
         # The catalog stores node keys relative to the file, e.g. `::test_x`.
         relative_node = base_node.split("::", 1)[1] if "::" in base_node else ""

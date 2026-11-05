@@ -51,11 +51,27 @@ def collect(evidence: Path, required: Path, plan: dict[str, Any]) -> dict[str, A
     executions: list[dict[str, Any]] = []
     groups: list[dict[str, Any]] = []
     problems: list[str] = []
+    host_qualification_status = 'NOT_VERIFIED'
+    unit_policy_valid = True
     l5_coverage: Any = 'unavailable'
     unit = evidence / 'unit/fwrouter-affected-unit.json'
     if unit.is_file():
         value = read(unit)
         l5_coverage = value.get('l5_coverage', 'unavailable')
+        if value.get('host_qualification_status') != 'NOT_VERIFIED':
+            host_qualification_status = 'INVALID_OR_UNAVAILABLE'
+            unit_policy_valid = False
+            problems.append('routine unit report does not explicitly separate host qualification')
+        try:
+            gate.validate_authorized_node_skips(
+                manifest, value.get('node_status', {}), value.get('authorized_skip_reasons'),
+                required_paths=set(plan.get('selected_files', [])),
+            )
+        except gate.GateError as exc:
+            host_qualification_status = 'INVALID_OR_UNAVAILABLE'
+            unit_policy_valid = False
+            problems.append('unit skip-policy validation failed: ' + str(exc))
+        skip_reasons = value.get('authorized_skip_reasons', {})
         markers = set(value.get('file_marker_paths', []))
         for item in value.get('executions', []):
             if not isinstance(item, dict) or item.get('path') == '@L0':
@@ -69,12 +85,18 @@ def collect(evidence: Path, required: Path, plan: dict[str, Any]) -> dict[str, A
             for node, status in statuses.items():
                 if node in ids and node not in markers:
                     executions.append({'node_id': node, 'status': status if status in STATUSES else 'blocked',
+                                       **({'skip_reason': skip_reasons[node]} if status == 'skipped'
+                                          and isinstance(skip_reasons, dict) and node in skip_reasons else {}),
                                        'job': row.get('execution_group', 'routine'), 'profile': 'routine',
                                        'primary_level': row.get('primary_level', 'unknown'),
                                        'domain': row.get('domain', 'unknown'),
                                        'evidence': 'unit/fwrouter-affected-unit.json'})
         for item in value.get('routine_shards', []):
             groups.append(dict(item))
+    else:
+        host_qualification_status = 'INVALID_OR_UNAVAILABLE'
+        unit_policy_valid = False
+        problems.append('routine unit report is missing; skip policy cannot be verified')
     seen_receipts: set[str] = set()
     for name in ('hosted-acceptance-report.json', 'qualified-child-receipt.json',
                  'qualified-xray-docker-receipt.json'):
@@ -106,7 +128,9 @@ def collect(evidence: Path, required: Path, plan: dict[str, Any]) -> dict[str, A
     strict_path = required / 'fwrouter-aggregate.json'
     result = read(result_path) if result_path.is_file() else {}
     strict = read(strict_path) if strict_path.is_file() else {}
-    eligible = result.get('eligible') is True and strict.get('eligible') is True
+    required_result_eligible = result.get('eligible') is True
+    strict_aggregate_eligible = strict.get('eligible') is True
+    eligible = required_result_eligible and strict_aggregate_eligible
     selected = set(plan.get('selected_files', []))
     observed_files = {item['node_id'].split('::', 1)[0] for item in executions}
     omitted = [{'path': path, 'reason': 'not selected by immutable plan'}
@@ -124,8 +148,13 @@ def collect(evidence: Path, required: Path, plan: dict[str, Any]) -> dict[str, A
     report = {'schema': 'fwrouter-ci-visibility/v1', 'source_commit': plan.get('source_commit'),
               'plan_digest': plan.get('plan_digest'), 'manifest_digest': plan.get('manifest_digest'),
               'run_id': result.get('run_id'), 'run_attempt': result.get('run_attempt'),
-              'qualification_status': 'passed' if eligible else 'incomplete_or_failed',
-              'eligibility_authority': 'strict aggregate; visibility cannot establish eligibility',
+              'qualification_status': ('passed' if eligible and unit_policy_valid
+                                        else 'incomplete_or_failed'),
+              'host_qualification_status': host_qualification_status,
+              'strict_aggregate_status': 'passed' if strict_aggregate_eligible else 'incomplete_or_failed',
+              'required_result_eligible': required_result_eligible,
+              'strict_aggregate_eligible': strict_aggregate_eligible,
+              'eligibility_authority': 'strict aggregate; visibility also requires valid unit skip-policy projection',
               'unique_test_coverage': len(unique), 'total_test_executions': len(executions),
               'statuses': {status: counts[status] for status in STATUSES},
               'levels': by_level, 'groups': groups, 'executions': executions,
@@ -141,6 +170,7 @@ def summary(report: dict[str, Any]) -> str:
     escape = lambda value: html.escape(str(value)).replace('|', '&#124;')
     lines = ['## CI V3 test execution', '',
              f"- Qualification: **{escape(report['qualification_status'])}** (strict aggregate authority)",
+             f"- Host qualification: **{escape(report.get('host_qualification_status', 'unavailable'))}** (separate manual scope)",
              f"- SHA `{report.get('source_commit')}`; run `{report.get('run_id')}` / attempt `{report.get('run_attempt')}`",
              f"- Unique observed test IDs: **{report['unique_test_coverage']}**; total executions: **{report['total_test_executions']}**",
              '- ' + '; '.join(f'{key.upper()}: {value}' for key, value in report['statuses'].items()),

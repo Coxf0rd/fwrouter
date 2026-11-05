@@ -2184,6 +2184,7 @@ class AcceptanceContractTests(unittest.TestCase):
             "deferred_remote_suites": [], "executions": [{"path": path, "status": "passed"}],
             "blocked_reasons": [], "completed_levels": ["L0", "L2"],
             "l0": {"status": "passed"}, "node_status": {},
+            "host_qualification_status": "NOT_VERIFIED", "authorized_skip_reasons": {},
         }
         unit["report_digest"] = aggregate_hosted.gate.canonical_digest(unit)
         with tempfile.TemporaryDirectory(prefix="fwrouter-main-smoke-required-contract-") as temp:
@@ -2230,6 +2231,7 @@ class AcceptanceContractTests(unittest.TestCase):
             "executions": [{"path": path, "status": "deferred_remote_hosted"} for path in selected],
             "blocked_reasons": [], "completed_levels": ["L0"],
             "l0": {"status": "passed"}, "node_status": {},
+            "host_qualification_status": "NOT_VERIFIED", "authorized_skip_reasons": {},
         }
         unit["report_digest"] = aggregate_hosted.gate.canonical_digest(unit)
 
