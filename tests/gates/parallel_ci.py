@@ -1012,7 +1012,7 @@ def main():
     parser.add_argument('--lint-changed', action='store_true')
     parser.add_argument('--state', type=Path)
     parser.add_argument('--qualification-mode', default='')
-    parser.add_argument('--manifest', type=Path, default=gate.MANIFEST_PATH)
+    parser.add_argument('--manifest', type=Path, default=gate.MANIFEST)
     parser.add_argument('--event-before', default='')
     parser.add_argument('--pr-base', default='')
     parser.add_argument('--pr-head-repo', default='')

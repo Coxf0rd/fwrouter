@@ -49,6 +49,46 @@ WHEEL_VERIFIER_SPEC.loader.exec_module(wheel_verifier)
 
 
 class GateContractTests(unittest.TestCase):
+    def test_parallel_cli_main_prepare_full_safe_uses_real_entrypoint_and_current_manifest(self) -> None:
+        script = Path(__file__).with_name("parallel_ci.py")
+        source_sha = gate.git("rev-parse", "HEAD")
+        base_sha = gate.git("rev-parse", "HEAD^")
+        manifest = gate.load_manifest()
+        safe_rows = [row for row in manifest["test_files"]
+                     if row["primary_level"] in {"L1", "L2", "L3", "L4"}
+                     and not row.get("destructive")]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            plan_path = Path(temporary) / "plan.json"
+            prepared = subprocess.run(
+                [sys.executable, str(script), "prepare", "--event", "push",
+                 "--ref", "refs/heads/main", "--event-before", base_sha,
+                 "--plan", str(plan_path)],
+                cwd=gate.ROOT, text=True, capture_output=True, check=False,
+            )
+
+            self.assertEqual(0, prepared.returncode, prepared.stderr)
+            self.assertEqual("main-mandatory", prepared.stdout.strip())
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            self.assertEqual(source_sha, plan["source_commit"])
+            self.assertEqual(gate.canonical_digest(manifest), plan["manifest_digest"])
+            self.assertTrue(plan["mandatory_suite_required"])
+            self.assertEqual(214, len(plan["selected_files"]))
+            self.assertEqual(215, len({row["path"] for row in manifest["test_files"]}))
+            self.assertEqual({row["path"] for row in safe_rows}, set(plan["selected_files"]))
+
+    def test_parallel_cli_mode_entrypoint_rejects_invalid_dispatch_context(self) -> None:
+        script = Path(__file__).with_name("parallel_ci.py")
+        result = subprocess.run(
+            [sys.executable, str(script), "mode", "--event", "workflow_dispatch",
+             "--ref", "refs/heads/stage6", "--acknowledge", "RUN L6",
+             "--expected-sha", "a" * 40, "--actual-sha", "b" * 40, "--l6-mode", "branch"],
+            cwd=gate.ROOT, text=True, capture_output=True, check=False,
+        )
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("acknowledgement, branch, or exact SHA is invalid", result.stderr)
+
     def test_verified_github_run_context_must_match_actual_environment(self) -> None:
         launcher_path = gate.ROOT / "tests/acceptance/launcher.py"
         spec = importlib.util.spec_from_file_location("fwrouter_run_context_launcher", launcher_path)
