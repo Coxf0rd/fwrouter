@@ -14,12 +14,151 @@ import stat
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate
 import aggregate_hosted as strict
 import routine_shards
+
+PREPR_ACKNOWLEDGEMENT = 'RUN PRE-PR FULL'
+PREPR_SCOPE = 'pre-pr-safe-non-promotional'
+
+
+def qualification_scope(mode):
+    return {'branch-quick': 'branch-quick-non-promotional',
+            'pre-pr-full-safe': PREPR_SCOPE,
+            'pr-affected': 'pr-affected', 'pr-full-safe': 'pr-trusted-full-safe',
+            'main-mandatory': 'main-mandatory',
+            'l6-main': 'main-regression', 'l6-branch': 'branch-regression-non-promotional'}.get(mode)
+
+
+def resolve_plan_mode(event, ref, plan, *, pr_head_repo='', repository='', acknowledge='', expected_sha=''):
+    trusted_pr = event == 'pull_request' and bool(repository) and pr_head_repo == repository
+    marker = trusted_pr and 'ci:full-acceptance' in gate.git('show', '-s', '--format=%B', plan['source_commit'])
+    mode = qualification_mode(event, ref, trusted_pr=trusted_pr, full_marker=marker,
+                              acknowledge=acknowledge, expected_sha=expected_sha,
+                              actual_sha=plan.get('source_commit', ''))
+    full = mode in {'main-mandatory', 'pr-full-safe', 'pre-pr-full-safe'}
+    if bool(plan.get('mandatory_suite_required')) != full:
+        raise gate.GateError('qualification mode does not match the immutable plan selection')
+    return mode
+
+
+def qualification_mode(event, ref, *, trusted_pr=False, full_marker=False, acknowledge='', expected_sha='', actual_sha='', l6_mode=''):
+    """Closed event policy shared by workflow planning and independent callers."""
+    if event == 'workflow_dispatch':
+        if (acknowledge == 'RUN L6' and expected_sha == actual_sha
+                and re.fullmatch(r'[0-9a-f]{40}', actual_sha or '')):
+            if l6_mode == 'main' and ref == 'refs/heads/main':
+                return 'l6-main'
+            if l6_mode == 'branch' and ref.startswith('refs/heads/') and ref != 'refs/heads/main':
+                return 'l6-branch'
+        if (acknowledge != PREPR_ACKNOWLEDGEMENT or not ref.startswith('refs/heads/')
+                or ref == 'refs/heads/main' or expected_sha != actual_sha
+                or not re.fullmatch(r'[0-9a-f]{40}', actual_sha or '')):
+            raise gate.GateError('pre-PR full-safe dispatch acknowledgement, branch, or exact SHA is invalid')
+        return 'pre-pr-full-safe'
+    if event == 'pull_request' and ref.startswith('refs/pull/'):
+        return 'pr-full-safe' if trusted_pr and full_marker else 'pr-affected'
+    if event == 'push' and ref == 'refs/heads/main':
+        return 'main-mandatory'
+    if event == 'push' and ref.startswith('refs/heads/'):
+        return 'branch-quick'
+    if event == 'schedule' and ref == 'refs/heads/main':
+        return 'l6-main'
+    raise gate.GateError('CI event/ref is outside the supported qualification modes')
+
+
+def write_configure_outputs(plan_path, output_path, *, main_smoke=False, l6=False, qualification_mode=''):
+    """Single output constructor used by the affected and repeated L6 DAGs."""
+    plan = load_plan(plan_path, l6=l6)
+    required = requirements(plan, main_smoke)
+    outputs = {'source_sha': plan['source_commit'], 'plan_digest': plan['plan_digest'],
+               **{f'needs_{key}': str(value).lower() for key, value in required.items()},
+               'needs_runtime': str(any(required[key] for key in ('hosted', 'provider', 'packet', 'native'))).lower(),
+               'needs_recovery': str({'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
+                                      'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'}
+                                     <= set(plan['selected_files'])).lower(),
+               'main_smoke': str(bool(main_smoke)).lower(),
+               'unit_shards_json': json.dumps(list(gate.ROUTINE_SHARD_GROUPS), separators=(',', ':')),
+               'native_profiles_json': json.dumps(native_profiles(plan), separators=(',', ':'))}
+    if qualification_mode:
+        if qualification_scope(qualification_mode) is None:
+            raise gate.GateError('unknown CI qualification mode')
+        outputs['qualification_mode'] = qualification_mode
+    with Path(output_path).open('a') as stream:
+        for key, value in outputs.items():
+            stream.write(f'{key}={value}\n')
+    seal(Path(plan_path).parent, 'plan', plan, 'success')
+    return outputs
+
+
+def prepare_plan(args):
+    """Resolve trusted trigger context and invoke gate.py's existing plan constructors."""
+    actual = gate.git('rev-parse', 'HEAD')
+    if args.l6:
+        mode = qualification_mode(args.event, args.ref, acknowledge=args.acknowledge,
+                                  expected_sha=args.expected_sha, actual_sha=actual,
+                                  l6_mode=args.l6_mode)
+        if mode not in {'l6-main', 'l6-branch'}:
+            raise gate.GateError('L6 planning requires an authorized main or branch regression mode')
+        gate.command_full_suite_plan(SimpleNamespace(
+            manual=True, manifest=args.manifest, include_native=True, output=args.plan))
+        if not Path(args.plan).is_file():
+            raise gate.GateError('L6 full-suite planner did not produce its immutable plan')
+        if args.github_output:
+            write_configure_outputs(args.plan, args.github_output, l6=True)
+            with Path(args.github_output).open('a') as stream:
+                stream.write(f"qualification_scope={'main-regression' if mode == 'l6-main' else 'branch-regression-non-promotional'}\n")
+        return mode
+
+    trusted_pr = (args.event == 'pull_request' and bool(args.repository)
+                  and args.pr_head_repo == args.repository)
+    full_marker = trusted_pr and 'ci:full-acceptance' in gate.git('log', '-1', '--format=%B')
+    mode = qualification_mode(args.event, args.ref, trusted_pr=trusted_pr,
+                              full_marker=full_marker, acknowledge=args.acknowledge,
+                              expected_sha=args.expected_sha, actual_sha=actual)
+    if args.quick_push and mode != 'branch-quick':
+        raise gate.GateError('quick planning is restricted to non-main branch pushes')
+    if not args.quick_push and mode in {'branch-quick', 'l6-main', 'l6-branch'}:
+        raise gate.GateError('affected planning cannot use quick or L6 qualification modes')
+    if args.event == 'pull_request':
+        base = args.pr_base
+    elif args.event == 'workflow_dispatch':
+        base = gate.git('merge-base', 'HEAD', 'refs/remotes/origin/main')
+    else:
+        base = args.event_before
+        if base == '0' * 40 and mode == 'branch-quick':
+            base = gate.git('merge-base', 'HEAD', 'refs/remotes/origin/main')
+    if not base or subprocess.run(['git', 'cat-file', '-e', f'{base}^{{commit}}'],
+                                  cwd=gate.ROOT, capture_output=True).returncode:
+        raise gate.GateError('cannot resolve immutable base for CI plan')
+    if getattr(args, 'lint_changed', False) and gate.command_lint_changed(SimpleNamespace(base=base)) != 0:
+        raise gate.GateError('changed-source lint failed')
+    if args.quick_push:
+        changed = subprocess.run(['git', 'diff', '--name-only', '-z', base, 'HEAD', '--'],
+                                 cwd=gate.ROOT, capture_output=True, check=True).stdout
+        if not changed:
+            if not args.state:
+                raise gate.GateError('quick no-op requires an explicit state output')
+            Path(args.state).write_text('unchanged\n', encoding='utf-8')
+            return mode
+    manifest = gate.load_manifest(Path(args.manifest))
+    if mode in {'main-mandatory', 'pr-full-safe', 'pre-pr-full-safe'}:
+        plan = gate.make_mandatory_suite_plan(base, manifest)
+    elif mode == 'branch-quick':
+        plan = gate.make_quick_push_plan(base, manifest)
+    else:
+        plan = gate.make_plan(base, manifest, include_native=True)
+    gate.atomic_json(Path(args.plan), plan)
+    if args.quick_push and args.state:
+        Path(args.state).write_text('changed\n', encoding='utf-8')
+    if args.github_output:
+        write_configure_outputs(args.plan, args.github_output,
+                                main_smoke=mode == 'main-mandatory', qualification_mode=mode)
+    return mode
 
 ROLES = ('plan', 'build', 'unit', 'hosted', 'provider', 'packet', 'native')
 MAX_FILES = 6000
@@ -130,20 +269,16 @@ def validate_results(results, required):
 
 
 def configure(args):
-    plan = load_plan(args.plan); required = requirements(plan, args.main_smoke)
-    outputs = {'source_sha': plan['source_commit'], 'plan_digest': plan['plan_digest'],
-               **{f'needs_{k}': str(v).lower() for k, v in required.items()},
-               'needs_runtime': str(any(required[k] for k in ('hosted', 'provider', 'packet', 'native'))).lower(),
-               'needs_recovery': str({'installer/tests/test_safe_recovery.py', 'backend/tests/test_network_contract.py',
-                                      'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'}
-                                     <= set(plan['selected_files'])).lower(),
-               'main_smoke': str(args.main_smoke).lower(),
-               'unit_shards_json': json.dumps(list(gate.ROUTINE_SHARD_GROUPS), separators=(',', ':')),
-               'native_profiles_json': json.dumps(native_profiles(plan), separators=(',', ':'))}
-    with Path(args.github_output).open('a') as stream:
-        for k, v in outputs.items():
-            stream.write(f'{k}={v}\n')
-    seal(Path(args.plan).parent, 'plan', plan, 'success')
+    plan = load_plan(args.plan)
+    mode = resolve_plan_mode(args.event, args.ref, plan,
+                             pr_head_repo=args.pr_head_repo, repository=args.repository,
+                             acknowledge=args.acknowledge, expected_sha=args.expected_sha)
+    if args.qualification_mode and args.qualification_mode != mode:
+        raise gate.GateError('configured qualification mode differs from trusted event context and plan')
+    if bool(args.main_smoke) != (mode == 'main-mandatory'):
+        raise gate.GateError('main smoke is required only for actual-main affected CI')
+    write_configure_outputs(args.plan, args.github_output, main_smoke=args.main_smoke,
+                            qualification_mode=mode)
 
 
 def run_command(command, log, *, env=None):
@@ -525,6 +660,13 @@ def aggregate(args):
         if plan_status != 'success':
             raise gate.GateError(f'plan preflight result is {plan_status or "missing"}; immutable plan unavailable')
         plan = load_plan(args.plan)
+        mode = resolve_plan_mode(args.event, args.ref, plan,
+                                 pr_head_repo=args.pr_head_repo, repository=args.repository,
+                                 acknowledge=args.acknowledge, expected_sha=args.expected_sha)
+        if getattr(args, 'qualification_mode', '') != mode:
+            raise gate.GateError('configured qualification mode differs from trusted event context and plan')
+        if bool(args.main_smoke) != (mode == 'main-mandatory'):
+            raise gate.GateError('main smoke is required only for actual-main affected CI')
         required = requirements(plan, args.main_smoke)
         problems = validate_results(results, required)
         if problems:
@@ -617,7 +759,8 @@ def aggregate(args):
                         'backend/tests/test_dnsmasq.py', 'tests/application_acceptance/test_packet_dataplane.py'} <= set(plan['selected_files'])
             gate.atomic_json(output / 'required-result.json', {'schema': 'fwrouter-parallel-required/v1',
                              **identity(plan), 'eligible': False, 'upstream': results,
-                             'safe_recovery_required': recovery})
+                             'safe_recovery_required': recovery,
+                             **({'qualification_scope': qualification_scope(mode)} if mode else {})})
             try:
                 import visibility_report
                 partial_visibility = visibility_report.collect(artifact_root, output, plan)
@@ -631,7 +774,8 @@ def aggregate(args):
             subprocess.run([sys.executable, 'installer/qualify_recovery.py', '--aggregate',
                             str(output / 'fwrouter-aggregate.json'), '--output', str(output / 'safe-recovery')], check=True)
         gate.atomic_json(output / 'required-result.json', {'schema': 'fwrouter-parallel-required/v1',
-                         **identity(plan), 'eligible': True, 'upstream': results, 'safe_recovery_required': recovery})
+                         **identity(plan), 'eligible': True, 'upstream': results, 'safe_recovery_required': recovery,
+                         **({'qualification_scope': qualification_scope(mode)} if mode else {})})
         import visibility_report
         visibility = visibility_report.collect(artifact_root, output, plan)
         if (visibility.get('qualification_status') != 'passed'
@@ -660,8 +804,8 @@ def aggregate(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('configure', 'verify-plan', 'seal', 'worker', 'aggregate', 'summary'))
-    parser.add_argument('--plan', type=Path, required=True)
+    parser.add_argument('command', choices=('mode', 'prepare', 'configure', 'verify-plan', 'seal', 'worker', 'aggregate', 'summary'))
+    parser.add_argument('--plan', type=Path)
     parser.add_argument('--root', type=Path)
     parser.add_argument('--role', choices=ROLES)
     parser.add_argument('--shard-group', choices=gate.ROUTINE_SHARD_GROUPS)
@@ -671,9 +815,33 @@ def main():
     parser.add_argument('--artifacts', type=Path)
     parser.add_argument('--main-smoke', action='store_true')
     parser.add_argument('--l6', action='store_true')
+    parser.add_argument('--event', default='')
+    parser.add_argument('--ref', default='')
+    parser.add_argument('--trusted-pr', action='store_true')
+    parser.add_argument('--full-marker', action='store_true')
+    parser.add_argument('--acknowledge', default='')
+    parser.add_argument('--expected-sha', default='')
+    parser.add_argument('--actual-sha', default='')
+    parser.add_argument('--l6-mode', default='')
+    parser.add_argument('--quick-push', action='store_true')
+    parser.add_argument('--lint-changed', action='store_true')
+    parser.add_argument('--state', type=Path)
+    parser.add_argument('--qualification-mode', default='')
+    parser.add_argument('--manifest', type=Path, default=gate.MANIFEST_PATH)
+    parser.add_argument('--event-before', default='')
+    parser.add_argument('--pr-base', default='')
+    parser.add_argument('--pr-head-repo', default='')
+    parser.add_argument('--repository', default='')
     args = parser.parse_args()
     try:
-        if args.command == 'configure':
+        if args.command == 'mode':
+            print(qualification_mode(args.event, args.ref, trusted_pr=args.trusted_pr,
+                                     full_marker=args.full_marker, acknowledge=args.acknowledge,
+                                     expected_sha=args.expected_sha, actual_sha=args.actual_sha,
+                                     l6_mode=args.l6_mode))
+        elif args.command == 'prepare':
+            print(prepare_plan(args))
+        elif args.command == 'configure':
             configure(args)
         elif args.command == 'verify-plan':
             verify_producer(args.plan.parent, 'plan', load_plan(args.plan, l6=args.l6))

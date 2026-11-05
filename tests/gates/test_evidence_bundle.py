@@ -64,6 +64,93 @@ class EvidenceBundleTests(unittest.TestCase):
         self.assertFalse(bundle.main_smoke_for("pull_request", "refs/pull/35/merge"))
         self.assertFalse(bundle.main_smoke_for("push", "refs/heads/feature"))
 
+    def test_prepr_scope_is_bound_to_required_result_and_cannot_be_relabelled(self) -> None:
+        plan = {'source_commit': 'a' * 40, 'plan_digest': 'b' * 64,
+                'manifest_digest': 'c' * 64, 'manifest_version': 'v',
+                'mandatory_suite_required': True, 'selected_files': []}
+        upstream = {role: {'result': 'success'} for role in bundle.parallel_ci.ROLES}
+        required = {'schema': 'fwrouter-parallel-required/v1', 'eligible': True,
+                    'source_commit': plan['source_commit'], 'plan_digest': plan['plan_digest'],
+                    'manifest_digest': plan['manifest_digest'], 'manifest_version': 'v',
+                    'run_id': '123', 'run_attempt': '2', 'upstream': upstream,
+                    'safe_recovery_required': False,
+                    'qualification_scope': bundle.parallel_ci.PREPR_SCOPE}
+        report = {'eligible': True, 'source_commit': plan['source_commit'],
+                  'plan_digest': plan['plan_digest'], 'manifest_version': 'v',
+                  'main_smoke_required': False, 'blocked_reasons': [], 'missing_levels': []}
+        with patch.object(bundle, 'load_plan', return_value=(Path('plan.json'), plan)), \
+                patch.object(bundle, 'read_json', side_effect=[required, report]), \
+                patch.object(bundle.parallel_ci, 'requirements', return_value={}), \
+                patch.object(bundle.parallel_ci, 'validate_results', return_value=[]):
+            bundle.check_eligibility(Path('evidence'), Path('required'), event='workflow_dispatch',
+                                     ref='refs/heads/topic', run_id='123', attempt='2',
+                                     upstream=upstream, require_prepr_scope=True)
+        required['qualification_scope'] = 'pr-trusted-full-safe'
+        with patch.object(bundle, 'load_plan', return_value=(Path('plan.json'), plan)), \
+                patch.object(bundle, 'read_json', side_effect=[required, report]), \
+                patch.object(bundle.parallel_ci, 'requirements', return_value={}), \
+                patch.object(bundle.parallel_ci, 'validate_results', return_value=[]), \
+                self.assertRaisesRegex(bundle.gate.GateError, 'non-promotional pre-PR scope'):
+            bundle.check_eligibility(Path('evidence'), Path('required'), event='workflow_dispatch',
+                                     ref='refs/heads/topic', run_id='123', attempt='2',
+                                     upstream=upstream, require_prepr_scope=True)
+
+        # Even if the outer archive is relabelled as a trusted PR bundle, its
+        # sealed required-result remains bound to the pre-PR event scope.
+        required['qualification_scope'] = bundle.parallel_ci.PREPR_SCOPE
+        with patch.object(bundle, 'load_plan', return_value=(Path('plan.json'), plan)), \
+                patch.object(bundle, 'read_json', side_effect=[required, report]), \
+                patch.object(bundle.parallel_ci, 'requirements', return_value={}), \
+                patch.object(bundle.parallel_ci, 'validate_results', return_value=[]), \
+                self.assertRaisesRegex(bundle.gate.GateError, 'scope does not match'):
+            bundle.check_eligibility(Path('evidence'), Path('required'), event='pull_request',
+                                     ref='refs/pull/8/merge', run_id='123', attempt='2',
+                                     upstream=upstream)
+
+    def test_offline_verifier_rejects_prepr_required_result_relabelled_as_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'bundle'
+            (root / 'evidence/plan').mkdir(parents=True)
+            (root / 'reports').mkdir()
+            source = 'a' * 40
+            plan = {'source_commit': source, 'plan_digest': 'b' * 64,
+                    'manifest_digest': 'c' * 64, 'manifest_version': 'v',
+                    'mandatory_suite_required': True, 'selected_files': []}
+            bundle.gate.atomic_json(root / 'evidence/plan/fwrouter-affected-plan.json', plan)
+            bundle.gate.atomic_json(root / 'reports/required-result.json',
+                                    {'qualification_scope': bundle.parallel_ci.PREPR_SCOPE})
+            metadata = {'schema': bundle.SCHEMA, 'source_sha': source, 'run_id': '123',
+                        'run_attempt': '2', 'event': 'pull_request', 'ref': 'refs/pull/8/merge',
+                        'repository': bundle.REPOSITORY, 'workflow': bundle.WORKFLOW_NAME,
+                        'workflow_path': '.github/workflows/test-gates.yml',
+                        'required_check': bundle.REQUIRED_CHECK, 'strict_aggregate': 'passed',
+                        'plan_digest': plan['plan_digest'], 'manifest_digest': plan['manifest_digest'],
+                        'manifest_version': plan['manifest_version'],
+                        'main_smoke_required': False, 'verifier_sources': []}
+            rows = []
+            for path in bundle.SOURCE_FILES:
+                local = bundle.ROOT / path
+                packaged = root / 'verifier-source' / path
+                packaged.parent.mkdir(parents=True, exist_ok=True)
+                packaged.write_bytes(local.read_bytes())
+                rows.append({'path': path, 'bytes': local.stat().st_size, 'sha256': 'd' * 64})
+            metadata['verifier_sources'] = rows
+            with patch.object(bundle, 'verify_content', return_value=(metadata, {})), \
+                    patch.object(bundle.gate, 'git', side_effect=[source, '']), \
+                    patch.object(bundle, 'sha256', return_value='d' * 64), \
+                    patch.object(bundle.gate, 'ensure_plan'), \
+                    self.assertRaisesRegex(bundle.gate.GateError, 'offline required-result scope'):
+                bundle.verify_bundle(argparse.Namespace(bundle=root, expected_sha=source,
+                    event='pull_request', ref='refs/pull/8/merge', run_id='123', attempt='2',
+                    require_main=False, workflow_kind='main'))
+
+    def test_prepr_bundle_contract_uses_distinct_name_and_check_context(self) -> None:
+        workflow = (bundle.ROOT / '.github/workflows/test-gates.yml').read_text(encoding='utf-8')
+        self.assertIn("Pre-PR full safe qualification", workflow)
+        self.assertIn("PREPR_REQUIRED_CHECK = \"Pre-PR full safe qualification\"", SCRIPT.read_text())
+        self.assertIn('fwrouter-pre-pr-evidence-', workflow)
+        self.assertNotIn("name: Affected L0-L5 with hosted profiles\n    if: github.event_name == 'workflow_dispatch'", workflow)
+
     def test_hidden_bundle_paths_are_limited_to_pinned_workflow_source(self) -> None:
         self.assertEqual(".github/workflows/test-gates.yml",
                          bundle.safe_path(".github/workflows/test-gates.yml").as_posix())
@@ -416,6 +503,7 @@ class EvidenceBundleTests(unittest.TestCase):
                     for role, required in needed.items()}
 
         def fixtures(root: Path, event: str, ref: str, results: dict[str, dict[str, str]], attempt: str):
+            plan['mandatory_suite_required'] = event == 'push' and ref == 'refs/heads/main'
             evidence = root / "evidence"
             plan_dir = evidence / "plan"
             plan_dir.mkdir(parents=True)
@@ -567,6 +655,7 @@ class EvidenceBundleTests(unittest.TestCase):
         selected_files = [host_path, manual_path]
         plan = {'source_commit': 'a' * 40, 'plan_digest': 'b' * 64, 'manifest_digest': 'c' * 64,
                 'manifest_version': bundle.gate.load_manifest()['version'],
+                'mandatory_suite_required': event == 'push' and ref == 'refs/heads/main',
                 'selected_files': selected_files}
         plan_path = root / 'plan.json'; plan_path.write_text(json.dumps(plan), encoding='utf-8')
         jobs = {role: {'result': 'success'} for role in bundle.parallel_ci.ROLES}
@@ -880,7 +969,9 @@ class EvidenceBundleTests(unittest.TestCase):
     def test_workflow_preserves_eight_jobs_required_name_and_no_write_permission(self) -> None:
         workflow = (bundle.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
         self.assertNotIn("actions: write", workflow)
-        self.assertIn("name: Affected L0-L5 with hosted profiles", workflow)
+        self.assertIn("'Affected L0-L5 with hosted profiles'", workflow)
+        self.assertIn("name: ${{ github.event_name == 'workflow_dispatch' && 'Pre-PR full safe qualification' || 'Affected L0-L5 with hosted profiles' }}", workflow)
+        self.assertNotIn('jobs:\n  prepr-required-alias:', workflow)
         self.assertIn("Publish successful CI evidence bundle", workflow)
         self.assertIn("retention-days: 1", workflow)
         self.assertIn("retention-days: 3", workflow)

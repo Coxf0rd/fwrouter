@@ -37,28 +37,17 @@ jobs:
         id: quick
         env:
           EVENT_BEFORE: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           printf 'changed\n' > "$RUNNER_TEMP/fwrouter-fast-state"
-          # A new branch push has the zero SHA, not a previous commit.
-          # Resolve its immutable fork point from the fully fetched main ref.
-          if [ "$EVENT_BEFORE" = 0000000000000000000000000000000000000000 ]; then
-            EVENT_BEFORE="$(git merge-base HEAD refs/remotes/origin/main)"
-          fi
-          if [ -z "$EVENT_BEFORE" ] || ! git cat-file -e "$EVENT_BEFORE^{commit}" 2>/dev/null; then
-            echo "Push has no resolvable immutable before SHA" >&2
-            exit 2
-          fi
-          python tests/gates/gate.py lint-changed --base "$EVENT_BEFORE"
-          CHANGED_PATHS="$RUNNER_TEMP/fwrouter-fast-changed-paths.bin"
-          git diff --name-only -z "$EVENT_BEFORE" HEAD -- > "$CHANGED_PATHS"
-          if [ ! -s "$CHANGED_PATHS" ]; then
-            printf 'unchanged\n' > "$RUNNER_TEMP/fwrouter-fast-state"
-            exit 0
-          fi
           PLAN="$RUNNER_TEMP/fwrouter-fast-plan.json"
           REPORT="$RUNNER_TEMP/fwrouter-fast-report.json"
-          python tests/gates/gate.py plan --base "$EVENT_BEFORE" --quick-push --output "$PLAN"
+          python tests/gates/parallel_ci.py prepare --event "$EVENT_NAME" --ref "$EVENT_REF" \
+            --event-before "$EVENT_BEFORE" --quick-push --lint-changed \
+            --plan "$PLAN" --state "$RUNNER_TEMP/fwrouter-fast-state"
+          if [ "$(cat "$RUNNER_TEMP/fwrouter-fast-state")" = unchanged ]; then exit 0; fi
           python tests/gates/gate.py run --plan "$PLAN" --output "$REPORT" \
             > "$RUNNER_TEMP/fwrouter-fast.log" 2>&1
       - name: Write non-promotional quick summary

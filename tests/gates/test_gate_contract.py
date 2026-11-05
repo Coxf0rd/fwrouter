@@ -698,66 +698,148 @@ class GateContractTests(unittest.TestCase):
 
     def test_main_and_trusted_final_pr_use_mandatory_all_plan_policy(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text(encoding="utf-8")
-        self.assertIn("name: Affected L0-L5 with hosted profiles", workflow)
-        self.assertIn("github.event_name == 'pull_request'", workflow)
-        self.assertIn("github.ref == 'refs/heads/main'", workflow)
+        self.assertIn("'Affected L0-L5 with hosted profiles'", workflow)
+        self.assertIn("Pre-PR full safe qualification", workflow)
+        self.assertIn("parallel_ci.py prepare", workflow)
+        self.assertIn("name: ${{ github.event_name == 'workflow_dispatch' && 'Pre-PR full safe qualification' || 'Affected L0-L5 with hosted profiles' }}", workflow)
         self.assertIn("PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}", workflow)
-        self.assertIn("&& [ \"$PR_HEAD_REPO\" = \"$GITHUB_REPOSITORY\" ]", workflow)
-        self.assertIn("grep -Fq -- 'ci:full-acceptance'", workflow)
-        self.assertIn("PLAN_ARGS+=(--mandatory-all)", workflow)
-        self.assertIn("python tests/gates/gate.py plan \"${PLAN_ARGS[@]}\"", workflow)
-        self.assertIn("PLAN_ARGS=(--base \"$BASE\" --include-native --output \"$PLAN\")", workflow)
+        self.assertIn("ci:full-acceptance", (gate.ROOT / 'tests/gates/parallel_ci.py').read_text())
+        planner = (gate.ROOT / 'tests/gates/parallel_ci.py').read_text()
+        self.assertIn("gate.make_mandatory_suite_plan(base, manifest)", planner)
+        self.assertIn("gate.make_plan(base, manifest, include_native=True)", planner)
+        self.assertIn("gate.make_quick_push_plan(base, manifest)", planner)
+        resolve = parallel_ci.qualification_mode
+        self.assertEqual('branch-quick', resolve('push', 'refs/heads/topic'))
+        self.assertEqual('pr-affected', resolve('pull_request', 'refs/pull/8/merge'))
+        self.assertEqual('pr-full-safe', resolve('pull_request', 'refs/pull/8/merge',
+                                                  trusted_pr=True, full_marker=True))
+        self.assertEqual('pr-affected', resolve('pull_request', 'refs/pull/8/merge',
+                                                 trusted_pr=False, full_marker=True))
+        self.assertEqual('main-mandatory', resolve('push', 'refs/heads/main'))
+        sha = 'a' * 40
+        self.assertEqual('pre-pr-full-safe', resolve('workflow_dispatch', 'refs/heads/topic',
+                                                      acknowledge='RUN PRE-PR FULL', expected_sha=sha,
+                                                      actual_sha=sha))
+        for ref, ack, expected in (('refs/heads/main', 'RUN PRE-PR FULL', sha),
+                                   ('refs/heads/topic', '', sha),
+                                   ('refs/heads/topic', 'RUN PRE-PR FULL', 'b' * 40)):
+            with self.subTest(ref=ref, ack=ack, expected=expected), self.assertRaises(parallel_ci.gate.GateError):
+                resolve('workflow_dispatch', ref, acknowledge=ack, expected_sha=expected, actual_sha=sha)
+        base = gate.git('rev-parse', 'HEAD^')
+        legacy_full = gate.make_mandatory_suite_plan(base, self.manifest, None)
+        prepr_full = gate.make_mandatory_suite_plan(base, self.manifest, None)
+        self.assertEqual(legacy_full, prepr_full)
+        self.assertTrue(legacy_full['mandatory_suite_required'])
+        self.assertFalse(gate.make_plan(base, self.manifest, None, include_native=True)['mandatory_suite_required'])
+        with mock.patch.object(parallel_ci.gate, 'git', return_value='ci:full-acceptance'):
+            self.assertEqual('pr-full-safe', parallel_ci.resolve_plan_mode(
+                'pull_request', 'refs/pull/8/merge', {'source_commit': sha, 'mandatory_suite_required': True},
+                pr_head_repo='Coxf0rd/fwrouter', repository='Coxf0rd/fwrouter'))
+            with self.assertRaises(parallel_ci.gate.GateError):
+                parallel_ci.resolve_plan_mode(
+                    'pull_request', 'refs/pull/8/merge', {'source_commit': sha, 'mandatory_suite_required': True},
+                    pr_head_repo='fork/fwrouter', repository='Coxf0rd/fwrouter')
+        with self.assertRaises(parallel_ci.gate.GateError):
+            parallel_ci.resolve_plan_mode('push', 'refs/heads/main',
+                                          {'source_commit': sha, 'mandatory_suite_required': False})
 
-        start = workflow.index("          PLAN_ARGS=(--base")
-        end = workflow.index("          python tests/gates/gate.py plan ", start)
-        policy = workflow[start:end]
-        with tempfile.TemporaryDirectory(prefix="fwrouter-mandatory-event-policy-") as temp:
-            repo = Path(temp)
-            subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
-            subprocess.run(["git", "config", "user.name", "Gate Contract"], cwd=repo, check=True)
-            subprocess.run(["git", "config", "user.email", "gate-contract@example.invalid"],
-                           cwd=repo, check=True)
-            (repo / "event.txt").write_text("event policy\n", encoding="utf-8")
-            subprocess.run(["git", "add", "event.txt"], cwd=repo, check=True)
-            subprocess.run(["git", "commit", "--quiet", "-m", "ci:full-acceptance"], cwd=repo, check=True)
+    def test_shared_prepare_preserves_legacy_plan_selection_by_context(self) -> None:
+        changed = ['backend/fwrouter_api/services/bootstrap.py']
+        sha, base = 'a' * 40, 'b' * 40
+        cases = (
+            ('push', 'refs/heads/topic', False, 'branch-quick'),
+            ('pull_request', 'refs/pull/1/merge', False, 'pr-affected'),
+            ('pull_request', 'refs/pull/1/merge', True, 'pr-full-safe'),
+            ('pull_request', 'refs/pull/1/merge', False, 'pr-affected-foreign-marker'),
+            ('push', 'refs/heads/main', False, 'main-mandatory'),
+            ('workflow_dispatch', 'refs/heads/topic', False, 'pre-pr-full-safe'),
+            ('workflow_dispatch', 'refs/heads/main', False, 'l6-main'),
+            ('workflow_dispatch', 'refs/heads/topic', False, 'l6-branch'),
+        )
 
-            cases = (
-                ("push", "refs/heads/main", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "true"),
-                ("pull_request", "refs/pull/8/merge", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "true"),
-                ("pull_request", "refs/pull/8/merge", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", False, "false"),
-                ("pull_request", "refs/pull/8/merge", "fork/fwrouter", "Coxf0rd/fwrouter", True, "false"),
-                ("push", "refs/heads/feature", "Coxf0rd/fwrouter", "Coxf0rd/fwrouter", True, "false"),
-            )
-            for event, ref, head_repo, repository, marker, expected in cases:
-                with self.subTest(event=event, ref=ref, head_repo=head_repo):
-                    subprocess.run(
-                        ["git", "commit", "--quiet", "--allow-empty", "-m",
-                         "ci:full-acceptance" if marker else "ordinary commit"],
-                        cwd=repo, check=True,
-                    )
-                    output_path = repo / "github-output.txt"
-                    env = {
-                        **os.environ,
-                        "EVENT_NAME": event,
-                        "BASE": "base-commit",
-                        "GITHUB_REF": ref,
-                        "PR_HEAD_REPO": head_repo,
-                        "GITHUB_REPOSITORY": repository,
-                        "PLAN": str(repo / "plan.json"),
-                        "GITHUB_OUTPUT": str(output_path),
-                    }
-                    output_path.write_text("", encoding="utf-8")
-                    completed = subprocess.run(
-                        ["bash", "-euo", "pipefail", "-c", policy], cwd=repo,
-                        env=env, text=True, capture_output=True, check=False,
-                    )
-                    self.assertEqual(0, completed.returncode, completed.stderr)
-                    args = subprocess.run(
-                        ["bash", "-euo", "pipefail", "-c", policy + '\nprintf \'%s\\n\' "${PLAN_ARGS[@]}"'],
-                        cwd=repo, env=env, text=True, capture_output=True, check=False,
-                    )
-                    self.assertEqual(0, args.returncode, args.stderr)
-                    self.assertEqual(expected == "true", "--mandatory-all" in args.stdout.splitlines())
+        def normalized(plan):
+            self.assertEqual(plan['plan_digest'], gate.canonical_digest(
+                {key: value for key, value in plan.items() if key != 'plan_digest'}))
+            return {key: value for key, value in plan.items()
+                    if key not in {'created_utc', 'plan_digest'}}
+
+        for event, ref, trusted, expected_mode in cases:
+            with self.subTest(mode=expected_mode), tempfile.TemporaryDirectory() as temp:
+                output = Path(temp) / 'plan.json'
+                l6 = expected_mode.startswith('l6-')
+                quick = expected_mode == 'branch-quick'
+                args = SimpleNamespace(
+                    event=event, ref=ref, event_before=base, pr_base=base,
+                    pr_head_repo='repo' if trusted else ('fork/repo' if expected_mode == 'pr-affected-foreign-marker' else ''),
+                    repository='repo', acknowledge='RUN L6' if l6 else
+                    ('RUN PRE-PR FULL' if expected_mode == 'pre-pr-full-safe' else ''),
+                    expected_sha=sha if l6 or expected_mode == 'pre-pr-full-safe' else '',
+                    actual_sha=sha, l6=l6, l6_mode=('main' if expected_mode == 'l6-main' else 'branch' if l6 else ''),
+                    quick_push=quick, lint_changed=False, state=None, manifest=gate.MANIFEST,
+                    plan=output, github_output=None)
+
+                def git_side_effect(*command):
+                    if command == ('rev-parse', 'HEAD'):
+                        return sha
+                    if command == ('rev-parse', f'{base}^{{commit}}'):
+                        return base
+                    if command == ('log', '-1', '--format=%B'):
+                        return 'ci:full-acceptance' if trusted else 'ordinary commit'
+                    if command == ('merge-base', 'HEAD', 'refs/remotes/origin/main'):
+                        return base
+                    raise AssertionError(command)
+
+                with mock.patch.object(parallel_ci.gate, 'git', side_effect=git_side_effect), \
+                        mock.patch.object(gate, 'git', side_effect=git_side_effect), \
+                        mock.patch.object(parallel_ci.gate, 'load_manifest', return_value=self.manifest):
+                    if l6:
+                        old_path = Path(temp) / 'legacy-l6.json'
+                        gate.command_full_suite_plan(SimpleNamespace(
+                            manual=True, manifest=gate.MANIFEST, include_native=True, output=old_path))
+                        with mock.patch.object(parallel_ci.gate, 'git', side_effect=git_side_effect):
+                            self.assertEqual(expected_mode, parallel_ci.prepare_plan(args))
+                    else:
+                        old_base = gate.git('merge-base', 'HEAD', 'refs/remotes/origin/main') if expected_mode == 'pre-pr-full-safe' else (
+                            args.pr_base if event == 'pull_request' else args.event_before)
+                        if expected_mode == 'branch-quick' and old_base == '0' * 40:
+                            old_base = gate.git('merge-base', 'HEAD', 'refs/remotes/origin/main')
+                        if expected_mode in {'main-mandatory', 'pr-full-safe', 'pre-pr-full-safe'}:
+                            old = gate.make_mandatory_suite_plan(old_base, self.manifest, changed)
+                        elif quick:
+                            old = gate.make_quick_push_plan(old_base, self.manifest, changed)
+                        else:
+                            old = gate.make_plan(old_base, self.manifest, changed, include_native=True)
+                        fake_run = SimpleNamespace(returncode=0, stdout=('\0'.join(changed) + '\0').encode())
+                        with mock.patch.object(parallel_ci.subprocess, 'run', return_value=fake_run):
+                            resolved = 'pr-affected' if expected_mode == 'pr-affected-foreign-marker' else expected_mode
+                            self.assertEqual(resolved, parallel_ci.prepare_plan(args))
+                    new = json.loads(output.read_text(encoding='utf-8'))
+                    if l6:
+                        old = json.loads(old_path.read_text(encoding='utf-8'))
+                    self.assertEqual(normalized(old), normalized(new))
+                    self.assertEqual(old['selected_files'], new['selected_files'])
+                    self.assertEqual(old['required_execution_profiles'], new['required_execution_profiles'])
+
+    def test_shared_prepare_keeps_quick_empty_diff_as_no_plan(self) -> None:
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp) / 'state'
+            args = SimpleNamespace(event='push', ref='refs/heads/topic', event_before='b' * 40,
+                                   pr_base='', pr_head_repo='', repository='', acknowledge='',
+                                   expected_sha='', actual_sha='', l6=False, l6_mode='', quick_push=True,
+                                   lint_changed=False, state=state, manifest=gate.MANIFEST,
+                                   plan=Path(temp) / 'plan.json', github_output=None)
+            def git_side_effect(*command):
+                return 'a' * 40
+            def run_side_effect(command, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=b'' if command[1] == 'diff' else b'')
+            with mock.patch.object(parallel_ci.gate, 'git', side_effect=git_side_effect), \
+                    mock.patch.object(parallel_ci.subprocess, 'run', side_effect=run_side_effect), \
+                    mock.patch.object(parallel_ci.gate, 'make_quick_push_plan') as planner:
+                self.assertEqual('branch-quick', parallel_ci.prepare_plan(args))
+                planner.assert_not_called()
+            self.assertEqual('unchanged\n', state.read_text())
+            self.assertFalse(args.plan.exists())
 
     def test_mandatory_all_selects_every_safe_suite_and_rejects_omission(self) -> None:
         changed = "backend/fwrouter_api/services/bootstrap.py"
@@ -1302,11 +1384,26 @@ class GateContractTests(unittest.TestCase):
             self.assertEqual(["base.py", "committed.py", "intent-to-add.py", "staged.py"], paths)
 
     def test_preflight_lint_precedes_immutable_plan_publication(self) -> None:
-        workflow = (gate.ROOT / '.github/workflows/test-gates.yml').read_text()
-        plan = workflow.split('  plan:', 1)[1].split('  build:', 1)[0]
-        self.assertLess(plan.index('gate.py lint-changed --base'), plan.index('gate.py plan'))
-        self.assertLess(plan.index('gate.py plan'), plan.index('parallel_ci.py configure'))
-        self.assertIn('set -euo pipefail', plan)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'plan.json'
+            base, sha = 'b' * 40, 'a' * 40
+            args = SimpleNamespace(event='pull_request', ref='refs/pull/2/merge',
+                event_before='', pr_base=base, pr_head_repo='fork/repo', repository='repo',
+                acknowledge='', expected_sha='', actual_sha='', l6=False, l6_mode='',
+                quick_push=False, lint_changed=True, state=None, manifest=gate.MANIFEST,
+                plan=output, github_output=None)
+            run_result = SimpleNamespace(returncode=0, stdout=b'')
+            with mock.patch.object(parallel_ci.gate, 'git', side_effect=lambda *cmd: sha if cmd == ('rev-parse', 'HEAD') else 'ordinary'), \
+                    mock.patch.object(parallel_ci.subprocess, 'run', return_value=run_result), \
+                    mock.patch.object(parallel_ci.gate, 'command_lint_changed', return_value=1) as lint, \
+                    mock.patch.object(parallel_ci.gate, 'make_plan') as constructor, \
+                    mock.patch.object(parallel_ci.gate, 'atomic_json') as publish, \
+                    self.assertRaisesRegex(parallel_ci.gate.GateError, 'changed-source lint failed'):
+                parallel_ci.prepare_plan(args)
+            lint.assert_called_once_with(SimpleNamespace(base=base))
+            constructor.assert_not_called()
+            publish.assert_not_called()
+            self.assertFalse(output.exists())
 
 
     def test_provider_plan_expands_declared_domains_and_uses_l5_anchors_as_primary_levels(self) -> None:
@@ -1600,11 +1697,13 @@ class GateContractTests(unittest.TestCase):
         import yaml
         workflow = (gate.ROOT / ".github/workflows/test-gates.yml").read_text()
         jobs = yaml.safe_load(workflow)["jobs"]
-        self.assertEqual("Affected L0-L5 with hosted profiles", jobs["affected"]["name"])
+        self.assertIn("Affected L0-L5 with hosted profiles", jobs["affected"]["name"])
+        self.assertIn("Pre-PR full safe qualification", jobs["affected"]["name"])
         self.assertEqual("always()", jobs["affected"]["if"])
         self.assertEqual(set(parallel_ci.ROLES), set(jobs["affected"]["needs"]))
-        self.assertIn('BASE="$PR_BASE_SHA"', workflow)
-        self.assertIn('BASE="$PUSH_BASE_SHA"', workflow)
+        self.assertIn('--pr-base "$PR_BASE_SHA"', workflow)
+        self.assertIn('--event-before "$PUSH_BASE_SHA"', workflow)
+        self.assertIn('parallel_ci.py prepare', workflow)
         self.assertNotIn('BASE="HEAD^"', workflow)
         self.assertIn("github.event.pull_request.head.sha || github.sha", workflow)
         self.assertEqual(["plan"], jobs["unit"]["needs"])
@@ -2623,9 +2722,9 @@ class GateContractTests(unittest.TestCase):
         step = next(item for item in steps if item.get("name") == "Plan and run routine affected L0-L1 only")
         summary_step = steps[-1]
         script = step["run"]
-        self.assertLess(script.index("gate.py lint-changed --base"), script.index("git diff --name-only -z"))
-        self.assertLess(script.index("git diff --name-only -z"), script.index("gate.py plan"))
-        self.assertIn('printf \'unchanged\\n\' > "$RUNNER_TEMP/fwrouter-fast-state"', script)
+        self.assertIn("parallel_ci.py prepare", script)
+        self.assertIn("--quick-push --lint-changed", script)
+        self.assertIn('if [ "$(cat "$RUNNER_TEMP/fwrouter-fast-state")" = unchanged ]; then exit 0; fi', script)
         self.assertIn("quick-summary", steps[-1]["run"])
         self.assertEqual("always()", steps[-1]["if"])
         self.assertNotIn("actions/upload-artifact", workflow)
@@ -2669,14 +2768,23 @@ class GateContractTests(unittest.TestCase):
                 #!/usr/bin/env bash
                 set -eu
                 printf '%s\\n' "$*" >> "$STUB_CALLS"
-                if [[ "$1" == tests/gates/gate.py && "$2" == lint-changed ]]; then
-                  exit "$STUB_LINT_EXIT"
-                fi
-                if [[ "$1" == tests/gates/gate.py && "$2" == plan ]]; then
+                if [[ "$1" == tests/gates/parallel_ci.py && "$2" == prepare ]]; then
+                  [[ "$STUB_LINT_EXIT" == 0 ]] || exit "$STUB_LINT_EXIT"
+                  git cat-file -e "${EVENT_BEFORE}^{commit}"
+                  changed="$(git diff --name-only -z "$EVENT_BEFORE" HEAD --)"
+                  state=''
+                  plan=''
                   while (($#)); do
-                    if [[ "$1" == --output ]]; then shift; printf '{}\\n' > "$1"; break; fi
+                    if [[ "$1" == --state ]]; then shift; state="$1"; fi
+                    if [[ "$1" == --plan ]]; then shift; plan="$1"; fi
                     shift
                   done
+                  if [[ -z "$changed" ]]; then
+                    printf 'unchanged\\n' > "$state"
+                  else
+                    printf 'changed\\n' > "$state"
+                    printf '{}\\n' > "$plan"
+                  fi
                   exit 0
                 fi
                 if [[ "$1" == tests/gates/gate.py && "$2" == run ]]; then
@@ -2746,7 +2854,7 @@ class GateContractTests(unittest.TestCase):
         completed, calls, summary, artifacts = execute_case(None)
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertEqual(2, len(calls))
-        self.assertIn("lint-changed", calls[0])
+        self.assertIn("prepare", calls[0])
         self.assertIn("quick-summary", calls[1])
         self.assertIn("NOT RUN", summary)
         self.assertIn("no test/deploy qualification", summary)
@@ -2759,11 +2867,10 @@ class GateContractTests(unittest.TestCase):
             with self.subTest(change=kind):
                 completed, calls, summary, artifacts = execute_case(kind)
                 self.assertEqual(0, completed.returncode, completed.stderr)
-                self.assertEqual(4, len(calls), calls)
-                self.assertIn("lint-changed", calls[0])
-                self.assertIn("gate.py plan", calls[1])
-                self.assertIn("gate.py run", calls[2])
-                self.assertIn("quick-summary", calls[3])
+                self.assertEqual(3, len(calls), calls)
+                self.assertIn("prepare", calls[0])
+                self.assertIn("gate.py run", calls[1])
+                self.assertIn("quick-summary", calls[2])
                 self.assertNotIn("NOT RUN", summary)
                 self.assertIn("INCOMPLETE", summary)
                 self.assertIn("fwrouter-fast-plan.json", artifacts)
@@ -2776,7 +2883,7 @@ class GateContractTests(unittest.TestCase):
         completed, calls, _summary, _artifacts = execute_case(None, fail_diff=True)
         self.assertNotEqual(0, completed.returncode)
         self.assertEqual(2, len(calls))
-        self.assertIn("lint-changed", calls[0])
+        self.assertIn("prepare", calls[0])
 
         completed, calls, _summary, _artifacts = execute_case(None, lint_exit="7")
         self.assertNotEqual(0, completed.returncode)
@@ -2785,14 +2892,16 @@ class GateContractTests(unittest.TestCase):
         invalid = "f" * 40
         completed, calls, _summary, _artifacts = execute_case(None, before=invalid)
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual(1, len(calls))
-        self.assertIn("quick-summary", calls[0])
+        self.assertEqual(2, len(calls))
+        self.assertIn("prepare", calls[0])
+        self.assertIn("quick-summary", calls[1])
 
         zero_sha = "0" * 40
         completed, calls, _summary, _artifacts = execute_case(None, before=zero_sha)
         self.assertNotEqual(0, completed.returncode)
-        self.assertEqual(1, len(calls))
-        self.assertIn("quick-summary", calls[0])
+        self.assertEqual(2, len(calls))
+        self.assertIn("prepare", calls[0])
+        self.assertIn("quick-summary", calls[1])
 
     def test_acceptance_tail_diagnostic_repetitions_are_bounded_sequential_and_isolated(self) -> None:
         workflow = (gate.ROOT / ".github/workflows/phase-d-validation.yml").read_text(encoding="utf-8")

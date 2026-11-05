@@ -29,6 +29,7 @@ SCHEMA = "fwrouter-ci-evidence-bundle/v1"
 REPOSITORY = "Coxf0rd/fwrouter"
 WORKFLOW_NAME = "FWRouter affected CI"
 REQUIRED_CHECK = "Affected L0-L5 with hosted profiles"
+PREPR_REQUIRED_CHECK = "Pre-PR full safe qualification"
 SOURCE_FILES = (
     ".github/workflows/test-gates.yml",
     "tests/gates/evidence_bundle.py",
@@ -140,13 +141,29 @@ def main_smoke_for(event: str, ref: str) -> bool:
     return event == "push" and ref == "refs/heads/main"
 
 
+def mode_for_plan(event: str, ref: str, plan: dict[str, Any]) -> str:
+    if event == 'workflow_dispatch' and ref.startswith('refs/heads/') and ref != 'refs/heads/main':
+        if plan.get('mandatory_suite_required') is not True:
+            raise gate.GateError('pre-PR dispatch requires the complete safe mandatory plan')
+        return 'pre-pr-full-safe'
+    if event == 'push' and ref == 'refs/heads/main':
+        if plan.get('mandatory_suite_required') is not True:
+            raise gate.GateError('main push requires the complete safe mandatory plan')
+        return 'main-mandatory'
+    if event == 'pull_request' and ref.startswith('refs/pull/'):
+        return 'pr-full-safe' if plan.get('mandatory_suite_required') is True else 'pr-affected'
+    raise gate.GateError('event/ref cannot identify an affected CI qualification mode')
+
+
 def check_eligibility(evidence: Path, required_root: Path, *, event: str, ref: str,
-                      run_id: str, attempt: str, upstream: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+                      run_id: str, attempt: str, upstream: dict[str, Any],
+                      require_prepr_scope: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
     plan_path, plan = load_plan(evidence)
     required_result = read_json(required_root / "required-result.json")
     report = read_json(required_root / "fwrouter-aggregate.json")
     main_smoke = main_smoke_for(event, ref)
     needed = parallel_ci.requirements(plan, main_smoke)
+    mode = mode_for_plan(event, ref, plan)
     problems = parallel_ci.validate_results(upstream, needed)
     expected_identity = {
         "source_commit": plan["source_commit"], "plan_digest": plan["plan_digest"],
@@ -163,6 +180,13 @@ def check_eligibility(evidence: Path, required_root: Path, *, event: str, ref: s
                         <= set(plan["selected_files"]))
     if required_result.get("safe_recovery_required") is not recovery_required:
         problems.append("safe-recovery requirement does not match the immutable plan")
+    if require_prepr_scope and (mode != 'pre-pr-full-safe'
+                                or required_result.get('qualification_scope') != parallel_ci.PREPR_SCOPE):
+        problems.append('required-result is not bound to the non-promotional pre-PR scope')
+    expected_scope = parallel_ci.qualification_scope(mode)
+    if (required_result.get('qualification_scope') is not None
+            and required_result.get('qualification_scope') != expected_scope):
+        problems.append('required-result qualification scope does not match the trusted event and plan')
     if (report.get("eligible") is not True or report.get("source_commit") != plan["source_commit"]
             or report.get("plan_digest") != plan["plan_digest"]
             or report.get("manifest_version") != plan["manifest_version"]
@@ -514,13 +538,18 @@ def build_bundle(args: argparse.Namespace) -> dict[str, Any]:
     run_id, attempt = str(args.run_id), str(args.attempt)
     if not run_id.isdigit() or int(run_id) <= 0 or not attempt.isdigit() or int(attempt) <= 0:
         raise gate.GateError("positive workflow run ID and attempt are required")
-    if args.event not in {"push", "pull_request"}:
-        raise gate.GateError("only PR and push CI runs can publish evidence")
+    workflow_kind = getattr(args, 'workflow_kind', 'main')
+    prepr = workflow_kind == 'prepr'
+    if args.event not in ({"workflow_dispatch"} if prepr else {"push", "pull_request"}):
+        raise gate.GateError("event does not match this CI evidence profile")
+    if prepr and (not args.ref.startswith('refs/heads/') or args.ref == 'refs/heads/main'):
+        raise gate.GateError('pre-PR evidence is restricted to a non-main branch dispatch')
     if args.event == "push" and args.ref != "refs/heads/main":
         raise gate.GateError("push evidence bundle is restricted to refs/heads/main")
     upstream = read_json(args.jobs)
     plan, report = check_eligibility(args.evidence, args.required, event=args.event, ref=args.ref,
-                                     run_id=run_id, attempt=attempt, upstream=upstream)
+                                     run_id=run_id, attempt=attempt, upstream=upstream,
+                                     require_prepr_scope=prepr)
     main_smoke = main_smoke_for(args.event, args.ref)
     needed = parallel_ci.requirements(plan, main_smoke)
     os.environ["GITHUB_RUN_ID"] = run_id
@@ -580,8 +609,10 @@ def build_bundle(args: argparse.Namespace) -> dict[str, Any]:
         metadata = {
             "schema": SCHEMA, "source_sha": plan["source_commit"],
             "repository": REPOSITORY, "workflow": WORKFLOW_NAME,
-            "workflow_path": ".github/workflows/test-gates.yml", "required_check": REQUIRED_CHECK,
+            "workflow_path": ".github/workflows/test-gates.yml",
+            "required_check": PREPR_REQUIRED_CHECK if prepr else REQUIRED_CHECK,
             "event": args.event, "ref": args.ref, "run_id": run_id, "run_attempt": attempt,
+            **({"qualification_scope": parallel_ci.PREPR_SCOPE, "deploy_eligibility": False} if prepr else {}),
             "plan_digest": plan["plan_digest"], "manifest_digest": plan["manifest_digest"],
             "manifest_version": plan["manifest_version"], "strict_aggregate": "passed",
             "main_smoke_required": main_smoke, "jobs": upstream,
@@ -600,7 +631,7 @@ def build_bundle(args: argparse.Namespace) -> dict[str, Any]:
         })
         verify_bundle(argparse.Namespace(bundle=args.destination, expected_sha=plan["source_commit"],
                                          event=args.event, ref=args.ref, run_id=run_id, attempt=attempt,
-                                         require_main=False))
+                                         require_main=False, workflow_kind=workflow_kind))
         return metadata
     except BaseException:
         # A failed publication build is retained by the failure-diagnostic path only.
@@ -621,13 +652,15 @@ def verify_content(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def verify_bundle(args: argparse.Namespace) -> dict[str, Any]:
+    workflow_kind = getattr(args, 'workflow_kind', 'main')
+    prepr = workflow_kind == 'prepr'
     metadata, _manifest = verify_content(args.bundle)
     expected = {
         "source_sha": args.expected_sha,
         "run_id": str(args.run_id), "run_attempt": str(args.attempt),
         "event": args.event, "ref": args.ref, "repository": REPOSITORY,
         "workflow": WORKFLOW_NAME, "workflow_path": ".github/workflows/test-gates.yml",
-        "required_check": REQUIRED_CHECK,
+        "required_check": PREPR_REQUIRED_CHECK if prepr else REQUIRED_CHECK,
     }
     if any(metadata.get(key) != value for key, value in expected.items()):
         raise gate.GateError("bundle source/run/attempt differs from the independently supplied expectation")
@@ -635,10 +668,21 @@ def verify_bundle(args: argparse.Namespace) -> dict[str, Any]:
         raise gate.GateError("bundle has no strict aggregate PASS")
     if args.require_main and not (args.event == "push" and args.ref == "refs/heads/main"):
         raise gate.GateError("deployment verification requires an actual main push evidence bundle")
-    if args.event not in {"push", "pull_request"} or (args.event == "push" and args.ref != "refs/heads/main"):
-        raise gate.GateError("bundle event/ref is outside the supported workflow contract")
-    if args.event == "pull_request" and not args.ref.startswith("refs/pull/"):
-        raise gate.GateError("pull-request bundle does not identify a GitHub PR merge ref")
+    if prepr:
+        if (args.event != 'workflow_dispatch' or not args.ref.startswith('refs/heads/')
+                or args.ref == 'refs/heads/main'
+                or metadata.get('qualification_scope') != parallel_ci.PREPR_SCOPE
+                or metadata.get('deploy_eligibility') is not False
+                or args.require_main):
+            raise gate.GateError('pre-PR evidence cannot be promoted to PR/main/deployment qualification')
+    else:
+        if (args.event not in {"push", "pull_request"}
+                or (args.event == "push" and args.ref != "refs/heads/main")):
+            raise gate.GateError("bundle event/ref is outside the supported workflow contract")
+        if args.event == "pull_request" and not args.ref.startswith("refs/pull/"):
+            raise gate.GateError("pull-request bundle does not identify a GitHub PR merge ref")
+        if metadata.get('deploy_eligibility') is not None:
+            raise gate.GateError('PR/main bundle qualification metadata is invalid')
     if metadata.get("main_smoke_required") != main_smoke_for(args.event, args.ref):
         raise gate.GateError("main smoke policy does not match the trusted event/ref")
     if not (ROOT / ".git").exists() or gate.git("rev-parse", "HEAD") != metadata["source_sha"]:
@@ -674,10 +718,21 @@ def verify_bundle(args: argparse.Namespace) -> dict[str, Any]:
             or plan.get("manifest_digest") != metadata.get("manifest_digest")
             or plan.get("manifest_version") != metadata.get("manifest_version")):
         raise gate.GateError("bundled plan identity differs from bundle metadata")
+    expected_scope = parallel_ci.qualification_scope(mode_for_plan(args.event, args.ref, plan))
+    if metadata.get('qualification_scope') not in (None, expected_scope):
+        raise gate.GateError('bundle qualification scope does not match the immutable plan and event')
     os.environ["GITHUB_RUN_ID"] = metadata["run_id"]
     os.environ["GITHUB_RUN_ATTEMPT"] = metadata["run_attempt"]
     os.environ["FWROUTER_CI_PLAN_DIGEST"] = plan["plan_digest"]
+    if prepr and plan.get('mandatory_suite_required') is not True:
+        raise gate.GateError('pre-PR bundle must contain the full safe mandatory plan')
     needed = parallel_ci.requirements(plan, main_smoke_for(args.event, args.ref))
+    bundled_required = read_json(args.bundle / 'reports/required-result.json')
+    bundled_scope = bundled_required.get('qualification_scope')
+    if bundled_scope is not None and bundled_scope != expected_scope:
+        raise gate.GateError('offline required-result scope does not match the immutable plan and event')
+    if prepr and bundled_scope != parallel_ci.PREPR_SCOPE:
+        raise gate.GateError('offline required-result does not bind this archive to pre-PR non-promotional scope')
     expected_paths = expected_evidence_paths(evidence, plan, needed)
     validate_projection_metadata(metadata, plan, needed, expected_paths)
     expected_bundle_paths = {
@@ -930,6 +985,8 @@ def _record_digest_valid(value: dict[str, Any], field: str) -> bool:
 
 
 def _summary_profile(event: str, ref: str, workflow_kind: str) -> str:
+    if workflow_kind == 'prepr':
+        return 'Pre-PR full safe qualification; non-promotional'
     if workflow_kind == 'l6':
         return 'L6 main regression' if ref == 'refs/heads/main' else 'L6 non-promotional branch regression'
     if event == 'pull_request':
@@ -942,6 +999,8 @@ def _summary_profile(event: str, ref: str, workflow_kind: str) -> str:
 
 
 def _summary_context_valid(event: str, ref: str, workflow_kind: str) -> bool:
+    if workflow_kind == 'prepr':
+        return event == 'workflow_dispatch' and ref.startswith('refs/heads/') and ref != 'refs/heads/main'
     if workflow_kind == 'l6':
         return (event in {'schedule', 'workflow_dispatch'} and ref.startswith('refs/heads/')
                 and (event != 'schedule' or ref == 'refs/heads/main'))
@@ -1002,6 +1061,12 @@ def summary(args: argparse.Namespace) -> int:
             required_valid = (required.get('qualification_scope') == expected_scope
                               and required.get('minimum_repeats') == 2
                               and required.get('safe_recovery_required') is True)
+        elif workflow_kind == 'prepr':
+            required_valid = (plan.get('mandatory_suite_required') is True
+                              and required.get('qualification_scope') == parallel_ci.PREPR_SCOPE)
+        elif event == 'push' and ref == 'refs/heads/main':
+            required_valid = (plan.get('mandatory_suite_required') is True
+                              and required.get('safe_recovery_required') is recovery_required)
         else:
             required_valid = required.get('safe_recovery_required') is recovery_required
     current_jobs_valid = bool(isinstance(jobs, dict) and set(jobs) == set(parallel_ci.ROLES)
@@ -1176,6 +1241,7 @@ def summary(args: argparse.Namespace) -> int:
         lines.append(f"- [Open this run and its job logs]({run_url})")
     if artifact_valid and context_valid:
         artifact_name = (f"fwrouter-l6-evidence-{expected_sha}-{run_id}-{attempt}" if workflow_kind == 'l6'
+                         else f"fwrouter-pre-pr-evidence-{expected_sha}-{run_id}-{attempt}" if workflow_kind == 'prepr'
                          else f"fwrouter-main-evidence-{expected_sha}-{run_id}-{attempt}"
                          if event == 'push' and ref == 'refs/heads/main'
                          else f"fwrouter-pr-evidence-{expected_sha}-{run_id}-{attempt}")
@@ -1322,14 +1388,16 @@ def main() -> int:
     build.add_argument("--ref", required=True)
     build.add_argument("--run-id", required=True)
     build.add_argument("--attempt", required=True)
+    build.add_argument("--workflow-kind", choices=("main", "prepr"), default="main")
     verify = commands.add_parser("verify")
     verify.add_argument("--bundle", type=Path, required=True)
     verify.add_argument("--expected-sha", required=True)
-    verify.add_argument("--event", choices=("push", "pull_request"), required=True)
+    verify.add_argument("--event", choices=("push", "pull_request", "workflow_dispatch"), required=True)
     verify.add_argument("--ref", required=True)
     verify.add_argument("--run-id", required=True)
     verify.add_argument("--attempt", required=True)
     verify.add_argument("--require-main", action="store_true")
+    verify.add_argument("--workflow-kind", choices=("main", "prepr"), default="main")
     diag = commands.add_parser("diagnostics")
     diag.add_argument("--l6", action="store_true")
     diag.add_argument("--required", type=Path, required=True)
@@ -1362,7 +1430,7 @@ def main() -> int:
     summary_parser.add_argument("--expected-sha", default="")
     summary_parser.add_argument("--event", default="")
     summary_parser.add_argument("--ref", default="")
-    summary_parser.add_argument("--workflow-kind", choices=("main", "l6"), default="main")
+    summary_parser.add_argument("--workflow-kind", choices=("main", "l6", "prepr"), default="main")
     summary_parser.add_argument("--aggregate-outcome", required=True)
     summary_parser.add_argument("--bundle-outcome", required=True)
     summary_parser.add_argument("--publish-outcome", required=True)

@@ -33,30 +33,22 @@ def load(path):
 
 
 def trigger(event, ref, acknowledge, mode, expected_sha, actual_sha):
-    if event == 'schedule':
-        if ref != 'refs/heads/main':
-            raise gate.GateError('nightly L6 requires main')
-        return 'main-regression'
-    if (event != 'workflow_dispatch' or acknowledge != 'RUN L6'
-            or expected_sha != actual_sha or len(actual_sha) != 40):
-        raise gate.GateError('L6 dispatch acknowledgement or exact SHA is invalid')
-    if mode == 'main' and ref == 'refs/heads/main':
-        return 'main-regression'
-    if mode == 'branch' and ref.startswith('refs/heads/') and ref != 'refs/heads/main':
-        return 'branch-regression-non-promotional'
-    raise gate.GateError('L6 mode/ref is not authorized by the trigger contract')
+    resolved = parallel.qualification_mode(event, ref, acknowledge=acknowledge,
+                                           expected_sha=expected_sha, actual_sha=actual_sha,
+                                           l6_mode=mode)
+    if resolved not in {'l6-main', 'l6-branch'}:
+        raise gate.GateError('L6 mode/ref is not authorized by the trigger contract')
+    return {'l6-main': 'main-regression',
+            'l6-branch': 'branch-regression-non-promotional'}[resolved]
 
 
 def configure(args):
     scope = trigger(os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_REF'],
                     args.acknowledge, args.mode, args.expected_sha, gate.git('rev-parse', 'HEAD'))
-    plan = load(args.plan)
-    parallel.seal(args.plan.parent, 'plan', plan, 'success')
+    load(args.plan)
+    parallel.write_configure_outputs(args.plan, args.github_output, l6=True)
     with Path(args.github_output).open('a') as stream:
-        for key, value in {'source_sha': plan['source_commit'], 'plan_digest': plan['plan_digest'],
-                           'unit_shards_json': json.dumps(gate.ROUTINE_SHARD_GROUPS),
-                           'native_profiles_json': json.dumps(parallel.native_profiles(plan)),
-                           'qualification_scope': scope}.items():
+        for key, value in {'qualification_scope': scope}.items():
             stream.write(f'{key}={value}\n')
 
 
@@ -68,12 +60,9 @@ def expected_children():
 
 
 def check_jobs(jobs):
-    if not isinstance(jobs, dict) or set(jobs) != set(ROLES):
-        raise gate.GateError('L6 required job result set is incomplete or unexpected')
-    failed = [role for role in ROLES if not isinstance(jobs[role], dict)
-              or jobs[role].get('result') != 'success']
-    if failed:
-        raise gate.GateError('L6 required jobs failed/skipped/cancelled: ' + ', '.join(failed))
+    problems = parallel.validate_results(jobs, {role: True for role in ROLES})
+    if problems:
+        raise gate.GateError('L6 required jobs failed/skipped/cancelled: ' + '; '.join(problems))
 
 
 def verify_metadata_plan_identity(metadata, plan):
