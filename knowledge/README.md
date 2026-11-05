@@ -1,5 +1,12 @@
 # FWRouter Knowledge
 
+## Current Stage 6.2 authority — 2026-11-05
+
+The canonical roadmap is `/решения/roadmap/fwrouter/ROADMAP.md`; [ROADMAP.md](ROADMAP.md) is its deliberately reconciled Git mirror, not an independent plan. The maintained [Stage 6.2 CI/Test plan](audits/STAGE6_2_CI_TEST_ARCHITECTURE.md) records accepted 6.2.1–6.2.4 source scope and current 6.2.5 qualification preparation. Local tests never imply hosted PR/Main/L6 or live acceptance. The earlier dated status text below is retained history and must not override this decision.
+
+CI Pipeline & Test Architecture is **Stage 6.2**. **Stage 6A — Measured Performance / Server-Wide Compose Audit** remains separate; Stage 8 → 8A → 7 remains unchanged. QEMU/TCG is rejected. Host-dependent identities remain registered with explicit authorized CI SKIPs and separately authorized post-deployment or disposable Stage 9/L7 acceptance. One Stage 6.2 branch → one PR → required CI → user Squash & Merge → Main CI → one separately authorized deploy → live acceptance; no pre-deployment or intermediate production deployment.
+
+
 ## Current architecture and planning authority — 2026-11-03
 
 The single active roadmap is the owner-local `/решения/roadmap/fwrouter/ROADMAP.md`.
